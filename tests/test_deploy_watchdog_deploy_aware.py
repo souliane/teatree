@@ -39,25 +39,36 @@ _OTHER_FAIL = "Compose service teatree-worker is exited"
 _WEDGED_FAIL = "the worker holds the flock but these loops are not advancing their cadence: inbox, review"
 
 
+def _created(*, seconds_ago: float = 0) -> str:
+    """A container creation time in `docker inspect .Created`'s real shape (RFC3339Nano, UTC)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - seconds_ago)) + ".683288764Z"
+
+
 def _verdict(*messages: str) -> str:
     findings = ", ".join(f'{{"level": "FAIL", "message": "{m}"}}' for m in messages)
     return f'{{"ok": false, "findings": [{findings}]}}'
 
 
 def _write_docker_stub(bin_dir: Path) -> None:
-    """A ``docker`` shim modelling the compose calls ``run_pass`` makes.
+    """A ``docker`` shim modelling the docker + compose calls ``run_pass`` makes.
 
-    ``STUB_CREATED_AT`` serves the container-creation probe (``docker ps
-    --format '{{.CreatedAt}}'``); a doctor ``exec`` prints ``STUB_DOCTOR_JSON``; a
-    ``notify send`` exec captures the piped DM body to ``STUB_NOTIFY_FILE``.
+    The container-creation probe is TWO calls, exactly as the real one is: ``ps
+    --format '{{.ID}}'`` then ``inspect --format '{{.Created}}'``. ``STUB_CREATED``
+    supplies the RFC3339 creation time (empty → no containers). Every invocation is
+    appended to ``STUB_DOCKER_LOG`` so the argv shape itself can be asserted.
+
+    A doctor ``exec`` prints ``STUB_DOCTOR_JSON``; a ``notify send`` exec captures
+    the piped DM body to ``STUB_NOTIFY_FILE``.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "docker"
     shim.write_text(
         "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >>"${STUB_DOCKER_LOG:-/dev/null}"\n'
         'if [ "$1" != compose ]; then\n'
-        '  case "$*" in\n'
-        '    *CreatedAt*) printf "%s\\n" "$STUB_CREATED_AT" ;;\n'
+        '  case "$1 $*" in\n'
+        '    "ps "*.ID*) [ -z "${STUB_CREATED:-}" ] || printf "%s\\n" "stubcid" ;;\n'
+        '    "inspect "*) printf "%s\\n" "${STUB_CREATED:-}" ;;\n'
         "  esac\n"
         "  exit 0\n"
         "fi\n"
@@ -96,7 +107,8 @@ def _run_pass(tmp_path: Path, *, label: str = "1", **stub_env: str) -> str:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["STUB_NOTIFY_FILE"] = str(notify_file)
-    env.setdefault("STUB_CREATED_AT", "")
+    env["STUB_DOCKER_LOG"] = str(tmp_path / "docker.log")
+    env.setdefault("STUB_CREATED", "")
     env.setdefault("STUB_DOCTOR_JSON", '{"ok": true, "findings": []}')
     # Shared across passes so the two-strikes ledger is exercised for real.
     env.setdefault("TEATREE_WATCHDOG_DEPLOY_PENDING_STATE", str(tmp_path / "pending.state"))
@@ -146,17 +158,26 @@ class TestDeployInFlightSuppressesTheThreeFindings:
         # The image swap recreates containers; it is still settling.
         env = {
             "STUB_DOCTOR_JSON": _verdict(_FLOCK_FAIL, _LISTENER_FAIL, _CLONE_FAIL),
-            "STUB_CREATED_AT": time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime()),
+            "STUB_CREATED": _created(),
         }
         assert _run_pass(tmp_path, label="1", **env) == ""
         assert _run_pass(tmp_path, label="2", **env) == ""
+
+    def test_the_creation_time_is_read_in_a_tzdata_free_format(self, tmp_path: Path) -> None:
+        # `ps --format {{.CreatedAt}}` yields a local-zone abbreviation ("+0200
+        # CEST") that GNU date REFUSES without tzdata — which the deploy image and
+        # the CI image both lack, so the probe would silently never fire. Pin the
+        # argv: the creation time comes from `inspect .Created` (RFC3339 UTC).
+        _run_pass(tmp_path, STUB_DOCTOR_JSON=_verdict(_FLOCK_FAIL), STUB_CREATED=_created())
+        log = (tmp_path / "docker.log").read_text(encoding="utf-8")
+        assert "inspect --format {{.Created}}" in log
+        assert "CreatedAt" not in log, "the tzdata-dependent human timestamp must never be parsed"
 
     def test_a_long_running_container_is_not_a_deploy(self, tmp_path: Path) -> None:
         # A crash-looping container RESTARTS without being recreated, so an old
         # creation timestamp must never read as a deploy — only the two-strikes
         # rule gates here, and the second pass pages.
-        old = time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime(time.time() - 86400))
-        env = {"STUB_DOCTOR_JSON": _verdict(_FLOCK_FAIL), "STUB_CREATED_AT": old}
+        env = {"STUB_DOCTOR_JSON": _verdict(_FLOCK_FAIL), "STUB_CREATED": _created(seconds_ago=86400)}
         assert _run_pass(tmp_path, label="1", **env) == ""
         assert "holds the flock" in _run_pass(tmp_path, label="2", **env)
 
@@ -196,8 +217,7 @@ class TestTwoStrikesWithoutADeploy:
     def test_a_deploy_pass_does_not_count_as_a_strike(self, tmp_path: Path) -> None:
         # A finding observed only while the swap ran is not evidence of anything.
         red = _verdict(_LISTENER_FAIL)
-        fresh = time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime())
-        assert _run_pass(tmp_path, label="1", STUB_DOCTOR_JSON=red, STUB_CREATED_AT=fresh) == ""
+        assert _run_pass(tmp_path, label="1", STUB_DOCTOR_JSON=red, STUB_CREATED=_created()) == ""
         assert _run_pass(tmp_path, label="2", STUB_DOCTOR_JSON=red) == ""
 
 

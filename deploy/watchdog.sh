@@ -261,16 +261,28 @@ deploy_lock_held() {
 # of the image swap. Created (never started) is the discriminating field: a
 # crash-looping container restarts without being recreated, so a genuine outage is
 # never mistaken for a deploy.
+#
+# The timestamp comes from `inspect .Created` (RFC3339 UTC, e.g.
+# 2026-07-25T09:01:41.683288764Z), NEVER from `ps --format {{.CreatedAt}}`, whose
+# local-zone abbreviation form ("… +0200 CEST") GNU date REFUSES to parse on a
+# tzdata-less image — which this one is, so every sample would silently fail to
+# parse and the probe would never fire on the box.
 stack_recently_recreated() {
   local now created epoch
+  local -a ids
   now="$(date -u +%s 2>/dev/null)" || return 1
+  mapfile -t ids < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}' 2>/dev/null)
+  [ "${#ids[@]}" -gt 0 ] || return 1
   while IFS= read -r created; do
     [ -n "$created" ] || continue
-    epoch="$(date -u -d "$created" +%s 2>/dev/null)" || continue
+    if ! epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
+      log "unreadable container creation time ('$created') — not treating the stack as mid-deploy"
+      continue
+    fi
     if [ "$((now - epoch))" -lt "$DEPLOY_RECREATE_WINDOW" ]; then
       return 0
     fi
-  done < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.CreatedAt}}' 2>/dev/null)
+  done < <(docker inspect --format '{{.Created}}' "${ids[@]}" 2>/dev/null)
   return 1
 }
 

@@ -589,7 +589,10 @@ A convergence is detected two ways, either sufficient:
 - **Very-recent container creation**, read from the docker socket. `Created` (not
   started) is the discriminating field: a crash-looping container restarts without
   being recreated, so a genuine outage never reads as a deploy. The grace window is
-  one watchdog interval.
+  one watchdog interval. The timestamp comes from `inspect --format '{{.Created}}'`
+  (RFC3339 UTC) and never `ps --format '{{.CreatedAt}}'`, whose local-zone
+  abbreviation (`… +0200 CEST`) GNU date refuses to parse on this tzdata-less image
+  — every sample would fail to parse and the probe would silently never fire.
 
 Then:
 
