@@ -96,7 +96,10 @@ class Command(TyperCommand):
         *,
         tier: Annotated[
             str,
-            typer.Option("--tier", help="Cost tier (cheap/medium/expensive/all). Default: cheap."),
+            typer.Option(
+                "--tier",
+                help="Cost tier: cheap|all (default: cheap). medium/expensive have no detectors and are refused.",
+            ),
         ] = "cheap",
         json_output: Annotated[
             bool,
@@ -105,10 +108,19 @@ class Command(TyperCommand):
     ) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
         from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: lazy command import
-        from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loop.self_improve.schedule import (  # noqa: PLC0415 — deferred: keeps command import light
+            UnimplementedTierError,
+            require_implemented_tier,
+            run_tier,
+        )
 
         out = cast("IO[str]", self.stdout)
         err = cast("IO[str]", self.stderr)
+        try:
+            require_implemented_tier(tier)
+        except UnimplementedTierError as exc:
+            err.write(f"REFUSE  {exc}\n")
+            raise SystemExit(2) from exc
         session_id = _non_owner_session_id()
         if not _session_owns_loop(session_id):
             now = dt.datetime.now(tz=dt.UTC)

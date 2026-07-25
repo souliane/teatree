@@ -306,11 +306,15 @@ def self_improve_run_command(
     tier: str = typer.Option(
         "cheap",
         "--tier",
-        help="Cost tier: cheap|medium|expensive|all (default: cheap; Phase 1 ships cheap only).",
+        help="Cost tier: cheap|all (default: cheap). medium/expensive have no detectors and are refused.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the cycle report as JSON."),
 ) -> None:
-    """Run one self-improve schedule cycle for the given tier."""
+    """Run one self-improve schedule cycle for the given tier.
+
+    Delegates to the loop_self_improve management command, which refuses a
+    tier with no detectors — both surfaces exit 2 with the same message.
+    """
     ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time

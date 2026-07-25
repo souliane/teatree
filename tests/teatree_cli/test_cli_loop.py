@@ -521,6 +521,33 @@ class TestSelfImproveStartCommand:
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
+class TestSelfImproveUnbuiltTierParity:
+    """Both surfaces must refuse an unbuilt tier identically (no silent no-op)."""
+
+    @pytest.mark.parametrize("tier", ["medium", "expensive", "phase-99-future"])
+    def test_typer_cli_and_management_command_refuse_alike(self, tier: str) -> None:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: non-Django module (docstring)
+
+        from teatree.loop.self_improve import UnimplementedTierError  # noqa: PLC0415 — deferred: pulls in the ORM
+
+        cli = runner.invoke(loop_app, ["self-improve", "run", "--tier", tier])
+        with pytest.raises(SystemExit) as raised:
+            call_command("loop_self_improve", tier=tier)
+
+        assert cli.exit_code == raised.value.code == 2
+        assert str(UnimplementedTierError(tier)) in cli.output
+
+    def test_implemented_tier_still_runs_through_both_surfaces(self) -> None:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: non-Django module (docstring)
+
+        cli = runner.invoke(loop_app, ["self-improve", "run", "--tier", "cheap"])
+        call_command("loop_self_improve", tier="cheap")
+
+        assert cli.exit_code == 0
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
 class TestLoopOwnerCli:
     """``t3 loop claim/owner/release`` end-to-end through the mgmt command (#1073)."""
 
