@@ -243,6 +243,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.managers_phase_cadence"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
@@ -253,6 +258,7 @@ depends_on = [
   "teatree.core.loop_lease_manager",
   "teatree.core.managers_issue_match",
   "teatree.core.managers_overlay",
+  "teatree.core.managers_phase_cadence",
   "teatree.core.managers_task_claim",
   "teatree.core.repair_loop",
   "teatree.core.session_handover_manager"

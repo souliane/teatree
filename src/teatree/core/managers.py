@@ -20,6 +20,8 @@ from teatree.core.loop_lease_manager import (
 from teatree.core.managers_issue_match import matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
+from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
+from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
@@ -258,6 +260,14 @@ class TaskQuerySet(models.QuerySet):
             phase__in=phase_spellings(phase),
             status__in=task_model.Status.active(),
         )
+
+    def in_flight_for_phase(self, overlay: str, phase: str) -> models.QuerySet:
+        """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
+        return _in_flight_for_phase(self, overlay, phase)
+
+    def last_run_at_for_phase(self, overlay: str, phase: str, *, completed_only: bool = False) -> datetime | None:
+        """Most recent ``Session.started_at`` for an overlay+phase task, or ``None`` — the cadence clock."""
+        return _last_run_at_for_phase(self, overlay, phase, completed_only=completed_only)
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))

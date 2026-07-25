@@ -71,6 +71,7 @@ graph TD
     teatree.core.managers --> teatree.core.loop_lease_manager
     teatree.core.managers --> teatree.core.managers_issue_match
     teatree.core.managers --> teatree.core.managers_overlay
+    teatree.core.managers --> teatree.core.managers_phase_cadence
     teatree.core.managers --> teatree.core.managers_task_claim
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
@@ -384,6 +385,7 @@ graph TD
     teatree.core.managers_overlay
     teatree.core.managers_task_claim
     teatree.core.managers_issue_match
+    teatree.core.managers_phase_cadence
     teatree.backends.errors
     teatree.backends.http_retry
     teatree.backends.types

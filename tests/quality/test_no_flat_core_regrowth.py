@@ -113,7 +113,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # UNKNOWN) that unified the three hand-rolled `gh pr list` / `glab mr list` probes. A genuine shared
 # root leaf bridging two gates/ modules (orphan_guard, open_pr_teardown_gate) and the flat root
 # fast_push.py: gates/ is gate/deny logic, not a forge-transport probe, and no other subpackage owns it.
-PINNED_FLAT_CORE_MODULES = 100
+# 101: +managers_phase_cadence.py — the periodic-scanner dedupe/last-run Task queryset helpers
+# (in_flight_for_phase + last_run_at_for_phase) carved out of managers.py to hold it under the 500-LOC
+# module-health cap. A pure queryset-builder leaf helper of the flat root managers.py hub, mirroring
+# managers_overlay.py / managers_issue_match.py / managers_task_claim.py. Owned by no existing subpackage.
+PINNED_FLAT_CORE_MODULES = 101
 
 
 def _flat_core_modules() -> list[str]:
