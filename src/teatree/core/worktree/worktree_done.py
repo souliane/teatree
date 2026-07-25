@@ -52,6 +52,7 @@ from teatree.core.worktree.branch_classification import (
     effective_default_target,
     is_squash_merged,
 )
+from teatree.core.worktree.broken_checkout import BrokenCheckout, BrokenCheckoutVerdict, classify_broken_checkout
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -384,6 +385,10 @@ def reap_done_worktree(
     if pre_gate is not None:
         return pre_gate
 
+    broken = classify_broken_checkout(worktree, workspace=workspace)
+    if broken.state is not BrokenCheckout.LIVE_CHECKOUT:
+        return _dead_checkout_outcome(worktree, workspace=workspace, verdict=broken, dry_run=dry_run)
+
     signal = worktree_is_done(worktree)
     if not signal.done:
         return ReapOutcome(
@@ -405,6 +410,34 @@ def reap_done_worktree(
     return _wipe_proven_redundant(
         worktree, workspace=workspace, signal=signal, head_at_analysis=head_at_analysis, dry_run=dry_run
     )
+
+
+def _dead_checkout_outcome(
+    worktree: Worktree,
+    *,
+    workspace: Path,
+    verdict: BrokenCheckoutVerdict,
+    dry_run: bool,
+) -> ReapOutcome:
+    """Release (or keep) a row whose checkout is dead — the ONE owner of that state.
+
+    The done/redundancy gates below cannot reach a dir git will not open, so this
+    branch decides instead, on the proof :func:`classify_broken_checkout` gathered
+    from the source clone. ``force=True`` is warranted for the same reason it is in
+    :func:`_wipe_proven_redundant`: that proof IS the data-loss gate, and the guards
+    it bypasses are exactly the ones that can only fail closed here. The dir itself
+    is left to the broken-DIR reaper, which owns an untracked dead checkout.
+    """
+    if verdict.state is not BrokenCheckout.RELEASABLE:
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': {verdict.reason}",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+        )
+    if dry_run:
+        return ReapOutcome("would-wipe", f"WOULD RELEASE '{worktree.branch}': {verdict.reason}")
+    result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    return ReapOutcome("wiped", f"Released dead checkout '{worktree.branch}': {result.label}", errors=result.errors)
 
 
 def _wipe_proven_redundant(

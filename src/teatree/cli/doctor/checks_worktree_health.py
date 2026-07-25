@@ -14,30 +14,40 @@ import typer
 
 
 def _check_registered_worktrees_are_checkouts() -> bool:
-    """FAIL on a registered worktree dir that ``git rev-parse`` cannot resolve.
+    """FAIL on a registered worktree dir git PROVED is not a checkout; WARN when it could not say.
 
     A missing dir is NOT a failure here — that is an ordinary reaped worktree
     whose row the done-reaper releases. The failure is a dir that EXISTS but is
     not a checkout: the state that produced the repeating "is not a git checkout"
     setup WARNs.
+
+    The three-valued probe is shared with the reaper on purpose. FAILing on a
+    merely-inconclusive probe would print a remedy for a state no reaper is
+    allowed to act on — a doctor prescribing what the factory cannot do.
     """
     from teatree.core.models import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.core.worktree.worktree_roots import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
-        resolves_as_git_checkout,
+        CheckoutState,
+        probe_checkout,
     )
 
-    broken = [
-        worktree
+    present = [
+        (worktree, probe_checkout(Path(worktree.worktree_path)))
         for worktree in Worktree.objects.all()
-        if worktree.worktree_path
-        and Path(worktree.worktree_path).is_dir()
-        and not resolves_as_git_checkout(Path(worktree.worktree_path))
+        if worktree.worktree_path and Path(worktree.worktree_path).is_dir()
     ]
+    broken = [worktree for worktree, state in present if state is CheckoutState.NOT_A_CHECKOUT]
+    unverified = [worktree for worktree, state in present if state is CheckoutState.INCONCLUSIVE]
     for worktree in broken:
         typer.echo(
             f"FAIL  Registered worktree {worktree.pk} at {worktree.worktree_path} is not a git checkout "
             "(git rev-parse fails) — every git-driven pass over it silently no-ops. "
-            "Fix: t3 <overlay> workspace clean-all (the broken-worktree reaper drops it)."
+            "Fix: t3 <overlay> workspace clean-all (the row reaper releases the row, then the dir)."
+        )
+    for worktree in unverified:
+        typer.echo(
+            f"WARN  Registered worktree {worktree.pk} at {worktree.worktree_path} UNVERIFIED: git declined to "
+            "say whether it is a checkout (ownership, permissions, or git itself). Nothing reaps it until it can."
         )
     return not broken
 

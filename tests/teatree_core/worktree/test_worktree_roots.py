@@ -1,8 +1,8 @@
 """The canonical worktree ROOTS the reaper and doctor scan (souliane/teatree#3583).
 
 Real ``Worktree`` rows and real on-disk git checkouts under ``tmp_path`` — the
-``resolves_as_git_checkout`` probe runs the real ``git rev-parse`` and the
-namespace-split classifier compares real paths against a pinned canonical root.
+``probe_checkout`` probe runs the real ``git rev-parse`` and the namespace-split
+classifier compares real paths against a pinned canonical root.
 """
 
 import tempfile
@@ -13,14 +13,14 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.worktree_roots import (
+    CheckoutState,
     canonical_worktree_root,
+    probe_checkout,
     registered_worktree_roots,
-    resolves_as_git_checkout,
     scanned_worktree_roots,
     worktrees_outside_the_canonical_root,
 )
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError
 
 
 class _RootsTestCase(TestCase):
@@ -48,30 +48,38 @@ class _RootsTestCase(TestCase):
         )
 
 
-class ResolvesAsGitCheckoutTest(_RootsTestCase):
-    def test_a_real_checkout_resolves(self) -> None:
+class ProbeCheckoutTest(_RootsTestCase):
+    def test_a_real_checkout_is_proven_live(self) -> None:
         checkout = self.tmp / "live"
         checkout.mkdir()
         git.run(repo=str(checkout), args=["init", "--quiet", "--initial-branch=main"])
-        assert resolves_as_git_checkout(checkout) is True
+        assert probe_checkout(checkout) is CheckoutState.CHECKOUT
 
-    def test_a_non_repo_dir_does_not_resolve(self) -> None:
-        # git rev-parse raises CommandFailedError inside a plain dir — the probe
-        # maps that to False rather than propagating the error.
+    def test_a_non_repo_dir_is_proven_not_a_checkout(self) -> None:
         plain = self.tmp / "plain"
         plain.mkdir()
-        assert resolves_as_git_checkout(plain) is False
+        assert probe_checkout(plain) is CheckoutState.NOT_A_CHECKOUT
 
-    def test_an_absent_path_does_not_resolve(self) -> None:
-        assert resolves_as_git_checkout(self.tmp / "nowhere") is False
+    def test_a_dangling_gitfile_is_proven_not_a_checkout(self) -> None:
+        dead = self.tmp / "dead"
+        dead.mkdir()
+        (dead / ".git").write_text("gitdir: /nonexistent/clone/.git/worktrees/gone\n", encoding="utf-8")
+        assert probe_checkout(dead) is CheckoutState.NOT_A_CHECKOUT
 
-    def test_a_git_probe_error_reads_as_not_a_checkout(self) -> None:
-        # A raising git probe (corrupt repo, launch failure) maps to not-a-checkout
-        # rather than propagating — the reaper/doctor never crash on a bad dir.
-        checkout = self.tmp / "corrupt"
-        checkout.mkdir()
-        with mock.patch.object(git, "run", side_effect=CommandFailedError(["git", "rev-parse"], 128, "", "fatal")):
-            assert resolves_as_git_checkout(checkout) is False
+    def test_an_absent_path_proves_nothing(self) -> None:
+        # "cannot change to <path>" says nothing about whether a repo lives there.
+        assert probe_checkout(self.tmp / "nowhere") is CheckoutState.INCONCLUSIVE
+
+    def test_a_refusal_git_could_not_answer_is_inconclusive_not_proof(self) -> None:
+        # The whole point of the third value: a dubious-ownership refusal must
+        # never read as "this dir holds nothing", which is what authorises a wipe.
+        refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: detected dubious ownership in repository")
+        with mock.patch("teatree.core.worktree.worktree_roots.run_allowed_to_fail", return_value=refusal):
+            assert probe_checkout(self.tmp) is CheckoutState.INCONCLUSIVE
+
+    def test_a_probe_that_cannot_launch_is_inconclusive(self) -> None:
+        with mock.patch("teatree.core.worktree.worktree_roots.run_allowed_to_fail", side_effect=OSError("no git")):
+            assert probe_checkout(self.tmp) is CheckoutState.INCONCLUSIVE
 
 
 class WorktreesOutsideCanonicalRootTest(_RootsTestCase):

@@ -14,25 +14,58 @@ DRAINED by the reaper rather than left to accumulate — and, once drained, neve
 written to again, collapsing the split without a manual migration.
 """
 
+from enum import StrEnum
 from pathlib import Path
 
 from teatree.config import worktree_root
 from teatree.core.models import Worktree
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError
+from teatree.utils.git_run import git_env_without_overrides
+from teatree.utils.run import run_allowed_to_fail
 
 
-def resolves_as_git_checkout(path: Path) -> bool:
-    """Whether ``git rev-parse`` succeeds inside *path* — the broken-checkout probe.
+class CheckoutState(StrEnum):
+    """What ``git rev-parse`` proved about a directory — three answers, not two.
 
-    The exact probe whose failure the setup-time ``is not a git checkout`` WARN
-    reports, so the reaper, the doctor check and that warning can never disagree
-    about which dirs are broken.
+    ``INCONCLUSIVE`` is the load-bearing one: git declining to speak (dubious
+    ownership, a permission error, a missing binary) looks exactly like a dead
+    checkout to a boolean probe, and a boolean probe is what let the reaper treat
+    "git would not answer" as "this dir holds nothing". Only ``NOT_A_CHECKOUT``
+    is positive proof, so only it may authorise a destructive release.
+    """
+
+    CHECKOUT = "checkout"
+    NOT_A_CHECKOUT = "not-a-checkout"
+    INCONCLUSIVE = "inconclusive"
+
+
+# git's own wording for "there is no repository here". Every other fatal leaves
+# the question open.
+_NOT_A_CHECKOUT_STDERR = ("not a git repository", "not a working tree", "invalid gitfile format")
+
+
+def probe_checkout(path: Path) -> CheckoutState:
+    """Classify *path* as a live checkout, a proven non-checkout, or unanswerable.
+
+    The one probe the broken-dir reaper, the row reaper and ``t3 doctor`` share,
+    so they can never disagree about which dirs are broken — and the same probe
+    whose failure the setup-time ``is not a git checkout`` WARN reports. Runs with
+    every ``GIT_*`` override stripped so an ambient hook environment cannot answer
+    for a different repo.
     """
     try:
-        return bool(git.run(repo=str(path), args=["rev-parse", "--git-dir"]).strip())
-    except (CommandFailedError, OSError):
-        return False
+        result = run_allowed_to_fail(
+            ["git", "-C", str(path), "rev-parse", "--git-dir"],
+            expected_codes=None,
+            env=git_env_without_overrides(),
+        )
+    except OSError:
+        return CheckoutState.INCONCLUSIVE
+    if result.returncode == 0 and result.stdout.strip():
+        return CheckoutState.CHECKOUT
+    stderr = result.stderr.lower()
+    if any(marker in stderr for marker in _NOT_A_CHECKOUT_STDERR):
+        return CheckoutState.NOT_A_CHECKOUT
+    return CheckoutState.INCONCLUSIVE
 
 
 def canonical_worktree_root() -> Path:
@@ -75,9 +108,10 @@ def worktrees_outside_the_canonical_root() -> list[Worktree]:
 
 
 __all__ = [
+    "CheckoutState",
     "canonical_worktree_root",
+    "probe_checkout",
     "registered_worktree_roots",
-    "resolves_as_git_checkout",
     "scanned_worktree_roots",
     "worktrees_outside_the_canonical_root",
 ]
