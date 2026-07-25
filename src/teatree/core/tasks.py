@@ -14,7 +14,7 @@ from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
-from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
+from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 
 logger = logging.getLogger(__name__)
@@ -286,7 +286,7 @@ def refresh_followup_snapshot() -> dict[str, int]:
 
 @task()
 def execute_retrospect(ticket_id: int) -> TransitionResult:
-    """Run retrospection I/O for a ticket in the RETROSPECTED state.
+    """Stamp the retro-phase marker for a ticket in the RETROSPECTED state.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
@@ -294,13 +294,13 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
     On success, advances ``RETROSPECTED → DELIVERED`` via ``mark_delivered()``.
 
-    ``RetroExecutor.run()`` (retrospection I/O — potentially minutes) runs
-    OUTSIDE the FSM-advance transaction (#1522 shape, mirroring ``execute_ship``):
-    a short atomic state-check, the executor as a top-level operation, then a
-    short atomic re-check + ``mark_delivered``. Running the executor inside the
-    ``select_for_update`` atomic held the SQLite global write lock (``BEGIN
-    IMMEDIATE``) for the whole run, stalling every other writer and expiring
-    live leases.
+    ``RetroPhaseMarker.run()`` runs OUTSIDE the FSM-advance transaction (#1522
+    shape, mirroring ``execute_ship``): a short atomic state-check, the runner as
+    a top-level operation, then a short atomic re-check + ``mark_delivered``. The
+    marker is durable evidence that the retro phase was reached, so it must
+    outlive a refused delivery — inside the advance atomic its ``merge_extra``
+    would be a savepoint the ``CriticGateError`` below unwinds, losing the
+    evidence the same way the rolled-back ``CriticFinding`` rows are lost.
 
     When the SELFCATCH-5 critic gate blocks (enforcing mode), it raises
     ``CriticGateError`` from inside the advance atomic, rolling back the
@@ -319,7 +319,7 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-    result = RetroExecutor(ticket).run()
+    result = RetroPhaseMarker(ticket).run()
     if not result.ok:
         logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
         return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}

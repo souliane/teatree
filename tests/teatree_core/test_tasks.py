@@ -10,6 +10,7 @@ from django.test import TestCase, override_settings
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
 from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, Ticket
+from teatree.core.runners import RetroPhaseMarker
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
     drain_headless_queue,
@@ -403,6 +404,15 @@ class TestExecuteRetrospect(TestCase):
         ticket.state = Ticket.State.MERGED
         ticket.save(update_fields=["state"])
         return ticket
+
+    def test_the_runner_only_stamps_the_phase_marker(self) -> None:
+        """Bookkeeping only — the agent-driven retro lives in `/t3:retro` + `lifecycle visit-phase`."""
+        ticket = self._ticket_in_merged()
+
+        assert RetroPhaseMarker(ticket).run() == RunnerResult(ok=True, detail="retro-scheduled")
+
+        ticket.refresh_from_db()
+        assert ticket.extra == {"retro_scheduled": True}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_merged_ticket_to_delivered(self) -> None:
