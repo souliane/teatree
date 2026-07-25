@@ -420,7 +420,10 @@ class TestTicketCompletionIsolation(TestCase):
             return host
 
         scanner = TicketCompletionScanner(overlay=_Overlay(), overlay_name="acme")
-        with patch("teatree.loop.scanners.ticket_completion.get_code_host_for_url", _patched_get_code_host):
+        # The scanner resolves the host through the shared ``issue_is_done`` seam
+        # in ``teatree.backends.loader``; a raising host lookup there propagates
+        # out of ``issue_is_done`` into the scanner's per-ticket ``except`` guard.
+        with patch("teatree.backends.loader.get_code_host_for_url", _patched_get_code_host):
             signals = scanner.scan()
 
         assert len(signals) == 1, "second ticket must still emit completion_detected"

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
-from teatree.backends.loader import get_code_host_for_url
+from teatree.backends.loader import issue_is_done
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
 
@@ -65,17 +65,7 @@ class TicketCompletionScanner:
                     )
                     continue
 
-                host = get_code_host_for_url(self.overlay, ticket.issue_url)
-                if host is None:
-                    continue
-                try:
-                    issue_data = host.get_issue(ticket.issue_url)
-                except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the scan
-                    logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
-                    continue
-                if not isinstance(issue_data, dict) or "error" in issue_data:
-                    continue
-                if self.overlay.is_issue_done(issue_data):
+                if issue_is_done(self.overlay, ticket.issue_url):
                     signals.append(
                         ScanSignal(
                             kind="ticket.completion_detected",

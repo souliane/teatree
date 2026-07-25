@@ -64,7 +64,7 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
                 return_value={"fake-overlay": _AlwaysDoneOverlay()},
             ),
             patch(
-                "teatree.core.management.commands._sweep_commands.get_code_host_for_url",
+                "teatree.backends.loader.get_code_host_for_url",
                 return_value=_FakeHost(),
             ),
         ):
@@ -99,7 +99,7 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
                 return_value={"fake-overlay": _AlwaysDoneOverlay()},
             ),
             patch(
-                "teatree.core.management.commands._sweep_commands.get_code_host_for_url",
+                "teatree.backends.loader.get_code_host_for_url",
                 return_value=_FakeHost(),
             ),
         ):

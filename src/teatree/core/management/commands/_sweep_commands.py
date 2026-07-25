@@ -12,18 +12,14 @@ stays out of the (cap-bound) ``ticket.py`` god-module. django-typer collects
 
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Annotated, TypedDict
+from typing import Annotated, TypedDict
 
 import typer
-from django.db import transaction
 from django_typer.management import TyperCommand, command
 
-from teatree.backends.loader import get_code_host_for_url
+from teatree.backends.loader import issue_is_done
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_all_overlays
-
-if TYPE_CHECKING:
-    from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +63,7 @@ class SweepCommands(TyperCommand):
             ).exclude(issue_url="")
 
             for ticket in tickets:
-                if not _issue_is_done(overlay, ticket):
+                if not issue_is_done(overlay, ticket.issue_url):
                     continue
                 result = _complete_one_ticket(ticket, dry_run=dry_run)
                 results.append(result)
@@ -132,31 +128,14 @@ class SweepCommands(TyperCommand):
         return results
 
 
-def _issue_is_done(overlay: "OverlayBase", ticket: Ticket) -> bool:
-    """Whether *ticket*'s upstream issue is done — the eligibility gate for advancement.
-
-    A missing host, an issue-fetch failure, an error payload, or an unfinished issue
-    all skip the ticket. A fetch failure is logged, never fatal — it must not abort the sweep.
-    """
-    host = get_code_host_for_url(overlay, ticket.issue_url)
-    if host is None:
-        return False
-    try:
-        issue_data = host.get_issue(ticket.issue_url)
-    except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the sweep
-        logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
-        return False
-    if not isinstance(issue_data, dict) or "error" in issue_data:
-        return False
-    return bool(overlay.is_issue_done(issue_data))
-
-
 def _complete_one_ticket(ticket: Ticket, *, dry_run: bool) -> CompletionResult:
     """Advance one done ticket toward delivered, returning the recorded outcome.
 
-    A gate-refused (or otherwise failing) FSM advance is caught and recorded as a
-    ``refused`` result so the sweep CONTINUES to the next ticket — the whole-table
-    sweep must never abort on one bad row (CFG-2). ``--dry-run`` records the intent.
+    Delegates the atomic-per-step FSM walk to ``Ticket.advance_to_delivered`` and
+    maps its structured result onto a ``CompletionResult``. A gate-refused advance
+    is reported as ``refused`` (with the persisted partial-progress landing state)
+    rather than aborting; an unexpected non-refusal error is likewise caught so the
+    whole-table sweep never dies on one bad row (CFG-2). ``--dry-run`` records the intent.
     """
     from_state = ticket.state
     if dry_run:
@@ -164,14 +143,10 @@ def _complete_one_ticket(ticket: Ticket, *, dry_run: bool) -> CompletionResult:
             ticket_id=int(ticket.pk), issue_url=ticket.issue_url, from_state=from_state, action="would_complete"
         )
     try:
-        _advance_ticket(ticket)
-    except Exception as exc:  # noqa: BLE001 — a gate-refused / failed FSM advance skips this ticket, never aborts the sweep
+        outcome = ticket.advance_to_delivered()
+    except Exception as exc:  # noqa: BLE001 — an unexpected per-ticket error must never abort the whole-table sweep (CFG-2)
         logger.warning("Failed to advance ticket %s (%s): %s", ticket.pk, ticket.issue_url, exc)
-        # ``_advance_ticket`` commits up to three transitions in separate
-        # ``atomic()`` blocks, so a mid-chain refusal leaves the earlier
-        # transitions persisted. Reload the true landing state to report the
-        # partial progress instead of the (possibly stale) starting state; a
-        # vanished row must not abort the sweep either, so keep the in-memory state.
+        # A vanished row must not abort the sweep either — keep the in-memory state.
         with contextlib.suppress(Exception):
             ticket.refresh_from_db()
         return CompletionResult(
@@ -182,13 +157,17 @@ def _complete_one_ticket(ticket: Ticket, *, dry_run: bool) -> CompletionResult:
             action="refused",
             error=str(exc),
         )
-    return CompletionResult(
+    result = CompletionResult(
         ticket_id=int(ticket.pk),
         issue_url=ticket.issue_url,
-        from_state=from_state,
-        to_state=ticket.state,
-        action="completed",
+        from_state=outcome.from_state,
+        to_state=outcome.to_state,
+        action="refused" if outcome.refused else "completed",
     )
+    if outcome.error is not None:
+        logger.warning("Failed to advance ticket %s (%s): %s", ticket.pk, ticket.issue_url, outcome.error)
+        result["error"] = outcome.error
+    return result
 
 
 def _completion_line(result: CompletionResult) -> str:
@@ -217,19 +196,3 @@ def _completion_summary_lines(results: list[CompletionResult], *, dry_run: bool)
         lines.append(f"{len(refused)} ticket(s) skipped (gate-refused or errored):")
         lines.extend(f"  #{r['ticket_id']} ({r['from_state']}): {r['error']}" for r in refused)
     return lines
-
-
-def _advance_ticket(ticket: Ticket) -> None:
-    """Walk the ticket through remaining FSM transitions toward delivered."""
-    with transaction.atomic():
-        if ticket.state == "shipped":
-            ticket.request_review()
-            ticket.save()
-    with transaction.atomic():
-        if ticket.state == "in_review":
-            ticket.mark_merged()
-            ticket.save()
-    with transaction.atomic():
-        if ticket.state == "merged":
-            ticket.retrospect()
-            ticket.save()

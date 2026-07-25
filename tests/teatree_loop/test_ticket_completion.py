@@ -102,8 +102,10 @@ class TicketCompletionScannerTests(TestCase):
         )
 
     def _patch_host(self, host: _Host):
+        # The scanner resolves the host through the shared ``issue_is_done`` seam
+        # in ``teatree.backends.loader``, so patch the host resolver there.
         return patch(
-            "teatree.loop.scanners.ticket_completion.get_code_host_for_url",
+            "teatree.backends.loader.get_code_host_for_url",
             return_value=host,
         )
 

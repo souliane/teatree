@@ -70,7 +70,12 @@ def ignore_disposed_ticket(payload: ActionPayload) -> None:
 def complete_ticket(payload: ActionPayload) -> None:
     """Transition a ticket from its current post-ship state toward delivered.
 
-    FSM path: shipped → request_review → mark_merged → retrospect.
+    FSM path: shipped → request_review → mark_merged → retrospect. Delegates to
+    ``Ticket.advance_to_delivered`` so this loop path shares the CLI's
+    atomic-per-step + refusal-safe semantics: a mid-chain gate refusal (e.g. the
+    merge-evidence gate on ``mark_merged``) stops the walk gracefully instead of
+    escaping as an exception after a partial commit — the every-tick error the
+    ungated cascade used to raise.
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
@@ -80,15 +85,16 @@ def complete_ticket(payload: ActionPayload) -> None:
         return
     ticket = ticket_model.objects.get(pk=ticket_id)
 
-    if ticket.state == "shipped":
-        ticket.request_review()
-        ticket.save()
-    if ticket.state == "in_review":
-        ticket.mark_merged()
-        ticket.save()
-    if ticket.state == "merged":
-        ticket.retrospect()
-        ticket.save()
+    result = ticket.advance_to_delivered()
+    if result.refused:
+        logger.info(
+            "complete_ticket: ticket %s advance stopped at %s (%s → %s): %s",
+            ticket_id,
+            result.to_state,
+            result.from_state,
+            result.to_state,
+            result.error,
+        )
 
 
 def reopen_ticket(payload: ActionPayload) -> None:
