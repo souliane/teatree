@@ -13,9 +13,18 @@ Parser equality is BEHAVIORAL, not object-identity: a bound ``.parse`` classmeth
 would spuriously diverge. The two keys whose resolve-tier coercer intentionally differs from
 the model's storage-tier validator (``handover_mirror_path``, ``agent_harness_provider``) are
 re-sourced by the derivation and so match here too.
+
+WHY the runtime dicts stay hand-maintained instead of calling ``derive_*()``:
+``teatree.config``'s package init eagerly imports all three registry-defining modules,
+and the cold path (``cold_reader``) loads that package init — so a module-scope
+``derive_*()`` call would drag ``schema`` -> pydantic (~110ms) onto every cold-hook
+invocation. ``test_registry_modules_stay_pydantic_free`` pins that invariant.
 """
 
 import math
+import subprocess
+import sys
+import textwrap
 from typing import Any
 
 import pytest
@@ -114,6 +123,30 @@ def test_cold_hook_registry_derives_from_model(key: str) -> None:
     assert type(derived[key].default) is type(hand.default)
     assert derived[key].scope == hand.scope
     _assert_parser_parity(hand.parse, derived[key].parse, key)
+
+
+def test_registry_modules_stay_pydantic_free() -> None:
+    # The reason the four registries above stay hand-maintained rather than deriving from
+    # the model at import: ``teatree.config``'s package init eagerly imports the three
+    # registry-defining modules, and the cold path loads that package init, so a
+    # module-scope ``derive_*()`` call would import ``schema`` -> pydantic (~110ms) onto
+    # every cold-hook invocation. A fresh subprocess is the only honest probe — the test
+    # process already has pydantic/schema loaded. This pins the invariant the parity
+    # matrix above depends on: the ``derive_*`` helpers stay call-time only.
+    probe = textwrap.dedent(
+        """
+        import sys
+        import teatree.config.setting_registries
+        import teatree.config.registries
+        import teatree.config.cold_hook_settings
+        assert "pydantic" not in sys.modules, "pydantic leaked onto the cold path via a registry module"
+        assert "teatree.config.schema" not in sys.modules, "schema leaked onto the cold path via a registry module"
+        print("clean")
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "clean"
 
 
 class TestDerivedKeysetsMatchTheHandRegistries:
