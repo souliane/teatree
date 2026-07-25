@@ -147,7 +147,7 @@ class GitHubSyncBackend(SyncBackend):
         """
         from teatree.core.models import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        for worktree in Worktree.objects.filter(ticket=ticket):
+        for worktree in Worktree.objects.for_ticket(ticket):
             try:
                 cleanup_result = cleanup_worktree(worktree)
                 result.worktrees_cleaned += 1

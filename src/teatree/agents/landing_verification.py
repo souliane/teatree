@@ -39,7 +39,7 @@ def landing_verification_error(task: "Task", *, phase: str = "") -> str:
     """
     if normalize_phase(phase or task.phase) not in _LANDING_VERIFIED_PHASES:
         return ""
-    checkable = [wt for wt in Worktree.objects.filter(ticket=task.ticket) if _on_disk_repo(wt)]
+    checkable = [wt for wt in Worktree.objects.for_ticket(task.ticket) if _on_disk_repo(wt)]
     if not checkable:
         return ""
     for wt in checkable:

@@ -471,7 +471,7 @@ def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
     clone_workspace = clone_root()
-    worktrees = list(Worktree.objects.filter(ticket=ticket))
+    worktrees = list(Worktree.objects.for_ticket(ticket))
 
     for wt in worktrees:
         _reconcile_worktree_row(drift, wt)
@@ -546,7 +546,7 @@ def reconcile_work_state_ticket(ticket: Ticket) -> Drift:
     :func:`reconcile_ticket` runs for ``workspace doctor``.
     """
     drift = Drift(ticket_pk=ticket.pk)
-    worktrees = list(Worktree.objects.filter(ticket=ticket))
+    worktrees = list(Worktree.objects.for_ticket(ticket))
     _collect_work_state_drift(drift, ticket, worktrees, clone_root())
     return drift
 

@@ -384,7 +384,7 @@ def _salvage_coding_result(task: Task, result: AgentResultBlob, *, phase: str) -
 
 def _committed_file_changes(task: Task) -> list[dict[str, str]]:
     """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``."""
-    for worktree in Worktree.objects.filter(ticket=task.ticket):
+    for worktree in Worktree.objects.for_ticket(task.ticket):
         if not worktree_has_commits_ahead(worktree):
             continue
         paths = _committed_paths(worktree)

@@ -1,7 +1,10 @@
 """``TaskAttempt.Lane`` attribution and the per-row ``effective_tokens`` metric."""
 
+import datetime as dt
+
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
@@ -59,6 +62,33 @@ class TestTaskAttemptLane(TestCase):
         metered.refresh_from_db()
         assert subscription.lane == "subscription"
         assert metered.lane == "metered"
+
+
+class TestTaskAttemptPrunable(TestCase):
+    """``TaskAttemptQuerySet.prunable`` — the conservative double-guard prune set (#3693)."""
+
+    def _attempt(self, *, ticket_state: str, task_status: str, started_at: dt.datetime) -> TaskAttempt:
+        ticket = Ticket.objects.create(overlay="acme", state=ticket_state)
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, status=task_status)
+        attempt = TaskAttempt.objects.create(task=task)
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=started_at)
+        return TaskAttempt.objects.get(pk=attempt.pk)
+
+    def test_old_terminal_owned_attempt_is_prunable(self) -> None:
+        old = timezone.now() - dt.timedelta(days=60)
+        attempt = self._attempt(ticket_state=Ticket.State.MERGED, task_status=Task.Status.COMPLETED, started_at=old)
+        cutoff = timezone.now() - dt.timedelta(days=30)
+        assert list(TaskAttempt.objects.prunable(cutoff).values_list("pk", flat=True)) == [attempt.pk]
+
+    def test_never_prunes_live_ticket_or_active_task_or_recent_attempt(self) -> None:
+        old = timezone.now() - dt.timedelta(days=60)
+        recent = timezone.now() - dt.timedelta(days=2)
+        self._attempt(ticket_state=Ticket.State.STARTED, task_status=Task.Status.COMPLETED, started_at=old)
+        self._attempt(ticket_state=Ticket.State.MERGED, task_status=Task.Status.PENDING, started_at=old)
+        self._attempt(ticket_state=Ticket.State.SHIPPED, task_status=Task.Status.COMPLETED, started_at=old)
+        self._attempt(ticket_state=Ticket.State.MERGED, task_status=Task.Status.COMPLETED, started_at=recent)
+        assert TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
 
 
 class TestTaskAttemptOutcome(TestCase):

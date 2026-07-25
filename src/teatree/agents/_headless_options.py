@@ -249,7 +249,7 @@ def _resolve_task_cwd(task: Task) -> str | None:
     Every other phase keeps the historical ``None`` (cwd unset) when no ticket
     worktree exists.
     """
-    worktree = Worktree.objects.filter(ticket=task.ticket).order_by("pk").first()
+    worktree = Worktree.objects.for_ticket(task.ticket).order_by("pk").first()
     if worktree and Path(worktree.repo_path).is_dir():
         return str(worktree.repo_path)
     return _main_clone_cwd(task)
