@@ -21,7 +21,10 @@
 #      over overdue loop work, stranded headless tasks, stale timers, unrunnable
 #      interactive tasks, failed tasks on live tickets, a drifted runtime clone).
 #   3. On any red finding, DM the owner via `t3 teatree notify send`, keyed on the
-#      finding set so an ongoing outage does not re-spam every pass.
+#      finding set so an ongoing outage does not re-spam every pass. Three of those
+#      findings — a free worker flock, a down slack-listener, a clone behind
+#      origin — are what a ROLLING DEPLOY looks like mid-swap, so they are gated on
+#      the deploy-awareness block below; every other finding pages as before.
 #
 # Safe by construction: the ONLY mutating docker op is `up -d --no-recreate`
 # (idempotent, never destructive, never recreates a running container). The
@@ -59,6 +62,15 @@ read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatre
 TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-admin teatree-worker}"
 TEMP_TRIM_ROOTS="${TEATREE_WATCHDOG_TEMP_TRIM_ROOTS:-/var/tmp /tmp}"
 TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
+
+# Deploy-awareness (#3732). deploy.sh holds this host flock for the whole
+# convergence (path-identity mounted read-only into this container, see
+# docker-compose.yml); the recreate window is the grace after a container was
+# CREATED, one watchdog interval by default; the pending-state file carries the
+# two-strikes ledger across passes.
+DEPLOY_LOCK="${TEATREE_WATCHDOG_DEPLOY_LOCK:-${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}}"
+DEPLOY_RECREATE_WINDOW="${TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW:-$INTERVAL}"
+DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-watchdog-deploy-sensitive.state}"
 
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
@@ -210,6 +222,120 @@ trim_stale_temp() {
   log "stale-temp trim swept ${TEMP_TRIM_SERVICES// /, } (>${TEMP_TRIM_MIN_AGE_MIN}min under ${TEMP_TRIM_ROOTS// /, })"
 }
 
+# The finding's deploy-sensitive class token, non-zero when it is not one. Keyed on
+# the class rather than the message text: the clone-behind count changes between
+# passes, so a text-keyed ledger could never match two observations of it.
+#
+# The patterns are deliberately narrow. A loose `holds the flock` would also swallow
+# the INVERSE finding — "the worker holds the flock but these loops are not
+# advancing" — a wedged worker, which is a real outage that must page on sight. A
+# wording drift here un-gates a finding (back to a false page), never gates a real
+# outage: the safe direction.
+_deploy_sensitive_token() {
+  case "$1" in
+    *"no loop worker holds the flock"*) printf 'worker-flock-not-held' ;;
+    *"slack-listener receiver is DOWN"*) printf 'slack-listener-down' ;;
+    *"commit(s) behind origin/"*) printf 'clone-behind-origin' ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when deploy.sh's single-convergence flock is held. READ-ONLY by construction:
+# it matches the lock file's device+inode against /proc/locks and never opens the
+# file for locking. A probe that briefly ACQUIRED the lock would make a deploy
+# starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
+# that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
+# (lock invisible from this container, /proc/locks unreadable, macOS host); the
+# caller then falls back to the recreation signal, so a probe that cannot run fails
+# toward alerting rather than toward silence.
+deploy_lock_held() {
+  local fields maj min ino
+  [ -r /proc/locks ] || return 1
+  fields="$(stat -c '%Hd %Ld %i' "$DEPLOY_LOCK" 2>/dev/null)" || return 1
+  read -r maj min ino <<<"$fields"
+  [ -n "${ino:-}" ] || return 1
+  grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
+}
+
+# True when a stack container was CREATED within the grace window — the fingerprint
+# of the image swap. Created (never started) is the discriminating field: a
+# crash-looping container restarts without being recreated, so a genuine outage is
+# never mistaken for a deploy.
+#
+# The timestamp comes from `inspect .Created` (RFC3339 UTC, e.g.
+# 2026-07-25T09:01:41.683288764Z), NEVER from `ps --format {{.CreatedAt}}`, whose
+# local-zone abbreviation form ("… +0200 CEST") GNU date REFUSES to parse on a
+# tzdata-less image — which this one is, so every sample would silently fail to
+# parse and the probe would never fire on the box.
+stack_recently_recreated() {
+  local now created epoch
+  local -a ids
+  now="$(date -u +%s 2>/dev/null)" || return 1
+  mapfile -t ids < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}' 2>/dev/null)
+  [ "${#ids[@]}" -gt 0 ] || return 1
+  while IFS= read -r created; do
+    [ -n "$created" ] || continue
+    if ! epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
+      log "unreadable container creation time ('$created') — not treating the stack as mid-deploy"
+      continue
+    fi
+    if [ "$((now - epoch))" -lt "$DEPLOY_RECREATE_WINDOW" ]; then
+      return 0
+    fi
+  done < <(docker inspect --format '{{.Created}}' "${ids[@]}" 2>/dev/null)
+  return 1
+}
+
+deploy_in_flight() {
+  if deploy_lock_held; then
+    log "deploy lock $DEPLOY_LOCK is held — a convergence is in flight"
+    return 0
+  fi
+  if stack_recently_recreated; then
+    log "a stack container was created <${DEPLOY_RECREATE_WINDOW}s ago — the image swap is still settling"
+    return 0
+  fi
+  return 1
+}
+
+_read_pending_findings() { cat "$DEPLOY_PENDING_STATE" 2>/dev/null || true; }
+
+# Best-effort: an unwritable state root must never retire the only supervisor.
+# Losing the ledger costs one extra pass before a persisting finding pages.
+_write_pending_findings() {
+  printf '%s' "$1" >"$DEPLOY_PENDING_STATE" 2>/dev/null ||
+    log "could not persist the deploy-sensitive ledger at $DEPLOY_PENDING_STATE"
+}
+
+# Emit (stdout) the FAIL messages that page THIS pass, reading all of them on stdin
+# one per line. A deploy-sensitive finding is dropped while a convergence is in
+# flight, and otherwise pages only on a SECOND consecutive observation — so a swap
+# window that ended moments ago cannot page either, while a worker down over two
+# clean passes pages exactly as it did before. Log lines go to stderr, never into
+# the DM body.
+_findings_that_page() {
+  local in_flight=false previous observed="" message token
+  deploy_in_flight && in_flight=true
+  previous="$(_read_pending_findings)"
+  while IFS= read -r message; do
+    [ -n "$message" ] || continue
+    if ! token="$(_deploy_sensitive_token "$message")"; then
+      printf '%s\n' "$message"
+      continue
+    fi
+    if [ "$in_flight" = true ]; then
+      log "deploy in flight — skipping $token this pass"
+      continue
+    fi
+    observed="$observed$token"$'\n'
+    case "$previous" in
+      *"$token"*) printf '%s\n' "$message" ;;
+      *) log "first observation of $token with no deploy in flight — re-probing next pass before paging" ;;
+    esac
+  done
+  _write_pending_findings "$observed"
+}
+
 # The three hard-outage alarms below key on a DAILY bucket (`%Y%m%d`), not an
 # hourly one: `notify_user` dedups on the key, so an hourly bucket re-DM'd the
 # identical "stack down" alarm every hour (13+ overnight copies observed). A
@@ -264,13 +390,26 @@ run_pass() {
   case "$json" in
     *'"ok": true'*)
       log "doctor: all green"
+      # "Two CONSECUTIVE passes": a green pass resets the two-strikes ledger.
+      _write_pending_findings ""
       return 0
       ;;
   esac
 
   # Red: build the DM body (FAIL findings) and a stable idempotency key from them.
-  local body key
-  body="$(printf '%s' "$json" | _extract_fail_body)"
+  local fails body key
+  fails="$(printf '%s' "$json" | _fail_messages)"
+  if [ -n "$fails" ]; then
+    fails="$(printf '%s\n' "$fails" | _findings_that_page)"
+    if [ -z "$fails" ]; then
+      log "every red finding was deploy-sensitive and gated this pass — not paging"
+      return 0
+    fi
+    body="$(printf '%s\n' "$fails" | sed 's/^/- /')"
+  else
+    # Nothing to classify — a red verdict is never silently dropped.
+    body="$(_generic_fail_body)"
+  fi
   key="watchdog:red:$(printf '%s' "$body" | _stable_key)"
   log "doctor RED — DMing owner"
   printf 'teatree watchdog found red findings on the box:\n\n%s\n\nThe stack was already `up -d`-restarted this pass; SSH in if it persists.' "$body" \
@@ -289,22 +428,30 @@ run_loop() {
   done
 }
 
-# Extract the FAIL messages from the doctor JSON (read on stdin). Uses python3
-# (present on the box) and degrades to a generic body when it is absent. Uses
-# `python3 -c` rather than a `-` heredoc: a `python3 - <<'PY'` feeds the heredoc
-# as the PROGRAM on stdin, leaving `sys.stdin` at EOF so the piped verdict is
-# never read — the body would always be the generic fallback.
-_extract_fail_body() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c '
+# Extract the FAIL messages from the doctor JSON (read on stdin), one per line, so
+# each can be classified for deploy-sensitivity. Empty when there are none or when
+# python3 is absent; the caller then falls back to `_generic_fail_body`. Uses
+# `python3 -c` rather than a `-` heredoc: a `python3 - <<'PY'` feeds the heredoc as
+# the PROGRAM on stdin, leaving `sys.stdin` at EOF so the piped verdict is never
+# read — every body would be the generic fallback.
+_fail_messages() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
-    fails = [f["message"] for f in data.get("findings", []) if f.get("level") == "FAIL"]
 except Exception:
-    fails = []
-print("\n".join(f"- {m}" for m in fails) if fails else "- (see `t3 doctor check` on the box for detail)")
+    sys.exit(0)
+for f in data.get("findings", []):
+    if f.get("level") == "FAIL":
+        print(f.get("message", "").replace("\n", " "))
 '
+}
+
+# The body for a red verdict whose FAIL lines could not be extracted.
+_generic_fail_body() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "- (see \`t3 doctor check\` on the box for detail)"
   else
     printf '%s' "- one or more red findings (install python3 on the box for detail, or run \`t3 doctor check\`)"
   fi
