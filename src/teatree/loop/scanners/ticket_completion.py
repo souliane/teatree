@@ -30,13 +30,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _has_draft_mrs(ticket: "Ticket") -> bool:
-    """Return True if any MR in the ticket's extra is still a draft."""
+def _has_draft_prs(ticket: "Ticket") -> bool:
+    """Return True if any PR in the ticket's extra is still a draft."""
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict):
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict):
         return False
-    return any(isinstance(mr, dict) and mr.get("draft") for mr in mrs.values())
+    return any(isinstance(pr, dict) and pr.get("draft") for pr in prs.values())
 
 
 @dataclass(slots=True)
@@ -51,11 +51,11 @@ class TicketCompletionScanner:
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
             try:
-                if _has_draft_mrs(ticket):
+                if _has_draft_prs(ticket):
                     signals.append(
                         ScanSignal(
                             kind="ticket.reopen_needed",
-                            summary=f"Ticket {ticket.ticket_number} — draft MRs exist, reopening",
+                            summary=f"Ticket {ticket.ticket_number} — draft PRs exist, reopening",
                             payload={
                                 "ticket_id": ticket.pk,
                                 "ticket_state": ticket.state,
