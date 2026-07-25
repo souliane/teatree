@@ -17,7 +17,8 @@ overlay set via ``T3_OVERLAY_NAME``.
 from unittest import mock
 
 import pytest
-from django.db.utils import OperationalError
+from django.core.exceptions import AppRegistryNotReady
+from django.db.utils import OperationalError, ProgrammingError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
@@ -172,14 +173,65 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_bootstrap_missing_table_error_is_a_silent_no_op(self) -> None:
-        # A pre-migration / missing-table read is the legitimate no-op: {} and NO error log.
+        # A pre-migration / missing-table read while the app registry is NOT ready is the
+        # legitimate bootstrap no-op: {} and NO error log. `_app_registry_ready` is patched
+        # False to model the genuine bootstrap state (this TestCase has Django set up).
         with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=False),
             mock.patch.object(
                 ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("no such table")
             ),
             self.assertNoLogs("teatree.config", level="ERROR"),
         ):
             assert _load_global_rows() == {}
+
+    def test_app_registry_not_ready_error_is_always_silent(self) -> None:
+        # AppRegistryNotReady is an unambiguous bootstrap state — silent regardless of the
+        # readiness predicate (it is the very signal the predicate reads as not-ready).
+        with (
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=AppRegistryNotReady("apps not ready")
+            ),
+            self.assertNoLogs("teatree.config", level="ERROR"),
+        ):
+            assert _load_global_rows() == {}
+
+    def test_runtime_operational_error_is_logged_loud_not_silent(self) -> None:
+        # THE fix: an OperationalError raised while the app registry IS ready (a locked DB,
+        # a lock timeout, a mid-session drop) is a RUNTIME fault, not a bootstrap no-op — it
+        # still degrades to {} but MUST be signalled loud, else the operator's DB-override
+        # tier (autonomy, per-overlay mode, worker_quiescing) silently reverts to defaults.
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("database is locked")
+            ),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_global_rows() == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_runtime_programming_error_is_logged_loud_not_silent(self) -> None:
+        # ProgrammingError shares the runtime-vs-bootstrap distinction with OperationalError.
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=ProgrammingError("relation gone")
+            ),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_global_rows() == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_runtime_operational_error_on_overlay_read_is_logged_loud(self) -> None:
+        # The per-overlay reader shares the runtime-vs-bootstrap distinction.
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch.object(ConfigSetting.objects, "exclude", side_effect=OperationalError("database is locked")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_overlay_rows("my-overlay") == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_real_read_error_is_logged_loud_not_silent(self) -> None:
         # A genuine read bug (not a bootstrap state) degrades to {} but is SIGNALLED loud —
