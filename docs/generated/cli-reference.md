@@ -1619,8 +1619,9 @@ Usage: t3 eval benchmark [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --models                            TEXT     Comma-separated model@effort    │
 │                                              variants to compare, e.g.       │
-│                                              claude-opus-4-8@xhigh,claude-s… │
-│                                              (a plain model name = default   │
+│                                              opus@xhigh,sonnet@medium (a     │
+│                                              family alias or a concrete id;  │
+│                                              a plain model name = default    │
 │                                              effort). Exactly one of         │
 │                                              --models/--presets is required. │
 │ --presets                           TEXT     Comma-separated PRESET names to │
@@ -2349,10 +2350,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     model. Each entry may    │
 │                                                     carry a reasoning-effort │
 │                                                     variant as model@effort  │
-│                                                     (e.g.                    │
-│                                                     claude-opus-4-8@xhigh) — │
-│                                                     the tag is the           │
-│                                                     column/ledger identity.  │
+│                                                     (e.g. opus@xhigh) — the  │
+│                                                     tag is the column/ledger │
+│                                                     identity.                │
 │ --persist                  --no-persist             Persist this run into    │
 │                                                     the run-history ledger   │
 │                                                     (read back via `t3 eval  │

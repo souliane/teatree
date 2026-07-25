@@ -58,7 +58,7 @@ def _attempt_usage(
     Token counts come from the nested ``usage`` dict (``input_tokens`` /
     ``output_tokens`` / ``cache_creation_input_tokens`` /
     ``cache_read_input_tokens``), the billed model from the single key of
-    ``model_usage`` (e.g. ``claude-opus-4-8[1m]``), the cost from
+    ``model_usage`` (a dated id, optionally ``[1m]``-suffixed), the cost from
     ``total_cost_usd`` (else the price-table estimate). *lane*,
     *reasoning_effort* and *skills_loaded* are dispatch provenance
     (souliane/teatree#657, #3673) resolved before the run — independent of the

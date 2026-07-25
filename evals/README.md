@@ -164,7 +164,7 @@ t3 eval list                                # show available scenarios as a rich
 t3 eval --free-only                           # the free deterministic lanes only (no AI lane)
 t3 eval --docker                              # run the gate inside the CI image (dev/Dockerfile.test) for parity
 t3 eval run --backend api                       # fresh-run Agent-SDK lane — DEFAULTS to the container (dev/Dockerfile.test), authed on the agent_harness_provider credential (DEFAULT subscription OAuth; --credential api_key for a metered run)
-t3 eval benchmark --models claude-opus-4-8@xhigh,claude-sonnet-5@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
+t3 eval benchmark --models opus@xhigh,sonnet@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
 t3 eval run                                 # run all (DEFAULT backend = transcript, $0 extra — reuses a recorded run)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -737,7 +737,7 @@ single-scenario `t3 eval run` path is unchanged — it stays fail-loud; the
 resilience is a property of the multi-cell matrix/benchmark loop only.
 
 Each `--models` entry may carry a reasoning-effort variant as `model@effort`
-(e.g. `claude-opus-4-8@xhigh`; levels `low`/`medium`/`high`/`xhigh`/`max`,
+(e.g. `opus@xhigh`; levels `low`/`medium`/`high`/`xhigh`/`max`,
 mirroring `claude --effort`). The rendered tag is the variant's identity
 string everywhere — matrix column, `EvalScenarioResult.model`, baselines,
 score/cost gates — with zero schema change; the SDK runner
@@ -746,7 +746,7 @@ option when building `ClaudeAgentOptions`.
 
 ### Benchmark (`t3 eval benchmark`)
 
-`t3 eval benchmark --models claude-opus-4-8@xhigh,claude-sonnet-5@medium`
+`t3 eval benchmark --models opus@xhigh,sonnet@medium`
 answers "which variant is worth its cost": it runs the suite once per
 `model@effort` variant on the metered Agent-SDK runner (the all-skipped gate
 always armed), persists the matrix record into the run-history ledger, and
@@ -807,7 +807,7 @@ the cache confound. So billed cost is the headline; the rest is honest
 observability around it.
 
 **Main-model vs auxiliary (haiku) split.** Claude Code always runs a cheap
-`claude-haiku-4-5` auxiliary alongside the requested main model, so the billed
+Haiku auxiliary alongside the requested main model, so the billed
 total mixes the two. Each `model_usage` entry carries a per-model `costUSD`, so
 the benchmark splits the billed spend: the requested main model's cost (`main
 cost`) is the headline comparison number, the auxiliary background cost (`aux
@@ -884,7 +884,7 @@ to an LLM judge by adding a `judge:` block:
     rubric: |
       The explanation names every file it changed and does not claim a change
       it did not make.
-    model: haiku            # optional, default "claude-sonnet-5" (the run tier)
+    model: haiku            # optional, defaults to the `balanced` tier (the run tier)
     max_output_tokens: 512  # optional cap on the judge reply
 ```
 
@@ -1421,13 +1421,13 @@ for the generated scenarios (reading `DEFAULT_PHASE_MODELS` rather than
 duplicating its frontier set, so a future frontier phase is caught
 automatically). A scenario that genuinely needs to exercise `frontier`-tier
 behavior (a benchmark cell, a deliberate model-regression check) still reaches
-it via `--models`/`--benchmark`/an explicit `model: claude-opus-4-8` pin — this
+it via `--models`/`--benchmark`/an explicit `model:` pin — this
 rule is about the catalog's OWN default resolution path, not about removing
 `frontier` from the tier system.
 
 ### The per-scenario Opus fallback, and the guard it has to clear first
 
-Mechanically, a scenario CAN pin `tier: frontier` (or `model: claude-opus-4-8`)
+Mechanically, a scenario CAN pin `tier: frontier` (or a concrete `model:` id)
 in its `evals/scenarios/*.yaml` spec — both are loader-validated against
 `TIER_MODELS` and honored by the normal eval lanes the same as any other tier.
 But doing so on a scenario shipped under `evals/scenarios/` also trips the
@@ -1449,7 +1449,7 @@ lane-wide `--effort` (or the `efforts` matrix input) re-runs every scenario in
 that leg at the higher tier, multiplying cost and wall-clock for scenarios that
 were never flaky, when the actual fix only needs one scenario to think harder.
 The `model@effort` escape hatch (`model_variant.py`) already exists for exactly
-this — set the ONE flaky scenario's own `model: claude-sonnet-5@xhigh` (it wins
+this — set the ONE flaky scenario's own `model: sonnet@xhigh` (it wins
 over the lane's `--effort` default per the resolution precedence above) and
 leave the rest of the catalog at the lane's default effort.
 

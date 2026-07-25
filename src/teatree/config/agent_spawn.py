@@ -8,7 +8,7 @@ one DB key per setting. Set a value with
     t3 <overlay> config_setting set agent_session_model opus
     t3 <overlay> config_setting set agent_session_effort xhigh
     t3 <overlay> config_setting set agent_skill_models '{"code-review": "opus"}'
-    t3 <overlay> config_setting set agent_tier_models '{"frontier": "claude-opus-4-9"}'
+    t3 <overlay> config_setting set agent_tier_models '{"frontier": "<a-newer-opus-id>"}'
     t3 <overlay> config_setting set agent_pydantic_ai_tier_models '{"frontier": "vendor/some-model"}'
     t3 <overlay> config_setting set agent_tier_effort '{"balanced": "xhigh"}'
 

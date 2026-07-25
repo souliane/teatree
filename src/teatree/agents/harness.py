@@ -267,7 +267,7 @@ class PydanticAiHarness:
             return resolve_native_anthropic_model(options)
         # Normalise the resolved id to what the configured endpoint actually serves:
         # ``options.model`` is a teatree-abstract-tier default in Claude DASH-form
-        # (``claude-opus-5``) an OpenAI-compatible provider does NOT carry, so it maps
+        # (the :data:`TIER_MODELS` form) an OpenAI-compatible provider does NOT carry, so it maps
         # to the configured ``openai_compatible_model``; an explicit provider-native pin
         # passes through.
         model_name = resolve_pydantic_ai_model(options.model, configured_model=self._backend.model)

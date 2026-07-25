@@ -1,7 +1,7 @@
 """One shared ``run_one_shot`` seam for cheap, single-turn aux LLM calls.
 
 The aux one-shot call sites — Slack ``simple_answer``, ``ticket_short_describe``
-— used to hardcode ``claude-haiku-4-5`` and drive :func:`claude_agent_sdk.query`
+— used to hardcode the cheap tier's model id and drive :func:`claude_agent_sdk.query`
 directly, bypassing BOTH the tier-resolution seam and the harness seam, so they
 silently broke off-Claude (§3a #1, §7 #2). This module collapses them onto ONE
 helper that:
