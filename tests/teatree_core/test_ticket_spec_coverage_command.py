@@ -19,7 +19,13 @@ from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.core.gates.spec_coverage_gate import SpecCoverageDodError
+from teatree.core.management.commands._spec_coverage_commands import (
+    SpecCoverageCommands,
+    SpecCoverageResult,
+    parse_ac_specs,
+)
 from teatree.core.models import Ticket
+from teatree.core.models.types import ac_label, spec_coverage_criteria
 
 
 @contextmanager
@@ -31,8 +37,49 @@ def _gate(*, required: bool) -> Iterator[None]:
         yield
 
 
-def _record(ticket: Ticket, *args: str) -> dict[str, object]:
-    return cast("dict[str, object]", call_command("ticket", "record-spec-coverage", str(ticket.pk), *args))
+def _record(ticket: Ticket, *args: str) -> SpecCoverageResult:
+    return cast("SpecCoverageResult", call_command("ticket", "record-spec-coverage", str(ticket.pk), *args))
+
+
+def test_the_command_mounts_on_the_ticket_command_via_the_mixin() -> None:
+    from teatree.core.management.commands.ticket import Command  # noqa: PLC0415 — deferred: needs the app registry
+
+    assert issubclass(Command, SpecCoverageCommands)
+
+
+class TestParseAcSpecs:
+    def test_splits_label_from_its_comma_separated_tests(self) -> None:
+        assert parse_ac_specs([" AC1 = tests/a.py::t1 , tests/a.py::t2 "]) == [
+            {"id": "AC1", "tests": ["tests/a.py::t1", "tests/a.py::t2"]}
+        ]
+
+    def test_bare_label_records_a_declared_but_uncovered_ac(self) -> None:
+        assert parse_ac_specs(["AC3="]) == [{"id": "AC3", "tests": []}]
+
+    def test_missing_separator_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="must be"):
+            parse_ac_specs(["AC1 tests/a.py::t"])
+
+    def test_blank_label_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="must be"):
+            parse_ac_specs(["  =tests/a.py::t"])
+
+
+class TestSharedManifestShape:
+    """``ac_label`` / ``spec_coverage_criteria`` are the one parse reader and writer share."""
+
+    def test_label_prefers_id_then_description(self) -> None:
+        assert ac_label({"id": "AC1", "description": "ignored"}) == "AC1"
+        assert ac_label({"description": " anonymous AC "}) == "anonymous AC"
+        assert ac_label({}) == "<unnamed-ac>"
+
+    def test_criteria_drop_every_non_mapping_shape(self) -> None:
+        assert spec_coverage_criteria(None) == []
+        assert spec_coverage_criteria({"spec_coverage": "not-a-dict"}) == []
+        assert spec_coverage_criteria({"spec_coverage": {"acceptance_criteria": "x"}}) == []
+        assert spec_coverage_criteria({"spec_coverage": {"acceptance_criteria": [{"id": "AC1"}, "junk"]}}) == [
+            {"id": "AC1"}
+        ]
 
 
 class TestRecordSpecCoverage(TestCase):
