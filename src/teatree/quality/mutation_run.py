@@ -3,7 +3,7 @@
 The cheap gate (diff ∩ registry) lives in :mod:`teatree.quality.mutation`. This
 module is the runner that, when the intersection is non-empty, writes a scoped
 mutmut config and executes mutmut over ONLY the touched safety modules, then
-classifies the result and applies the warn/block ratchet.
+classifies the result and applies the surviving-count ratchet.
 
 Two design choices keep it robust and narrow. Serial (debug) execution:
 mutmut's default forks a child per mutant; on macOS a forked child that has
@@ -286,9 +286,11 @@ class BaselineRatchet:
         A run above the recorded baseline fails (exit 1) in BOTH ``warn`` and
         ``block`` mode: the surviving count may only ever shrink, so a PR that
         surfaces more survivors than the baseline is a regression CI must catch.
-        This is the prerequisite that makes flipping ``mode`` to ``"block"`` safe
-        — ``mode`` stays as the lever for that follow-up (where it will gate on
-        survivors existing at all); today both modes coincide on the ratchet.
+        ``mode`` is validated here and does nothing else — the two values resolve
+        to the identical verdict, pinned by ``TestModeIsInertToday``. It is
+        reserved for the follow-up that gates on survivors existing at all, which
+        needs the recorded survivor backlog paid down first; that paydown has no
+        tracking issue.
         """
         if mode not in _MODES:
             detail = f"mode must be one of {sorted(_MODES)}, got {mode!r}"
