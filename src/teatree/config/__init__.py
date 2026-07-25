@@ -34,7 +34,14 @@ from teatree.config.enums import (
     TeamsDisplay,
     Wip,
 )
-from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage, dark_flags, is_feature_flag
+from teatree.config.feature_flags import (
+    DURABLE_GATE_SETTINGS,
+    FEATURE_FLAGS,
+    FeatureFlag,
+    FlagStage,
+    dark_flags,
+    is_feature_flag,
+)
 from teatree.config.homes import BOOTSTRAP_ENV_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.loader import (
@@ -82,6 +89,7 @@ __all__ = [
     "COLD_SETTINGS",
     "DATA_DIR",
     "DERIVED_FIELDS",
+    "DURABLE_GATE_SETTINGS",
     "ENV_SETTING_OVERRIDES",
     "FEATURE_FLAGS",
     "OVERLAY_OVERRIDABLE_SETTINGS",

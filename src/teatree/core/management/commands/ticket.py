@@ -15,6 +15,7 @@ from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._spec_coverage_commands import SpecCoverageCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
@@ -66,11 +67,11 @@ class E2EBypassResult(TypedDict, total=False):
     approver: str
 
 
-# The 8-mixin base list is a django-typer requirement, not a composition-bar
+# The 9-mixin base list is a django-typer requirement, not a composition-bar
 # violation: django-typer discovers ``@command``-decorated methods by walking the
 # Command class's own MRO, so each cohesive command group (rubric, plan, show,
-# context, close, attachment, merge-keystone, sweep) MUST be a base class of the
-# single ``Command`` rather than a plain collaborator it delegates to — a helper
+# context, close, attachment, merge-keystone, sweep, spec-coverage) MUST be a base
+# class of the single ``Command`` rather than a plain collaborator it delegates to — a helper
 # object's methods would never register as CLI subcommands. The mixins stay
 # single-concern; only their registration is inheritance-shaped.
 class Command(
@@ -82,6 +83,7 @@ class Command(
     AttachmentCommands,
     MergeKeystoneCommands,
     SweepCommands,
+    SpecCoverageCommands,
     TyperCommand,
 ):
     @command(help=TRANSITION_HELP)

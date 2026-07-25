@@ -379,6 +379,28 @@ class SpecCoverageManifest(TypedDict, total=False):
     acceptance_criteria: list[AcceptanceCriterion]
 
 
+def ac_label(ac: AcceptanceCriterion) -> str:
+    """The human label for an AC: its ``id`` if present, else its ``description``."""
+    return str(ac.get("id") or ac.get("description") or "<unnamed-ac>").strip()
+
+
+def spec_coverage_criteria(extra: dict | None) -> list[AcceptanceCriterion]:
+    """The declared acceptance criteria carried in *extra*, or an empty list.
+
+    The one parse shared by the gate that READS the manifest and the ticket
+    method that WRITES it, so producer and consumer can never drift. A missing,
+    non-mapping, or non-list manifest all yield ``[]`` — there is no partial
+    parse; non-mapping entries inside the list are dropped.
+    """
+    manifest = (extra or {}).get("spec_coverage")
+    if not isinstance(manifest, dict):
+        return []
+    criteria = manifest.get("acceptance_criteria")
+    if not isinstance(criteria, list):
+        return []
+    return [ac for ac in criteria if isinstance(ac, dict)]
+
+
 class SpecCoverageOverride(TypedDict, total=False):
     """Audited escape hatch for an AC-less ticket (#2232).
 
