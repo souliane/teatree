@@ -181,6 +181,7 @@ self_update_cadence_hours = 1
 self_update_disabled = false
 send_proxy_allowlist = []
 send_proxy_mode = "warn"
+session_stale_after_hours = 12
 skill_loading_gate_enabled = true
 slack_voice_classifier_mode = "warn"
 snapshot_baseline_gate_enabled = true

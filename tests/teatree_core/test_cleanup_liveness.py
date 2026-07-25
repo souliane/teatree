@@ -117,16 +117,26 @@ class TestFsmTerminalBypass(_LivenessFixture):
         assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True).active is False
 
     def test_open_session_ignored_under_fsm_terminal(self) -> None:
-        # A never-ended Session (ended_at NULL) pins a frozen ticket's worktree
-        # ACTIVE forever on the ad-hoc path — the exact stale-session that kept
-        # worktrees from being reaped. The post-terminal teardown passes
-        # fsm_terminal=True so that stale session no longer blocks the purge,
-        # while the ad-hoc sweep (fsm_terminal=False) still keeps it.
+        # A RECENT open Session keeps the ad-hoc sweep off the worktree (an agent
+        # may be mid-task in it); fsm_terminal bypasses it, because the merge
+        # ceremony mints that very session. The staleness bound below is what
+        # stops an ABANDONED open session from pinning the ad-hoc path forever.
         worktree = self._worktree()
         session = Session.objects.create(overlay="test", ticket=worktree.ticket)
         assert session.ended_at is None
         assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=False).active is True
         assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True).active is False
+
+    def test_stale_open_session_no_longer_pins_the_ad_hoc_path(self) -> None:
+        # The session-close defect: ``ended_at`` had no production writer, so
+        # every ticket's session stayed open and the ad-hoc ``clean-all`` sweep
+        # could never converge. The staleness bound retires an abandoned session
+        # WITHOUT weakening the recent-session guard asserted above.
+        worktree = self._worktree()
+        session = Session.objects.create(overlay="test", ticket=worktree.ticket)
+        Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(days=7))
+
+        assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=False).active is False
 
     def test_recent_commit_is_bypassed_on_fsm_terminal(self) -> None:
         worktree = self._worktree()

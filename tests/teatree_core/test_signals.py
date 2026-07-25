@@ -609,3 +609,72 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
         # states minus SHIPPED, so a future terminal state cannot silently skip
         # purge (SHIPPED stays excluded — its PR is still open).
         assert set(Ticket._TERMINAL_STATES) - {Ticket.State.SHIPPED} == signals_mod._TERMINAL_TARGET_STATES
+
+
+class TestSessionClosedOnTerminalTask(TestCase):
+    """A Session ends when the work it was minted for terminates (the reaper's liveness input).
+
+    Every production ``Session.objects.create`` site mints exactly one Session
+    per dispatched Task, so the Task's terminal transition is the Session's
+    terminal point. Without this, ``ended_at`` was never written in production
+    and every ticket read as permanently busy.
+    """
+
+    @staticmethod
+    def _session_with_task() -> tuple[Session, Task]:
+        # CODED + a ``coding`` task: the completion is an idempotent FSM replay, so
+        # the fixture exercises the close path without dragging in a transition.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        return session, task
+
+    def test_completing_the_owning_task_ends_the_session(self) -> None:
+        session, task = self._session_with_task()
+
+        task.complete()
+
+        session.refresh_from_db()
+        assert session.ended_at is not None
+
+    def test_failing_the_owning_task_ends_the_session(self) -> None:
+        session, task = self._session_with_task()
+
+        task.fail()
+
+        session.refresh_from_db()
+        assert session.ended_at is not None
+
+    def test_a_sibling_task_still_in_flight_keeps_the_session_open(self) -> None:
+        session, task = self._session_with_task()
+        Task.objects.create(
+            ticket=session.ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        task.fail()
+
+        session.refresh_from_db()
+        assert session.ended_at is None
+
+    def test_claiming_a_task_leaves_the_session_open(self) -> None:
+        session, task = self._session_with_task()
+
+        task.claim(claimed_by="worker-1")
+
+        session.refresh_from_db()
+        assert session.ended_at is None
+
+    def test_the_ticket_stops_reading_busy_once_its_task_terminates(self) -> None:
+        session, task = self._session_with_task()
+
+        task.fail()
+
+        assert session.ticket.has_active_work() is False
