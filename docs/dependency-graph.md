@@ -102,6 +102,7 @@ graph TD
     teatree.backends --> teatree.llm
     teatree.backends --> teatree.backends.errors
     teatree.backends --> teatree.backends.types
+    teatree.backends --> teatree.backends.http_retry
     teatree.backends --> teatree.backends.forge_merge_rpc
     teatree.backends --> teatree.backends.github
     teatree.backends --> teatree.backends.gitlab
@@ -115,6 +116,7 @@ graph TD
     teatree.backends.slack --> teatree.core.models
     teatree.backends.slack --> teatree.identity
     teatree.backends.slack --> teatree.url_classify
+    teatree.backends.slack --> teatree.backends.http_retry
     teatree.backends.gitlab --> teatree.types
     teatree.backends.gitlab --> teatree.utils
     teatree.backends.gitlab --> teatree.core
@@ -122,6 +124,7 @@ graph TD
     teatree.backends.gitlab --> teatree.llm
     teatree.backends.gitlab --> teatree.backends.errors
     teatree.backends.gitlab --> teatree.backends.types
+    teatree.backends.gitlab --> teatree.backends.http_retry
     teatree.backends.gitlab --> teatree.backends.forge_merge_rpc
     teatree.backends.gitlab --> teatree.backends.slack
     teatree.backends.github --> teatree.types
@@ -382,6 +385,7 @@ graph TD
     teatree.core.managers_task_claim
     teatree.core.managers_issue_match
     teatree.backends.errors
+    teatree.backends.http_retry
     teatree.backends.types
     teatree.cli._format_opts
     teatree.loop.statusline_palette

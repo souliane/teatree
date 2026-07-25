@@ -6,6 +6,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from teatree.backends.http_retry import SimpleRetryTransport
 from teatree.types import RawAPIDict
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -152,11 +153,22 @@ def _property_name_value(prop: object) -> str | None:
 
 
 class NotionClient:
+    """Notion API client — page reads, database queries, status writes.
+
+    Reads (``get_page`` and each ``query_database`` page — a POST, but a read
+    with no side effect) run under the shared bounded-retry transport
+    (:class:`~teatree.backends.http_retry.SimpleRetryTransport`); the
+    ``update_page_status`` PATCH is a non-idempotent write, so it is retried only
+    on a CONNECT-phase failure (never replayed after the request reached Notion).
+    Knobs default from ``T3_NOTION_HTTP_*``.
+    """
+
     _BASE = "https://api.notion.com/v1"
 
     def __init__(self, *, token: str, version: str = "2022-06-28") -> None:
         self.token = token
         self.version = version
+        self._transport = SimpleRetryTransport(env_prefix="T3_NOTION_HTTP")
 
     def _client(self) -> httpx.Client:
         return httpx.Client(
@@ -169,7 +181,7 @@ class NotionClient:
 
     def get_page(self, page_id: str) -> RawAPIDict:
         with self._client() as client:
-            response = client.get(f"{self._BASE}/pages/{page_id}")
+            response = self._transport.run(lambda: client.get(f"{self._BASE}/pages/{page_id}"), idempotent=True)
             response.raise_for_status()
             return cast("RawAPIDict", response.json())
 
@@ -191,7 +203,10 @@ class NotionClient:
                     payload["filter"] = db_filter
                 if cursor:
                     payload["start_cursor"] = cursor
-                response = client.post(f"{self._BASE}/databases/{database_id}/query", json=payload)
+                response = self._transport.run(
+                    lambda p=payload: client.post(f"{self._BASE}/databases/{database_id}/query", json=p),
+                    idempotent=True,
+                )
                 response.raise_for_status()
                 body = response.json()
                 results.extend(body.get("results", []))
@@ -201,9 +216,12 @@ class NotionClient:
 
     def update_page_status(self, page_id: str, *, property_name: str, value: str) -> RawAPIDict:
         with self._client() as client:
-            response = client.patch(
-                f"{self._BASE}/pages/{page_id}",
-                json={"properties": {property_name: {"status": {"name": value}}}},
+            response = self._transport.run(
+                lambda: client.patch(
+                    f"{self._BASE}/pages/{page_id}",
+                    json={"properties": {property_name: {"status": {"name": value}}}},
+                ),
+                idempotent=False,
             )
             response.raise_for_status()
             return cast("RawAPIDict", response.json())

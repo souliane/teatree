@@ -22,15 +22,15 @@ Two reliability invariants govern every request:
 """
 
 import logging
-import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import httpx
 
+from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
 
@@ -44,9 +44,6 @@ alias IS the typed contract here: "an untyped JSON object straight off the wire"
 Callers narrow it at the domain layer (``api.GitLabAPI``) or at the host boundary.
 """
 
-type AttemptFn = Callable[[], httpx.Response]
-type SleepFn = Callable[[float], None]
-
 # Upper bound on pages walked for an offset-paginated list endpoint. GitLab
 # serves at most 100 items per page; this cap stops a runaway loop if the API
 # ever returns a malformed ``x-next-page`` that never empties.
@@ -54,13 +51,9 @@ _MAX_PAGES = 100
 
 _DEFAULT_TIMEOUT_SECONDS = 10.0
 _UPLOAD_TIMEOUT_SECONDS = 30.0
-_DEFAULT_MAX_RETRIES = 3
-_DEFAULT_BACKOFF_BASE_SECONDS = 0.5
-_MAX_BACKOFF_SECONDS = 30.0
 # Statuses at or above which a write is a failure the caller may drop on the floor;
 # the transport logs it so a failed MR update / note post never vanishes silently.
 _HTTP_ERROR_FLOOR = 400
-_CONNECT_ERRORS = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,29 +98,17 @@ def _resolve_token() -> str:
         return ""
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
+class GitLabHTTPClient(BoundedRetryTransport):
+    """GitLab REST/GraphQL transport on the shared bounded-retry machine.
 
+    Inherits :class:`~teatree.backends.http_retry.BoundedRetryTransport`'s retry
+    loop unchanged (``_RAISE_FOR_STATUS_ON_RETURN`` stays ``False`` — a response
+    is handed back raw so status-inspecting callers like ``post_status`` keep
+    working; body-returning callers apply ``raise_for_status`` themselves) and
+    layers on GitLab's own concerns: token resolution, the TTL response cache,
+    offset pagination, uploads, and GraphQL.
+    """
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value >= 0 else default
-
-
-class GitLabHTTPClient:
     def __init__(
         self,
         *,
@@ -141,16 +122,10 @@ class GitLabHTTPClient:
         self.base_url = base_url.rstrip("/")
         self._project_cache: dict[str, ProjectInfo] = {}
         self._response_cache: dict[str, tuple[float, object]] = {}
-        self._timeout = _env_float("T3_GITLAB_HTTP_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
-        self._max_retries = (
-            max_retries if max_retries is not None else _env_int("T3_GITLAB_HTTP_MAX_RETRIES", _DEFAULT_MAX_RETRIES)
+        self._timeout = env_float("T3_GITLAB_HTTP_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
+        self._configure_retry(
+            env_prefix="T3_GITLAB_HTTP", max_retries=max_retries, backoff_base=backoff_base, sleep=sleep
         )
-        self._backoff_base = (
-            backoff_base
-            if backoff_base is not None
-            else _env_float("T3_GITLAB_HTTP_BACKOFF", _DEFAULT_BACKOFF_BASE_SECONDS)
-        )
-        self._sleep = sleep
 
     def _get_cached[T](self, cache_key: str, ttl: int) -> T | None:
         """Return the fresh cached value for *cache_key*, or ``None`` when missing/stale.
@@ -191,44 +166,6 @@ class GitLabHTTPClient:
     def clear_response_cache(self) -> None:
         self._response_cache.clear()
 
-    def _run(self, attempt: AttemptFn, *, idempotent: bool) -> httpx.Response:
-        """Execute *attempt* under a bounded retry, returning the ``httpx.Response``.
-
-        Retries are gated by BOTH the failure class and the call's idempotency,
-        mirroring :class:`teatree.backends.slack.http.SlackHttpClient`:
-
-        *   a CONNECT-phase failure (the request never reached GitLab) is safe to
-            retry for any call, idempotent or not — nothing was sent;
-        *   a RESPONSE-phase failure (a read timeout, a ``5xx``, a ``429``) is
-            retried only for an idempotent call, so a non-idempotent ``POST``
-            (creating a note / pipeline) is never blindly replayed.
-
-        A ``429`` / ``5xx`` honours the ``Retry-After`` header when present, else
-        the standard exponential backoff. The response is returned WITHOUT
-        ``raise_for_status`` so status-inspecting callers (``post_status`` et al.)
-        keep working; body-returning callers apply ``raise_for_status`` themselves.
-        """
-        for retries_left in range(self._max_retries, -1, -1):
-            last = retries_left == 0
-            try:
-                response = attempt()
-            except _CONNECT_ERRORS:
-                if last:
-                    raise
-                self._backoff(self._max_retries - retries_left)
-                continue
-            except httpx.TimeoutException:
-                if last or not idempotent:
-                    raise
-                self._backoff(self._max_retries - retries_left)
-                continue
-            retry_after = self._transient_response_wait(response, idempotent=idempotent)
-            if retry_after is None or last:
-                return response
-            self._sleep_for(retry_after if retry_after > 0 else self._backoff_seconds(self._max_retries - retries_left))
-        unreachable = "retry loop is exhaustive: the final iteration always returns or raises"
-        raise AssertionError(unreachable)  # pragma: no cover
-
     def _url(self, endpoint: str) -> str:
         return f"{self.base_url}/{endpoint.lstrip('/')}"
 
@@ -265,49 +202,6 @@ class GitLabHTTPClient:
             return httpx.delete(url, headers=self._headers(), timeout=self._timeout)
 
         return self._run(attempt, idempotent=True)
-
-    def _transient_response_wait(self, response: httpx.Response, *, idempotent: bool) -> float | None:
-        """Seconds to wait before a response-phase retry, or ``None`` when not retryable.
-
-        ``0.0`` means "retry on the standard backoff"; a positive value is an
-        explicit ``Retry-After`` to honour. ``None`` means surface the response to
-        the caller (success, a non-transient status, or a non-idempotent write
-        that must not be replayed on a response-phase failure).
-        """
-        if not self._is_transient_response(response):
-            return None
-        if not idempotent:
-            return None
-        return self._retry_after_seconds(response)
-
-    @staticmethod
-    def _is_transient_response(response: httpx.Response) -> bool:
-        # A real httpx.Response always carries an int status; a response object that
-        # reports no integer status is not classifiable as transient (surfaced as-is).
-        status = getattr(response, "status_code", None)
-        if not isinstance(status, int):
-            return False
-        return status >= httpx.codes.INTERNAL_SERVER_ERROR or status == httpx.codes.TOO_MANY_REQUESTS
-
-    @staticmethod
-    def _retry_after_seconds(response: httpx.Response) -> float:
-        header = response.headers.get("Retry-After", "").strip()
-        if not header:
-            return 0.0
-        try:
-            return max(0.0, float(header))
-        except ValueError:
-            return 0.0
-
-    def _backoff(self, attempt_index: int) -> None:
-        self._sleep_for(self._backoff_seconds(attempt_index))
-
-    def _backoff_seconds(self, attempt_index: int) -> float:
-        return min(_MAX_BACKOFF_SECONDS, self._backoff_base * (2**attempt_index))
-
-    def _sleep_for(self, seconds: float) -> None:
-        if seconds > 0:
-            self._sleep(min(_MAX_BACKOFF_SECONDS, seconds))
 
     @staticmethod
     def _log_write_failure(method: str, endpoint: str, status: int) -> int:
