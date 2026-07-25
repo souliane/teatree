@@ -117,7 +117,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # (in_flight_for_phase + last_run_at_for_phase) carved out of managers.py to hold it under the 500-LOC
 # module-health cap. A pure queryset-builder leaf helper of the flat root managers.py hub, mirroring
 # managers_overlay.py / managers_issue_match.py / managers_task_claim.py. Owned by no existing subpackage.
-PINNED_FLAT_CORE_MODULES = 101
+# 102: +managers_session.py — SessionQuerySet (overlay/agent scoping + the bounded-liveness
+# `live()` query) carved out of managers.py to hold it under the 500-LOC module-health cap.
+# A queryset leaf helper of the flat root managers.py hub, mirroring managers_phase_cadence.py /
+# managers_overlay.py / managers_issue_match.py / managers_task_claim.py. Owned by no existing
+# subpackage — models/ may not import config, and this reads `session_stale_after_hours`.
+PINNED_FLAT_CORE_MODULES = 102
 
 
 def _flat_core_modules() -> list[str]:

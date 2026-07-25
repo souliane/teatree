@@ -314,6 +314,7 @@ class TeatreeSettingsSchema(BaseSettings):
     self_update_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     send_proxy_allowlist: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     send_proxy_mode: Annotated[SendProxyMode, BeforeValidator(SendProxyMode.parse), _DEFAULT_OVERLAY]
+    session_stale_after_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     slack_voice_classifier_mode: Annotated[
         SlackVoiceClassifierMode, BeforeValidator(SlackVoiceClassifierMode.parse), _DEFAULT_OVERLAY
     ]

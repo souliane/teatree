@@ -280,6 +280,31 @@ def _auto_enqueue_headless_task(
         logger.exception("Failed to auto-enqueue headless task %s", instance.pk)
 
 
+def _close_session_on_terminal_task(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Task,
+    **_kwargs: object,
+) -> None:
+    """End a Session once the work it was minted for terminates.
+
+    The single chokepoint for writing ``Session.ended_at``: every production
+    session-minting site creates one Session per dispatched Task, so a task
+    reaching COMPLETED/FAILED is its session's terminal point. Riding ``post_save``
+    covers ``complete()``, ``fail()``, ``complete_surfacing_advance_failure()`` and
+    ``complete_with_attempt()`` at once, instead of sprinkling a close into each.
+
+    ``close_if_idle`` keeps the session open while a sibling/child task on it is
+    still active. Best-effort: a task write must never fail because its session
+    could not be stamped — the ``session_stale_after_hours`` bound is the backstop.
+    """
+    if instance.status not in Task.Status.terminal():
+        return
+    try:
+        instance.session.close_if_idle()
+    except Exception:
+        logger.exception("Failed to close the session of terminal task %s", instance.pk)
+
+
 def _enqueue_ticket_transition_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
@@ -393,4 +418,5 @@ def register_signals() -> None:
         dispatch_uid="ticket_completion_release_issue_markers",
     )
     post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+    post_save.connect(_close_session_on_terminal_task, sender=Task, dispatch_uid="close_session_on_terminal_task")
     post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")

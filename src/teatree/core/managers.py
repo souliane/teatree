@@ -22,6 +22,7 @@ from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
+from teatree.core.managers_session import SessionQuerySet
 from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
@@ -148,14 +149,6 @@ class WorktreeQuerySet(models.QuerySet):
             ticket_id=ticket_pk,
             state__in=[worktree_model.State.SERVICES_UP, worktree_model.State.READY],
         ).update(last_e2e_run=now or timezone.now())
-
-
-class SessionQuerySet(models.QuerySet):
-    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
-        return _for_overlay(self, overlay)
-
-    def for_agent(self, agent_id: str) -> models.QuerySet:
-        return self.filter(agent_id=agent_id).order_by("pk")
 
 
 # The settled/in-flight boundary, defined ONCE (#3693): an event is UNSETTLED until it is

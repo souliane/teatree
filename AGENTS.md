@@ -111,6 +111,7 @@ records.
 - Tracks visited phases across tasks within a conversation (not FSM-driven)
 - **Fields:** overlay, ticket (FK), visited_phases (JSONField), phase_visits (JSONField), started_at, ended_at, agent_id, repos_modified, repos_tested
 - Quality gates enforce ordering: reviewing requires testing, shipping requires reviewing
+- **Terminal point:** `ended_at` is written by `Session.close()`, driven from the `_close_session_on_terminal_task` `post_save` receiver — a Task reaching COMPLETED/FAILED closes its session once no sibling task on it is still active. `SessionQuerySet.live()` bounds the open-session liveness signal by `session_stale_after_hours` so a crashed agent cannot pin its ticket busy forever
 
 ### TaskAttempt — Execution history (FK → Task)
 

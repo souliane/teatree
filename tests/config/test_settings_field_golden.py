@@ -175,6 +175,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "self_update_disabled",
         "send_proxy_allowlist",
         "send_proxy_mode",
+        "session_stale_after_hours",
         "slack_voice_classifier_mode",
         "snapshot_baseline_gate_enabled",
         "snapshot_warmer_disabled",

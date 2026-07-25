@@ -858,6 +858,18 @@ class _ResourcePressureSettings:
     # ``0`` disables that table's pruning entirely. Per-overlay overridable.
     task_attempt_retention_days: int = 30
     incoming_event_retention_days: int = 30
+    # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
+    # consults (``Ticket.has_active_work``). An agent that crashed without closing
+    # its Session would otherwise pin its ticket — and so its worktree, its
+    # ``max_concurrent_local_stacks`` slot, and ``workspace relocate`` — busy
+    # forever. An open Session whose last recorded activity (its own
+    # ``started_at``, its tasks' heartbeats, its attempts' start times) is older
+    # than this many hours is NOT live. 12h is 4x the ``watchdog_max_runtime_seconds``
+    # hard cap on a single agent run, so it cannot mask real in-flight work — and
+    # an active (PENDING/CLAIMED) task keeps a ticket busy with NO time bound at
+    # all, independently of this. ``0`` disables the bound (every open Session is
+    # live). Per-overlay overridable.
+    session_stale_after_hours: int = 12
 
 
 @dataclass

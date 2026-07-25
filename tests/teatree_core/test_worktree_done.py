@@ -13,14 +13,16 @@ unpushed work even on a done ticket; and the done-wipe tears the docker volumes 
 """
 
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
-from teatree.core.models import Ticket, Worktree
+from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree.worktree_done import (
     ChangeAnalysis,
@@ -444,6 +446,55 @@ class TestReaperGatesAndEmit(_ReaperFixture):
         assert "colleague-authored" in outcome.label
         assert self.wt_path.exists(), "a colleague's work must never be wiped"
         assert outcome.emit is not None
+
+
+class TestStaleSessionReachesTheDonePath(_ReaperFixture):
+    """End-to-end: an abandoned open Session must stop returning ACTIVE before done-detection.
+
+    The consequence chain the session-close defect produced — never-written
+    ``ended_at`` → ``has_active_work`` permanently true → ``_ownership_liveness_skip``
+    returning ACTIVE ahead of done-detection → ``clean-all`` never converging.
+    These run the REAL liveness guard (the fixture's stub is restored per test).
+    """
+
+    def _reap_with_real_liveness(self, worktree: Worktree) -> object:
+        with patch("teatree.core.worktree.worktree_done.worktree_liveness", worktree_liveness):
+            return self._reap(worktree)
+
+    def _backdate_head(self) -> None:
+        """Age HEAD past the recent-commit window so the SESSION signal is the decider."""
+        stamp = "2020-01-01T00:00:00 +0000"
+        env = {**_clean_env(), "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp}
+        subprocess.run(
+            [_GIT, "-C", str(self.wt_path), "commit", "-q", "--amend", "--no-edit"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+
+    def test_merged_ticket_with_a_stale_session_is_wiped(self) -> None:
+        self._backdate_head()
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        session = Session.objects.create(overlay="test", ticket=worktree.ticket)
+        Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(days=7))
+
+        outcome = self._reap_with_real_liveness(worktree)
+
+        assert outcome.action == "wiped", outcome.label
+        assert not self.wt_path.exists()
+
+    def test_merged_ticket_with_a_recent_session_is_still_skipped(self) -> None:
+        """The fail-CLOSED control: a genuinely live session keeps the worktree."""
+        self._backdate_head()
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        Session.objects.create(overlay="test", ticket=worktree.ticket)
+
+        outcome = self._reap_with_real_liveness(worktree)
+
+        assert outcome.action == "active", outcome.label
+        assert self.wt_path.exists()
 
 
 class TestPostMergeWorkEmitTag(_ReaperFixture):
