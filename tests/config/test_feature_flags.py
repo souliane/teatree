@@ -63,7 +63,7 @@ class TestRegistrySeededNonVacuously:
     def test_canonical_seed_flag_present(self) -> None:
         # The canonical DARK flags plus a retro-classified one — loop_runner_enabled was
         # graduated OUT by PR-28 (durable kill-switch, no longer a dying flag).
-        assert {"outer_loop_enabled", "teams_enabled"} <= set(FEATURE_FLAGS)
+        assert {"outer_loop_enabled", "factory_score_enabled"} <= set(FEATURE_FLAGS)
         assert "loop_runner_enabled" not in FEATURE_FLAGS
 
 

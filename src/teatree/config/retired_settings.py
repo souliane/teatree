@@ -95,6 +95,26 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         replacement=None,
         reason="the eval lane's credential follows agent_harness_provider (#3527)",
     ),
+    RetiredSetting(
+        key="teams_enabled",
+        replacement=None,
+        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+    ),
+    RetiredSetting(
+        key="teams_max_panes",
+        replacement=None,
+        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+    ),
+    RetiredSetting(
+        key="teams_idle_minutes",
+        replacement=None,
+        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+    ),
+    RetiredSetting(
+        key="teams_display",
+        replacement=None,
+        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+    ),
 )
 
 #: Retired key -> the live field its stored value migrates onto.

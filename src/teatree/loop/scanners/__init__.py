@@ -28,7 +28,6 @@ from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrain
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
-from teatree.loop.scanners.pane_reaper import PaneReaperScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
 from teatree.loop.scanners.pr_approvals import PrApprovalScanner
 from teatree.loop.scanners.pr_sweep import PrSweepScanner
@@ -93,7 +92,6 @@ __all__ = [
     "NotionViewScanner",
     "NullMergeNotifier",
     "OutboundAuditScanner",
-    "PaneReaperScanner",
     "PendingTasksScanner",
     "PrApprovalScanner",
     "PrSweepScanner",

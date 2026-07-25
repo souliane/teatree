@@ -134,7 +134,6 @@ class TestSafetyAndDarkFlagsPinned:
         # DARK feature-flags — each pinned to its off value.
         "outer_loop_enabled": False,
         "factory_score_enabled": False,
-        "teams_enabled": False,
         "require_plan_adequacy": False,
         "critic_gate_mode": "off",
         "directive_loop_enabled": False,

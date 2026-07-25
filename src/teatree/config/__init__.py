@@ -31,7 +31,6 @@ from teatree.config.enums import (
     Mode,
     OnBehalfPostMode,
     SendProxyMode,
-    TeamsDisplay,
     Wip,
 )
 from teatree.config.feature_flags import (
@@ -114,7 +113,6 @@ __all__ = [
     "SendProxyMode",
     "SettingHome",
     "TeaTreeConfig",
-    "TeamsDisplay",
     "UserSettings",
     "Wip",
     "_active_overlay_entry",

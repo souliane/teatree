@@ -77,9 +77,6 @@ class TestOverlayDbHomeOverrides(TestCase):
             "T3_OVERLAY_NAME",
             "T3_ISSUE_IMPLEMENTER_ENABLED",
             "T3_ORCHESTRATE_CLAIM_ENABLED",
-            "T3_TEAMS_ENABLED",
-            "T3_TEAMS_MAX_PANES",
-            "T3_TEAMS_IDLE_MINUTES",
         ):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
@@ -191,34 +188,13 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().issue_implementer_enabled is False
 
-    def test_overlay_can_override_teams_enabled(self) -> None:
-        ConfigSetting.objects.set_value("teams_enabled", value=True, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().teams_enabled is True
-
-    def test_env_teams_enabled_beats_overlay_db_override(self) -> None:
-        ConfigSetting.objects.set_value("teams_enabled", value=True, scope="my-overlay")
-        self.monkeypatch.setenv("T3_TEAMS_ENABLED", "false")
-        self._activate()
-        assert get_effective_settings().teams_enabled is False
-
-    def test_overlay_can_override_pane_budget(self) -> None:
-        ConfigSetting.objects.set_value("teams_max_panes", value=4, scope="my-overlay")
-        ConfigSetting.objects.set_value("teams_idle_minutes", value=60, scope="my-overlay")
+    def test_overlay_can_override_positive_int_settings(self) -> None:
+        ConfigSetting.objects.set_value("db_backup_cadence_hours", value=4, scope="my-overlay")
+        ConfigSetting.objects.set_value("db_backup_retention_days", value=60, scope="my-overlay")
         self._activate()
         settings = get_effective_settings()
-        assert settings.teams_max_panes == 4
-        assert settings.teams_idle_minutes == 60
-
-    def test_env_pane_budget_beats_overlay_db_override(self) -> None:
-        ConfigSetting.objects.set_value("teams_max_panes", value=9, scope="my-overlay")
-        ConfigSetting.objects.set_value("teams_idle_minutes", value=90, scope="my-overlay")
-        self.monkeypatch.setenv("T3_TEAMS_MAX_PANES", "2")
-        self.monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "15")
-        self._activate()
-        settings = get_effective_settings()
-        assert settings.teams_max_panes == 2
-        assert settings.teams_idle_minutes == 15
+        assert settings.db_backup_cadence_hours == 4
+        assert settings.db_backup_retention_days == 60
 
     def test_overlay_can_override_mr_title_regex(self) -> None:
         ConfigSetting.objects.set_value("mr_title_regex", r"^JIRA-\d+: .+", scope="my-overlay")
@@ -231,12 +207,13 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().e2e_mandatory_gate_enabled is False
 
-    def test_pane_budget_env_non_positive_fails_safe(self) -> None:
-        self.monkeypatch.setenv("T3_TEAMS_MAX_PANES", "0")
-        self.monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "garbage")
+    def test_positive_int_overlay_override_non_positive_fails_safe(self) -> None:
+        ConfigSetting.objects.set_value("db_backup_cadence_hours", value=0, scope="my-overlay")
+        ConfigSetting.objects.set_value("db_backup_retention_days", "garbage", scope="my-overlay")
+        self._activate()
         settings = get_effective_settings()
-        assert settings.teams_max_panes == 1
-        assert settings.teams_idle_minutes == 30
+        assert settings.db_backup_cadence_hours == 24
+        assert settings.db_backup_retention_days == 7
 
 
 class TestAliasScopeGroupsMerge(TestCase):

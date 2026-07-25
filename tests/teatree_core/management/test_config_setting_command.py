@@ -277,7 +277,7 @@ class TestConfigSettingFlagsAudit(TestCase):
         rendered = out.getvalue()
         # loop_runner_enabled was graduated out by PR-28 (durable kill-switch, not a
         # dying flag); the live registry is all-DARK, so its rows render stage=dark.
-        for key in ("outer_loop_enabled", "teams_enabled"):
+        for key in ("outer_loop_enabled", "factory_score_enabled"):
             assert key in rendered
         assert "loop_runner_enabled" not in rendered
         assert "stage=dark" in rendered

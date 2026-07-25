@@ -6,7 +6,7 @@ the worktree-cwd resolver (:func:`_resolve_task_cwd`), the resumable-session wal
 (:func:`_get_resume_session_id`), and the spawn constants they read. Re-exported
 from ``teatree.agents.headless`` so ``from teatree.agents.headless import
 _build_options`` (and the ``_MAX_TURNS`` / ``_PERMISSION_MODE`` / ``UUID_RE`` /
-``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in ``teams.pane_spawn`` and
+``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in
 ``core.management.commands.tasks``) stays valid.
 """
 

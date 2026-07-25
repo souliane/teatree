@@ -118,15 +118,6 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
-        "pane_reaper",
-        300,
-        None,
-        None,
-        "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
-        False,
-        True,
-    ),
-    (
         "issue_disposition",
         300,
         None,

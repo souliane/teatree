@@ -84,9 +84,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
-│ teams           Agent-teams master switch. The teams.enabled config key      │
-│                 (default off) gates the pane-backed teammate layer; off      │
-│                 keeps the classic in-session sub-agent fan-out.              │
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
