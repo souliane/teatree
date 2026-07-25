@@ -17,6 +17,7 @@ from typing import TypedDict, cast
 import httpx
 from PIL import Image
 
+from teatree.backends.http_retry import SimpleRetryTransport
 from teatree.llm.credentials import Credential, CredentialSpec
 
 
@@ -146,21 +147,30 @@ class FigmaComponentMetadata:
 
 
 class FigmaClient:
-    """Figma REST API client — one HTTP call per method, no local state."""
+    """Figma REST API client — one HTTP call per method, no local state.
+
+    Every method is an idempotent GET, so all run under the shared bounded-retry
+    transport (:class:`~teatree.backends.http_retry.SimpleRetryTransport`): a
+    transient ``5xx`` / ``429`` / connect timeout is retried instead of breaking
+    the design-to-code workflow. Knobs default from ``T3_FIGMA_HTTP_*``.
+    """
 
     def __init__(self, *, token: str, base_url: str = "https://api.figma.com") -> None:
         self.token = token
         self.base_url = base_url.rstrip("/")
+        self._transport = SimpleRetryTransport(env_prefix="T3_FIGMA_HTTP")
 
     def get_file(self, file_key: str) -> _FigmaFileResponse:
         with self._client() as client:
-            response = client.get(f"/v1/files/{file_key}")
+            response = self._transport.run(lambda: client.get(f"/v1/files/{file_key}"), idempotent=True)
             response.raise_for_status()
             return cast("_FigmaFileResponse", response.json())
 
     def get_node(self, file_key: str, node_id: str) -> FigmaNode:
         with self._client() as client:
-            response = client.get(f"/v1/files/{file_key}/nodes", params={"ids": node_id})
+            response = self._transport.run(
+                lambda: client.get(f"/v1/files/{file_key}/nodes", params={"ids": node_id}), idempotent=True
+            )
             response.raise_for_status()
             body = cast("_FigmaNodesResponse", response.json())
         entry = body.get("nodes", {}).get(node_id)
@@ -180,9 +190,12 @@ class FigmaClient:
         self, file_key: str, node_ids: list[str], *, scale: float = 1.0, image_format: str = "png"
     ) -> dict[str, str]:
         with self._client() as client:
-            response = client.get(
-                f"/v1/images/{file_key}",
-                params={"ids": ",".join(node_ids), "scale": scale, "format": image_format},
+            response = self._transport.run(
+                lambda: client.get(
+                    f"/v1/images/{file_key}",
+                    params={"ids": ",".join(node_ids), "scale": scale, "format": image_format},
+                ),
+                idempotent=True,
             )
             response.raise_for_status()
             body = cast("_FigmaImagesResponse", response.json())
@@ -203,7 +216,7 @@ class FigmaClient:
 
     def get_comments(self, file_key: str) -> list[FigmaComment]:
         with self._client() as client:
-            response = client.get(f"/v1/files/{file_key}/comments")
+            response = self._transport.run(lambda: client.get(f"/v1/files/{file_key}/comments"), idempotent=True)
             response.raise_for_status()
             body = cast("_FigmaCommentsResponse", response.json())
         return body.get("comments") or []

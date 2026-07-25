@@ -317,6 +317,7 @@ depends_on = [
   "teatree.llm",
   "teatree.backends.errors",
   "teatree.backends.types",
+  "teatree.backends.http_retry",
   "teatree.backends.forge_merge_rpc",
   "teatree.backends.github",
   "teatree.backends.gitlab",
@@ -325,6 +326,11 @@ depends_on = [
 
 [[modules]]
 path = "teatree.backends.errors"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.backends.http_retry"
 layer = "domain"
 depends_on = []
 
@@ -347,7 +353,8 @@ depends_on = [
   "teatree.core",
   "teatree.core.models",
   "teatree.identity",
-  "teatree.url_classify"
+  "teatree.url_classify",
+  "teatree.backends.http_retry"
 ]
 
 [[modules]]
@@ -361,6 +368,7 @@ depends_on = [
   "teatree.llm",
   "teatree.backends.errors",
   "teatree.backends.types",
+  "teatree.backends.http_retry",
   "teatree.backends.forge_merge_rpc",
   "teatree.backends.slack"
 ]
