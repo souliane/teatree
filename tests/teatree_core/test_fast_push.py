@@ -284,9 +284,10 @@ class TestForgeCliCommands:
 
     def test_gh_find_create_update(self, tmp_path: Path) -> None:
         forge = GhForge(tmp_path)
-        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed("https://x/pr/4\n")):
+        listing = json.dumps([{"url": "https://x/pr/4"}])
+        with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed(listing)):
             assert forge.find_pr_url(branch="b") == "https://x/pr/4"
-        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed("", returncode=1)):
+        with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed("", returncode=1)):
             assert forge.find_pr_url(branch="b") == ""
         with patch("teatree.core.fast_push.run_checked", return_value=self._completed("https://x/pr/5\n")) as run:
             assert forge.create_pr(branch="b", title="t", body="d") == "https://x/pr/5"
@@ -299,9 +300,9 @@ class TestForgeCliCommands:
     def test_glab_find_create_update(self, tmp_path: Path) -> None:
         forge = GlabForge(tmp_path)
         listing = json.dumps([{"web_url": "https://gl/mr/7"}])
-        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed(listing)):
+        with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed(listing)):
             assert forge.find_pr_url(branch="b") == "https://gl/mr/7"
-        with patch("teatree.core.fast_push.run_allowed_to_fail", return_value=self._completed("not-json")):
+        with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed("not-json")):
             assert forge.find_pr_url(branch="b") == ""
         with patch(
             "teatree.core.fast_push.run_checked", return_value=self._completed("created https://gl/mr/8\n")

@@ -36,6 +36,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+import teatree.core.forge_pr_probe as probe_mod
 import teatree.core.gates.open_pr_teardown_gate as gate_mod
 import teatree.core.management.commands._workspace.forge_pr_state as forge_state_mod
 import teatree.core.management.commands.workspace as workspace_mod
@@ -119,7 +120,7 @@ class _TeardownHarness(TestCase):
             payload = [{"web_url": _MR_URL}] if branch in opened else []
             return subprocess.CompletedProcess(cmd, returncode, json.dumps(payload), "")
 
-        return patch.object(gate_mod, "run_allowed_to_fail", side_effect=_run)
+        return patch.object(probe_mod, "run_allowed_to_fail", side_effect=_run)
 
     def _forge_api(self, state: PrOpenState):
         """Fake the code host behind the injected reader, for the recorded-row leg."""
@@ -206,7 +207,7 @@ class TestFailsClosed(_TeardownHarness):
 
     def test_refuses_when_the_forge_cli_is_missing(self) -> None:
         with (
-            patch.object(gate_mod, "run_allowed_to_fail", side_effect=FileNotFoundError("glab")),
+            patch.object(probe_mod, "run_allowed_to_fail", side_effect=FileNotFoundError("glab")),
             pytest.raises(OpenPullRequestTeardownError),
         ):
             self._teardown()
@@ -236,7 +237,7 @@ class TestNoForgeRemote(_TeardownHarness):
     remote = ""
 
     def test_a_repo_with_no_forge_origin_is_clear(self) -> None:
-        with patch.object(gate_mod, "run_allowed_to_fail", side_effect=AssertionError("must not probe")):
+        with patch.object(probe_mod, "run_allowed_to_fail", side_effect=AssertionError("must not probe")):
             self._teardown()
         self.assert_all_reclaimed()
 
@@ -297,18 +298,8 @@ class TestGateHelpersDirect(_TeardownHarness):
 
     def test_open_pr_url_for_branch_uses_the_github_probe_on_a_github_remote(self) -> None:
         with (
-            patch.object(gate_mod.git, "remote_url", return_value="https://github.com/acme/backend"),
-            patch.object(gate_mod, "_first_url", return_value="") as first_url,
+            patch.object(probe_mod.git, "remote_url", return_value="https://github.com/acme/backend"),
+            patch.object(probe_mod, "_probe_open_pr", return_value=probe_mod.PrProbe.none()) as probe,
         ):
             assert gate_mod._open_pr_url_for_branch(self.clone, "feature") == ""
-        assert first_url.call_args.args[0][0] == "gh"
-
-    def test_first_url_is_none_on_unparseable_json(self) -> None:
-        result = subprocess.CompletedProcess(["glab"], 0, "not json at all", "")
-        with patch.object(gate_mod, "run_allowed_to_fail", return_value=result):
-            assert gate_mod._first_url(["glab"], self.clone, key="web_url") is None
-
-    def test_first_url_is_none_when_payload_is_not_a_list(self) -> None:
-        result = subprocess.CompletedProcess(["glab"], 0, '{"web_url": "x"}', "")
-        with patch.object(gate_mod, "run_allowed_to_fail", return_value=result):
-            assert gate_mod._first_url(["glab"], self.clone, key="web_url") is None
+        assert probe.call_args.args[0][0] == "gh"

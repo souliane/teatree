@@ -61,16 +61,14 @@ reader is INJECTED as :class:`PrStateReader` — the same split as
 interface layer supplies the concrete reader.
 """
 
-import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import PullRequest, Ticket, Worktree
-from teatree.utils import git
-from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -193,43 +191,14 @@ def _live_pr_state(pr_url: str, read_pr_state: PrStateReader) -> PrOpenState:
 def _open_pr_url_for_branch(repo_dir: Path, branch: str) -> str | None:
     """The OPEN PR/MR URL backing *branch*, ``""`` when there is none, ``None`` when unknown.
 
-    Deliberately not ``fast_push.ForgeClient.find_pr_url``: that primitive
-    collapses "no PR" and "the probe failed" into ``""`` because its caller
-    treats both as "create one", which is safe there. A reclaim gate needs the
-    two apart — one clears the teardown, the other must block it.
+    Maps the shared :func:`find_open_pr_for_branch` tri-state through
+    :meth:`~teatree.core.forge_pr_probe.PrProbe.url_or_none_on_unknown`, keeping
+    "found nothing" (``""`` — the teardown clears) apart from "could not ask"
+    (``None`` — the reclaim must block). This is exactly the distinction a
+    collapse-to-``""`` caller like fast_push does not need but this fail-closed
+    gate does.
 
-    A repo whose ``origin`` is not a recognised forge returns ``""``: no forge,
+    A repo whose ``origin`` is not a recognised forge yields ``""``: no forge,
     therefore no MR, therefore nothing to protect.
     """
-    if not branch:
-        return None
-    remote = git.remote_url(repo=str(repo_dir))
-    if "gitlab" in remote:
-        return _first_url(["glab", "mr", "list", "--source-branch", branch, "-F", "json"], repo_dir, key="web_url")
-    if "github" in remote:
-        return _first_url(["gh", "pr", "list", "--head", branch, "--json", "url"], repo_dir, key="url")
-    return ""
-
-
-def _first_url(cmd: list[str], repo_dir: Path, *, key: str) -> str | None:
-    """First ``key`` in the forge CLI's JSON array, ``""`` when empty, ``None`` when the probe failed.
-
-    Both CLIs list only OPEN PRs/MRs by default, so a non-empty payload IS an
-    open one. A missing binary raises ``FileNotFoundError`` rather than exiting
-    non-zero, which is why the catch covers ``OSError`` as well as a bad exit.
-    """
-    try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, cwd=repo_dir)
-    except OSError:
-        logger.warning("open-PR teardown gate could not run %r in %s — failing closed", cmd[0], repo_dir)
-        return None
-    if result.returncode != 0:
-        logger.warning("open-PR teardown gate probe %r failed in %s — failing closed", cmd[0], repo_dir)
-        return None
-    try:
-        payload = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, list):
-        return None
-    return str(payload[0].get(key, "")) if payload else ""
+    return find_open_pr_for_branch(repo_dir, branch).url_or_none_on_unknown()

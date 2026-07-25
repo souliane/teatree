@@ -25,12 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
+from teatree.core.forge_pr_probe import probe_github_open_pr, probe_gitlab_open_pr
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.term_match import matched_term
 from teatree.utils import git, git_remote
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.run import run_allowed_to_fail, run_checked
 
 LEAK_GATES: Final[tuple[str, str, str, str]] = (
@@ -80,12 +82,7 @@ class GhForge:
         self._repo = repo
 
     def find_pr_url(self, *, branch: str) -> str:
-        result = run_allowed_to_fail(
-            ["gh", "pr", "list", "--head", branch, "--json", "url", "--jq", ".[0].url"],
-            expected_codes=None,
-            cwd=self._repo,
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        return probe_github_open_pr(self._repo, branch).url_or_empty()
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
         result = run_checked(
@@ -103,18 +100,7 @@ class GlabForge:
         self._repo = repo
 
     def find_pr_url(self, *, branch: str) -> str:
-        result = run_allowed_to_fail(
-            ["glab", "mr", "list", "--source-branch", branch, "-F", "json"],
-            expected_codes=None,
-            cwd=self._repo,
-        )
-        if result.returncode != 0:
-            return ""
-        try:
-            payload = json.loads(result.stdout or "[]")
-        except json.JSONDecodeError:
-            return ""
-        return str(payload[0].get("web_url", "")) if payload else ""
+        return probe_gitlab_open_pr(self._repo, branch).url_or_empty()
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
         result = run_checked(
@@ -129,10 +115,10 @@ class GlabForge:
 
 
 def forge_for_repo(repo: Path) -> ForgeClient | None:
-    remote = git.remote_url(repo=str(repo))
-    if "github" in remote:
+    kind = forge_from_remote(git.remote_url(repo=str(repo)))
+    if kind == "github":
         return GhForge(repo)
-    if "gitlab" in remote:
+    if kind == "gitlab":
         return GlabForge(repo)
     return None
 
