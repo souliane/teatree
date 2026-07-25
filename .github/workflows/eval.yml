@@ -105,6 +105,21 @@
 #   failed-workflow-run email goes to the maintainer (Actions → Notifications) with
 #   no extra secret and no bot — that is the failure-notification mechanism here.
 #
+# RED-LEG DIAGNOSIS (souliane/teatree#3745)
+#   A metered leg is expensive to re-run (~2% of the subscription's weekly window per
+#   attempt), so a red leg MUST be diagnosable from the run it already spent — never
+#   by firing another one. Three artifacts back that, all uploaded `if: always()` and
+#   all named per matrix leg (`<lane>-<shard>-<effort>`, so the fan-out's legs cannot
+#   collide or overwrite each other):
+#     * `eval-run-log-*`   — the raw teed stdout/stderr of EVERY attempt. Exists from
+#       the first byte, so it is the only one that survives a leg that dies mid-run.
+#     * `eval-report-*`    — the per-trial transcripts (rendered at end of run).
+#     * `eval-summary-*`   — the sanitized publish-safe summary (ditto).
+#   And the first diagnosis needs NO download at all: on a non-zero exit the eval step
+#   re-prints the captured tail plus the summary into the job log, then re-raises the
+#   real exit code. See the block above the eval step's `command:` for the two gaps
+#   that made a red leg emit only `Child_process exited with error code 1`.
+#
 # The FREE deterministic TESTS (eval-pinned-regressions push-stage) are
 # unaffected — they gate every push via
 # prek and the regression corpus is asserted every PR via pytest. Only the
@@ -427,6 +442,9 @@ jobs:
           # a pure no-op: MODEL_FLAG stays "" below and the emitted command is
           # byte-identical to a run with no `model` input at all.
           EVAL_MODEL: ${{ inputs.model || '' }}
+          # The per-leg (lane-shard-effort) filename token, so the command block names
+          # its summary + captured-log files without re-inlining the expression.
+          EVAL_SUFFIX: ${{ steps.artifact.outputs.suffix }}
         with:
           # A single shard is ≤ its lane's ceiling (clean_room ≤14, under_load ≤4 —
           # #2683) x 3 trials, each a real metered `claude` SDK call. Each retry
@@ -455,19 +473,63 @@ jobs:
           # private transcript — both land in $RUNNER_TEMP (the writable artifacts
           # mount). The `publish` job merges every shard's summary into the public
           # dashboard; the transcript stays in the private `eval-report-*` artifact.
+          #
+          # FAILURE OBSERVABILITY (#3745). A red leg used to emit ONLY the retry
+          # action's `Child_process exited with error code 1` — no scenario name, no
+          # pass@k line, no traceback — so every diagnostic re-run re-spent ~2% of the
+          # subscription's weekly window for zero information. Two gaps caused that,
+          # and `tee` closes both:
+          #   * The container's output was STREAMED but never STORED. `t3 eval run
+          #     --docker` does inherit the container's stdio (`run_streamed`) and
+          #     nick-fields/retry does forward the child's stdout, so the bytes reach
+          #     the live log — but nothing wrote them to a file, so nothing could be
+          #     uploaded, and anything lost to the 80min SIGTERM kill (or the action's
+          #     exit-vs-close drain race) was gone for good.
+          #   * `--summary-md` is rendered at the END of a run, so a leg that dies
+          #     mid-run NEVER writes it. The upload step's `if: always()` was already
+          #     correct; the file simply did not exist, which is why the summary
+          #     artifact looked un-uploaded on exactly the failures that needed it.
+          # So the run is teed to a durable $RUNNER_TEMP log (uploaded as its own
+          # per-leg artifact below, and the ONLY artifact that survives a pre-summary
+          # death), and on non-zero exit the tail + the summary are re-printed from
+          # that file into the job log — the first diagnosis needs no download.
+          # `set -o pipefail` keeps `tee` from masking the eval's exit code, and the
+          # block ends in `exit "$rc"`: this adds visibility, it never swallows the
+          # failure. Printing INSIDE the command block is what makes EACH attempt
+          # visible — attempt 1's tail lands before the retry's "Attempt 1 failed"
+          # line, instead of being discarded when attempt 2 starts. `tee -a` keeps
+          # both attempts in the one uploaded log.
           command: |
+            set -o pipefail
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             MODEL_FLAG=""
             [ -n "$EVAL_MODEL" ] && MODEL_FLAG="--model $EVAL_MODEL"
             PRESET_FLAG=""
             [ -n "$EVAL_PRESET" ] && PRESET_FLAG="--preset $EVAL_PRESET"
+            TAIL_LINES=400
+            SUMMARY="$RUNNER_TEMP/eval-summary-$EVAL_SUFFIX.md"
+            LOG="$RUNNER_TEMP/eval-run-$EVAL_SUFFIX.log"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" >> "$LOG"
             uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend "$EVAL_BACKEND" \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG $PRESET_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md" \
-              $MODEL_FLAG
+              --summary-md "$SUMMARY" \
+              $MODEL_FLAG 2>&1 | tee -a "$LOG"
+            rc=$?
+            [ "$rc" -eq 0 ] && exit 0
+            echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
+            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            echo "::endgroup::"
+            if [ -s "$SUMMARY" ]; then
+              echo "::group::leg $EVAL_SUFFIX FAILED — eval summary"
+              cat "$SUMMARY"
+              echo "::endgroup::"
+            else
+              echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
+            fi
+            exit "$rc"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
@@ -492,6 +554,21 @@ jobs:
         with:
           name: eval-summary-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
+          if-no-files-found: warn
+      # The RAW captured stdout/stderr of every attempt (the `tee -a` target in the
+      # eval command). Unlike the transcript and the summary — both rendered only if
+      # the run reaches its end — this file exists from the first byte, so it is the
+      # one artifact that survives a leg that died mid-run, which is precisely the
+      # failure class that used to leave a maintainer with nothing but "exit code 1".
+      # `if: always()` because a GREEN leg needs none of this; a red one needs all of
+      # it. NOT downloaded by the `publish` job — it is unsanitized, so it stays out
+      # of the public dashboard alongside the private transcript.
+      - name: Upload the raw eval run log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-run-log-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
           if-no-files-found: warn
 
   # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
