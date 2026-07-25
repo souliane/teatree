@@ -52,6 +52,7 @@ from teatree.config.resolution import (
     _apply_autonomy,
     _overlay_overrides_by_name,
     cadence_seconds,
+    effective_default,
     get_effective_settings,
     worker_is_quiescing,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "default_logging",
     "discover_active_overlay",
     "discover_overlays",
+    "effective_default",
     "effective_trusted_issue_authors",
     "get_data_dir",
     "get_effective_settings",

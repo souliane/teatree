@@ -14,10 +14,14 @@ Integration-first: real ``ConfigSetting`` rows against the real DB, the active
 overlay set via ``T3_OVERLAY_NAME``.
 """
 
+from unittest import mock
+
 import pytest
+from django.db.utils import OperationalError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
+from teatree.config.resolution import _load_global_rows, _load_overlay_rows
 from teatree.core.models import ConfigSetting
 
 
@@ -151,3 +155,57 @@ class TestPerOverlayDbScope(TestCase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert ConfigSetting.objects.count() == 0
         assert get_effective_settings().issue_implementer_enabled is False
+
+
+class TestOverrideReadSignalsOnRealFailure(TestCase):
+    """The DB override read never SILENTLY empties the tier on a REAL error (P1-B).
+
+    ``_load_global_rows`` / ``_load_overlay_rows`` degrade to ``{}`` SILENTLY only for
+    genuine bootstrap states (missing table, DB not ready). A real read bug drops the
+    whole override tier — including the ``autonomy`` / ``require_human_approval_to_merge``
+    safety gates — back to the dataclass defaults; that fail-open must be SIGNALLED loud
+    (ERROR log + traceback), not silently swallowed, so operator monitoring surfaces it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_bootstrap_missing_table_error_is_a_silent_no_op(self) -> None:
+        # A pre-migration / missing-table read is the legitimate no-op: {} and NO error log.
+        with (
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("no such table")
+            ),
+            self.assertNoLogs("teatree.config", level="ERROR"),
+        ):
+            assert _load_global_rows() == {}
+
+    def test_real_read_error_is_logged_loud_not_silent(self) -> None:
+        # A genuine read bug (not a bootstrap state) degrades to {} but is SIGNALLED loud —
+        # never a silent empty override tier that fails OPEN on the safety gates.
+        with (
+            mock.patch.object(ConfigSetting.objects, "overrides_for_scope", side_effect=RuntimeError("corrupt read")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_global_rows() == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_real_read_error_signals_through_effective_settings(self) -> None:
+        # End to end: a real read failure surfaces loud (ERROR) rather than silently
+        # resolving the safety gates to their fail-open defaults with no trace.
+        with (
+            mock.patch.object(ConfigSetting.objects, "overrides_for_scope", side_effect=RuntimeError("corrupt read")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            get_effective_settings()
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_overlay_read_real_error_is_logged_loud(self) -> None:
+        # The per-overlay reader shares the same signal-on-real-failure contract.
+        with (
+            mock.patch.object(ConfigSetting.objects, "exclude", side_effect=RuntimeError("corrupt read")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_overlay_rows("my-overlay") == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
