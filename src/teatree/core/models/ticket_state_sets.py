@@ -85,6 +85,24 @@ class TicketStateSetsModel(TicketFacet):
         return AdvanceResult(from_state=from_state, to_state=self.state)
 
     @classmethod
+    def state_index(cls, state: str) -> int:
+        """Position of *state* in the ``State`` declaration order."""
+        return [s.value for s in cls.State].index(state)
+
+    @classmethod
+    def state_advances(cls, current: str, candidate: str) -> bool:
+        """True iff writing *candidate* over *current* moves the ticket forward.
+
+        The single ordering every external-sync writer compares against. A
+        tracker/board tells us where IT thinks the ticket is; that is an
+        advance-only signal, never a rewind — a board column or an inferred PR
+        state that reads behind the ticket's own FSM would otherwise reset live
+        work (an in-review ticket back to not-started) and re-arm the loop's
+        scanners against already-delivered work.
+        """
+        return cls.state_index(candidate) > cls.state_index(current)
+
+    @classmethod
     def marker_release_states(cls) -> frozenset[str]:
         """Terminal-done states that free markers and trigger worktree teardown.
 
