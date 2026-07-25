@@ -337,13 +337,29 @@ class TestEnforcingBlockFindingsSurviveRollback(TestCase):
     def test_findings_persist_after_the_enforcing_block(self) -> None:
         ticket = _clean_delivered_ticket()
         _strip_merge_evidence(ticket)
-        with _mode(CriticGateMode.BLOCKING), patch.object(core_tasks, "RetroExecutor") as retro:
+        with _mode(CriticGateMode.BLOCKING), patch.object(core_tasks, "RetroPhaseMarker") as retro:
             retro.return_value.run.return_value = RunnerResult(ok=True, detail="retro ok")
             result = core_tasks.execute_retrospect.func(ticket.pk)
         ticket.refresh_from_db()
         assert result["ok"] is False
         assert ticket.state == Ticket.State.RETROSPECTED  # the delivery was refused
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()  # survived rollback
+
+    def test_retro_phase_marker_survives_the_enforcing_block(self) -> None:
+        """The REAL marker: hoisting it out of the advance atomic is what keeps it durable.
+
+        Moving ``RetroPhaseMarker(ticket).run()`` inside that atomic turns its
+        ``merge_extra`` into a savepoint the ``CriticGateError`` unwinds, and the
+        evidence that the retro phase was reached disappears with the refusal.
+        """
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        with _mode(CriticGateMode.BLOCKING):
+            result = core_tasks.execute_retrospect.func(ticket.pk)
+        ticket.refresh_from_db()
+        assert result["ok"] is False
+        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.extra.get("retro_scheduled") is True
 
 
 class TestProductionRecordingPath(TestCase):
