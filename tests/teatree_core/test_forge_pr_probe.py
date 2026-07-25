@@ -12,7 +12,6 @@ external) is faked.
 """
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -26,18 +25,22 @@ from teatree.core.forge_pr_probe import (
     probe_github_open_pr,
     probe_gitlab_open_pr,
 )
+from tests._git_repo import make_git_repo, run_git
 
 _GH_URL = "https://github.com/acme/widgets/pull/7"
 _MR_URL = "https://gitlab.com/acme/widgets/-/merge_requests/7"
-_GIT = shutil.which("git") or "git"
 
 
 def _repo(tmp_path: Path, *, remote: str) -> Path:
-    repo = tmp_path / "clone"
-    repo.mkdir()
-    subprocess.run([_GIT, "-C", str(repo), "init", "-q"], check=True)
+    """A real git repo (born on ``main``) carrying the forge *remote* as ``origin``.
+
+    A real checkout is needed because :func:`find_open_pr_for_branch` sniffs the
+    forge from ``git remote get-url origin``; the ``gh`` / ``glab`` subprocess it
+    then runs is the only external the tests fake.
+    """
+    repo = make_git_repo(tmp_path / "clone")
     if remote:
-        subprocess.run([_GIT, "-C", str(repo), "remote", "add", "origin", remote], check=True)
+        run_git(repo, "remote", "add", "origin", remote)
     return repo
 
 
