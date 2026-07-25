@@ -71,6 +71,10 @@ class TestTierConstantIsSingleSource:
     def test_three_named_tiers(self) -> None:
         assert set(TIER_MODELS) == {"frontier", "balanced", "cheap"}
 
+    def test_frontier_tier_is_opus_5(self) -> None:
+        assert TIER_MODELS["frontier"] == "claude-opus-5"
+        assert resolve_tier("frontier") == "claude-opus-5"
+
     def test_resolve_tier_reads_the_constant(self) -> None:
         for tier, model in TIER_MODELS.items():
             assert resolve_tier(tier) == model
