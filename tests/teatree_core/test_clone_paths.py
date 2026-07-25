@@ -19,7 +19,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.clone_paths import find_clone_path, repair_stale_clone_path, resolve_clone_path
+from teatree.core.worktree.clone_paths import (
+    find_clone_path,
+    repair_stale_clone_path,
+    resolve_clone_path,
+    stored_clone_path,
+)
 from tests.teatree_core.cleanup._shared import _run_git
 
 
@@ -65,11 +70,18 @@ class _StoredClonePathCase(TestCase):
         self.clone = _init_clone(self.workspace / "myrepo")
 
     def _row(self, stored: str) -> Worktree:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/3699")
+        ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{Ticket.objects.count() + 3699}")
         extra = {"worktree_path": str(self.tmp_path / "wt")}
         if stored:
             extra["clone_path"] = stored
         return Worktree.objects.create(overlay="test", ticket=ticket, repo_path="myrepo", branch="feat-x", extra=extra)
+
+
+class TestStoredClonePath(_StoredClonePathCase):
+    def test_only_a_confirmed_checkout_is_handed_back(self) -> None:
+        assert stored_clone_path(self._row(str(self.clone))) == self.clone
+        assert stored_clone_path(self._row(str(self.tmp_path / "gone"))) is None
+        assert stored_clone_path(self._row("")) is None
 
 
 class TestResolveClonePath(_StoredClonePathCase):
