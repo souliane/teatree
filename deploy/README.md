@@ -560,10 +560,50 @@ service is down — exactly the outage it exists to repair.
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the
    findings are visible in the watchdog's own container logs and `t3 doctor check`.)
+   Three of those findings are **deploy-gated** — see below.
 
 The DM leaves the box via a `docker compose exec` inside a *live app container*,
 not from the watchdog itself — the watchdog runs `network_mode: none`, so the
 docker socket is its only channel.
+
+### Deploy-awareness (#3732)
+
+`deploy.sh` fast-forwards the checkout and swaps the image, which **recreates**
+the worker and the slack-listener. A watchdog pass landing in that window samples
+a healthy rolling deploy and used to DM it as an outage — one red DM per merge,
+which on a busy day makes a genuine freeze indistinguishable from routine noise.
+
+Exactly three findings are what a deploy manufactures, so exactly three are gated:
+**worker-flock-not-held**, **slack-listener-down**, **clone-behind-origin**. Every
+other finding pages on the first observation, unchanged.
+
+A convergence is detected two ways, either sufficient:
+
+- **The deploy flock.** `deploy.sh` holds `${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}`
+  for its whole run. The watchdog probes it **read-only** — it matches the file's
+  device+inode against `/proc/locks` and never opens it for locking, because a
+  probe that briefly *acquired* the lock would make a deploy starting in that
+  instant see it as busy, and `deploy.sh` exits 0 on a busy lock (a silently
+  skipped deploy). The host `/tmp` is mounted read-only at `/host-tmp` so the lock
+  is visible; without that mount the probe degrades to the signal below.
+- **Very-recent container creation**, read from the docker socket. `Created` (not
+  started) is the discriminating field: a crash-looping container restarts without
+  being recreated, so a genuine outage never reads as a deploy. The grace window is
+  one watchdog interval.
+
+Then:
+
+| Situation | Behaviour |
+| --- | --- |
+| deploy in flight | the three findings are skipped for this pass (logged with the reason) |
+| no deploy, first observation | recorded in a small state file, **not** paged — a swap window that just ended cannot page either |
+| no deploy, second consecutive observation | **paged**, exactly as before |
+| any other finding | paged immediately, deploy or not |
+
+No blanket time-based mute, and the findings are never silenced outright: a worker
+down over two clean passes still reaches the owner. A green pass resets the count,
+and a deploy pass is not a strike. If the deploy probe itself errors it reports "no
+deploy", so a broken probe fails toward alerting rather than toward silence.
 
 ### What it does — and does not — survive
 
@@ -602,6 +642,9 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY` | `15` | seconds between those retries |
 | `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
+| `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
+| `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
+| `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
 
 It needs `python3` in the image for the richest DM body (baked into the image);
 without it the DM degrades to a generic "red findings" body.

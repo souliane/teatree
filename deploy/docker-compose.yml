@@ -229,6 +229,10 @@ services:
     environment:
       TEATREE_ROLE: watchdog
       TEATREE_WATCHDOG_INTERVAL: "300"
+      # Where deploy.sh's single-convergence flock lands inside THIS container — the
+      # deploy-in-flight probe that keeps a rolling deploy from paging as an outage
+      # (#3732). The host path is /tmp/teatree-deploy.lock; see the /host-tmp mount.
+      TEATREE_WATCHDOG_DEPLOY_LOCK: /host-tmp/teatree-deploy.lock
       # The watchdog role execs watchdog.sh before the entrypoint's TMPDIR export
       # and runs no agents, so it never writes scratch to this root — but #3641's
       # contract is that EVERY service declares the output root explicitly, so the
@@ -246,6 +250,17 @@ services:
       - type: bind
         source: /home/teatree/teatree-deploy
         target: /home/teatree/teatree-deploy
+        read_only: true
+      # The host temp root, READ-ONLY, at a DISTINCT target so the container's own
+      # /tmp is untouched. The only thing read from it is deploy.sh's convergence
+      # flock, whose inode the deploy-in-flight probe matches against /proc/locks
+      # (#3732). The DIRECTORY is the mount source, never the lock file: a missing
+      # file source would have dockerd create a host DIRECTORY at that path, and
+      # deploy.sh's `exec 9>` on a directory fails — killing every later deploy.
+      # Without this mount the probe degrades to the container-recreation signal.
+      - type: bind
+        source: /tmp
+        target: /host-tmp
         read_only: true
     # NO depends_on — it must start even when init crash-loops (the whole point).
     # restart: always (NOT unless-stopped) — it must resurrect even after a manual
