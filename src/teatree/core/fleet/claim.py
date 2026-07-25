@@ -30,19 +30,25 @@ only :mod:`teatree.utils.run` (the sanctioned subprocess boundary),
 :func:`teatree.instance_id.instance_id`, and the stdlib — so a claim race can be
 exercised by real subprocesses without booting Django.
 
-Known, deferred: each ``acquire``/``heartbeat``/``steal`` writes one throwaway
-loose commit object (empty tree, nonce message) into the pushing repo's object DB.
-Over a long-lived clone these accumulate; a periodic ``git gc`` / ``git prune`` on
-the claim repo reclaims them. Pruning is not wired here — it is a follow-up.
+Zero footprint: every object git writes for a claim operation — the throwaway
+claim commit, and the rival commit an expiry probe fetches to read its metadata —
+is routed into an EPHEMERAL object directory (:func:`_ephemeral_odb`) that is
+deleted when the operation ends. The remote ref is the claim's only durable home,
+so nothing local is needed after the push, and the clone teatree pushes from stays
+byte-identical. There is therefore nothing to prune, and no pruning pass that could
+drop a live claim.
 """
 
 import contextlib
 import hashlib
 import json
 import re
+import tempfile
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TypedDict, cast
 
 from teatree.instance_id import instance_id
@@ -50,7 +56,6 @@ from teatree.utils.git_run import git_env_without_overrides
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
 
 _REF_PREFIX = "refs/teatree/claims"
-_PROBE_PREFIX = "refs/teatree/_probe"
 
 
 class ClaimMeta(TypedDict):
@@ -165,8 +170,10 @@ def acquire(
     ref = claim_ref(work_key)
     ts = _resolve_now(now)
     inst = instance_id()
-    sha = _write_claim_commit(repo, _meta(work_key, inst, ts, ttl_seconds))
-    if _try_create(repo, remote, sha, ref):
+    with _ephemeral_odb(repo, remote) as scope:
+        sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
+        created = _try_create(scope, sha, ref)
+    if created:
         return Claim(work_key=work_key, ref=ref, sha=sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
     # The create failed. A present ref means a rival holds it (a normal loss);
     # an absent ref means the push failed for an infra/permission reason.
@@ -200,8 +207,10 @@ def steal_if_expired(
     if not _is_expired(meta, ts):
         return None
     inst = instance_id()
-    new_sha = _write_claim_commit(repo, _meta(work_key, inst, ts, ttl_seconds))
-    if _cas(repo, remote, ref, old_sha=current_sha, new_sha=new_sha):
+    with _ephemeral_odb(repo, remote) as scope:
+        new_sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
+        won = _cas(scope, ref, old_sha=current_sha, new_sha=new_sha)
+    if won:
         return Claim(work_key=work_key, ref=ref, sha=new_sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
     return None
 
@@ -216,8 +225,10 @@ def heartbeat(claim: Claim, *, repo: str = ".", remote: str = "origin", now: flo
     clobber a rival's steal.
     """
     ts = _resolve_now(now)
-    new_sha = _write_claim_commit(repo, _meta(claim.work_key, claim.instance_id, ts, claim.ttl_seconds))
-    if _cas(repo, remote, claim.ref, old_sha=claim.sha, new_sha=new_sha):
+    with _ephemeral_odb(repo, remote) as scope:
+        new_sha = _write_claim_commit(scope, _meta(claim.work_key, claim.instance_id, ts, claim.ttl_seconds))
+        landed = _cas(scope, claim.ref, old_sha=claim.sha, new_sha=new_sha)
+    if landed:
         return replace(claim, sha=new_sha, claimed_at=ts)
     return ClaimLost(
         work_key=claim.work_key,
@@ -269,41 +280,75 @@ def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float) -> Cl
     }
 
 
-def _git(repo: str, args: tuple[str, ...] | list[str]) -> CompletedProcess[str]:
+def _git(repo: str, args: tuple[str, ...] | list[str], *, env: dict[str, str] | None = None) -> CompletedProcess[str]:
     # Every remote/read op tolerates a non-zero exit (the caller inspects the
     # returncode); the local claim-commit writes use run_checked directly.
-    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=git_env_without_overrides())
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env or git_env_without_overrides())
 
 
-def _empty_tree(repo: str) -> str:
-    return run_checked(["git", "-C", repo, "mktree"], stdin_text="", env=git_env_without_overrides()).stdout.strip()
+def _objects_dir(repo: str) -> str:
+    result = _git(repo, ["rev-parse", "--git-path", "objects"])
+    if result.returncode != 0:
+        msg = f"cannot resolve the object directory of {repo} (not a git repo?)"
+        raise FleetClaimUnavailableError(msg)
+    # ``-C repo`` makes git's relative answer relative to *repo*; an absolute
+    # answer (worktree, GIT_DIR-style layout) wins the join on its own.
+    return str(Path(repo) / result.stdout.strip())
 
 
-def _write_claim_commit(repo: str, meta: ClaimMeta) -> str:
-    # LOCAL object-DB writes (mktree + commit-tree). Per the module contract any
-    # inability to build a claim commit surfaces as FleetClaimUnavailableError
-    # (never a bare CommandFailedError), so the wire's fail-safe catch handles a
-    # corrupt local repo uniformly with the remote-unreachable case.
+@dataclass(frozen=True, slots=True)
+class _Scope:
+    """One claim operation's clone, remote, and ephemeral-object-dir git env."""
+
+    repo: str
+    remote: str
+    env: dict[str, str]
+
+
+@contextlib.contextmanager
+def _ephemeral_odb(repo: str, remote: str) -> Iterator[_Scope]:
+    """A scope routing every object git WRITES during one claim op into a throwaway dir.
+
+    The clone's real object DB is attached as a read-only alternate — push and
+    fetch negotiation walk local refs, which resolve only through it — so the
+    scope reads everything the clone has and contributes nothing back to it.
+    """
+    env = git_env_without_overrides()
+    alternate = _objects_dir(repo)
+    with tempfile.TemporaryDirectory(prefix="t3-claim-odb-") as scratch:
+        overrides = {"GIT_OBJECT_DIRECTORY": scratch, "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternate}
+        yield _Scope(repo=repo, remote=remote, env=env | overrides)
+
+
+def _empty_tree(scope: _Scope) -> str:
+    return run_checked(["git", "-C", scope.repo, "mktree"], stdin_text="", env=scope.env).stdout.strip()
+
+
+def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
+    # mktree + commit-tree, written into the scope's ephemeral object dir. Per the
+    # module contract any inability to build a claim commit surfaces as
+    # FleetClaimUnavailableError (never a bare CommandFailedError), so the wire's
+    # fail-safe catch handles a corrupt local repo uniformly with remote-unreachable.
     message = json.dumps(meta, sort_keys=True)
     try:
-        args = ["git", "-C", repo, *_CLAIM_IDENTITY, "commit-tree", _empty_tree(repo), "-m", message]
-        return run_checked(args, env=git_env_without_overrides()).stdout.strip()
+        args = ["git", "-C", scope.repo, *_CLAIM_IDENTITY, "commit-tree", _empty_tree(scope), "-m", message]
+        return run_checked(args, env=scope.env).stdout.strip()
     except CommandFailedError as exc:
-        msg = f"cannot write the claim commit in {repo} (local git failure)"
+        msg = f"cannot write the claim commit in {scope.repo} (local git failure)"
         raise FleetClaimUnavailableError(msg) from exc
 
 
-def _try_create(repo: str, remote: str, sha: str, ref: str) -> bool:
+def _try_create(scope: _Scope, sha: str, ref: str) -> bool:
     # Assumes each claim commit is unique (the nonce in _meta): so an existing ref
     # is never a fast-forward of this fresh commit, and a plain push succeeds ONLY
     # as a create — an idempotent "already there" success (two claimants, one sha)
     # cannot occur.
-    return _git(repo, ["push", remote, f"{sha}:{ref}"]).returncode == 0
+    return _git(scope.repo, ["push", scope.remote, f"{sha}:{ref}"], env=scope.env).returncode == 0
 
 
-def _cas(repo: str, remote: str, ref: str, *, old_sha: str, new_sha: str) -> bool:
-    args = ["push", f"--force-with-lease={ref}:{old_sha}", remote, f"{new_sha}:{ref}"]
-    return _git(repo, args).returncode == 0
+def _cas(scope: _Scope, ref: str, *, old_sha: str, new_sha: str) -> bool:
+    args = ["push", f"--force-with-lease={ref}:{old_sha}", scope.remote, f"{new_sha}:{ref}"]
+    return _git(scope.repo, args, env=scope.env).returncode == 0
 
 
 def _cas_delete(repo: str, remote: str, ref: str, *, old_sha: str) -> bool:
@@ -323,22 +368,23 @@ def _ls_remote_sha(repo: str, remote: str, ref: str) -> str:
 def _fetch_claim(repo: str, remote: str, ref: str) -> tuple[str, ClaimMeta | None] | None:
     """Return the ref's current ``(sha, metadata)`` or ``None`` when absent.
 
-    Fetches the claim commit locally so its message (the metadata) is readable;
-    the returned sha is the just-fetched tip, so a steal CASes against exactly
-    the value whose metadata drove the expiry decision.
+    The commit is fetched into an ephemeral object dir with no destination
+    refspec and no ``FETCH_HEAD``, so reading a rival's metadata mutates neither
+    the clone's object DB nor its ref store. The sha is the one ``ls-remote``
+    reported, so a steal CASes against exactly the value whose metadata drove the
+    expiry decision; a ref that moved under us leaves that sha unfetched, the read
+    fails, and the steal is skipped this round (fail-safe).
     """
-    if not _ls_remote_sha(repo, remote, ref):
+    tip = _ls_remote_sha(repo, remote, ref)
+    if not tip:
         return None
-    probe = f"{_PROBE_PREFIX}/{uuid.uuid4().hex}"
-    if _git(repo, ["fetch", "--quiet", remote, f"+{ref}:{probe}"]).returncode != 0:
-        msg = f"fetch {ref} failed (remote unreachable)"
-        raise FleetClaimUnavailableError(msg)
-    try:
-        tip = _git(repo, ["rev-parse", probe]).stdout.strip()
-        body = _git(repo, ["log", "-1", "--format=%B", probe]).stdout
-    finally:
-        _git(repo, ["update-ref", "-d", probe])
-    return tip, _parse_meta(body)
+    with _ephemeral_odb(repo, remote) as scope:
+        fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", remote, ref]
+        if _git(repo, fetch, env=scope.env).returncode != 0:
+            msg = f"fetch {ref} failed (remote unreachable)"
+            raise FleetClaimUnavailableError(msg)
+        read = _git(repo, ["log", "-1", "--format=%B", tip], env=scope.env)
+    return (tip, _parse_meta(read.stdout)) if read.returncode == 0 else None
 
 
 def _parse_meta(body: str) -> ClaimMeta | None:

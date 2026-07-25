@@ -133,10 +133,10 @@ class TestErrorPaths:
         fleet_claim.acquire(_KEY, repo=str(client), remote="origin", ttl_seconds=10.0, now=1000.0)
         real_git = fleet_claim._git
 
-        def fail_fetch(repo, args):
-            if args and args[0] == "fetch":
+        def fail_fetch(repo, args, *, env=None):
+            if "fetch" in args:
                 return real_git(repo, ["ls-remote", "does-not-exist"])  # non-zero exit
-            return real_git(repo, args)
+            return real_git(repo, args, env=env)
 
         monkeypatch.setattr(fleet_claim, "_git", fail_fetch)
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
