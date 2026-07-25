@@ -2074,8 +2074,11 @@ Usage: t3 eval set-baseline [OPTIONS]
  For each scenario in *from_matrix* that is still discovered, picks the
  cheapest tier whose cell passed (not skipped, not errored). A scenario
  failing every tier is skipped with a warning — never guessed. A scenario in
- the matrix that is no longer discovered (renamed/removed) is pruned. Output
- is deterministic: scenario keys sorted, ``frontier_ok`` sorted.
+ the matrix that is no longer discovered (renamed/removed) is pruned. A
+ column naming a model outside the shipped tier models is warned about and
+ dropped, so a matrix from before a tier bump still yields the pins its
+ current columns prove. Output is deterministic: scenario keys sorted,
+ ``frontier_ok`` sorted.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --from                  PATH  Matrix JSON to derive the baseline from —   │
