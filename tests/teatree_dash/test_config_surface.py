@@ -9,7 +9,9 @@ from teatree.config.agent_spawn import AgentConfig
 from teatree.core.config_self_repair import ConfigRepair
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.dash.config_surface import (
+    MASKED,
     CredentialEntry,
+    _band_row,
     _pass_entry_resolves,
     _self_repair_rows,
     build_config_view,
@@ -58,6 +60,21 @@ class TestCredentialEntry:
     def test_a_public_setting_keeps_its_entry_name(self) -> None:
         entry = CredentialEntry.mask_if_private("openai_compatible_credential_entry", "router/key")
         assert entry.entry_name == "router/key"
+
+
+class TestBandRowMasksSecretValues:
+    """A band value obeys the shared secret taxonomy — never leaks a secret's value."""
+
+    def test_a_personal_identifier_value_is_masked(self) -> None:
+        # slack_user_id is a personal identifier (NOT in SECRET_SETTINGS). Were it ever to
+        # land in a value band, its value must be masked — the same policy the settings
+        # editor applies. This is the cluster-9 drift: the config surface used to render it.
+        row = _band_row("slack_user_id", "U-OWNER-SECRET")
+        assert row.value == MASKED
+        assert "U-OWNER-SECRET" not in row.value
+
+    def test_an_ordinary_dial_value_renders(self) -> None:
+        assert _band_row("boost_concurrency", 4).value == "4"
 
 
 class TestBuildConfigView(TestCase):

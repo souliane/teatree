@@ -6,23 +6,8 @@ from django.test import TestCase
 
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.core.models import ConfigSetting
-from teatree.dash.settings_editor import MASKED, build_settings_editor, export_text, import_preview, is_secret_setting
-
-
-class TestIsSecretSetting:
-    def test_secret_category_and_denylist_keys_are_secret(self) -> None:
-        assert is_secret_setting("banned_terms") is True  # Category.SECRET + SECRET_SETTINGS
-        assert is_secret_setting("github_token_pass_key") is True  # credential coordinate
-        assert is_secret_setting("slack_user_id") is True  # personal identifier
-
-    def test_an_ordinary_dial_is_not_secret(self) -> None:
-        assert is_secret_setting("mode") is False
-        assert is_secret_setting("issue_implementer_enabled") is False
-
-    def test_an_unknown_non_schema_key_is_not_secret(self) -> None:
-        # A key that is neither a secret/personal/credential coordinate NOR a model field
-        # (a stale or bogus key) is safely reported non-secret, never a KeyError.
-        assert is_secret_setting("a_removed_or_unknown_key") is False
+from teatree.dash.config_display import MASKED
+from teatree.dash.settings_editor import build_settings_editor, export_text, import_preview
 
 
 class TestBuildSettingsEditor(TestCase):
@@ -43,6 +28,15 @@ class TestBuildSettingsEditor(TestCase):
     def test_a_secret_default_is_also_masked(self) -> None:
         # No override — the secret still renders MASKED, never its (empty) default.
         assert self._row("banned_terms").value == MASKED
+
+    def test_a_personal_identifier_not_on_the_denylist_is_masked(self) -> None:
+        # slack_user_id is a personal identifier (NOT in SECRET_SETTINGS) — the exact
+        # drift class: masked here, and now masked on the config surface too (cluster 9).
+        ConfigSetting.objects.set_value("slack_user_id", "U-OWNER-SECRET")
+        row = self._row("slack_user_id")
+        assert row.is_secret is True
+        assert row.value == MASKED
+        assert "U-OWNER-SECRET" not in row.value
 
     def test_a_non_secret_override_shows_its_value(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")

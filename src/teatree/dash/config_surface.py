@@ -8,10 +8,12 @@ than introducing a second source of truth: the effective values come from
 :func:`~teatree.config.get_effective_settings` and
 :func:`~teatree.config.agent_spawn.resolve_agent_config`.
 
-**A secret value is never rendered.** A credential row carries the ``pass`` entry
-NAME and whether it resolves — never the token. An entry name that is itself
-private (a key in :data:`~teatree.config.secret_settings.SECRET_SETTINGS`, whose
-value can carry an internal namespace) is masked too, so the page answers "which
+**A secret value is never rendered.** A band row's value is masked whenever the setting
+is secret under the shared :func:`~teatree.dash.config_display.is_secret` taxonomy — the
+SAME policy the settings editor applies, so the two pages never diverge. A credential row
+carries the ``pass`` entry NAME and whether it resolves — never the token; an entry name
+that is itself private (a key in :data:`~teatree.config.secret_settings.SECRET_SETTINGS`,
+whose value can carry an internal namespace) is masked too, so the page answers "which
 account, and does it work" without becoming a secret surface.
 """
 
@@ -25,11 +27,12 @@ from teatree.config.agent_spawn import resolve_agent_config
 from teatree.config.secret_settings import SECRET_SETTINGS, is_credential_reference
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.models import Task
+from teatree.dash.config_display import is_secret, render_value
 from teatree.utils.secrets import read_pass
 
 logger = logging.getLogger(__name__)
 
-#: Redaction shown in place of a private entry name.
+#: Redaction shown in place of a private entry name OR a secret setting's value.
 MASKED = "<private>"
 
 #: How many self-repairs the band lists, newest first.
@@ -81,7 +84,13 @@ class CredentialEntry:
 
     @classmethod
     def mask_if_private(cls, setting: str, entry_name: str) -> "CredentialEntry":
-        """Build the row, masking the entry name when the SETTING is itself private."""
+        """Build the row, masking the entry NAME when the SETTING is itself private.
+
+        Keyed on ``SECRET_SETTINGS`` membership — NOT the shared ``is_secret`` value-masking
+        taxonomy. Every setting reaching here is a credential coordinate, so ``is_secret``
+        would be true for all of them and hide every account name, defeating the band. This
+        narrower rule masks only names that can carry an internal namespace.
+        """
         shown = MASKED if setting in SECRET_SETTINGS else entry_name
         return cls(setting=setting, entry_name=shown, resolves=_pass_entry_resolves(entry_name))
 
@@ -148,8 +157,13 @@ def _settings_bands() -> _Bands:
         if band == "credentials":
             bands.credentials.extend(_credential_entries(spec.name, value))
             continue
-        getattr(bands, band).append(SettingRow(name=spec.name, value=_render(value)))
+        getattr(bands, band).append(_band_row(spec.name, value))
     return bands
+
+
+def _band_row(name: str, value: object) -> SettingRow:
+    """A band row — the value MASKED when the setting is secret (same policy as the editor)."""
+    return SettingRow(name=name, value=MASKED if is_secret(name) else render_value(value))
 
 
 def _credential_entries(setting: str, value: object) -> list[CredentialEntry]:
@@ -166,9 +180,9 @@ def _model_rows() -> list[SettingRow]:
     """The agent lane's model / reasoning-effort pins."""
     agent = resolve_agent_config()
     rows = [
-        SettingRow(name="session_model", value=_render(agent.session_model)),
-        SettingRow(name="session_effort", value=_render(agent.session_effort)),
-        SettingRow(name="honesty_model", value=_render(agent.honesty_model)),
+        SettingRow(name="session_model", value=render_value(agent.session_model)),
+        SettingRow(name="session_effort", value=render_value(agent.session_effort)),
+        SettingRow(name="honesty_model", value=render_value(agent.honesty_model)),
     ]
     rows.extend(
         SettingRow(name=f"tier_model[{tier}]", value=model) for tier, model in sorted(agent.tier_models.items())
@@ -210,15 +224,6 @@ def _pass_entry_resolves(entry_name: str) -> bool:
     except Exception:
         logger.warning("pass probe for a configured credential entry failed", exc_info=True)
         return False
-
-
-def _render(value: object) -> str:
-    """A setting's effective value as display text — booleans as on/off, absence as a dash."""
-    if isinstance(value, bool):
-        return "on" if value else "off"
-    if value is None or (isinstance(value, str) and not value):
-        return "—"
-    return str(value)
 
 
 __all__ = ["ConfigView", "CredentialEntry", "SelfRepairRow", "SettingRow", "build_config_view", "classify_setting_band"]
