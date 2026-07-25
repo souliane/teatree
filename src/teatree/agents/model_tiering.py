@@ -30,9 +30,9 @@ spawns emit no effort and inherit the SDK default.
 
 **Harness-scoped model + effort ([#2885](https://github.com/souliane/teatree/issues/2885)).**
 :data:`TIER_MODELS` is the ``claude_sdk`` catalog — Claude ids in DASH-form
-(``claude-opus-4-8``). The ``pydantic_ai`` harness's OpenAI-compatible provider does
+(``claude-opus-5``). The ``pydantic_ai`` harness's OpenAI-compatible provider does
 NOT carry those dash-form ids (those serve provider-prefixed ids —
-``anthropic/claude-opus-4.8``, the open-source pool, and named router handles), so its
+``anthropic/claude-opus-5``, the open-source pool, and named router handles), so its
 catalog is the SEPARATE :data:`PYDANTIC_AI_TIER_MODELS` (all tiers collapsing to
 one router handle; the router's own bandit does the mundane-vs-hard tiering).
 :func:`resolve_pydantic_ai_model` is the boundary that normalises a resolved
@@ -76,7 +76,7 @@ from teatree.core.cost import FAMILY_TO_TIER, PRICE_TABLE, tier_of_model, tier_r
 # (merged OVER this default), so adopting a new model is one edit here or one
 # DB row — no scenario, test, or dispatch edit.
 TIER_MODELS: dict[str, str] = {
-    "frontier": "claude-opus-4-8",
+    "frontier": "claude-opus-5",
     "balanced": "claude-sonnet-5",
     "cheap": "claude-haiku-4-5",
 }
@@ -84,7 +84,7 @@ TIER_MODELS: dict[str, str] = {
 # The ``pydantic_ai`` parallel of :data:`TIER_MODELS`. The ``claude_sdk`` harness
 # serves the Claude dash-form ids above; the ``pydantic_ai`` harness serves an
 # OpenAI-compatible provider's PROVIDER-PREFIXED catalog, so its tier map is
-# SEPARATE — :data:`TIER_MODELS`'s dash-form ids (``claude-opus-4-8``) do not exist
+# SEPARATE — :data:`TIER_MODELS`'s dash-form ids (``claude-opus-5``) do not exist
 # there, so trusting them here would send an unresolvable id. This shipped default
 # is EMPTY: teatree carries no opinion about a third party's catalog. The operator
 # supplies the id through the generic ``openai_compatible_model`` setting (the
@@ -310,9 +310,9 @@ def resolve_pydantic_ai_model(model_name: str | None, *, configured_model: str |
     """Normalise a resolved model id for the ``pydantic_ai`` (OpenAI-compatible) harness.
 
     THE dash-form id normalisation. teatree's abstract tiers resolve (via
-    :data:`TIER_MODELS`) to Claude ids in DASH-form (``claude-opus-4-8``) that an
+    :data:`TIER_MODELS`) to Claude ids in DASH-form (``claude-opus-5``) that an
     OpenAI-compatible provider's catalog does NOT carry — those serve
-    PROVIDER-PREFIXED ids (``anthropic/claude-opus-4.8``, ``vendor/some-model``). So a
+    PROVIDER-PREFIXED ids (``anthropic/claude-opus-5``, ``vendor/some-model``). So a
     teatree-native id (no provider ``/`` prefix — the :data:`TIER_MODELS` default
     form, or ``None``) is normalised UP to the configured id for its abstract tier
     (:func:`_resolve_pydantic_ai_tier`). An explicit provider-native pin (ANY
@@ -496,7 +496,7 @@ def model_supports_thinking(model: str | None) -> bool:
     """Whether *model* accepts an explicit adaptive-thinking pin — fail-SAFE.
 
     Production spawns set ``thinking={"type": "adaptive"}`` EXPLICITLY so the
-    Opus-4.8 reasoning phases deterministically think — Opus 4.8 runs WITHOUT
+    frontier Opus reasoning phases deterministically think — Opus runs WITHOUT
     thinking when the option is omitted (unlike Sonnet 5, which defaults to
     adaptive). The cheap/Haiku tier rejects the ``thinking`` / ``effort`` levers,
     so this GUARD returns ``False`` for a Haiku model (matched on the tier via
