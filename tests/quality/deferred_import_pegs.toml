@@ -148,7 +148,7 @@
 # so the CLI-build-time caller resolves it only when Django is up (#3355).
 "src/teatree/core/overlay_skills.py" = 1
 "src/teatree/core/overlay_url.py" = 1
-"src/teatree/core/reference_linkifier.py" = 4
+"src/teatree/core/reference_linkifier.py" = 5
 "src/teatree/core/reply_transport.py" = 1
 # fleet-safety Stage 2: execute_ship re-verifies the fleet-claim fence immediately
 # before BOTH outward writes via a deferred `from teatree.core.fleet import wire`.
