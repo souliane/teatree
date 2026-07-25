@@ -5,7 +5,6 @@ from teatree.core.backend_protocols import (
     CIService,
     CodeHostBackend,
     ForgeMergeResult,
-    MessageSpec,
     MessagingBackend,
     PrMergeState,
     PrOpenState,
@@ -332,8 +331,3 @@ def test_non_conforming_class_is_not_messaging_backend() -> None:
         pass
 
     assert not isinstance(NotAMessaging(), MessagingBackend)
-
-
-def test_message_spec_default_thread_ts() -> None:
-    spec = MessageSpec(channel="C123", text="hello")
-    assert spec.thread_ts == ""

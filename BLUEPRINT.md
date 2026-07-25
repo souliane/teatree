@@ -406,7 +406,7 @@ Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.b
 | `CIService` — pipeline cancel/trigger/quality-check | `GitLabCIService` |
 | `MessagingBackend` — mentions/DMs/post/reply/react | `SlackBotBackend`, `NoopMessagingBackend` |
 
-Request parameters are grouped into frozen `slots=True` dataclasses (`PullRequestSpec`, `MessageSpec`). `repo + pr_iid` is the natural unit on both code hosts — protocol methods never accept free-form PR URLs.
+Multi-field request parameters are grouped into frozen `slots=True` dataclasses (`PullRequestSpec`). `repo + pr_iid` is the natural unit on both code hosts — protocol methods never accept free-form PR URLs.
 
 **Selection.** Per-overlay configuration (the DB `overlays` registry row) declares `code_host = "github" | "gitlab"` and `messaging_backend = "slack" | "noop"`. The loader (`backends/loader.py`) resolves the overlay's selected backend with no platform branches in caller code, cached `lru_cache(maxsize=1)` per overlay identity.
 

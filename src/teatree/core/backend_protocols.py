@@ -78,15 +78,6 @@ class PullRequestSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageSpec:
-    """Fields for an outgoing chat message."""
-
-    channel: str
-    text: str
-    thread_ts: str = ""
-
-
-@dataclass(frozen=True, slots=True)
 class PrMergeState:
     """The PR/MR's merge state from the forge — used for the §928 reconciliation.
 

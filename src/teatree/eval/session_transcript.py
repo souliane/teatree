@@ -11,8 +11,7 @@ Every line is one JSON envelope keyed by ``type``:
 
 ``assistant`` carries ``message.content[]`` blocks (``thinking`` / ``text`` /
 ``tool_use``); a ``tool_use`` block carries ``name``, ``input``, ``id`` and a
-``caller`` object. A ``Skill`` tool call carries ``input.skill`` (e.g.
-``t3:code``).
+``caller`` object.
 
 ``user`` carries ``message.content`` as a str (a real prompt) or a list of
 ``tool_result`` blocks.
@@ -61,11 +60,11 @@ class SessionEvent:
     """One ordered event from an on-disk session JSONL line.
 
     A single dataclass spans the three envelope kinds. ``tool_name`` /
-    ``tool_input`` / ``skill`` are populated only for an ``assistant``
-    ``tool_use`` block; ``hook_event`` / ``hook_exit_code`` / ``tool_use_id`` /
-    ``gate_id`` only for a hook ``attachment`` (``gate_id`` only on a deny that
-    stamped the marker). ``raw`` keeps the parsed line so a caller can reach a
-    field this dataclass does not surface.
+    ``tool_input`` are populated only for an ``assistant`` ``tool_use`` block;
+    ``hook_event`` / ``hook_exit_code`` / ``tool_use_id`` / ``gate_id`` only for
+    a hook ``attachment`` (``gate_id`` only on a deny that stamped the marker).
+    ``raw`` keeps the parsed line so a caller can reach a field this dataclass
+    does not surface.
     """
 
     line_no: int
@@ -74,7 +73,6 @@ class SessionEvent:
     timestamp: str | None
     tool_name: str | None
     tool_input: dict[str, Any] | None
-    skill: str | None
     hook_event: str | None
     hook_exit_code: int | None
     tool_use_id: str | None
@@ -152,7 +150,6 @@ def _event_from_envelope(line_no: int, obj: dict[str, Any]) -> SessionEvent:
         timestamp=_str_or_none(obj.get("timestamp")),
         tool_name=None,
         tool_input=None,
-        skill=None,
         hook_event=hook_event,
         hook_exit_code=exit_code,
         tool_use_id=tool_use_id,
@@ -167,13 +164,11 @@ def _tool_use_event(line_no: int, envelope: SessionEvent, block: dict[str, Any])
         return None
     tool_input = block.get("input")
     tool_input = dict(tool_input) if isinstance(tool_input, dict) else {}
-    skill = _str_or_none(tool_input.get("skill")) if name == "Skill" else None
     return dataclasses.replace(
         envelope,
         line_no=line_no,
         tool_name=name,
         tool_input=tool_input,
-        skill=skill,
         tool_use_id=_str_or_none(block.get("id")),
     )
 
@@ -220,11 +215,6 @@ def parse_session_jsonl(text: str) -> list[SessionEvent]:
 def extract_tool_calls(events: list[SessionEvent]) -> list[SessionEvent]:
     """Return only the events that carry a tool invocation (``tool_name`` set)."""
     return [event for event in events if event.tool_name is not None]
-
-
-def extract_skill_invocations(events: list[SessionEvent]) -> list[SessionEvent]:
-    """Return only the ``Skill`` tool calls (``skill`` set)."""
-    return [event for event in events if event.skill is not None]
 
 
 def extract_hook_events(events: list[SessionEvent]) -> list[SessionEvent]:
