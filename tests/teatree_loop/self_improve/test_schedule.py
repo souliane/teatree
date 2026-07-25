@@ -18,7 +18,7 @@ from teatree.loop.self_improve import (
     record_firing,
     run_tier,
 )
-from teatree.loop.self_improve.schedule import detectors_for_tier
+from teatree.loop.self_improve.schedule import detectors_for_tier, require_implemented_tier
 
 
 @dataclass(slots=True)
@@ -76,6 +76,12 @@ class SchedulerMetaTests(TestCase):
             assert tier in message
             assert "no detectors" in message
             assert "forgotten_merge" in message
+
+    def test_require_implemented_tier_is_the_shared_refusal_seam(self) -> None:
+        assert require_implemented_tier(Tier.CHEAP) is None
+        assert require_implemented_tier(Tier.ALL) is None
+        with pytest.raises(UnimplementedTierError):
+            require_implemented_tier(Tier.MEDIUM)
 
     def test_unknown_tier_is_refused_not_silently_empty(self) -> None:
         with pytest.raises(UnimplementedTierError) as exc:
