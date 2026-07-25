@@ -50,7 +50,7 @@ class MatrixRow:
     #: not match the clean identity and would bias the fit.
     terminal_reason: str = ""
     #: This cell's metered cost split into the requested MAIN model vs the
-    #: AUXILIARY background (Claude Code's ``claude-haiku-4-5``), summed across
+    #: AUXILIARY background (Claude Code's Haiku model), summed across
     #: trials. ``0.0`` for a non-metered/errored/skipped cell. The benchmark
     #: surfaces the main cost as the headline comparison and the aux separately.
     main_cost_usd: float = 0.0

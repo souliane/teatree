@@ -51,7 +51,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         "--models",
         help=(
             "Comma-separated model@effort variants to compare, e.g. "
-            "claude-opus-4-8@xhigh,claude-sonnet-5@medium (a plain model name = default effort). "
+            "opus@xhigh,sonnet@medium (a family alias or a concrete id; a plain model name = default effort). "
             "Exactly one of --models/--presets is required."
         ),
     ),

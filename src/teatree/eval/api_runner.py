@@ -48,6 +48,7 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
 from teatree.agents import permission_modes
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
@@ -110,7 +111,9 @@ WATCHDOG_SECONDS = resolve_watchdog_seconds()
 #: thread a generous cap so a finishing scenario is measured, not truncated. See
 #: :data:`CleanRoomConfig.max_budget_usd` and ``METERED_DEFAULT_BUDGET_USD``.
 MAX_BUDGET_USD = "0.10"
-FALLBACK_MODEL = "claude-sonnet-5"
+#: The capacity-exhaustion fallback for an eval spawn — the conservative mid
+#: tier, DERIVED from the tier catalog so a generation bump carries it.
+FALLBACK_MODEL = TIER_MODELS[DEFAULT_TIER]
 EMPTY_SETTINGS = '{"hooks":{}}'
 
 #: Local-plugin path (relative to the teatree repo root) for the eval-only

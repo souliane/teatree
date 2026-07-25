@@ -131,7 +131,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model. "
             "Each entry may carry a reasoning-effort variant as model@effort (e.g. "
-            "claude-opus-4-8@xhigh) — the tag is the column/ledger identity."
+            "opus@xhigh) — the tag is the column/ledger identity."
         ),
     ),
     persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.

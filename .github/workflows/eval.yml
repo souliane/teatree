@@ -146,7 +146,7 @@ on:
         default: "api"
         type: string
       model:
-        description: "Force every scenario onto this one model id, overriding per-scenario tiers (e.g. claude-opus-4-8 for a full-Opus run). Single-trial: trials is ignored when set. Empty = per-scenario tier (mostly Sonnet)."
+        description: "Force every scenario onto this one model id or family alias, overriding per-scenario tiers (e.g. opus for a full-Opus run). Single-trial: trials is ignored when set. Empty = per-scenario tier (mostly the balanced tier)."
         required: false
         default: ""
         type: string

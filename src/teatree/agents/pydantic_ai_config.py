@@ -155,7 +155,7 @@ def native_anthropic_model_name(options: HarnessOptions) -> str:
 
     An explicit ``options.model`` passes through unchanged (a Claude dash-form id is a valid
     Anthropic Messages-API model). An UNPINNED dispatch falls back to the default tier's
-    CONCRETE Claude id (:func:`resolve_tier`, e.g. ``claude-sonnet-5``).
+    CONCRETE Claude id (:func:`resolve_tier` — the ``balanced`` tier's catalog entry).
 
     Critically it must NOT go through :func:`~teatree.agents.model_tiering.resolve_pydantic_ai_model`,
     which normalises an unpinned id UP to the configured OpenAI-compatible model id. That id is

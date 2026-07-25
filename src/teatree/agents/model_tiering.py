@@ -7,11 +7,14 @@ catalog — see the harness-scoped note below). Production phase dispatch and th
 eval scenarios reference an abstract TIER (``frontier`` / ``balanced`` /
 ``cheap``), never a concrete model id, so adopting a new model for a live spawn
 is one edit to :data:`TIER_MODELS` (or one ``agent_tier_models`` DB row), with
-zero scenario or dispatch edits. This is NOT the whole story for a generation
-bump: the eval LANE keeps its own concrete pins (``eval/transcript.py``,
-``eval/loader.py``, ``eval/models.py``, ``eval/api_runner.py``) that a bump also
-touches — see the allowlist in ``tests/quality/test_no_hardcoded_model_ids.py``
-for the full set of legitimate id homes.
+zero scenario or dispatch edits. The eval LANE follows the same catalog rather
+than keeping its own pins: its family aliases come from
+:func:`teatree.agents.model_aliases.family_alias_models`, and its judge / capacity-fallback defaults
+(``eval/loader.py``, ``eval/models.py``, ``eval/api_runner.py``) index
+``TIER_MODELS[DEFAULT_TIER]`` — so a bump can never leave the lane REQUESTING one
+generation while the transcript REPORTS another. See the allowlist in
+``tests/quality/test_no_hardcoded_model_ids.py`` for the remaining legitimate
+(non-dispatch) id homes.
 
 The three tiers map to the price points #562 reasons about: ``frontier`` is the
 full-reasoning tier (genuine design work), ``balanced`` the mid tier, ``cheap``
@@ -30,9 +33,9 @@ spawns emit no effort and inherit the SDK default.
 
 **Harness-scoped model + effort ([#2885](https://github.com/souliane/teatree/issues/2885)).**
 :data:`TIER_MODELS` is the ``claude_sdk`` catalog — Claude ids in DASH-form
-(``claude-opus-5``). The ``pydantic_ai`` harness's OpenAI-compatible provider does
-NOT carry those dash-form ids (those serve provider-prefixed ids —
-``anthropic/claude-opus-5``, the open-source pool, and named router handles), so its
+(``claude-<family>-<version>``). The ``pydantic_ai`` harness's OpenAI-compatible
+provider does NOT carry those dash-form ids (those serve provider-prefixed ids —
+``anthropic/<dotted-id>``, the open-source pool, and named router handles), so its
 catalog is the SEPARATE :data:`PYDANTIC_AI_TIER_MODELS` (all tiers collapsing to
 one router handle; the router's own bandit does the mundane-vs-hard tiering).
 :func:`resolve_pydantic_ai_model` is the boundary that normalises a resolved
@@ -84,7 +87,7 @@ TIER_MODELS: dict[str, str] = {
 # The ``pydantic_ai`` parallel of :data:`TIER_MODELS`. The ``claude_sdk`` harness
 # serves the Claude dash-form ids above; the ``pydantic_ai`` harness serves an
 # OpenAI-compatible provider's PROVIDER-PREFIXED catalog, so its tier map is
-# SEPARATE — :data:`TIER_MODELS`'s dash-form ids (``claude-opus-5``) do not exist
+# SEPARATE — :data:`TIER_MODELS`'s dash-form ids do not exist
 # there, so trusting them here would send an unresolvable id. This shipped default
 # is EMPTY: teatree carries no opinion about a third party's catalog. The operator
 # supplies the id through the generic ``openai_compatible_model`` setting (the

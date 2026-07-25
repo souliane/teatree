@@ -4322,7 +4322,7 @@ def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
     The Claude Code harness silently disables auto-compaction on
-    1M-capable models (currently claude-opus-4-7) unless an
+    1M-capable models unless an
     explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW (or settings.json
     autoCompactWindow) is set — CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
     alone is silently dropped. The advisory tells the agent the

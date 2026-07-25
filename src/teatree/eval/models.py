@@ -4,6 +4,7 @@ import dataclasses
 from pathlib import Path
 from typing import Any, Literal
 
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
 
 #: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
@@ -190,12 +191,14 @@ class JudgeSpec:
     Present only when a scenario's pass/fail is not cleanly matcher-gradeable
     (e.g. "the explanation is faithful to the diff", "the tone is non-blaming").
     A judge model reads the captured transcript and the ``rubric`` and returns
-    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the Sonnet run
+    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the mid run
     tier) and ``max_output_tokens`` caps the judge's reply — both cost controls.
     """
 
     rubric: str
-    model: str = "claude-sonnet-5"
+    #: DERIVED from the tier catalog (the conservative mid tier), never pinned —
+    #: a hardcoded id would leave the judge a generation behind the runs it grades.
+    model: str = TIER_MODELS[DEFAULT_TIER]
     max_output_tokens: int = 512
 
 
