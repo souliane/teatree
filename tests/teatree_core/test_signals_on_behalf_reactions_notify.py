@@ -5,8 +5,8 @@ made under the user's identity on a colleague-facing Slack message, so a
 *successful* reaction (the helper actually reacted, count > 0) must be
 followed by exactly one ``on_behalf_post:`` bot→user DM.
 
-Scope guarantee: a keystone merge transition that reacts nothing (no PR
-permalink → ``add_reactions_for_transition`` returns 0) must NOT emit an
+Scope guarantee: a keystone merge transition that reacts nothing
+(``add_reactions_for_transition`` returns 0) must NOT emit an
 after-receipt DM — the merge FSM transition itself is internal
 orchestration, never a colleague-visible post.
 
@@ -137,7 +137,7 @@ class TestSignalsAfterReceiptDm(TestCase):
         colleague-visible on-behalf post, so with no review message to
         react on (helper returns 0) no ``on_behalf_post:`` DM is sent.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra={"mrs": {}})
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
         with _patch_transition_publisher(lambda _t, _n: 0):
             ticket.mark_merged()
             ticket.save()
@@ -147,11 +147,8 @@ class TestSignalsAfterReceiptDm(TestCase):
         assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
 
     def test_transition_reaction_emits_after_receipt_dm_when_reacted(self) -> None:
-        ticket = Ticket.objects.create(
-            overlay="test",
-            state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"https://x/1": {"review_permalink": "https://t.slack.com/archives/C1/p1700000000000100"}}},
-        )
+        # No PR data: the fake publisher's return value alone drives the receipt.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
         with _patch_transition_publisher(lambda _t, _n: 1):
             ticket.mark_merged()
             ticket.save()
