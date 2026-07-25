@@ -1532,7 +1532,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                           skill is covered or eval_exempt.                   │
 │ pinned-regressions        Run the deterministic regression corpus over the   │
 │                           real gate/checker code paths.                      │
-│ skill-command-validity    Validate every backticked ``t3 …`` in the skill    │
+│ skill-command-validity    Validate every backticked ``t3 …`` in the repo     │
 │                           docs against the live CLI registry.                │
 │ reachability              Report scenario/fixture ``t3 …`` invocations that  │
 │                           name no live CLI command.                          │
@@ -1779,16 +1779,17 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 ```
 Usage: t3 eval skill-command-validity [OPTIONS]
 
- Validate every backticked ``t3 …`` in the skill docs against the live CLI
+ Validate every backticked ``t3 …`` in the repo docs against the live CLI
  registry.
 
- Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
- backticked ``t3 …`` commands are token-walked against the live typer command
- tree. A leading ``t3 <overlay>`` is resolved to a representative overlay so an
- overlay-scoped ``t3 <overlay> <group> <sub>`` is validated too. A command that
- no longer resolves (a CLI rename left the doc stale) is a violation — the "no
- stale references" rule — and exits non-zero. A generic mention whose command
- path is a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
+ Tier-1 (deterministic, free, no ``claude`` run): the backticked ``t3 …``
+ commands in the skills tree, the ``agents/*.md`` role briefs, ``BLUEPRINT.md``
+ and ``docs/`` are token-walked against the live typer command tree. A leading
+ ``t3 <overlay>`` is resolved to a representative overlay so an overlay-scoped
+ ``t3 <overlay> <group> <sub>`` is validated too. A command that no longer
+ resolves (a CLI rename left the doc stale) is a violation — the "no stale
+ references" rule — and exits non-zero. A generic mention whose command path is
+ a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
@@ -5996,6 +5997,9 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ env             Inspect and mutate the worktree env cache.                   │
 │ ticket          Ticket state management.                                     │
 │ review          Persist + look up cold-review verdicts per MR.               │
+│ repro           Forced-repro gate: record the RED/GREEN reproduction a fix   │
+│                 must carry.                                                  │
+│ recipe          Read seam over the recipe-weighted factory score.            │
 │ availability    24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).  │
 │ config_setting  DB-home settings store — the sole tier for a DB-home setting │
 │                 below env (#1775).                                           │
@@ -9553,6 +9557,17 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                          issue/work item.                                    │
 │ context                  Durable per-ticket knowledge store: show / add /    │
 │                          edit (#627).                                        │
+│ show                     Show a ticket's state plus the per-phase attempt    │
+│                          counts.                                             │
+│ expedite                 Flag a ticket as an expedite/release-blocker.       │
+│ attachments              Print (and with --fetch download) a ticket's        │
+│                          referenced attachments.                             │
+│ record-spec-coverage     Record the spec-coverage manifest the delivery gate │
+│                          reads (#2232).                                      │
+│ rubric-set               Set a ticket's rubric from explicit JSON criteria   │
+│                          (#2241).                                            │
+│ rubric-grade             Record a verifier's per-criterion PASS/FAIL on the  │
+│                          rubric (#2241).                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10027,6 +10042,154 @@ Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket show`
+
+```
+Usage: t3 teatree ticket show [OPTIONS] TICKET_ID
+
+ Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009).
+
+ Surfaces the visible repair-loop iteration budget: for each phase the
+ ticket has attempted, ``attempt <count>/<cap>`` against the configurable
+ ``MAX_PHASE_ITERATIONS`` cap, so the operator can see how much of the
+ retry budget each phase has burned before the re-queue chokepoint refuses
+ with ``MaxIterationsExceeded``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket expedite`
+
+```
+Usage: t3 teatree ticket expedite [OPTIONS] TICKET_ID
+
+ Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
+
+ A flagged ticket may push before CI completes; the merge keystone is NEVER
+ relaxed — merge stays gated on local review + test evidence. Surfaces on
+ ``ticket show`` and as a ⚡ statusline chip.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --off           Clear the flag instead of setting it.                        │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket attachments`
+
+```
+Usage: t3 teatree ticket attachments [OPTIONS] TICKET_REF
+
+ Print (and with ``--fetch`` download) a ticket's referenced attachments.
+
+ Builds the manifest of every attachment the ticket's issue body/comments
+ reference (GitLab uploads, linked Notion files, Slack-thread files) and
+ prints each entry as fetched / MISSING. ``--fetch`` downloads the missing
+ ones through the manifest's per-source fetch seams and re-prints; a
+ source with no wired transport is reported un-fetched with an actionable
+ detail rather than silently marked done.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_ref      TEXT  [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --fetch          Download the missing attachments.                           │
+│ --help           Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket record-spec-coverage`
+
+```
+Usage: t3 teatree ticket record-spec-coverage [OPTIONS] TICKET_ID
+
+ Record the spec-coverage manifest the delivery DoD gate reads (#2232).
+
+ Each ``--ac`` maps one acceptance criterion to the test(s) that prove it,
+ so ``require_spec_coverage`` can refuse a RETROSPECTED→DELIVERED advance
+ that would declare done on a partial subset of the spec.
+
+ ACs are upserted by label; ``--replace`` records exactly the given set.
+ An AC recorded with no tests (``--ac 'AC3='``) is declared-but-uncovered
+ and still blocks. ``--override-reason`` records the audited exemption for
+ a genuinely AC-less ticket (a pure refactor, a docs-only change).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ac                                 TEXT  '<label>=<test>[,<test>…]' — one  │
+│                                            acceptance criterion and its      │
+│                                            backing tests. Repeatable.        │
+│ --replace            --no-replace          Record exactly these ACs instead  │
+│                                            of upserting them into the        │
+│                                            existing manifest.                │
+│                                            [default: no-replace]             │
+│ --override-reason                    TEXT  Audited escape hatch: why this    │
+│                                            ticket genuinely has no ACs.      │
+│ --help                                     Show this message and exit.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rubric-set`
+
+```
+Usage: t3 teatree ticket rubric-set [OPTIONS] TICKET_ID
+
+ Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241).
+
+ Replaces the ticket's :class:`Rubric` criteria atomically (a get-or-create),
+ resetting every grade to PENDING so a changed checklist is re-graded. The
+ criteria are explicit — auto-derivation from ``/plan`` is the  follow-up.
+ An empty / malformed / non-array payload is refused. Full contract:
+ ``docs/blueprint/rubric-done-gate.md``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --criteria-json        TEXT  JSON array: '["AC1"]' or '[{"text": "AC1"}]'.   │
+│ --criteria-file        TEXT  Path to a JSON criteria-array file.             │
+│ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rubric-grade`
+
+```
+Usage: t3 teatree ticket rubric-grade [OPTIONS] TICKET_ID
+
+ Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241).
+
+ Each grade is stamped through the guarded :meth:`RubricCriterion.record_grade`
+ factory (grader != maker, terminal status, 40-char-hex SHA); criteria not
+ named
+ stay PENDING (fail-closed). The rubric is fully passed only when EVERY
+ criterion
+ is PASS by this independent grader at the head SHA. Full contract:
+ ``docs/blueprint/rubric-done-gate.md``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --grades-json            TEXT  JSON: '[{"ordinal": 0, "status": "pass"}]'.   │
+│ --grader-identity        TEXT  Independent verifier id (NOT a                │
+│                                maker/coding-agent/loop role).                │
+│ --reviewed-sha           TEXT  Full 40-char hex SHA of the graded tree (the  │
+│                                verifier's head).                             │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree review`
 
 ```
@@ -10038,9 +10201,15 @@ Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ record  Persist a cold-review verdict for a PR at an exact reviewed SHA.     │
-│ status  Report whether an MR is safe to approve at its current head          │
-│         (read-only).                                                         │
+│ record            Persist a cold-review verdict for a PR at an exact         │
+│                   reviewed SHA.                                              │
+│ status            Report whether an MR is safe to approve at its current     │
+│                   head (read-only).                                          │
+│ lock-acquire      Acquire the per-MR review-dispatch lock before a manual    │
+│                   review.                                                    │
+│ lock-status       Report the current MRReviewLock state for an MR            │
+│                   (read-only).                                               │
+│ rebind-clearance  Re-bind a CLEAR to a conflict-only merge commit.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10102,6 +10271,229 @@ Usage: t3 teatree review status [OPTIONS] MR_URL
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review lock-acquire`
+
+```
+Usage: t3 teatree review lock-acquire [OPTIONS] MR_URL
+
+ Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer
+ dispatch (#1405).
+
+ Run this before spawning a `t3:reviewer` sub-agent via the Agent tool.
+ ``acquired: true`` means proceed with the dispatch — the lock is now
+ held by ``holder``. ``acquired: false`` means a review is already in
+ flight for this MR (state + holder are reported); skip the dispatch,
+ the in-flight review already covers it.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --holder        TEXT  Identity of the dispatcher acquiring the lock          │
+│                       (agent/session id).                                    │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review lock-status`
+
+```
+Usage: t3 teatree review lock-status [OPTIONS] MR_URL
+
+ Report the current :class:`MRReviewLock` state for *mr_url* (read-only).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review rebind-clearance`
+
+```
+Usage: t3 teatree review rebind-clearance [OPTIONS] CLEAR_ID
+
+ Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07).
+
+ After ``origin/main`` is merged into a reviewed branch to resolve conflicts
+ (merge, never rebase — §17.4), the head moves and the SHA-bind gate refuses
+ it. This re-binds ONLY when the merge commit's first parent is the reviewed
+ SHA, its SECOND parent is a forge-verified ancestor of the PR base branch
+ (never an arbitrary unreviewed branch), AND the commit is
+ conflict-resolution-only; the original independent verdict is carried forward
+ to the merge SHA, so the merge preconditions pass at the new head. A
+ substantive merge, or one that merged in a non-base branch, is refused — a
+ fresh review is required.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    clear_id      INTEGER  [required]                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --merge-sha          TEXT  Full 40-char hex SHA of the merge commit.         │
+│ --repo-root          TEXT  Git clone the merge commit lives in (default: cwd │
+│                            project root).                                    │
+│ --base-branch        TEXT  The PR base branch the merge's second parent must │
+│                            descend from (default: repo default branch).      │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree repro`
+
+```
+Usage: t3 teatree repro [OPTIONS] COMMAND [ARGS]...
+
+ Forced-repro gate: record the RED/GREEN reproduction a fix must carry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record-red    Record the harness-run FAILING red reproduction for a fix      │
+│               ticket.                                                        │
+│ record-green  Record the harness-run PASSING green and freeze the            │
+│               provenance.                                                    │
+│ waive         Record a human-authorized waiver of the forced-repro gate.     │
+│ status        Show the recorded red/green/provenance/waiver state for a      │
+│               ticket.                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree repro record-red`
+
+```
+Usage: t3 teatree repro record-red [OPTIONS] TICKET_ID
+
+ Record the harness-run FAILING RED reproduction for a FIX ticket (#118).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --command        TEXT  The repro command to run (must FAIL pre-fix).      │
+│                           [required]                                         │
+│    --cwd            TEXT  Worktree dir to run in (default: the ticket's      │
+│                           dispatch worktree).                                │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree repro record-green`
+
+```
+Usage: t3 teatree repro record-green [OPTIONS] TICKET_ID
+
+ Record the harness-run PASSING GREEN and freeze the provenance verdict (#118).
+
+ Computes ``git merge-base --is-ancestor red green`` in the worktree — the
+ proof the RED tree is a proper ancestor of the GREEN tree — and passes it
+ to the domain factory, which refuses when it is False (the provenance
+ bypass) or when ``red == green``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --command        TEXT  The repro command to run (must PASS post-fix).     │
+│                           [required]                                         │
+│    --cwd            TEXT  Worktree dir to run in (default: the ticket's      │
+│                           dispatch worktree).                                │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree repro waive`
+
+```
+Usage: t3 teatree repro waive [OPTIONS] TICKET_ID
+
+ Record a HUMAN-authorized waiver of the forced-repro gate (#118).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Human user id (a maker/loop id is refused).       │
+│                            [required]                                        │
+│ *  --reason          TEXT  Why this failure class is genuinely repro-less.   │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree repro status`
+
+```
+Usage: t3 teatree repro status [OPTIONS] TICKET_ID
+
+ Show the recorded RED/GREEN/provenance/waiver state for a ticket (audit).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree recipe`
+
+```
+Usage: t3 teatree recipe [OPTIONS] COMMAND [ARGS]...
+
+ Read seam over the recipe-weighted factory score.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ score    Compute the recipe-weighted factory score over the trailing window. │
+│ approve  Pin the committed recipe's sha into approved_recipe_sha.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree recipe score`
+
+```
+Usage: t3 teatree recipe score [OPTIONS]
+
+ Compute the recipe-weighted factory score over the trailing window.
+
+ Read-only by default (safe for calibration even when the flag is OFF).
+ ``--record`` persists a snapshot and — for an unapproved recipe — queues a
+ single human-approval question, but ONLY when ``factory_score_enabled`` is
+ on; otherwise it refuses and writes nothing.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --window-days        INTEGER  Trailing window width in days (default 28).    │
+│                               [default: 28]                                  │
+│ --json                        Emit the score payload as JSON instead of the  │
+│                               human view.                                    │
+│ --record                      Persist a FactoryScoreSnapshot (refused unless │
+│                               factory_score_enabled).                        │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree recipe approve`
+
+```
+Usage: t3 teatree recipe approve [OPTIONS]
+
+ Pin the committed recipe's sha into ``approved_recipe_sha`` (the human EVOLVE
+ gate).
+
+ Writes the current ``recipe.yaml`` sha to the ``ConfigSetting`` store in
+ this overlay's scope (global when no overlay is active), so subsequent
+ scored reads stamp ``recipe_approved=true``. Re-run after any recipe edit.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -10229,6 +10621,8 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 │ clear   Remove a DB row, falling back to the dataclass default.              │
 │ list    List every DB config setting row (read-only).                        │
 │ import  Seed the DB store from operational  toml keys (one-time).            │
+│ export  Dump the ConfigSetting store to TOML — the inverse of import.        │
+│ flags   Read-only dead-toggle audit report over the FEATURE_FLAGS registry.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10383,6 +10777,56 @@ Usage: t3 teatree config_setting import [OPTIONS]
 │ --dry-run              Classify every row (folded / written / skipped /      │
 │                        rejected); write nothing.                             │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting export`
+
+```
+Usage: t3 teatree config_setting export [OPTIONS]
+
+ Dump the ``ConfigSetting`` store to TOML — the inverse of ``import``.
+
+ Global rows render under ```` and each overlay scope under
+ ````, each value as its native TOML scalar — so a dump fed
+ back through ``import`` rebuilds the same store (``export -> import ->
+ export`` is a fixed point). ``--overlay <name>`` scopes the dump to that one
+ overlay; omitted, every scope is dumped. ``--output <path>`` writes a file;
+ omitted, the TOML goes to stdout.
+
+ The secret guard withholds private rows by DEFAULT — a known-private key
+ (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
+ SHARED export (auto-configuring a fresh teatree) cannot leak customer data
+ even though the private DB store keeps it. Each withheld row is named on
+ stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
+ backup.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay                TEXT  Overlay name to scope the row to; omit for    │
+│                                the global scope (every overlay).             │
+│ --output                 TEXT  Write the TOML to this path instead of        │
+│                                stdout.                                       │
+│ --include-private              Also export private/secret rows               │
+│                                (terms/brands, token refs) — PERSONAL backup  │
+│                                only, never share.                            │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting flags`
+
+```
+Usage: t3 teatree config_setting flags [OPTIONS]
+
+ The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry.
+
+ Lists every governed feature flag with its lifecycle stage, off-value, and
+ tracking issue; a ``REMOVE``-stage flag (a toggle whose gated code is now
+ permanent) is surfaced LOUD so a dead toggle cannot rot unnoticed. Reads the
+ code-level registry only — it writes nothing to the ``ConfigSetting`` store.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

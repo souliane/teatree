@@ -118,7 +118,6 @@ class TicketExtra(TypedDict, total=False):
     notion_status: str
     issue_title: str
     labels: list[str]
-    auto_started: bool
     reviewed_sha: str
     last_review_state: str
     retro_scheduled: bool
