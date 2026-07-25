@@ -380,16 +380,24 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     return overrides
 
 
-def _bootstrap_read_exceptions() -> tuple[type[Exception], ...]:
-    """The GENUINE not-ready exceptions the DB override read fails SILENTLY-safe on (returns ``{}``).
+def _app_registry_ready() -> bool:
+    """True when Django is configured AND its app registry is fully populated (post-``django.setup()``)."""
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+    from django.conf import settings as django_settings  # noqa: PLC0415 — deferred: settings read at call time
 
-    Django unconfigured / a settings access failing (``ImproperlyConfigured``), the app
-    registry not yet populated (``AppRegistryNotReady``), a pre-migration/missing table
-    or an unreachable DB (``OperationalError`` / ``ProgrammingError``) — the legitimate
-    bootstrap states a cold or fresh install hits before the DB exists. These are the
-    only states the reader may empty the override tier for WITHOUT a signal, because
-    they are expected. Any OTHER exception is a real read bug and is LOGGED loud (see
-    :func:`_read_override_rows`) rather than silently swallowed.
+    return django_settings.configured and apps.ready
+
+
+def _override_read_degrades_silently(exc: BaseException) -> bool:
+    """Whether a caught override-read exception is a genuine BOOTSTRAP no-op (silent ``{}``).
+
+    ``ImproperlyConfigured`` / ``AppRegistryNotReady`` are unambiguous bootstrap states —
+    always silent. ``OperationalError`` / ``ProgrammingError`` are AMBIGUOUS: a bootstrap
+    signal (missing table, DB not ready) before ``django.setup()``, but ALSO a real RUNTIME
+    fault (a locked SQLite DB, a lock timeout, a mid-session drop) once the registry is
+    ready — the TYPE alone can't tell them apart, so they are silent ONLY while the registry
+    is not ready (:func:`_app_registry_ready`); a runtime one logs loud. Any OTHER exception
+    is a real read bug — always loud.
     """
     from django.core.exceptions import (  # noqa: PLC0415 — deferred: Django import at call time
         AppRegistryNotReady,
@@ -400,7 +408,11 @@ def _bootstrap_read_exceptions() -> tuple[type[Exception], ...]:
         ProgrammingError,
     )
 
-    return (ImproperlyConfigured, AppRegistryNotReady, OperationalError, ProgrammingError)
+    if isinstance(exc, ImproperlyConfigured | AppRegistryNotReady):
+        return True
+    if isinstance(exc, OperationalError | ProgrammingError):
+        return not _app_registry_ready()
+    return False
 
 
 # The loud SIGNAL for a non-bootstrap ``ConfigSetting`` read fault. Such a failure is a
@@ -419,19 +431,19 @@ def _load_global_rows() -> dict[str, Any]:
     """Read the GLOBAL-scope (``scope=""``) ``{key: value}`` rows, or ``{}`` on failure.
 
     Reaches the model via Django's app registry (no static ``teatree.core`` import — that
-    would be a backwards ``platform -> domain`` tach edge). A bootstrap state degrades
-    SILENTLY (:func:`_bootstrap_read_exceptions`); any other read fault is logged loud
-    (:data:`_OVERRIDE_READ_FAILURE_MSG`), never silently emptying the override tier.
+    would be a backwards ``platform -> domain`` tach edge). A genuine bootstrap state
+    degrades SILENTLY (:func:`_override_read_degrades_silently`); a RUNTIME fault — incl.
+    an ``OperationalError`` / ``ProgrammingError`` raised while the app registry is ready —
+    is logged loud (:data:`_OVERRIDE_READ_FAILURE_MSG`), never silently emptying the tier.
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     try:
         model = apps.get_model("core", "ConfigSetting")
         return dict(model.objects.overrides_for_scope(""))
-    except _bootstrap_read_exceptions():
-        return {}
-    except Exception:
-        _logger.exception(_OVERRIDE_READ_FAILURE_MSG, "global")
+    except Exception as exc:
+        if not _override_read_degrades_silently(exc):
+            _logger.exception(_OVERRIDE_READ_FAILURE_MSG, "global")
         return {}
 
 
@@ -444,7 +456,8 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
     a row scoped ``myovl`` and one scoped ``t3-myovl`` both apply. Alias groups
     apply in sorted-scope order, then the exact-name group last, so on a key
     collision the exact-name row wins. Same signal-on-real-failure posture as
-    :func:`_load_global_rows`.
+    :func:`_load_global_rows`: a genuine bootstrap state is silent, a runtime fault
+    (incl. a ready-registry ``OperationalError`` / ``ProgrammingError``) logs loud.
     """
     if not overlay_name:
         return {}
@@ -462,10 +475,9 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
             if scope != overlay_name:
                 merged.update(scope_values[scope])
         merged.update(scope_values.get(overlay_name, {}))
-    except _bootstrap_read_exceptions():
-        return {}
-    except Exception:
-        _logger.exception(_OVERRIDE_READ_FAILURE_MSG, f"overlay {overlay_name!r}")
+    except Exception as exc:
+        if not _override_read_degrades_silently(exc):
+            _logger.exception(_OVERRIDE_READ_FAILURE_MSG, f"overlay {overlay_name!r}")
         return {}
     return merged
 
