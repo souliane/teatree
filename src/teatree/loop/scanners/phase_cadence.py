@@ -58,17 +58,31 @@ class PhaseCadence:
             return False
         return task_model.objects.in_flight_for_phase(self.overlay_name, self.phase).exists()
 
-    def last_run_at(self, *, completed_only: bool = False) -> dt.datetime | None:
+    def last_run_at(self, *, statuses: frozenset[str] | None = None) -> dt.datetime | None:
         """Most recent task's ``Session.started_at``, or ``None`` (bootstrap).
 
-        ``completed_only`` narrows to COMPLETED tasks — the
-        ``architectural_review`` variant, whose cadence only advances on a review
-        that actually ran (a FAILED task must not suppress the next dispatch).
+        ``statuses`` narrows to the given ``Task.Status`` set; ``None`` counts a
+        task in any status. The ``architectural_review`` variant reads two clocks
+        off this via :meth:`last_completed_run_at` and :meth:`last_terminal_run_at`.
         """
         task_model = _task_model()
         if task_model is None:
             return None
-        return task_model.objects.last_run_at_for_phase(self.overlay_name, self.phase, completed_only=completed_only)
+        return task_model.objects.last_run_at_for_phase(self.overlay_name, self.phase, statuses=statuses)
+
+    def last_completed_run_at(self) -> dt.datetime | None:
+        """Newest COMPLETED run — the success cadence clock (advances only on a review that ran)."""
+        task_model = _task_model()
+        if task_model is None:
+            return None
+        return self.last_run_at(statuses=frozenset({task_model.Status.COMPLETED}))
+
+    def last_terminal_run_at(self) -> dt.datetime | None:
+        """Newest COMPLETED-or-FAILED run — the post-failure backoff clock."""
+        task_model = _task_model()
+        if task_model is None:
+            return None
+        return self.last_run_at(statuses=task_model.Status.terminal())
 
     def evaluate_trigger(self, *, now: dt.datetime, last_run_at: dt.datetime | None) -> str | None:
         """Return the trigger name (``bootstrap`` / ``cadence``) or ``None``.

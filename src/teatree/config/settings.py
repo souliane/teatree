@@ -524,6 +524,11 @@ class _QualityGateSettings:
     architectural_review_disabled: bool = False
     architectural_review_skill: str = "ac-reviewing-codebase"
     architectural_review_cadence_hours: int = 168
+    # After a FAILED review (none completed since), re-fire once the failed
+    # attempt reaches this shorter age instead of the full cadence — bounds the
+    # post-failure retry so a persistent failure backs off to every 12h rather
+    # than storming the expensive review hourly.
+    architectural_review_retry_backoff_hours: int = 12
     architectural_review_after_merge_count: int = 25
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
     # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is

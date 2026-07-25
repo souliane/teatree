@@ -303,6 +303,7 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
         overlay_name=backend.name,
         skill=settings.architectural_review_skill,
         cadence_hours=settings.architectural_review_cadence_hours,
+        retry_backoff_hours=settings.architectural_review_retry_backoff_hours,
         after_merge_count=settings.architectural_review_after_merge_count,
     )
 

@@ -359,7 +359,8 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
 | `architectural_review_disabled` | Escape hatch for the periodic architectural-review scanner on a given overlay |
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
-| `architectural_review_cadence_hours` | Per-overlay cadence floor for the architectural-review scanner |
+| `architectural_review_cadence_hours` | Per-overlay success-cadence floor (age of the last COMPLETED review) for the architectural-review scanner (default 168) |
+| `architectural_review_retry_backoff_hours` | Per-overlay post-failure backoff (age of the last terminal attempt of any status) before re-firing after a FAILED review — bounds the retry so a persistent failure backs off instead of storming hourly (default 12) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
 | `e2e_confidence_threshold` | Rubric score (0-100, default `90`) a Playwright spec must reach to be VERIFIED by the `/t3:e2e` verify↔review loop (`/t3:e2e` § "Verify–Review Loop to Threshold"). The single knob both the `/t3:e2e-review` E2E Confidence Rubric and the loop read, so "the threshold" is one resolved value. A stricter client overlay raises it (e.g. `95`); a fast dogfood overlay lowers it. Documentation-driven today (the loop is agent prose, not a deterministic gate) — the typed field is the shared source of truth for the doc value and any future programmatic consumer. |

@@ -27,6 +27,7 @@ approved_recipe_sha = ""
 architectural_review_after_merge_count = 25
 architectural_review_cadence_hours = 168
 architectural_review_disabled = false
+architectural_review_retry_backoff_hours = 12
 architectural_review_skill = "ac-reviewing-codebase"
 ask_before_backlog_sweep_closes = true
 ask_before_creating_news_tickets = true

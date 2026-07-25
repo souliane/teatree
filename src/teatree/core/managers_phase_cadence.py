@@ -28,18 +28,18 @@ def in_flight_for_phase(qs: models.QuerySet, overlay: str, phase: str) -> models
 
 
 def last_run_at_for_phase(
-    qs: models.QuerySet, overlay: str, phase: str, *, completed_only: bool = False
+    qs: models.QuerySet, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
 ) -> datetime | None:
     """Most recent ``Session.started_at`` for an overlay+phase task, or ``None``.
 
     A ``Task`` always carries a ``Session`` created at queue time, so the newest
     ``session__started_at`` is the last-run instant; ``None`` is the bootstrap
-    case. ``completed_only`` narrows to COMPLETED tasks — the
-    ``architectural_review`` variant, whose cadence only advances on a review that
-    actually ran (a FAILED task must not suppress the next dispatch).
+    case. ``statuses`` narrows to the given ``Task.Status`` set — the
+    ``architectural_review`` variant reads two clocks off this: COMPLETED-only for
+    the success cadence, and terminal (COMPLETED|FAILED) for the post-failure
+    backoff. ``None`` counts every task regardless of status.
     """
-    task_model = cast("type[Task]", apps.get_model("core", "Task"))
     scoped = qs.filter(ticket__overlay=overlay, phase=phase)
-    if completed_only:
-        scoped = scoped.filter(status=task_model.Status.COMPLETED)
+    if statuses is not None:
+        scoped = scoped.filter(status__in=statuses)
     return scoped.aggregate(ts=Max("session__started_at"))["ts"]

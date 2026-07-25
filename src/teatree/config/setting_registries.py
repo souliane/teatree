@@ -104,6 +104,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_disabled": _parse_strict_bool,
     "architectural_review_skill": _parse_strict_str,
     "architectural_review_cadence_hours": _parse_strict_int,
+    "architectural_review_retry_backoff_hours": _parse_strict_int,
     "architectural_review_after_merge_count": _parse_strict_int,
     "review_skill": _parse_strict_str,
     "admit_colleague_prs_to_board": _parse_strict_bool,
