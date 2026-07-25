@@ -219,7 +219,7 @@ class Command(TyperCommand):
         # provisioning work competes with them for host CPU/RAM.
         reap_stale_local_stacks(self.stdout.write)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        worktrees = list(Worktree.objects.for_ticket(ticket))
         to_provision = [wt for wt in worktrees if wt.state in {Worktree.State.CREATED, Worktree.State.PROVISIONED}]
         results = run_worktree_provisions_in_parallel(
             to_provision,
@@ -255,7 +255,7 @@ class Command(TyperCommand):
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        worktrees = list(Worktree.objects.for_ticket(ticket))
         started: list[Worktree] = []
         failures: list[str] = []
         # #2207: abandoned unowned stacks (age-guarded) are reaped first so
@@ -316,7 +316,7 @@ class Command(TyperCommand):
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        worktrees = list(Worktree.objects.for_ticket(ticket))
         total, total_failures = _wh.report_worktree_probes(worktrees, overlay, self.stdout.write, note_empty=True)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
@@ -353,7 +353,7 @@ class Command(TyperCommand):
         """
         ticket = _resolve_workspace_ticket(path)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        worktrees = list(Worktree.objects.for_ticket(ticket))
         check_no_open_prs(ticket, worktrees, read_pr_state=read_live_pr_state, allow_open_prs=allow_open_prs)
         labels: list[str] = []
         failures: list[str] = []

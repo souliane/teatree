@@ -1,9 +1,11 @@
+from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from django.db import models
 
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import terminal_reason_fingerprint
 
@@ -12,6 +14,23 @@ if TYPE_CHECKING:
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def prunable(self, cutoff: datetime) -> "TaskAttemptQuerySet":
+        """Attempts safe to delete (#3693): the conservative double guard.
+
+        An attempt is prunable ONLY when it started before *cutoff* AND its owning task
+        is terminal AND that task's ticket is definitively finished. SHIPPED is NOT
+        finished (its PR is still open, so the ticket may take review comments and
+        re-work), so ``marker_release_states()`` plus RETROSPECTED is the terminal set.
+        An attempt of an active task, or of a live ticket, is NEVER prunable — deleting
+        a referenced/in-flight row is far worse than a bloated DB.
+        """
+        finished = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+        return self.filter(
+            started_at__lt=cutoff,
+            task__status__in=Task.Status.terminal(),
+            task__ticket__state__in=finished,
+        )
+
     def headless(self) -> "TaskAttemptQuerySet":
         """Only the attempts that ran a billed detached headless-SDK run.
 

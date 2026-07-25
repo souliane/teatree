@@ -15,7 +15,7 @@ from django.utils import timezone
 from teatree.config.settings import UserSettings
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.retention import apply_retention, incoming_events_prunable, plan_retention, task_attempts_prunable
+from teatree.core.retention import apply_retention, plan_retention
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _RECENT = timezone.now() - dt.timedelta(days=2)
@@ -56,51 +56,51 @@ def _event(
 class TaskAttemptPrunableGuardTestCase(TestCase):
     def test_old_terminal_owned_attempt_is_prunable(self) -> None:
         attempt = _attempt()
-        prunable = task_attempts_prunable(timezone.now() - dt.timedelta(days=30))
+        prunable = TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert list(prunable.values_list("pk", flat=True)) == [attempt.pk]
 
     def test_never_prunes_attempt_of_non_terminal_ticket(self) -> None:
         # The critical guard: a live ticket's attempt must survive even when old
         # and its task is terminal — deleting it drops history a live ticket needs.
         _attempt(ticket_state=Ticket.State.STARTED, task_status=Task.Status.COMPLETED)
-        prunable = task_attempts_prunable(timezone.now() - dt.timedelta(days=30))
+        prunable = TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert prunable.count() == 0
 
     def test_never_prunes_attempt_of_non_terminal_task(self) -> None:
         _attempt(ticket_state=Ticket.State.MERGED, task_status=Task.Status.PENDING)
-        prunable = task_attempts_prunable(timezone.now() - dt.timedelta(days=30))
+        prunable = TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert prunable.count() == 0
 
     def test_never_prunes_attempt_within_window(self) -> None:
         _attempt(started_at=_RECENT)
-        prunable = task_attempts_prunable(timezone.now() - dt.timedelta(days=30))
+        prunable = TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert prunable.count() == 0
 
     def test_shipped_ticket_is_not_prunable(self) -> None:
         # SHIPPED is excluded on purpose — its PR is still open and may re-work.
         _attempt(ticket_state=Ticket.State.SHIPPED)
-        assert task_attempts_prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
+        assert TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
 
 
 class IncomingEventPrunableGuardTestCase(TestCase):
     def test_old_processed_event_is_prunable(self) -> None:
         event = _event(idempotency_key="k-processed")
-        prunable = incoming_events_prunable(timezone.now() - dt.timedelta(days=30))
+        prunable = IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert list(prunable.values_list("pk", flat=True)) == [event.pk]
 
     def test_old_dead_lettered_event_is_prunable(self) -> None:
         event = _event(idempotency_key="k-dead", processed=False, dead_lettered=True)
-        prunable = incoming_events_prunable(timezone.now() - dt.timedelta(days=30))
+        prunable = IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30))
         assert list(prunable.values_list("pk", flat=True)) == [event.pk]
 
     def test_never_prunes_old_unprocessed_event(self) -> None:
         # An un-processed, non-dead-lettered event is still in-flight — never pruned.
         _event(idempotency_key="k-inflight", processed=False, dead_lettered=False)
-        assert incoming_events_prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
+        assert IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
 
     def test_never_prunes_processed_event_within_window(self) -> None:
         _event(idempotency_key="k-recent", received_at=_RECENT)
-        assert incoming_events_prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
+        assert IncomingEvent.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
 
 
 class PlanRetentionTestCase(TestCase):

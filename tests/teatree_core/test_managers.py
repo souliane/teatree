@@ -52,6 +52,15 @@ class TestWorktreeQuerySet(TestCase):
 
         assert list(Worktree.objects.active()) == [active, also_active]
 
+    def test_for_ticket_scopes_to_the_given_ticket(self) -> None:
+        wanted_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        other_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/be", branch="mine")
+        also_mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/fe", branch="also")
+        Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
+
+        assert list(Worktree.objects.for_ticket(wanted_ticket).order_by("pk")) == [mine, also_mine]
+
 
 class TestIncomingEventQuerySet(TestCase):
     def _slack(self, *, channel: str, thread_ref: str, key: str) -> IncomingEvent:
@@ -93,6 +102,37 @@ class TestIncomingEventQuerySet(TestCase):
         self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
 
         assert IncomingEvent.objects.active_dm_thread(channel="") == ""
+
+    def _event(
+        self, *, key: str, processed: bool = False, dead: bool = False, retry_ahead: bool = False
+    ) -> IncomingEvent:
+        now = timezone.now()
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            idempotency_key=key,
+            received_at=now - timedelta(days=60),
+            processed_at=now if processed else None,
+            dead_lettered_at=now if dead else None,
+            next_retry_at=(now + timedelta(hours=1)) if retry_ahead else None,
+        )
+
+    def test_prunable_is_the_settled_set_processed_or_dead_lettered(self) -> None:
+        processed = self._event(key="k-proc", processed=True)
+        dead = self._event(key="k-dead", dead=True)
+        self._event(key="k-inflight")
+
+        prunable = IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
+
+        assert set(prunable.values_list("pk", flat=True)) == {processed.pk, dead.pk}
+
+    def test_prunable_derives_from_the_unprocessed_boundary_not_its_due_clause(self) -> None:
+        # A backoff-retry event is unsettled but NOT due, so it is absent from BOTH
+        # unprocessed(now) and prunable(). Were prunable defined as the naive complement
+        # of unprocessed(now) it would wrongly prune this in-flight, backing-off row.
+        backoff = self._event(key="k-backoff", retry_ahead=True)
+
+        assert backoff not in IncomingEvent.objects.unprocessed()
+        assert backoff not in IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
 
 
 class TestSessionQuerySet(TestCase):

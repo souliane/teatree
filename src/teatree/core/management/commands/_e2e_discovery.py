@@ -79,12 +79,12 @@ def ticket_frontend_projects(worktree: Worktree, *, linked_ticket: Ticket | None
     ticket's siblings.
     """
     if linked_ticket is not None:
-        candidates: list[Worktree] = [worktree, *Worktree.objects.filter(ticket=linked_ticket).order_by("pk")]
+        candidates: list[Worktree] = [worktree, *Worktree.objects.for_ticket(linked_ticket).order_by("pk")]
     else:
         ticket = worktree.ticket
         candidates = [worktree]
         if ticket is not None:
-            candidates += [wt for wt in Worktree.objects.filter(ticket=ticket) if wt.pk != worktree.pk]
+            candidates += [wt for wt in Worktree.objects.for_ticket(ticket) if wt.pk != worktree.pk]
     seen: set[str] = set()
     projects: list[str] = []
     for wt in candidates:
@@ -147,7 +147,7 @@ def resolve_linked_worktree(linked_ticket: Ticket) -> Worktree | None:
     first stored-path worktree, then any sibling so a freshly-provisioned
     ticket with no recorded ``worktree_path`` still routes.
     """
-    siblings = list(Worktree.objects.filter(ticket=linked_ticket).order_by("pk"))
+    siblings = list(Worktree.objects.for_ticket(linked_ticket).order_by("pk"))
     stored = [wt for wt in siblings if (wt.extra or {}).get("worktree_path")]
     for wt in stored:
         if _runs_backend_stack(wt):

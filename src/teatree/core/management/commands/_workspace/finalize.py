@@ -54,7 +54,7 @@ def run_finalize(ticket: Ticket, *, message: str, write: Callable[[str], None]) 
     worktrees. Returns the joined per-worktree result lines.
     """
     results: list[str] = []
-    for worktree in Worktree.objects.filter(ticket=ticket):
+    for worktree in Worktree.objects.for_ticket(ticket):
         repo = worktree.repo_path
         repo_dir = (worktree.extra or {}).get("worktree_path") or repo
         default_br = git.default_branch(repo)

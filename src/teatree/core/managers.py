@@ -119,6 +119,9 @@ class WorktreeQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         return _for_overlay(self, overlay)
 
+    def for_ticket(self, ticket: "Ticket") -> models.QuerySet:
+        return self.filter(ticket=ticket)
+
     def active(self, overlay: str | None = None) -> models.QuerySet:
         """Worktrees whose ticket is still in flight (not delivered, review-posted, or ignored).
 
@@ -155,6 +158,13 @@ class SessionQuerySet(models.QuerySet):
         return self.filter(agent_id=agent_id).order_by("pk")
 
 
+# The settled/in-flight boundary, defined ONCE (#3693): an event is UNSETTLED until it is
+# drained (``processed_at``) or dead-lettered. ``unprocessed()`` filters this in (plus a
+# due clause); ``prunable()`` excludes it (the exact settled complement). Deriving both
+# from this one Q keeps the boundary from drifting between the two call sites.
+_UNSETTLED = Q(processed_at__isnull=True, dead_lettered_at__isnull=True)
+
+
 class IncomingEventQuerySet(models.QuerySet):
     def unprocessed(self, now: datetime | None = None) -> models.QuerySet:
         """Events still awaiting a drain: un-processed, not dead-lettered, and due (#673).
@@ -166,9 +176,13 @@ class IncomingEventQuerySet(models.QuerySet):
         dead-lettered poison out of the queue rather than block behind it.
         """
         moment = now or timezone.now()
-        return self.filter(processed_at__isnull=True, dead_lettered_at__isnull=True).filter(
-            Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment)
-        )
+        return self.filter(_UNSETTLED).filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment))
+
+    def prunable(self, cutoff: datetime) -> models.QuerySet:
+        # Settled events before *cutoff*, safe to delete (#3693). Excludes the _UNSETTLED
+        # boundary itself (drained/dead-lettered) — NOT unprocessed(): a not-yet-due backoff
+        # row is still in-flight and must never be pruned however old.
+        return self.exclude(_UNSETTLED).filter(received_at__lt=cutoff)
 
     def dead_lettered(self) -> models.QuerySet:
         """Poisoned events that exhausted their retries — the dead-letter view (#673)."""

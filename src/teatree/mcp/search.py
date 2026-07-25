@@ -172,7 +172,7 @@ def worktree_status(
             resolved = Ticket.objects.resolve(ticket)
         except Ticket.DoesNotExist:
             return []
-        queryset = Worktree.objects.filter(ticket=resolved)
+        queryset = Worktree.objects.for_ticket(resolved)
     elif active_only:
         queryset = Worktree.objects.active(overlay)
     else:
