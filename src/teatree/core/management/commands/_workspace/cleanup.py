@@ -19,7 +19,7 @@ from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
-from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.clone_paths import repair_stale_clone_path, resolve_clone_path
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -28,7 +28,7 @@ from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_check
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.core.worktree.reconcile import Drift
+    from teatree.core.worktree.reconcile import Drift, StaleClonePath
 
 
 logger = logging.getLogger(__name__)
@@ -520,6 +520,20 @@ def _teardown_dir_gone_row(row: Worktree, path: Path) -> str:
     return f"tore down wt#{row.pk} (path gone: {path})"
 
 
+def _repair_clone_path(stale: "StaleClonePath") -> str:
+    """Point a row's ``clone_path`` back at a clone that exists, or report why it cannot.
+
+    A row keeps its stale value when no clone is discoverable — it is the only
+    surviving record of where the clone was, and the probes that read it already
+    fail closed on an unresolvable one.
+    """
+    row = Worktree.objects.filter(pk=stale.worktree_pk).first()
+    repaired = repair_stale_clone_path(clone_root(), row) if row is not None else None
+    if repaired is None:
+        return f"no clone found for wt#{stale.worktree_pk}; left {stale.path} recorded"
+    return f"repaired clone_path wt#{stale.worktree_pk}: {stale.path} → {repaired}"
+
+
 def _fix_drift(drift: "Drift") -> list[str]:
     """Apply reconciler fixes for one ticket's drift.
 
@@ -546,6 +560,8 @@ def _fix_drift(drift: "Drift") -> list[str]:
         f"stale worktree dir {stale.path} — remove manually with `git worktree remove`"
         for stale in drift.stale_worktree_dirs
     )
+
+    fixes.extend(_repair_clone_path(stale) for stale in drift.stale_clone_paths)
 
     # ``filter().first()`` (not ``get``): the dir-gone teardown above may have
     # already deleted the same row this finding references.

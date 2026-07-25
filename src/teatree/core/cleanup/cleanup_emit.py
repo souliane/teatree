@@ -12,12 +12,14 @@ these). ``schema_version`` is bumped on any breaking field change.
 
 ```jsonc
 {
-    "schema_version": 1,
+    "schema_version": 2,
     "path": "/abs/path/to/worktree-or-clone",       // on-disk location, "" for a bare branch/stash
     "branch": "feat-x",                             // the branch (or "stash@{N}" for a stash)
     "kind": "worktree",                             // "worktree" | "branch" | "stash"
     "unique_commit_shas": ["<sha>", ...],           // commits whose CONTENT is not provably on target
     "merged_with_post_merge_work": true,            // forge-merged BUT current tip has unique content
+    "content_verified": true,                       // a content probe actually RAN and its answer stands
+    "verdict_source": "cherry-zero-unique",         // the deciding layer, or why nothing decided
     "banned_terms_status": "contains",              // "clean" | "contains" | "unknown"
     "banned_terms_found": ["credential", ...],      // distinct banned terms hit (empty when clean)
     "liveness": "",                                 // "" when not live, else the keep-reason phrase
@@ -29,13 +31,22 @@ these). ``schema_version`` is bumped on any breaking field change.
 The skill reads ``unique_commit_shas`` + ``merged_with_post_merge_work`` to decide
 salvage-to-fresh-PR, ``banned_terms_status`` to know whether to clean before
 salvage, and ``liveness`` to defer a live item.
+
+``content_verified`` gates all of that (schema 2). An empty ``unique_commit_shas``
+carried two opposite meanings — "the probe proved the tip holds nothing unique"
+and "no probe could run" — and the skill routed both to DELETE, so an unresolvable
+clone or an erroring ``git cherry`` emitted a record byte-identical to a shipped
+one. It is now ``false`` for every verdict nothing proved, and ``verdict_source``
+names which layer decided (``cherry-zero-unique`` / ``synthetic-squash`` /
+``branch-merged`` / ``not-redundant``) or why none could (``inconclusive`` /
+``clone-unresolvable``). An unverified record routes to KEEP, never DELETE.
 """
 
 import re
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-EMIT_SCHEMA_VERSION = 1
+EMIT_SCHEMA_VERSION = 2
 
 
 class EmitRecordDict(TypedDict):
@@ -47,6 +58,8 @@ class EmitRecordDict(TypedDict):
     kind: str
     unique_commit_shas: list[str]
     merged_with_post_merge_work: bool
+    content_verified: bool
+    verdict_source: str
     banned_terms_status: str
     banned_terms_found: list[str]
     liveness: str
@@ -114,6 +127,9 @@ class CleanupEmitRecord:
     kind: str
     unique_commit_shas: list[str] = field(default_factory=list)
     merged_with_post_merge_work: bool = False
+    # Fail closed: a record nobody proved must never read as a verified-redundant one.
+    content_verified: bool = False
+    verdict_source: str = "inconclusive"
     banned_terms_status: str = "unknown"
     banned_terms_found: list[str] = field(default_factory=list)
     liveness: str = ""
@@ -129,6 +145,8 @@ class CleanupEmitRecord:
             "kind": self.kind,
             "unique_commit_shas": list(self.unique_commit_shas),
             "merged_with_post_merge_work": self.merged_with_post_merge_work,
+            "content_verified": self.content_verified,
+            "verdict_source": self.verdict_source,
             "banned_terms_status": self.banned_terms_status,
             "banned_terms_found": list(self.banned_terms_found),
             "liveness": self.liveness,

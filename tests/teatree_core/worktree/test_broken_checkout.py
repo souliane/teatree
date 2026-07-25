@@ -217,12 +217,24 @@ class FailClosedControlsTest(_BrokenWorktreeCase):
     def test_an_unresolvable_clone_leaves_the_branch_unverifiable(self) -> None:
         wt_path = self._worktree_on("orphan", commit="feat: work")
         row = self._register(wt_path, branch="orphan", clone=self.tmp / "clone-is-gone")
+        row.repo_path = "no-such-repo"  # nothing for the fallback scan to find either
+        row.save(update_fields=["repo_path"])
         _break_checkout(self.clone, wt_path)
 
         verdict = classify_broken_checkout(row, workspace=self.workspace)
 
         assert verdict.state is BrokenCheckout.UNVERIFIABLE
         assert "clone" in verdict.reason
+
+    def test_a_stale_stored_clone_path_no_longer_blinds_the_branch_probe(self) -> None:
+        wt_path = self._worktree_on("unshipped", commit="feat: never pushed")
+        row = self._register(wt_path, branch="unshipped", clone=self.tmp / "clone-moved-away")
+        _break_checkout(self.clone, wt_path)
+
+        verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.HOLDS_WORK, "the real clone is discoverable, so the branch is readable"
+        assert "NO remote" in verdict.reason
 
     def test_a_row_with_no_dir_on_disk_is_not_this_pass_business(self) -> None:
         row = self._register(self.workspace / "never-existed", branch="ghost")
