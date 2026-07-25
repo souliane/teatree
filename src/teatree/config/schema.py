@@ -9,14 +9,18 @@ callable the four config registries already use (``setting_parsers`` /
 model HOSTS teatree's strictness rather than substituting pydantic's own lax/strict
 rules.
 
-Phase 1 is foundation only: NOTHING in the runtime imports this module — the
-resolver, registries and cold readers are untouched. The only consumers are the
-conformance tests. The rewire (registries derived from the model, resolver
-re-sourcing the TOML-default tier) is a later phase.
+No runtime module imports this one: the four config registries stay
+hand-maintained (``setting_registries`` / ``registries`` / ``cold_hook_settings``)
+and the ``derive_*`` helpers below are consumed ONLY by the conformance suite
+(``tests/config/test_registry_derivation.py``), which pins each hand registry equal
+to what the model derives, key-for-key and coercer-for-coercer. That parity-pin is a
+deliberate steady state, not a half-finished cutover — see the ``derive_*`` block for
+why the runtime must never call these at import scope.
 
-The ONE cost this module carries — importing ``pydantic_settings`` — is paid only
-by a caller that imports ``schema``; thin CLI / cold-hook paths never do (they use
-the stdlib cold readers), so they never pay the ~110ms. ``shipped_defaults()`` is
+The ONE cost this module carries — importing ``pydantic_settings`` (~110ms) — is paid
+only by a caller that imports ``schema``; the cold path (``cold_reader`` /
+``cold_defaults`` / ``cold_hook_settings``, all reached through ``teatree.config``'s
+package init) never imports ``schema``, so it never pays it. ``shipped_defaults()`` is
 the ``@lru_cache`` singleton entry point.
 """
 
@@ -454,6 +458,19 @@ def _keys_in(registry: Registry) -> list[str]:
     return [k for k in TeatreeSettingsSchema.model_fields if setting_meta(k).registry is registry]
 
 
+# COLD-PATH PARITY PIN — deliberate; do NOT wire these into the registry modules.
+# The four ``derive_*`` helpers reconstruct each hand registry from the model taxonomy,
+# and the conformance suite asserts they match the hand copies exactly. They are
+# call-time helpers ONLY: none may be assigned at the import scope of
+# ``setting_registries`` / ``registries`` / ``cold_hook_settings``. ``teatree.config``'s
+# package ``__init__`` eagerly imports all three of those modules, and the cold path
+# loads that package init (``cold_reader`` does ``from teatree.config import
+# value_coercion``), so a module-scope ``derive_*()`` call would drag ``schema`` ->
+# pydantic (~110ms) onto every cold-hook invocation. The registries therefore stay
+# hand-maintained; these helpers exist to keep the hand copies honest via the parity
+# suite, not to replace them at runtime. The leak guard is
+# ``test_registry_derivation.test_registry_modules_stay_pydantic_free`` (with
+# ``test_cold_defaults``'s cold-import control).
 def derive_overlay_overridable_settings() -> dict[str, Callable[[Any], Any]]:
     """The ``OVERLAY_OVERRIDABLE_SETTINGS`` registry, derived from the model taxonomy."""
     return {k: _registry_coercer(k) for k in _keys_in(Registry.OVERLAY)}
