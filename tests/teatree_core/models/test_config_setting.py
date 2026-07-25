@@ -12,7 +12,17 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
-from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome, scope_label
+
+
+class TestScopeLabel:
+    """The one ``scope_label`` home shared by the config CLI and the TOML export."""
+
+    def test_empty_scope_is_global(self) -> None:
+        assert scope_label("") == "global"
+
+    def test_named_scope_is_overlay_quoted(self) -> None:
+        assert scope_label("myproj") == "overlay 'myproj'"
 
 
 class TestConfigSettingStore(TestCase):
