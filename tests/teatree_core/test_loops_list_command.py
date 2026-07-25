@@ -23,9 +23,12 @@ def _prompt(name: str = "demo-prompt") -> Prompt:
 
 
 def _run(*args: str) -> str:
+    # The emit() seam sends JSON to stdout and the human view to stderr; exactly
+    # one channel is populated per invocation, so their concatenation is the output.
     out = io.StringIO()
-    call_command("loops_list", *args, stdout=out)
-    return out.getvalue()
+    err = io.StringIO()
+    call_command("loops_list", *args, stdout=out, stderr=err)
+    return out.getvalue() + err.getvalue()
 
 
 @django.test.override_settings(USE_TZ=True)

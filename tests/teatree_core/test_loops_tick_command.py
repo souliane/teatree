@@ -65,9 +65,12 @@ class TestHardExitGuard:
 
 
 def _run(**kwargs: object) -> str:
+    # emit() sends JSON to stdout and the human view to stderr — one channel per
+    # call — so their concatenation is the single populated output stream.
     out = io.StringIO()
-    call_command("loops_tick", stdout=out, **kwargs)
-    return out.getvalue()
+    err = io.StringIO()
+    call_command("loops_tick", stdout=out, stderr=err, **kwargs)
+    return out.getvalue() + err.getvalue()
 
 
 class _CleanOverlay(OverlayBase):

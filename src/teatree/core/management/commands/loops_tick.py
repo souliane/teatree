@@ -42,18 +42,18 @@ its own dedicated ``LoopLease``.
 """
 
 import datetime as dt
-import json
 import os
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from django_typer.management import TyperCommand
 
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
+from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
@@ -185,10 +185,13 @@ class Command(TyperCommand):
 
         now = dt.datetime.now(tz=dt.UTC)
         _write_tick_meta(now, target=statusline_file)
-        if json_output:
-            self.stdout.write(json.dumps(_skipped_report_dict(now, reason), indent=2))
-        else:
-            self.stdout.write(f"SKIP  {reason}")
+        emit(
+            _skipped_report_dict(now, reason),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"SKIP  {reason}",
+        )
 
     def _build_request(self, overlay: str) -> "TickRequest":
         from teatree.loop.tick import TickRequest  # noqa: PLC0415 — deferred: keeps command import light
@@ -198,11 +201,14 @@ class Command(TyperCommand):
         return TickRequest(backends=_focus_scoped_backends())
 
     def _emit_report(self, report: "TickReport", *, json_output: bool) -> None:
-        if json_output:
-            self.stdout.write(json.dumps(_report_to_dict(report), indent=2))
-            return
-        for name, message in report.errors.items():
-            self.stdout.write(f"WARN  {name}: {message}")
+        human = "\n".join(f"WARN  {name}: {message}" for name, message in report.errors.items()) or None
+        emit(
+            _report_to_dict(report),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     def handle(
         self,

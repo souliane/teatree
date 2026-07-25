@@ -11,11 +11,12 @@ import datetime as dt
 import json
 import os
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.machine_output import emit
 from teatree.core.session_identity import session_id_from_env
 
 if TYPE_CHECKING:
@@ -106,42 +107,35 @@ class Command(TyperCommand):
         from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: lazy command import
         from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415 — deferred: keeps command import light
 
+        out = cast("IO[str]", self.stdout)
+        err = cast("IO[str]", self.stderr)
         session_id = _non_owner_session_id()
         if not _session_owns_loop(session_id):
             now = dt.datetime.now(tz=dt.UTC)
-            if json_output:
-                self.stdout.write(
-                    json.dumps(
-                        {
-                            "tier": tier,
-                            "skipped": True,
-                            "skipped_reason": "non-owner session",
-                            "started_at": now.isoformat(),
-                        },
-                        indent=2,
-                    )
-                )
-            else:
-                self.stdout.write("SKIP  this session is not the loop owner — skipping self-improve cycle.")
+            emit(
+                {"tier": tier, "skipped": True, "skipped_reason": "non-owner session", "started_at": now.isoformat()},
+                json_output=json_output,
+                out=out,
+                err=err,
+                human="SKIP  this session is not the loop owner — skipping self-improve cycle.",
+            )
             return
 
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire("loop-self-improve", owner=owner):
             now = dt.datetime.now(tz=dt.UTC)
-            if json_output:
-                self.stdout.write(
-                    json.dumps(
-                        {
-                            "tier": tier,
-                            "skipped": True,
-                            "skipped_reason": "another self-improve cycle is already running",
-                            "started_at": now.isoformat(),
-                        },
-                        indent=2,
-                    )
-                )
-            else:
-                self.stdout.write("SKIP  loop-self-improve lease held — another cycle is running.")
+            emit(
+                {
+                    "tier": tier,
+                    "skipped": True,
+                    "skipped_reason": "another self-improve cycle is already running",
+                    "started_at": now.isoformat(),
+                },
+                json_output=json_output,
+                out=out,
+                err=err,
+                human="SKIP  loop-self-improve lease held — another cycle is running.",
+            )
             return
         try:
             result = run_tier(tier, auto_fix_callable=self_improve_rerender)
@@ -149,10 +143,8 @@ class Command(TyperCommand):
             LoopLease.objects.release("loop-self-improve", owner=owner)
 
         report = _result_to_dict(result)
-        if json_output:
-            self.stdout.write(json.dumps(report, indent=2, default=str))
-            return
         if result.skipped:
-            self.stdout.write(f"SKIP  budget gate: {result.budget.reason}")
-            return
-        self.stdout.write(f"OK    tier={result.tier} reports={len(result.reports)} actions={len(result.actions)}")
+            human = f"SKIP  budget gate: {result.budget.reason}"
+        else:
+            human = f"OK    tier={result.tier} reports={len(result.reports)} actions={len(result.actions)}"
+        emit(report, json_output=json_output, out=out, err=err, human=human)

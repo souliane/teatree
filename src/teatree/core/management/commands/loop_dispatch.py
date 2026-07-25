@@ -8,9 +8,8 @@ each via ``spawn-claim`` so the next tick doesn't see them as pending.
 """
 
 import contextlib
-import json
 import logging
-from typing import Annotated, Any
+from typing import IO, Annotated, Any, cast
 
 import typer
 from django.core.exceptions import ObjectDoesNotExist
@@ -18,6 +17,7 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.config import cadence_seconds
+from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -259,17 +259,21 @@ class Command(TyperCommand):
                 .order_by("pk")
             )
             payload = [_task_to_dict(task) for task in pending]
-        if json_output:
-            self.stdout.write(json.dumps(payload, indent=2))
-            return
         if not payload:
-            self.stdout.write("No pending spawn requests.")
-            return
-        for entry in payload:
-            self.stdout.write(
+            human: str | None = "No pending spawn requests."
+        else:
+            human = "\n".join(
                 f"task={entry['task_id']:<5} subagent={entry['subagent']:<18} "
-                f"phase={entry['phase']:<10} url={entry['issue_url']}",
+                f"phase={entry['phase']:<10} url={entry['issue_url']}"
+                for entry in payload
             )
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     @command(name="claim-next")
     def claim_next(
@@ -346,16 +350,20 @@ class Command(TyperCommand):
             )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
 
-        if json_output:
-            self.stdout.write(json.dumps(payload, indent=2))
-            return
         if not payload:
-            self.stdout.write("No pending spawn requests.")
-            return
-        entry = payload[0]
-        self.stdout.write(
-            f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
-            f"phase={entry['phase']} url={entry['issue_url']}",
+            human: str | None = "No pending spawn requests."
+        else:
+            entry = payload[0]
+            human = (
+                f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
+                f"phase={entry['phase']} url={entry['issue_url']}"
+            )
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
         )
 
     @command(name="spawn-claim")

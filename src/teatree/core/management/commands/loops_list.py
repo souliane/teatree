@@ -15,13 +15,13 @@ row. Distinct from the singular ``t3 loop`` (the legacy fat-loop status view).
 """
 
 import datetime as dt
-import json
-from typing import Annotated, Any
+from typing import IO, Annotated, Any, cast
 
 import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand
 
+from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState, LoopStatus
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 
@@ -135,15 +135,19 @@ class Command(TyperCommand):
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
         # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
         verdicts = {verdict.name: verdict for verdict in effective_verdicts(now)}
-        if json_output:
-            payload = [
-                _payload(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)) for loop in loops
-            ]
-            self.stdout.write(json.dumps({"loops": payload}, indent=2))
-            return
-        self.stdout.write("loops:")
+        payload = [
+            _payload(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)) for loop in loops
+        ]
+        human_lines = ["loops:"]
         for loop in loops:
-            self.stdout.write(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)))
+            human_lines.append(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)))
             description_line = _description_line(loop)
             if description_line is not None:
-                self.stdout.write(description_line)
+                human_lines.append(description_line)
+        emit(
+            {"loops": payload},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(human_lines),
+        )

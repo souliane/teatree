@@ -13,9 +13,12 @@ from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 
 
 def _run(*args: str, **kwargs: object) -> str:
+    # emit() sends JSON to stdout and the human view to stderr — one channel per
+    # call — so their concatenation is the single populated output stream.
     out = io.StringIO()
-    call_command("loop_schedule", *args, stdout=out, **kwargs)
-    return out.getvalue()
+    err = io.StringIO()
+    call_command("loop_schedule", *args, stdout=out, stderr=err, **kwargs)
+    return out.getvalue() + err.getvalue()
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")

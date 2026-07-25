@@ -9,62 +9,67 @@ command" rule. Non-zero exits use ``raise SystemExit(N)`` (the ``call_command``
 path); the CLI layer maps that to ``typer.Exit``.
 """
 
-import json
-from collections.abc import Callable
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
-# ``self.stdout.write`` — the command's Django ``OutputWrapper.write``.
-StdoutWrite = Callable[..., object]
+from teatree.core.machine_output import emit
 
 
-def _set(name: str, check: str, *, json_output: bool, stdout_write: StdoutWrite) -> None:
+def _out_err(command: TyperCommand) -> tuple[IO[str], IO[str]]:
+    return cast("IO[str]", command.stdout), cast("IO[str]", command.stderr)
+
+
+def _set(command: TyperCommand, name: str, check: str, *, json_output: bool) -> None:
     from teatree.core.models import (  # noqa: PLC0415 — deferred: touch the ORM only at call time
         StandingGoal,
         StandingGoalError,
     )
 
+    out, err = _out_err(command)
     try:
         goal = StandingGoal.objects.set_goal(name, check)
     except StandingGoalError as exc:
-        if json_output:
-            stdout_write(json.dumps({"ok": False, "error": str(exc)}, indent=2))
-        else:
-            stdout_write(f"ERROR  {exc}")
+        emit({"ok": False, "error": str(exc)}, json_output=json_output, out=out, err=err, human=f"ERROR  {exc}")
         raise SystemExit(2) from exc
-    if json_output:
-        stdout_write(json.dumps({"ok": True, "name": goal.name, "check_command": goal.check_command}, indent=2))
-    else:
-        stdout_write(f"OK    registered standing goal {goal.name!r} — green when `{goal.check_command}` exits 0.")
+    emit(
+        {"ok": True, "name": goal.name, "check_command": goal.check_command},
+        json_output=json_output,
+        out=out,
+        err=err,
+        human=f"OK    registered standing goal {goal.name!r} — green when `{goal.check_command}` exits 0.",
+    )
 
 
-def _clear(name: str | None, *, json_output: bool, stdout_write: StdoutWrite) -> None:
+def _clear(command: TyperCommand, name: str | None, *, json_output: bool) -> None:
     from teatree.core.models import StandingGoal  # noqa: PLC0415 — deferred import
 
     count = StandingGoal.objects.clear(name)
     scope = "all standing goals" if name is None else f"standing goal {name!r}"
-    if json_output:
-        stdout_write(json.dumps({"ok": True, "cleared": count, "scope": scope}, indent=2))
-    else:
-        stdout_write(f"OK    cleared {count} {scope}.")
+    out, err = _out_err(command)
+    emit(
+        {"ok": True, "cleared": count, "scope": scope},
+        json_output=json_output,
+        out=out,
+        err=err,
+        human=f"OK    cleared {count} {scope}.",
+    )
 
 
-def _list(*, json_output: bool, stdout_write: StdoutWrite) -> None:
+def _list(command: TyperCommand, *, json_output: bool) -> None:
     from teatree.core.models import StandingGoal  # noqa: PLC0415 — deferred import
 
     goals = list(StandingGoal.objects.order_by("created_at"))
-    if json_output:
-        rows = [{"name": g.name, "check_command": g.check_command, "active": g.active} for g in goals]
-        stdout_write(json.dumps({"ok": True, "goals": rows}, indent=2))
-        return
+    rows = [{"name": g.name, "check_command": g.check_command, "active": g.active} for g in goals]
     if not goals:
-        stdout_write("NOOP  no standing goals registered.")
-        return
-    for goal in goals:
-        state = "active" if goal.active else "retired"
-        stdout_write(f"{state:8}{goal.name} — `{goal.check_command}`")
+        human: str | None = "NOOP  no standing goals registered."
+    else:
+        human = "\n".join(
+            f"{'active' if goal.active else 'retired':8}{goal.name} — `{goal.check_command}`" for goal in goals
+        )
+    out, err = _out_err(command)
+    emit({"ok": True, "goals": rows}, json_output=json_output, out=out, err=err, human=human)
 
 
 class Command(TyperCommand):
@@ -79,7 +84,7 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Register (or re-arm) a standing verified-green goal."""
-        _set(name, check, json_output=json_output, stdout_write=self.stdout.write)
+        _set(self, name, check, json_output=json_output)
 
     @command(name="clear")
     def clear(
@@ -89,7 +94,7 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Delete one named standing goal, or every goal when no name is given."""
-        _clear(name, json_output=json_output, stdout_write=self.stdout.write)
+        _clear(self, name, json_output=json_output)
 
     @command(name="list")
     def list_goals(
@@ -98,4 +103,4 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """List every registered standing goal and its active state."""
-        _list(json_output=json_output, stdout_write=self.stdout.write)
+        _list(self, json_output=json_output)

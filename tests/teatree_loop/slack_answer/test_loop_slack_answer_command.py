@@ -73,7 +73,7 @@ class TestLoopSlackAnswerCommand:
             "teatree.core.backend_factory.messaging_from_overlay",
             return_value=backend,
         ):
-            call_command("loop_slack_answer", stdout=out)
+            call_command("loop_slack_answer", stdout=out, stderr=out)
 
         assert "OK" in out.getvalue()
         assert any(e[2] for e in backend.reactions)
@@ -97,7 +97,7 @@ class TestLoopSlackAnswerCommand:
         PendingChatInjection.record(channel="C1", slack_ts="1.0", text="thanks!")
         LoopLease.objects.acquire("loop-slack-answer", owner="other-pid")
         out = io.StringIO()
-        call_command("loop_slack_answer", stdout=out)
+        call_command("loop_slack_answer", stdout=out, stderr=out)
 
         assert "SKIP" in out.getvalue()
 
@@ -111,7 +111,7 @@ class TestLoopSlackAnswerCommand:
                 return_value=False,
             ),
         ):
-            call_command("loop_slack_answer", stdout=out)
+            call_command("loop_slack_answer", stdout=out, stderr=out)
 
         assert "SKIP" in out.getvalue()
         assert PendingChatInjection.loop_unreplied().count() == 1

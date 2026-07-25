@@ -19,14 +19,14 @@ ORM access is here (a management command, not a plain typer command) per the
 project's "anything touching the ORM is a management command" rule.
 """
 
-import json
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django.core.management.base import CommandError
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.machine_output import emit
 from teatree.core.models import Session, SessionTodo
 from teatree.core.session_identity import current_session_id
 from teatree.core.stop_snapshot import prepare_stop
@@ -52,29 +52,28 @@ class Command(TyperCommand):
         overwrites the files and the resume ref in place — no duplicate commits.
         """
         result = prepare_stop(current_session_id(), str(Path.cwd()))
-        if json_output:
-            self.stdout.write(
-                json.dumps(
-                    {
-                        "session_id": result.session_id,
-                        "todos_path": str(result.todos_path) if result.todos_path else None,
-                        "resume_plan_path": str(result.resume_plan_path) if result.resume_plan_path else None,
-                        "at_risk": [
-                            {"path": str(w.path), "branch": w.branch, "recovery_ref": w.recovery_ref}
-                            for w in result.at_risk
-                        ],
-                    },
-                    indent=2,
-                )
-            )
-            return
-        self.stdout.write(f"OK    resume plan: {result.resume_plan_path}")
-        self.stdout.write(f"      TODO mirror: {result.todos_path}")
+        human_lines = [
+            f"OK    resume plan: {result.resume_plan_path}",
+            f"      TODO mirror: {result.todos_path}",
+        ]
         if result.at_risk:
-            for wt in result.at_risk:
-                self.stdout.write(f"      at-risk worktree captured: {wt.path} → {wt.recovery_ref}")
+            human_lines += [f"      at-risk worktree captured: {wt.path} → {wt.recovery_ref}" for wt in result.at_risk]
         else:
-            self.stdout.write("      at-risk worktrees: none")
+            human_lines.append("      at-risk worktrees: none")
+        emit(
+            {
+                "session_id": result.session_id,
+                "todos_path": str(result.todos_path) if result.todos_path else None,
+                "resume_plan_path": str(result.resume_plan_path) if result.resume_plan_path else None,
+                "at_risk": [
+                    {"path": str(w.path), "branch": w.branch, "recovery_ref": w.recovery_ref} for w in result.at_risk
+                ],
+            },
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(human_lines),
+        )
 
     def _resolve_session(self, session_pk: int | None) -> Session:
         """The session the TODO verbs act on: explicit ``--session``, else the live one.
@@ -116,17 +115,18 @@ class Command(TyperCommand):
     ) -> None:
         """List this session's working items, in working order."""
         session = self._resolve_session(session_pk)
-        rows = SessionTodo.objects.filter(session=session) if all_items else SessionTodo.objects.open_for(session)
-        if json_output:
-            self.stdout.write(
-                json.dumps([{"id": r.pk, "text": r.text, "status": r.status, "order": r.order} for r in rows], indent=2)
-            )
-            return
+        rows = list(SessionTodo.objects.filter(session=session) if all_items else SessionTodo.objects.open_for(session))
         if not rows:
-            self.stdout.write("      (no items)")
-            return
-        for row in rows:
-            self.stdout.write(f"  {row.pk:>4}  [{row.status}] {row.text}")
+            human = "      (no items)"
+        else:
+            human = "\n".join(f"  {row.pk:>4}  [{row.status}] {row.text}" for row in rows)
+        emit(
+            [{"id": r.pk, "text": r.text, "status": r.status, "order": r.order} for r in rows],
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     @command(name="todo-set")
     def todo_set(
