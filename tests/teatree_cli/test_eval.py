@@ -1800,7 +1800,7 @@ def _coverage(*, gaps: tuple[str, ...] = ()) -> CoverageReport:
 def _command_validity(*, ok: bool = True) -> CommandValidityReport:
     if ok:
         return CommandValidityReport(violations=(), checked=3)
-    violation = CommandViolation(skill="stale", doc="stale/SKILL.md", command="t3 frobnicate")
+    violation = CommandViolation(doc="skills/stale/SKILL.md", command="t3 frobnicate")
     return CommandValidityReport(violations=(violation,), checked=3)
 
 

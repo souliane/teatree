@@ -1,7 +1,7 @@
-"""skill-command-validity: backticked ``t3 …`` in skill docs must name real commands (#550).
+"""skill-command-validity: backticked ``t3 …`` in repo docs must name real commands (#550).
 
 The engine is dependency-inverted — it takes the ``(valid_paths, group_paths)`` registry
-as an argument, so these drive it with a small synthetic registry and a tmp skills tree.
+as an argument, so these drive it with a small synthetic registry and a tmp repo root.
 """
 
 from pathlib import Path
@@ -10,7 +10,7 @@ from teatree.eval.skill_command_validity import (
     _is_placeholder_only,
     iter_backticked_t3_commands,
     resolve_command_path,
-    validate_skill_commands,
+    validate_doc_commands,
 )
 
 _VALID = {"t3", "t3 teatree", "t3 teatree ticket", "t3 teatree ticket list"}
@@ -52,21 +52,21 @@ class TestIterBackticked:
         assert iter_backticked_t3_commands("just prose about t3 teatree ticket list") == []
 
 
-class TestValidateSkillCommands:
+class TestValidateDocCommands:
     def _skill(self, root: Path, body: str) -> None:
-        skill = root / "myskill"
-        skill.mkdir()
+        skill = root / "skills" / "myskill"
+        skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(body, encoding="utf-8")
 
     def test_a_doc_citing_a_missing_command_is_a_violation(self, tmp_path: Path) -> None:
         self._skill(tmp_path, "Run `t3 teatree ticket frobnicate` to do it.\n")
-        report = validate_skill_commands(_VALID, _GROUPS, skills_dir=tmp_path)
+        report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
         assert not report.ok
         assert report.violations[0].command == "t3 teatree ticket frobnicate"
         assert "does not resolve" in report.render_text()
 
     def test_a_doc_citing_a_real_command_passes(self, tmp_path: Path) -> None:
         self._skill(tmp_path, "Run `t3 teatree ticket list`.\n")
-        report = validate_skill_commands(_VALID, _GROUPS, skills_dir=tmp_path)
+        report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
         assert report.ok
         assert report.checked == 1

@@ -47,7 +47,7 @@ messaging_backend = "slack"
 slack_token_ref = "teatree/slack/another-project"
 slack_user_id = "U01ABCD1234"
 
-# External Playwright E2E repos — used by `t3 e2e external --repo <name>`
+# External Playwright E2E repos — used by `t3 <overlay> e2e external --repo <name>`
 # Teatree clones/updates the repo to ~/.local/share/teatree/e2e-repos/<name>/
 # and runs Playwright from <clone>/<e2e_dir>. `branch` is the default ref;
 # `--branch <name>` (alias `--ref`) overrides it to run the suite from an open

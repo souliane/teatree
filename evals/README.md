@@ -920,12 +920,19 @@ code path still honors the invariant — then add the matching anti-vacuous test
 
 `t3 eval skill-command-validity` is a Layer-1 (deterministic, free, no `claude`
 run) **test** — a sibling of pinned-regressions. It
-grades the skill *docs* themselves: every backticked `t3 …` command a
-`skills/<name>/SKILL.md` (and its nested `*.md` references) documents must
-resolve against the LIVE CLI registry. A SKILL.md that cites a `t3` command
+grades the repo's prose *docs* themselves: every backticked `t3 …` command a
+doc in `DOC_GLOBS` cites — `skills/<name>/SKILL.md` and its nested `*.md`
+references, the `agents/*.md` role briefs, `BLUEPRINT.md`, and the `docs/` tree
+minus `docs/generated/` (rendered FROM the registry, so checking it is circular)
+— must resolve against the LIVE CLI registry. A doc that cites a `t3` command
 which no longer exists in the registry is drift — the exact "no stale
-references" rule in `CLAUDE.md` — and exits non-zero, catching a stale skill doc
-after a CLI rename.
+references" rule in `CLAUDE.md` — and exits non-zero, catching a stale doc
+after a CLI rename. An overlay slot (`t3 <overlay> …`, or an illustrative
+overlay name like `t3 acme …`) is SUBSTITUTED with a representative overlay
+rather than skipped, so the subcommand path behind it is validated; a
+slash/pipe enumeration (`t3 loop enable/disable`) is expanded and every
+alternative walked. The narrow `ALLOWED_NON_RESOLVING` exemptions each carry a
+justification and an anti-rot test that fails once an entry starts resolving.
 
 The engine (`eval/skill_command_validity.py`) is pure and dependency-inverted:
 it takes the registry as the `(valid_paths, group_paths)` argument pair (the
@@ -934,7 +941,7 @@ importing `teatree.cli` — `teatree.eval` must not reach up into the CLI layer.
 The thin lane (`cli/eval/skill_command_lane.py`) builds the live registry from
 the typer app (registering the `teatree` overlay so `t3 teatree …` invocations
 resolve) and injects it. The parse + token-walk logic is the single chokepoint
-the skill-prose static-invocation pytest gate (`tests/test_skill_t3_invocations.py`)
+the doc-prose static-invocation pytest gate (`tests/test_skill_t3_invocations.py`)
 also consumes, so the regex and placeholder rules live in exactly one place. A
 generic placeholder mention (`t3 …` / `t3 <overlay> …`) names no concrete
 command and is skipped — never drift. It runs as a free lane in every `t3 eval
