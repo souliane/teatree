@@ -32,7 +32,7 @@
 # app-load cycle). Nesting the two modules under core/fleet/ does not change these
 # runtime edges, so the deferrals stay and are pegged here.
 "src/teatree/core/fleet/wire.py" = 3
-"src/teatree/core/gates/dod_gate.py" = 3
+"src/teatree/core/gates/dod_gate.py" = 2
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1
 "src/teatree/core/gates/live_post_gate.py" = 1
