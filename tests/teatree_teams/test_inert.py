@@ -1,14 +1,15 @@
 """Pane-layer wiring fitness — only the sanctioned consumer reaches teams (#1838 PR#7b).
 
-PR#6/#7a shipped the team-role registry + pane machinery DARK. PR#7b is the
-named consumer the Track-B section staged for: it wires teams into the live path
-through exactly ONE module-level seam — ``teatree.loop.scanners.pane_reaper`` (the
-idle-pane reaper scanner the pane-reaper mini-loop dispatches). This AST-level
-import scan pins that the ONLY live-path module reaching ``teatree.teams`` is that
-sanctioned consumer; any OTHER live-path module wiring the registry in turns it
-RED. The maker claim path (``teatree.teams.pane_spawn``) lives INSIDE the teams
-package and is reached via a lazy import from the claim command, so it never adds
-a module-level live-path → teams edge either.
+Exactly ONE live-path module reaches ``teatree.teams``:
+``teatree.loop.scanners.pane_reaper`` (the idle-pane reaper scanner the
+pane-reaper mini-loop dispatches). This AST-level import scan pins that; any
+OTHER live-path module wiring the registry in turns it RED.
+
+The maker claim path (``teatree.teams.pane_spawn``) has NO production caller at
+all — no module-level import, no lazy one. So this scan currently ENFORCES the
+pane-spawn half's dead state: wiring a maker consumer in would turn it red by
+design, and re-specifying ``_SANCTIONED_TEAMS_CONSUMERS`` is part of that work.
+Wire-vs-retire is an open owner decision (#3734).
 """
 
 import ast
