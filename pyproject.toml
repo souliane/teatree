@@ -118,7 +118,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.4.10",
+  "prek==0.4.11",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
