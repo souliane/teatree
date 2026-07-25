@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 from teatree.core.intake.factory_admission import IntakeFacts, decide_intake, payload_labels
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
 from teatree.types import RawAPIDict
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 
@@ -49,7 +50,7 @@ def pr_is_admitted(pr: RawAPIDict, *, pr_url: str, trusted: frozenset[str], admi
     slug = slug_from_issue_or_pr_url(parsed.path)
     if not author or not slug:
         return False
-    host_kind = "gitlab" if "/-/" in parsed.path or "gitlab" in (parsed.hostname or "").lower() else "github"
+    host_kind = "gitlab" if "/-/" in parsed.path or forge_from_remote(pr_url) == "gitlab" else "github"
     subject = AuthorSubject(slug=slug, author=author, host_kind=host_kind)
     trust = decide_author_trust(subject, gate=AutonomyGate.INTAKE, extra_trusted=trusted)
     author_trusted = trust is TrustVerdict.AUTONOMOUS

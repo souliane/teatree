@@ -109,7 +109,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 99: +retention.py (#3693) — the age-based prune of the high-churn control-DB tables. A genuine new
 # root data-lifecycle concern: it spans TaskAttempt + IncomingEvent + Ticket and fits no existing
 # subpackage (cleanup/ is worktree/branch/stash reaping, not DB-row retention).
-PINNED_FLAT_CORE_MODULES = 99
+# 100: +forge_pr_probe.py — the single tri-state open-PR probe (find_open_pr_for_branch → FOUND/NONE/
+# UNKNOWN) that unified the three hand-rolled `gh pr list` / `glab mr list` probes. A genuine shared
+# root leaf bridging two gates/ modules (orphan_guard, open_pr_teardown_gate) and the flat root
+# fast_push.py: gates/ is gate/deny logic, not a forge-transport probe, and no other subpackage owns it.
+PINNED_FLAT_CORE_MODULES = 100
 
 
 def _flat_core_modules() -> list[str]:
