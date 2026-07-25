@@ -619,7 +619,7 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 
 ```toml
 asgiref>=3.8
-claude-agent-sdk==0.2.125
+claude-agent-sdk==0.2.94
 coverage>=7
 croniter>=6.2.2
 django>=6,<6.1
@@ -639,7 +639,7 @@ tomlkit>=0.13
 whitenoise>=6.6
 ```
 
-Load-bearing pins: `claude-agent-sdk` is an EXACT pin (not a floor) so the installed `t3`'s in-process headless SDK never drifts from the tested version; `pydantic-ai-slim[anthropic,openai]` is a RUNTIME dep (not dev-only) because `agent_harness=pydantic_ai` is a live headless-dispatch path (the `[anthropic]` extra backs the CLI-free Anthropic Messages-API binding, the `[openai]` extra the OrcaRouter client); `croniter` parses the `[teatree.availability].windows` cron expressions (§17.1 invariant 9); `tomlkit` renders the `config_setting export` DB→TOML interchange dump; `django-linear-migrations` records the per-app `max_migration.txt` fork sentinel (§4 migration-fork probe); `gunicorn`/`whitenoise` serve the dashboard; `mcp` backs the MCP server; `pillow` handles image attachments; `coverage`/`asgiref`/`pyyaml` are transitive-critical direct pins.
+Load-bearing pins: `claude-agent-sdk` is an EXACT pin (not a floor) AND carries a Dependabot `ignore` entry so the installed `t3`'s in-process headless SDK never drifts from the tested version — the bundled claude CLI at/after 2.1.204 emits a markdown `**AskUserQuestion**` chip instead of a `tool_use` block, which reds every AskUserQuestion eval scenario, so a bump is opened by hand and re-verified against the metered eval lane; `pydantic-ai-slim[anthropic,openai]` is a RUNTIME dep (not dev-only) because `agent_harness=pydantic_ai` is a live headless-dispatch path (the `[anthropic]` extra backs the CLI-free Anthropic Messages-API binding, the `[openai]` extra the OrcaRouter client); `croniter` parses the `[teatree.availability].windows` cron expressions (§17.1 invariant 9); `tomlkit` renders the `config_setting export` DB→TOML interchange dump; `django-linear-migrations` records the per-app `max_migration.txt` fork sentinel (§4 migration-fork probe); `gunicorn`/`whitenoise` serve the dashboard; `mcp` backs the MCP server; `pillow` handles image attachments; `coverage`/`asgiref`/`pyyaml` are transitive-critical direct pins.
 
 Optional extras (installed on demand):
 
