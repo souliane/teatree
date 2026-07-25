@@ -21,7 +21,8 @@ from teatree.config.write_validation import ConfigWriteError, validate_config_wr
 from teatree.core.config_migration import import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.dash import audit
-from teatree.dash.settings_editor import build_settings_editor, export_text, import_preview, is_secret_setting
+from teatree.dash.config_display import is_secret
+from teatree.dash.settings_editor import build_settings_editor, export_text, import_preview
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, nav_context
 
@@ -34,7 +35,7 @@ SAFETY_CONFIRM_PHRASE = "change-safety-posture"
 
 def _audit_after(key: str, canonical: object) -> str:
     """The audit ``after`` value — never the real value of a secret key."""
-    return "***" if is_secret_setting(key) else str(canonical)
+    return "***" if is_secret(key) else str(canonical)
 
 
 @require_loopback_or_staff
