@@ -36,6 +36,15 @@ down; markdown/docs, declarative config, and ``tests/``.
 import re
 from dataclasses import dataclass
 
+from teatree.hooks._diff_lines import (
+    DOC_BASENAME_PREFIXES,
+    DOC_PATH_PREFIXES,
+    DOC_SUFFIXES,
+    FILE_HEADER_RE,
+    SLASH_COMMENT_SUFFIXES,
+    is_added_line,
+)
+
 _ALLOW_MARKER = "privacy-scan:allow"
 _SECURITY_RATIONALE_MARKER = "security:"
 
@@ -67,16 +76,14 @@ _MIN_ADDED_CODE_LINES = 3
 _MIN_ADDED_COMMENT_LINES = 3
 _CONSECUTIVE_COMMENT_WARN_THRESHOLD = 2
 
+# Unlike the self-reference leak scan, YAML/TOML/INI are config surfaces
+# exempt from the density pass entirely (``_is_exempt_file``), so the
+# hash-comment set here stays code-only.
 _HASH_COMMENT_SUFFIXES = (".py", ".sh", ".bash", ".rb")
-_SLASH_COMMENT_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".c", ".cpp", ".cs", ".scss", ".css")
 
-_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
 _CONFIG_SUFFIXES = (".yml", ".yaml", ".toml", ".cfg", ".ini")
-_DOC_PATH_PREFIXES = ("docs/",)
-_DOC_BASENAME_PREFIXES = ("CHANGELOG",)
 _TEST_PATH_PREFIXES = ("tests/", "test/")
 
-_FILE_HEADER_RE = re.compile(r"^\+\+\+ (?:b/)?(.+?)(?:\t.*)?$")
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _HASH_COMMENT_RE = re.compile(r"^\s*#")
 _SLASH_COMMENT_RE = re.compile(r"^\s*(?://|/\*|\*)")
@@ -231,19 +238,19 @@ def _echoes_signature(words: list[str], name_words: set[str]) -> bool:
 
 def _is_exempt_file(path: str) -> bool:
     lowered = path.lower()
-    if lowered.endswith((*_DOC_SUFFIXES, *_CONFIG_SUFFIXES)):
+    if lowered.endswith((*DOC_SUFFIXES, *_CONFIG_SUFFIXES)):
         return True
-    if any(lowered.startswith(p) or f"/{p}" in lowered for p in (*_DOC_PATH_PREFIXES, *_TEST_PATH_PREFIXES)):
+    if any(lowered.startswith(p) or f"/{p}" in lowered for p in (*DOC_PATH_PREFIXES, *_TEST_PATH_PREFIXES)):
         return True
     basename = path.rsplit("/", 1)[-1]
-    return any(basename.startswith(p) for p in _DOC_BASENAME_PREFIXES)
+    return any(basename.startswith(p) for p in DOC_BASENAME_PREFIXES)
 
 
 def _comment_re(path: str) -> re.Pattern[str] | None:
     lowered = path.lower()
     if lowered.endswith(_HASH_COMMENT_SUFFIXES):
         return _HASH_COMMENT_RE
-    if lowered.endswith(_SLASH_COMMENT_SUFFIXES):
+    if lowered.endswith(SLASH_COMMENT_SUFFIXES):
         return _SLASH_COMMENT_RE
     return None
 
@@ -288,7 +295,7 @@ class _FileScan:
         if raw.startswith(" "):
             self._feed_context_line(raw[1:])
             return
-        if not raw.startswith("+") or raw.startswith("+++"):
+        if not is_added_line(raw):
             return
         self._feed_added_line(raw[1:], comment_re)
 
@@ -429,7 +436,7 @@ def _iter_file_scans(text: str) -> "list[tuple[int, str, _FileScan]]":
             results.append((header_lineno, current_path, scan))
 
     for lineno, raw in enumerate(text.splitlines(), 1):
-        header = _FILE_HEADER_RE.match(raw)
+        header = FILE_HEADER_RE.match(raw)
         if header is not None:
             flush()
             current_path = header.group(1)
