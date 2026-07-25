@@ -4,6 +4,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
 
@@ -224,6 +225,75 @@ class TestTaskQuerySet(TestCase):
         assert claimed is not None
         assert claimed.claimed_by == "loop-slot"
         assert claimed.claimed_by_session == "sess-A"
+
+
+class TestTaskPhaseCadenceQueries(TestCase):
+    """The periodic-scanner dedupe/last-run queries shared via ``PhaseCadence``."""
+
+    OVERLAY = "t3-teatree"
+    PHASE = "eval_local"
+
+    def _task(self, *, overlay: str, phase: str, status: str, started_hours_ago: int | None = None) -> Task:
+        ticket = Ticket.objects.create(overlay=overlay)
+        session = Session.objects.create(overlay=overlay, ticket=ticket, agent_id="a")
+        if started_hours_ago is not None:
+            Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(hours=started_hours_ago))
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
+
+    def test_in_flight_for_phase_matches_pending_and_claimed_only(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        claimed = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.CLAIMED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED)
+
+        in_flight = set(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE))
+
+        assert in_flight == {pending, claimed}
+
+    def test_in_flight_for_phase_scopes_to_overlay_and_phase(self) -> None:
+        target = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay="other-overlay", phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay=self.OVERLAY, phase="scanning_news", status=Task.Status.PENDING)
+
+        assert list(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE)) == [target]
+
+    def test_last_run_at_for_phase_returns_newest_session_start(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=48)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=2)
+
+        last_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert last_run is not None
+        # The newest task started ~2h ago, so the clock reads ~2h, not 48h.
+        assert (timezone.now() - last_run) < timedelta(hours=3)
+
+    def test_last_run_at_for_phase_none_when_no_task(self) -> None:
+        assert Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE) is None
+
+    def test_manager_methods_delegate_to_module_helpers(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=3)
+
+        # The module-level helpers are the concern-split home the manager methods delegate to.
+        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)) == [pending]
+        direct = last_run_at_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)
+        via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+        assert direct == via_manager
+
+    def test_last_run_at_for_phase_completed_only_ignores_failed(self) -> None:
+        completed = self._task(
+            overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200
+        )
+        # A newer FAILED task must NOT advance the completed-only clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+
+        completed_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE, completed_only=True)
+        any_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert completed_run is not None
+        assert (timezone.now() - completed_run) > timedelta(hours=100)  # the old COMPLETED one
+        assert completed_run == Session.objects.get(pk=completed.session_id).started_at
+        assert any_run is not None
+        assert (timezone.now() - any_run) < timedelta(hours=2)  # the recent FAILED one wins without the filter
 
 
 class TestActiveClaimExists(TestCase):
