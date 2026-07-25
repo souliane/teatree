@@ -281,9 +281,10 @@ class _LoopAndTeamsSettings:
     # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
     # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the
-    # WORK-team ships DARK. When flipped on, a LATER PR wires the
-    # `team:<role>` claim namespace + the overlay-seam claim filters into a
-    # pane-backed teammate; this PR adds only the config surface. DB-home
+    # WORK-team ships DARK. Flipping it TRUE spawns no teammate pane either —
+    # the `team:<role>` claim namespace + the overlay-seam claim filters are
+    # built and tested but have no production caller, so this key gates only
+    # the reaper scanner. Wire-vs-retire is open (#3734). DB-home
     # (#1775): resolved from the `ConfigSetting` store (global + overlay rows) +
     # `T3_TEAMS_ENABLED` env; a `[teams]`/`[overlays.<name>]` TOML value is ignored
     # on read. Set via `t3 teams on|off` (the DB-row write path).

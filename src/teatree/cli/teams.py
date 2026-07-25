@@ -13,6 +13,10 @@ in the ``[teams]`` TOML table is ignored on read). ``status`` reports the
 :func:`teatree.config.get_effective_settings`). The writes go through the ORM, so
 they ensure Django is configured first. Kept top-level (like ``t3 loop``) because
 the switch is overlay-agnostic.
+
+Flipping the row on does not currently produce a teammate pane: the pane-spawn
+half of ``teatree.teams`` has no production caller (#3734), so ``on`` and a
+``status`` that reads on both disclose that rather than implying a live pane.
 """
 
 import typer
@@ -20,6 +24,12 @@ import typer
 ENABLED_KEY = "teams_enabled"
 
 CLASSIC_NOTE = "classic in-session sub-agent mode"
+
+NO_CONSUMER_NOTE = (
+    "note: no teammate pane is spawned — the pane-spawn half has no production "
+    "caller yet; wire-vs-retire is open at "
+    "https://github.com/souliane/teatree/issues/3734"
+)
 
 teams_app = typer.Typer(
     name="teams",
@@ -47,6 +57,7 @@ def on() -> None:
     """Enable agent teams — write the global teams_enabled = true config row."""
     _set_enabled(value=True)
     typer.echo(f"agent teams = on — wrote the {ENABLED_KEY} row to the global config store")
+    typer.echo(NO_CONSUMER_NOTE)
 
 
 @teams_app.command()
@@ -63,5 +74,6 @@ def status() -> None:
 
     if get_effective_settings().teams_enabled:
         typer.echo("agent teams = on")
+        typer.echo(NO_CONSUMER_NOTE)
         return
     typer.echo(f"agent teams = off — {CLASSIC_NOTE}")

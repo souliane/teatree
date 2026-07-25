@@ -8,12 +8,18 @@ key in the ``team:<role>`` namespace (disjoint from the t3-master / per-loop /
 infra slots), and each maker role a declarative overlay-seam claim filter that
 partitions the backlog (CORE → ``overlay == ""``, OVERLAY → ``overlay != ""``).
 
-This PR ships the registry DARK behind the default-OFF ``[teams] enabled``
-toggle: the module is PURE DATA, imports nothing from ``teatree`` (a foundation
-leaf), and is referenced by NOTHING in the loop / dispatch / claim execution
-path. The pane-spawn helper and the live REVIEWER/maker teammates are deferred
-to later PRs. Nothing here runs when the flag is off; nothing runs when it is
-on either, until a future PR wires a consumer in.
+The registry ships DARK behind the default-OFF ``teams_enabled`` toggle: the
+module is PURE DATA, imports nothing from ``teatree`` (a foundation leaf), and is
+referenced by NOTHING in the loop / dispatch / claim execution path.
+
+**No production caller spawns a teammate pane (#3734).** The whole package is
+built and tested, but the only live-path importer is the idle-pane reaper
+scanner, which consumes four reaper-side symbols. ``claim_maker_pane``,
+``TeammatePane.spawn``, ``build_pane_options``, ``spawn_pane``, the guardrails
+and the role claim filters have zero references outside this package and its
+tests — so ``t3 teams on`` produces no pane, and the reaper reaps nothing because
+nothing claims a ``team:*`` slot. Whether to wire the spawn half in or retire it
+is an open owner decision.
 """
 
 from teatree.teams.roles import TEAM_CLAIM_PREFIX, TeamRole, is_team_claim_slot, team_claim_slot

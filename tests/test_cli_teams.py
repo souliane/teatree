@@ -75,6 +75,34 @@ class TestTeamsStatus(TestCase):
         assert ConfigSetting.objects.get_effective("teams_enabled") is True
 
 
+class TestOnAndStatusDiscloseTheMissingConsumer(TestCase):
+    # `on` writing the row must not read as "a teammate pane now exists" while the
+    # pane-spawn half has no production caller (#3734).
+    def test_on_states_no_pane_is_spawned_and_points_at_the_issue(self) -> None:
+        result = runner.invoke(teams_app, ["on"])
+        assert result.exit_code == 0
+        assert "no teammate pane is spawned" in result.stdout
+        assert "3734" in result.stdout
+
+    def test_status_on_states_no_pane_is_spawned_and_points_at_the_issue(self) -> None:
+        ConfigSetting.objects.set_value("teams_enabled", value=True)
+        result = runner.invoke(teams_app, ["status"])
+        assert result.exit_code == 0
+        assert "no teammate pane is spawned" in result.stdout
+        assert "3734" in result.stdout
+
+    def test_off_does_not_carry_the_note(self) -> None:
+        result = runner.invoke(teams_app, ["off"])
+        assert result.exit_code == 0
+        assert "no teammate pane is spawned" not in result.stdout
+
+    def test_status_off_does_not_carry_the_note(self) -> None:
+        ConfigSetting.objects.set_value("teams_enabled", value=False)
+        result = runner.invoke(teams_app, ["status"])
+        assert result.exit_code == 0
+        assert "no teammate pane is spawned" not in result.stdout
+
+
 class TestStatusReflectsRoundTrip(TestCase):
     def test_off_then_status_reports_off(self) -> None:
         ConfigSetting.objects.set_value("teams_enabled", value=True)

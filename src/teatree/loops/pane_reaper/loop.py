@@ -1,9 +1,10 @@
 """Pane-reaper mini-loop — demote idle maker panes past the idle threshold (#1838 PR#7b).
 
-A sibling of :mod:`teatree.loops.idle_stack_reaper`. PR#7a deferred this
-registration to avoid the inertness gate; now that the maker consumer wires
-teams into the live path, the pane reaper registers as a mini-loop. It is ONLY
-active when ``teams_enabled``: :func:`_pane_reaper_scanner` returns ``None`` (so
+A sibling of :mod:`teatree.loops.idle_stack_reaper`. The pane reaper is the ONE
+registered consumer of ``teatree.teams``; the pane-SPAWN half it reaps for has no
+production caller, so nothing ever claims a ``team:*`` slot and this loop reaps
+nothing. Wire-vs-retire is an open owner decision (#3734). It is ONLY active when
+``teams_enabled``: :func:`_pane_reaper_scanner` returns ``None`` (so
 ``build_jobs`` returns ``[]``) while the feature is off, and the scanner itself
 no-ops on a disabled flag — DEFAULT-OFF, byte-identical to today.
 """
