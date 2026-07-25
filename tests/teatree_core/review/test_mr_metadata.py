@@ -292,7 +292,7 @@ class TestAutoCreatedDescription:
     rather than invent a rationale.
     """
 
-    _TITLE = "fix(hook): render a gate-conforming body (#3760)"
+    _TITLE = "fix(pr): render a gate-conforming auto-created body"
 
     def test_output_passes_the_gate(self) -> None:
         out = auto_created_description(self._TITLE, "- the commit body")
