@@ -210,6 +210,40 @@ class SyntheticUmbrellaTests(_SweepHarness):
         assert signals[0].payload["task_id"] == task.pk
 
 
+class SyntheticSchemeTicketTests(_SweepHarness):
+    """Cadence-scanner placeholder tickets anchor on hostless synthetic schemes.
+
+    ``eval-local://``, ``scanning-news://``, ``architectural-review://``,
+    ``backlog-sweep://``, ``dogfood-smoke://`` carry no forge host, so
+    ``get_code_host_for_url`` would fall back to the overlay DEFAULT host and run
+    ``get_issue`` against the wrong forge — manufacturing a spurious
+    ``task.orphaned`` signal and wasting an API call. The sweep must exclude them
+    up front, exactly like the loop umbrella.
+    """
+
+    def test_synthetic_scheme_task_is_not_swept(self) -> None:
+        self._task(url="eval-local://t3-acme", phase="eval_local")
+        host = _Host()
+        with self._patch_host(host):
+            assert self._scanner().scan() == []
+        assert host.get_issue_calls == []  # never even fetched — excluded up front
+
+    def test_every_named_synthetic_scheme_is_excluded(self) -> None:
+        schemes = (
+            "eval-local://t3-acme",
+            "scanning-news://t3-acme",
+            "architectural-review://t3-acme",
+            "backlog-sweep://t3-acme",
+            "dogfood-smoke://t3-acme",
+        )
+        for url in schemes:
+            self._task(url=url, phase="coding")
+        host = _Host()
+        with self._patch_host(host):
+            assert self._scanner().scan() == []
+        assert host.get_issue_calls == []
+
+
 class FailOpenTests(_SweepHarness):
     """Uncertainty never auto-completes — it emits ``task.orphaned``."""
 
