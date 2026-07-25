@@ -167,8 +167,8 @@ class TestFetchReviewPermalinks(TestCase):
         assert mr["review_permalink"] == "https://team.slack.com/archives/C123/p170000"
         assert mr["review_channel"] == "review-team"
 
-    def test_skips_non_dict_mrs_in_collection(self) -> None:
-        """Tickets with non-dict mrs are skipped during collection (line 370)."""
+    def test_skips_non_dict_prs_in_collection(self) -> None:
+        """Tickets with a non-dict ``extra["prs"]`` are skipped during collection."""
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/801",
