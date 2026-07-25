@@ -11,7 +11,9 @@ format in each error.
 import pytest
 
 from teatree.core.review.mr_metadata import (
+    AUTO_CREATED_WHY_PLACEHOLDER,
     DEFAULT_MR_TITLE_REGEX,
+    auto_created_description,
     ensure_standard_body,
     expected_title_format,
     missing_required_sections,
@@ -280,3 +282,40 @@ class TestEnsureStandardBody:
             section_defaults={"Configuration": "SHOULD NOT APPEAR"},
         )
         assert "SHOULD NOT APPEAR" not in out
+
+
+class TestAutoCreatedDescription:
+    """The body a PR opened with no author-written description ships.
+
+    The no-orphan pre-push hook has only the commit to work from, so the body it
+    renders must satisfy this same gate — and its ``## Why`` must ask the author
+    rather than invent a rationale.
+    """
+
+    _TITLE = "fix(hook): render a gate-conforming body (#3760)"
+
+    def test_output_passes_the_gate(self) -> None:
+        out = auto_created_description(self._TITLE, "- the commit body")
+        assert validate_mr_metadata(self._TITLE, out, DEFAULT_MR_TITLE_REGEX) == []
+
+    def test_raw_commit_message_is_still_rejected(self) -> None:
+        """Control: the gate is unchanged — only the generated body was fixed."""
+        raw = f"{self._TITLE}\n\n- the commit body"
+        assert validate_mr_metadata(self._TITLE, raw, DEFAULT_MR_TITLE_REGEX) != []
+
+    def test_first_line_is_the_title(self) -> None:
+        out = auto_created_description(self._TITLE, "- the commit body")
+        assert out.splitlines()[0] == self._TITLE
+
+    def test_what_carries_the_commit_body(self) -> None:
+        out = auto_created_description(self._TITLE, "- the commit body")
+        assert "## What\n- the commit body" in out
+
+    def test_bodyless_commit_falls_back_to_the_title_under_what(self) -> None:
+        out = auto_created_description(self._TITLE, "")
+        assert f"## What\n{self._TITLE}" in out
+
+    def test_why_is_an_explicit_placeholder_not_a_rationale(self) -> None:
+        out = auto_created_description(self._TITLE, "- the commit body")
+        assert out.endswith(f"## Why\n{AUTO_CREATED_WHY_PLACEHOLDER}")
+        assert AUTO_CREATED_WHY_PLACEHOLDER.startswith("TODO")

@@ -29,8 +29,10 @@ import re
 from teatree.types import DEFAULT_MR_TITLE_REGEX
 
 __all__ = [
+    "AUTO_CREATED_WHY_PLACEHOLDER",
     "DEFAULT_MR_TITLE_REGEX",
     "STANDARD_SECTIONS",
+    "auto_created_description",
     "ensure_standard_body",
     "expected_first_line_format",
     "expected_title_format",
@@ -46,6 +48,22 @@ _WHAT_WHY_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(what|why)\b\s*:?", re.IGNORECASE 
 # ``Configuration`` section); those are appended to this base by
 # ``ensure_standard_body``.
 STANDARD_SECTIONS: tuple[str, ...] = ("What", "Why")
+
+AUTO_CREATED_WHY_PLACEHOLDER = (
+    "TODO — opened automatically by the no-orphan pre-push hook, which sees only "
+    "the commit. Replace this line with the rationale before requesting review."
+)
+
+
+def auto_created_description(title: str, commit_body: str) -> str:
+    """The What/Why body for a PR opened with no author-written description.
+
+    The no-orphan invariant opens the PR from the commit alone, so the rationale
+    has no source: ``## Why`` carries a visible ask-the-author placeholder rather
+    than a plausible-sounding invention, which would be worse than an obviously
+    unfinished body.
+    """
+    return f"{title}\n\n## What\n{commit_body.strip() or title}\n\n## Why\n{AUTO_CREATED_WHY_PLACEHOLDER}"
 
 
 def expected_title_format(title_regex: str) -> str:
