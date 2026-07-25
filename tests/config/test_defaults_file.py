@@ -142,6 +142,7 @@ class TestSafetyAndDarkFlagsPinned:
         "require_debt_delta": False,
         "require_executed_repro": False,
         "require_merge_quality_verdict": False,
+        "require_spec_coverage": False,
         "ci_eval_heal_autofix_enabled": False,
     }
 

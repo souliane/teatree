@@ -5,14 +5,17 @@ from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.types import validated_ticket_extra
+from teatree.core.models.types import ac_label, spec_coverage_criteria, validated_ticket_extra
 
 if TYPE_CHECKING:
     from teatree.core.models.types import (
+        AcceptanceCriterion,
         AntiVacuityAttestation,
         JSONObject,
         ReviewContext,
         ReviewSkillRun,
+        SpecCoverageManifest,
+        SpecCoverageOverride,
         TicketExtra,
         TicketSiblingFields,
     )
@@ -185,6 +188,31 @@ class TicketEvidenceModel(TicketFacet):
             "at": timezone.now().isoformat(),
         }
         self.merge_extra(set_keys={"anti_vacuity_attestation": attestation})
+
+    def record_spec_coverage(self, criteria: "list[AcceptanceCriterion]", *, replace: bool = False) -> None:
+        """Stamp the per-ticket spec-coverage manifest the DoD gate reads (#2232).
+
+        The producer half of ``teatree.core.gates.spec_coverage_gate``, which
+        without one made ``require_spec_coverage`` unsatisfiable — its ON state
+        refused every delivery because nothing could ever write the manifest.
+
+        Criteria are upserted by :func:`ac_label`, so a later run adds tests to
+        one AC without restating the rest; ``replace`` records exactly *criteria*
+        (the only way to drop a mis-recorded AC). The read side runs against the
+        ``select_for_update``-locked row rather than the possibly-stale in-memory
+        ``extra``, so a concurrent writer's AC survives the merge.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            merged = {} if replace else {ac_label(ac): ac for ac in spec_coverage_criteria(locked.extra)}
+            merged.update({ac_label(ac): ac for ac in criteria})
+            manifest: SpecCoverageManifest = {"acceptance_criteria": list(merged.values())}
+            self.merge_extra(set_keys={"spec_coverage": manifest})
+
+    def record_spec_coverage_override(self, reason: str) -> None:
+        """Stamp the audited escape hatch for a genuinely AC-less ticket (#2232)."""
+        override: SpecCoverageOverride = {"reason": reason}
+        self.merge_extra(set_keys={"spec_coverage_override": override})
 
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.

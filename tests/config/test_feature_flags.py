@@ -21,6 +21,7 @@ import dataclasses
 from enum import StrEnum
 
 from teatree.config import (
+    DURABLE_GATE_SETTINGS,
     FEATURE_FLAGS,
     OVERLAY_OVERRIDABLE_SETTINGS,
     CriticGateMode,
@@ -105,6 +106,39 @@ class TestRegisteredHome:
     def test_every_flag_field_is_overlay_overridable(self) -> None:
         unregistered = sorted(key for key in FEATURE_FLAGS if key not in OVERLAY_OVERRIDABLE_SETTINGS)
         assert unregistered == [], f"feature flags not in OVERLAY_OVERRIDABLE_SETTINGS: {unregistered}"
+
+
+class TestEveryGateToggleIsClassified:
+    """No ``require_*`` toggle ships unclassified — the hole ``require_spec_coverage`` fell through.
+
+    Its ON state refused every RETROSPECTED→DELIVERED advance (a missing manifest
+    is itself a block) while no command could write the manifest, and nothing
+    reviewed that because the flag was in no registry at all. Classification is
+    now mandatory: a new gate toggle is a dying ``FEATURE_FLAGS`` entry or a
+    declared-durable operator policy, never neither.
+    """
+
+    def _gate_toggles(self) -> set[str]:
+        return {f.name for f in dataclasses.fields(UserSettings) if f.name.startswith("require_")}
+
+    def test_every_gate_toggle_is_a_flag_or_a_durable_setting(self) -> None:
+        unclassified = sorted(self._gate_toggles() - set(FEATURE_FLAGS) - DURABLE_GATE_SETTINGS)
+        assert unclassified == [], (
+            f"gate toggles in neither FEATURE_FLAGS nor DURABLE_GATE_SETTINGS: {unclassified} — "
+            f"register a dying flag, or declare it durable operator policy"
+        )
+
+    def test_the_two_buckets_are_disjoint(self) -> None:
+        assert set(FEATURE_FLAGS) & DURABLE_GATE_SETTINGS == set()
+
+    def test_durable_bucket_names_only_real_gate_toggles(self) -> None:
+        assert self._gate_toggles() >= DURABLE_GATE_SETTINGS
+
+    def test_spec_coverage_gate_is_governed_dark_and_off(self) -> None:
+        flag = FEATURE_FLAGS["require_spec_coverage"]
+        assert flag.stage is FlagStage.DARK
+        assert "2232" in flag.tracking_issue
+        assert UserSettings().require_spec_coverage is False
 
 
 class TestLifecycleFields:

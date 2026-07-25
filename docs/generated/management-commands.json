@@ -1107,6 +1107,10 @@
           "name": "comment"
         },
         {
+          "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",
+          "name": "record-spec-coverage"
+        },
+        {
           "help": "Check post-ship tickets against upstream issues and advance completed ones",
           "name": "sync-completions"
         },

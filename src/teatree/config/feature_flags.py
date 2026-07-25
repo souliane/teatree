@@ -170,6 +170,16 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "hatch during the soak. OFF restores the pre-graduation terminal-FAILED behaviour."
         ),
     ),
+    "require_spec_coverage": FeatureFlag(
+        field="require_spec_coverage",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#2232",
+        summary=(
+            "Per-ticket spec-coverage DoD gate on mark_delivered: every acceptance criterion must name a "
+            "backing test. Ships dark — `ticket record-spec-coverage` is the manual producer of the manifest; "
+            "graduation waits on the #2232 AC extractor that derives ACs from the issue body."
+        ),
+    ),
     "ci_eval_heal_autofix_enabled": FeatureFlag(
         field="ci_eval_heal_autofix_enabled",
         stage=FlagStage.DARK,
@@ -181,6 +191,27 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         ),
     ),
 }
+
+
+# The other half of the classification: every ``require_*`` ``UserSettings``
+# toggle is either a dying flag above or a durable operator policy listed here.
+# These qualify because each gates a COMPLETE capability — its satisfying
+# artifact already has a producer command — or is a standing doctrine knob, so
+# enabling it is a permanent per-overlay choice rather than a soak with an end.
+# An UNCLASSIFIED toggle is the governance hole ``require_spec_coverage`` fell
+# through: gated, default-off, and reviewed by nothing.
+DURABLE_GATE_SETTINGS: frozenset[str] = frozenset(
+    {
+        "require_anti_vacuity_attestation",  # producer: lifecycle record-anti-vacuity
+        "require_human_approval_to_answer",  # standing doctrine knob
+        "require_human_approval_to_merge",  # standing doctrine knob
+        "require_integration_review",  # producer: review record-evidence
+        "require_merge_evidence",  # producer: the keystone merge's MergeAudit row
+        "require_review_context",  # producer: lifecycle record-review-context
+        "require_reviewed_state_for_review_request",  # satisfied by the FSM state itself
+        "require_rubric_verification",  # producer: ticket rubric-set / rubric-grade
+    }
+)
 
 
 def is_feature_flag(key: str) -> bool:
