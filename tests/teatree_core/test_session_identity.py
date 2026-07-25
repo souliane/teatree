@@ -252,7 +252,8 @@ class TestLoopClaimSucceedsViaRegistrySessionId:
         )
         out = io.StringIO()
         with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
-            call_command("loop_owner", "claim", "--take-over", stdout=out)
+            # emit() routes the human view to stderr; capture it in the same buffer for the assertion.
+            call_command("loop_owner", "claim", "--take-over", stdout=out, stderr=out)
 
         assert "OK    claimed" in out.getvalue()
         status = LoopLease.objects.ownership_status("t3-master")
