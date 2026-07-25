@@ -173,6 +173,7 @@ class TeatreeSettingsSchema(BaseSettings):
     architectural_review_after_merge_count: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     architectural_review_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     architectural_review_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    architectural_review_retry_backoff_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     architectural_review_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     ask_before_backlog_sweep_closes: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     ask_before_creating_news_tickets: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]

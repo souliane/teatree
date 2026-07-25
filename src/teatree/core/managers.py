@@ -279,9 +279,11 @@ class TaskQuerySet(models.QuerySet):
         """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
         return _in_flight_for_phase(self, overlay, phase)
 
-    def last_run_at_for_phase(self, overlay: str, phase: str, *, completed_only: bool = False) -> datetime | None:
+    def last_run_at_for_phase(
+        self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
+    ) -> datetime | None:
         """Most recent ``Session.started_at`` for an overlay+phase task, or ``None`` — the cadence clock."""
-        return _last_run_at_for_phase(self, overlay, phase, completed_only=completed_only)
+        return _last_run_at_for_phase(self, overlay, phase, statuses=statuses)
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))

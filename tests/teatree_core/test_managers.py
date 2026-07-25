@@ -319,21 +319,38 @@ class TestTaskPhaseCadenceQueries(TestCase):
         via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
         assert direct == via_manager
 
-    def test_last_run_at_for_phase_completed_only_ignores_failed(self) -> None:
+    def test_last_run_at_for_phase_completed_statuses_ignores_failed(self) -> None:
         completed = self._task(
             overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200
         )
-        # A newer FAILED task must NOT advance the completed-only clock.
+        # A newer FAILED task must NOT advance the COMPLETED-only clock.
         self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
 
-        completed_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE, completed_only=True)
+        completed_run = Task.objects.last_run_at_for_phase(
+            self.OVERLAY, self.PHASE, statuses=frozenset({Task.Status.COMPLETED})
+        )
         any_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
 
         assert completed_run is not None
         assert (timezone.now() - completed_run) > timedelta(hours=100)  # the old COMPLETED one
         assert completed_run == Session.objects.get(pk=completed.session_id).started_at
+        # The unfiltered clock still sees the newer FAILED task.
         assert any_run is not None
-        assert (timezone.now() - any_run) < timedelta(hours=2)  # the recent FAILED one wins without the filter
+        assert (timezone.now() - any_run) < timedelta(hours=2)
+
+    def test_last_run_at_for_phase_terminal_statuses_counts_failed(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200)
+        # The terminal (COMPLETED|FAILED) clock — the backoff clock — sees the FAILED attempt.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+        # A still-PENDING task is not terminal and must not advance the backoff clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=0)
+
+        terminal_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE, statuses=Task.Status.terminal())
+
+        assert terminal_run is not None
+        # The FAILED one (1h ago) wins over the old COMPLETED (200h); the newer
+        # PENDING (0h) is not terminal, so it must NOT advance the clock.
+        assert timedelta(minutes=30) < (timezone.now() - terminal_run) < timedelta(hours=2)
 
 
 class TestActiveClaimExists(TestCase):

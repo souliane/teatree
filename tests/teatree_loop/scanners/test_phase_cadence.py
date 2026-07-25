@@ -56,7 +56,7 @@ class LastRunAtTests(TestCase):
         with patch("teatree.loop.scanners.phase_cadence._task_model", return_value=None):
             assert _cadence().last_run_at() is None
 
-    def test_completed_only_ignores_a_newer_failed_task(self) -> None:
+    def test_last_completed_run_at_ignores_a_newer_failed_task(self) -> None:
         ticket = Ticket.objects.create(overlay=OVERLAY)
         completed_session = Session.objects.create(overlay=OVERLAY, ticket=ticket, agent_id="a")
         Session.objects.filter(pk=completed_session.pk).update(started_at=timezone.now() - timedelta(hours=200))
@@ -64,10 +64,19 @@ class LastRunAtTests(TestCase):
         failed_session = Session.objects.create(overlay=OVERLAY, ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=failed_session, phase=PHASE, status=Task.Status.FAILED)
 
-        completed_run = _cadence().last_run_at(completed_only=True)
+        # The success clock ignores the newer FAILED task; the backoff clock counts it.
+        completed_run = _cadence().last_completed_run_at()
+        terminal_run = _cadence().last_terminal_run_at()
 
         assert completed_run is not None
         assert (timezone.now() - completed_run) > timedelta(hours=100)
+        assert terminal_run is not None
+        assert (timezone.now() - terminal_run) < timedelta(hours=2)
+
+    def test_clock_helpers_none_when_task_model_missing(self) -> None:
+        with patch("teatree.loop.scanners.phase_cadence._task_model", return_value=None):
+            assert _cadence().last_completed_run_at() is None
+            assert _cadence().last_terminal_run_at() is None
 
 
 class EvaluateTriggerTests(TestCase):

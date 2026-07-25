@@ -3,11 +3,13 @@
 M1 — _sweep_white_check_mark crosses overlay boundaries (missing overlay= filter)
 M4 — _fetch_review_state raises TypeError when get_draft_notes_count returns None
 M6 — _decode_pr collapses missing/None number to pr_id=0, poisoning the marker table
-L1 — _last_review_completed_at counts FAILED tasks, suppressing cadence for a week
+L1 — bounded post-failure backoff for the architectural-review cadence: a FAILED
+review re-fires after retry_backoff_hours (not the full week, not hourly)
 """
 
 import json
 from dataclasses import dataclass, field
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +22,7 @@ from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.architectural_review import ARCHITECTURAL_REVIEW_PHASE, ArchitecturalReviewScanner
 from teatree.loop.scanners.codex_review import _decode_pr
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
@@ -229,59 +232,81 @@ class TestM6DecodePrMissingNumber:
 # ---------------------------------------------------------------------------
 
 
-def _scanner_l1(*, cadence_hours: int = 1) -> ArchitecturalReviewScanner:
+def _scanner_l1(*, cadence_hours: int = 168, retry_backoff_hours: int = 12) -> ArchitecturalReviewScanner:
     return ArchitecturalReviewScanner(
         overlay_name=OVERLAY_A,
         cadence_hours=cadence_hours,
+        retry_backoff_hours=retry_backoff_hours,
         after_merge_count=999,
     )
 
 
-def _last_review_task(overlay: str = OVERLAY_A) -> Task | None:
-    return (
-        Task.objects.filter(
-            ticket__overlay=overlay,
-            phase=ARCHITECTURAL_REVIEW_PHASE,
-        )
-        .order_by("-id")
-        .first()
+def _seed_review_task(*, status: Task.Status, hours_ago: float, overlay: str = OVERLAY_A) -> Task:
+    """Seed a terminal architectural-review task whose Session started ``hours_ago`` ago."""
+    ticket, _ = Ticket.objects.get_or_create(
+        issue_url=f"architectural-review://{overlay}",
+        defaults={"overlay": overlay, "role": "author"},
+    )
+    session = Session.objects.create(overlay=overlay, ticket=ticket, agent_id="arch")
+    Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(hours=hours_ago))
+    return Task.objects.create(
+        ticket=ticket,
+        session=session,
+        phase=ARCHITECTURAL_REVIEW_PHASE,
+        status=status,
     )
 
 
-class TestL1FailedTaskDoesNotAdvanceCadence(TestCase):
-    """A FAILED architectural-review task must NOT count as "last completed"."""
+class TestL1BoundedPostFailureBackoff(TestCase):
+    """The architectural-review cadence re-fires a FAILED review after a bounded backoff.
 
-    def test_failed_task_does_not_suppress_next_dispatch(self) -> None:
-        # Create a review task and mark it FAILED.
-        signals = _scanner_l1(cadence_hours=1).scan()
+    The expensive full-codebase review mini-loop ticks hourly, but the internal
+    gate limits firing to two clocks: the last COMPLETED review drives the full
+    ``cadence_hours`` (168h) success gate, and the last terminal attempt of any
+    status drives a shorter ``retry_backoff_hours`` (12h) backoff gate. A review
+    fires only when BOTH have elapsed. So a transient failure retries in 12h (no
+    week-long blind spot), a persistently failing review backs off to every 12h
+    instead of storming hourly, and a completed review still suppresses for the
+    full week.
+    """
+
+    def test_recent_failure_within_backoff_is_suppressed(self) -> None:
+        """A FAILED review 30 min old must NOT re-dispatch — the backoff has not elapsed.
+
+        Anti-vacuous: if the backoff were ignored (hourly storm), the completed
+        clock would be None → bootstrap → a fresh expensive review every tick.
+        """
+        _seed_review_task(status=Task.Status.FAILED, hours_ago=0.5)
+
+        assert _scanner_l1().scan() == []
+
+    def test_failure_past_backoff_redispatches(self) -> None:
+        """A FAILED review 13 h old (no completed review since) MUST re-dispatch.
+
+        Anti-vacuous: if a failure suppressed for the full 168h week (the old
+        completed-only clock with no backoff bound, or treating a failure like a
+        completed review), this would return [] and leave a 7-day blind spot.
+        """
+        _seed_review_task(status=Task.Status.FAILED, hours_ago=13)
+
+        signals = _scanner_l1().scan()
+
         assert len(signals) == 1
-        prior = _last_review_task()
-        assert prior is not None
-        Task.objects.filter(pk=prior.pk).update(status=Task.Status.FAILED)
-        # Backdate to 2 hours ago — well past the 1-hour cadence window.
-        Session.objects.filter(pk=prior.session_id).update(
-            started_at=timezone.now() - __import__("datetime").timedelta(hours=2),
-        )
 
-        # With the bug: _last_review_completed_at sees the FAILED task's timestamp
-        # (2 hours ago), cadence appears elapsed=2h >= 1h → a new task IS queued.
-        # That coincidentally passes. The real invariant is the inverse:
-        # a FAILED task less than cadence_hours ago should NOT suppress dispatch.
-        # Seed a FAILED task that is only 30 minutes old.
-        signals2 = _scanner_l1(cadence_hours=168).scan()
-        assert len(signals2) == 1  # New task queued (prior was FAILED, not completed)
-        prior2 = _last_review_task()
-        assert prior2 is not None
-        Task.objects.filter(pk=prior2.pk).update(status=Task.Status.FAILED)
-        # 30 minutes ago — well inside cadence_hours=168.
-        Session.objects.filter(pk=prior2.session_id).update(
-            started_at=timezone.now() - __import__("datetime").timedelta(minutes=30),
-        )
+    def test_completed_review_suppresses_for_full_week(self) -> None:
+        """A COMPLETED review 13 h old (past the 12h backoff) still suppresses.
 
-        # Bug: the query aggregates over ALL tasks (incl. FAILED), so it sees the
-        # FAILED task 30min ago and treats cadence as not-elapsed → returns [].
-        # Fix: only COMPLETED tasks count → cadence is elapsed from prior.pk (2h) →
-        # a new task should be dispatched.
-        signals3 = _scanner_l1(cadence_hours=168).scan()
+        Anti-vacuous: if the 12h backoff were the only gate, a completed review
+        older than 12h would wrongly re-fire long before its 168h cadence.
+        """
+        _seed_review_task(status=Task.Status.COMPLETED, hours_ago=13)
 
-        assert len(signals3) == 1, "FAILED task within cadence window incorrectly suppressed next dispatch"
+        assert _scanner_l1().scan() == []
+
+    def test_completed_review_past_cadence_redispatches(self) -> None:
+        """A COMPLETED review older than the 168h cadence re-fires (success clock intact)."""
+        _seed_review_task(status=Task.Status.COMPLETED, hours_ago=169)
+
+        signals = _scanner_l1().scan()
+
+        assert len(signals) == 1

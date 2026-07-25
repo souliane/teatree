@@ -37,6 +37,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "architectural_review_after_merge_count",
         "architectural_review_cadence_hours",
         "architectural_review_disabled",
+        "architectural_review_retry_backoff_hours",
         "architectural_review_skill",
         "ask_before_backlog_sweep_closes",
         "ask_before_creating_news_tickets",
