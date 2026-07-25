@@ -10,7 +10,7 @@ literal endpoint being called.
 """
 
 import logging
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from django.core.cache import cache
 from django.utils import timezone
@@ -25,6 +25,11 @@ from teatree.core.intake.label_admission import LabelPolicy
 from teatree.core.models import Ticket
 from teatree.core.sync import _overlay_name
 from teatree.types import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from teatree.backends.gitlab.api import GitLabAPI
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +94,38 @@ class GitLabSyncBackend(SyncBackend):
             Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)
 
         fetch_issue_labels(client, result)
-        detect_merged_prs(client, username, result, last_sync)
-        detect_closed_prs(client, username, result, last_sync)
+        self._sync_terminal_prs(client, username, result, last_sync=last_sync, sync_started_at=sync_started_at)
         fetch_review_permalinks(result)
         self._sync_reviewer_prs(host, username, result)
         self._detect_conflicted_prs(host, username, result)
 
-        cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
-
         return result
+
+    @classmethod
+    def _sync_terminal_prs(
+        cls,
+        client: "GitLabAPI",
+        username: str,
+        result: SyncResult,
+        *,
+        last_sync: str | None,
+        sync_started_at: "datetime",
+    ) -> None:
+        """Apply terminal PR status, then advance the watermark iff both windows were read.
+
+        The watermark is monotonic: advancing it past a window a fetch failed to
+        read retires that window forever, so an MR that merged inside it is never
+        seen again — its ticket never reaches MERGED and its worktrees are never
+        cleaned. Holding the previous watermark costs one overlapping re-fetch,
+        and both appliers are idempotent. The only other ``last_sync``-bounded
+        fetch is the open-PR one, which aborts the whole sync on failure.
+        """
+        merged_window_read = detect_merged_prs(client, username, result, last_sync)
+        closed_window_read = detect_closed_prs(client, username, result, last_sync)
+        if merged_window_read and closed_window_read:
+            cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
+        else:
+            logger.warning("Holding the GitLab sync watermark at %s — a terminal PR fetch failed.", last_sync)
 
     @classmethod
     def _detect_conflicted_prs(cls, host: GitLabCodeHost, username: str, result: SyncResult) -> None:

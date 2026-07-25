@@ -197,12 +197,6 @@ def check_local_e2e_dod(ticket: "Ticket") -> None:
 _DOD_VIOLATION_KEY = "dod_e2e_violation"
 
 
-def _state_index(state: str) -> int:
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    return [s.value for s in Ticket.State].index(state)
-
-
 def _is_post_ship_state(state: str) -> bool:
     """True iff *state* is at or past SHIPPED on the lifecycle.
 
@@ -213,7 +207,7 @@ def _is_post_ship_state(state: str) -> bool:
     """
     from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    return _state_index(state) >= _state_index(Ticket.State.SHIPPED)
+    return Ticket.state_index(state) >= Ticket.state_index(Ticket.State.SHIPPED)
 
 
 def sync_gate_allows(ticket: "Ticket", inferred_state: str) -> bool:

@@ -27,7 +27,6 @@ _E2E_TEST_PLAN_RE = re.compile(
     re.IGNORECASE,
 )
 _SKILL_WRITTEN_FIELDS = ("review_channel", "review_permalink", "e2e_test_plan_url", "notion_status", "notion_url")
-_STATE_ORDER = [s.value for s in Ticket.State]
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +244,7 @@ def update_ticket(
     # same atomic write (no split).
     also_set: TicketSiblingFields = {"repos": repos}
     capped_state = workflow_capped_state(ticket, inferred_state) if inferred_state else inferred_state
-    if capped_state and _STATE_ORDER.index(capped_state) > _STATE_ORDER.index(ticket.state):
+    if capped_state and Ticket.state_advances(ticket.state, capped_state):
         also_set["state"] = capped_state
 
     set_keys = cast("TicketExtra", {"prs": prs})
@@ -265,7 +264,7 @@ def infer_state_from_prs(prs_data: dict[str, PREntryDict]) -> str:
             has_approvals = isinstance(approvals, dict) and int(approvals.get("count", 0)) > 0  # ty: ignore[no-matching-overload]
             review_requested = bool(pr.get("review_requested"))
             candidate = Ticket.State.IN_REVIEW if (has_approvals or review_requested) else Ticket.State.SHIPPED
-        if _STATE_ORDER.index(candidate) > _STATE_ORDER.index(best):
+        if Ticket.state_advances(best, candidate):
             best = candidate
     return best
 
