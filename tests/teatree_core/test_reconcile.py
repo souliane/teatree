@@ -12,6 +12,7 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.worktree.branch_classification as bc
+from teatree.core.management.commands._workspace.cleanup import _fix_drift
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
 from teatree.core.overlay import OverlayBase, OverlayProvisioning
@@ -203,6 +204,66 @@ class TestReconcileTicket(TestCase):
             write_env_cache(wt)
             drift = reconcile_ticket(ticket)
         assert not drift.has_drift
+
+
+class TestStaleClonePathDrift(TestCase):
+    """A ``clone_path`` that outlived its clone is drift the doctor names and repairs.
+
+    Left in place it turns every redundancy probe below it into "could not read",
+    which the emit record renders as "no unique commits" — the shape the judgment
+    skill routes to DELETE.
+    """
+
+    def _patches(self) -> tuple[AbstractContextManager, ...]:
+        return (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
+        )
+
+    @staticmethod
+    def _clone(workspace: Path) -> Path:
+        clone = workspace / "backend"
+        clone.mkdir(parents=True)
+        subprocess.run(
+            [_GIT, "init", "-q", "-b", "main", str(clone)], check=True, capture_output=True, env=_clean_env()
+        )
+        return clone
+
+    def test_a_stale_clone_path_is_reported_and_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for ctx in self._patches():
+                self.enterContext(ctx)
+            workspace = Path(tmp) / "workspace"
+            clone = self._clone(workspace)
+            ticket, wt, _ = _make(tmp)
+            wt.extra = {**wt.extra, "clone_path": str(Path(tmp) / "moved-away" / "backend")}
+            wt.save(update_fields=["extra"])
+            write_env_cache(wt)
+
+            drift = reconcile_ticket(ticket)
+            assert [f.worktree_pk for f in drift.stale_clone_paths] == [wt.pk]
+            assert "stale-clone-path" in drift.format()
+
+            with patch("teatree.core.management.commands._workspace.cleanup.clone_root", return_value=workspace):
+                fixes = _fix_drift(drift)
+
+            assert any(f"repaired clone_path wt#{wt.pk}" in line for line in fixes), fixes
+            wt.refresh_from_db()
+            assert wt.extra["clone_path"] == str(clone)
+
+    def test_a_live_clone_path_is_not_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for ctx in self._patches():
+                self.enterContext(ctx)
+            clone = self._clone(Path(tmp) / "workspace")
+            ticket, wt, _ = _make(tmp)
+            wt.extra = {**wt.extra, "clone_path": str(clone)}
+            wt.save(update_fields=["extra"])
+            write_env_cache(wt)
+
+            assert reconcile_ticket(ticket).stale_clone_paths == []
 
 
 class TestReconcileMissingDbUsesWorktreePgUser(TestCase):

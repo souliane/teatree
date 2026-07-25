@@ -565,10 +565,13 @@ class Command(TyperCommand):
 
         The read-only structured EMIT the judgment skill consumes: a JSON array of
         records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
-        banned_terms_status, liveness, last_commit_date, owner — schema in
-        ``teatree.core.cleanup.cleanup_emit``). Removes nothing — ``clean-all`` does the
-        auto-deletion of provably-redundant items; this surfaces the rest for the
-        skill to route (superseded / salvage-to-fresh-PR / defer-live).
+        content_verified, verdict_source, banned_terms_status, liveness,
+        last_commit_date, owner — schema in ``teatree.core.cleanup.cleanup_emit``).
+        Removes nothing — ``clean-all`` does the auto-deletion of provably-redundant
+        items; this surfaces the rest for the skill to route (superseded /
+        salvage-to-fresh-PR / defer-live). A record whose ``content_verified`` is
+        ``false`` was never probed, so its empty ``unique_commit_shas`` is silence,
+        not proof — the skill keeps it.
         """
         # Return the JSON string only — django-typer serializes the return onto
         # stdout exactly once. A manual ``self.stdout.write(rendered)`` here (the

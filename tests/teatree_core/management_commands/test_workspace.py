@@ -1652,7 +1652,8 @@ class TestWorkspaceEmitAndSalvage(TestCase):
             data = json.loads(cast("str", call_command("workspace", "emit")))
         assert data[0]["branch"] == "feat"
         assert data[0]["unique_commit_shas"] == ["abc"]
-        assert data[0]["schema_version"] == 1
+        assert data[0]["schema_version"] == 2
+        assert data[0]["content_verified"] is False, "the skill must read an unproven record as unproven"
 
     def test_salvage_builds_request_and_reports_outcome(self) -> None:
         from teatree.core.cleanup.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415

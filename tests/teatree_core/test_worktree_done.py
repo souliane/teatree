@@ -24,9 +24,11 @@ from django.utils import timezone
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.runners import worktree_start
+from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import (
     ChangeAnalysis,
     _effective_default_target,
+    _verdict_provenance,
     analyze_worktree_changes,
     reap_done_worktree,
     reap_done_worktrees,
@@ -517,6 +519,59 @@ class TestPostMergeWorkEmitTag(_ReaperFixture):
         assert outcome.emit is not None
         assert outcome.emit.merged_with_post_merge_work is True
         assert outcome.emit.unique_commit_shas, "post-merge SHAs must be emitted for a fresh PR"
+
+
+class TestEmitVerdictProvenance(_ReaperFixture):
+    """An empty ``unique_commit_shas`` must never mean two opposite things.
+
+    A probe that could not run and a tip proven to hold nothing unique both leave
+    the list empty; only ``content_verified`` tells the judgment skill which one it
+    is looking at, and only the second may be routed to DELETE.
+    """
+
+    def _make_unresolvable_clone(self, state: str) -> Worktree:
+        worktree = self._make_worktree(state)
+        worktree.repo_path = "ghostrepo"
+        worktree.extra = {**worktree.extra, "clone_path": str(self.tmp_path / "moved-away" / "ghostrepo")}
+        worktree.save(update_fields=["repo_path", "extra"])
+        return worktree
+
+    def test_an_unresolvable_clone_emits_an_unverified_record(self) -> None:
+        outcome = self._reap(self._make_unresolvable_clone(Ticket.State.STARTED))
+
+        assert outcome.action == "kept", outcome.label
+        assert outcome.emit is not None
+        assert outcome.emit.unique_commit_shas == [], "no probe ran, so no commit can be named"
+        assert outcome.emit.content_verified is False
+        assert outcome.emit.verdict_source == "clone-unresolvable"
+
+    def test_a_proven_redundant_record_still_emits_the_deletable_shape(self) -> None:
+        _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)  # the tip's content ships…
+        _run_git("commit", "-q", "-m", "squash: ship the feature (#2761)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        (self.wt_path / "wip.txt").write_text("uncommitted work in progress\n", encoding="utf-8")  # …this keeps it
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert outcome.emit is not None
+        assert outcome.emit.unique_commit_shas == []
+        assert outcome.emit.content_verified is True
+        assert outcome.emit.verdict_source == "cherry-zero-unique"
+
+
+def test_inconclusive_verdict_over_a_real_clone_is_not_verified(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True, env=_clean_env())
+
+    inconclusive = RedundancyVerdict(redundant=False, forge_merged=False, source="inconclusive")
+
+    assert _verdict_provenance(repo, inconclusive) == (False, "inconclusive")
+    assert _verdict_provenance(repo, RedundancyVerdict(redundant=False, forge_merged=False)) == (True, "not-redundant")
+    assert _verdict_provenance(tmp_path / "absent", inconclusive) == (False, "clone-unresolvable")
 
 
 class TestSnapshotModulesRemoved:

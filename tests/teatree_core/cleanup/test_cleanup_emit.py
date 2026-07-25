@@ -44,6 +44,8 @@ class TestCleanupEmitRecordSchema:
             kind="worktree",
             unique_commit_shas=["abc123"],
             merged_with_post_merge_work=True,
+            content_verified=True,
+            verdict_source="not-redundant",
             banned_terms_status="contains",
             banned_terms_found=["secret"],
             liveness="",
@@ -59,9 +61,20 @@ class TestCleanupEmitRecordSchema:
             "kind": "worktree",
             "unique_commit_shas": ["abc123"],
             "merged_with_post_merge_work": True,
+            "content_verified": True,
+            "verdict_source": "not-redundant",
             "banned_terms_status": "contains",
             "banned_terms_found": ["secret"],
             "liveness": "",
             "last_commit_date": "2026-06-27T10:00:00+00:00",
             "owner": "souliane",
         }
+
+    def test_the_provenance_fields_default_to_unverified(self) -> None:
+        record = CleanupEmitRecord(path="/ws/feat-x", branch="feat-x", kind="worktree")
+
+        assert record.content_verified is False, "a record nobody proved must never read as verified"
+        assert record.verdict_source == "inconclusive"
+
+    def test_the_provenance_fields_are_a_breaking_schema_change(self) -> None:
+        assert EMIT_SCHEMA_VERSION == 2, "content_verified changes what an empty unique_commit_shas means"

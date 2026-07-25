@@ -60,19 +60,27 @@ t3 <overlay> workspace emit
 ```
 
 This prints a JSON **array** of the items the CLI did NOT auto-delete — one
-`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 1`):
+`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 2`):
 
 | field | meaning you route on |
 |---|---|
 | `path` | on-disk worktree/clone location (`""` for a bare branch/stash) |
 | `branch` | the branch ref — the `<source_ref>` you pass to `salvage`/`teardown` |
 | `kind` | `"worktree"` \| `"branch"` \| `"stash"` |
-| `unique_commit_shas` | commits whose **content** is NOT provably on target. **`[]` ⇒ nothing unique ⇒ redundant.** |
+| `content_verified` | **`false` ⇒ no content probe ran; every other field below is unproven ⇒ KEEP** |
+| `verdict_source` | which layer decided: `cherry-zero-unique` / `synthetic-squash` / `branch-merged` / `not-redundant`, or why none could: `inconclusive` / `clone-unresolvable` |
+| `unique_commit_shas` | commits whose **content** is NOT provably on target. **`[]` ⇒ nothing unique ⇒ redundant — but ONLY when `content_verified` is `true`.** |
 | `merged_with_post_merge_work` | forge-merged BUT the current tip has unique content (commits added AFTER the merge) |
 | `banned_terms_status` | `"clean"` \| `"contains"` \| `"unknown"` — `"contains"` ⇒ clean before any push |
 | `banned_terms_found` | the distinct banned terms hit |
 | `liveness` | `""` when not live; otherwise the keep-reason phrase the CLI's liveness guard produced |
 | `owner` | the tip author identity |
+
+**`unique_commit_shas: []` alone proves nothing.** A worktree whose source clone
+moved away, or whose `git cherry` errored, names no commits for the same reason a
+shipped branch does — the list is empty either way. `content_verified` is the
+only field that separates them, and a `false` there means the record is a
+question, not an answer.
 
 `emit` is **read-only** — it removes nothing. `clean-all` already removed the
 provably-redundant; this surfaces the rest for you to route.
@@ -84,11 +92,13 @@ digraph route {
   rankdir=TB; node [shape=box];
   own  [shape=diamond, label="owner a colleague\non a product repo?"];
   live [shape=diamond, label="liveness != \"\" ?"];
+  ver  [shape=diamond, label="content_verified == true ?"];
   pmw  [shape=diamond, label="merged_with_post_merge_work?"];
   uniq [shape=diamond, label="unique_commit_shas == [] ?"];
   rel  [shape=diamond, label="still-relevant AND\nfits current architecture?"];
   skip1 [label="SKIP — never touch\na colleague's item"];
   skip2 [label="SKIP — defer,\nnever disturb live work"];
+  unver [label="KEEP with a warning —\nUNVERIFIED, nothing was proved"];
   newpr [label="push post-merge work to a\nNEW PR (salvage) — NEVER delete"];
   del   [label="DELETE (redundant) —\nguarded CLI delete"];
   salv  [label="SALVAGE → new PR,\nthen delete source"];
@@ -96,7 +106,9 @@ digraph route {
   own -> skip1 [label="yes"];
   own -> live  [label="no"];
   live -> skip2 [label="yes"];
-  live -> pmw   [label="no"];
+  live -> ver   [label="no"];
+  ver -> unver [label="no"];
+  ver -> pmw   [label="yes"];
   pmw -> newpr [label="yes"];
   pmw -> uniq  [label="no"];
   uniq -> del  [label="yes"];
@@ -122,7 +134,17 @@ git `index.lock`, the current CWD, an active-delivery lease, or a fresh HEAD com
 changes are part of this: the CLI keeps a dirty worktree, so a dirty item never reaches a
 delete decision.)
 
-**Then route the lost item (owned, not live):**
+**Gate C — provenance (an unverified record is a question, not an answer).** If
+`content_verified` is `false`, no content probe reached this item — the clone the probe
+needed was unresolvable (`verdict_source: "clone-unresolvable"`, the stored `clone_path`
+outlived its clone) or `git cherry` errored (`"inconclusive"`). Its
+`unique_commit_shas: []` therefore means "nobody looked", not "nothing here". **KEEP with
+a warning naming the `verdict_source`** — never DELETE and never salvage-then-teardown.
+The repair is mechanical, not a judgment call: `t3 <overlay> workspace doctor --fix`
+re-points a stale `clone_path` at the clone that exists, after which a re-run of
+`workspace emit` yields a record you can actually route.
+
+**Then route the lost item (owned, not live, verified):**
 
 - **`merged_with_post_merge_work == true` → push the post-merge work to a NEW PR, NEVER
   delete.** The branch was forge-merged, but commits were added AFTER the merge. Those
@@ -130,7 +152,7 @@ delete decision.)
   worktree (step 3 — for a `kind:"worktree"` item that is `workspace salvage` **then**
   `worktree teardown`). Do NOT treat "the PR is merged" as "the branch is redundant".
 
-- **`unique_commit_shas == []` (and not post-merge) → DELETE (redundant).** The tip has
+- **`unique_commit_shas == []` (verified, and not post-merge) → DELETE (redundant).** The tip has
   no content that is not already on target — this is the **shipped-to-master** case
   (including work cleaned / de-branded and merged under a *different SHA*, which
   content-equivalence still resolves to empty) and the **superseded** case. Delete via the
@@ -210,8 +232,8 @@ done+proven-redundant worktrees; it keeps every uncertain item with a warning.
 
 After resolving the emitted items, re-run `t3 <overlay> workspace emit`. Every item that
 remains must be either **a colleague's** (skipped by Gate A), **live** (skipped by Gate
-B), or **explicitly kept-with-a-warning** (uncertain). No owned, not-live, lost item
-should remain un-routed.
+B), **unverified** (kept-with-a-warning by Gate C), or **explicitly kept-with-a-warning**
+(uncertain). No owned, not-live, verified, lost item should remain un-routed.
 
 ## Worked scenarios — the decision tree applied
 
@@ -221,19 +243,29 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 // A. colleague's branch on a product repo → Gate A: SKIP (never touch).
 { "kind": "worktree", "branch": "fix-invoice", "owner": "a-colleague",
   "path": "/wk/product-repo/fix-invoice", "unique_commit_shas": ["a1b2"],
+  "content_verified": true, "verdict_source": "not-redundant",
   "merged_with_post_merge_work": false, "banned_terms_status": "clean", "liveness": "" }
 // → SKIP. Owner is a colleague on a product repo. Do nothing — not even salvage.
 
 // B. live worktree → Gate B: SKIP/defer (an agent is mid-task).
 { "kind": "worktree", "branch": "feat-x", "owner": "souliane", "path": "/wk/feat-x",
-  "unique_commit_shas": ["c3d4"], "merged_with_post_merge_work": false,
-  "banned_terms_status": "clean",
+  "unique_commit_shas": ["c3d4"], "content_verified": true, "verdict_source": "not-redundant",
+  "merged_with_post_merge_work": false, "banned_terms_status": "clean",
   "liveness": "ticket has a live session or active/claimed task" }
 // → SKIP. liveness != "". Never disturb live work. Re-sweep when it goes idle.
 
+// B2. the stored clone_path outlived its clone → Gate C: KEEP (nothing was proved).
+{ "kind": "worktree", "branch": "feat-w", "owner": "", "path": "/wk/feat-w",
+  "unique_commit_shas": [], "content_verified": false, "verdict_source": "clone-unresolvable",
+  "merged_with_post_merge_work": false, "banned_terms_status": "unknown", "liveness": "" }
+// → KEEP with a warning: "unverified (clone-unresolvable) — no probe reached this branch".
+//   The empty unique_commit_shas is the probe's silence, NOT proof the work shipped.
+//   Repair with `t3 <overlay> workspace doctor --fix`, then re-run `workspace emit`.
+
 // C. merged PR + commits added AFTER the merge → push post-merge work to a NEW PR, NEVER delete.
 { "kind": "worktree", "branch": "feat-y", "owner": "souliane", "path": "/wk/feat-y",
-  "unique_commit_shas": ["e5f6"], "merged_with_post_merge_work": true,
+  "unique_commit_shas": ["e5f6"], "content_verified": true, "verdict_source": "not-redundant",
+  "merged_with_post_merge_work": true,
   "banned_terms_status": "clean", "liveness": "" }
 // → t3 <overlay> workspace salvage feat-y               (post-merge commits → fresh salvage/feat-y PR, verified)
 //   then t3 <overlay> worktree teardown --path /wk/feat-y  (removes the worktree dir+branch → GONE)
@@ -241,15 +273,17 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 
 // D. unique unmerged work, still relevant, carries customer terms → CLEAN then salvage.
 { "kind": "worktree", "branch": "feat-z", "owner": "souliane", "path": "/wk/feat-z",
-  "unique_commit_shas": ["7a8b","9c0d"], "merged_with_post_merge_work": false,
+  "unique_commit_shas": ["7a8b","9c0d"], "content_verified": true, "verdict_source": "not-redundant",
+  "merged_with_post_merge_work": false,
   "banned_terms_status": "contains", "banned_terms_found": ["credential"], "liveness": "" }
 // → edit /wk/feat-z to replace the banned terms with placeholders, commit;
 //   t3 <overlay> workspace salvage feat-z                  (banned gate now passes; salvage/feat-z PR verified)
 //   then t3 <overlay> worktree teardown --path /wk/feat-z  (worktree dir+branch GONE)
 
-// E. nothing unique — shipped via a different SHA → DELETE (redundant).
+// E. nothing unique AND the probe proved it — shipped via a different SHA → DELETE (redundant).
 { "kind": "worktree", "branch": "old-fix", "owner": "souliane", "path": "/wk/old-fix",
-  "unique_commit_shas": [], "merged_with_post_merge_work": false,
+  "unique_commit_shas": [], "content_verified": true, "verdict_source": "cherry-zero-unique",
+  "merged_with_post_merge_work": false,
   "banned_terms_status": "clean", "liveness": "" }
 // → t3 <overlay> worktree teardown --path /wk/old-fix   (guarded; deleted-no-PR; invariant met)
 ```
@@ -259,6 +293,8 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 | Rationalization | Reality |
 |---|---|
 | "The PR is merged, so the branch is redundant — delete it." | Check `merged_with_post_merge_work`. `true` ⇒ there is work added AFTER the merge → push it to a **new PR**, never delete. |
+| "`unique_commit_shas` is empty, so the branch is redundant — delete it." | Only when `content_verified` is `true`. On `false` the list is empty because **no probe ran** (`verdict_source` says which failure) — that record is a question. KEEP. |
+| "The clone_path is stale, but the record still says no unique commits." | That IS the failure. A probe against a clone that moved away reports nothing found, identically to a shipped branch. KEEP, run `workspace doctor --fix`, re-emit. |
 | "It's a colleague's stale branch but I'll tidy it up." | `owner` not yours on a product repo ⇒ **SKIP**. Never salvage and never delete another person's work. |
 | "It has customer/banned terms — safest to just delete it." | Banned terms are **never** a reason to keep OR delete. **Clean** them, then route by the actual rules. |
 | "The worktree looks abandoned, I'll just `git worktree remove` it." | **Never hand-roll git deletion.** Use `worktree teardown` / `clean-all` — they carry the data-loss guard. |
@@ -272,6 +308,7 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 - About to `rm -rf`, `git worktree remove`, `git branch -D`, or `git stash drop` **by hand** → STOP, use the CLI verb.
 - About to delete an item whose `owner` is not you → STOP (Gate A).
 - About to delete/salvage an item with a non-empty `liveness` → STOP (Gate B).
+- About to delete or salvage an item whose `content_verified` is `false` → STOP (Gate C): nothing was proved about it.
 - About to delete an item with `merged_with_post_merge_work == true` → STOP, salvage to a new PR.
 - About to abandon/delete an item *because* it has banned terms → STOP, clean it.
 - About to delete "because uncertain / to be safe" → STOP, keep-with-warning.

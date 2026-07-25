@@ -45,6 +45,8 @@ from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
+    INCONCLUSIVE_SOURCE,
+    RedundancyVerdict,
     _branch_has_open_pr,
     _branch_tree_matches_squash,
     branch_redundancy,
@@ -54,6 +56,7 @@ from teatree.core.worktree.branch_classification import (
 )
 from teatree.core.worktree.broken_checkout import BrokenCheckout, BrokenCheckoutVerdict, classify_broken_checkout
 from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -68,6 +71,7 @@ _DONE_TICKET_STATES = Ticket.marker_release_states()
 
 _PREVIEW_LIMIT = 3
 _FALLBACK_DEFAULT_TARGET = "origin/main"
+_CLONE_UNRESOLVABLE_SOURCE = "clone-unresolvable"
 
 
 def _effective_default_target(repo: Path) -> str:
@@ -274,13 +278,30 @@ def _branch_ref_gone_reasons(
     return [f"{count} commit(s) on NO remote (content not upstream): {preview}"]
 
 
+def _verdict_provenance(repo_main: Path, verdict: RedundancyVerdict) -> tuple[bool, str]:
+    """Did a content probe actually PROVE this verdict, and which layer decided?
+
+    Without this, an empty ``unique_commit_shas`` means two opposite things — the
+    tip was proven to hold nothing unique, or nothing could be probed at all — and
+    the judgment skill routes the first to DELETE. A repo the shared checkout
+    probe cannot confirm (a row whose ``clone_path`` outlived its clone) makes
+    every git answer below it meaningless, so it reports its own source rather
+    than the verdict's.
+    """
+    if probe_checkout(repo_main) is not CheckoutState.CHECKOUT:
+        return False, _CLONE_UNRESOLVABLE_SOURCE
+    return verdict.source != INCONCLUSIVE_SOURCE, verdict.source
+
+
 def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) -> CleanupEmitRecord:
     """Assemble the structured handoff record for a NOT-auto-deleted worktree.
 
     Resolves the current-tip redundancy (for ``unique_commit_shas`` +
-    ``merged_with_post_merge_work``), the banned-terms status of the unique
-    content, the tip author/date, and the liveness reason — everything the
-    judgment skill needs to route the item without re-probing git itself.
+    ``merged_with_post_merge_work``), its provenance (:func:`_verdict_provenance`,
+    so an unprobeable item never emits the proven-redundant shape), the
+    banned-terms status of the unique content, the tip author/date, and the
+    liveness reason — everything the judgment skill needs to route the item
+    without re-probing git itself.
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
@@ -289,6 +310,7 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     probe_repo = str(repo_main)
     default_target = _effective_default_target(Path(repo_main))
     verdict = branch_redundancy(probe_repo, ref, default_target)
+    content_verified, verdict_source = _verdict_provenance(Path(repo_main), verdict)
     try:
         texts = [
             git.run_strict(repo=probe_repo, args=["log", f"{default_target}..{ref}", "--format=%B"]),
@@ -309,6 +331,8 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
         kind="worktree",
         unique_commit_shas=verdict.unique_shas,
         merged_with_post_merge_work=verdict.merged_with_post_merge_work,
+        content_verified=content_verified,
+        verdict_source=verdict_source,
         banned_terms_status=status,
         banned_terms_found=found,
         liveness=liveness,
