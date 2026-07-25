@@ -16,12 +16,13 @@ live worker for the same rows.
 """
 
 import datetime as dt
-import json
 import os
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand
+
+from teatree.core.machine_output import emit
 
 
 class Command(TyperCommand):
@@ -35,31 +36,34 @@ class Command(TyperCommand):
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
         from teatree.loop.queue_drain import expire_then_drain  # noqa: PLC0415 — deferred: keeps command import light
 
+        out = cast("IO[str]", self.stdout)
+        err = cast("IO[str]", self.stderr)
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire("loop-drain-queue", owner=owner):
             now = dt.datetime.now(tz=dt.UTC)
-            if json_output:
-                self.stdout.write(
-                    json.dumps(
-                        {
-                            "skipped": True,
-                            "skipped_reason": "another drain cycle is already running",
-                            "started_at": now.isoformat(),
-                        },
-                        indent=2,
-                    )
-                )
-            else:
-                self.stdout.write("SKIP  loop-drain-queue lease held — another cycle is running.")
+            emit(
+                {
+                    "skipped": True,
+                    "skipped_reason": "another drain cycle is already running",
+                    "started_at": now.isoformat(),
+                },
+                json_output=json_output,
+                out=out,
+                err=err,
+                human="SKIP  loop-drain-queue lease held — another cycle is running.",
+            )
             return
         try:
             result = expire_then_drain()
         finally:
             LoopLease.objects.release("loop-drain-queue", owner=owner)
 
-        if json_output:
-            self.stdout.write(json.dumps(result, indent=2, default=str))
-            return
         retired = result["retired"]
         retired_total = sum(retired.values()) if isinstance(retired, dict) else 0
-        self.stdout.write(f"OK    retired={retired_total} drained={result['drained']}")
+        emit(
+            result,
+            json_output=json_output,
+            out=out,
+            err=err,
+            human=f"OK    retired={retired_total} drained={result['drained']}",
+        )

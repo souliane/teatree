@@ -20,12 +20,12 @@ durable registry instead of hard-refusing. The refusal still fires only
 when there is genuinely no resolvable session id anywhere.
 """
 
-import json
-from collections.abc import Callable
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
+
+from teatree.core.machine_output import emit
 
 
 def _refresh_loop_owner_statusline() -> None:
@@ -74,22 +74,17 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
         current_session_pid,
     )
 
-    stdout_write = command.stdout.write
+    out = cast("IO[str]", command.stdout)
+    err = cast("IO[str]", command.stderr)
     stderr_write = command.stderr.write
     if driver and driver not in LoopDriver.values:
         msg = f"invalid --driver {driver!r} — must be one of: {', '.join(LoopDriver.values)}"
-        if json_output:
-            stdout_write(json.dumps({"ok": False, "error": msg}, indent=2))
-        else:
-            stdout_write(f"ERROR  {msg}")
+        emit({"ok": False, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
         raise SystemExit(2)
     session_id = current_session_id()
     if not session_id:
         msg = "refusing to claim loop ownership without a Claude session id — run inside a Claude Code session"
-        if json_output:
-            stdout_write(json.dumps({"ok": False, "error": msg}, indent=2))
-        else:
-            stdout_write(f"ERROR  {msg}")
+        emit({"ok": False, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
         raise SystemExit(2)
     # Record the durable SESSION pid for the ``t3-master`` slot — and for a
     # per-loop ``loop:<name>`` owner (#1834), which is a persistent
@@ -120,24 +115,25 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
         # anchor the rendered statusline still carries from before the claim.
         _refresh_loop_owner_statusline()
     driverless = pid_anchored and not resolved_driver
-    if json_output:
-        stdout_write(
-            json.dumps(
-                {"ok": won, "slot": slot, "owner_session": owner, "driver": resolved_driver, "driverless": driverless},
-                indent=2,
-            )
-        )
-    elif won:
-        stdout_write(f"OK    claimed loop slot {slot!r} for this session ({session_id}).")
-    else:
-        stdout_write(f"SKIP  loop slot {slot!r} held by session {owner} — pass --take-over to seize it.")
+    human = (
+        f"OK    claimed loop slot {slot!r} for this session ({session_id})."
+        if won
+        else f"SKIP  loop slot {slot!r} held by session {owner} — pass --take-over to seize it."
+    )
+    emit(
+        {"ok": won, "slot": slot, "owner_session": owner, "driver": resolved_driver, "driverless": driverless},
+        json_output=json_output,
+        out=out,
+        err=err,
+        human=human,
+    )
     # A successful pid-anchored claim with no driver is a silently-stalled loop —
     # warn loudly (stderr) even though the claim itself succeeded.
     if won and driverless:
         stderr_write(_DRIVERLESS_WARNING.format(slot=slot))
 
 
-def _owner(slot: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _owner(command: TyperCommand, slot: str, *, json_output: bool) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
 
@@ -146,61 +142,73 @@ def _owner(slot: str, *, json_output: bool, stdout_write: Callable[[str], object
     you = current_session_id()
     status = LoopLease.objects.ownership_status(slot)
     driverless = status.is_live and not status.driver
-    if json_output:
-        stdout_write(
-            json.dumps(
-                {
-                    "slot": slot,
-                    "you": you,
-                    "owner_session": status.owner_session,
-                    "you_are_owner": bool(you) and status.is_live and you == status.owner_session,
-                    "expires_at": status.expires_at.isoformat() if status.expires_at else "",
-                    "is_live": status.is_live,
-                    "generation": status.generation,
-                    "driver": status.driver,
-                    "driverless": driverless,
-                },
-                indent=2,
+    human_lines = [f"you are: {you or '(no session id)'}"]
+    if status.is_live:
+        human_lines.extend(
+            (
+                f"OWNER {slot}: session {status.owner_session} (live until {status.expires_at.isoformat()}).",
+                f"driver: {status.driver or 'DRIVERLESS'}",
             )
         )
-        return
-    stdout_write(f"you are: {you or '(no session id)'}")
-    if status.is_live:
-        stdout_write(f"OWNER {slot}: session {status.owner_session} (live until {status.expires_at.isoformat()}).")
-        stdout_write(f"driver: {status.driver or 'DRIVERLESS'}")
     else:
-        stdout_write(f"OWNER {slot}: unclaimed (no live owner).")
+        human_lines.append(f"OWNER {slot}: unclaimed (no live owner).")
+    emit(
+        {
+            "slot": slot,
+            "you": you,
+            "owner_session": status.owner_session,
+            "you_are_owner": bool(you) and status.is_live and you == status.owner_session,
+            "expires_at": status.expires_at.isoformat() if status.expires_at else "",
+            "is_live": status.is_live,
+            "generation": status.generation,
+            "driver": status.driver,
+            "driverless": driverless,
+        },
+        json_output=json_output,
+        out=cast("IO[str]", command.stdout),
+        err=cast("IO[str]", command.stderr),
+        human="\n".join(human_lines),
+    )
 
 
-def _whoami(*, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _whoami(command: TyperCommand, *, json_output: bool) -> None:
     """Print this Claude session's own id — the hand-off ``--to`` target."""
     from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
 
     session_id = current_session_id()
     driver = detect_driver(session_id)
-    if json_output:
-        stdout_write(json.dumps({"session_id": session_id, "driver": driver, "driverless": not driver}, indent=2))
-        return
     if session_id:
-        stdout_write(session_id)
-        stdout_write(f"driver: {driver or 'DRIVERLESS'}")
+        human = f"{session_id}\ndriver: {driver or 'DRIVERLESS'}"
     else:
-        stdout_write("(no Claude session id — not running inside a Claude Code session)")
+        human = "(no Claude session id — not running inside a Claude Code session)"
+    emit(
+        {"session_id": session_id, "driver": driver, "driverless": not driver},
+        json_output=json_output,
+        out=cast("IO[str]", command.stdout),
+        err=cast("IO[str]", command.stderr),
+        human=human,
+    )
 
 
-def _release(slot: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _release(command: TyperCommand, slot: str, *, json_output: bool) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
 
     session_id = current_session_id()
     released = LoopLease.objects.release_ownership(slot, session_id=session_id)
-    if json_output:
-        stdout_write(json.dumps({"ok": released, "slot": slot}, indent=2))
-    elif released:
-        stdout_write(f"OK    released loop slot {slot!r} (was held by this session).")
-    else:
-        stdout_write(f"NOOP  this session does not hold loop slot {slot!r} — nothing released.")
+    human = (
+        f"OK    released loop slot {slot!r} (was held by this session)."
+        if released
+        else f"NOOP  this session does not hold loop slot {slot!r} — nothing released."
+    )
+    emit(
+        {"ok": released, "slot": slot},
+        json_output=json_output,
+        out=cast("IO[str]", command.stdout),
+        err=cast("IO[str]", command.stderr),
+        human=human,
+    )
 
 
 class Command(TyperCommand):
@@ -239,7 +247,7 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Show which session owns the t3-master slot."""
-        _owner(slot, json_output=json_output, stdout_write=self.stdout.write)
+        _owner(self, slot, json_output=json_output)
 
     @command(name="whoami")
     def whoami(
@@ -248,7 +256,7 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Print this Claude session's own id."""
-        _whoami(json_output=json_output, stdout_write=self.stdout.write)
+        _whoami(self, json_output=json_output)
 
     @command(name="release")
     def release(
@@ -258,4 +266,4 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Release this session's t3-master claim (CAS — non-owner is a no-op)."""
-        _release(slot, json_output=json_output, stdout_write=self.stdout.write)
+        _release(self, slot, json_output=json_output)

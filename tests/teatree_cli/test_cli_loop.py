@@ -531,7 +531,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0, result.stdout
-        assert "claimed loop slot" in result.stdout
+        assert "claimed loop slot" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "cli-session"
 
     def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -541,7 +541,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 2
-        assert "refusing to claim loop ownership without a Claude session id" in result.stdout
+        assert "refusing to claim loop ownership without a Claude session id" in result.stderr
 
     def test_owner_reports_live_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -550,13 +550,13 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["owner"])
 
         assert result.exit_code == 0
-        assert "held-by" in result.stdout
+        assert "held-by" in result.stderr
 
     def test_owner_reports_unclaimed(self) -> None:
         result = runner.invoke(loop_app, ["owner"])
 
         assert result.exit_code == 0
-        assert "unclaimed" in result.stdout
+        assert "unclaimed" in result.stderr
 
     def test_release_only_clears_own_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -566,7 +566,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
-        assert "nothing released" in result.stdout
+        assert "nothing released" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "other-session"
 
     def test_release_clears_when_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,7 +577,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
-        assert "released loop slot" in result.stdout
+        assert "released loop slot" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == ""
 
     def test_take_over_seizes_live_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -588,7 +588,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim", "--take-over"])
 
         assert result.exit_code == 0
-        assert "claimed loop slot" in result.stdout
+        assert "claimed loop slot" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "main"
 
     def test_claim_without_take_over_is_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -599,7 +599,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0
-        assert "held by session hijacker" in result.stdout
+        assert "held by session hijacker" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "hijacker"
 
     def test_owner_json_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -639,7 +639,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim", "--driver", "bogus"])
 
         assert result.exit_code == 2
-        assert "invalid --driver" in result.stdout
+        assert "invalid --driver" in result.stderr
 
     def test_claim_json_success_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415

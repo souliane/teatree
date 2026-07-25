@@ -18,8 +18,15 @@ from teatree.core.models import LoopLease, SessionHandover
 
 def _call(*args: str, **kwargs) -> str:
     buf = StringIO()
-    call_command(*args, stdout=buf, **kwargs)
+    call_command(*args, stdout=buf, stderr=StringIO(), **kwargs)
     return buf.getvalue()
+
+
+def _call_human(*args: str, **kwargs) -> str:
+    """Capture the human view — the emit() seam routes it to stderr, stdout stays JSON-only."""
+    err = StringIO()
+    call_command(*args, stdout=StringIO(), stderr=err, **kwargs)
+    return err.getvalue()
 
 
 class _PinnedSessionTestCase(TestCase):
@@ -91,8 +98,9 @@ class TestHandoverCreate(_PinnedSessionTestCase):
         assert json.loads(out)["to_session"] == "target-Z"
 
     def test_human_output_reports_ok_and_the_mirror(self) -> None:
-        # The non-JSON path: durable state present → "OK" status and the mirror path.
-        out = _call("handover", "create", to="target-Z")
+        # The non-JSON path: durable state present → "OK" status and the mirror path,
+        # now routed to stderr so stdout stays a pure JSON channel (emit seam).
+        out = _call_human("handover", "create", to="target-Z")
         assert "OK" in out
         assert "handed off to target-Z" in out
         assert "mirror written to" in out
@@ -164,7 +172,7 @@ class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
 
 class TestHandoverWhoami(_PinnedSessionTestCase):
     def test_whoami_prints_session_id(self) -> None:
-        assert _call("handover", "whoami").strip() == "this-session"
+        assert _call_human("handover", "whoami").strip() == "this-session"
 
     def test_whoami_json(self) -> None:
         assert json.loads(_call("handover", "whoami", json_output=True))["session_id"] == "this-session"
@@ -191,10 +199,10 @@ class TestHandoverClaimOnStart(_PinnedSessionTestCase):
 
 class TestLoopWhoamiAndOwnerDisplay(_PinnedSessionTestCase):
     def test_loop_owner_whoami_prints_session_id(self) -> None:
-        assert _call("loop_owner", "whoami").splitlines()[0].strip() == "this-session"
+        assert _call_human("loop_owner", "whoami").splitlines()[0].strip() == "this-session"
 
     def test_loop_owner_shows_you_are(self) -> None:
-        out = _call("loop_owner", "owner")
+        out = _call_human("loop_owner", "owner")
         assert "you are: this-session" in out
 
     def test_loop_owner_json_includes_you_and_owner_flag(self) -> None:

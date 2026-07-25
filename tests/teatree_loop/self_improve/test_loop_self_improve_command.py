@@ -54,7 +54,7 @@ class LoopSelfImproveCommandTests(TestCase):
         MergeClear.objects.filter(pk=clear.pk).update(issued_at=old)
 
         out = io.StringIO()
-        call_command("loop_self_improve", tier="cheap", stdout=out)
+        call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
 
         # The forgotten_merge detector must have written a firing.
         assert SelfImproveFiring.objects.filter(detector="forgotten_merge").count() == 1
@@ -110,7 +110,7 @@ class LoopSelfImproveCommandTests(TestCase):
                 patch.dict(os.environ, {"XDG_DATA_HOME": data_home}),
                 patch("teatree.loop.phases.render.self_improve_rerender") as seam,
             ):
-                call_command("loop_self_improve", tier="cheap", stdout=out)
+                call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
 
         seam.assert_called_once()
         assert SelfImproveFiring.objects.filter(detector="stale_statusline_entry").count() == 1

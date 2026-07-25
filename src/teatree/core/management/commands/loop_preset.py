@@ -8,14 +8,14 @@ project's "anything touching the ORM is a management command" rule).
 """
 
 import datetime as dt
-import json
 import re
-from typing import Annotated, Any, NoReturn
+from typing import IO, Annotated, Any, NoReturn, cast
 
 import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.models import PIN_MODES, Loop, Mode, ModeOverride
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.preset_editing import apply_entry_edits
@@ -60,21 +60,20 @@ class Command(TyperCommand):
         active = active_summary()
         active_name = active.name if active is not None else ""
         presets = list(Mode.objects.all())
-        if json_output:
-            payload = [_preset_row(preset, active_name) for preset in presets]
-            self.stdout.write(json.dumps({"active": active_name, "presets": payload}, indent=2))
-            return
+        payload = [_preset_row(preset, active_name) for preset in presets]
         if not presets:
-            self.stdout.write("No presets defined. Run `t3 setup` to seed the defaults.")
-            return
-        self.stdout.write("presets:")
-        for preset in presets:
-            marker = " *ACTIVE*" if preset.name == active_name else ""
-            pin = f" pin={preset.availability_pin}" if preset.availability_pin else ""
-            scope = f" scope={','.join(preset.overlay_scope_names)}" if preset.overlay_scope_names else ""
-            self.stdout.write(f"  {preset.name:<16} {preset.entry_count} entries{pin}{scope}{marker}")
-            if preset.description:
-                self.stdout.write(f"      {preset.description}")
+            human = "No presets defined. Run `t3 setup` to seed the defaults."
+        else:
+            lines = ["presets:"]
+            for preset in presets:
+                marker = " *ACTIVE*" if preset.name == active_name else ""
+                pin = f" pin={preset.availability_pin}" if preset.availability_pin else ""
+                scope = f" scope={','.join(preset.overlay_scope_names)}" if preset.overlay_scope_names else ""
+                lines.append(f"  {preset.name:<16} {preset.entry_count} entries{pin}{scope}{marker}")
+                if preset.description:
+                    lines.append(f"      {preset.description}")
+            human = "\n".join(lines)
+        self._emit({"active": active_name, "presets": payload}, human, json_output=json_output)
 
     @command(name="show")
     def show(
@@ -184,43 +183,38 @@ class Command(TyperCommand):
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=json_output)
         unknown = _unknown_entry_loops(preset.entries)
-        if json_output:
-            self.stdout.write(json.dumps(_preset_detail(preset, unknown), indent=2))
-            return
-        self.stdout.write(f"preset {preset.name}: {preset.description}")
-        for loop_name, value in sorted(preset.entries.items()):
-            self.stdout.write(f"  {loop_name:<22} {'on' if value else 'off'}")
+        lines = [f"preset {preset.name}: {preset.description}"]
+        lines += [
+            f"  {loop_name:<22} {'on' if value else 'off'}" for loop_name, value in sorted(preset.entries.items())
+        ]
         if unknown:
-            self.stdout.write(f"  WARN entries name unknown loops: {', '.join(unknown)}")
+            lines.append(f"  WARN entries name unknown loops: {', '.join(unknown)}")
+        self._emit(_preset_detail(preset, unknown), "\n".join(lines), json_output=json_output)
 
     def _show_active(self, *, json_output: bool) -> None:
         now = timezone.now()
         summary = active_summary(now)
         verdicts = effective_verdicts(now)
-        if json_output:
-            self.stdout.write(
-                json.dumps(
-                    {
-                        "active": _summary_payload(summary),
-                        "loops": [
-                            {"name": v.name, "admitted": v.admitted, "layer": v.layer, "detail": v.detail}
-                            for v in verdicts
-                        ],
-                    },
-                    indent=2,
-                )
-            )
-            return
         if summary is None:
-            self.stdout.write("active preset: none (no override, no active schedule) — loops run per base config.")
+            lines = ["active preset: none (no override, no active schedule) — loops run per base config."]
         else:
             pin = f", pins availability {summary.availability_pin}" if summary.availability_pin else ""
             until = "" if summary.until is None else f", until {summary.until.isoformat()}"
-            self.stdout.write(f"active preset: {summary.name}  (why: {summary.reason}{until}{pin})")
-        self.stdout.write("per-loop effective verdict:")
+            lines = [f"active preset: {summary.name}  (why: {summary.reason}{until}{pin})"]
+        lines.append("per-loop effective verdict:")
         for verdict in verdicts:
             state = "run" if verdict.admitted else "masked"
-            self.stdout.write(f"  {verdict.name:<22} {state:<7} [{verdict.layer}] {verdict.detail}")
+            lines.append(f"  {verdict.name:<22} {state:<7} [{verdict.layer}] {verdict.detail}")
+        self._emit(
+            {
+                "active": _summary_payload(summary),
+                "loops": [
+                    {"name": v.name, "admitted": v.admitted, "layer": v.layer, "detail": v.detail} for v in verdicts
+                ],
+            },
+            "\n".join(lines),
+            json_output=json_output,
+        )
 
     def _resolve_until(self, *, expiry: str, hold: bool, json_output: bool) -> dt.datetime | None:
         if hold:
@@ -253,10 +247,22 @@ class Command(TyperCommand):
         self._emit(_preset_detail(preset, unknown), message, json_output=json_output)
 
     def _emit(self, payload: dict[str, Any], message: str, *, json_output: bool) -> None:
-        self.stdout.write(json.dumps(payload, indent=2) if json_output else message)
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=message,
+        )
 
     def _refuse(self, message: str, *, json_output: bool) -> NoReturn:
-        self.stdout.write(json.dumps({"error": message}, indent=2) if json_output else f"ERROR  {message}")
+        emit(
+            {"error": message},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"ERROR  {message}",
+        )
         raise SystemExit(2)
 
 

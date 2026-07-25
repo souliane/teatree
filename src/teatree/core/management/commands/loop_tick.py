@@ -9,14 +9,14 @@ scanner set regardless of which loops are enabled. The system never uses it to
 drive itself, and there is no master tick.
 """
 
-import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import IO, TYPE_CHECKING, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand
 
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
+from teatree.core.machine_output import emit
 from teatree.core.management.commands.loops_tick import _report_to_dict
 
 if TYPE_CHECKING:
@@ -57,8 +57,11 @@ class Command(TyperCommand):
         finally:
             set_mini_loop_schedules_reader(None)
 
-        if json_output:
-            self.stdout.write(json.dumps(_report_to_dict(report), indent=2))
-            return
-        for name, message in report.errors.items():
-            self.stdout.write(f"WARN  {name}: {message}")
+        human = "\n".join(f"WARN  {name}: {message}" for name, message in report.errors.items()) or None
+        emit(
+            _report_to_dict(report),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )

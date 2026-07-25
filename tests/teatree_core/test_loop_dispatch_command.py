@@ -108,9 +108,9 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert json.loads(stdout.getvalue()) == []
 
     def test_text_output_when_empty(self) -> None:
-        stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", stdout=stdout)
-        assert "No pending spawn requests." in stdout.getvalue()
+        stderr = StringIO()
+        call_command("loop_dispatch", "pending-spawn", stdout=StringIO(), stderr=stderr)
+        assert "No pending spawn requests." in stderr.getvalue()
 
     def test_payload_carries_model_and_skill_bundle(self) -> None:
         # The model tier + skill bundle are resolved in LOOP scope and threaded
@@ -290,10 +290,10 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
     def test_claim_next_text_output_when_claimed(self) -> None:
         """N3: the non-JSON branch — emits a human line for the claimed task."""
         task = self._reviewer_task()
-        stdout = StringIO()
-        call_command("loop_dispatch", "claim-next", stdout=stdout)
+        stderr = StringIO()
+        call_command("loop_dispatch", "claim-next", stdout=StringIO(), stderr=stderr)
 
-        out = stdout.getvalue()
+        out = stderr.getvalue()
         assert f"Claimed task={task.pk}" in out
         assert "subagent=t3:reviewer" in out
         assert "phase=reviewing" in out
@@ -302,9 +302,9 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
 
     def test_claim_next_text_output_when_empty(self) -> None:
         """N3: the non-JSON empty branch."""
-        stdout = StringIO()
-        call_command("loop_dispatch", "claim-next", stdout=stdout)
-        assert "No pending spawn requests." in stdout.getvalue()
+        stderr = StringIO()
+        call_command("loop_dispatch", "claim-next", stdout=StringIO(), stderr=stderr)
+        assert "No pending spawn requests." in stderr.getvalue()
 
     def test_claim_next_session_defaults_to_current_session_id(self) -> None:
         """#1917: an unset ``--claimed-by-session`` resolves to the active session id."""

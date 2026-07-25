@@ -85,7 +85,7 @@ class SessionTodoCommandTest(TestCase):
         call_command("session", "todo-add", "first thread", session_pk=session.pk)
         call_command("session", "todo-add", "second thread", session_pk=session.pk)
         out = StringIO()
-        call_command("session", "todo-list", session_pk=session.pk, stdout=out)
+        call_command("session", "todo-list", session_pk=session.pk, stdout=out, stderr=out)
         text = out.getvalue()
         assert "first thread" in text
         assert "second thread" in text
@@ -103,7 +103,7 @@ class SessionTodoCommandTest(TestCase):
     def test_todo_list_reports_no_items_when_empty(self) -> None:
         session = self._session()
         out = StringIO()
-        call_command("session", "todo-list", session_pk=session.pk, stdout=out)
+        call_command("session", "todo-list", session_pk=session.pk, stdout=out, stderr=out)
         assert "(no items)" in out.getvalue()
 
     def test_the_live_session_is_resolved_from_the_agent_id(self) -> None:
@@ -115,7 +115,7 @@ class SessionTodoCommandTest(TestCase):
             return_value="entrypoint-abc",
         ):
             out = StringIO()
-            call_command("session", "todo-list", stdout=out)
+            call_command("session", "todo-list", stdout=out, stderr=out)
         assert "resume the drain" in out.getvalue()
 
     def test_no_session_recorded_for_the_agent_id_names_the_escape(self) -> None:
