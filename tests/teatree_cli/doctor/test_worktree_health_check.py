@@ -65,6 +65,19 @@ class RegisteredCheckoutCheckTest(_TmpTestCase):
         assert "not a git checkout" in out
         assert str(broken) in out
 
+    def test_a_probe_git_declined_to_answer_warns_instead_of_failing(self) -> None:
+        # FAILing here would print a remedy for a state no reaper is allowed to act
+        # on — the doctor and the reaper share the probe precisely so they agree.
+        self._register(_broken_checkout(self.tmp / "roots" / "unanswerable"), branch="unanswerable")
+        refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: detected dubious ownership in repository")
+
+        with mock.patch("teatree.core.worktree.worktree_roots.run_allowed_to_fail", return_value=refusal):
+            ok, out = _echoes(_check_registered_worktrees_are_checkouts)
+
+        assert ok is True
+        assert "WARN" in out
+        assert "UNVERIFIED" in out
+
     def test_a_missing_dir_is_not_a_failure(self) -> None:
         # An absent dir is an ordinary reaped worktree, not the broken-checkout state.
         self._register(self.tmp / "roots" / "gone", branch="gone")

@@ -12,13 +12,17 @@ The pass is deliberately narrow. Only an immediate child dir of a worktree root
 that CARRIES a ``.git`` entry is a candidate — a dir with no ``.git`` was never a
 checkout (an auto-isolated env dir, a scratch dir) and belongs to another reaper
 or to nobody. Of those candidates, one that still resolves is a healthy worktree
-and is left to the row-driven and raw-orphan reapers; one that does NOT resolve
-is broken by definition and is removed, since a broken checkout can hold no
-recoverable git work.
+and is left to the row-driven and raw-orphan reapers; one git PROVES is not a
+repo is broken by definition and is removed, since a broken checkout can hold no
+recoverable git work. A probe that merely errored proves nothing and is kept.
 
 The safety guards mirror the #706/#835 data-loss discipline: a dir a live
 ``Worktree`` row still points at is never touched here (its row owns its
-lifecycle), and a ``clean_ignore`` match is always skipped.
+lifecycle), and a ``clean_ignore`` match is always skipped. The row-tracked skip
+is not a dead end any more: ``clean-all`` runs the ROW reaper first, and its
+dead-checkout branch (``core.worktree.broken_checkout``) releases the row of a
+provably-dead checkout whose branch holds nothing unrecoverable — so by the time
+this pass runs, a still-tracked dir is one the row reaper deliberately kept.
 """
 
 import logging
@@ -28,7 +32,7 @@ from pathlib import Path
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.models import Worktree
 from teatree.core.worktree.worktree_paths import paths_match
-from teatree.core.worktree.worktree_roots import resolves_as_git_checkout
+from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +70,17 @@ def reap_broken_worktree_dirs(*roots: Path) -> list[str]:
 
 
 def _reap_one(candidate: Path, *, tracked: list[str]) -> list[str]:
-    if resolves_as_git_checkout(candidate):
+    state = probe_checkout(candidate)
+    if state is CheckoutState.CHECKOUT:
         return []
     label = candidate.name
+    if state is CheckoutState.INCONCLUSIVE:
+        return [f"SKIPPED broken worktree '{label}': git declined to say whether it is a checkout — keeping"]
     if is_clean_ignored(label):
         return [f"SKIPPED broken worktree '{label}': matches clean_ignore — keeping"]
     if any(paths_match(str(candidate), path) for path in tracked):
-        return [f"SKIPPED broken worktree '{label}': a Worktree row still tracks it — its row owns the teardown"]
+        kept = f"SKIPPED broken worktree '{label}': a Worktree row still tracks it — the row reaper ran first "
+        return [kept + "and kept it, so its work is unverified"]
     try:
         shutil.rmtree(candidate)
     except OSError as exc:

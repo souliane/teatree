@@ -14,8 +14,9 @@ from django.test import TestCase
 
 import teatree.core.management.commands._workspace.broken_worktrees as broken_mod
 from teatree.core.management.commands._workspace.broken_worktrees import (
+    CheckoutState,
+    probe_checkout,
     reap_broken_worktree_dirs,
-    resolves_as_git_checkout,
 )
 from teatree.core.models import ConfigSetting, Ticket, Worktree
 from teatree.utils import git
@@ -71,7 +72,11 @@ class TestBrokenWorktreeReaper(_TmpPathTestCase):
         assert env_dir.is_dir(), "an auto-isolated env dir is another reaper's business"
         assert outcomes == []
 
-    def test_a_db_tracked_dir_is_left_to_its_row(self) -> None:
+    def test_a_db_tracked_dir_is_left_to_the_row_reaper_that_already_ran(self) -> None:
+        # Not a dead end: clean-all runs the ROW reaper first, and it releases a
+        # provably-dead checkout whose branch holds nothing unrecoverable
+        # (tests/teatree_core/worktree/test_broken_checkout.py). A dir still tracked
+        # HERE is one that pass deliberately kept.
         broken = _broken_checkout(self.tmp_path / "roots" / "tracked")
         ticket = Ticket.objects.create(issue_url="https://example.invalid/org/repo/issues/1")
         Worktree.objects.create(
@@ -85,7 +90,17 @@ class TestBrokenWorktreeReaper(_TmpPathTestCase):
         outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
 
         assert broken.is_dir()
-        assert any("its row owns the teardown" in line for line in outcomes)
+        assert any("the row reaper ran first" in line for line in outcomes)
+
+    def test_a_dir_git_could_not_classify_is_kept(self) -> None:
+        broken = _broken_checkout(self.tmp_path / "roots" / "unanswerable")
+        refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: detected dubious ownership in repository")
+
+        with mock.patch("teatree.core.worktree.worktree_roots.run_allowed_to_fail", return_value=refusal):
+            outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+
+        assert broken.is_dir()
+        assert any("git declined to say" in line for line in outcomes)
 
     def test_several_roots_are_drained_in_one_pass(self) -> None:
         canonical = _broken_checkout(self.tmp_path / "canonical" / "one")
@@ -129,6 +144,6 @@ class TestBrokenWorktreeReaper(_TmpPathTestCase):
 
 class TestCheckoutProbe(_TmpPathTestCase):
     def test_probe_agrees_with_git(self) -> None:
-        assert resolves_as_git_checkout(_real_checkout(self.tmp_path / "ok")) is True
-        assert resolves_as_git_checkout(_broken_checkout(self.tmp_path / "bad")) is False
-        assert resolves_as_git_checkout(self.tmp_path / "absent") is False
+        assert probe_checkout(_real_checkout(self.tmp_path / "ok")) is CheckoutState.CHECKOUT
+        assert probe_checkout(_broken_checkout(self.tmp_path / "bad")) is CheckoutState.NOT_A_CHECKOUT
+        assert probe_checkout(self.tmp_path / "absent") is CheckoutState.INCONCLUSIVE

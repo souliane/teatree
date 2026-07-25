@@ -67,6 +67,9 @@ def run_clean_all(
     omitting it.
     """
     in_use = _wh.dslr_tenants_in_use()  # before the reaper removes CREATED worktrees (#1306)
+    # Sampled before the row reaper: it releases rows, and a released row's root
+    # would otherwise drop out of the scanned set before the dir pass could sweep it.
+    broken_dir_roots = scanned_worktree_roots(workspace)
 
     cleaned: list[str] = reap_done_worktrees(workspace, dry_run=dry_run)
 
@@ -81,7 +84,7 @@ def run_clean_all(
     if dry_run:
         cleaned.append("NOT PREVIEWED: broken-worktree-dir reap (pass has no dry-run mode) — a live run includes it")
     else:
-        cleaned.extend(reap_broken_worktree_dirs(*scanned_worktree_roots(workspace)))
+        cleaned.extend(reap_broken_worktree_dirs(*broken_dir_roots))
 
     repo_root = Path.cwd()
     if (repo_root / ".git").exists():
