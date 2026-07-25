@@ -440,3 +440,42 @@ class EvalRun:
     #: shrinks the shared permit count, ``0``-and-clean grows it back — so a
     #: throttled suite backs its parallel load off the single shared OAuth token.
     throttle_retries: int = 0
+
+    @classmethod
+    def skipped(cls, spec_name: str, reason: str) -> "EvalRun":
+        """A skip-shaped run for an un-provisioned lane — no transcript, not an error.
+
+        Every fresh-run backend shares this shape when its provisioning gate is
+        unmet (no ``claude`` binary, no ``ANTHROPIC_API_KEY``, …): the terminal
+        reason is stamped ``skipped: <reason>`` so the report renders a clean SKIP,
+        and ``is_error`` stays False — a skip is not a failure.
+        """
+        return cls(
+            spec_name=spec_name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=f"skipped: {reason}",
+            is_error=False,
+            raw_stdout="",
+            raw_stderr="",
+        )
+
+    @classmethod
+    def terminal(cls, spec_name: str, *, terminal_reason: str, cost_usd: float = 0.0) -> "EvalRun":
+        """An error-shaped run that never produced a transcript (timeout / budget cap).
+
+        No captured tool calls or text, ``is_error=True``, and a ``terminal_reason``
+        that grades the cell to a FAIL signal rather than crashing the run. The
+        optional ``cost_usd`` carries a budget-exceeded cap's floored cost (``0.0``
+        for a timeout, which paid nothing).
+        """
+        return cls(
+            spec_name=spec_name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=terminal_reason,
+            is_error=True,
+            raw_stdout="",
+            raw_stderr="",
+            cost_usd=cost_usd,
+        )

@@ -31,13 +31,11 @@ the all-skipped enforcement gate — then it raises
 point.
 """
 
-import dataclasses
-
 from claude_agent_sdk.types import EffortLevel
 from pydantic_ai.models import Model
 
 from teatree.config import get_effective_settings
-from teatree.eval.model_resolution import resolve_eval_model
+from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.pydantic_ai_runner import PydanticAiRunner
@@ -89,10 +87,10 @@ class AnthropicApiRunner:
         # Resolve the abstract tier/phase to a concrete model id (a no-op when the
         # spec already carries a concrete ``model``); the resolved id names the
         # Anthropic API model and flows into the ledger label + report.
-        spec = dataclasses.replace(spec, model=resolve_eval_model(spec))
+        spec = resolve_spec_model(spec)
         model = self._resolve_model_or_skip(spec)
         if model is None:
-            return _skip_run(spec, "ANTHROPIC_API_KEY not resolvable")
+            return EvalRun.skipped(spec.name, "ANTHROPIC_API_KEY not resolvable")
         # Delegate the request loop + vocabulary mapping + watchdog to the pydantic_ai
         # lane, injecting the Anthropic model so its own model-resolution is
         # never reached; the turn cap bounds that loop.
@@ -135,19 +133,6 @@ def _build_anthropic_model(spec: EvalSpec, api_key: str) -> Model:
 
     model_name = parse_model_variant(spec.model).model
     return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
-
-
-def _skip_run(spec: EvalSpec, reason: str) -> EvalRun:
-    """A skip-shaped run for an un-provisioned lane (no key), mirroring the ``api`` runner's skip."""
-    return EvalRun(
-        spec_name=spec.name,
-        tool_calls=(),
-        text_blocks=(),
-        terminal_reason=f"skipped: {reason}",
-        is_error=False,
-        raw_stdout="",
-        raw_stderr="",
-    )
 
 
 def build_anthropic_api_eval_runner(
