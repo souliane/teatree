@@ -38,8 +38,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
-_TERMINAL_STATES: frozenset[str] = frozenset({"delivered", "review_posted", "ignored"})
-
 #: How many ``short_describe`` tasks this scanner may enqueue for one ticket before
 #: giving up on it permanently. Three covers a transient failure of the one-shot turn
 #: (timeout, backend blip); past that the write path is broken rather than unlucky,
@@ -59,7 +57,7 @@ class ActiveTicketsScanner:
 
     def scan(self) -> list[ScanSignal]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-        qs = ticket_model.objects.exclude(state__in=_TERMINAL_STATES).order_by("id")
+        qs = ticket_model.objects.exclude(state__in=ticket_model.in_flight_excluded_states()).order_by("id")
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
         signals: list[ScanSignal] = []

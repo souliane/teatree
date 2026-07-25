@@ -58,12 +58,11 @@ class SweepCommands(TyperCommand):
         ``is_issue_done()`` for each, and transitions completed tickets toward
         delivered. Use ``--dry-run`` to preview without touching state.
         """
-        completable_states = frozenset({"shipped", "in_review", "merged"})
         results: list[CompletionResult] = []
 
         for overlay_name, overlay in get_all_overlays().items():
             tickets = Ticket.objects.filter(
-                state__in=completable_states,
+                state__in=Ticket.completable_states(),
                 overlay=overlay_name,
             ).exclude(issue_url="")
 

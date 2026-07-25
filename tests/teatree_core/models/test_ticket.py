@@ -11,6 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
@@ -611,3 +612,56 @@ class TestHasCompletedPhase(TestCase):
         # the safe answer that escalates rather than silently retiring a live task.
         assert Ticket.objects.create(state=Ticket.State.TESTED).has_completed_phase("bughunt") is False
         assert Ticket.objects.create(state=Ticket.State.IN_REVIEW).has_completed_phase("coding") is False
+
+
+class TestTicketStateSets(TestCase):
+    """The canonical ticket state-set classmethods — the SSOT the scanners/managers read.
+
+    ~10 sites used to re-hand-roll these sets (some as raw strings that bypass the
+    enum), the drift class behind #798/#799/#808. Each classmethod is pinned to its
+    exact intended membership so any future edit that changes a set breaks HERE, and
+    every member is asserted to be a real ``State`` so a rename can't silently rot.
+    """
+
+    def test_sets_live_on_the_composed_facet(self) -> None:
+        # The SSOT is the field-less TicketStateSetsModel facet, reachable as a
+        # Ticket classmethod via composition — not re-defined on the concrete model.
+        assert issubclass(Ticket, TicketStateSetsModel)
+        assert Ticket.merged_states.__func__ is TicketStateSetsModel.merged_states.__func__
+
+    def test_marker_release_states_membership(self) -> None:
+        assert Ticket.marker_release_states() == frozenset(
+            {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+        )
+
+    def test_in_flight_excluded_states_membership(self) -> None:
+        assert Ticket.in_flight_excluded_states() == frozenset(
+            {Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+        )
+
+    def test_in_flight_excluded_is_marker_release_minus_merged(self) -> None:
+        # The invariant the docstring names: a MERGED ticket's PR has landed but the
+        # ticket is still in flight (retro/delivery pending), so it stays on the board.
+        assert Ticket.in_flight_excluded_states() == Ticket.marker_release_states() - {Ticket.State.MERGED}
+
+    def test_completable_states_membership(self) -> None:
+        assert Ticket.completable_states() == frozenset(
+            {Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED},
+        )
+
+    def test_merged_states_membership(self) -> None:
+        assert Ticket.merged_states() == frozenset(
+            {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED},
+        )
+
+    def test_every_set_member_is_a_real_state(self) -> None:
+        valid = set(Ticket.State.values)
+        for name in (
+            "marker_release_states",
+            "in_flight_excluded_states",
+            "completable_states",
+            "merged_states",
+        ):
+            states = getattr(Ticket, name)()
+            assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"
+            assert states <= valid, f"{name} has non-State members: {states - valid}"

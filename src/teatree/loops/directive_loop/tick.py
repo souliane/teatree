@@ -102,9 +102,8 @@ class DirectiveTickResult:
 
 def _ticket_merged(directive: Directive) -> bool:
     """Whether the directive's mechanism ticket has reached a merged-or-past state."""
-    merged_states = {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED}
     ticket = directive.ticket
-    return ticket is not None and ticket.state in merged_states
+    return ticket is not None and ticket.state in Ticket.merged_states()
 
 
 def _is_activation_only(directive: Directive) -> bool:

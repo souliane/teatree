@@ -61,9 +61,9 @@ logger = logging.getLogger(__name__)
 # Terminal ticket states that authorise teardown. SHIPPED is excluded on purpose
 # — a shipped ticket still has an OPEN PR, so the work is not finished.
 # REVIEW_POSTED (reviewer terminal) is included so a reviewer worktree is reaped.
-_DONE_TICKET_STATES = frozenset(
-    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
-)
+# The canonical set lives on the model so the teardown signal (``core.signals``)
+# and this reaper can never diverge on which states are terminal.
+_DONE_TICKET_STATES = Ticket.marker_release_states()
 
 _PREVIEW_LIMIT = 3
 _FALLBACK_DEFAULT_TARGET = "origin/main"
