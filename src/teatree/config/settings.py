@@ -18,7 +18,6 @@ from teatree.config.enums import (
     Mode,
     OnBehalfPostMode,
     SendProxyMode,
-    TeamsDisplay,
     Wip,
 )
 from teatree.config.mr_reminder import MrReminderConfig
@@ -228,8 +227,8 @@ class _ModeHarnessSettings:
 
 
 @dataclass
-class _LoopAndTeamsSettings:
-    """WIP dial + loop cadence/runner + the agent-teams pane budget."""
+class _LoopSettings:
+    """WIP dial + loop cadence/runner + the worker admission gate."""
 
     # How much new work a loop tick admits at once — the bounded-WIP dial. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
@@ -278,40 +277,6 @@ class _LoopAndTeamsSettings:
     # + `T3_WORKER_QUIESCING` env; a TOML value is ignored on read. Set via `t3 worker
     # drain` (which writes it) or `config_setting set worker_quiescing`.
     worker_quiescing: bool = False
-    # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
-    # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
-    # PURE DATA referenced by nothing in the loop/dispatch/claim path: the
-    # WORK-team ships DARK. Flipping it TRUE spawns no teammate pane either —
-    # the `team:<role>` claim namespace + the overlay-seam claim filters are
-    # built and tested but have no production caller, so this key gates only
-    # the reaper scanner. Wire-vs-retire is open (#3734). DB-home
-    # (#1775): resolved from the `ConfigSetting` store (global + overlay rows) +
-    # `T3_TEAMS_ENABLED` env; a `[teams]`/`[overlays.<name>]` TOML value is ignored
-    # on read. Set via `t3 teams on|off` (the DB-row write path).
-    teams_enabled: bool = False
-    # #1838 Track-B PR#7a — the inert maker-only pane budget. `teams_max_panes`
-    # caps how many concurrent maker panes a lead may run; `teams_idle_minutes`
-    # is the idle-pane reaper threshold (a pane with no live Session/Task past
-    # this many minutes is demoted to stopped). Both ship inert with the rest of
-    # the pane layer (referenced by nothing until `teams_enabled` flips on and a
-    # consumer lands). DB-home (#1775): resolved from the `ConfigSetting` store
-    # (global + overlay rows) + `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES`
-    # env; a `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A
-    # non-positive or non-int value FAILS SAFE to the default at every tier — the
-    # safety bound cannot be configured away by a typo.
-    teams_max_panes: int = 1
-    teams_idle_minutes: int = 30
-    # #1838 Track-B WI-5 — the PRESENTATION-only pane-display mode. Governs
-    # whether a maker pane's in-process SDK session is ALSO rendered in a visible
-    # tmux pane (native iTerm2 split under `tmux -CC`, plain tmux pane elsewhere).
-    # The SDK session is the source of truth; this never replaces it. Default
-    # `none` (ships dark, byte-identical to today); `auto`/`tmux` opt into the
-    # display with graceful degradation (no tmux / no TTY / spawn failure falls
-    # back to the in-process path). DB-home (#1775): resolved from the
-    # `ConfigSetting` store (global + overlay rows) + `T3_TEAMS_DISPLAY` env; a
-    # `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A bad value
-    # fails SAFE to `none` at every tier.
-    teams_display: TeamsDisplay = TeamsDisplay.NONE
 
 
 @dataclass
@@ -1110,7 +1075,7 @@ class _PrePublishGateSettings:
 class UserSettings(
     _WorkspaceCoreSettings,
     _ModeHarnessSettings,
-    _LoopAndTeamsSettings,
+    _LoopSettings,
     _OnBehalfSettings,
     _IdentityRoutingSettings,
     _QualityGateSettings,

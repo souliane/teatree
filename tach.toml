@@ -92,11 +92,6 @@ layer = "domain"
 depends_on = ["teatree.credential_config", "teatree.token_report", "teatree.utils"]
 
 [[modules]]
-path = "teatree.teams"
-layer = "domain"
-depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
-
-[[modules]]
 path = "teatree.config"
 layer = "platform"
 depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check"]
@@ -501,7 +496,6 @@ depends_on = [
   "teatree.backends.gitlab",
   "teatree.backends.slack",
   "teatree.messaging",
-  "teatree.teams",
   "teatree.loop.loop_cadences",
   "teatree.loop.session_identity",
   "teatree.loop.loop_scoping",
@@ -645,7 +639,6 @@ depends_on = [
   "teatree.backends.github",
   "teatree.backends.gitlab",
   "teatree.backends.slack",
-  "teatree.teams",
   "teatree.loop.url_specificity",
   "teatree.loop.review_claim_signals",
   "teatree.loop.review_done_reactions",

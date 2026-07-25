@@ -71,7 +71,6 @@ from teatree.cli.review import review_app, review_request_app
 from teatree.cli.setup import setup_app
 from teatree.cli.slack.listen import slack_app
 from teatree.cli.task_alias import task_app
-from teatree.cli.teams import teams_app
 from teatree.cli.tools import tool_app
 from teatree.cli.update import update_app
 from teatree.cli.worker import worker_app
@@ -197,7 +196,6 @@ app.add_typer(worker_app, name="worker")
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(prompts_app, name="prompts")
-app.add_typer(teams_app, name="teams")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
 app.add_typer(recover_app, name="recover")

@@ -159,12 +159,6 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "Runs under autonomous_away so the merge path never starves.",
     ),
     LoopSeedSpec(
-        "pane_reaper",
-        300,
-        "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
         "issue_disposition",
         300,
         "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) "

@@ -43,7 +43,6 @@ from teatree.config.enums import (
     Mode,
     OnBehalfPostMode,
     SendProxyMode,
-    TeamsDisplay,
     Wip,
 )
 from teatree.config.mr_reminder import parse_mr_reminder_setting
@@ -331,10 +330,6 @@ class TeatreeSettingsSchema(BaseSettings):
     task_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     task_sweep_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     task_sweep_recheck_interval_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
-    teams_display: Annotated[TeamsDisplay, BeforeValidator(TeamsDisplay.parse), _DEFAULT_OVERLAY]
-    teams_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
-    teams_idle_minutes: Annotated[int, BeforeValidator(_parse_overridable_positive_int(30)), _DEFAULT_OVERLAY]
-    teams_max_panes: Annotated[int, BeforeValidator(_parse_overridable_positive_int(1)), _DEFAULT_OVERLAY]
     ticket_budget_max_cost_usd: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     timezone: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     triage_assessor_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

@@ -81,9 +81,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
-│ teams           Agent-teams master switch. The teams.enabled config key      │
-│                 (default off) gates the pane-backed teammate layer; off      │
-│                 keeps the classic in-session sub-agent fan-out.              │
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
@@ -5329,63 +5326,6 @@ Usage: t3 prompts render [OPTIONS] NAME
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --arg         TEXT  A declared-param value as KEY=VALUE (repeatable).        │
 │ --help              Show this message and exit.                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 teams`
-
-```
-Usage: t3 teams [OPTIONS] COMMAND [ARGS]...
-
- Agent-teams master switch. The teams.enabled config key (default off) gates
- the pane-backed teammate layer; off keeps the classic in-session sub-agent
- fan-out.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ on      Enable agent teams — write the global teams_enabled = true config    │
-│         row.                                                                 │
-│ off     Disable agent teams — write the global teams_enabled = false config  │
-│         row.                                                                 │
-│ status  Show whether agent teams is on/off (effective value, read-only).     │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 teams on`
-
-```
-Usage: t3 teams on [OPTIONS]
-
- Enable agent teams — write the global teams_enabled = true config row.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 teams off`
-
-```
-Usage: t3 teams off [OPTIONS]
-
- Disable agent teams — write the global teams_enabled = false config row.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 teams status`
-
-```
-Usage: t3 teams status [OPTIONS]
-
- Show whether agent teams is on/off (effective value, read-only).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

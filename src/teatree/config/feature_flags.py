@@ -88,12 +88,6 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — autoresearch outer-loop (T4)",
         summary="The SIG-PR-2 recipe/score seam; ships dark until the outer loop consumes the metric.",
     ),
-    "teams_enabled": FeatureFlag(
-        field="teams_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#1838",
-        summary="Agent-teams WORK layer; ships dark until a pane-backed teammate lands.",
-    ),
     "require_plan_adequacy": FeatureFlag(
         field="require_plan_adequacy",
         stage=FlagStage.DARK,

@@ -15,13 +15,6 @@ graph TD
     teatree.ci_oauth_switch --> teatree.credential_config
     teatree.ci_oauth_switch --> teatree.token_report
     teatree.ci_oauth_switch --> teatree.utils
-    teatree.teams --> teatree.core
-    teatree.teams --> teatree.core.models
-    teatree.teams --> teatree.core.loop_lease_manager
-    teatree.teams --> teatree.config
-    teatree.teams --> teatree.agents
-    teatree.teams --> teatree.skill_support
-    teatree.teams --> teatree.utils
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -213,7 +206,6 @@ graph TD
     teatree.loop --> teatree.backends.gitlab
     teatree.loop --> teatree.backends.slack
     teatree.loop --> teatree.messaging
-    teatree.loop --> teatree.teams
     teatree.loop --> teatree.loop.loop_cadences
     teatree.loop --> teatree.loop.session_identity
     teatree.loop --> teatree.loop.loop_scoping
@@ -281,7 +273,6 @@ graph TD
     teatree.loop.scanners --> teatree.backends.github
     teatree.loop.scanners --> teatree.backends.gitlab
     teatree.loop.scanners --> teatree.backends.slack
-    teatree.loop.scanners --> teatree.teams
     teatree.loop.scanners --> teatree.loop.url_specificity
     teatree.loop.scanners --> teatree.loop.review_claim_signals
     teatree.loop.scanners --> teatree.loop.review_done_reactions

@@ -16,8 +16,8 @@ import dataclasses
 from teatree.config.settings import (
     UserSettings,
     _IdentityRoutingSettings,
-    _LoopAndTeamsSettings,
     _LoopFlagAndCredentialSettings,
+    _LoopSettings,
     _ModeHarnessSettings,
     _OnBehalfSettings,
     _PrePublishGateSettings,
@@ -33,7 +33,7 @@ from teatree.config.settings import (
 _GROUP_BASES = (
     _WorkspaceCoreSettings,
     _ModeHarnessSettings,
-    _LoopAndTeamsSettings,
+    _LoopSettings,
     _OnBehalfSettings,
     _IdentityRoutingSettings,
     _QualityGateSettings,

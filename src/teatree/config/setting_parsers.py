@@ -20,7 +20,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from teatree.config import value_coercion
-from teatree.config.enums import TeamsDisplay
 
 
 def _parse_str_list(raw: object) -> list[str]:
@@ -69,26 +68,6 @@ def _parse_env_bool_default_on(raw: str) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _parse_env_positive_int(default: int) -> Callable[[str], int]:
-    """A ``T3_*`` env coercer that fails SAFE to *default* on a bad value.
-
-    Returns a parser that accepts a positive integer string and degrades to
-    *default* for anything non-positive or non-integer. A pane-budget env var
-    (``T3_TEAMS_MAX_PANES`` / ``T3_TEAMS_IDLE_MINUTES``) must never silently
-    disable the safety bound by parsing to ``0`` or raising into the resolver —
-    the conservative bound cannot be configured away by a typo.
-    """
-
-    def parse(raw: str) -> int:
-        try:
-            value = int(raw.strip())
-        except (TypeError, ValueError):
-            return default
-        return value if value > 0 else default
-
-    return parse
-
-
 def _parse_env_str_list(raw: str) -> list[str]:
     """Coerce a ``T3_*`` comma-separated env string to ``list[str]`` for the env tier.
 
@@ -97,22 +76,6 @@ def _parse_env_str_list(raw: str) -> list[str]:
     clears the allowlist rather than reading as one empty action.
     """
     return [token for token in (part.strip() for part in raw.split(",")) if token]
-
-
-def _parse_env_teams_display(raw: str) -> TeamsDisplay:
-    """Coerce a ``T3_TEAMS_DISPLAY`` env string, failing SAFE to ``NONE`` (#1838 WI-5).
-
-    The presentation-only display mode must never crash the config resolver or
-    escalate itself ON via a typo in the env tier: a mistyped value degrades to
-    the conservative :attr:`TeamsDisplay.NONE` (no display, in-process path
-    unchanged). This is the env-tier counterpart to :meth:`TeamsDisplay.parse`,
-    which raises LOUD for the TOML/DB tiers where a write-time validator catches
-    the typo at set time.
-    """
-    try:
-        return TeamsDisplay.parse(raw)
-    except ValueError:
-        return TeamsDisplay.NONE
 
 
 def _parse_strict_bool(raw: object) -> bool:
@@ -138,9 +101,9 @@ def _parse_strict_int(raw: object) -> int:
 
 
 def _parse_overridable_positive_int(default: int) -> Callable[[object], int]:
-    """An overridable-int coercer that fails SAFE to *default* (mirrors ``_parse_env_positive_int``).
+    """An overridable-int coercer that fails SAFE to *default* on a bad value.
 
-    Used for the pane-budget settings (``teams_max_panes`` / ``teams_idle_minutes``)
+    Used for the bounded positive-int settings (review-request dedup, db-backup cadence)
     in ``OVERLAY_OVERRIDABLE_SETTINGS``: a per-overlay or DB-tier value that is
     non-positive, a ``bool``, a ``float``, or a non-numeric string degrades to
     *default* rather than raising into the config resolver. The safety bound the

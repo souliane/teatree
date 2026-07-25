@@ -31,7 +31,7 @@ from teatree.loops.seed import DEFAULT_LOOPS
 # The deterministic, model-free local loops ``low-power`` keeps up (capture via
 # inbox continues, cheap and lossless); every other loop is forced off.
 _LOW_POWER_ON: frozenset[str] = frozenset(
-    {"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "pane_reaper", "housekeeping"}
+    {"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}
 )
 
 # The explicit tri-state entries per preset (absent key = inherit the base config).
@@ -56,7 +56,6 @@ _ENGAGED = dict.fromkeys(
         "idle_stack_reaper",
         "local_stack_queue",
         "resource_pressure",
-        "pane_reaper",
     ),
     True,
 )
@@ -73,7 +72,6 @@ _HEADS_DOWN = {
             "idle_stack_reaper",
             "local_stack_queue",
             "resource_pressure",
-            "pane_reaper",
         ),
         True,
     ),
@@ -101,7 +99,6 @@ _UNATTENDED = {
             "idle_stack_reaper",
             "local_stack_queue",
             "resource_pressure",
-            "pane_reaper",
         ),
         True,
     ),
@@ -123,7 +120,6 @@ _MAINTENANCE = {
             "idle_stack_reaper",
             "local_stack_queue",
             "resource_pressure",
-            "pane_reaper",
         ),
         True,
     ),

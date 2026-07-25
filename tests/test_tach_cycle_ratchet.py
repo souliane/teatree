@@ -31,14 +31,8 @@ _TACH = _REPO / "tach.toml"
 # four new nodes already imported teatree.core inside the monolithic
 # teatree.backends node — the split makes that pre-existing coupling visible as
 # four separate fan-in entries; it adds no new coupling.
-# Bumped 17 → 18 (#1838 agent-teams Track-B PR#7a): teatree.teams is promoted
-# from a foundation leaf to a domain-layer consumer of teatree.core — the maker-
-# only pane layer (panes / pane_reaper / guardrails) legitimately reads the
-# Task/Session lease + LoopLease ownership via teatree.core. One reviewed new
-# fan-in entry (teatree.teams), the correct lower→higher direction mirroring
-# teatree.agents / teatree.backends; nothing in core/loop/loops/agents imports
-# teams back (the #2320 inertness scan + the no-core→agents/backends test still
-# hold).
+# Bumped 17 → 18 (#1838): teatree.teams was promoted from a foundation leaf to a
+# domain-layer consumer of teatree.core. Superseded — see the #3734 entry below.
 # Bumped 18 → 19 (#2413 PR-2): teatree.loop.scanners is split out of the
 # teatree.loop monolith into its own tach node so the scanner → review_claim
 # back-edges become declared (and severable) instead of hidden inside one node.
@@ -83,7 +77,10 @@ _TACH = _REPO / "tach.toml"
 # own independent core coupling, so it does not drop out to offset. One new
 # fan-in entry in the correct lower→higher direction; a pure carve artifact that
 # adds no new coupling.
-_CORE_FANIN_BASELINE = 23
+# Lowered 23 -> 22 (#3734): the agent-teams pane layer is retired, so the
+# teatree.teams node and its core fan-in entry are gone. The reduction is banked
+# rather than left as headroom, so a future fan-in still needs its own review.
+_CORE_FANIN_BASELINE = 22
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

@@ -13,7 +13,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import Mode, OnBehalfPostMode, get_effective_settings, load_config
-from teatree.config.setting_parsers import _parse_env_positive_int, _parse_overridable_positive_int
+from teatree.config.setting_parsers import _parse_overridable_positive_int
 from teatree.config.settings import UserSettings
 from teatree.core.models import ConfigSetting
 
@@ -47,7 +47,6 @@ class TestDbTierDefaults(TestCase):
             "T3_AUTOLOAD",
             "T3_ISSUE_IMPLEMENTER_ENABLED",
             "T3_ORCHESTRATE_CLAIM_ENABLED",
-            "T3_TEAMS_ENABLED",
             "T3_NOTIFY_ON_POST_ON_BEHALF",
             "T3_LOOP_AUTO_UPDATE",
         ):
@@ -78,13 +77,7 @@ class TestDbTierDefaults(TestCase):
         settings = get_effective_settings()
         assert settings.autoload is False
         assert settings.orchestrate_claim_enabled is False
-        assert settings.teams_enabled is False
         assert settings.require_review_context is False
-
-    def test_teams_pane_budget_defaults(self) -> None:
-        settings = get_effective_settings()
-        assert settings.teams_max_panes == 1
-        assert settings.teams_idle_minutes == 30
 
     def test_issue_implementer_defaults_are_opt_in_off(self) -> None:
         settings = get_effective_settings()
@@ -235,24 +228,8 @@ class TestModeParse:
             Mode.parse("headless")
 
 
-class TestPaneBudgetParsers:
-    """Pure-logic coverage of the fail-safe positive-int coercers (#1838 PR#7a)."""
-
-    def test_env_parser_accepts_positive_int(self) -> None:
-
-        assert _parse_env_positive_int(1)("4") == 4
-
-    def test_env_parser_fails_safe_on_non_positive(self) -> None:
-
-        parse = _parse_env_positive_int(7)
-        assert parse("0") == 7
-        assert parse("-3") == 7
-
-    def test_env_parser_fails_safe_on_non_int(self) -> None:
-
-        parse = _parse_env_positive_int(9)
-        assert parse("garbage") == 9
-        assert parse("") == 9
+class TestPositiveIntParser:
+    """Pure-logic coverage of the fail-safe overridable positive-int coercer."""
 
     def test_overridable_parser_accepts_positive_int(self) -> None:
 
