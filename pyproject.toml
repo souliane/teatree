@@ -509,13 +509,18 @@ baseline_file = "tests/skill_cli_ratchet_grandfathered.txt"
 # worst: a fail-closed gate that stops failing closed, a lost-update in a
 # claim/CAS path, a merge-clear/keystone that stops gating. ``t3 mutation
 # run`` mutates ONLY the registry entries a PR's diff touches and no-ops when
-# none are touched, so most PRs pay nothing. ``mode`` defaults to "warn"
-# (the CI ``mutation-diff`` job never fails the pipeline); flip to "block" to
-# promote it to a gate without a workflow change. ``baseline_surviving`` is the
-# ratchet floor (only shrinks): a per-module count of mutants knowingly left
-# alive, so "block" mode fails only on a NEW survivor, never on the documented
-# backlog. NARROW BY DESIGN — do NOT add the whole codebase; the conformance
-# test ``tests/quality/test_mutation.py`` caps the registry size.
+# none are touched, so most PRs pay nothing. The verdict is the
+# ``baseline_surviving`` ratchet floor (only shrinks): a per-module count of
+# mutants knowingly left alive, so a run FAILS only on a NEW survivor above the
+# recorded total, never on the documented backlog — and it fails that way in
+# BOTH modes. ``mode`` is validated against {"warn", "block"} and does nothing
+# else: the two values resolve to the identical ratchet verdict, so setting
+# "block" changes no behaviour (pinned by ``TestModeIsInertToday`` in
+# ``tests/quality/test_mutation_run.py``). It is reserved for the follow-up that
+# gates on survivors existing at all, which needs the recorded survivor backlog
+# paid down first — that paydown has no tracking issue. NARROW BY DESIGN — do
+# NOT add the whole codebase; the conformance test
+# ``tests/quality/test_mutation.py`` caps the registry size.
 
 [tool.teatree.mutation]
 mode = "warn"

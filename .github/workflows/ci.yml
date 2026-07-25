@@ -1038,10 +1038,10 @@ jobs:
     # ``[tool.teatree.mutation].high_value_modules``, and mutates ONLY the
     # touched safety modules — a no-op (fast pass) when the PR touches none, so
     # most PRs pay nothing. Programmatic ratchet: the command fails when the
-    # surviving-mutant count exceeds the recorded ``baseline_surviving`` total,
-    # in BOTH ``warn`` and ``block`` mode (the count may only ever shrink) —
-    # survivors at-or-below baseline still pass. Flipping ``mode`` to "block" is
-    # a later follow-up (gate on survivors existing at all), no workflow change.
+    # surviving-mutant count exceeds the recorded ``baseline_surviving`` total
+    # (the count may only ever shrink) — survivors at-or-below baseline still
+    # pass. ``mode`` is validated but inert: "warn" and "block" resolve to that
+    # same verdict, so this job's behaviour does not depend on it.
     # ``t3 mutation run --all --update-baseline`` tightens the recorded counts.
     # The 10-min cap bounds a pathological run.
     #

@@ -7,9 +7,10 @@ PR that touches no safety module pays nothing.
 
 The exit code is the programmatic ratchet in
 :meth:`teatree.quality.mutation_run.BaselineRatchet.verdict`: a run that surfaces
-MORE surviving mutants than the recorded ``baseline_surviving`` total FAILS — in
-both ``warn`` and ``block`` mode — because the surviving count may only ever
-shrink. This is the prerequisite to flipping ``mode`` to ``"block"`` later.
+MORE surviving mutants than the recorded ``baseline_surviving`` total FAILS —
+because the surviving count may only ever shrink. ``[tool.teatree.mutation].mode``
+is validated but does not change that verdict; ``"warn"`` and ``"block"`` are
+equivalent today.
 
 ``t3 mutation run --update-baseline`` rewrites the per-module
 ``baseline_surviving`` counts to the current measurement. The ratchet only moves

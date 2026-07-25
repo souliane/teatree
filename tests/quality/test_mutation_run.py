@@ -118,6 +118,43 @@ class TestBaselineRatchetVerdict:
             BaselineRatchet.verdict(self._outcome(survivors=1), mode="explode", baseline=0)
 
 
+class TestModeIsInertToday:
+    """``mode`` is validated but changes no verdict — the documented current contract.
+
+    ``[tool.teatree.mutation].mode`` is reserved for the follow-up that gates on
+    survivors existing at all, which needs the recorded survivor backlog paid
+    down first. Until then "warn" and "block" are equivalent, and this pins that
+    equivalence so an implementer wiring real blocking sees it fail here.
+    """
+
+    @pytest.mark.parametrize(("survivors", "baseline"), [(0, 0), (1, 0), (2, 2), (3, 2), (0, 5)])
+    def test_warn_and_block_agree(self, survivors: int, baseline: int) -> None:
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/x.py",),
+            survived=tuple(f"m{i}" for i in range(survivors)),
+            killed=(),
+            inconclusive=(),
+        )
+        warn = BaselineRatchet.verdict(outcome, mode="warn", baseline=baseline)
+        block = BaselineRatchet.verdict(outcome, mode="block", baseline=baseline)
+        assert warn == block
+
+    def test_a_survivor_at_baseline_passes_in_block_mode(self) -> None:
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/x.py",),
+            survived=("m0",),
+            killed=(),
+            inconclusive=(),
+        )
+        assert BaselineRatchet.verdict(outcome, mode="block", baseline=1) == 0
+
+    @pytest.mark.parametrize("mode", ["", "warn ", "BLOCK", "gate", "explode"])
+    def test_only_the_two_declared_values_are_accepted(self, mode: str) -> None:
+        outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
+        with pytest.raises(MutationConfigError, match="mode"):
+            BaselineRatchet.verdict(outcome, mode=mode, baseline=0)
+
+
 class TestSurvivingExceedsBaseline:
     """The mode-independent ratchet: more survivors than recorded baseline fails."""
 
