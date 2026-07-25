@@ -15,6 +15,7 @@ from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_overlay import TicketOverlayModel
 from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
 from teatree.core.models.ticket_scheduling import TicketSchedulingModel
+from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_status import TicketStatusModel
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
 
@@ -43,6 +44,7 @@ class Ticket(
     TicketSchedulingModel,
     TicketEvidenceModel,
     TicketStatusModel,
+    TicketStateSetsModel,
     TicketIntrospectionModel,
 ):
     class State(models.TextChoices):
@@ -191,16 +193,6 @@ class Ticket(
                 condition=~models.Q(repo_namespaced_key=""),
             ),
         ]
-
-    @classmethod
-    def marker_release_states(cls) -> frozenset[str]:
-        """Terminal-done states that free markers and trigger worktree teardown.
-
-        ``_TERMINAL_STATES`` minus SHIPPED (its PR is still open). Shared by the
-        teardown/marker signal and the #3275 reconciler; REVIEW_POSTED is the
-        reviewer terminal (marker release is a no-op for reviewer tickets).
-        """
-        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.REVIEW_POSTED, cls.State.IGNORED})
 
     def __str__(self) -> str:
         return str(self.issue_url or f"ticket-{self.pk}")

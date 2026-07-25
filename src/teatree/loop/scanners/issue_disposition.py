@@ -44,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 CLOSE_CANDIDATE_KIND = "issue_disposition.close_candidate"
 
-_DELIVERED_TICKET_STATES: frozenset[str] = frozenset({"merged", "delivered", "retrospected"})
 _LIVE_TICKET_STATES: frozenset[str] = frozenset(
     {"not_started", "scoped", "started", "planned", "coded", "tested", "reviewed", "in_review", "shipped"}
 )
@@ -148,7 +147,7 @@ class IssueDispositionScanner:
         states = set(ticket_model.objects.filter(issue_url=url).values_list("state", flat=True))
         if states & _LIVE_TICKET_STATES:
             return ""
-        return "already_shipped" if states & _DELIVERED_TICKET_STATES else ""
+        return "already_shipped" if states & ticket_model.merged_states() else ""
 
     def _exact_duplicate_reason(self, url: str, title: str) -> str:
         fingerprint = title_fingerprint(title)

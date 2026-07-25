@@ -39,9 +39,6 @@ def _has_draft_mrs(ticket: "Ticket") -> bool:
     return any(isinstance(mr, dict) and mr.get("draft") for mr in mrs.values())
 
 
-_COMPLETABLE_STATES: frozenset[str] = frozenset({"shipped", "in_review", "merged"})
-
-
 @dataclass(slots=True)
 class TicketCompletionScanner:
     """Yield ``ticket.completion_detected`` for post-ship tickets whose issue is done."""
@@ -97,7 +94,7 @@ class TicketCompletionScanner:
 
     def _candidate_tickets(self) -> Iterable["Ticket"]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-        qs = ticket_model.objects.filter(state__in=_COMPLETABLE_STATES).exclude(issue_url="")
+        qs = ticket_model.objects.filter(state__in=ticket_model.completable_states()).exclude(issue_url="")
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
         return qs.only("id", "issue_url", "state", "overlay")

@@ -107,13 +107,7 @@ class TicketQuerySet(models.QuerySet):
 
         return (
             self.for_overlay(overlay)
-            .exclude(
-                state__in=[
-                    ticket_model.State.DELIVERED,
-                    ticket_model.State.REVIEW_POSTED,
-                    ticket_model.State.IGNORED,
-                ],
-            )
+            .exclude(state__in=ticket_model.in_flight_excluded_states())
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
@@ -131,15 +125,7 @@ class WorktreeQuerySet(models.QuerySet):
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
-            self.for_overlay(overlay)
-            .exclude(
-                ticket__state__in=[
-                    ticket_model.State.DELIVERED,
-                    ticket_model.State.REVIEW_POSTED,
-                    ticket_model.State.IGNORED,
-                ],
-            )
-            .order_by("pk")
+            self.for_overlay(overlay).exclude(ticket__state__in=ticket_model.in_flight_excluded_states()).order_by("pk")
         )
 
     def stamp_e2e_run(self, ticket_pk: int, *, now: datetime | None = None) -> int:
