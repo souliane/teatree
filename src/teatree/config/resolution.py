@@ -43,6 +43,44 @@ _logger = logging.getLogger("teatree.config")
 # overlay-then-global, ``speak`` as a per-overlay MERGE onto the global base.
 _BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
 
+# Sentinel for "no shipped default at all" — never equals a real value, so a
+# seed/import of such a key is always written.
+_NO_EFFECTIVE_DEFAULT: object = object()
+
+
+def effective_default(key: str) -> object:
+    """The value *key* resolves to with NO DB row / env override — the ONE default authority.
+
+    The single source the seed-skip (``config_setting seed``), the import-skip
+    (``config_migration``), and the resolver all agree on, so a row equal to it is
+    provably redundant: writing it and clearing it resolve to the SAME value.
+
+    A ``UserSettings`` scalar field resolves to its DATACLASS default: the resolver
+    base (``load_config().user`` is always a bare ``UserSettings()``), NOT the
+    ``defaults.toml``/pydantic value. The TOML-default tier is NOT wired into the
+    resolver (a later phase — ``config/schema.py``), so ``defaults.toml`` adopting a
+    live value (e.g. ``provision_ram_ceiling_percent = 75``) that differs from the
+    conservative code default (``85``) MUST write a row on import/seed — else the
+    value would be skipped-as-default and then silently resolve to ``85``.
+
+    A structured field (``speak`` / ``mr_reminder``) is stored as a dict the resolver
+    rebuilds bespoke; its stored-form default is the ``shipped_defaults`` dict (equal
+    in meaning to the dataclass default), so it is compared in that stored form rather
+    than against the dataclass instance. A non-``UserSettings`` key (cold / cold-hook
+    / registry) resolves to its ``shipped_defaults`` value, which IS its resolver
+    default (the cold reader / registry default sourced from ``defaults.toml``).
+
+    Returns a never-equal sentinel for a key with no shipped default, so its
+    seed/import is always written.
+    """
+    if key not in _BESPOKE_STRUCTURED_FIELDS:
+        dataclass_default = getattr(UserSettings(), key, _NO_EFFECTIVE_DEFAULT)
+        if dataclass_default is not _NO_EFFECTIVE_DEFAULT:
+            return dataclass_default
+    from teatree.config.schema import shipped_defaults  # noqa: PLC0415 — deferred: heavy pydantic import
+
+    return getattr(shipped_defaults(), key, _NO_EFFECTIVE_DEFAULT)
+
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     """Return the user settings under the #1775 DB-home partition + env.
@@ -342,21 +380,58 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     return overrides
 
 
-def _load_global_rows() -> dict[str, Any]:
-    """Read the GLOBAL-scope (``scope=""``) ``{key: value}`` rows, or ``{}``.
+def _bootstrap_read_exceptions() -> tuple[type[Exception], ...]:
+    """The GENUINE not-ready exceptions the DB override read fails SILENTLY-safe on (returns ``{}``).
 
-    Reaches the model via Django's app registry (no static ``teatree.core``
-    import — that would be a backwards ``platform -> domain`` tach edge). Fails
-    safe to ``{}`` for any early/unconfigured read (apps not ready, no settings,
-    pre-migration table, DB unreachable) so the DB tier is a strict no-op rather
-    than an exception in the hot config path.
+    Django unconfigured / a settings access failing (``ImproperlyConfigured``), the app
+    registry not yet populated (``AppRegistryNotReady``), a pre-migration/missing table
+    or an unreachable DB (``OperationalError`` / ``ProgrammingError``) — the legitimate
+    bootstrap states a cold or fresh install hits before the DB exists. These are the
+    only states the reader may empty the override tier for WITHOUT a signal, because
+    they are expected. Any OTHER exception is a real read bug and is LOGGED loud (see
+    :func:`_read_override_rows`) rather than silently swallowed.
     """
-    try:
-        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+    from django.core.exceptions import (  # noqa: PLC0415 — deferred: Django import at call time
+        AppRegistryNotReady,
+        ImproperlyConfigured,
+    )
+    from django.db.utils import (  # noqa: PLC0415 — deferred: Django import at call time
+        OperationalError,
+        ProgrammingError,
+    )
 
+    return (ImproperlyConfigured, AppRegistryNotReady, OperationalError, ProgrammingError)
+
+
+# The loud SIGNAL for a non-bootstrap ``ConfigSetting`` read fault. Such a failure is a
+# fail-OPEN of the ENTIRE DB override tier — it drops the ``autonomy`` /
+# ``require_human_approval_to_merge`` safety gates back to the dataclass defaults — so it
+# is logged ``ERROR`` + traceback (the "raise or log-and-signal, not SILENTLY fail-open"
+# contract) rather than swallowed: operator error-monitoring surfaces the real fault.
+_OVERRIDE_READ_FAILURE_MSG = (
+    "ConfigSetting %s-scope override read FAILED unexpectedly — resolving with NO DB override tier for this "
+    "read (safety gates fall back to dataclass defaults). This is a real read fault, not a bootstrap no-op; "
+    "fix the DB/read error."
+)
+
+
+def _load_global_rows() -> dict[str, Any]:
+    """Read the GLOBAL-scope (``scope=""``) ``{key: value}`` rows, or ``{}`` on failure.
+
+    Reaches the model via Django's app registry (no static ``teatree.core`` import — that
+    would be a backwards ``platform -> domain`` tach edge). A bootstrap state degrades
+    SILENTLY (:func:`_bootstrap_read_exceptions`); any other read fault is logged loud
+    (:data:`_OVERRIDE_READ_FAILURE_MSG`), never silently emptying the override tier.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    try:
         model = apps.get_model("core", "ConfigSetting")
         return dict(model.objects.overrides_for_scope(""))
-    except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
+    except _bootstrap_read_exceptions():
+        return {}
+    except Exception:
+        _logger.exception(_OVERRIDE_READ_FAILURE_MSG, "global")
         return {}
 
 
@@ -368,14 +443,14 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
     for the active overlay) and MERGES every canonically-equivalent scope group —
     a row scoped ``myovl`` and one scoped ``t3-myovl`` both apply. Alias groups
     apply in sorted-scope order, then the exact-name group last, so on a key
-    collision the exact-name row wins. Same fail-safe-to-``{}`` posture as
+    collision the exact-name row wins. Same signal-on-real-failure posture as
     :func:`_load_global_rows`.
     """
     if not overlay_name:
         return {}
-    try:
-        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
+    try:
         model = apps.get_model("core", "ConfigSetting")
         canonical = OverlayEntry.canonical_overlay_name(overlay_name)
         scope_values: dict[str, dict[str, Any]] = {}
@@ -387,7 +462,10 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
             if scope != overlay_name:
                 merged.update(scope_values[scope])
         merged.update(scope_values.get(overlay_name, {}))
-    except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
+    except _bootstrap_read_exceptions():
+        return {}
+    except Exception:
+        _logger.exception(_OVERRIDE_READ_FAILURE_MSG, f"overlay {overlay_name!r}")
         return {}
     return merged
 

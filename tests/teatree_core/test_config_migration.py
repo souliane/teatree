@@ -17,8 +17,9 @@ from unittest import mock
 import pytest
 from django.test import TestCase
 
-from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
-from teatree.config.schema import _DEFAULTS_TOML
+from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
+from teatree.config.schema import _DEFAULTS_TOML, shipped_defaults
+from teatree.config.settings import UserSettings
 from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 
@@ -260,22 +261,44 @@ class TestImportTomlToDb(TestCase):
         assert result.rejected[0].reason.startswith("invalid")
         assert ConfigSetting.objects.count() == 0
 
-    def test_value_equal_to_shipped_default_writes_no_row(self) -> None:
-        # issue_implementer_enabled's shipped default is False.
+    def test_value_equal_to_effective_default_writes_no_row(self) -> None:
+        # issue_implementer_enabled's effective (code) default is False, so a row
+        # equal to it is redundant and skipped.
         result = import_toml_to_db("[teatree]\nissue_implementer_enabled = false\n", scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
         assert [(r.scope, r.key) for r in result.skipped_default] == [("", "issue_implementer_enabled")]
         assert ConfigSetting.objects.count() == 0
 
-    def test_defaults_toml_imports_to_zero_rows(self) -> None:
-        # Every key in the shipped defaults equals its own default, so a clean import
-        # of defaults.toml stores nothing — preserving the #3676 zero-seed property.
+    def test_import_of_adopted_default_diverging_from_code_default_writes_a_row(self) -> None:
+        # P1-A regression: defaults.toml ADOPTS a live value (provision_ram_ceiling_percent
+        # = 75) that diverges from the conservative dataclass code default (85). The old
+        # import-skip authority (shipped_defaults) SKIPPED it as "equal to the shipped
+        # default" — but the resolver has no toml tier, so it then silently resolved to 85.
+        # The unified effective-default authority is the resolver's own default (85), so 75
+        # is NOT redundant: it must be written and then resolve to 75, not 85.
+        toml_default = shipped_defaults().provision_ram_ceiling_percent
+        code_default = UserSettings().provision_ram_ceiling_percent
+        assert toml_default != code_default  # the divergence this test guards
+        assert effective_default("provision_ram_ceiling_percent") == code_default
+        result = import_toml_to_db(f"[teatree]\nprovision_ram_ceiling_percent = {toml_default}\n", scan_terms=())
+        assert result.rejected == ()
+        assert [(r.scope, r.key) for r in result.written] == [("", "provision_ram_ceiling_percent")]
+        assert result.skipped_default == ()
+        # No silent divergence: the imported value is what the resolver now returns.
+        assert get_effective_settings().provision_ram_ceiling_percent == toml_default
+
+    def test_defaults_toml_import_leaves_no_silent_divergence(self) -> None:
+        # A clean import of defaults.toml writes ONLY the adopted-live keys that diverge
+        # from their code default (e.g. provision_ram_ceiling_percent); every other key is
+        # skipped as redundant. The invariant: after import, every resolved value equals
+        # what defaults.toml declares — the import never silently drops an adopted value.
         result = import_toml_to_db(_DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
         assert result.rejected == ()
-        assert result.written == ()
         assert len(result.skipped_default) > 0
-        assert ConfigSetting.objects.count() == 0
+        assert "provision_ram_ceiling_percent" in {r.key for r in result.written}
+        resolved = get_effective_settings().provision_ram_ceiling_percent
+        assert resolved == shipped_defaults().provision_ram_ceiling_percent
 
     def test_dry_run_classifies_without_writing(self) -> None:
         result = import_toml_to_db('[teatree]\nmode = "auto"\n', scan_terms=(), dry_run=True)

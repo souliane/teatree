@@ -16,11 +16,13 @@ from typing import Any
 import tomlkit
 from tomlkit import items as tomlkit_items
 
+from teatree.config import effective_default
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
 from teatree.hooks.term_match import matched_term
@@ -29,11 +31,6 @@ GLOBAL_SCOPE = ""
 _TEATREE_TABLE = "teatree"
 _OVERLAYS_TABLE = "overlays"
 _E2E_REPOS_TABLE = "e2e_repos"
-
-
-def _scope_label(scope: str) -> str:
-    """Human label for a scope: ``global`` for the empty scope else ``overlay '<name>'``."""
-    return "global" if not scope else f"overlay {scope!r}"
 
 
 @dataclass(frozen=True)
@@ -279,18 +276,6 @@ class ConfigImport:
     dry_run: bool
 
 
-_NO_DEFAULT: object = object()
-
-
-def _shipped_default(key: str) -> object:
-    """The model's shipped default for *key* — the value a row equal to it is redundant against."""
-    # Deferred (PLC0415): the pydantic model import costs ~110ms; only the Django/import
-    # path pays it, never a cold reader.
-    from teatree.config.schema import shipped_defaults  # noqa: PLC0415 — deferred: heavy pydantic import
-
-    return getattr(shipped_defaults(), key, _NO_DEFAULT)
-
-
 def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]:
     """Flatten a parsed export document into ``(scope, key, value)`` candidate rows.
 
@@ -325,8 +310,12 @@ def _classify_import_row(key: str, value: ConfigValue, terms: tuple[str, ...]) -
 
     Reject a removed key (loud, no home), an unknown key, and a secret/personal-identifier
     row (reusing the export withhold rule so a shared TOML never smuggles customer data back
-    in). Otherwise coerce through the same registry parser the resolver uses; a value equal to
-    the shipped default is redundant (``skip``), leaving ``restore = delete row`` intact.
+    in). Otherwise coerce through the shared write-path validator; a value equal to the key's
+    EFFECTIVE default (:func:`~teatree.config.effective_default` — the resolver's own default,
+    the same authority the seed-skip consults) is redundant (``skip``), leaving
+    ``restore = delete row`` intact. An adopted-live ``defaults.toml`` value that diverges
+    from the code default is NOT redundant, so it is written rather than skipped-then-silently
+    resolving back to the code default (P1-A).
     """
     if key in REMOVED_SETTING_KEYS:
         entry = removed_setting(key)
@@ -336,10 +325,10 @@ def _classify_import_row(key: str, value: ConfigValue, terms: tuple[str, ...]) -
     if (secret := _redaction_reason(key, value, terms)) is not None:
         return ("reject", f"secret ({secret})")
     try:
-        canonical = ALL_KNOWN_CONFIG_SETTINGS[key](value)
-    except (ValueError, TypeError, AttributeError) as exc:
+        canonical = validate_config_write(key, value)
+    except ConfigWriteError as exc:
         return ("reject", f"invalid: {exc}")
-    return ("skip", canonical) if canonical == _shipped_default(key) else ("write", canonical)
+    return ("skip", canonical) if canonical == effective_default(key) else ("write", canonical)
 
 
 def import_toml_to_db(

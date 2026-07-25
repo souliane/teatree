@@ -68,6 +68,11 @@ GLOBAL_SCOPE = ""
 ENTRYPOINT_SEEDER = "entrypoint"
 
 
+def scope_label(scope: str) -> str:
+    """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
+    return "global" if not scope else f"overlay {scope!r}"
+
+
 class SeedOutcome(StrEnum):
     """What :meth:`ConfigSettingManager.seed` did to the row (for operator logs)."""
 

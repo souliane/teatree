@@ -17,6 +17,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_migration import import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.dash import audit
@@ -61,8 +62,8 @@ def settings_set(request: "HttpRequest") -> "HttpResponse":
     except json.JSONDecodeError as exc:
         return HttpResponseBadRequest(f"invalid JSON value: {exc}")
     try:
-        canonical = ALL_KNOWN_CONFIG_SETTINGS[key](parsed)
-    except (ValueError, TypeError, AttributeError) as exc:
+        canonical = validate_config_write(key, parsed)
+    except ConfigWriteError as exc:
         return HttpResponseBadRequest(f"invalid value for {key}: {exc}")
     try:
         ConfigSetting.objects.set_value(key, canonical, scope=scope)

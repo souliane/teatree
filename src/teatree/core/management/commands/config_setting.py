@@ -33,11 +33,18 @@ import typer
 from django.core.exceptions import ValidationError
 from django_typer.management import TyperCommand, command
 
-from teatree.config import ALL_KNOWN_CONFIG_SETTINGS, COLD_HOOK_SETTINGS, FEATURE_FLAGS, get_effective_settings
+from teatree.config import (
+    ALL_KNOWN_CONFIG_SETTINGS,
+    COLD_HOOK_SETTINGS,
+    FEATURE_FLAGS,
+    effective_default,
+    get_effective_settings,
+)
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
+from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
-from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 
 # Every key ``config_setting`` knows — the SINGLE known-key set shared by
 # get/list/set/clear AND the MCP ``config_setting_get`` read tool
@@ -46,20 +53,10 @@ from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
 # a row no reader would consult.
 _ALLOWED_SETTINGS = ALL_KNOWN_CONFIG_SETTINGS
 
-# Sentinel for "no known code default" — a registry/cold key that is not a
-# ``UserSettings`` field. It never equals a real seed value, so a seed of such a
-# key is always written rather than mistaken for a redundant code-default seed.
-_NO_CODE_DEFAULT: object = object()
-
 _OverlayOption = Annotated[
     str,
     typer.Option("--overlay", help="Overlay name to scope the row to; omit for the global scope (every overlay)."),
 ]
-
-
-def _scope_label(scope: str) -> str:
-    """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
-    return "global" if not scope else f"overlay {scope!r}"
 
 
 def _flag_suffix(key: str) -> str:
@@ -70,20 +67,6 @@ def _flag_suffix(key: str) -> str:
     """
     trailer = flag_trailer(key)
     return f"  {trailer}" if trailer else ""
-
-
-def _code_default(key: str) -> object:
-    """The pure CODE default for *key* — the ``UserSettings`` field default.
-
-    A bare ``UserSettings()`` carries the dataclass field defaults with NO env or
-    DB layer applied, so this is the value a setting resolves to when nothing
-    overrides it. Returns :data:`_NO_CODE_DEFAULT` when *key* is not a
-    ``UserSettings`` field (a registry/cold key), so the seeder never mistakes a
-    non-``UserSettings`` seed for a redundant code-default write.
-    """
-    from teatree.config.settings import UserSettings  # noqa: PLC0415 — deferred: heavy config import
-
-    return getattr(UserSettings(), key, _NO_CODE_DEFAULT)
 
 
 class Command(TyperCommand):
@@ -119,10 +102,9 @@ class Command(TyperCommand):
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        parser = _ALLOWED_SETTINGS[key]
         try:
-            canonical = parser(parsed)
-        except (ValueError, TypeError, AttributeError) as exc:
+            canonical = validate_config_write(key, parsed)
+        except ConfigWriteError as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         # Persist the CANONICAL parsed value, not the raw user value, so the DB
@@ -143,7 +125,7 @@ class Command(TyperCommand):
             raise SystemExit(2) from exc
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
-        self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]{_flag_suffix(key)}")
+        self.stdout.write(f"  set {key} = {stored!r}  [{scope_label(overlay)}]{_flag_suffix(key)}")
 
     @command()
     def seed(
@@ -174,22 +156,21 @@ class Command(TyperCommand):
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        parser = _ALLOWED_SETTINGS[key]
         try:
-            canonical = parser(parsed)
-        except (ValueError, TypeError, AttributeError) as exc:
+            canonical = validate_config_write(key, parsed)
+        except ConfigWriteError as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         outcome = ConfigSetting.objects.seed(
             key,
             canonical,
-            code_default=_code_default(key),
+            code_default=effective_default(key),
             seeded_by=seeded_by,
             scope=overlay,
         )
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         self.stdout.write(
-            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{_scope_label(overlay)}]{_flag_suffix(key)}"
+            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{scope_label(overlay)}]{_flag_suffix(key)}"
         )
 
     @command()
@@ -206,9 +187,9 @@ class Command(TyperCommand):
         silent.
         """
         if ConfigSetting.objects.clear(key, scope=overlay):
-            self.stdout.write(f"  cleared DB override for {key}  [{_scope_label(overlay)}]")
+            self.stdout.write(f"  cleared DB override for {key}  [{scope_label(overlay)}]")
             return
-        self.stderr.write(f"  no DB override row for {key}  [{_scope_label(overlay)}]")
+        self.stderr.write(f"  no DB override row for {key}  [{scope_label(overlay)}]")
         raise SystemExit(1)
 
     @command(name="list")
@@ -219,7 +200,7 @@ class Command(TyperCommand):
             self.stdout.write("  (no DB config overrides)")
             return
         for row in rows:
-            self.stdout.write(f"  {row.key} = {row.value!r}  [{_scope_label(row.scope)}]")
+            self.stdout.write(f"  {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
 
     @command()
     def flags(self) -> None:
@@ -253,7 +234,7 @@ class Command(TyperCommand):
             raise SystemExit(2)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
-            self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]{_flag_suffix(key)}")
+            self.stdout.write(f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]{_flag_suffix(key)}")
             return
         cold_hook = COLD_HOOK_SETTINGS.get(key)
         if cold_hook is not None:
@@ -297,7 +278,7 @@ class Command(TyperCommand):
         """
         result = export_db_to_toml(overlay or None, include_private=include_private)
         for row in result.redacted:
-            self.stderr.write(f"  withheld {row.key}  [{_scope_label(row.scope)}]  ({row.reason})")
+            self.stderr.write(f"  withheld {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.redacted:
             self.stderr.write(
                 f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
@@ -340,13 +321,13 @@ class Command(TyperCommand):
         for old, new in result.folded:
             self.stdout.write(f"  folded retired alias {old} -> {new}")
         for row in result.rejected:
-            self.stderr.write(f"  rejected {row.key}  [{_scope_label(row.scope)}]  ({row.reason})")
+            self.stderr.write(f"  rejected {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.rejected:
             self.stderr.write(f"  {len(result.rejected)} row(s) rejected; nothing was imported.")
             raise SystemExit(2)
         verb = "would import" if dry_run else "imported"
         for row in result.written:
-            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{_scope_label(row.scope)}]")
+            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
         self.stdout.write(
             f"  {verb} {len(result.written)} row(s); "
             f"{len(result.skipped_default)} equal to the shipped default (no row)."
