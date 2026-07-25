@@ -29,7 +29,7 @@ from teatree.agents.headless import (
     _resolve_dispatch_lane,
     run_headless,
 )
-from teatree.agents.headless_result import get_result_json_schema, parse_result, validate_result
+from teatree.agents.headless_result import parse_result
 from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
@@ -813,15 +813,6 @@ def test_limit_match_handles_missing_message() -> None:
 # --- Pure function tests (no DB) ---
 
 
-def test_validate_result_accepts_valid_keys() -> None:
-    assert validate_result({"summary": "OK", "tests_passed": 5}) == ""
-
-
-def test_validate_result_rejects_unknown_keys() -> None:
-    error = validate_result({"summary": "OK", "bogus": True})
-    assert "bogus" in error
-
-
 def test_parse_result_extracts_last_json_line() -> None:
     stdout = "Loading skills...\nRunning task...\n" + json.dumps({"summary": "OK"}) + "\n"
     assert parse_result(stdout) == {"summary": "OK"}
@@ -850,14 +841,6 @@ def test_parse_result_returns_last_object_when_several_present() -> None:
 def test_parse_result_ignores_inner_braces_of_multiline_object() -> None:
     stdout = 'progress\n{\n  "summary": "ok",\n  "nested": {"k": "v"}\n}\n'
     assert parse_result(stdout) == {"summary": "ok", "nested": {"k": "v"}}
-
-
-def test_get_result_json_schema_returns_valid_schema() -> None:
-    schema = get_result_json_schema()
-    assert schema["type"] == "object"
-    properties = schema["properties"]
-    assert isinstance(properties, dict)
-    assert "summary" in properties
 
 
 # --- Session resume tests ---

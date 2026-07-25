@@ -51,23 +51,16 @@ def _scan_text(result: AgentResultBlob, error: str) -> str:
     return " ".join(parts).casefold()
 
 
-def is_outage_death(result: AgentResultBlob, *, error: str = "") -> bool:
-    """Return whether *result* / *error* signal a network-outage sub-agent death.
-
-    Case-insensitive across ``summary``, ``user_input_reason``, and the explicit
-    ``error`` string. A direct connection signature is sufficient; the generic
-    "API Error" phrase counts only when a connection phrase co-occurs, so a
-    legitimate summary that merely discusses API-error handling is not flagged.
-    """
-    return bool(outage_signature(result, error=error))
-
-
 def outage_signature(result: AgentResultBlob, *, error: str = "") -> str:
     """Return the matched outage signature, or ``""`` when not an outage death.
 
     The signature is the diagnostic the recorder stamps onto the FAILED attempt
-    (``error="outage_death: <sig>"``). A direct connection signature returns
-    itself; the "API Error" path returns the co-occurring connection phrase.
+    (``error="outage_death: <sig>"``); an empty return means *result* / *error*
+    are not an outage death. Case-insensitive across ``summary``,
+    ``user_input_reason``, and the explicit ``error`` string. A direct connection
+    signature returns itself; the generic "API Error" phrase counts only when a
+    connection phrase co-occurs (returning that phrase), so a legitimate summary
+    that merely discusses API-error handling is not flagged.
     """
     haystack = _scan_text(result, error)
     for signature in _CONNECTION_SIGNATURES:

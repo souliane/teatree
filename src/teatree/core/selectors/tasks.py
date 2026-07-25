@@ -1,6 +1,6 @@
 from teatree.core.models import Task, Ticket, TicketTransition
 
-from ._types import TaskAttemptDetail, TaskDetail, TaskGraphNode, TaskRelatedRow
+from ._types import TaskAttemptDetail, TaskDetail, TaskRelatedRow
 
 
 def build_task_detail(task_id: int) -> TaskDetail | None:
@@ -58,30 +58,6 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
         children=children,
         attempts=attempts,
     )
-
-
-def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
-    """Build a tree of tasks for a ticket, rooted at tasks with no parent."""
-    tasks = list(Task.objects.filter(ticket_id=ticket_id).select_related("parent_task").order_by("pk"))
-    children_map: dict[int | None, list[Task]] = {}
-    for task in tasks:
-        children_map.setdefault(task.parent_task_id, []).append(task)
-
-    def _build(parent_id: int | None, depth: int) -> list[TaskGraphNode]:
-        return [
-            TaskGraphNode(
-                task_id=task.pk,
-                phase=task.phase,
-                status=task.get_status_display(),  # ty: ignore[unresolved-attribute]
-                execution_target=task.get_execution_target_display(),  # ty: ignore[unresolved-attribute]
-                execution_reason=task.execution_reason[:120],
-                depth=depth,
-                children=_build(task.pk, depth + 1),
-            )
-            for task in children_map.get(parent_id, [])
-        ]
-
-    return _build(None, 0)
 
 
 def build_ticket_lifecycle_mermaid(ticket_id: int) -> str:

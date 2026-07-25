@@ -14,7 +14,6 @@ import datetime as dt
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
 
 from django.utils import timezone
 
@@ -35,12 +34,6 @@ DEFAULT_DENIAL_BACKOFF_SECONDS = 4 * 60 * 60
 # "_BUDGET" / "_TOKEN" word.
 _ENV_PREFIX = "T3_SELF_IMPROVE_"
 DEFAULT_TOKEN_BUDGET_ENV = f"{_ENV_PREFIX}TOKEN_BUDGET"
-
-
-class RamSample(Protocol):
-    """The minimal RAM probe surface the budget gate consumes."""
-
-    percent: float
 
 
 @dataclass(frozen=True, slots=True)

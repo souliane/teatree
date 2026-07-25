@@ -2,7 +2,7 @@
 
 import pytest
 
-from teatree.agents.outage_classifier import is_outage_death, is_transient_failure, transient_failure_signature
+from teatree.agents.outage_classifier import is_transient_failure, outage_signature, transient_failure_signature
 
 
 @pytest.mark.parametrize(
@@ -15,7 +15,7 @@ from teatree.agents.outage_classifier import is_outage_death, is_transient_failu
     ],
 )
 def test_connection_signature_in_summary_is_outage(text: str) -> None:
-    assert is_outage_death({"summary": text}) is True
+    assert outage_signature({"summary": text})
 
 
 @pytest.mark.parametrize(
@@ -28,31 +28,31 @@ def test_connection_signature_in_summary_is_outage(text: str) -> None:
     ],
 )
 def test_signature_match_is_case_insensitive(text: str) -> None:
-    assert is_outage_death({"summary": text}) is True
+    assert outage_signature({"summary": text})
 
 
 def test_signature_in_user_input_reason_is_outage() -> None:
-    assert is_outage_death({"user_input_reason": "Unable to connect to API"}) is True
+    assert outage_signature({"user_input_reason": "Unable to connect to API"})
 
 
 def test_signature_in_error_arg_is_outage() -> None:
-    assert is_outage_death({"summary": "ok"}, error="connection refused") is True
+    assert outage_signature({"summary": "ok"}, error="connection refused")
 
 
 def test_api_error_with_connection_cooccurrence_is_outage() -> None:
-    assert is_outage_death({"summary": "API Error: connection reset by peer"}) is True
+    assert outage_signature({"summary": "API Error: connection reset by peer"})
 
 
 def test_api_error_alone_is_not_outage() -> None:
-    assert is_outage_death({"summary": "Added API Error handling and retries"}) is False
+    assert outage_signature({"summary": "Added API Error handling and retries"}) == ""
 
 
 def test_legit_completion_is_not_outage() -> None:
-    assert is_outage_death({"summary": "Implemented the recover command and tests"}) is False
+    assert outage_signature({"summary": "Implemented the recover command and tests"}) == ""
 
 
 def test_empty_result_is_not_outage() -> None:
-    assert is_outage_death({}) is False
+    assert outage_signature({}) == ""
 
 
 class TestTransientFailureClassifier:

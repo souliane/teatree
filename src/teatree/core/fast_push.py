@@ -17,7 +17,6 @@ Any finding is a hard refusal: nothing is committed, nothing is pushed.
 
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from teatree.core.forge_pr_probe import probe_github_open_pr, probe_gitlab_open_pr
+from teatree.core.public_identity import is_noreply_email
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
@@ -45,7 +45,6 @@ LEAK_GATES: Final[tuple[str, str, str, str]] = (
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
 _OVERLAY_TERMS_ENV = "TEATREE_OVERLAY_LEAK_TERMS"
-_NOREPLY_RE = re.compile(r"^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$")
 _DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
 
@@ -205,7 +204,7 @@ class LeakGateScan:
                 detail=f"non-noreply commit identity '{email}' would leak to public repo {slug}",
             )
             for email in _push_identities(self._repo)
-            if not _NOREPLY_RE.match(email)
+            if not is_noreply_email(email)
         ]
 
     def _added_lines_by_path(self) -> dict[str, list[str]]:

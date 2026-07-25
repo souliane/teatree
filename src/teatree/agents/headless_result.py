@@ -1,14 +1,15 @@
-"""Parse, validate, and expose the schema for structured headless-agent result JSON.
+"""Parse the structured result JSON out of a headless agent's text output.
 
-Split out of ``headless.py``: turning the agent's final text into a validated
-structured result is a self-contained concern, distinct from the run/heartbeat
-orchestration the runner owns.
+Split out of ``headless.py``: turning the agent's final text into a structured
+result is a self-contained concern, distinct from the run/heartbeat
+orchestration the runner owns. Schema validation is the recorder's job —
+:func:`teatree.agents.attempt_recorder.validate_result_keys`.
 """
 
 import json
 from typing import cast
 
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema
+from teatree.agents.result_schema import AgentResultBlob
 
 
 def parse_result(agent_text: str) -> AgentResultBlob:
@@ -38,23 +39,3 @@ def parse_result(agent_text: str) -> AgentResultBlob:
         if isinstance(decoded, dict):
             best = cast("AgentResultBlob", decoded)
         index = end
-
-
-def validate_result(result: AgentResultBlob) -> str:
-    """Check that *result* only contains keys declared in the schema.
-
-    Delegates to the shared :func:`~teatree.agents.attempt_recorder.validate_result_keys`
-    so the headless and ``record-attempt`` paths enforce the identical
-    ``additionalProperties: false`` rule.
-    """
-    from teatree.agents.attempt_recorder import validate_result_keys  # noqa: PLC0415 — deferred: call-time import
-
-    return validate_result_keys(result)
-
-
-def get_result_json_schema() -> JSONSchema:
-    """Return the JSON schema for structured agent output.
-
-    Agents produce output matching this schema as a final JSON object.
-    """
-    return RESULT_JSON_SCHEMA

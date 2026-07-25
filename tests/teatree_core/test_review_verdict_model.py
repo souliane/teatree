@@ -282,24 +282,6 @@ class TestReviewerIdentityIdempotency(TestCase):
         )
         assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
 
-    def test_has_verdict_for_identity_answers_the_query(self) -> None:
-        ReviewVerdict.record(
-            pr_id=1,
-            slug="souliane/teatree",
-            reviewed_sha=_SHA,
-            verdict="merge_safe",
-            reviewer_identity="Codex Reviewer",
-        )
-        assert ReviewVerdict.objects.has_verdict_for_identity(
-            slug="souliane/teatree", pr_id=1, reviewed_sha=_SHA, reviewer_identity="codex reviewer"
-        )
-        assert not ReviewVerdict.objects.has_verdict_for_identity(
-            slug="souliane/teatree", pr_id=1, reviewed_sha=_SHA, reviewer_identity="someone-else"
-        )
-        assert not ReviewVerdict.objects.has_verdict_for_identity(
-            slug="souliane/teatree", pr_id=1, reviewed_sha=_OTHER_SHA, reviewer_identity="codex reviewer"
-        )
-
 
 class TestQueryHelpers(TestCase):
     def test_latest_for_pr_returns_the_freshest_verdict(self) -> None:

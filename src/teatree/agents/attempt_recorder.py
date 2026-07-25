@@ -104,8 +104,9 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
 def validate_result_keys(result: AgentResultBlob) -> str:
     """Return an error message if *result* carries keys outside the schema.
 
-    Only the ``additionalProperties: false`` rule is enforced (no full
-    JSON-Schema dependency), mirroring the headless path's ``headless_result.validate_result``.
+    The single validation seam for every agent result — the headless driver and
+    ``record-attempt`` both land here. Only the ``additionalProperties: false``
+    rule is enforced (no full JSON-Schema dependency).
     """
     allowed = set(RESULT_JSON_SCHEMA.get("properties", {}).keys())  # type: ignore[union-attr]
     unexpected = set(result) - allowed

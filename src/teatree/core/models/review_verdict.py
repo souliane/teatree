@@ -47,8 +47,8 @@ def normalize_reviewer_identity(identity: str) -> str:
     collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
     runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
     genuinely distinct identities stay distinct (no role-prefix stripping, which
-    would over-merge two real reviewers). It is the canonical key at every boundary:
-    the record write, the uniqueness constraint, and the has-been-reviewed query.
+    would over-merge two real reviewers). It is the canonical key at both boundaries:
+    the record write and the uniqueness constraint.
     """
     return " ".join(identity.split()).casefold()
 
@@ -136,21 +136,6 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
 
     def for_pr(self, slug: str, pr_id: int) -> "models.QuerySet[ReviewVerdict]":
         return self.filter(slug=slug.strip(), pr_id=pr_id)
-
-    def has_verdict_for_identity(self, *, slug: str, pr_id: int, reviewed_sha: str, reviewer_identity: str) -> bool:
-        """True iff *reviewer_identity* already recorded a verdict for this exact sha (F8).
-
-        The query the free-text identity made impossible: it keys on the
-        NORMALIZED identity, so a dispatcher / reviewer can ask "has this head
-        already been cold-reviewed by me?" before arming (or recording) a
-        duplicate. ``reviewed_sha`` is normalised the way :meth:`record` stores it.
-        """
-        return self.filter(
-            slug=slug.strip(),
-            pr_id=pr_id,
-            reviewed_sha=reviewed_sha.strip().lower(),
-            reviewer_identity_normalized=normalize_reviewer_identity(reviewer_identity),
-        ).exists()
 
     def latest_for_pr(self, slug: str, pr_id: int) -> "ReviewVerdict | None":
         """The most recently recorded verdict for a PR, regardless of SHA.
