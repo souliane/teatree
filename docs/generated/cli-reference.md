@@ -4463,9 +4463,12 @@ Usage: t3 loop self-improve run [OPTIONS]
 
  Run one self-improve schedule cycle for the given tier.
 
+ Delegates to the loop_self_improve management command, which refuses a
+ tier with no detectors — both surfaces exit 2 with the same message.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --tier        TEXT  Cost tier: cheap|medium|expensive|all (default: cheap;   │
-│                     Phase 1 ships cheap only).                               │
+│ --tier        TEXT  Cost tier: cheap|all (default: cheap). medium/expensive  │
+│                     have no detectors and are refused.                       │
 │                     [default: cheap]                                         │
 │ --json              Emit the cycle report as JSON.                           │
 │ --help              Show this message and exit.                              │

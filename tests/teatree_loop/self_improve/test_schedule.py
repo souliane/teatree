@@ -5,11 +5,20 @@ from dataclasses import dataclass
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import SelfImproveFiring
-from teatree.loop.self_improve import ActionRung, BudgetVerdict, DetectorReport, Tier, record_firing, run_tier
-from teatree.loop.self_improve.schedule import detectors_for_tier
+from teatree.loop.self_improve import (
+    ActionRung,
+    BudgetVerdict,
+    DetectorReport,
+    Tier,
+    UnimplementedTierError,
+    record_firing,
+    run_tier,
+)
+from teatree.loop.self_improve.schedule import detectors_for_tier, require_implemented_tier
 
 
 @dataclass(slots=True)
@@ -55,18 +64,37 @@ class SchedulerMetaTests(TestCase):
         assert result.actions == []
         assert SelfImproveFiring.objects.count() == 0
 
-    def test_tier_filtering_cheap_only_in_phase_1(self) -> None:
-        cheap = detectors_for_tier(Tier.CHEAP)
-        medium = detectors_for_tier(Tier.MEDIUM)
-        expensive = detectors_for_tier(Tier.EXPENSIVE)
-        all_ = detectors_for_tier(Tier.ALL)
-        unknown = detectors_for_tier("phase-99-future")
-        # Phase 1 only ships cheap detectors.
-        assert len(cheap) == 3
-        assert medium == []
-        assert expensive == []
-        assert len(all_) == 3
-        assert unknown == []
+    def test_implemented_tiers_resolve_to_the_shipped_detectors(self) -> None:
+        assert len(detectors_for_tier(Tier.CHEAP)) == 3
+        assert len(detectors_for_tier(Tier.ALL)) == 3
+
+    def test_unbuilt_tier_is_refused_naming_what_is_missing(self) -> None:
+        for tier in (Tier.MEDIUM, Tier.EXPENSIVE):
+            with pytest.raises(UnimplementedTierError) as exc:
+                detectors_for_tier(tier)
+            message = str(exc.value)
+            assert tier in message
+            assert "no detectors" in message
+            assert "forgotten_merge" in message
+
+    def test_require_implemented_tier_is_the_shared_refusal_seam(self) -> None:
+        assert require_implemented_tier(Tier.CHEAP) is None
+        assert require_implemented_tier(Tier.ALL) is None
+        with pytest.raises(UnimplementedTierError):
+            require_implemented_tier(Tier.MEDIUM)
+
+    def test_unknown_tier_is_refused_not_silently_empty(self) -> None:
+        with pytest.raises(UnimplementedTierError) as exc:
+            detectors_for_tier("phase-99-future")
+        assert "phase-99-future" in str(exc.value)
+
+    def test_run_tier_refuses_an_unbuilt_tier_instead_of_reporting_success(self) -> None:
+        with pytest.raises(UnimplementedTierError):
+            run_tier(Tier.MEDIUM, budget=BudgetVerdict.allow())
+
+    def test_a_red_budget_does_not_mask_the_unbuilt_tier_refusal(self) -> None:
+        with pytest.raises(UnimplementedTierError):
+            run_tier(Tier.EXPENSIVE, budget=BudgetVerdict.skip("low_ram (used=92%)"))
 
     def test_tier_runs_all_detectors_then_advances_ladder(self) -> None:
         detector = _StubDetector()

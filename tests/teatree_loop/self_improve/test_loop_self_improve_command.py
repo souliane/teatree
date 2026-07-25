@@ -12,11 +12,12 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import MergeClear, SelfImproveFiring, Ticket
+from teatree.core.models import LoopLease, MergeClear, SelfImproveFiring, Ticket
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.models.pull_request import PullRequest
 
@@ -85,6 +86,19 @@ class LoopSelfImproveCommandTests(TestCase):
         # outcomes have the contract keys.
         assert "report_count" in payload
         assert "action_count" in payload
+
+    def test_unbuilt_tier_exits_nonzero_instead_of_reporting_a_clean_cycle(self) -> None:
+        for tier in ("medium", "expensive", "phase-99-future"):
+            out, err = io.StringIO(), io.StringIO()
+            with pytest.raises(SystemExit) as exc:
+                call_command("loop_self_improve", tier=tier, stdout=out, stderr=err)
+
+            assert exc.value.code == 2
+            assert tier in err.getvalue()
+            assert "OK" not in out.getvalue()
+            assert SelfImproveFiring.objects.count() == 0
+            # Refused before the lease is taken — a no-op cycle never holds it.
+            assert not LoopLease.objects.filter(name="loop-self-improve").exists()
 
     def test_dedicated_slot_invokes_real_rerender_seam_on_stale_statusline(self) -> None:
         """Anti-vacuous: the dedicated slot genuinely self-heals a stale statusline.
