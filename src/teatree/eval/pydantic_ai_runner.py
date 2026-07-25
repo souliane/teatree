@@ -23,7 +23,6 @@ side effect.
 """
 
 import asyncio
-import dataclasses
 from typing import cast
 
 from claude_agent_sdk import Message
@@ -45,7 +44,7 @@ from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import get_effective_settings
 from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.message_mapping import eval_run_from_messages
-from teatree.eval.model_resolution import resolve_eval_model
+from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
@@ -130,12 +129,12 @@ class PydanticAiRunner:
         # Resolve the abstract tier/phase to a concrete model id (a no-op when the
         # spec already carries a concrete ``model``); the resolved id flows into the
         # variant parse, the model-presence check, the ledger label, and the report.
-        spec = dataclasses.replace(spec, model=resolve_eval_model(spec))
+        spec = resolve_spec_model(spec)
         model = self._resolve_model(spec)
         try:
             messages = asyncio.run(self._drive_with_watchdog(spec, model))
         except TimeoutError:
-            return _terminal_eval_run(spec, terminal_reason="timeout")
+            return EvalRun.terminal(spec.name, terminal_reason="timeout")
         return eval_run_from_messages(spec, messages)
 
     def _resolve_model(self, spec: EvalSpec) -> Model:
@@ -183,19 +182,6 @@ class PydanticAiRunner:
             session = PydanticAiHarnessSession(agent, model_name=model.model_name, request_limit=request_limit)
             await session.query(build_user_prompt(spec))
             return [cast("Message", message) async for message in session.receive_response()]
-
-
-def _terminal_eval_run(spec: EvalSpec, *, terminal_reason: str) -> EvalRun:
-    """An error-shaped run for a lane that produced no transcript (the watchdog fired)."""
-    return EvalRun(
-        spec_name=spec.name,
-        tool_calls=(),
-        text_blocks=(),
-        terminal_reason=terminal_reason,
-        is_error=True,
-        raw_stdout="",
-        raw_stderr="",
-    )
 
 
 def build_pydantic_ai_eval_runner(

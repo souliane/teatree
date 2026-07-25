@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
-from teatree.eval.model_resolution import resolve_eval_model
+from teatree.eval.model_resolution import resolve_eval_model, resolve_spec_model
 from teatree.eval.models import EvalSpec
 
 
@@ -85,3 +85,17 @@ class TestResolveEvalModel:
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         _seed_tier_models(db, {"frontier": "sentinel-x"})
         assert resolve_eval_model(_spec(phase="planning")) == "sentinel-x"
+
+
+class TestResolveSpecModel:
+    def test_folds_the_resolved_id_onto_the_spec(self) -> None:
+        # The shared fresh-run opener returns a spec whose ``model`` is the concrete
+        # resolved id, leaving every other field untouched.
+        resolved = resolve_spec_model(_spec(tier="cheap"))
+        assert resolved.model == TIER_MODELS["cheap"]
+        assert resolved.tier == "cheap"
+
+    def test_is_a_noop_when_model_already_concrete(self) -> None:
+        # A spec that already pins a concrete ``model`` (matrix/--model lanes) is
+        # returned with that pin unchanged.
+        assert resolve_spec_model(_spec(model="claude-pinned-id@xhigh")).model == "claude-pinned-id@xhigh"
