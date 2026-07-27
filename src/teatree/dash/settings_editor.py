@@ -94,8 +94,13 @@ def export_text() -> str:
 
 
 def import_preview(text: str) -> ConfigImport:
-    """Classify an import WITHOUT writing — the dry-run preview of what would change."""
-    return import_toml_to_db(text, dry_run=True)
+    """Classify an import WITHOUT writing — the dry-run preview of what would change.
+
+    Classifies as if the safety-posture keys were authorized so the preview can SHOW and flag
+    them; nothing is written, and the apply path re-runs the classification with the operator's
+    actual authorization.
+    """
+    return import_toml_to_db(text, dry_run=True, allow_safety_posture=True)
 
 
 __all__ = [

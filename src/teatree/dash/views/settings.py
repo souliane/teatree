@@ -133,21 +133,27 @@ def settings_import(request: "HttpRequest") -> "HttpResponse":
 
     A rejected row refuses the whole import (Phase-4 atomicity); the result rides back onto
     the page so the operator sees exactly what changed (or would change) and what was refused.
+
+    A safety-posture key needs the SAME typed confirm phrase ``settings_set`` demands — a
+    paste is not a per-key intent. The preview always classifies as if authorized, so the
+    operator SEES which rows are safety-posture (each flagged) before deciding; the apply
+    passes the authorization only when the phrase is present, and without it the import is
+    refused wholesale with the offending key named.
     """
     text = request.POST.get("toml", "")
-    applied = request.POST.get("apply", "").strip() == "1"
+    confirmed = request.POST.get("confirm", "").strip() == SAFETY_CONFIRM_PHRASE
     preview = import_preview(text)
-    write = applied and not preview.rejected
-    result = import_toml_to_db(text) if write else preview
-    if write:
+    apply_now = request.POST.get("apply", "").strip() == "1" and not preview.rejected
+    result = import_toml_to_db(text, allow_safety_posture=confirmed) if apply_now else preview
+    written = apply_now and not result.rejected
+    if written:
         audit.record(actor=actor(request), action="settings:import", after=f"{len(result.written)} row(s)")
-    view = build_settings_editor()
     context = {
         **nav_context("dash:settings"),
-        "editor": view,
+        "editor": build_settings_editor(),
         "confirm_phrase": SAFETY_CONFIRM_PHRASE,
         "import_result": result,
-        "import_applied": write,
+        "import_applied": written,
     }
     return render(request, "dash/settings.html", context)
 

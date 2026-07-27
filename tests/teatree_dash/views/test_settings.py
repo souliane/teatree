@@ -7,6 +7,13 @@ from teatree.core.models import ConfigSetting
 from teatree.dash.views.settings import SAFETY_CONFIRM_PHRASE, settings
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+_SAFETY_TOML = '[teatree]\nautonomy = "full"\n'
+
+
+def _import_block(body: str) -> str:
+    """The import-result region only — the editor table below it mentions every safety key."""
+    start = body.index('class="import-result"')
+    return body[start : body.index("</section>", start)]
 
 
 class TestSettingsPage(TestCase):
@@ -194,6 +201,35 @@ class TestSettingsImport(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_apply_writes_the_rows(self) -> None:
+        self.client.post(
+            reverse("dash:settings_import"), {"toml": '[teatree]\nmode = "auto"\n', "apply": "1"}, **_LOOPBACK
+        )
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+
+    def test_a_safety_posture_key_is_not_written_without_the_confirm_phrase(self) -> None:
+        # The import textarea must not be the way around the confirm gate settings_set enforces.
+        response = self.client.post(reverse("dash:settings_import"), {"toml": _SAFETY_TOML, "apply": "1"}, **_LOOPBACK)
+        assert ConfigSetting.objects.get_effective("autonomy") is None
+        assert "safety-posture" in response.content.decode()
+
+    def test_a_safety_posture_key_is_written_with_the_confirm_phrase(self) -> None:
+        self.client.post(
+            reverse("dash:settings_import"),
+            {"toml": _SAFETY_TOML, "apply": "1", "confirm": SAFETY_CONFIRM_PHRASE},
+            **_LOOPBACK,
+        )
+        assert ConfigSetting.objects.get_effective("autonomy") == "full"
+
+    def test_the_dry_run_preview_flags_the_safety_posture_row(self) -> None:
+        response = self.client.post(reverse("dash:settings_import"), {"toml": _SAFETY_TOML, "apply": ""}, **_LOOPBACK)
+        # Scoped to the import block — the editor table below it labels every safety key,
+        # so an unscoped search would pass against a preview that flags nothing.
+        block = _import_block(response.content.decode())
+        assert "autonomy" in block
+        assert "safety-posture" in block
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_non_safety_key_still_imports_with_no_confirm(self) -> None:
         self.client.post(
             reverse("dash:settings_import"), {"toml": '[teatree]\nmode = "auto"\n', "apply": "1"}, **_LOOPBACK
         )

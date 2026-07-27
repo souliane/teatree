@@ -712,7 +712,14 @@ the resolver's own registry parser. **Zero-row normalization:** a value equal to
 default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
 dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
 `export → import → export` is byte-stable; a shareable export withholds Secret values and
-keeps Personal ones.
+keeps Personal ones. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
+CHANGE the store is rejected unless the caller passes `allow_safety_posture`, which defaults
+to False so a caller that never considered the question refuses those keys — the same boundary
+the settings editor's typed confirm and the MCP write-tool refusal enforce, closing the route
+where a pasted dump set `autonomy = "full"` more quietly than editing it would. The CLI passes
+it (typing the command IS the authorization, exactly as `config_setting set` is); the
+dashboard passes it only with the typed confirm phrase, and its dry-run preview classifies as
+if authorized so each safety-posture row is listed and flagged before the operator applies.
 
 **Dashboard settings editor** (`/dash/settings/`). The model-driven, EDITABLE companion to
 the read-only `/dash/config/` page: it walks the schema so every key is listable with no

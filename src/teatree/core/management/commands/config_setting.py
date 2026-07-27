@@ -311,10 +311,14 @@ class Command(TyperCommand):
         leaves a partial store; every value is validated through the same registry parser the
         resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
         ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without writing.
+
+        Safety-posture keys import here without a confirm phrase: typing this command IS the
+        operator's authorization, exactly as ``config_setting set`` is. The dashboard's import
+        textarea is the surface that demands one, because a paste is not a per-key intent.
         """
         text = Path(input_path).expanduser().read_text(encoding="utf-8") if input_path else sys.stdin.read()
         try:
-            result = import_toml_to_db(text, dry_run=dry_run)
+            result = import_toml_to_db(text, dry_run=dry_run, allow_safety_posture=True)
         except tomllib.TOMLDecodeError as exc:
             self.stderr.write(f"  invalid TOML: {exc}")
             raise SystemExit(2) from exc

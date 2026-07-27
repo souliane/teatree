@@ -245,6 +245,27 @@ class TestImportTomlToDb(TestCase):
         assert result.rejected[0].key == "branch_prefix"
         assert result.rejected[0].reason.startswith("removed")
 
+    def test_a_safety_posture_key_is_rejected_unless_the_caller_allows_it(self) -> None:
+        result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [("autonomy", "safety-posture")]
+        assert ConfigSetting.objects.count() == 0
+
+    def test_an_allowed_safety_posture_key_writes_and_is_flagged(self) -> None:
+        result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=(), allow_safety_posture=True)
+        assert result.rejected == ()
+        assert [(r.key, r.is_safety_posture) for r in result.written] == [("autonomy", True)]
+        assert ConfigSetting.objects.get_effective("autonomy") == "full"
+
+    def test_an_ordinary_key_is_not_flagged_safety_posture(self) -> None:
+        result = import_toml_to_db('[teatree]\nmode = "auto"\n', scan_terms=())
+        assert [(r.key, r.is_safety_posture) for r in result.written] == [("mode", False)]
+
+    def test_a_safety_posture_value_equal_to_its_default_is_skipped_not_rejected(self) -> None:
+        # It writes no row, so there is nothing for the confirm gate to authorize.
+        result = import_toml_to_db('[teatree]\nautonomy = "babysit"\n', scan_terms=())
+        assert result.rejected == ()
+        assert [r.key for r in result.skipped_default] == ["autonomy"]
+
     def test_retired_alias_folds_onto_its_replacement(self) -> None:
         # `speed` was renamed to `wip`; the stored value migrates onto the live key.
         result = import_toml_to_db('[teatree]\nspeed = "full"\n', scan_terms=())
