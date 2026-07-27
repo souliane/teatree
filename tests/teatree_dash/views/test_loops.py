@@ -178,6 +178,13 @@ class LoopsHtmxSwapTestCase(TestCase):
         assert "<!doctype html>" not in body.lower()
         assert "loops-table" in body
 
+    def test_the_answered_body_carries_the_verb_the_action_just_produced(self) -> None:
+        """The swap-in must SHOW the new state — a 200 carrying the stale verb swaps nothing."""
+        response = self._post("dash:loop_action", {"name": "demo", "action": "pause"})
+        row = next(r for r in re.findall(r"<tr>.*?</tr>", response.content.decode(), re.DOTALL) if ">demo<" in r)
+        assert 'value="resume"' in row
+        assert 'value="pause"' not in row
+
     def test_a_no_js_loop_action_keeps_the_redirect(self) -> None:
         response = self._post("dash:loop_action", {"name": "demo", "action": "pause"}, htmx=False)
         assert response.status_code == 302
