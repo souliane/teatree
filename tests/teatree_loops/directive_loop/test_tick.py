@@ -336,6 +336,48 @@ class TestIntakeDrain(TestCase):
         assert Directive.objects.get(pk=second.pk).state == Directive.State.ADMITTED
 
 
+class TestNoProgressStepsNeverSpendTheIntakeBudget(TestCase):
+    """The budget bounds the EXPENSIVE arm; a parked directive must not consume it.
+
+    39 directives against a budget of 25: once the first 25 park in ``RATIFY_PENDING``
+    waiting on the human, counting each ``pending`` no-op against the budget starves
+    every younger directive permanently while the tick still reports healthy.
+    """
+
+    @staticmethod
+    def _ratify_pending(label: str) -> Directive:
+        directive = Directive.objects.capture(label, source=Directive.Source.CLI)
+        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
+        directive.attach_ratification(
+            DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
+        )
+        return directive
+
+    def test_directives_parked_on_the_human_do_not_starve_younger_captured_rows(self) -> None:
+        for n in range(3):
+            self._ratify_pending(f"parked {n}")
+        captured = Directive.objects.capture("newest", source=Directive.Source.CLI)
+
+        result = run_tick(settings=_open_settings(intake_per_tick=2), seams=_seams())
+
+        assert DirectiveDispatch.objects.filter(directive=captured).exists()
+        assert result.advanced == 1
+
+    def test_a_captured_row_whose_interpreter_is_still_in_flight_spends_no_budget(self) -> None:
+        # The dedup `None` return of `dispatch_interpretation` was reported as a
+        # dispatched step, so a re-tick both over-reported progress and burned budget.
+        first = Directive.objects.capture("in flight", source=Directive.Source.CLI)
+        second = Directive.objects.capture("behind it", source=Directive.Source.CLI)
+        run_tick(settings=_open_settings(intake_per_tick=1), seams=_seams())
+        assert DirectiveDispatch.objects.filter(directive=first).exists()
+        assert not DirectiveDispatch.objects.filter(directive=second).exists()
+
+        result = run_tick(settings=_open_settings(intake_per_tick=1), seams=_seams())
+
+        assert DirectiveDispatch.objects.filter(directive=second).exists()
+        assert result.advanced == 1
+
+
 class TestIdle(TestCase):
     def test_no_active_directive_is_idle(self) -> None:
         result = run_tick(settings=_open_settings(), seams=_seams())

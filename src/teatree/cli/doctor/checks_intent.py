@@ -147,8 +147,14 @@ def _directive_consumer_liveness(
     An unmasked loop row is only half the gate: every directive tick first runs the
     fail-closed guard chain (the DARK ``directive_loop_enabled`` flag, signal trust, the
     self-improve budget), and it ships off — so a queue whose loop row is enabled can
-    still have no consumer at all. The remediation names both blockers, so following it
+    still have no consumer at all. The remediation names every blocker, so following it
     cannot silence the finding while directives still never advance.
+
+    A DRIVER is the third arm, and the one whose absence made this very check degrade to
+    an advisory for two weeks: ``directive_loop`` is ``off_live_tick``, so nothing in the
+    live fan-out or the timer chains ever calls its tick, and an unmasked row with clear
+    intake guards therefore read as live while 39 directives sat untouched. A loop
+    nothing can drive has no consumer regardless of how its mask and guards read.
 
     The chain probed is the INTAKE one: this queue holds the pre-admission arc — the rows
     the tick interprets before stopping at the structural human ratify gate. The
@@ -163,8 +169,15 @@ def _directive_consumer_liveness(
         SIGNAL_UNTRUSTED,
         evaluate_intake_guards,
     )
+    from teatree.loops.directive_loop.loop import DIRECTIVE_LOOP_NAME  # noqa: PLC0415 — deferred: loop-package import
+    from teatree.loops.loop_staleness import driverless_loops  # noqa: PLC0415 — deferred: registry walk at call time
 
     blockers: list[str] = []
+    if DIRECTIVE_LOOP_NAME in driverless_loops():
+        blockers.append(
+            "give the loop a driver: it is off_live_tick and declares no off_tick_command, "
+            "so no live tick, timer chain or driver chain can ever call it"
+        )
     if not loop_admits:
         blockers.append("unmask the loop row: t3 loop enable directive_loop --emergency")
     verdict = evaluate_intake_guards(

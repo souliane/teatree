@@ -68,11 +68,19 @@ class MiniLoop:
     the interval and refuses a once-a-day wall-clock time.
 
     ``off_live_tick`` excludes the loop from the live work loop's scanner fan-out
-    (:func:`teatree.loops.loop_table.build_loop_table_jobs` skips it) — it is driven
-    by its OWN low-frequency cron instead, gating on the same ``Loop.is_due`` /
-    ``last_run_at`` ledger. Reserved for the heavy ``dream`` consolidation pass
-    (#1933 § 3), which must not run on or re-arm the live tick. Default ``False``
-    → every existing loop is unchanged.
+    (:func:`teatree.loops.loop_table.build_loop_table_jobs` skips it) and from the
+    loop-timer chains — it is driven by its own ``off_tick_command`` instead, gating on
+    the same ``Loop.is_due`` / ``last_run_at`` ledger. Reserved for the heavy passes
+    (``dream``, ``directive_loop``, ``outer_loop``) that must not run on or re-arm the
+    live tick. Default ``False`` → every existing loop is unchanged.
+
+    ``off_tick_command`` is the management-command argv tail
+    (:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` runs
+    ``python -m teatree <off_tick_command>``) that drives an ``off_live_tick`` loop.
+    It is what makes such a loop reachable at all: with the live fan-out and the timer
+    chains both excluding it, a loop that declares no command has NO driver — the state
+    :func:`teatree.loops.loop_staleness.driverless_loops` alarms on. Meaningless on a
+    live-tick loop, which the timer chain already drives.
     """
 
     name: str
@@ -80,3 +88,4 @@ class MiniLoop:
     build_jobs: Callable[..., list["_ScannerJob"]]
     off_live_tick: bool = False
     cadence_is_floor: bool = False
+    off_tick_command: tuple[str, ...] = ()

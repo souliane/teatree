@@ -24,6 +24,7 @@ from teatree.loops.loop_staleness import (
     LoopHealth,
     StaleLoop,
     admission,
+    driverless_loops,
     format_age,
     loop_health,
     stale_loops,
@@ -135,7 +136,7 @@ class TestStaleLoops(_LoopTableCase):
             assert stale_loops(timezone.now()) == []
 
     def test_off_live_tick_loop_is_never_stale(self) -> None:
-        # ``dream`` runs on its own low-frequency cron, so the live tick leaving its
+        # ``dream`` runs off the live tick, so the live tick leaving its
         # anchor alone is correct, not a fault.
         _loop("dream", cadence=86400, ran_ago=dt.timedelta(days=30))
         with patch(_REGISTRY_SEAM, return_value=(_mini("dream", off_live_tick=True),)):
@@ -341,3 +342,57 @@ class TestFrozenFleetPredicate(django.test.SimpleTestCase):
         )
         assert health.frozen_fleet
         assert not health.ok
+
+
+class TestDriverlessLoops(django.test.SimpleTestCase):
+    """The sibling alarm for the hole staleness structurally cannot see.
+
+    ``_measured_loops`` keeps only rows that are enabled AND live-tick AND
+    interval-cadenced, so a loop with NO driver at all — ``off_live_tick``, disabled,
+    masked, or ``daily_at``-scheduled — is invisible to the alarm built to catch loops
+    that are not ticking. Driverlessness is a WIRING property, so it is measured off the
+    registry alone and is deliberately not gated on enablement or the mode mask.
+    """
+
+    def test_an_off_live_tick_loop_with_no_tick_command_is_driverless(self) -> None:
+        registry = (_mini("live"), _mini("orphan", off_live_tick=True))
+        with patch(_REGISTRY_SEAM, return_value=registry):
+            assert driverless_loops() == ("orphan",)
+
+    def test_an_off_live_tick_loop_that_declares_its_tick_command_has_a_driver(self) -> None:
+        driven = MiniLoop(
+            name="driven",
+            default_cadence_seconds=60,
+            build_jobs=lambda **_: [],
+            off_live_tick=True,
+            off_tick_command=("driven", "tick"),
+        )
+        with patch(_REGISTRY_SEAM, return_value=(driven,)):
+            assert driverless_loops() == ()
+
+    def test_a_live_tick_loop_is_never_driverless(self) -> None:
+        # The loop-timer chain drives it; declaring a tick command would be meaningless.
+        with patch(_REGISTRY_SEAM, return_value=(_mini("live"),)):
+            assert driverless_loops() == ()
+
+    def test_the_real_registry_leaves_no_loop_driverless(self) -> None:
+        assert driverless_loops() == ()
+
+
+class TestDriverlessHealthVerdict(django.test.SimpleTestCase):
+    @staticmethod
+    def _verdict() -> Admission:
+        return Admission(mode="engaged", source="override", admitted=("tickets",), enabled_total=1)
+
+    def test_a_driverless_loop_fails_health_even_with_nothing_stale(self) -> None:
+        health = LoopHealth(admission=self._verdict(), stale=(), considered=1, driverless=("directive_loop",))
+        assert not health.ok
+        rendered = "\n".join(health.lines())
+        assert "FAIL" in rendered
+        assert "directive_loop" in rendered
+        assert health.as_json()["driverless"] == ["directive_loop"]
+
+    def test_no_driverless_loop_leaves_health_ok(self) -> None:
+        health = LoopHealth(admission=self._verdict(), stale=(), considered=1)
+        assert health.ok
+        assert "FAIL" not in "\n".join(health.lines())

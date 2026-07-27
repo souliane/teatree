@@ -383,12 +383,12 @@ t3 admin                        # run the Django admin for the teatree project u
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
-t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
+t3 dream tick                   # cadence-gated pass (~04:00 slot); the worker's off-live-tick driver chain fires it, decoupled from the live loop
 t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)
-t3 outer tick                   # cadence-gated cron entry (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
+t3 outer tick                   # cadence-gated step the worker's off-live-tick driver chain fires (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
 t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
 t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
-t3 directive tick               # cadence-gated cron entry (implement→configure→verify→keep-or-revert; ships quadruple-OFF)
+t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships quadruple-OFF)
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 

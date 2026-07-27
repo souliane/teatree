@@ -20,10 +20,19 @@ when it cries wolf. Two facts are NOT faults on their own:
     ``review`` loop off for the week gets exactly what they asked for; a gate that
     reports that as a failure every hour is a gate people learn to ignore.
 
-So a failure is one of two shapes: an **unexplained** stale loop (nothing in the
-mode mask, the colleague gate or a ``LoopState`` hold accounts for it — something is
+So a staleness failure is one of two shapes: an **unexplained** stale loop (nothing in
+the mode mask, the colleague gate or a ``LoopState`` hold accounts for it — something is
 actually broken), or a **frozen fleet** (every measured loop is behind, which is the
 seven-hour incident: deliberate, forgotten, and total).
+
+:func:`driverless_loops` is the third, structural reading, and it exists because
+staleness alone has a blind spot it cannot close: :func:`_measured_loops` keeps only
+rows that are enabled AND live-tick AND interval-cadenced, so a loop with no driver at
+all — ``off_live_tick``, and typically disabled and mask-suppressed besides — is
+invisible to the very alarm built to catch loops that are not ticking. Driverlessness is
+a WIRING property, not a cadence one, so it is measured off the registry alone and is
+deliberately NOT gated on enablement or the mask: a loop nothing can ever drive is a
+fault whether or not anyone has turned it on yet.
 
 The wording lives here beside the data, not in the CLI — the same single-home rule
 :mod:`teatree.loop.statusline_staleness` follows for its stale banner, so every
@@ -125,6 +134,8 @@ class LoopHealth:
     #: Enabled live-tick interval loops measured this pass — the denominator that
     #: makes "every one of them is behind" a meaningful statement.
     considered: int
+    #: Registered loops NO driver reaches — the structural fault staleness cannot see.
+    driverless: tuple[str, ...] = ()
 
     @property
     def unexplained(self) -> tuple[StaleLoop, ...]:
@@ -138,7 +149,7 @@ class LoopHealth:
 
     @property
     def ok(self) -> bool:
-        return not self.frozen_fleet and not self.unexplained
+        return not self.frozen_fleet and not self.unexplained and not self.driverless
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -146,6 +157,7 @@ class LoopHealth:
             "stale": [loop.as_json() for loop in self.stale],
             "considered": self.considered,
             "frozen_fleet": self.frozen_fleet,
+            "driverless": list(self.driverless),
         }
 
     def lines(self) -> list[str]:
@@ -157,7 +169,9 @@ class LoopHealth:
                 f"{len(verdict.admitted)}/{verdict.enabled_total} enabled loop(s) admitted"
             )
         ]
-        if self.ok:
+        if self.driverless:
+            rendered.append(self._driverless_line())
+        if not self.frozen_fleet and not self.unexplained:
             rendered.extend(self._suppressed_note())
             return rendered
         reported = self.stale if self.frozen_fleet else self.unexplained
@@ -180,6 +194,16 @@ class LoopHealth:
         names = ", ".join(loop.name for loop in self.stale[:_MAX_NAMED_STALE])
         return [f"  ({len(self.stale)} loop(s) idle by configuration: {names})"]
 
+    def _driverless_line(self) -> str:
+        """Name the loops nothing can ever drive — a wiring fault, not a cadence one."""
+        names = ", ".join(self.driverless)
+        return (
+            f"FAIL {len(self.driverless)} registered loop(s) have NO driver at all: {names}. "
+            "They are off_live_tick (so the live fan-out and the loop-timer chains both skip "
+            "them) and declare no off_tick_command for the off-live-tick driver chain to "
+            "fire, so they can never tick however enabled or unmasked they are."
+        )
+
     def _cause_line(self) -> str:
         """Name the most likely cause, so a stale reading is actionable rather than alarming."""
         if self.frozen_fleet:
@@ -198,10 +222,24 @@ class LoopHealth:
 
 
 def _live_tick_loop_names() -> set[str]:
-    """Registry loops the live tick drives — an ``off_live_tick`` row runs on its own cron."""
+    """Registry loops the live tick drives — an ``off_live_tick`` row runs on its own command."""
     from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: the walk imports every loop module
 
     return {loop.name for loop in iter_loops() if not loop.off_live_tick}
+
+
+def driverless_loops() -> tuple[str, ...]:
+    """Registered loops NO driver reaches, sorted by name.
+
+    A live-tick loop is driven by the loop-timer chain; an ``off_live_tick`` loop is
+    driven by :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` firing the
+    ``off_tick_command`` it declares. An ``off_live_tick`` loop that declares no command
+    falls through both and can never tick. This reads the registry alone — see the module
+    docstring for why it is deliberately blind to enablement and the mode mask.
+    """
+    from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: the walk imports every loop module
+
+    return tuple(sorted(loop.name for loop in iter_loops() if loop.off_live_tick and not loop.off_tick_command))
 
 
 def _measured_loops() -> list["Loop"]:
@@ -283,6 +321,7 @@ def loop_health(now: dt.datetime) -> LoopHealth:
         admission=admission(now),
         stale=tuple(stale_loops(now)),
         considered=len(_measured_loops()),
+        driverless=driverless_loops(),
     )
 
 
@@ -292,6 +331,7 @@ __all__ = [
     "LoopHealth",
     "StaleLoop",
     "admission",
+    "driverless_loops",
     "format_age",
     "loop_health",
     "stale_loops",

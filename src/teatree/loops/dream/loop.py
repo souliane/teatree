@@ -5,8 +5,10 @@ run on — or re-arm — the live 12-minute work loop (issue #1933 § 3). It is
 registered as a MiniLoop so the statusline can show its countdown, but it is
 marked ``off_live_tick`` so the live fan-out
 (:func:`teatree.loops.loop_table.build_loop_table_jobs`) skips it. The actual pass is
-driven by its own low-frequency cron, the ``dream`` management command
-(``t3 dream tick`` / ``t3 dream run``), which gates on the ONE cadence ledger —
+driven by the worker's off-live-tick driver chain
+(:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops`), which fires the
+``off_tick_command`` below — the ``dream`` management command
+(``t3 dream tick`` / ``t3 dream run``) — which gates on the ONE cadence ledger —
 the ``dream`` :class:`teatree.core.models.Loop` row's ``is_due`` / ``last_run_at``
 (the same anchor every other loop's tick uses) — behind the in-flight
 lease (:class:`teatree.core.models.LoopLease`).
@@ -20,7 +22,7 @@ CAS — the overlap the "no two overlapping passes" invariant forbids. Matching 
 TTL to the budget keeps the invariant true for the whole pass.
 
 ``build_jobs`` deliberately returns no scanner jobs — the consolidation engine
-is invoked directly by the cron, not through the scanner-signal dispatch
+is invoked directly by the tick command, not through the scanner-signal dispatch
 pipeline.
 """
 
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 
 DREAM_LOOP_NAME = "dream"
 DREAM_LEASE_NAME = "dream-tick"
-DREAM_DEFAULT_CADENCE_SECONDS = 24 * 3600  # nightly; the cron drives the actual ~04:00 firing.
+DREAM_DEFAULT_CADENCE_SECONDS = 24 * 3600  # nightly; the driver chain fires the actual ~04:00 pass.
 DREAM_PASS_BUDGET_SECONDS = 30 * 60
 DREAM_LEASE_SECONDS = DREAM_PASS_BUDGET_SECONDS + 5 * 60
 
@@ -202,7 +204,7 @@ def _dream_phase_default_off(key: str) -> bool:
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":
-    """No scanner jobs — the dream cron invokes the engine directly."""
+    """No scanner jobs — the dream tick command invokes the engine directly."""
     return []
 
 
@@ -211,4 +213,5 @@ MINI_LOOP = MiniLoop(
     default_cadence_seconds=DREAM_DEFAULT_CADENCE_SECONDS,
     build_jobs=_build_jobs,
     off_live_tick=True,
+    off_tick_command=("dream", "tick"),
 )

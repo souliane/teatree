@@ -23,7 +23,7 @@ from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Loop, LoopLease, Mode, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 from teatree.loop.tick import TickReport
-from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER
+from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
 
 _MODE_SEAM = "teatree.core.management.commands.loops_tick.resolve_active_mode"
 

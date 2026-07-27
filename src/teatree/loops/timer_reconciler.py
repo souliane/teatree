@@ -28,7 +28,10 @@ lands in ~one worker poll instead of waiting out the cadence, while
 wake left behind. A :func:`render_statusline` chain
 (:mod:`teatree.loops.statusline_refresh`) keeps ``statusline.txt`` fresh on a short
 cadence even when no domain loop is admitted-and-ticking, so the pre-rendered loop line
-never freezes headless. The maintenance chains are seeded by
+never freezes headless. The :mod:`teatree.loops.off_live_tick_driver` chain fires each ``off_live_tick``
+loop's own tick command (``directive`` / ``dream`` / ``outer``) as a deadlined
+subprocess — those loops are excluded from BOTH the live fan-out and the timer chains,
+so without it they have no driver at all. The maintenance chains are seeded by
 :func:`ensure_maintenance_chains` at worker startup and self-perpetuate, so a worker
 restart re-arms them.
 """
@@ -79,8 +82,9 @@ def timer_chain_loop_names() -> set[str]:
 
     Enabled ``Loop`` rows (the row-level ``enabled`` column) intersected with the
     registered mini-loops that are NOT ``off_live_tick`` — the heavy off-tick loops
-    (``dream``) are driven by their own low-frequency cron, never a worker timer, so
-    they never get a chain that would only ever no-op.
+    (``dream``, ``directive_loop``, ``outer_loop``) are driven by
+    :mod:`teatree.loops.off_live_tick_driver` firing their own tick command, never a
+    worker timer, so they never get a chain that would only ever no-op.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
@@ -442,8 +446,13 @@ def wake_slack_answer() -> dict[str, int]:
 
 
 def ensure_maintenance_chains() -> None:
-    """Seed reconcile / prune / expire / drain / slack-answer / usage-window / preset / statusline chains if absent."""
+    """Seed every maintenance chain if absent.
+
+    Reconcile, prune, expire, drain, slack-answer, off-live-tick drive, usage-window
+    recovery, preset transitions, and statusline refresh.
+    """
     from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
+    from teatree.loops.off_live_tick_driver import ensure_off_live_tick_driver_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.statusline_refresh import ensure_statusline_refresh_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
@@ -466,6 +475,10 @@ def ensure_maintenance_chains() -> None:
     # session's ``/loop`` slot before. Lease-guarded against the owner session.
     if not _pending_for_path(run_slack_answer.module_path):
         run_slack_answer.using(run_after=now + dt.timedelta(seconds=slack_answer_cadence_seconds())).enqueue()
+    # The off-live-tick driver. Without it directive_loop / dream / outer_loop have NO
+    # driver at all: the live fan-out excludes them, the reconciler above builds them no
+    # chain, and the cron their docstrings promised was never installed anywhere.
+    ensure_off_live_tick_driver_chain()
     # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
     # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
     ensure_usage_window_recovery_chain()
