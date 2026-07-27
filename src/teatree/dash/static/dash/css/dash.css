@@ -780,3 +780,22 @@ table.dash.provenance {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* --- Settings: shipped-default comparison. Colour is never the only signal — each
+verdict carries an icon and its own words, so it survives greyscale and colour blindness.
+Both tokens are existing palette entries that clear 4.5:1 on every surface in both
+themes. --- */
+.default-match,
+.default-differs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--text-xs);
+}
+.default-match {
+  color: var(--ok);
+}
+.default-differs {
+  color: var(--warn);
+  font-weight: 600;
+}

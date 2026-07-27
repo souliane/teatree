@@ -10,6 +10,7 @@ nothing, so ``/static/`` 404s wholesale without WhiteNoise.
 """
 
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -127,3 +128,42 @@ def test_static_is_served_with_debug_off() -> None:
     )
     assert result.returncode == 0, f"static-serving check failed:\n{result.stdout}\n{result.stderr}"
     assert "SERVED_OK" in result.stdout
+
+
+# The settings page's shipped-default verdict colours (#3775 P8 dashboard half). Colour is
+# never the only signal there — each verdict carries a text icon and its own words — but the
+# colour must still be legible, so the two tokens it reuses are computed against every
+# surface in both themes rather than assumed.
+_VERDICT_FOREGROUNDS = ("--ok", "--warn")
+_SURFACES = ("--bg", "--surface", "--surface-2")
+_BODY_TEXT_MINIMUM = 4.5
+
+
+def _relative_luminance(hex_colour: str) -> float:
+    channels = (int(hex_colour.lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(foreground: str, background: str) -> float:
+    first, second = _relative_luminance(foreground), _relative_luminance(background)
+    return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+
+
+def test_settings_default_verdict_colours_meet_the_body_text_ratio() -> None:
+    css = (_REPO_ROOT / "src/teatree/dash/static/dash/css/tokens.css").read_text(encoding="utf-8")
+    palettes = [
+        dict(re.findall(r"(--[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{6})", body))
+        for _selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+    ]
+    complete = [tokens for tokens in palettes if set(_VERDICT_FOREGROUNDS + _SURFACES) <= set(tokens)]
+    assert complete, "no palette block in tokens.css carries the verdict tokens"
+
+    failures = [
+        f"{fg} on {bg} = {_contrast(tokens[fg], tokens[bg]):.2f}"
+        for tokens in complete
+        for fg in _VERDICT_FOREGROUNDS
+        for bg in _SURFACES
+        if _contrast(tokens[fg], tokens[bg]) < _BODY_TEXT_MINIMUM
+    ]
+    assert not failures, "the settings default-verdict colours miss 4.5:1:\n" + "\n".join(failures)

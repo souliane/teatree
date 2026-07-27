@@ -3,7 +3,7 @@
 {% block content %}
   <section class="band">
     <h2>Settings</h2>
-    <p class="muted">Every config key, from the schema. Edits write to the DB store; a secret value is never shown (<span class="mono">***</span>) and its input is write-only. Restore-to-default deletes the row.</p>
+    <p class="muted">Every config key, from the schema. Edits write to the DB store; a secret value is never shown (<span class="mono">***</span>) and its input is write-only. Restore-to-default deletes the row. The <em>shipped default</em> column shows what <span class="mono">config/defaults.toml</span> ships, with <span class="default-match">&#10003; same as default</span> or <span class="default-differs">&#9679; differs from default</span> next to it.</p>
     <p class="toolbar">
       <a class="btn" href="{% url 'dash:settings_export' %}">Export (secrets withheld)</a>
     </p>
@@ -54,7 +54,7 @@
 
   <section class="band">
     <table class="dash">
-      <thead><tr><th>setting</th><th>category</th><th>value</th><th>edit</th></tr></thead>
+      <thead><tr><th>setting</th><th>category</th><th>value</th><th>shipped default</th><th>edit</th></tr></thead>
       <tbody>
         {% for s in editor.settings %}
           {% include "dash/partials/_settings_row.html" with s=s scope=editor.scope %}

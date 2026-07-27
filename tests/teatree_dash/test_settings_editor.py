@@ -4,8 +4,9 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.core.config_display import MASKED
+from teatree.core.config_display import MASKED, render_value
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import build_setting_row, build_settings_editor, export_text, import_preview
 
@@ -96,3 +97,61 @@ class TestExportAndPreview(TestCase):
         assert result.dry_run is True
         assert [(r.scope, r.key) for r in result.written] == [("", "mode")]
         assert ConfigSetting.objects.count() == 0
+
+
+class TestShippedDefaultComparison(TestCase):
+    """Each row shows the shipped default and whether the effective value matches it."""
+
+    def _row(self, key: str, scope: str = ""):
+        return next(s for s in build_settings_editor(scope).settings if s.name == key)
+
+    def test_a_key_with_a_toml_default_carries_it_on_the_row(self) -> None:
+        row = self._row("mode")
+        assert row.has_shipped_default is True
+        assert row.shipped_default == render_value(shipped_defaults_table()["mode"])
+
+    def test_an_unset_key_reads_as_matching_its_shipped_default(self) -> None:
+        row = self._row("mode")
+        assert row.is_overridden is False
+        assert row.matches_shipped_default is True
+        assert row.default_comparison == "same as default"
+
+    def test_an_override_equal_to_the_shipped_default_still_reads_as_matching(self) -> None:
+        ConfigSetting.objects.set_value("mode", shipped_defaults_table()["mode"])
+        row = self._row("mode")
+        assert row.is_overridden is True
+        assert row.matches_shipped_default is True
+
+    def test_an_override_away_from_the_shipped_default_reads_as_differing(self) -> None:
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
+        row = self._row("provision_ram_ceiling_percent")
+        assert row.matches_shipped_default is False
+        assert row.default_comparison == "differs from default"
+
+    def test_a_key_with_no_toml_default_offers_no_comparison(self) -> None:
+        # Personal/Secret keys are absent from the shipped file by construction, so there is
+        # nothing to compare against — the row shows no default and no verdict.
+        row = self._row("workspace_dir")
+        assert row.is_secret is False
+        assert row.has_shipped_default is False
+        assert row.shipped_default == ""
+        assert row.default_comparison == ""
+
+    def test_a_secret_key_offers_no_comparison_and_still_masks(self) -> None:
+        row = self._row("slack_user_id")
+        assert row.has_shipped_default is False
+        assert row.shipped_default == MASKED
+        assert row.default_comparison == ""
+
+    def test_a_secret_default_is_masked_before_it_reaches_the_row(self) -> None:
+        # Belt and braces: a secret key that ever gained a shipped default still masks.
+        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value={"banned_terms": ["leaky"]}):
+            row = self._row("banned_terms")
+        assert row.shipped_default == MASKED
+        assert "leaky" not in row.shipped_default
+
+    def test_the_comparison_text_stands_alone_without_the_colour(self) -> None:
+        # Colour is not the only signal: every comparison carries words of its own.
+        assert self._row("mode").default_comparison
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
+        assert self._row("provision_ram_ceiling_percent").default_comparison

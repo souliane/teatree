@@ -13,11 +13,16 @@ with ``***`` HERE, before the row enters the view context — so the stored valu
 into a rendered string. Restore-to-default deletes the DB row (the Phase-4 zero-row /
 ``restore = delete row`` semantics). Export withholds secrets and keeps personal; import
 previews via ``import_toml_to_db(dry_run=True)``.
+
+Every row also carries the shipped default `config/defaults.toml` ships for that key and
+whether the effective value still matches it. A Secret/Personal key is absent from that
+file by construction, so it has no default to compare against and offers no verdict.
 """
 
 import logging
 from dataclasses import dataclass
 
+from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema, setting_meta, shipped_defaults
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, is_secret, render_value
@@ -27,10 +32,13 @@ from teatree.core.models.config_setting import ConfigValue
 
 logger = logging.getLogger(__name__)
 
+SAME_AS_DEFAULT = "same as default"
+DIFFERS_FROM_DEFAULT = "differs from default"
+
 
 @dataclass(frozen=True, slots=True)
 class EditableSetting:
-    """One row of the editor — its value already masked when secret."""
+    """One row of the editor — its value and its shipped default already masked when secret."""
 
     name: str
     category: str  # "default" / "personal" / "secret"
@@ -38,6 +46,10 @@ class EditableSetting:
     is_secret: bool
     is_safety_posture: bool
     is_overridden: bool  # a DB row exists in this scope → restore-to-default is available
+    shipped_default: str  # ``***`` for a secret, "" when the shipped file carries none
+    has_shipped_default: bool
+    matches_shipped_default: bool
+    default_comparison: str  # the words the colour accompanies; "" when there is no default
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,14 +73,36 @@ def _display_value(key: str, *, overridden: bool, db_value: ConfigValue | None) 
     return render_value(value)
 
 
-def _row(key: str, overrides: dict[str, ConfigValue]) -> EditableSetting:
+def _display_default(key: str, *, has_default: bool) -> str:
+    """The shipped default as display text — ``***`` for a secret, "" when there is none.
+
+    A secret is masked BEFORE the value is read, exactly as :func:`_display_value` does, so
+    neither the stored value nor the shipped default can be serialised into the page.
+    """
+    if is_secret(key):
+        return MASKED
+    return render_value(getattr(shipped_defaults(), key)) if has_default else ""
+
+
+def _row(key: str, overrides: dict[str, ConfigValue], shipped_keys: frozenset[str]) -> EditableSetting:
+    overridden = key in overrides
+    has_default = key in shipped_keys
+    value = _display_value(key, overridden=overridden, db_value=overrides.get(key))
+    default = _display_default(key, has_default=has_default)
+    # Compared as the operator SEES them: identical text on the row means identical value.
+    # An unset key resolves FROM the default, so it matches by construction.
+    matches = not overridden or value == default
     return EditableSetting(
         name=key,
         category=setting_meta(key).category.value,
-        value=_display_value(key, overridden=key in overrides, db_value=overrides.get(key)),
+        value=value,
         is_secret=is_secret(key),
         is_safety_posture=key in SAFETY_POSTURE_KEYS,
-        is_overridden=key in overrides,
+        is_overridden=overridden,
+        shipped_default=default,
+        has_shipped_default=has_default,
+        matches_shipped_default=matches,
+        default_comparison=(SAME_AS_DEFAULT if matches else DIFFERS_FROM_DEFAULT) if has_default else "",
     )
 
 
@@ -76,7 +110,8 @@ def build_settings_editor(scope: str = "") -> SettingsEditorView:
     """Compose the editable row for every schema key in *scope*; degrade to a visible error."""
     try:
         overrides = ConfigSetting.objects.overrides_for_scope(scope)
-        rows = [_row(key, overrides) for key in sorted(TeatreeSettingsSchema.model_fields)]
+        shipped_keys = frozenset(shipped_defaults_table())
+        rows = [_row(key, overrides, shipped_keys) for key in sorted(TeatreeSettingsSchema.model_fields)]
     except Exception:
         logger.warning("dash settings editor read failed — degrading to an error page", exc_info=True)
         return SettingsEditorView(scope=scope, error="settings unavailable — read failed")
@@ -85,7 +120,7 @@ def build_settings_editor(scope: str = "") -> SettingsEditorView:
 
 def build_setting_row(key: str, scope: str = "") -> EditableSetting:
     """One row, re-read after a write — the htmx swap unit, masked by the same policy."""
-    return _row(key, ConfigSetting.objects.overrides_for_scope(scope))
+    return _row(key, ConfigSetting.objects.overrides_for_scope(scope), frozenset(shipped_defaults_table()))
 
 
 def export_text() -> str:

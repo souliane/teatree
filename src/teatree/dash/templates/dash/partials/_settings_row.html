@@ -4,6 +4,18 @@
   <td>{{ s.category }}</td>
   <td class="mono">{{ s.value }}</td>
   <td>
+    {% if s.has_shipped_default %}
+      <span class="mono">{{ s.shipped_default }}</span>
+      {% if s.matches_shipped_default %}
+        <span class="default-match" title="the effective value is the shipped default">&#10003; {{ s.default_comparison }}</span>
+      {% else %}
+        <span class="default-differs" title="the effective value overrides the shipped default">&#9679; {{ s.default_comparison }}</span>
+      {% endif %}
+    {% else %}
+      <span class="muted">no shipped default</span>
+    {% endif %}
+  </td>
+  <td>
     {% if row_error %}<p class="banner-red">{{ row_error }}</p>{% endif %}
     <form class="row-actions" method="post" action="{% url 'dash:settings_set' %}"
       hx-post="{% url 'dash:settings_set' %}" hx-target="closest tr" hx-swap="outerHTML">
