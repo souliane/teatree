@@ -26,6 +26,39 @@ from tests.factories import PullRequestFactory, TicketFactory, TicketTransitionF
 
 State = Ticket.State
 
+BROWSER_EXECUTABLE_ENV = "E2E_CHROMIUM_EXECUTABLE"
+
+
+def browser_launch_overrides(executable: str | None) -> dict[str, object]:
+    """Launch-arg overrides for an externally-provided chromium, or none when unset.
+
+    Playwright ships browser builds per distro and has none for every host it can
+    otherwise run on — ``playwright install`` refuses outright on an unrecognised
+    platform, so the lane is unrunnable there even though a perfectly good chromium
+    is installed. Pointing Playwright at that binary is the supported escape.
+
+    ``--no-sandbox`` is required because a distro chromium's SUID sandbox helper is
+    not installed at the path Playwright's own build uses; the other two flags avoid
+    a GPU probe and a shared-memory sizing assumption that headless containers and
+    confined desktop packages both break on.
+    """
+    if not executable:
+        return {}
+    return {
+        "executable_path": executable,
+        "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+    }
+
+
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args: dict[str, object]) -> dict[str, object]:
+    """Honor ``E2E_CHROMIUM_EXECUTABLE`` so a host without a Playwright build can run the lane.
+
+    Unset (CI, where the job installs Playwright's own chromium) this returns the
+    plugin's arguments untouched, so the lane runs byte-identically to before.
+    """
+    return {**browser_type_launch_args, **browser_launch_overrides(os.environ.get(BROWSER_EXECUTABLE_ENV))}
+
 
 @pytest.fixture
 def seeded_board(request: pytest.FixtureRequest) -> SeededBoard:
