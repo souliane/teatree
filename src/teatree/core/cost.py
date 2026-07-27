@@ -354,6 +354,20 @@ class _CacheAccumulator:
         return {key: self._reads[key] / cacheable for key, cacheable in self._cacheable.items() if cacheable > 0}
 
 
+class _DollarSplits:
+    """One attempt's cost, accumulated along all three attribution axes at once."""
+
+    def __init__(self) -> None:
+        self.per_tier: dict[str, float] = {}
+        self.per_lane: dict[str, float] = {}
+        self.per_phase: dict[str, float] = {}
+
+    def add(self, *, tier: str, lane: str, phase: str, cost: float) -> None:
+        self.per_tier[tier] = self.per_tier.get(tier, 0.0) + cost
+        self.per_lane[lane] = self.per_lane.get(lane, 0.0) + cost
+        self.per_phase[phase] = self.per_phase.get(phase, 0.0) + cost
+
+
 @dataclass(frozen=True, slots=True)
 class CostBreakdown:
     """Cycle-to-date SDK-equivalent spend, totalled and split per tier and per Layer-2 lane."""
@@ -374,14 +388,17 @@ class CostBreakdown:
     # Layer-2 lane and per phase, so a broken cache (a lane/phase stuck at 0%) is visible.
     per_lane_cache_hit_ratio: dict[str, float] = field(default_factory=dict)
     per_phase_cache_hit_ratio: dict[str, float] = field(default_factory=dict)
+    # Every attempt already carries its ``phase``; splitting dollars along it is what makes
+    # a per-phase model-cutover comparison against the frozen pre-cutover baseline
+    # (:mod:`teatree.core.cost_baseline`) computable from live data instead of by hand.
+    per_phase_usd: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_usages(cls, usages: Iterable[AttemptUsage]) -> "CostBreakdown":
         # Resolve the ``cost_model_prices`` overrides ONCE for the whole
         # aggregation rather than a cold read per attempt.
         overrides = _cost_price_overrides()
-        per_tier: dict[str, float] = {}
-        per_lane_usd: dict[str, float] = {}
+        splits = _DollarSplits()
         per_lane_et: dict[str, float] = {}
         lane_cache = _CacheAccumulator()
         phase_cache = _CacheAccumulator()
@@ -394,23 +411,24 @@ class CostBreakdown:
             et = usage.effective_tokens
             tier = tier_of_model(usage.model)
             lane = usage.lane or UNATTRIBUTED_LANE
-            per_tier[tier] = per_tier.get(tier, 0.0) + cost
-            per_lane_usd[lane] = per_lane_usd.get(lane, 0.0) + cost
+            phase = usage.phase or UNATTRIBUTED_PHASE
+            splits.add(tier=tier, lane=lane, phase=phase, cost=cost)
             per_lane_et[lane] = per_lane_et.get(lane, 0.0) + et
             lane_cache.add(lane, usage)
-            phase_cache.add(usage.phase or UNATTRIBUTED_PHASE, usage)
+            phase_cache.add(phase, usage)
             total += cost
             estimated += cost if usage.estimated else 0.0
             et_total += et
             count += 1
         return cls(
             total_usd=total,
-            per_tier_usd=per_tier,
+            per_tier_usd=splits.per_tier,
             attempts=count,
             effective_tokens_total=et_total,
-            per_lane_usd=per_lane_usd,
+            per_lane_usd=splits.per_lane,
             per_lane_effective_tokens=per_lane_et,
             estimated_usd=estimated,
+            per_phase_usd=splits.per_phase,
             per_lane_cache_hit_ratio=lane_cache.ratios(),
             per_phase_cache_hit_ratio=phase_cache.ratios(),
         )

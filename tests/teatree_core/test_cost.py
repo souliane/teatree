@@ -317,6 +317,28 @@ class TestCostBreakdown:
         breakdown = CostBreakdown.from_usages(usages)
         assert set(breakdown.per_lane_usd) == {"unattributed"}
 
+    def test_splits_by_phase(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 0, 0, 0, 0, phase="coding"),
+            AttemptUsage("opus", 2.0, 0, 0, 0, 0, phase="reviewing"),
+            AttemptUsage("opus", 0.5, 0, 0, 0, 0, phase="reviewing"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert breakdown.per_phase_usd["coding"] == pytest.approx(1.0)
+        assert breakdown.per_phase_usd["reviewing"] == pytest.approx(2.5)
+
+    def test_unattributed_phase_buckets_separately(self) -> None:
+        breakdown = CostBreakdown.from_usages([AttemptUsage("opus", 1.0, 0, 0, 0, 0)])
+        assert set(breakdown.per_phase_usd) == {"unattributed"}
+
+    def test_per_phase_dollars_sum_to_the_total(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 0, 0, 0, 0, phase="coding"),
+            AttemptUsage("haiku", 2.0, 0, 0, 0, 0, phase="reviewing"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert sum(breakdown.per_phase_usd.values()) == pytest.approx(breakdown.total_usd)
+
 
 class TestCycleStart:
     def test_calendar_month_when_no_anchor(self) -> None:
