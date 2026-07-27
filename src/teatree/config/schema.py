@@ -1,4 +1,4 @@
-"""The unified ``pydantic-settings`` model over teatree's 237 config keys.
+"""The unified ``pydantic-settings`` model over teatree's 235 config keys.
 
 ``TeatreeSettingsSchema`` is the BASE-LAYER schema: it hosts the shipped default
 VALUES (``defaults.toml``) behind teatree's existing per-key coercers and carries
@@ -135,7 +135,7 @@ class _TeatreeTableTomlSource(TomlConfigSettingsSource):
 
 
 class TeatreeSettingsSchema(BaseSettings):
-    """The 237-key config schema. See the module docstring for the design."""
+    """The 235-key config schema. See the module docstring for the design."""
 
     model_config = SettingsConfigDict(extra="forbid", validate_default=True, frozen=True)
 

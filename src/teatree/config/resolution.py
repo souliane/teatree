@@ -36,7 +36,12 @@ from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.retired_settings import RENAMED_SETTING_KEYS, removed_setting, warn_removed_setting
-from teatree.config.setting_layers import SettingLayers, apply_structured_settings, drop_db_home_overlay_keys
+from teatree.config.setting_layers import (
+    SettingLayers,
+    apply_structured_settings,
+    drop_db_home_overlay_keys,
+    shipped_defaults_base,
+)
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.config.settings import OverlayEntry, UserSettings
 
@@ -194,9 +199,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
         env_overrides = _env_setting_overrides()
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)
-    layered = {**layers.toml_defaults, **code_defaults, **overrides}
-    settings = base if not layered else replace(base, **layered)
-    settings = apply_structured_settings(settings, layers.raw, base.speak)
+    defaults_base = shipped_defaults_base(base, layers)
+    layered = {**code_defaults, **overrides}
+    settings = defaults_base if not layered else replace(defaults_base, **layered)
+    settings = apply_structured_settings(settings, layers.db_rows, defaults_base.speak)
     # ``global_pinned`` MUST be the FOLDED field names (``layers.global_db``), not the raw
     # row keys: a global row stored under a retired alias (``_LEGACY_SETTING_ALIASES``)
     # resolves its VALUE onto the current field via ``_coerce_setting_rows``, so its pin
@@ -213,9 +219,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
 
 def _read_setting_layers(overlay_name: str) -> SettingLayers:
     """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once."""
-    raw = (_toml_default_rows(), _load_global_rows(), _load_overlay_rows(overlay_name))
-    toml_defaults, global_db, overlay_db = (_coerce_setting_rows(rows) for rows in raw)
-    return SettingLayers(raw, toml_defaults, global_db, overlay_db)
+    toml_rows = _toml_default_rows()
+    db_rows = (_load_global_rows(), _load_overlay_rows(overlay_name))
+    global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
+    return SettingLayers(toml_rows, _coerce_setting_rows(toml_rows), db_rows, global_db, overlay_db)
 
 
 def _active_overlay_overrides() -> dict[str, Any]:

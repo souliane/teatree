@@ -31,16 +31,40 @@ _logger = logging.getLogger("teatree.config")
 class SettingLayers:
     """The stored-form tiers of one resolution, read ONCE and served in both forms.
 
-    ``raw`` is the ascending-precedence ``(TOML default, DB global, DB overlay)`` tuple
+    ``toml_rows`` / ``toml_defaults`` are the shipped-defaults table in raw and coerced
+    form; ``db_rows`` is the ascending-precedence ``(global, overlay)`` tuple
     :func:`apply_structured_settings` walks (``speak`` / ``mr_reminder`` are JSON dicts
-    the row coercer skips); the three coerced maps drive the generic
-    ``dataclasses.replace``.
+    the row coercer skips), and ``global_db`` / ``overlay_db`` are those same two rows
+    coerced, driving the generic ``dataclasses.replace``.
     """
 
-    raw: tuple[dict[str, Any], ...]
+    toml_rows: dict[str, Any]
     toml_defaults: dict[str, Any]
+    db_rows: tuple[dict[str, Any], ...]
     global_db: dict[str, Any]
     overlay_db: dict[str, Any]
+
+
+def shipped_defaults_base(base: UserSettings, layers: SettingLayers) -> UserSettings:
+    """The object the resolver layers its overrides onto — the shipped defaults, or *base* itself.
+
+    The TOML tier is a DEFAULTS tier, so it sits BELOW everything, including the base
+    ``load_config().user`` hands the resolver. Production's loader returns the plain
+    dataclass default (``config/loader.py``), which carries no opinion of its own, so
+    there the whole shipped table applies — scalars via ``replace`` and the two nested
+    tables via the same parsers a stored row uses. Any other base is a caller-staged
+    opinion (the ``load_config`` patch seam, a structural-subset stub, a future loader
+    that resolves values itself) and is returned untouched: a staged value always wins
+    over a shipped default, and the resolver keeps reading only the fields it needs off
+    the base rather than every field the shipped table names.
+
+    All-or-nothing is exact rather than approximate: the committed file is pinned
+    value-identical to the dataclass defaults (``tests/config/test_toml_default_tier.py``),
+    so applying the table wholesale and applying it per-field resolve to the same settings.
+    """
+    if type(base) is not UserSettings or base != UserSettings():
+        return base
+    return apply_structured_settings(replace(base, **layers.toml_defaults), (layers.toml_rows,), base.speak)
 
 
 def apply_structured_settings(
@@ -50,8 +74,8 @@ def apply_structured_settings(
 ) -> UserSettings:
     """Resolve the nested-table fields from *row_layers*, LOWEST precedence first (#1775).
 
-    The layers are ``(TOML default, DB global, DB overlay)``. ``mr_reminder`` takes the
-    HIGHEST layer that carries a table (no merge — it has no per-scope merge layer).
+    ``mr_reminder`` takes the HIGHEST layer that carries a table (no merge — it has no
+    per-scope merge layer).
     ``speak`` is the one non-generic override: each layer MERGES onto the one below it
     (:func:`speak_from_subtable`), so a partial row overrides only the keys it sets.
     """

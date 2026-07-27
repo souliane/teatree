@@ -335,9 +335,9 @@ def _classify_import_row(
     A storable row is coerced through the shared write-path validator; a value equal to the
     key's EFFECTIVE default (:func:`~teatree.config.effective_default` — the resolver's own
     default, the same authority the seed-skip consults) is redundant (``skip``), leaving
-    ``restore = delete row`` intact. An adopted-live ``defaults.toml`` value that diverges
-    from the code default is NOT redundant, so it is written rather than skipped-then-silently
-    resolving back to the code default (P1-A).
+    ``restore = delete row`` intact. The resolver reads ``defaults.toml`` as its DEFAULTS
+    tier, so every shipped value IS that effective default: importing the shipped file
+    writes zero rows, and each skipped row resolves to exactly the value the file declares.
 
     A :data:`~teatree.config.setting_registries.SAFETY_POSTURE_KEYS` row that would actually
     CHANGE the store is rejected unless the caller declares the operator authorized it — the

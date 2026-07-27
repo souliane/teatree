@@ -8,10 +8,17 @@ directly: the resolver-level integration (which layer comes from where) is
 """
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
-from teatree.config.setting_layers import SettingLayers, apply_structured_settings, drop_db_home_overlay_keys, toml_home
+from teatree.config.setting_layers import (
+    SettingLayers,
+    apply_structured_settings,
+    drop_db_home_overlay_keys,
+    shipped_defaults_base,
+    toml_home,
+)
 from teatree.config.settings import UserSettings
 
 
@@ -53,12 +60,38 @@ class TestApplyStructuredSettings:
 
 
 class TestSettingLayers:
-    def test_carries_the_raw_tuple_and_the_three_coerced_maps(self) -> None:
-        layers = SettingLayers(({"a": 1},), {"a": 1}, {}, {})
-        assert layers.raw == ({"a": 1},)
+    def test_separates_the_shipped_table_from_the_db_scopes(self) -> None:
+        layers = SettingLayers({"a": 1}, {"a": 1}, ({"b": 2}, {}), {"b": 2}, {})
+        assert layers.toml_rows == {"a": 1}
         assert layers.toml_defaults == {"a": 1}
-        assert layers.global_db == {}
+        assert layers.db_rows == ({"b": 2}, {})
+        assert layers.global_db == {"b": 2}
         assert layers.overlay_db == {}
+
+
+class TestShippedDefaultsBase:
+    """The shipped table builds the base ONLY when the loader handed over a plain default."""
+
+    def test_plain_dataclass_base_takes_the_shipped_table(self) -> None:
+        layers = SettingLayers({"speak": {"local": "all"}}, {"merge_wip": 9}, ({}, {}), {}, {})
+        resolved = shipped_defaults_base(UserSettings(), layers)
+        assert resolved.merge_wip == 9
+        assert resolved.speak.local == "all"
+
+    def test_staged_base_is_returned_untouched(self) -> None:
+        staged = UserSettings(review_nag_enabled=True)
+        layers = SettingLayers({"speak": {"local": "all"}}, {"merge_wip": 9}, ({}, {}), {}, {})
+        resolved = shipped_defaults_base(staged, layers)
+        assert resolved is staged
+        assert resolved.merge_wip == UserSettings().merge_wip
+        assert resolved.speak.local == UserSettings().speak.local
+
+    def test_non_dataclass_base_is_returned_untouched(self) -> None:
+        # A structural-subset stub carries only the fields the resolver reads; the shipped
+        # table must never demand the rest of the dataclass off it.
+        stub = SimpleNamespace(user_identity_aliases=[])
+        layers = SettingLayers({}, {"merge_wip": 9}, ({}, {}), {}, {})
+        assert shipped_defaults_base(stub, layers) is stub
 
 
 class TestHomeFilter:
