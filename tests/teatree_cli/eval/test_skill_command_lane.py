@@ -46,10 +46,10 @@ class TestShippedCorpus:
 
 
 class TestLaneResult:
-    def test_clean_corpus_is_a_passing_free_lane(self) -> None:
+    def test_clean_corpus_is_a_passing_model_free_lane(self) -> None:
         lane = skill_command_validity_lane(validate_shipped_skill_commands())
         assert lane.name == "skill-command-validity"
-        assert lane.cost == "free"
+        assert lane.cost == "model-free"
         assert lane.passed is True
         assert lane.skipped is False
 

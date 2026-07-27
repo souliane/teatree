@@ -15,7 +15,7 @@ one umbrella CLI (`t3 eval …`):
   **cadence** (weekly cron + manual dispatch), fail-loud via `--require-executed`
   / judge-metered / count-floor. This is the `--backend api` AI lane, the
   `--judge` / `judge:` oracles, `benchmark`, and the advisory `skill-prose-judge`.
-- **tests** — deterministic, no live model, free, run **every commit** (pytest +
+- **tests** — deterministic, no live model, run **every commit** (pytest +
   prek): pinned-regressions, skill-command-validity, coverage,
   negative-control, transcript-replay, corpus-grade, plus the **replay** of the
   committed `evals/scenarios/*.yaml` against their `_{pass,fail,noop}` fixtures.
@@ -88,9 +88,9 @@ installed editable from a clone; the eval harness ships inside it.
 
 ### How it runs
 
-- **Free / deterministic lanes — host (the default).** `t3 eval` / `t3 eval
-  --free-only` run directly on the host — no container, no setup. The free
-  lanes spawn no agent, so they are host-default for every local invocation.
+- **Model-free / deterministic lanes — host (the default).** `t3 eval` / `t3 eval
+  --model-free` run directly on the host — no container, no setup. The
+  model-free lanes spawn no agent, so they are host-default for every local invocation.
 - **Fresh-run lane + benchmark — DOCKER is the default.** `t3 eval run --backend
   api` and `t3 eval benchmark` run IN the CI image (`dev/Dockerfile.test`, the
   exact image the CI test job builds, which ships the `claude` CLI) **by
@@ -161,7 +161,7 @@ installed editable from a clone; the eval harness ships inside it.
 ```bash
 t3 eval                                      # THE DEFAULT: run the WHOLE suite (all lanes) in one summary table — no subcommand, no args
 t3 eval list                                # show available scenarios as a rich table
-t3 eval --free-only                           # the free deterministic lanes only (no AI lane)
+t3 eval --model-free                           # the model-free deterministic lanes only (no AI lane)
 t3 eval --docker                              # run the gate inside the CI image (dev/Dockerfile.test) for parity
 t3 eval run --backend api                       # fresh-run Agent-SDK lane — DEFAULTS to the container (dev/Dockerfile.test), authed on the agent_harness_provider credential (DEFAULT subscription OAuth; --credential api_key for a metered run)
 t3 eval benchmark --models opus@xhigh,sonnet@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
@@ -198,7 +198,7 @@ t3 eval negative-control                      # harness self-test: plant a viola
 t3 eval negative-control --format json        # JSON: caught / violated_rule / offending_tool_call
 t3 eval corpus list                           # ground-truth corpus entries (id, oracle, confidence, axis, expected, labeller)
 t3 eval corpus show <entry_id>                # one label in full + a privacy-safe session summary (counts only)
-t3 eval corpus grade                          # grade every entry (--no-judge default: free; judge-oracle entries skip); FAIL exits non-zero
+t3 eval corpus grade                          # grade every entry (--no-judge default: model-free; judge-oracle entries skip); FAIL exits non-zero
 t3 eval corpus grade <entry_id> --judge       # grade one entry incl. its LLM-judge oracle (metered)
 t3 eval audit                                 # conversation-audit the recent sessions into the ledger (--limit N, --session <id>)
 t3 eval audit --confusion <axis>              # …then render the confusion matrix for one outcome axis (--json for machine form)
@@ -241,7 +241,7 @@ JSON `ci-status` downloads — so the shard fan-out is invisible to the heal loo
 The deterministic regression lane is wired into prek under its explicit name:
 `eval-pinned-regressions` runs at the **pre-push** stage (real git/FSM work) —
 token-free, no model, no spec discovery. It fails the push on a real
-deterministic violation. The full free-lane summary (`t3 eval --free-only`) —
+deterministic violation. The full model-free-lane summary (`t3 eval --model-free`) —
 which also folds in the warn-first skill-coverage lane, negative-control, and the
 SKIP-when-out-of-scope transcript-replay lane — stays runnable on demand. Run the
 prek lane on demand with:
@@ -263,7 +263,7 @@ metered `ANTHROPIC_API_KEY` selectable per run via `--credential api_key`.
 | `transcript` (default) | $0 extra (reuses a recorded run) | local / manual | grades an already-recorded `<scenario>.jsonl` transcript off disk — runs no model |
 | `sdk` | subscription-covered by default (NOT API-billed; the metered `api_key` selectable) | CI (standalone `eval.yml`) + local `--backend api` (DEFAULTS to the container) | RUNS the model fresh in-process via the Agent SDK + grades the run, in a container by default (`--local` for durable-history gates / host checks) |
 
-The free, no-model commands — `pinned-regressions` and
+The model-free commands — `pinned-regressions` and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
 ### Token cost — the per-scenario system prompt (`agent_sections`)
@@ -476,13 +476,13 @@ wall-clock lever only — it does not change token cost.
 prints a single aggregated summary table — the command to reach for by default.
 Arguments and subcommands are the *targeted/special* path: `run` (a single AI
 scenario, the fresh-run `--backend api` path — Docker-default), `pinned-regressions` /
-`negative-control` / `coverage` (one free lane in isolation),
+`negative-control` / `coverage` (one model-free lane in isolation),
 `history` / `list` / `prepare-transcript` (introspection). The bare default
-accepts `--free-only`, `--backend`, `--transcript-dir`, `--docker`, `--strict`,
+accepts `--model-free`, `--backend`, `--transcript-dir`, `--docker`, `--strict`,
 `--parallel`. The process exits non-zero if ANY lane fails (fail-loud); a SKIP
 never counts as a green pass.
 
-It runs every lane in one summary table: the six free deterministic lanes
+It runs every lane in one summary table: the six model-free deterministic lanes
 (`skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`, `corpus-grade`, `skill-command-validity`) plus the AI lane.
 `skill-coverage` is warn-first (reports a gap, exit 0). The AI lane never runs a
@@ -494,7 +494,7 @@ transcript SKIPs (never FAILs) the transcript-replay lane. Driver:
 
 A fresh-run suite (`--backend api`, the AI lane + the live prose-judge) runs a
 model, so it DEFAULTS to running inside the CI container (`dev/Dockerfile.test`) —
-exactly like `t3 eval run` / `t3 eval benchmark`. `--free-only` runs only the
+exactly like `t3 eval run` / `t3 eval benchmark`. `--model-free` runs only the
 host-safe deterministic lanes (no model) and stays on the host.
 
 `--trials`/`--models` require the fresh-run `sdk` runner (a multi-trial / matrix
@@ -679,7 +679,7 @@ whose cost rose by more than `--cost-regression-tolerance` (relative drift,
 default `0.20` = +20%) prints a `COST REGRESSED` line and exits non-zero. This
 is *relative drift*, distinct from the absolute `--max-budget-usd` ceiling: a
 scenario can stay under the absolute cap while still doubling its cost vs the
-baseline. A `$0` baseline scenario (subscription/free — no metered reference)
+baseline. A `$0` baseline scenario (subscription — no metered reference)
 has undefined relative drift, so the gate no-ops it (never divides by zero) and
 reports "no cost baseline" when no metered baseline exists at all. The gate runs
 in every run shape — single-trial, `--trials` (pass@k, cost summed across
@@ -896,7 +896,7 @@ no `expect:` (judge-only) or alongside matchers (both must pass).
 
 ### Pinned-regressions corpus (real gate/checker code paths)
 
-`t3 eval pinned-regressions` is a Layer-1 (deterministic, free, no `claude` run)
+`t3 eval pinned-regressions` is a Layer-1 (deterministic, model-free, no `claude` run)
 **test**. Where a scenario grades what an agent *says* it
 would do, the pinned-regressions corpus (`regression_corpus.py`) grades what the gate/checker
 code *does*: each `RegressionCheck` calls the **real** function for a recurring
@@ -917,7 +917,7 @@ code path still honors the invariant — then add the matching anti-vacuous test
 
 ### Skill-command-validity (#550 Tier-1 — stale `t3 …` references)
 
-`t3 eval skill-command-validity` is a Layer-1 (deterministic, free, no `claude`
+`t3 eval skill-command-validity` is a Layer-1 (deterministic, model-free, no `claude`
 run) **test** — a sibling of pinned-regressions. It
 grades the repo's prose *docs* themselves: every backticked `t3 …` command a
 doc in `DOC_GLOBS` cites — `skills/<name>/SKILL.md` and its nested `*.md`
@@ -943,7 +943,7 @@ resolve) and injects it. The parse + token-walk logic is the single chokepoint
 the doc-prose static-invocation pytest gate (`tests/test_skill_t3_invocations.py`)
 also consumes, so the regex and placeholder rules live in exactly one place. A
 generic placeholder mention (`t3 …` / `t3 <overlay> …`) names no concrete
-command and is skipped — never drift. It runs as a free lane in every `t3 eval
+command and is skipped — never drift. It runs as a model-free lane in every `t3 eval
 all` run.
 
 ### Skill-prose-judge (#550 Tier-3 — model-judged, ADVISORY)
@@ -977,7 +977,7 @@ path drives it for real.
   `tests/eval_replay/test_regression_corpus.py` in the normal pytest gate on every
   PR, and the scenario anti-vacuous matchers are pinned by
   `tests/eval_replay/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
-  test_eval.py`. The deterministic, free layers therefore guard every PR
+  test_eval.py`. The deterministic, model-free layers therefore guard every PR
   through pytest — only the paid Agent-SDK scenario *run* is weekly.
 - **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
   scenario suite once a week on a cron — not on every push, not on every PR, and
@@ -997,16 +997,16 @@ path drives it for real.
 
 This table is the single source of truth for which lanes exist, how they run, and when. Other docs point here rather than repeating it.
 
-**Kind** is the binding split: a **test** is deterministic and model-free — it runs every commit, for free; an **eval** drives a live model + grader — it is metered, runs on a cadence, and fails loud. The `t3 eval …` command surface is the shared umbrella across both.
+**Kind** is the binding split: a **test** is deterministic and model-free — it runs every commit; an **eval** drives a live model + grader — it is metered, runs on a cadence, and fails loud. The `t3 eval …` command surface is the shared umbrella across both.
 
 | Lane | Kind | Cost | Host / Docker | Local invocation | CI | Cadence |
 |---|---|---|---|---|---|---|
-| pinned-regressions | **test** | free | host | `t3 eval pinned-regressions` | pytest (`test_regression_corpus.py`) | push (prek `eval-pinned-regressions`) + every PR |
-| skill-coverage | **test** | free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
-| negative-control | **test** | free | host | `t3 eval negative-control` | — | on demand |
-| transcript-replay | **test** | free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
-| corpus-grade | **test** | free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
-| skill-command-validity | **test** | free | host | `t3 eval skill-command-validity` | pytest (`tests/teatree_cli/eval/test_skill_command_lane.py`, `tests/test_skill_t3_invocations.py`) | every bare-`t3 eval` run + on demand |
+| pinned-regressions | **test** | model-free | host | `t3 eval pinned-regressions` | pytest (`test_regression_corpus.py`) | push (prek `eval-pinned-regressions`) + every PR |
+| skill-coverage | **test** | model-free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
+| negative-control | **test** | model-free | host | `t3 eval negative-control` | — | on demand |
+| transcript-replay | **test** | model-free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
+| corpus-grade | **test** | model-free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
+| skill-command-validity | **test** | model-free | host | `t3 eval skill-command-validity` | pytest (`tests/teatree_cli/eval/test_skill_command_lane.py`, `tests/test_skill_t3_invocations.py`) | every bare-`t3 eval` run + on demand |
 | ai-eval transcript | **test** (replay) | $0 extra (reuses a recorded run) | host | `t3 eval run` (default backend) | — (grades a saved transcript off disk; the in-session capture that produces it is the live step) | manual / on demand |
 | ai-eval sdk | **eval** | `agent_harness_provider`-selected — DEFAULT subscription OAuth (no per-token bill); the metered `api_key` selectable | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `t3 eval run --backend api` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` secrets, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
 | `--judge` / `judge:` oracle | **eval** | subscription-covered (judge) | host/docker (with the api lane) | `t3 eval run --judge` / `corpus grade --judge` | metered path only (fail-loud: judge-metered guard) | metered path + on demand |
@@ -1089,7 +1089,7 @@ The per-skill coverage map is **generated, not hand-maintained** — run
 (from the core catalog or an overlay dir), or **exempt** when its frontmatter
 carries a non-empty `eval_exempt: <reason>` (pure-doc / methodology skills). A skill that is neither
 is a **gap**. `coverage.py` (`skill_eval_coverage`) is a pure function over
-`discover_specs()` + frontmatter — deterministic, free, no model.
+`discover_specs()` + frontmatter — deterministic, model-free, no model.
 
 The gate is general and declarative: a new `skills/<name>/` with no eval and no
 `eval_exempt` trips it by default, and a new skill is covered-or-exempt with a
@@ -1230,9 +1230,9 @@ readers/writers over the committed engine modules (`corpus_loader`,
 - `t3 eval corpus grade [<entry_id>]` — grade captured sessions against their
   labels through `corpus_grade.grade`, with `assert_independent_oracle`
   enforced (a circular matcher oracle is a FAIL row). The `--no-judge` default
-  is free and deterministic: judge-oracle entries SKIP with a note; `both`
+  is model-free and deterministic: judge-oracle entries SKIP with a note; `both`
   entries grade their matcher part. Any FAIL exits non-zero. This deterministic
-  form also runs as the free `corpus-grade` lane inside bare `t3 eval`.
+  form also runs as the model-free `corpus-grade` lane inside bare `t3 eval`.
 - `t3 eval audit` — run the #1861 conversation-audit engine over recent on-disk
   sessions (`--limit N`, `--session <id>`), persist one `SessionAuditRecord`
   per session, and print the per-session verdict table + nominated count.
@@ -1554,8 +1554,8 @@ Behavioral rules fall into two layers:
   "stakeholder messages avoid code jargon"), a YAML+JSONL scenario
   captures the captured tool-call shape and applies matchers.
 
-Prefer Layer 1 every time it applies — code-level tests run in CI for
-free; eval scenarios require a paid Claude run. Layer 2 is for what
+Prefer Layer 1 every time it applies — code-level tests run in CI with no
+model call; eval scenarios require a paid Claude run. Layer 2 is for what
 Layer 1 cannot reach.
 
 ## Transcript-replay conformance (the other half)
@@ -1687,7 +1687,7 @@ agent editing the canonical clone without `git worktree add` first), drives it
 through the *public* report path, and exits 0 only when the harness reports the
 violation — naming the violated rule and the offending tool call. It is
 token-free and deterministic (it never drives the Agent SDK), so it runs as one of
-the free lanes `t3 eval --free-only` gates on. A non-zero
+the model-free lanes `t3 eval --model-free` gates on. A non-zero
 exit means the harness went green on a genuine violation, i.e. the harness
 itself is broken.
 

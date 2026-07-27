@@ -23,7 +23,7 @@ _README = _REPO_ROOT / "evals" / "README.md"
 _PARTS_TABLE_ROW = "| CLI surface"
 
 _CLI_EVAL_FILE_RE = re.compile(r"`(?:src/teatree/cli/eval/)?([a-z_]+\.py)`")
-# A subcommand starts with a letter; a `--flag` (e.g. `t3 eval --free-only`,
+# A subcommand starts with a letter; a `--flag` (e.g. `t3 eval --model-free`,
 # now valid on the bare-`t3 eval` default) is NOT a subcommand and must not be
 # captured as one.
 _EVAL_COMMAND_RE = re.compile(r"\bt3 eval ([a-z][a-z-]*)\b")

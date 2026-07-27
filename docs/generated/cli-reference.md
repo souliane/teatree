@@ -1531,8 +1531,9 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │
-│ --free-only                      Run only the free deterministic lanes (drop │
-│                                  the AI lane) — the fast pre-push gate.      │
+│ --model-free                     Run only the model-free deterministic lanes │
+│                                  (drop the AI lane) — the fast pre-push      │
+│                                  gate.                                       │
 │ --strict                         Exit non-zero when a lane was SKIPPED for   │
 │                                  setup reasons (the AI behavioural lane with │
 │                                  no transcripts / no key) — for CI, where    │
@@ -1773,7 +1774,7 @@ Usage: t3 eval coverage [OPTIONS]
  via ``agent_path`` (from the ``evals/scenarios/`` catalog or an overlay's
  own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
  reason. A skill that is
- neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
+ neither is a GAP. Deterministic and model-free — no ``claude -p`` invocation.
  Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
  Phase-B enforcement that exits non-zero on any gap.
 
@@ -1792,7 +1793,8 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 
  Run the deterministic regression corpus over the real gate/checker code paths.
 
- Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
+ Layer-1 (deterministic, model-free, no ``claude`` run): each check calls the
+ real
  function for a recurring failure class (branch-currency §940, the
  bare-reference gate, the substrate-merge and maker≠checker floors, the
  pid-anchored loop lease, the migration-graph leaf count) on a must-block and
@@ -1812,7 +1814,7 @@ Usage: t3 eval skill-command-validity [OPTIONS]
  Validate every backticked ``t3 …`` in the repo docs against the live CLI
  registry.
 
- Tier-1 (deterministic, free, no ``claude`` run): the backticked ``t3 …``
+ Tier-1 (deterministic, model-free, no ``claude`` run): the backticked ``t3 …``
  commands in the skills tree, the ``agents/*.md`` role briefs, ``BLUEPRINT.md``
  and ``docs/`` are token-walked against the live typer command tree. A leading
  ``t3 <overlay>`` is resolved to a representative overlay so an overlay-scoped
@@ -1834,7 +1836,8 @@ Usage: t3 eval reachability [OPTIONS]
 
  Report scenario/fixture ``t3 …`` invocations that name no live CLI command.
 
- Tier-1 (deterministic, free, no ``claude`` run): each scenario YAML and each
+ Tier-1 (deterministic, model-free, no ``claude`` run): each scenario YAML and
+ each
  ``_pass``/``_fail`` transcript fixture is scanned for ``t3 …`` runs, which are
  token-walked against the live typer command tree. A reference that resolves to
  nothing grades a path the product cannot take. ADVISORY by default (the
@@ -2405,9 +2408,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     exits non-zero. Distinct │
 │                                                     from an absolute         │
 │                                                     ceiling: a zero-cost     │
-│                                                     (subscription/free)      │
-│                                                     baseline is skipped,     │
-│                                                     never divided by.        │
+│                                                     (subscription) baseline  │
+│                                                     is skipped, never        │
+│                                                     divided by.              │
 │ --cost-regression-tole…                    FLOAT    Relative per-scenario    │
 │                                                     cost rise                │
 │                                                     --gate-cost-regression   │
@@ -2808,9 +2811,9 @@ Usage: t3 eval ci-account switch [OPTIONS]
 │                               [default: souliane/teatree]                    │
 │ --json                        Emit the report as JSON.                       │
 │ --starting-in        INTEGER  Minutes until the run starts. A 5h window that │
-│                               resets before then counts as fully free, so an │
-│                               account can be scored for a run scheduled      │
-│                               after its reset.                               │
+│                               resets before then counts as fully available,  │
+│                               so an account can be scored for a run          │
+│                               scheduled after its reset.                     │
 │                               [default: 0]                                   │
 │ --dry-run                     Report the switch without writing anything.    │
 │ --help                        Show this message and exit.                    │
@@ -2889,10 +2892,10 @@ Usage: t3 eval corpus grade [OPTIONS] [ENTRY_ID]
 │                                          shipped corpus).                    │
 │ --judge           --no-judge             Grade judge-oracle entries with the │
 │                                          LLM judge (metered). The --no-judge │
-│                                          default is free and deterministic:  │
-│                                          judge entries SKIP with a note;     │
-│                                          `both` entries grade their matcher  │
-│                                          part.                               │
+│                                          default is model-free and           │
+│                                          deterministic: judge entries SKIP   │
+│                                          with a note; `both` entries grade   │
+│                                          their matcher part.                 │
 │                                          [default: no-judge]                 │
 │ --judge-budget                  INTEGER  Max LLM-judge calls per run (cost   │
 │                                          cap).                               │

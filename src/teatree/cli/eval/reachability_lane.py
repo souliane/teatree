@@ -51,7 +51,7 @@ def reachability(
 ) -> None:
     """Report scenario/fixture ``t3 …`` invocations that name no live CLI command.
 
-    Tier-1 (deterministic, free, no ``claude`` run): each scenario YAML and each
+    Tier-1 (deterministic, model-free, no ``claude`` run): each scenario YAML and each
     ``_pass``/``_fail`` transcript fixture is scanned for ``t3 …`` runs, which are
     token-walked against the live typer command tree. A reference that resolves to
     nothing grades a path the product cannot take. ADVISORY by default (the shipped

@@ -28,7 +28,7 @@ _STARTING_IN_OPTION = typer.Option(
     "--starting-in",
     help=(
         "Minutes until the run starts. A 5h window that resets before then counts as fully "
-        "free, so an account can be scored for a run scheduled after its reset."
+        "available, so an account can be scored for a run scheduled after its reset."
     ),
 )
 
@@ -83,7 +83,7 @@ def show(*, repo: str = _REPO_OPTION, json_output: bool = _JSON_OPTION) -> None:
     typer.echo(f"active: {active or '(unrecorded — the secret predates account tracking)'}")
     for entry in selection.ranked:
         typer.echo(
-            f"  {entry.account}  5h free {entry.headroom_5h:.0%}  weekly free {entry.headroom_7d:.0%}  "
+            f"  {entry.account}  5h headroom {entry.headroom_5h:.0%}  weekly headroom {entry.headroom_7d:.0%}  "
             f"binding {entry.binding_headroom:.0%}"
         )
     for rejection in selection.rejected:

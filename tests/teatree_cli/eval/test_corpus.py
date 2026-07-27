@@ -230,7 +230,7 @@ class TestShippedCorpusLaneBody:
         assert rows, "shipped corpus is empty — the corpus-grade lane would be vacuous"
         assert all(row.verdict != "fail" for row in rows), rows
 
-    def test_judge_oracle_entries_skip_in_the_free_lane(self) -> None:
+    def test_judge_oracle_entries_skip_in_the_model_free_lane(self) -> None:
         rows = {row.entry_id: row for row in grade_shipped_corpus()}
         assert rows["faithful_explanation"].verdict == "skip"
         assert rows["structured_question"].verdict == "pass"
@@ -252,7 +252,7 @@ class TestShippedCorpusLaneBody:
             "ZERO entries under --no-judge and read as a vacuous green. Add a deterministically-"
             "gradable entry."
         )
-        # And it actually grades (not skips) in the free lane.
+        # And it actually grades (not skips) in the model-free lane.
         graded_ids = {label.entry_id for label in deterministic}
         rows = {row.entry_id: row for row in grade_shipped_corpus()}
         assert any(rows[entry_id].verdict in {"pass", "fail"} for entry_id in graded_ids)

@@ -35,10 +35,10 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
             "--transcript-dir",
             help="Directory of <scenario>.jsonl transcripts for the AI lane (default: cwd).",
         ),
-        free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        model_free: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
             False,
-            "--free-only",
-            help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
+            "--model-free",
+            help="Run only the model-free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
         ),
         strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
             False,
@@ -71,7 +71,7 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
         run_full_suite(
             backend=backend,
             transcript_dir=transcript_dir,
-            free_only=free_only,
+            model_free=model_free,
             docker=docker,
             strict=strict,
             parallel=parallel,
