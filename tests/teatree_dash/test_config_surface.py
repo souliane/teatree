@@ -6,10 +6,11 @@ import pytest
 from django.test import TestCase
 
 from teatree.config.agent_spawn import AgentConfig
+from teatree.core.config_display import MASKED
 from teatree.core.config_self_repair import ConfigRepair
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.dash.config_surface import (
-    MASKED,
+    MASKED_ENTRY_NAME,
     CredentialEntry,
     _band_row,
     _pass_entry_resolves,
@@ -55,7 +56,8 @@ class TestCredentialEntry:
         assert not hasattr(entry, "value")
 
     def test_a_private_setting_masks_even_its_entry_name(self) -> None:
-        assert CredentialEntry.mask_if_private("github_token_pass_key", "team/internal/token").entry_name == "<private>"
+        masked = CredentialEntry.mask_if_private("github_token_pass_key", "team/internal/token")
+        assert masked.entry_name == MASKED_ENTRY_NAME == "<private>"
 
     def test_a_public_setting_keeps_its_entry_name(self) -> None:
         entry = CredentialEntry.mask_if_private("openai_compatible_credential_entry", "router/key")
@@ -72,6 +74,10 @@ class TestBandRowMasksSecretValues:
         row = _band_row("slack_user_id", "U-OWNER-SECRET")
         assert row.value == MASKED
         assert "U-OWNER-SECRET" not in row.value
+
+    def test_the_value_mask_is_the_one_shared_token(self) -> None:
+        """One policy, one token. This surface used to redact a VALUE with the ENTRY-NAME mask."""
+        assert _band_row("slack_user_id", "U-OWNER-SECRET").value != MASKED_ENTRY_NAME
 
     def test_an_ordinary_dial_value_renders(self) -> None:
         assert _band_row("boost_concurrency", 4).value == "4"

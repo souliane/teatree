@@ -9,7 +9,7 @@ than introducing a second source of truth: the effective values come from
 :func:`~teatree.config.agent_spawn.resolve_agent_config`.
 
 **A secret value is never rendered.** A band row's value is masked whenever the setting
-is secret under the shared :func:`~teatree.dash.config_display.is_secret` taxonomy — the
+is secret under the shared :func:`~teatree.core.config_display.is_secret` taxonomy — the
 SAME policy the settings editor applies, so the two pages never diverge. A credential row
 carries the ``pass`` entry NAME and whether it resolves — never the token; an entry name
 that is itself private (a key in :data:`~teatree.config.secret_settings.SECRET_SETTINGS`,
@@ -25,15 +25,17 @@ from dataclasses import dataclass, field
 from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import resolve_agent_config
 from teatree.config.secret_settings import SECRET_SETTINGS, is_credential_reference
+from teatree.core.config_display import masked_display, render_value
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.models import Task
-from teatree.dash.config_display import is_secret, render_value
 from teatree.utils.secrets import read_pass
 
 logger = logging.getLogger(__name__)
 
-#: Redaction shown in place of a private entry name OR a secret setting's value.
-MASKED = "<private>"
+#: Redaction shown in place of a private ``pass`` entry NAME. A secret VALUE is redacted
+#: by the shared :data:`~teatree.core.config_display.MASKED` token instead — two different
+#: questions, and only the value one is a policy the settings editor also answers.
+MASKED_ENTRY_NAME = "<private>"
 
 #: How many self-repairs the band lists, newest first.
 _SELF_REPAIR_LIMIT = 20
@@ -91,7 +93,7 @@ class CredentialEntry:
         would be true for all of them and hide every account name, defeating the band. This
         narrower rule masks only names that can carry an internal namespace.
         """
-        shown = MASKED if setting in SECRET_SETTINGS else entry_name
+        shown = MASKED_ENTRY_NAME if setting in SECRET_SETTINGS else entry_name
         return cls(setting=setting, entry_name=shown, resolves=_pass_entry_resolves(entry_name))
 
 
@@ -162,8 +164,8 @@ def _settings_bands() -> _Bands:
 
 
 def _band_row(name: str, value: object) -> SettingRow:
-    """A band row — the value MASKED when the setting is secret (same policy as the editor)."""
-    return SettingRow(name=name, value=MASKED if is_secret(name) else render_value(value))
+    """A band row — masked when the setting is secret, through the editor's own helper."""
+    return SettingRow(name=name, value=masked_display(name, value))
 
 
 def _credential_entries(setting: str, value: object) -> list[CredentialEntry]:

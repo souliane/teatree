@@ -107,7 +107,7 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         row = self.filter(scope=scope, key=key).first()
         return row.value if row is not None else None
 
-    def _reject_inconsistent_cross_key(self, key: str, value: ConfigValue, scope: str) -> None:
+    def reject_inconsistent_cross_key(self, key: str, value: ConfigValue, scope: str) -> None:
         """Raise :class:`ValidationError` when this write would land an inconsistent coupled pair (#3688).
 
         Delegates to the config-layer :func:`~teatree.config.cross_key_consistency.validate_cross_key_write`,
@@ -115,6 +115,10 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         (overlay-scope row, then global-scope row) so the RESULTING pair — not
         just the value in hand — is judged. A no-op for any key in no coupled
         pair. Imported lazily to keep the model module's cold-import cheap.
+
+        Called by :meth:`set_value` (every programmatic write) and by
+        :meth:`ConfigSetting.clean` (every ``ModelForm`` write, so the Django
+        admin shows a field error instead of landing the bad pair).
         """
         from teatree.config.cross_key_consistency import (  # noqa: PLC0415 — deferred: heavy config import
             validate_cross_key_write,
@@ -149,7 +153,7 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         config into one loud error, not a fleet-wide repair-halt flood on every
         later dispatch. The store is left untouched on rejection.
         """
-        self._reject_inconsistent_cross_key(key, value, scope)
+        self.reject_inconsistent_cross_key(key, value, scope)
         row, _ = self.update_or_create(
             scope=scope,
             key=key,
@@ -267,11 +271,21 @@ class ConfigSetting(models.Model):
         ]
 
     def __str__(self) -> str:
+        """Identify the row by coordinate ONLY — a value here would leak a stored secret.
+
+        ``__str__`` reaches log lines, tracebacks, and the Django admin's object
+        labels (the changelist action checkbox, the change-form breadcrumb), none of
+        which consult the secret taxonomy. The coordinate is what identifies a row;
+        reading its value is the settings surfaces' job, and they mask it.
+        """
         where = "global" if self.scope == GLOBAL_SCOPE else f"overlay:{self.scope}"
-        return f"config-setting<{where} {self.key}={self.value!r}>"
+        return f"config-setting<{where} {self.key}>"
 
     def clean(self) -> None:
-        """Refuse a JSON ``null`` value, which ``blank=True`` would otherwise wave through.
+        """Refuse a JSON ``null`` value and any inconsistent coupled pair (#3688).
+
+        ``ModelForm`` validation runs this, so the Django admin refuses the same
+        writes ``set_value`` refuses instead of landing them via ``Model.save()``.
 
         ``value`` is ``blank=True`` because ``[]`` / ``{}`` / ``""`` are all
         legitimate overrides (``statusline_chain = []`` means "override the
@@ -289,3 +303,4 @@ class ConfigSetting(models.Model):
         """
         if self.value is None:
             raise ValidationError({"value": "Enter a JSON value — use [] or {} for an empty list or object."})
+        ConfigSetting.objects.reject_inconsistent_cross_key(self.key, self.value, self.scope)

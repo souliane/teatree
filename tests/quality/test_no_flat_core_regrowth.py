@@ -122,7 +122,13 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # A queryset leaf helper of the flat root managers.py hub, mirroring managers_phase_cadence.py /
 # managers_overlay.py / managers_issue_match.py / managers_task_claim.py. Owned by no existing
 # subpackage — models/ may not import config, and this reads `session_stale_after_hours`.
-PINNED_FLAT_CORE_MODULES = 102
+# 103: +config_display.py — the setting-name secrecy taxonomy (is_secret) and the one
+# value-to-display rule, relocated out of teatree.dash. Three surfaces now consume it —
+# the two dash config pages and ConfigSettingAdmin — and the admin sits in the domain
+# layer, which may not import the interface-layer dash. It must also stay OUT of
+# core/models/ (which may not import teatree.config, and this reads the settings schema),
+# so no existing subpackage owns it.
+PINNED_FLAT_CORE_MODULES = 103
 
 
 def _flat_core_modules() -> list[str]:
