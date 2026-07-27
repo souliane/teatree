@@ -1,6 +1,6 @@
 """``t3 eval list`` table render + bare-``t3 eval`` full-suite lane orchestration.
 
-The six free deterministic lanes (skill-coverage, pinned-regressions,
+The six model-free deterministic lanes (skill-coverage, pinned-regressions,
 negative-control, transcript-replay, corpus-grade, skill-command-validity) always run;
 skill-coverage is warn-first (reports a gap, never FAILs in Phase A), transcript-replay
 surfaces as a SKIP when no real session transcript is in scope (never a FAIL), corpus-grade
@@ -96,7 +96,7 @@ def regression_lane(report: RegressionReport) -> LaneResult:
     detail = f"{len(report.results)} checks, {len(report.failures)} failed, {skipped} skipped"
     return LaneResult(
         name="pinned-regressions",
-        cost="free",
+        cost="model-free",
         passed=report.ok,
         skipped=False,
         detail=detail,
@@ -111,14 +111,14 @@ def coverage_lane(report: CoverageReport) -> LaneResult:
         if report.gaps
         else f"{len(report.rows)} skills, all covered or eval_exempt"
     )
-    return LaneResult(name="skill-coverage", cost="free", passed=True, skipped=False, detail=detail)
+    return LaneResult(name="skill-coverage", cost="model-free", passed=True, skipped=False, detail=detail)
 
 
 def negative_control_lane(outcome: NegativeControlOutcome) -> LaneResult:
     detail = "harness caught the planted violation" if outcome.caught else "harness MISSED the planted violation"
     return LaneResult(
         name="negative-control",
-        cost="free",
+        cost="model-free",
         passed=outcome.caught,
         skipped=False,
         detail=detail,
@@ -129,7 +129,7 @@ def transcript_replay_lane(results: list[InvariantResult] | None) -> LaneResult:
     if results is None:
         return LaneResult(
             name="transcript-replay",
-            cost="free",
+            cost="model-free",
             passed=True,
             skipped=True,
             detail="no session transcript in scope",
@@ -137,7 +137,7 @@ def transcript_replay_lane(results: list[InvariantResult] | None) -> LaneResult:
     failed = sum(1 for result in results if not result.ok)
     return LaneResult(
         name="transcript-replay",
-        cost="free",
+        cost="model-free",
         passed=failed == 0,
         skipped=False,
         detail=f"{len(results)} invariants, {failed} violated",
@@ -266,13 +266,13 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
 
 
 def _full_suite_docker_passthrough(
-    *, backend: str, free_only: bool, strict: bool, parallel: int = DEFAULT_PARALLEL
+    *, backend: str, model_free: bool, strict: bool, parallel: int = DEFAULT_PARALLEL
 ) -> list[str]:
     # The bare `t3 eval` callback IS the full suite (no subcommand), so the
     # in-container re-invocation passes only the flags — `all` was removed.
     passthrough: list[str] = []
-    if free_only:
-        passthrough.append("--free-only")
+    if model_free:
+        passthrough.append("--model-free")
     if backend != TRANSCRIPT_BACKEND:
         passthrough += ["--backend", backend]
     if strict:
@@ -303,14 +303,14 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     *,
     backend: str,
     transcript_dir: Path | None,
-    free_only: bool,
+    model_free: bool,
     docker: bool,
     strict: bool,
     parallel: int = DEFAULT_PARALLEL,
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
-    The bare ``t3 eval`` default calls this. The six free deterministic lanes
+    The bare ``t3 eval`` default calls this. The six model-free deterministic lanes
     (skill-coverage, pinned-regressions, negative-control,
     transcript-replay, corpus-grade, skill-command-validity) always run;
     skill-coverage is warn-first, transcript-replay SKIPs when no real session
@@ -333,13 +333,13 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     """
     # The fresh-run SDK AI lane + the live prose-judge run a model, so the whole
     # suite defaults to the CI container when they are in scope (`--backend api`,
-    # not `--free-only`) — exactly like `eval run` / `eval benchmark`. `--docker`
-    # forces the container for any backend; `--free-only` runs only the host-safe
+    # not `--model-free`) — exactly like `eval run` / `eval benchmark`. `--docker`
+    # forces the container for any backend; `--model-free` runs only the host-safe
     # deterministic lanes, so it never runs a model.
-    metered = backend != TRANSCRIPT_BACKEND and not free_only
+    metered = backend != TRANSCRIPT_BACKEND and not model_free
     if docker or should_route_to_docker(metered=metered, local=False):
         passthrough = _full_suite_docker_passthrough(
-            backend=backend, free_only=free_only, strict=strict, parallel=parallel
+            backend=backend, model_free=model_free, strict=strict, parallel=parallel
         )
         try:
             raise typer.Exit(code=run_eval_in_docker(passthrough))
@@ -357,7 +357,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         _timed(lambda: skill_command_validity_lane(validate_shipped_skill_commands())),
     ]
     ai_results: list[ScenarioResult] = []
-    if not free_only:
+    if not model_free:
         # The AI lane runs first. It is itself backend-gated: the default
         # transcript backend grades on-disk transcripts ($0 extra) and never runs
         # a model, so it is safe on the bare-`t3 eval` path.
@@ -368,8 +368,8 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     if metered:
         # The ADVISORY Tier-3 prose-judge fires the LIVE ClaudeJudge, so it is gated
         # on the explicit fresh-run opt-in (`--backend api`), NOT merely on
-        # `not --free-only` — bare `t3 eval` (default transcript, $0 extra) must
-        # never silently run a model, and `--free-only` drops it.
+        # `not --model-free` — bare `t3 eval` (default transcript, $0 extra) must
+        # never silently run a model, and `--model-free` drops it.
         # skill_prose_judge_lane always returns passed=True, so a low prose score
         # never fails the suite.
         lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))

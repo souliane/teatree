@@ -1,4 +1,4 @@
-"""``t3 eval skill-command-validity`` — Tier-1 command-validity lane (#550, free).
+"""``t3 eval skill-command-validity`` — Tier-1 command-validity lane (#550, model-free).
 
 The thin CLI surface over the pure :mod:`teatree.eval.skill_command_validity`
 engine. The engine validates SKILL.md ``t3 …`` invocations against an injected
@@ -17,8 +17,8 @@ that builds the registry from its own app. The default provider raises a clear
 error, so a caller that never registered one fails loud rather than silently
 validating against an empty registry.
 
-Free and deterministic — no model, no spend. Wired into ``t3 eval`` (the
-free-lane summary) and exposed as the standalone ``t3 eval skill-command-validity``.
+Model-free and deterministic — no model, no spend. Wired into ``t3 eval`` (the
+model-free-lane summary) and exposed as the standalone ``t3 eval skill-command-validity``.
 """
 
 import sys
@@ -67,7 +67,7 @@ def validate_shipped_skill_commands(repo_root: Path = DEFAULT_REPO_ROOT) -> Comm
 
 
 def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
-    """Fold a validity report into the free ``skill-command-validity`` lane for ``t3 eval``."""
+    """Fold a validity report into the model-free ``skill-command-validity`` lane for ``t3 eval``."""
     detail = (
         f"{report.checked} `t3 …` invocation(s) all resolve"
         if report.ok
@@ -75,7 +75,7 @@ def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
     )
     return LaneResult(
         name="skill-command-validity",
-        cost="free",
+        cost="model-free",
         passed=report.ok,
         skipped=False,
         detail=detail,
@@ -87,7 +87,7 @@ def skill_command_validity(
 ) -> None:
     """Validate every backticked ``t3 …`` in the repo docs against the live CLI registry.
 
-    Tier-1 (deterministic, free, no ``claude`` run): the backticked ``t3 …``
+    Tier-1 (deterministic, model-free, no ``claude`` run): the backticked ``t3 …``
     commands in the skills tree, the ``agents/*.md`` role briefs, ``BLUEPRINT.md``
     and ``docs/`` are token-walked against the live typer command tree. A leading
     ``t3 <overlay>`` is resolved to a representative overlay so an overlay-scoped

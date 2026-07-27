@@ -155,7 +155,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Diff this run's per-scenario cost against each model's baseline cost; a relative "
             "rise beyond --cost-regression-tolerance exits non-zero. Distinct from an absolute "
-            "ceiling: a zero-cost (subscription/free) baseline is skipped, never divided by."
+            "ceiling: a zero-cost (subscription) baseline is skipped, never divided by."
         ),
     ),
     cost_regression_tolerance: float = typer.Option(

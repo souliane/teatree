@@ -62,7 +62,7 @@ class TestRunEvalInDocker(TestCase):
             patch(f"{_MODULE}._image_present", return_value=False),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
-            code = run_eval_in_docker(["all", "--free-only"])
+            code = run_eval_in_docker(["all", "--model-free"])
         assert code == 0
         build, exec_ = streamed.call_args_list
         assert "build" in build.args[0]
@@ -76,7 +76,7 @@ class TestRunEvalInDocker(TestCase):
             patch(f"{_MODULE}._image_present", return_value=True),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
-            run_eval_in_docker(["all", "--free-only"])
+            run_eval_in_docker(["all", "--model-free"])
         assert streamed.call_count == 1
         assert streamed.call_args.args[0][:2] == ["docker", "run"]
 
@@ -86,10 +86,10 @@ class TestRunEvalInDocker(TestCase):
             patch(f"{_MODULE}._image_present", return_value=True),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
-            run_eval_in_docker(["all", "--free-only"])
+            run_eval_in_docker(["all", "--model-free"])
         container_cmd = streamed.call_args.args[0]
         start = container_cmd.index("uv")
-        assert container_cmd[start:] == ["uv", "run", "t3", "eval", "all", "--free-only"]
+        assert container_cmd[start:] == ["uv", "run", "t3", "eval", "all", "--model-free"]
 
     def test_propagates_nonzero_exit_from_container(self) -> None:
         with (
@@ -97,7 +97,7 @@ class TestRunEvalInDocker(TestCase):
             patch(f"{_MODULE}._image_present", return_value=True),
             patch(f"{_MODULE}.run_streamed", return_value=1),
         ):
-            assert run_eval_in_docker(["all", "--free-only"]) == 1
+            assert run_eval_in_docker(["all", "--model-free"]) == 1
 
     def test_uses_the_ci_image_tag(self) -> None:
         with (
@@ -133,7 +133,7 @@ class TestRunEvalInDocker(TestCase):
             patch(f"{_MODULE}._image_present", return_value=False),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
-            run_eval_in_docker(["all", "--free-only"])
+            run_eval_in_docker(["all", "--model-free"])
         build = streamed.call_args_list[0].args[0]
         assert "-q" not in build
 
@@ -145,7 +145,7 @@ class TestRunEvalInDocker(TestCase):
             patch(f"{_MODULE}._image_present", return_value=True),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
-            run_eval_in_docker(["all", "--free-only"])
+            run_eval_in_docker(["all", "--model-free"])
         command = streamed.call_args.args[0]
         index = command.index("PYTHONUNBUFFERED=1")
         assert command[index - 1 : index + 1] == ["-e", "PYTHONUNBUFFERED=1"]
@@ -361,7 +361,7 @@ class TestDockerResolvesCredentialFromPassForSdkLane(TestCase):
     resolves it from the ``pass`` store and exports it into the parent env BEFORE
     ``_auth_passthrough_flags()`` is computed, so the ``-e`` flag is emitted and the
     credential reaches the container — ``--backend api --docker`` just works. The
-    free / transcript lane must not read the secret store.
+    model-free / transcript lane must not read the secret store.
     """
 
     def _run(self, args: list[str], env: dict[str, str], pass_value: str) -> list[str]:
@@ -382,8 +382,8 @@ class TestDockerResolvesCredentialFromPassForSdkLane(TestCase):
         index = command.index(_OAUTH_ENV)
         assert command[index - 1 : index + 1] == ["-e", _OAUTH_ENV]
 
-    def test_free_only_lane_does_not_read_pass(self) -> None:
-        self._run(["all", "--free-only"], env={}, pass_value="oauth-pass-token")
+    def test_model_free_lane_does_not_read_pass(self) -> None:
+        self._run(["all", "--model-free"], env={}, pass_value="oauth-pass-token")
         self.read_pass.assert_not_called()
 
 

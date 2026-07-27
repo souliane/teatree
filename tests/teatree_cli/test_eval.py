@@ -947,7 +947,7 @@ def _per_scenario_cost_runner(costs: dict[str, float]) -> type:
 @pytest.mark.django_db
 class TestEvalCostRegressionGate:
     def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float) -> None:
-        # A zero-cost baseline is a subscription/free run (no metered cost) — persist it
+        # A zero-cost baseline is a subscription run (no metered cost) — persist it
         # through the ledger directly, the way such a baseline really lands, rather than
         # the metered api path (whose $0-fail guard would correctly reject it). The
         # specs carry their RESOLVED model (the candidate run resolves per-scenario at
@@ -995,7 +995,7 @@ class TestEvalCostRegressionGate:
         assert "COST REGRESSED" not in result.output
 
     def test_zero_baseline_cost_passes_without_div_by_zero(self) -> None:
-        # The baseline run EXISTS but its per-scenario cost is $0 (a subscription/free
+        # The baseline run EXISTS but its per-scenario cost is $0 (a subscription
         # baseline). The relative drift is undefined, so the gate skips the scenario:
         # exit 0, never a COST REGRESSED, never a divide-by-zero — and NOT the
         # "no cost baseline" path (a baseline run is present, just zero-cost).
@@ -1813,7 +1813,7 @@ def _prose_report(*, weakest: str = "beta") -> ProseJudgeReport:
 
 @contextmanager
 # ast-grep-ignore: ac-django-no-complexity-suppressions
-def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the bare-`t3 eval` run patches; the list IS the lane set.
+def _patch_all_lanes(  # noqa: PLR0913 — one keyword per model-free lane the bare-`t3 eval` run patches; the list IS the lane set.
     specs: list[EvalSpec],
     *,
     regression_ok: bool = True,
@@ -1822,7 +1822,7 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the bare-`t
     coverage_gaps: tuple[str, ...] = (),
     command_validity_ok: bool = True,
 ) -> "Iterator[None]":
-    """Patch every free-lane input `run_full_suite` (in cli.eval.all) resolves."""
+    """Patch every model-free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
         patch("teatree.cli.eval.all.discover_specs", return_value=specs),
         patch("teatree.cli.eval.all.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
@@ -1891,10 +1891,10 @@ class TestEvalDefault:
                 side_effect=AssertionError("docker must not run host lanes"),
             ),
         ):
-            result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
+            result = CliRunner().invoke(app, ["eval", "--docker", "--model-free"])
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
-        assert run_docker.call_args.args[0] == ["--free-only"]
+        assert run_docker.call_args.args[0] == ["--model-free"]
 
     def test_bare_eval_docker_propagates_container_exit_code(self) -> None:
         with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=1):
@@ -2004,7 +2004,7 @@ class TestEvalSubcommandsStillWork:
 
 
 class TestEvalAll:
-    def test_runs_free_lanes_and_renders_unified_table(self, tmp_path: Path) -> None:
+    def test_runs_model_free_lanes_and_renders_unified_table(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
@@ -2013,7 +2013,7 @@ class TestEvalAll:
         assert "pinned-regressions" in result.output
 
     def test_table_lists_all_lanes_including_coverage(self, tmp_path: Path) -> None:
-        # The default subscription path lists every free lane plus the
+        # The default subscription path lists every model-free lane plus the
         # transcript-graded ai-eval lane; the metered prose-judge is gated off the
         # default path (it bills the API — see TestEvalAllSkillProseJudgeLaneAdvisory).
         with _patch_all_lanes([_spec("worktree_first")]):
@@ -2034,13 +2034,13 @@ class TestEvalAll:
 
     def test_coverage_gap_is_warn_first_exit_zero(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], coverage_gaps=("loops",)):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "skill-coverage" in result.output
 
-    def test_free_only_drops_the_ai_lane(self, tmp_path: Path) -> None:
+    def test_model_free_drops_the_ai_lane(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         for lane in (
             "skill-coverage",
@@ -2050,21 +2050,23 @@ class TestEvalAll:
             "corpus-grade",
             "skill-command-validity",
         ):
-            assert lane in result.output, f"missing free lane {lane!r}: {result.output}"
+            assert lane in result.output, f"missing model-free lane {lane!r}: {result.output}"
         assert "ai-eval" not in result.output, result.output
-        assert "skill-prose-judge" not in result.output, result.output  # Tier-3 is metered, dropped by --free-only
+        assert "skill-prose-judge" not in result.output, result.output  # Tier-3 is metered, dropped by --model-free
 
-    def test_free_only_never_discovers_specs_or_meters(self, tmp_path: Path) -> None:
+    def test_model_free_never_discovers_specs_or_meters(self, tmp_path: Path) -> None:
         with (
             _patch_all_lanes([_spec("worktree_first")]),
-            patch("teatree.cli.eval.all.run_ai_lane", side_effect=AssertionError("free-only must not run the AI lane")),
+            patch(
+                "teatree.cli.eval.all.run_ai_lane", side_effect=AssertionError("--model-free must not run the AI lane")
+            ),
         ):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
-    def test_free_only_still_fails_on_a_deterministic_violation(self, tmp_path: Path) -> None:
+    def test_model_free_still_fails_on_a_deterministic_violation(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_docker_delegates_to_the_container_and_skips_host_lanes(self) -> None:
@@ -2075,10 +2077,10 @@ class TestEvalAll:
                 side_effect=AssertionError("docker must not run host lanes"),
             ),
         ):
-            result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
+            result = CliRunner().invoke(app, ["eval", "--docker", "--model-free"])
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
-        assert run_docker.call_args.args[0] == ["--free-only"]
+        assert run_docker.call_args.args[0] == ["--model-free"]
 
     def test_docker_propagates_container_exit_code(self) -> None:
         with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=1):
@@ -2110,14 +2112,14 @@ class TestEvalFinalVerdict:
     def test_all_pass_renders_all_good_verdict(self, tmp_path: Path) -> None:
         # Free-only so every lane truly passes (no AI lane to caveat).
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "✅ ALL GOOD" in result.output, result.output
         assert "every check passed" in result.output, result.output
 
     def test_real_failure_renders_problems_and_names_the_lane(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "❌ PROBLEMS FOUND" in result.output, result.output
         assert "negative-control" in result.output, result.output
@@ -2158,7 +2160,7 @@ class TestEvalFinalVerdict:
 
     def test_strict_stays_green_when_everything_actually_passes(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "--strict", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--strict", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "✅ ALL GOOD" in result.output, result.output
 
@@ -2340,7 +2342,7 @@ class TestEvalRunMeteredDockerByDefault:
         assert result.exit_code == 0, result.output
         assert "ai-eval" in result.output
 
-    def test_failing_free_lane_exits_nonzero(self, tmp_path: Path) -> None:
+    def test_failing_model_free_lane_exits_nonzero(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], regression_ok=False):
             result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
@@ -2490,11 +2492,11 @@ class TestEvalCoverage:
 
 
 class TestEvalAllCorpusGradeLane:
-    """The deterministic corpus part runs as a free lane in the full suite."""
+    """The deterministic corpus part runs as a model-free lane in the full suite."""
 
-    def test_corpus_grade_lane_runs_in_the_free_suite(self, tmp_path: Path) -> None:
+    def test_corpus_grade_lane_runs_in_the_model_free_suite(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "corpus-grade" in result.output
         assert "judge-skipped" in result.output
@@ -2505,7 +2507,7 @@ class TestEvalAllCorpusGradeLane:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=failing),
         ):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "corpus-grade" in result.output
 
@@ -2518,7 +2520,7 @@ class TestEvalAllCorpusGradeLane:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=all_skip),
         ):
-            default_run = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            default_run = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert default_run.exit_code == 0, default_run.output
         assert "needs setup" in default_run.output.lower(), default_run.output
 
@@ -2526,22 +2528,24 @@ class TestEvalAllCorpusGradeLane:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=all_skip),
         ):
-            strict_run = CliRunner().invoke(app, ["eval", "--free-only", "--strict", "--transcript-dir", str(tmp_path)])
+            strict_run = CliRunner().invoke(
+                app, ["eval", "--model-free", "--strict", "--transcript-dir", str(tmp_path)]
+            )
         assert strict_run.exit_code == 1, strict_run.output
 
 
 class TestEvalAllSkillCommandValidityLane:
-    """Tier-1 (#550) runs as a free lane and FAILs on a stale `t3 …` reference."""
+    """Tier-1 (#550) runs as a model-free lane and FAILs on a stale `t3 …` reference."""
 
-    def test_command_validity_lane_runs_in_the_free_suite(self, tmp_path: Path) -> None:
+    def test_command_validity_lane_runs_in_the_model_free_suite(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "skill-command-validity" in result.output
 
     def test_stale_command_reference_fails_the_suite(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], command_validity_ok=False):
-            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--model-free", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "skill-command-validity" in result.output
 
@@ -2566,7 +2570,7 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
     def test_bare_eval_does_not_invoke_the_live_judge(self, tmp_path: Path) -> None:
         # Bare `t3 eval` (default subscription backend, advertised "no API spend")
         # must NOT fire the live metered prose-judge — gate it on the metered
-        # opt-in, not merely on `not --free-only`.
+        # opt-in, not merely on `not --model-free`.
         with (
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_prose_judge") as prose,
@@ -2576,15 +2580,15 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
         prose.assert_not_called()
         assert "skill-prose-judge" not in result.output, result.output
 
-    def test_free_only_drops_the_prose_judge_even_with_sdk_backend(self, tmp_path: Path) -> None:
-        # `--free-only` runs only the host-safe deterministic lanes — it is never
+    def test_model_free_drops_the_prose_judge_even_with_sdk_backend(self, tmp_path: Path) -> None:
+        # `--model-free` runs only the host-safe deterministic lanes — it is never
         # metered, so the prose-judge is dropped even when `--backend api` is given.
         with (
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_prose_judge") as prose,
         ):
             result = CliRunner().invoke(
-                app, ["eval", "--free-only", "--backend", "api", "--transcript-dir", str(tmp_path)]
+                app, ["eval", "--model-free", "--backend", "api", "--transcript-dir", str(tmp_path)]
             )
         assert result.exit_code == 0, result.output
         prose.assert_not_called()
@@ -2661,7 +2665,7 @@ class TestSuiteMeteredImpliesStrict:
 
     def _lanes(self) -> list[LaneResult]:
         return [
-            LaneResult(name="pinned-regressions", cost="free", passed=True, skipped=False, detail="ok"),
+            LaneResult(name="pinned-regressions", cost="model-free", passed=True, skipped=False, detail="ok"),
             LaneResult(
                 name="ai-eval",
                 cost="metered",
@@ -2682,7 +2686,7 @@ class TestSuiteMeteredImpliesStrict:
         assert _suite_should_fail(self._lanes(), strict=True, metered=False) is True
 
     def test_all_green_never_fails(self) -> None:
-        green = [LaneResult(name="x", cost="free", passed=True, skipped=False, detail="ok")]
+        green = [LaneResult(name="x", cost="model-free", passed=True, skipped=False, detail="ok")]
         assert _suite_should_fail(green, strict=True, metered=True) is False
 
 

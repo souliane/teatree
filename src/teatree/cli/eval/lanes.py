@@ -1,7 +1,7 @@
-"""Deterministic single-lane ``t3 eval`` subcommands (free — no ``claude`` run).
+"""Deterministic single-lane ``t3 eval`` subcommands (model-free — no ``claude`` run).
 
 Held apart from the ``run`` body and the bare-suite callback in
-:mod:`teatree.cli.eval.app`: each is a self-contained free lane that renders one
+:mod:`teatree.cli.eval.app`: each is a self-contained model-free lane that renders one
 report and exits non-zero on a violation, sharing none of the runner/persist/gate
 machinery. Registered onto ``eval_app`` from ``app`` via the same
 ``command(name)(func)`` indirection the other split-out lanes use.
@@ -35,7 +35,7 @@ def coverage(
     via ``agent_path`` (from the ``evals/scenarios/`` catalog or an overlay's
     own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
     reason. A skill that is
-    neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
+    neither is a GAP. Deterministic and model-free — no ``claude -p`` invocation.
     Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
     Phase-B enforcement that exits non-zero on any gap.
     """
@@ -52,7 +52,7 @@ def pinned_regressions(
 ) -> None:
     """Run the deterministic regression corpus over the real gate/checker code paths.
 
-    Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
+    Layer-1 (deterministic, model-free, no ``claude`` run): each check calls the real
     function for a recurring failure class (branch-currency §940, the
     bare-reference gate, the substrate-merge and maker≠checker floors, the
     pid-anchored loop lease, the migration-graph leaf count) on a must-block and

@@ -2,7 +2,7 @@
 
 The metered ``api`` lane and ``t3 eval benchmark`` default to running IN the CI
 container (``dev/Dockerfile.test``): a metered run bills the API, so it must
-never accidentally run on the host. The free / deterministic / subscription
+never accidentally run on the host. The model-free / deterministic / subscription
 lanes spawn no agent and stay host-default.
 
 Two predicates break the re-route loop and gate the host escape:
@@ -30,7 +30,7 @@ def should_route_to_docker(*, metered: bool, local: bool) -> bool:
 
     Routes to docker only for a *metered* lane that is NOT already in the
     container and was NOT given the explicit ``--local`` host escape. A
-    non-metered lane (free / deterministic / subscription) is never routed.
+    non-metered lane (model-free / deterministic / subscription) is never routed.
     """
     if not metered:
         return False

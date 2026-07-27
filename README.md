@@ -631,7 +631,7 @@ graph LR
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
 | `review-request` | Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
-| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
+| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — model-free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
 | `scanning-news` | Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |

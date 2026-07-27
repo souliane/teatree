@@ -1,6 +1,6 @@
 # Testing skill evals
 
-A **test** checks what a function *returns* (deterministic, free, runs every
+A **test** checks what a function *returns* (deterministic, model-free, runs every
 commit). An **eval** checks what an *agent does* when it loads a skill — given a
 prompt, does it call the right tools, in the right order, and say the right
 thing? Skills carry behavior, so they need behavioral tests. That is an eval.
@@ -27,7 +27,7 @@ Overlays ship their own scenarios from the directory returned by
 ## A scenario, end to end
 
 A scenario is two *separate* AI steps — keeping them apart is what makes
-re-grading free and lets cheap checks gate every PR.
+re-grading model-free and lets cheap checks gate every PR.
 
 1. **RUN** — a fresh agent is given only the scenario `prompt`, run once **with
    the skill** loaded as its system prompt and once at a neutral **baseline** (no
@@ -39,7 +39,7 @@ re-grading free and lets cheap checks gate every PR.
 
 2. **GRADE** — a separate step reads the recorded transcript and decides
    PASS/FAIL. It never re-runs the task. Two mechanisms:
-   - **Matchers** (no model, free, instant) for crisp criteria: `tool_call`
+   - **Matchers** (no model, instant) for crisp criteria: `tool_call`
      present, `no_tool_call_matching` absent, `any_of`, `final_state`.
    - **LLM judge** (a second model call) only for fuzzy criteria a matcher can't
      express (tone, faithfulness). Prefer matchers; reach for a judge last.
@@ -98,7 +98,7 @@ negative; only `_pass` is GREEN.
 
 | Lane | What it does | Cost | When |
 |------|-------------|------|------|
-| **matchers** | GRADE a transcript, no model | free | every PR |
+| **matchers** | GRADE a transcript, no model | model-free | every PR |
 | **transcript** (default) | REUSE an already-recorded RUN, then GRADE | $0 extra | in-session via `/t3:running-evals` |
 | **api** | RUN the model fresh, then GRADE | on the `agent_harness_provider` credential (default subscription OAuth) | weekly CI + explicit `t3 eval run` |
 
@@ -123,8 +123,8 @@ nothing. The `api` lane never runs silently; it runs only when passed explicitly
 ## How to run
 
 ```bash
-t3 eval --free-only    # fast pre-push gate: free deterministic lanes only
-t3 eval                # whole suite: free lanes + grade recorded transcripts
+t3 eval --model-free   # fast pre-push gate: model-free deterministic lanes only
+t3 eval                # whole suite: model-free lanes + grade recorded transcripts
 t3 eval list           # discovered scenarios
 t3 eval coverage       # per-skill covered / exempt / gap (--fail-on-gap to enforce)
 ```
@@ -145,7 +145,7 @@ green with zero coverage.
 
 ## What CI does
 
-- **Free lanes — every PR.** `pinned-regressions` (prek hook)
+- **Model-free lanes — every PR.** `pinned-regressions` (prek hook)
   - `skill-coverage` (pytest). `t3 tool verify-gates` runs the same set locally.
 - **Fresh-run lane — weekly + on demand.** A standalone workflow
   ([`eval.yml`](https://github.com/souliane/teatree/blob/main/.github/workflows/eval.yml)), off the PR path: weekly cron +
