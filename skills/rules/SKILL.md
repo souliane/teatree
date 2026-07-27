@@ -19,6 +19,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 
 1. [Invoke Skills Before ANY Response](#invoke-skills-before-any-response)
 2. [Verification Before Completion](#verification-before-completion-non-negotiable)
+2a. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
 3. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
 4. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
 4a. [Read the Canonical Source Before Fixing a Conformance Bug](#read-the-canonical-source-before-fixing-a-conformance-bug)
@@ -150,6 +151,16 @@ This is enforced, not just prose: the BLOCKING Stop gate `handle_completion_clai
 - Before reporting a defect in your own artifact, **quote the exact text and name the concrete failure**. If the quoted text does not actually exhibit the flaw, there is no finding — drop it.
 - Keep the severity vocabulary honest: a **conflict** contradicts the spec; a **gap** is uncovered scope; an **optional extra** is a side note someone flagged as nice-to-have. Reporting a gap or a side note as a conflict inflates severity and invites a needless retraction.
 - **In a bug report, "Actual Behavior" states the DEFECT, not the target.** Evidence and test plans demonstrate the _Expected Behavior_; never judge them for disagreeing with the Actual section. Misreading those two inverts the entire review.
+
+## An Acceptance Criterion That Cannot Fail Is Not a Criterion (Non-Negotiable)
+
+`/t3:code` § "TDD Discipline" mandates observing every regression test RED before trusting its green. This is that rule one level up, applied to feature acceptance: **before building against a criterion, name the state of the world that makes it FAIL.** If no such state exists, it is not a criterion — it certifies whatever you do, including doing nothing.
+
+- **Absence-satisfied criteria are the highest-risk shape.** "X stays unchanged", "Y is untouched", "no regression in Z", "suite S still passes unmodified" are all satisfied by never touching the module — so skipping the work scores as success, and the skipped phase reports complete.
+- **Pair every absence-satisfied criterion with a positive one only the implemented feature can satisfy** — a behaviour observably absent before the change and observably present after. The positive criterion is what the phase is verified against; the absence one is a guard, never the proof.
+- **Say so when a handed-down criterion is unfalsifiable.** It is a defect in the spec, not a licence to satisfy it cheaply — surface it and add the positive pair before implementing.
+
+The E2E-scoped statements of the same principle are `/t3:e2e` § "Writing Tests" (author side) and `/t3:e2e-review` § "Test the ticket, not the MR diff" (reviewer side): a test built against the diff's current behaviour passes regardless of whether the feature is correct. This section is the general form — apply it to acceptance criteria; they apply it to tests.
 
 ## Grep Before Claiming Cross-Reference Coverage (Non-Negotiable)
 
@@ -1010,6 +1021,7 @@ When a fix trips a real linter/type error, a failing test, or an awkward edge, t
 
 - a lint/type **suppression** — `# noqa`, `# type: ignore`, a new `per-file-ignores` entry, a relaxed ruff rule;
 - a **TODO/FIXME-for-later** left in code instead of the fix;
+- a **comment or docstring that ADMITS the implementation is incomplete** — "not wired in yet", "carve-out retained but currently empty", "placeholder until X lands" — shipped in place of finishing the work;
 - a **workaround** that masks the cause rather than removing it;
 - a **weakened, xfailed, or skipped test** (`pytest.mark.xfail` / `.skip`) slapped on instead of making the assertion pass honestly;
 - lowering a **coverage threshold** or adding a file to a coverage/omit list.
@@ -1023,6 +1035,8 @@ Edit(file_path="module.py", old_string="<the tangled function>", new_string="<th
 ```
 
 **Reduce debt when you are already there.** If the file you are fixing carries existing debt — a stale suppression you can now remove, a duplicated helper you can collapse, a misleading name you can rename — clean it in the same change. You are already in the file; leaving the debt for "later" is the deferral the rule above forbids, applied to code health.
+
+**Never file a confession in prose — finish the phase, or do not ship it.** A comment or docstring stating that the implementation is partial is not a disclosure; it is a note left where nothing will read it again, because CI is green and review passed, so the gap becomes permanent and invisible. The same shape is banned in documentation: a BLUEPRINT/README promise deferred to an untracked follow-up. Prose that admits incompleteness is inadmissible in a shipped change.
 
 **The carve-out is the same as everywhere else: ASK, don't suppress silently.** If a clean fix genuinely needs significant refactoring or a structural config change (a ruff rule, a coverage floor), surface the trade-off via `AskUserQuestion` with concrete options — never quietly add the suppression and move on. Introducing debt is a decision the user makes explicitly, not a shortcut the agent takes to save time. Pinned by `no_tech_debt_fixes_cleanly_not_a_suppression` (`evals/scenarios/do_the_best_no_tech_debt.yaml`); the project-level bar is `CLAUDE.md` § "No tech debt without explicit approval".
 
