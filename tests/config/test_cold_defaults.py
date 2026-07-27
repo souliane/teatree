@@ -14,6 +14,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from teatree.config import cold_defaults
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
@@ -96,3 +98,16 @@ def test_import_does_not_load_pydantic_or_django() -> None:
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "clean"
+
+
+def test_the_default_path_is_resolved_at_call_time_not_bound_at_import(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Binding DEFAULTS_TOML as a default ARGUMENT made a re-pointed module constant
+    # silently invisible to every no-argument caller, while `resolution._toml_default_rows`
+    # (which passes it explicitly) honoured it — so the shipped key SET and the shipped
+    # VALUES could be read from two different files at once.
+    fixture = tmp_path / "defaults.toml"
+    fixture.write_text('[teatree]\nmode = "sentinel"\n', encoding="utf-8")
+    monkeypatch.setattr(cold_defaults, "DEFAULTS_TOML", fixture)
+    assert cold_defaults.shipped_defaults_table() == {"mode": "sentinel"}

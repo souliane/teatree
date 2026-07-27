@@ -681,12 +681,34 @@ key the file omits keeps its `UserSettings` dataclass default (the resolver base
 file carries EXACTLY the `Category.DEFAULT` keys at their ship values; `Personal` and
 `Secret` keys are ABSENT by construction (they hold the empty code default and are never
 written to a shareable file). Safety-posture keys and dark feature-flags are pinned to
-their fail-closed / off literals. Regenerate it from the live box (secret / personal /
-safety-safe) with `manage.py generate_settings_defaults`; a maintainer may hand-edit a
-per-key value and re-run the generator's conformance tests. Because the resolver reads
-it, a shipped value that diverges from its in-code default MOVES that effective default —
-`tests/config/test_toml_default_tier.py` pins every shipped value equal to its dataclass
-default, so a generator run that adopts a live box value has to be a reviewed decision.
+their fail-closed / off literals.
+
+**The file is the authority; a divergence is a recorded decision.** A maintainer edits a
+per-key value directly and the resolver serves it. Because the resolver reads it, a shipped
+value that differs from its in-code `UserSettings` default MOVES that effective default —
+so the move must be reviewed, not silent. `src/teatree/config/defaults_approvals.toml` is
+that record: one entry per diverging key carrying the exact approved value, who approved
+it, and the deferred question they answered. `config/defaults_approvals.py`'s
+`audit_shipped_defaults` is the gate (asserted by `tests/config/test_defaults_approvals.py`)
+and refuses four states — a divergence with no entry, an entry approving a different value
+than is shipped, an entry left behind after the divergence was reverted, and any divergence
+at all on a safety-posture key or dark feature-flag (those stay pinned fail-closed whatever
+the ledger says). Hand-editing therefore means editing both files in one commit; the PR
+diff IS the review. `tests/config/test_toml_default_tier.py` carries the resolved-object
+half of the same contract: a field's TYPE may never move, and its VALUE only where the
+ledger approves it.
+
+**Snapshotting the live box goes through the owner.** `manage.py snapshot_settings_defaults`
+proposes the live GLOBAL-scope `ConfigSetting` values ONTO the current file (the file is
+the base, so a hand-edited value the box does not override survives). It renders the diff —
+key, shipped now, proposed, scope — as a monospace table, records ONE `DeferredQuestion`
+fingerprinted to that exact diff, and writes NOTHING. The owner answers it through the
+existing seam (`t3 teatree questions list`, then `t3 teatree questions answer <id>
+approve`) — the same human-approval primitive the directive loop's ratify step uses — and
+only then does `--apply` write the file and reconcile the approval ledger. An approval does
+not carry over to a different diff: `--apply` re-derives the fingerprint and refuses a
+mismatch. Safety-posture keys, dark feature-flags and the owner-workflow / engagement keys
+are declined by the planner, so a live override of one is reported and never written.
 
 `src/teatree/config/schema.py` is the single source of truth for the key set, the value
 taxonomy, and validation. `TeatreeSettingsSchema` is a `pydantic-settings` model over all
@@ -714,7 +736,10 @@ from `defaults.toml`, so a malformed file fails once, loudly.
   imports `resolution`, and the pre-Django cold path (hook leaves, statusline) loads that
   package init, so a pydantic read in the tier would put the ~110ms on EVERY hook
   invocation. Both readers resolve the file from one `cold_defaults.DEFAULTS_TOML` path
-  constant, and a subprocess control pins that importing the stdlib reader pulls in neither
+  constant, read at CALL time rather than bound as a default argument (a bound default
+  would make a re-pointed constant invisible to every no-argument caller while the tier —
+  which passes it explicitly — honoured it, so the shipped key SET and the shipped VALUES
+  could come from two different files at once), and a subprocess control pins that importing the stdlib reader pulls in neither
   pydantic nor Django
   (`tests/config/test_cold_defaults.py::test_import_does_not_load_pydantic_or_django`).
   The cold hook leaves themselves do NOT read this file — each gate flag resolves from the
