@@ -107,6 +107,7 @@ class JobsForDomainPartitionTestCase(TestCase):
             "outbound_audit",
             "undelivered_notify",
             "deferred_question_poster",
+            "question_backlog_nag",
             "waiting_digest",
             "work_state",
         }

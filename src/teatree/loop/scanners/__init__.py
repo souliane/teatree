@@ -40,6 +40,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
 )
 from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.loop.scanners.pull_main_clone import PullMainCloneScanner
+from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
 from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
@@ -97,6 +98,7 @@ __all__ = [
     "PrSweepScanner",
     "ProvisionSmokeScanner",
     "PullMainCloneScanner",
+    "QuestionBacklogNagScanner",
     "RedCardScanner",
     "ResourcePressureScanner",
     "ReviewDoneAckScanner",
