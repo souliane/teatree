@@ -23,16 +23,19 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-_DEFAULTS_TOML = Path(__file__).with_name("defaults.toml")
+#: The packaged shipped-defaults file — the ONE path every default reader resolves
+#: it from: this stdlib one, ``schema.shipped_defaults``, and the resolver's
+#: TOML-default tier (``resolution._toml_default_rows``).
+DEFAULTS_TOML = Path(__file__).with_name("defaults.toml")
 _TEATREE_TABLE = "teatree"
 
 _lock = threading.Lock()
 _cache: dict[int, dict[str, Any]] = {}
 
-__all__ = ["default_for", "shipped_defaults_table"]
+__all__ = ["DEFAULTS_TOML", "default_for", "shipped_defaults_table"]
 
 
-def shipped_defaults_table(path: Path = _DEFAULTS_TOML) -> dict[str, Any]:
+def shipped_defaults_table(path: Path = DEFAULTS_TOML) -> dict[str, Any]:
     """The ``[teatree]`` table of ``defaults.toml``, parsed once per file mtime.
 
     Returns a fresh copy so a caller can never mutate the cached parse. A missing
@@ -52,7 +55,7 @@ def shipped_defaults_table(path: Path = _DEFAULTS_TOML) -> dict[str, Any]:
     return dict(table)
 
 
-def default_for(key: str, fallback: object = None, *, path: Path = _DEFAULTS_TOML) -> object:
+def default_for(key: str, fallback: object = None, *, path: Path = DEFAULTS_TOML) -> object:
     """The shipped default VALUE for *key*, or *fallback* when it carries none.
 
     A Default-category key resolves to its ``defaults.toml`` value; a Secret/Personal

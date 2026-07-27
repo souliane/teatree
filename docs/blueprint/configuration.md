@@ -671,12 +671,22 @@ The shipped default VALUES live in one hand-editable, committed file —
 shape (a `[teatree]` table with `speak` / `mr_reminder` sub-tables). It is NOT a
 per-install config file (there is still nothing to edit per box — operator config lives
 in the DB store); it is the shipped **code-default layer**, the last tier of every
-resolution chain above. It carries EXACTLY the `Category.DEFAULT` keys at their ship
-values; `Personal` and `Secret` keys are ABSENT by construction (they hold the empty code
-default and are never written to a shareable file). Safety-posture keys and dark
-feature-flags are pinned to their fail-closed / off literals. Regenerate it from the live
-box (secret / personal / safety-safe) with `manage.py generate_settings_defaults`; a
-maintainer may hand-edit a per-key value and re-run the generator's conformance tests.
+resolution chain above, and the resolver READS it: `resolution._toml_default_rows` layers
+the file's `[teatree]` table in as the DEFAULTS base under the overlay-code-default tier,
+so each key resolves `env → DB(overlay) → DB(global) → overlay code default → TOML
+default`. The table arrives in stored form, so it goes through
+`resolution._coerce_setting_rows` — the same registry coercer a `ConfigSetting` row goes
+through — which is what keeps the defaults tier and the override tiers type-identical; a
+key the file omits keeps its `UserSettings` dataclass default (the resolver base). The
+file carries EXACTLY the `Category.DEFAULT` keys at their ship values; `Personal` and
+`Secret` keys are ABSENT by construction (they hold the empty code default and are never
+written to a shareable file). Safety-posture keys and dark feature-flags are pinned to
+their fail-closed / off literals. Regenerate it from the live box (secret / personal /
+safety-safe) with `manage.py generate_settings_defaults`; a maintainer may hand-edit a
+per-key value and re-run the generator's conformance tests. Because the resolver reads
+it, a shipped value that diverges from its in-code default MOVES that effective default —
+`tests/config/test_toml_default_tier.py` pins every shipped value equal to its dataclass
+default, so a generator run that adopts a live box value has to be a reviewed decision.
 
 `src/teatree/config/schema.py` is the single source of truth for the key set, the value
 taxonomy, and validation. `TeatreeSettingsSchema` is a `pydantic-settings` model over all
@@ -698,9 +708,13 @@ from `defaults.toml`, so a malformed file fails once, loudly.
 * **Two default readers, one file.** The Django / hot path reads defaults through the
   pydantic model (~110ms). The pre-Django cold path (hook leaves, statusline) reads the
   SAME `defaults.toml` through `config/cold_defaults.py` — stdlib `tomllib` only, an
-  mtime-keyed process cache, ~2ms — so a cold leaf never pays the pydantic import. A
-  coherence test pins the cold default equal to the model default for every
-  Default-category key.
+  mtime-keyed process cache, ~2ms — so a cold leaf never pays the pydantic import. Both
+  resolve the file from one `cold_defaults.DEFAULTS_TOML` path constant. A coherence test
+  pins the cold default equal to the model default for every Default-category key. The
+  resolver's TOML-default tier reads through the COLD one on purpose: `teatree.config`'s
+  package init imports `resolution`, and the cold hook path imports that package, so a
+  pydantic read there would put the ~110ms on every hook invocation
+  (`tests/config/test_cold_defaults.py::test_import_does_not_load_pydantic_or_django`).
 
 **Import (`import_toml_to_db(text, dry_run)` + `t3 <overlay> config_setting import`).** The
 precise inverse of `export`: it loads a dump back into the store. Retired aliases fold onto

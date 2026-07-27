@@ -19,7 +19,6 @@ from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
 from teatree.config.schema import _DEFAULTS_TOML, shipped_defaults
-from teatree.config.settings import UserSettings
 from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 
@@ -291,33 +290,30 @@ class TestImportTomlToDb(TestCase):
         assert [(r.scope, r.key) for r in result.skipped_default] == [("", "issue_implementer_enabled")]
         assert ConfigSetting.objects.count() == 0
 
-    def test_import_of_adopted_default_diverging_from_code_default_writes_a_row(self) -> None:
-        # P1-A regression: defaults.toml ADOPTS a live value (provision_ram_ceiling_percent
-        # = 75) that diverges from the conservative dataclass code default (85). The old
-        # import-skip authority (shipped_defaults) SKIPPED it as "equal to the shipped
-        # default" — but the resolver has no toml tier, so it then silently resolved to 85.
-        # The unified effective-default authority is the resolver's own default (85), so 75
-        # is NOT redundant: it must be written and then resolve to 75, not 85.
+    def test_import_of_the_shipped_default_value_writes_no_row(self) -> None:
+        # The import-skip authority is the resolver's own default, and the resolver reads
+        # defaults.toml — so a value equal to the shipped default is provably redundant:
+        # skipping it and writing it resolve to the SAME value. (Before the TOML tier was
+        # wired in, a shipped value diverging from the dataclass default had to be written
+        # or it silently resolved to the dataclass value instead.)
         toml_default = shipped_defaults().provision_ram_ceiling_percent
-        code_default = UserSettings().provision_ram_ceiling_percent
-        assert toml_default != code_default  # the divergence this test guards
-        assert effective_default("provision_ram_ceiling_percent") == code_default
+        assert effective_default("provision_ram_ceiling_percent") == toml_default
         result = import_toml_to_db(f"[teatree]\nprovision_ram_ceiling_percent = {toml_default}\n", scan_terms=())
         assert result.rejected == ()
-        assert [(r.scope, r.key) for r in result.written] == [("", "provision_ram_ceiling_percent")]
-        assert result.skipped_default == ()
-        # No silent divergence: the imported value is what the resolver now returns.
+        assert result.written == ()
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "provision_ram_ceiling_percent")]
         assert get_effective_settings().provision_ram_ceiling_percent == toml_default
 
-    def test_defaults_toml_import_leaves_no_silent_divergence(self) -> None:
-        # A clean import of defaults.toml writes ONLY the adopted-live keys that diverge
-        # from their code default (e.g. provision_ram_ceiling_percent); every other key is
-        # skipped as redundant. The invariant: after import, every resolved value equals
-        # what defaults.toml declares — the import never silently drops an adopted value.
+    def test_defaults_toml_imports_to_zero_rows(self) -> None:
+        # The zero-row normalization invariant: every key in defaults.toml is by
+        # definition equal to the shipped default, so a clean import of the file itself
+        # writes NOTHING (preserving zero-seed + `restore = delete row`), and every
+        # resolved value still equals what defaults.toml declares.
         result = import_toml_to_db(_DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
         assert result.rejected == ()
+        assert result.written == ()
         assert len(result.skipped_default) > 0
-        assert "provision_ram_ceiling_percent" in {r.key for r in result.written}
+        assert ConfigSetting.objects.count() == 0
         resolved = get_effective_settings().provision_ram_ceiling_percent
         assert resolved == shipped_defaults().provision_ram_ceiling_percent
 

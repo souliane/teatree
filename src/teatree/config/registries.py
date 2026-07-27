@@ -22,7 +22,7 @@ partition (``config/homes.py``):
 ``OVERLAY_OVERRIDABLE_SETTINGS``) to allow + validate a key, so an admin cannot
 stash a row no reader would consult. These keys are deliberately NOT in
 ``OVERLAY_OVERRIDABLE_SETTINGS`` (the ``UserSettings`` partition), so the resolver's
-``_coerce_db_rows`` ignores them and they never masquerade as a settings field.
+``_coerce_setting_rows`` ignores them and they never masquerade as a settings field.
 """
 
 from collections.abc import Callable
