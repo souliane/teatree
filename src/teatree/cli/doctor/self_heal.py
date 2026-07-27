@@ -217,12 +217,18 @@ class _Probe:
 
     @staticmethod
     def parse_findings(text: str) -> list[dict[str, str]]:
-        """Split doctor echo lines into ``{"level", "message"}`` records for ``--json``.
+        """Split doctor echo lines into ``{"level", "message", "identity"}`` records for ``--json``.
 
         The doctor convention prefixes every line with its level token
         (``FAIL`` / ``WARN`` / ``OK``); a line without a recognised token is
         carried as an ``INFO`` record so nothing is dropped.
+
+        ``identity`` is the volatility-normalized form the watchdog keys its owner DM on
+        (:func:`~teatree.cli.doctor.finding_digest.finding_identity`), so an unchanged
+        condition whose message carries a ticking counter re-pages nobody.
         """
+        from teatree.cli.doctor.finding_digest import finding_identity  # noqa: PLC0415 — deferred: --json path only
+
         findings: list[dict[str, str]] = []
         for raw in text.splitlines():
             line = raw.rstrip()
@@ -231,7 +237,7 @@ class _Probe:
             token = line.split(maxsplit=1)[0]
             level = token if token in {"FAIL", "WARN", "OK"} else "INFO"
             message = line[len(token) :].strip() if level != "INFO" else line.strip()
-            findings.append({"level": level, "message": message})
+            findings.append({"level": level, "message": message, "identity": finding_identity(message)})
         return findings
 
 
@@ -346,11 +352,11 @@ def _check_stale_loop_timer() -> bool:
     if not overdue:
         return True
     # Collapse to ONE FAIL summary keyed on the SET of overdue timers (sorted
-    # names, no timestamps): the watchdog RED body-hash keys on FAIL messages, so
-    # a volatile ``run_after`` in the summary would churn the hash and re-DM the
-    # whole bundle every pass even when the set is unchanged (#slack-comms). The
-    # per-timer ``run_after`` detail goes on non-FAIL lines — visible in
-    # ``t3 doctor``, excluded from the dedup body.
+    # names, no timestamps): the watchdog digests FAIL findings into its DM key, so
+    # a volatile ``run_after`` in the summary would re-DM the whole bundle every pass
+    # even when the set is unchanged (#slack-comms). The per-timer ``run_after``
+    # detail goes on non-FAIL lines — visible in ``t3 doctor``, excluded from the
+    # dedup body.
     names = sorted(name for name, _run_after, _threshold in overdue)
     typer.echo(
         f"FAIL  {len(names)} loop timer(s) READY but overdue past 2x cadence: "

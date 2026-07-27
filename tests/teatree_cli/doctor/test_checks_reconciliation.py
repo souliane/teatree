@@ -78,6 +78,24 @@ class ParkSpinTestCase(TestCase):
             finding = recon._check_park_spin()
         assert finding.level == "ok"
 
+    def test_a_spin_that_coalesces_into_one_row_still_alarms(self) -> None:
+        """The detector counts park OBSERVATIONS; coalescing must not blind it.
+
+        A poller re-deriving one unchanged reason now updates a single row rather than
+        appending per poll, so a row count alone would read a 231k-poll spin as one row.
+        """
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+        with patch.object(recon, "MAX_PARK_ROWS_PER_DAY", 2):
+            for _ in range(6):
+                TaskAttempt.objects.create(task=task, error=f"{LIMIT_PARKED_PREFIX}window")
+            finding = recon._check_park_spin()
+
+        assert TaskAttempt.objects.count() == 1, "the coalescing under test must actually be in play"
+        assert finding.is_alarm
+        assert "`6`" in finding.message
+
 
 class CostPerDeliveredTicketTestCase(TestCase):
     def test_no_spend_is_ok(self) -> None:

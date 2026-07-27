@@ -146,3 +146,56 @@ class TestValidateDirectory:
         (a / "SKILL.md").write_text("---\nname: skill-a\ndescription: d\nrequires:\n  - nonexistent\n---\n")
         errors, _ = validate_directory(tmp_path)
         assert any("requires unknown skill 'nonexistent'" in e for e in errors)
+
+
+class TestPluginProvidedRequiresResolve:
+    """A ``requires:`` target that ships via the plugin — not apm-installed — resolves.
+
+    The real shape: ``~/.claude/skills/ac-reviewing-codebase`` declares ``requires: review``
+    while ``review`` lives only in the plugin's own ``skills/`` tree, so a validator whose
+    known set is the apm dir alone calls a correct declaration broken.
+    """
+
+    @staticmethod
+    def _plugin_tree(root: Path, *names: str) -> Path:
+        for name in names:
+            skill = root / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\ndescription: d\n---\n")
+        return root
+
+    def test_directory_resolves_plugin_provided_requires(self, tmp_path: Path, monkeypatch):
+        plugin = self._plugin_tree(tmp_path / "plugin-skills", "review")
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(plugin))
+        apm = tmp_path / "apm-skills"
+        consumer = apm / "ac-reviewing-codebase"
+        consumer.mkdir(parents=True)
+        (consumer / "SKILL.md").write_text(
+            "---\nname: ac-reviewing-codebase\ndescription: d\nrequires:\n  - review\n---\n"
+        )
+
+        errors, _ = validate_directory(apm)
+
+        assert errors == []
+
+    def test_single_file_resolves_plugin_provided_companion(self, tmp_path: Path, monkeypatch):
+        plugin = self._plugin_tree(tmp_path / "plugin-skills", "ship")
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(plugin))
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - ship\n---\n")
+
+        errors, _ = validate_skill_md(skill_md, known_skills=set())
+
+        assert errors == []
+
+    def test_a_genuinely_absent_target_still_fails(self, tmp_path: Path, monkeypatch):
+        plugin = self._plugin_tree(tmp_path / "plugin-skills", "review")
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(plugin))
+        apm = tmp_path / "apm-skills"
+        consumer = apm / "skill-a"
+        consumer.mkdir(parents=True)
+        (consumer / "SKILL.md").write_text("---\nname: skill-a\ndescription: d\nrequires:\n  - nonexistent\n---\n")
+
+        errors, _ = validate_directory(apm)
+
+        assert any("requires unknown skill 'nonexistent'" in e for e in errors)

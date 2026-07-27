@@ -476,10 +476,19 @@ class ParseFindingsTest(TestCase):
     def test_levels_and_messages_split(self) -> None:
         text = "FAIL  boom\nWARN  careful\nOK    fine\nAll checks passed\n"
         findings = self_heal._Probe.parse_findings(text)
-        assert findings[0] == {"level": "FAIL", "message": "boom"}
-        assert findings[1] == {"level": "WARN", "message": "careful"}
-        assert findings[2] == {"level": "OK", "message": "fine"}
-        assert findings[3] == {"level": "INFO", "message": "All checks passed"}
+        assert [(f["level"], f["message"]) for f in findings] == [
+            ("FAIL", "boom"),
+            ("WARN", "careful"),
+            ("OK", "fine"),
+            ("INFO", "All checks passed"),
+        ]
 
     def test_blank_lines_skipped(self) -> None:
         assert self_heal._Probe.parse_findings("\n\n  \n") == []
+
+    def test_each_finding_carries_its_volatility_normalized_identity(self) -> None:
+        """The watchdog keys its owner DM on identities, so the doctor must emit them."""
+        before = self_heal._Probe.parse_findings("FAIL  clone is 17 commit(s) behind origin/main\n")
+        after = self_heal._Probe.parse_findings("FAIL  clone is 18 commit(s) behind origin/main\n")
+        assert before[0]["identity"] == after[0]["identity"]
+        assert before[0]["message"] != after[0]["message"]
