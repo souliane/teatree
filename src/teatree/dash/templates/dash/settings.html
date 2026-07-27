@@ -47,37 +47,18 @@
       <thead><tr><th>setting</th><th>category</th><th>value</th><th>edit</th></tr></thead>
       <tbody>
         {% for s in editor.settings %}
-          <tr class="{% if s.is_safety_posture %}stalled{% endif %}">
-            <td class="mono">{{ s.name }}{% if s.is_safety_posture %} <span class="muted">(safety-posture)</span>{% endif %}</td>
-            <td>{{ s.category }}</td>
-            <td class="mono">{{ s.value }}</td>
-            <td>
-              <form class="row-actions" method="post" action="{% url 'dash:settings_set' %}">
-                {% csrf_token %}
-                <input type="hidden" name="key" value="{{ s.name }}">
-                <input type="hidden" name="scope" value="{{ editor.scope }}">
-                {% if s.is_secret %}
-                  <input type="password" name="value" placeholder="new JSON value (write-only)" autocomplete="off">
-                {% else %}
-                  <input type="text" name="value" placeholder="JSON value, e.g. true / 3 / &quot;x&quot;">
-                {% endif %}
-                {% if s.is_safety_posture %}
-                  <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off">
-                {% endif %}
-                <button type="submit">Save</button>
-              </form>
-              {% if s.is_overridden %}
-                <form class="row-actions" method="post" action="{% url 'dash:settings_restore' %}">
-                  {% csrf_token %}
-                  <input type="hidden" name="key" value="{{ s.name }}">
-                  <input type="hidden" name="scope" value="{{ editor.scope }}">
-                  <button type="submit">Restore default</button>
-                </form>
-              {% endif %}
-            </td>
-          </tr>
+          {% include "dash/partials/_settings_row.html" with s=s scope=editor.scope %}
         {% endfor %}
       </tbody>
     </table>
   </section>
+{% endblock %}
+{% block extra_js %}
+  <script>
+    // A refused write answers 400 carrying the row plus its reason; htmx discards
+    // non-2xx bodies by default, so opt this page's row swaps into showing it.
+    document.body.addEventListener("htmx:beforeSwap", function (evt) {
+      if (evt.detail.xhr.status === 400) { evt.detail.shouldSwap = true; evt.detail.isError = false; }
+    });
+  </script>
 {% endblock %}

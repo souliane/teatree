@@ -61,25 +61,31 @@ def _display_value(key: str, *, overridden: bool, db_value: ConfigValue | None) 
     return render_value(value)
 
 
+def _row(key: str, overrides: dict[str, ConfigValue]) -> EditableSetting:
+    return EditableSetting(
+        name=key,
+        category=setting_meta(key).category.value,
+        value=_display_value(key, overridden=key in overrides, db_value=overrides.get(key)),
+        is_secret=is_secret(key),
+        is_safety_posture=key in SAFETY_POSTURE_KEYS,
+        is_overridden=key in overrides,
+    )
+
+
 def build_settings_editor(scope: str = "") -> SettingsEditorView:
     """Compose the editable row for every schema key in *scope*; degrade to a visible error."""
     try:
         overrides = ConfigSetting.objects.overrides_for_scope(scope)
-        rows = [
-            EditableSetting(
-                name=key,
-                category=setting_meta(key).category.value,
-                value=_display_value(key, overridden=key in overrides, db_value=overrides.get(key)),
-                is_secret=is_secret(key),
-                is_safety_posture=key in SAFETY_POSTURE_KEYS,
-                is_overridden=key in overrides,
-            )
-            for key in sorted(TeatreeSettingsSchema.model_fields)
-        ]
+        rows = [_row(key, overrides) for key in sorted(TeatreeSettingsSchema.model_fields)]
     except Exception:
         logger.warning("dash settings editor read failed — degrading to an error page", exc_info=True)
         return SettingsEditorView(scope=scope, error="settings unavailable — read failed")
     return SettingsEditorView(settings=tuple(rows), scope=scope)
+
+
+def build_setting_row(key: str, scope: str = "") -> EditableSetting:
+    """One row, re-read after a write — the htmx swap unit, masked by the same policy."""
+    return _row(key, ConfigSetting.objects.overrides_for_scope(scope))
 
 
 def export_text() -> str:
@@ -96,6 +102,7 @@ __all__ = [
     "MASKED",
     "EditableSetting",
     "SettingsEditorView",
+    "build_setting_row",
     "build_settings_editor",
     "export_text",
     "import_preview",

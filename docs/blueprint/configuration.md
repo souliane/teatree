@@ -720,7 +720,11 @@ hand-kept list, writes each edit through `ConfigSetting.set_value` (the same val
 seam), restores-to-default by DELETING the row, gates a safety-posture key behind an extra
 confirm phrase, and offers export + a dry-run import preview. A SECRET value AND its shipped
 default are masked to `***` before the row enters the response context — pinned by a test
-asserting a configured secret never appears in the response bytes.
+asserting a configured secret never appears in the response bytes. Each row's Save/Restore
+answers the edited `<tr>` alone to an htmx request (`dash/partials/_settings_row.html`,
+`hx-target="closest tr"`), so an edit never re-renders the document and the scroll position
+never moves; a refused write answers 400 carrying that same row plus its reason. Both forms
+keep `method`/`action`, so with JavaScript off the pre-htmx redirect path still works.
 
 ### 10.4 Data Storage
 
