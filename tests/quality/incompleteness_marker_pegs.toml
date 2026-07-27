@@ -36,7 +36,7 @@
 # resolved statement must be banked by lowering the entry, so the freed budget
 # cannot be spent silently on the next one.
 [markers]
-"BLUEPRINT.md" = 4
+"BLUEPRINT.md" = 3
 "docs/blueprint/factory-architecture.md" = 1
 "docs/blueprint/memory-consolidation.md" = 1
 "docs/blueprint/rubric-done-gate.md" = 1
