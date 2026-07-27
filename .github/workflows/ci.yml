@@ -69,9 +69,12 @@
 #                              test (combiner = required `test (3.13)`),
 #                              test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
-#                              banned-terms-tree, overlay-leak-tree
+#                              banned-terms-tree, overlay-leak-tree,
+#                              term-source-drift
 #                              (the two tree gates run on push, schedule AND PR
-#                              so a leak is caught before merge — #44)
+#                              so a leak is caught before merge — #44;
+#                              term-source-drift proves those two are scanning
+#                              the list the operator actually configured)
 #   7. Security & supply chain — uv-audit, sbom, uv-audit-advisory
 #
 # THE METERED AI EVAL DOES NOT RUN HERE
@@ -1208,6 +1211,42 @@ jobs:
         env:
           TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
         run: uv run python scripts/hooks/check_no_overlay_leak.py
+
+  # GATE (push + schedule + PR): the two tree gates above scan whatever list
+  # their secret happens to hold, and a secret is a point-in-time copy — nothing
+  # re-reads the operator's DB, so a term added locally silently never reaches
+  # CI and the backstop keeps running an older, shorter list. This job closes
+  # that: it fingerprints the CI-visible list (count + a domain-separated digest
+  # over the whole sorted list) and compares it to the committed, term-free
+  # `.github/term-source-fingerprint.json`. A stale, shrunk or diverged secret
+  # reds CI with COUNTS ONLY — no term value is ever read, logged or committed.
+  #
+  # No `uv sync`: `check-ci` reads only the env vars and the fingerprint file, so
+  # it runs on the stdlib and stays a seconds-long job.
+  #
+  # push/schedule omit `--allow-unset` so a MISSING secret is a LOUD exit-2 on
+  # main. The PR step passes it: a fork PR cannot read secrets, so it skips
+  # cleanly instead of false-redding, while a same-repo PR gets the full check.
+  term-source-drift:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Term-source drift (push/schedule — require the secrets)
+        if: github.event_name != 'pull_request'
+        env:
+          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
+          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
+        run: python scripts/term_source_drift.py check-ci
+      - name: Term-source drift (PR — fork-safe)
+        if: github.event_name == 'pull_request'
+        env:
+          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
+          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
+        run: python scripts/term_source_drift.py check-ci --allow-unset
 
   # GATE (PR-only, NON-required): ground-truth anti-vacuity audit for the
   # incremental push gate (souliane/teatree#122). Runs the WHOLE-TREE ast-grep scan
