@@ -2,8 +2,12 @@
 
 import pytest
 
+from teatree.agents.result_schema import ReviewVerdictEnvelope
+from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.models import AutoReviewDispatch, MRReviewLock, Task, Ticket
 from teatree.core.models.auto_review_dispatch import build_review_contract
+
+REVIEWING_PHASE = "reviewing"
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -113,6 +117,64 @@ class TestReviewContract:
     def test_contract_forbids_the_shell_record_cli(self) -> None:
         contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
         assert "Do NOT run `t3 <overlay> review record`" in contract
+
+
+#: Phrasings that assert the reviewing phase cannot shell out. Each is a claim
+#: :func:`tools_for_phase` is the authority on, so any of them appearing while
+#: the table grants ``shell`` is the drift :class:`TestContractMatchesPhaseToolGrant` pins.
+SHELL_DENIAL_PHRASINGS = (
+    "no shell",
+    "shell denied",
+    "denied the shell",
+    "shell is denied",
+    "without a shell",
+    "no bash",
+    "cannot shell out",
+)
+
+
+def _reviewing_capability_claims() -> dict[str, str]:
+    """Every prose surface that tells a reviewing-phase agent what it may call."""
+    return {
+        "stamped execution_reason contract": build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL),
+        "build_review_contract docstring": build_review_contract.__doc__ or "",
+        "ReviewVerdictEnvelope docstring": ReviewVerdictEnvelope.__doc__ or "",
+    }
+
+
+class TestContractMatchesPhaseToolGrant:
+    """The reviewer's brief may never deny a capability ``phase_tools`` grants.
+
+    #2971 wrote "this phase has no shell" into the contract when it was true;
+    #3549 granted every verdict-producing review phase the shell 17 days later
+    and left the prose. A reviewer that believes its brief will not check out
+    the reviewed head or run the tests, so the claim and the grant are pinned
+    to each other here rather than to a fixed sentence.
+    """
+
+    def test_reviewing_phase_is_granted_the_shell(self) -> None:
+        assert "shell" in tools_for_phase(REVIEWING_PHASE)
+
+    def test_no_capability_claim_denies_the_granted_shell(self) -> None:
+        if "shell" not in tools_for_phase(REVIEWING_PHASE):
+            pytest.skip("phase_tools no longer grants the shell — the denial prose would be truthful")
+        offenders = [
+            (surface, phrasing)
+            for surface, text in _reviewing_capability_claims().items()
+            for phrasing in SHELL_DENIAL_PHRASINGS
+            if phrasing in text.lower()
+        ]
+        assert not offenders, (
+            f"tools_for_phase({REVIEWING_PHASE!r}) grants the shell, but these surfaces deny it: {offenders}"
+        )
+
+    def test_contract_directs_the_reviewer_to_the_sanctioned_checkout(self) -> None:
+        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
+        assert "t3 review checkout" in contract
+
+    def test_contract_states_maker_checker_as_the_reason_for_the_record_ban(self) -> None:
+        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
+        assert "maker" in contract.lower()
 
 
 class TestDispatchedTaskReachesTerminalState:

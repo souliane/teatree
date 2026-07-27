@@ -94,8 +94,8 @@ class AnswerEnvelope(TypedDict, total=False):
 class ReviewVerdictEnvelope(TypedDict, total=False):
     """A reviewing-phase agent's typed verdict, recorded server-side (corr-11).
 
-    A headless reviewing phase is denied the shell (PR-11), so it cannot run
-    ``t3 <overlay> review record``. It RETURNS this instead: the orchestrator
+    A headless reviewing phase must not run ``t3 <overlay> review record`` —
+    maker≠checker reserves that write for another actor. It RETURNS this instead: the orchestrator
     (a different actor) records the ``ReviewVerdict`` from it, so maker≠checker
     holds by construction. ``reviewed_sha`` is the full 40-char SHA the review
     bound to; ``verdict`` is ``merge_safe`` / ``hold``.

@@ -726,8 +726,10 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      draft).                                                 │
 │ approve              Approve a GitLab MR — only after you have reviewed it.  │
 │ unapprove            Revoke your approval on a GitLab MR.                    │
-│ run                  Run the review-shape audit for an MR and print a JSON   │
-│                      summary.                                                │
+│ checkout             Materialise a detached review worktree at the exact     │
+│                      reviewed head.                                          │
+│ run                  Run the review-shape audit for a GitLab MR or GitHub PR │
+│                      and print a JSON summary.                               │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
 │                      on-behalf gate.                                         │
 │ delete-draft-note    Delete a draft note from a GitLab MR.                   │
@@ -1041,31 +1043,59 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 review checkout`
+
+```
+Usage: t3 review checkout [OPTIONS] URL
+
+ Materialise a detached review worktree at the exact reviewed head.
+
+ Prints ``{"worktree": ..., "ref": ..., "sha": ..., "url": ...}`` on success.
+ A HEAD that does not equal ``--sha`` is a hard failure, never a fallback to
+ whatever tree happened to be reachable — the review runs on the pushed head
+ or not at all. Remove the worktree with ``git worktree remove`` when done.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  PR/MR URL whose head to materialise. [required]          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --sha             TEXT  Full 40-char head SHA the checkout must land on.  │
+│                            [required]                                        │
+│    --repo            TEXT  Local clone to add the review worktree from.      │
+│                            [default: .]                                      │
+│    --remote          TEXT  Remote to fetch the head ref from.                │
+│                            [default: origin]                                 │
+│    --base-dir        TEXT  Parent directory for the temp worktree.           │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 review run`
 
 ```
 Usage: t3 review run [OPTIONS] URL
 
- Run the review-shape audit for an MR and print a JSON summary.
+ Run the review-shape audit for a GitLab MR or GitHub PR and print a JSON
+ summary.
 
  Read-only: this command never posts to GitLab or GitHub. It fetches
  diff metadata, existing-review state (discussions + draft notes +
  approvals), classifies complexity, and emits a small findings
- catalog. The reviewer sub-agent consumes the JSON and decides what
- to do next via ``t3 review post-draft-note`` / ``post-comment``.
+ catalog. Both forges produce the same payload shape, so the reviewer
+ sub-agent consumes one contract and decides what to do next via
+ ``t3 review post-draft-note`` / ``post-comment``.
 
  Exit codes:
 
  * ``0`` — audit ran, JSON printed.
- * ``1`` — URL parsed but the GitLab API refused the audit
+ * ``1`` — URL parsed but the forge refused the audit
      (``api_unavailable``: missing token, 401/403/404, connection
      failure, or any other backend error).
- * ``2`` — URL refused before any API call (``unsupported_forge`` for
-     GitHub PRs, ``bad_url`` for anything else).
+ * ``2`` — URL refused before any API call (``bad_url``: neither a
+     GitLab MR nor a GitHub PR URL).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    url      TEXT  GitLab MR URL (GitHub PR URLs return unsupported_forge). │
-│                     [required]                                               │
+│ *    url      TEXT  GitLab MR or GitHub PR URL to audit. [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
