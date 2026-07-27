@@ -22,10 +22,10 @@ from django.views.decorators.http import require_GET, require_POST
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
+from teatree.core.config_display import is_secret
 from teatree.core.config_migration import import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.dash import audit
-from teatree.dash.config_display import is_secret
 from teatree.dash.settings_editor import build_setting_row, build_settings_editor, export_text, import_preview
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, nav_context

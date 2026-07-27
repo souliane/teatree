@@ -747,6 +747,20 @@ answers the edited `<tr>` alone to an htmx request (`dash/partials/_settings_row
 never moves; a refused write answers 400 carrying that same row plus its reason. Both forms
 keep `method`/`action`, so with JavaScript off the pre-htmx redirect path still works.
 
+**Django admin (`ConfigSettingAdmin`).** The fourth config write surface, held to the same
+two boundaries as the other three. A secret's value is MASKED wherever the admin would
+render it — the changelist column, the change form's textarea (a write-only widget, so
+submitting nothing keeps the stored value), the `seed_value` provenance copy, and
+`ConfigSetting.__str__` itself, which reaches log lines and the admin's object labels and
+therefore carries the coordinate alone. Every write runs `ConfigSetting.objects.set_value`,
+so the cross-key check and the seed-provenance clear fire exactly as they do for
+`config_setting set`; `ConfigSetting.clean` runs that same cross-key check, so an
+inconsistent coupled pair is a form error rather than a silent save. The masking taxonomy is
+ONE function (`teatree.core.config_display.is_secret`) shared by all three rendering
+surfaces — it lives in `core` because the admin sits below `dash` in the layer graph. There
+is no `list_editable`: an inline widget must round-trip the raw value (so it cannot mask)
+and the changelist formset writes through `Model.save()` (so it cannot use the seam).
+
 ### 10.4 Data Storage
 
 `~/.local/share/teatree/<namespace>/` — namespaced data directories created by `get_data_dir()`.

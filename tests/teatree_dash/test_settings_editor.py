@@ -5,8 +5,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.config.schema import TeatreeSettingsSchema
+from teatree.core.config_display import MASKED
 from teatree.core.models import ConfigSetting
-from teatree.dash.config_display import MASKED
 from teatree.dash.settings_editor import build_setting_row, build_settings_editor, export_text, import_preview
 
 

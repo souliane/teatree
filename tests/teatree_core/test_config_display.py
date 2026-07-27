@@ -1,6 +1,6 @@
 """The shared config-display helpers both dash config surfaces consume (cluster 9)."""
 
-from teatree.dash.config_display import MASKED, is_secret, render_value
+from teatree.core.config_display import MASKED, is_secret, render_value
 
 
 class TestIsSecret:

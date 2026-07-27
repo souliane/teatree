@@ -5,7 +5,7 @@ and editable with NO hand-kept list — a newly-added setting appears here for f
 edit path writes through ``ConfigSetting.set_value`` (the same seam ``config_setting set``
 uses), so the #258 strict coercion and the #3688 cross-key checks fire identically.
 
-**A secret value never reaches the response.** :func:`~teatree.dash.config_display.is_secret`
+**A secret value never reaches the response.** :func:`~teatree.core.config_display.is_secret`
 (the shared value-masking taxonomy — ``Category.SECRET`` / ``SECRET_SETTINGS`` / credential
 coordinate / personal identifier) drives masking here AND on the read-only config surface,
 so the two pages apply ONE policy. A secret row's value AND its shipped default are replaced
@@ -20,10 +20,10 @@ from dataclasses import dataclass
 
 from teatree.config.schema import TeatreeSettingsSchema, setting_meta, shipped_defaults
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.core.config_display import MASKED, is_secret, render_value
 from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
-from teatree.dash.config_display import MASKED, is_secret, render_value
 
 logger = logging.getLogger(__name__)
 
