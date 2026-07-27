@@ -1,5 +1,6 @@
 """The settings-editor POSTs write through the validating seam, mask secrets, gate safety keys (D7)."""
 
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -7,10 +8,23 @@ from django.test import TestCase
 from django.urls import resolve, reverse
 
 from teatree.config.cold_defaults import shipped_defaults_table
-from teatree.config.schema import shipped_defaults
+from teatree.config.schema import TeatreeSettingsSchema, shipped_defaults
+from teatree.config.setting_groups import group_labels
 from teatree.core.models import ConfigSetting
-from teatree.dash.settings_editor import build_settings_editor
-from teatree.dash.views.settings import SAFETY_CONFIRM_PHRASE, settings
+from teatree.dash.settings_editor import SettingsEditorView, build_settings_editor
+from teatree.dash.settings_readouts import ReadoutsView
+from teatree.dash.views import settings_readouts as exported_readouts_view
+from teatree.dash.views.settings import (
+    SAFETY_CONFIRM_PHRASE,
+    ReadoutsContext,
+    SettingsPageContext,
+    _page_context,
+    _readouts_context,
+    settings,
+    settings_readouts,
+)
+
+_ROW_ID = re.compile(r'id="setting-([a-z0-9_]+)"')
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SAFETY_TOML = '[teatree]\nautonomy = "full"\n'
@@ -28,11 +42,31 @@ class TestSettingsPage(TestCase):
         assert response.status_code == 200
         assert "Settings" in response.content.decode()
         # reachable from another page's nav bar
-        other = self.client.get(reverse("dash:config"), **_LOOPBACK)
+        other = self.client.get(reverse("dash:health"), **_LOOPBACK)
         assert reverse("dash:settings") in other.content.decode()
 
     def test_route_is_registered(self) -> None:
         assert resolve(reverse("dash:settings")).func is settings
+
+    def test_the_readouts_route_is_registered_from_the_views_package_export(self) -> None:
+        assert resolve(reverse("dash:settings_readouts")).func is settings_readouts is exported_readouts_view
+
+
+class TestSettingsPageContext(TestCase):
+    """The page context declares its shape — one typed dict, not a bag of strings."""
+
+    def test_the_readouts_context_carries_only_the_readouts_view(self) -> None:
+        assert ReadoutsContext.__annotations__ == {"readouts": ReadoutsView}
+        ctx = _readouts_context()
+        assert set(ctx) == {"readouts"}
+        assert isinstance(ctx["readouts"], ReadoutsView)
+
+    def test_the_page_context_carries_the_editor_beside_the_readouts_and_the_nav(self) -> None:
+        assert SettingsPageContext.__annotations__["editor"] is SettingsEditorView
+        ctx = _page_context()
+        assert set(ctx) == {"nav_items", "nav_active", "instance_label", "readouts", "editor", "confirm_phrase"}
+        assert ctx["nav_active"] == "dash:settings"
+        assert ctx["confirm_phrase"] == SAFETY_CONFIRM_PHRASE
 
     def test_a_configured_secret_value_never_appears_in_the_response_bytes(self) -> None:
         # THE critical guarantee: a stored secret is masked before the context is built.
@@ -43,6 +77,78 @@ class TestSettingsPage(TestCase):
         assert "supersecretcodename" not in body
         # the row is still present, masked
         assert "banned_terms" in body
+
+
+class TestTheOneSettingsPage(TestCase):
+    """``/dash/config`` is absorbed here — one page carrying every key AND the live readouts."""
+
+    def _body(self) -> str:
+        return self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
+
+    def test_no_schema_key_is_dropped_from_the_page(self) -> None:
+        # The direct regression test for the 130-of-184 keys the retired band classifier
+        # returned "" for and silently ``continue``d out of /dash/config.
+        rendered = set(_ROW_ID.findall(self._body()))
+        assert rendered == set(TeatreeSettingsSchema.model_fields)
+
+    def test_every_key_sits_under_a_named_group_heading(self) -> None:
+        body = self._body()
+        headings = [label for label in group_labels() if f"<h2>{label}</h2>" in body]
+        assert headings, "the page renders no group heading at all"
+        # Each rendered row belongs to the group section that precedes it.
+        for label in headings:
+            section = body[body.index(f"<h2>{label}</h2>") :]
+            assert _ROW_ID.search(section), f"group {label!r} renders a heading but no row"
+
+    def test_the_page_absorbs_the_config_pages_live_readouts(self) -> None:
+        body = self._body()
+        for heading in ("Model &amp; reasoning effort", "Credentials", "Self-repairs"):
+            assert heading in body, heading
+        assert "session_model" in body
+
+    def test_the_readouts_keep_their_own_poll_so_live_values_stay_fresh(self) -> None:
+        body = self._body()
+        assert reverse("dash:settings_readouts") in body
+        assert 'hx-trigger="every 15s"' in body
+
+    def test_the_readouts_fragment_is_pollable_on_its_own(self) -> None:
+        response = self.client.get(reverse("dash:settings_readouts"), **_LOOPBACK)
+        body = response.content.decode()
+        assert response.status_code == 200
+        assert "Self-repairs" in body
+        assert "<html" not in body
+
+    def test_the_two_masking_questions_stay_separate_now_they_share_one_page(self) -> None:
+        # A credential coordinate answers two different questions, and merging the surfaces
+        # must not collapse them: the READOUT shows which account and whether it resolves
+        # (masked only when the coordinate NAME can carry an internal namespace), while the
+        # editable ROW for the same key masks its VALUE under the is_secret taxonomy.
+        ConfigSetting.objects.set_value("openai_compatible_credential_entry", "router/key")
+        body = self._body()
+        readout, _, rows = body.partition('id="setting-')
+        assert "router/key" in readout
+        assert "router/key" not in rows
+        row = body[body.index('id="setting-openai_compatible_credential_entry"') :][:600]
+        assert "***" in row
+
+    def test_a_key_no_group_declares_renders_under_a_visible_leftovers_banner(self) -> None:
+        # The never-vanish guarantee, exercised: force a key out of every declared group.
+        with patch("teatree.dash.settings_editor.setting_group", side_effect=lambda key: "" if key == "mode" else "x"):
+            body = self._body()
+        assert 'id="setting-mode"' in body
+        assert "Ungrouped" in body
+        assert "no declared group" in body
+
+
+class TestConfigPageIsRetired(TestCase):
+    def test_the_old_config_url_redirects_to_the_one_settings_page(self) -> None:
+        response = self.client.get(reverse("dash:config"), **_LOOPBACK)
+        assert response.status_code == 302
+        assert response["Location"] == reverse("dash:settings")
+
+    def test_the_nav_no_longer_offers_a_separate_config_page(self) -> None:
+        body = self.client.get(reverse("dash:health"), **_LOOPBACK).content.decode()
+        assert ">Config<" not in body
 
 
 class TestSettingsSet(TestCase):
@@ -119,6 +225,12 @@ class TestSettingsRestore(TestCase):
     def test_restore_rejects_an_unknown_key_instead_of_silently_no_opping(self) -> None:
         response = self.client.post(reverse("dash:settings_restore"), {"key": "not_a_setting"}, **_LOOPBACK)
         assert response.status_code == 400
+
+    def test_restoring_an_unset_key_audits_nothing_but_still_answers(self) -> None:
+        # Nothing was deleted, so there is no action to record — the page still answers.
+        with self.assertNoLogs("teatree.dash.audit", level="INFO"):
+            response = self.client.post(reverse("dash:settings_restore"), {"key": "mode"}, **_LOOPBACK)
+        assert response.status_code == 302
 
 
 class TestHtmxRowSwap(TestCase):

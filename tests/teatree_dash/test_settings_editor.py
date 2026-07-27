@@ -6,9 +6,17 @@ from django.test import TestCase
 
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema
+from teatree.config.setting_groups import UNGROUPED_LABEL, group_labels
 from teatree.core.config_display import MASKED, render_value
 from teatree.core.models import ConfigSetting
-from teatree.dash.settings_editor import build_setting_row, build_settings_editor, export_text, import_preview
+from teatree.dash.settings_editor import (
+    EditableSetting,
+    build_setting_row,
+    build_settings_editor,
+    export_text,
+    group_rows,
+    import_preview,
+)
 
 
 class TestBuildSettingsEditor(TestCase):
@@ -32,7 +40,7 @@ class TestBuildSettingsEditor(TestCase):
 
     def test_a_personal_identifier_not_on_the_denylist_is_masked(self) -> None:
         # slack_user_id is a personal identifier (NOT in SECRET_SETTINGS) — the exact
-        # drift class: masked here, and now masked on the config surface too (cluster 9).
+        # drift class the shared is_secret taxonomy closed (cluster 9).
         ConfigSetting.objects.set_value("slack_user_id", "U-OWNER-SECRET")
         row = self._row("slack_user_id")
         assert row.is_secret is True
@@ -61,6 +69,72 @@ class TestBuildSettingsEditor(TestCase):
         assert view.settings == ()
         assert view.error is not None
         assert "read failed" in view.error
+
+
+def _stub_row(name: str) -> EditableSetting:
+    return EditableSetting(
+        name=name,
+        category="default",
+        value="x",
+        is_secret=False,
+        is_safety_posture=False,
+        is_overridden=False,
+        shipped_default="",
+        has_shipped_default=False,
+        matches_shipped_default=True,
+        default_comparison="",
+    )
+
+
+class TestGroupingDropsNothing:
+    """The grouping partitions the rows — the guard against the 130-of-184 drop returning."""
+
+    def test_the_groups_partition_the_flat_row_set_exactly(self) -> None:
+        # The undeclared row is deliberate: a grouping that skips what it cannot classify
+        # loses it here, which is exactly the drop this partition assertion exists to catch.
+        rows = (
+            _stub_row("mode"),
+            _stub_row("banned_terms"),
+            _stub_row("overlays"),
+            _stub_row("a_key_no_declaration_base_carries"),
+        )
+        grouped = [s.name for group in group_rows(rows) for s in group.settings]
+        assert sorted(grouped) == sorted(r.name for r in rows)
+        assert len(grouped) == len(set(grouped)), "a row landed in two groups"
+
+    def test_a_row_no_group_declares_lands_in_the_leftovers_bucket_not_nowhere(self) -> None:
+        groups = group_rows((_stub_row("mode"), _stub_row("a_key_no_declaration_base_carries")))
+        leftovers = next(g for g in groups if g.is_ungrouped)
+        assert leftovers.label == UNGROUPED_LABEL
+        assert [s.name for s in leftovers.settings] == ["a_key_no_declaration_base_carries"]
+
+    def test_an_empty_group_is_omitted_so_the_page_has_no_hollow_sections(self) -> None:
+        groups = group_rows((_stub_row("mode"),))
+        assert [g.label for g in groups] == ["Mode, harness & agent runtime"]
+
+    def test_groups_render_in_the_declared_order(self) -> None:
+        rows = (_stub_row("overlays"), _stub_row("mode"), _stub_row("autoload"))
+        rendered = [g.label for g in group_rows(rows)]
+        assert rendered == [label for label in group_labels() if label in rendered]
+
+
+class TestBuildSettingsEditorGroups(TestCase):
+    def test_the_page_groups_carry_every_schema_key(self) -> None:
+        view = build_settings_editor()
+        grouped = {s.name for group in view.groups for s in group.settings}
+        assert grouped == set(TeatreeSettingsSchema.model_fields)
+        assert grouped == {s.name for s in view.settings}
+
+    def test_no_group_is_empty(self) -> None:
+        assert all(group.settings for group in build_settings_editor().groups)
+
+    def test_a_read_failure_leaves_no_groups_to_render(self) -> None:
+        with patch(
+            "teatree.dash.settings_editor.ConfigSetting.objects.overrides_for_scope",
+            side_effect=RuntimeError("db down"),
+        ):
+            view = build_settings_editor()
+        assert view.groups == ()
 
 
 class TestBuildSettingRow(TestCase):

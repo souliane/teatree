@@ -1,8 +1,9 @@
 """URL config for the ``teatree.dash`` admin dashboard app (#3162).
 
-Mounted at ``/dash/`` by the project URLconf. Full-page GETs render the three
-pages (board / health / loops); the ``*_partial`` routes serve the htmx-poll
-fragments; the POST routes are the CSRF-protected mutations.
+Mounted at ``/dash/`` by the project URLconf. Full-page GETs render the pages
+(board / health / loops / presets / settings); the ``*_partial`` and ``readouts``
+routes serve the htmx-poll fragments; the POST routes are the CSRF-protected
+mutations.
 """
 
 from django.urls import path
@@ -13,8 +14,6 @@ from teatree.dash.views import (
     board,
     board_columns_partial,
     command_run,
-    config,
-    config_bands_partial,
     debug_session,
     gate_toggle,
     health,
@@ -37,6 +36,7 @@ from teatree.dash.views import (
     settings,
     settings_export,
     settings_import,
+    settings_readouts,
     settings_restore,
     settings_set,
     ticket_drawer,
@@ -52,8 +52,9 @@ urlpatterns = [
     path("board/columns/", board_columns_partial, name="board_columns"),
     path("health/", health, name="health"),
     path("health/bands/", health_bands_partial, name="health_bands"),
-    path("config/", config, name="config"),
-    path("config/bands/", config_bands_partial, name="config_bands"),
+    # Retired: the config page merged into /dash/settings/. Kept as a redirect so an old
+    # bookmark, doc link or skill reference lands on the page that absorbed it.
+    path("config/", RedirectView.as_view(pattern_name="dash:settings", permanent=False), name="config"),
     path("loops/", loops, name="loops"),
     path("loops/table/", loops_table_partial, name="loops_table"),
     path("loops/action/", loop_action, name="loop_action"),
@@ -72,6 +73,7 @@ urlpatterns = [
     path("presets/schedule/slot/", schedule_slot, name="schedule_slot"),
     path("presets/schedule/slot/delete/", schedule_slot_delete, name="schedule_slot_delete"),
     path("settings/", settings, name="settings"),
+    path("settings/readouts/", settings_readouts, name="settings_readouts"),
     path("settings/set/", settings_set, name="settings_set"),
     path("settings/restore/", settings_restore, name="settings_restore"),
     path("settings/export/", settings_export, name="settings_export"),

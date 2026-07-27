@@ -17,6 +17,11 @@ previews via ``import_toml_to_db(dry_run=True)``.
 Every row also carries the shipped default `config/defaults.toml` ships for that key and
 whether the effective value still matches it. A Secret/Personal key is absent from that
 file by construction, so it has no default to compare against and offers no verdict.
+
+Rows are rendered in :func:`~teatree.config.setting_groups.setting_group` groups, and the
+grouping is TOTAL: :func:`group_rows` partitions the flat row set, so a key whose group is
+unknown lands in the leftovers bucket rather than being dropped — the defect the retired
+band classifier shipped, where 130 of 184 keys classified to ``""`` and were skipped.
 """
 
 import logging
@@ -24,6 +29,7 @@ from dataclasses import dataclass
 
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema, setting_meta, shipped_defaults
+from teatree.config.setting_groups import UNGROUPED_LABEL, group_labels, setting_group
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, is_secret, render_value
 from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
@@ -54,10 +60,24 @@ class EditableSetting:
 
 
 @dataclass(frozen=True, slots=True)
+class SettingGroupView:
+    """One rendered group — its label and the rows that declared themselves into it."""
+
+    label: str
+    settings: tuple[EditableSetting, ...]
+    is_ungrouped: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SettingsEditorView:
-    """The whole editor page — every setting, or a visible error (never a 500)."""
+    """The whole editor page — every setting, or a visible error (never a 500).
+
+    ``settings`` is the flat authoritative row set; ``groups`` is a partition of it, so
+    the two can never disagree about which keys the page carries.
+    """
 
     settings: tuple[EditableSetting, ...] = ()
+    groups: tuple[SettingGroupView, ...] = ()
     scope: str = ""
     available_scopes: tuple[str, ...] = ("",)
     error: str = ""
@@ -108,17 +128,34 @@ def _row(key: str, overrides: dict[str, ConfigValue], shipped_keys: frozenset[st
     )
 
 
+def group_rows(rows: tuple[EditableSetting, ...]) -> tuple[SettingGroupView, ...]:
+    """Partition *rows* into rendered groups — total by construction, so no row is dropped.
+
+    A row whose group is unknown collects in :data:`UNGROUPED_LABEL`, which renders only
+    when it has members. An empty declared group is omitted; the leftovers bucket is not,
+    because its whole job is to be seen.
+    """
+    buckets: dict[str, list[EditableSetting]] = {label: [] for label in group_labels()}
+    for row in rows:
+        buckets.setdefault(setting_group(row.name) or UNGROUPED_LABEL, []).append(row)
+    return tuple(
+        SettingGroupView(label=label, settings=tuple(members), is_ungrouped=label == UNGROUPED_LABEL)
+        for label, members in buckets.items()
+        if members
+    )
+
+
 def build_settings_editor(scope: str = "") -> SettingsEditorView:
     """Compose the editable row for every schema key in *scope*; degrade to a visible error."""
     try:
         overrides = ConfigSetting.objects.overrides_for_scope(scope)
         shipped_keys = frozenset(shipped_defaults_table())
-        rows = [_row(key, overrides, shipped_keys) for key in sorted(TeatreeSettingsSchema.model_fields)]
+        rows = tuple(_row(key, overrides, shipped_keys) for key in sorted(TeatreeSettingsSchema.model_fields))
         scopes = available_scopes()
     except Exception:
         logger.warning("dash settings editor read failed — degrading to an error page", exc_info=True)
         return SettingsEditorView(scope=scope, error="settings unavailable — read failed")
-    return SettingsEditorView(settings=tuple(rows), scope=scope, available_scopes=scopes)
+    return SettingsEditorView(settings=rows, groups=group_rows(rows), scope=scope, available_scopes=scopes)
 
 
 def available_scopes() -> tuple[str, ...]:
@@ -160,10 +197,12 @@ def import_preview(text: str) -> ConfigImport:
 __all__ = [
     "MASKED",
     "EditableSetting",
+    "SettingGroupView",
     "SettingsEditorView",
     "available_scopes",
     "build_setting_row",
     "build_settings_editor",
     "export_text",
+    "group_rows",
     "import_preview",
 ]

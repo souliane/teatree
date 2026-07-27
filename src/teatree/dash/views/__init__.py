@@ -1,5 +1,4 @@
 from teatree.dash.views.board import board, board_columns_partial
-from teatree.dash.views.config import config, config_bands_partial
 from teatree.dash.views.debug import command_run, debug_session
 from teatree.dash.views.health import health, health_bands_partial
 from teatree.dash.views.loops import (
@@ -23,7 +22,14 @@ from teatree.dash.views.presets import (
     schedule_slot,
     schedule_slot_delete,
 )
-from teatree.dash.views.settings import settings, settings_export, settings_import, settings_restore, settings_set
+from teatree.dash.views.settings import (
+    settings,
+    settings_export,
+    settings_import,
+    settings_readouts,
+    settings_restore,
+    settings_set,
+)
 from teatree.dash.views.tickets import ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
@@ -32,8 +38,6 @@ __all__ = [
     "board",
     "board_columns_partial",
     "command_run",
-    "config",
-    "config_bands_partial",
     "debug_session",
     "gate_toggle",
     "health",
@@ -56,6 +60,7 @@ __all__ = [
     "settings",
     "settings_export",
     "settings_import",
+    "settings_readouts",
     "settings_restore",
     "settings_set",
     "ticket_drawer",

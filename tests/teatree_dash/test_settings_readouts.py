@@ -1,4 +1,4 @@
-"""The dashboard answers "what is this box configured to do?" without an SSH session (#3664)."""
+"""The settings page's live readouts — resolved model pins, credential coordinates, self-repairs (#3664)."""
 
 from collections.abc import Iterator
 from unittest import mock
@@ -8,45 +8,15 @@ from django.core.cache import cache
 from django.test import TestCase
 
 from teatree.config.agent_spawn import AgentConfig
-from teatree.core.config_display import MASKED
 from teatree.core.config_self_repair import ConfigRepair
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
-from teatree.dash.config_surface import (
+from teatree.dash.settings_readouts import (
     MASKED_ENTRY_NAME,
     CredentialEntry,
-    _band_row,
     _pass_entry_resolves,
     _self_repair_rows,
-    build_config_view,
-    classify_setting_band,
+    build_readouts_view,
 )
-
-
-class TestSettingBands:
-    """Every setting the owner tuned this session lands in a band, none in two."""
-
-    @pytest.mark.parametrize(
-        ("name", "band"),
-        [
-            ("agent_harness", "agent"),
-            ("agent_harness_provider", "agent"),
-            ("agent_runtime", "agent"),
-            ("loop_runner_enabled", "kill_switches"),
-            ("scanning_news_disabled", "kill_switches"),
-            ("danger_gate_fail_open", "kill_switches"),
-            ("boost_concurrency", "concurrency"),
-            ("max_concurrent_local_stacks", "concurrency"),
-            ("provision_max_concurrency", "concurrency"),
-            ("provision_ram_ceiling_percent", "memory"),
-            ("anthropic_oauth_pass_paths", "credentials"),
-            ("openai_compatible_credential_entry", "credentials"),
-        ],
-    )
-    def test_setting_lands_in_its_band(self, name: str, band: str) -> None:
-        assert classify_setting_band(name) == band
-
-    def test_an_unclassified_setting_is_omitted(self) -> None:
-        assert classify_setting_band("billing_cycle_anchor_day") == ""
 
 
 class TestCredentialEntry:
@@ -66,31 +36,12 @@ class TestCredentialEntry:
         assert entry.entry_name == "router/key"
 
 
-class TestBandRowMasksSecretValues:
-    """A band value obeys the shared secret taxonomy — never leaks a secret's value."""
-
-    def test_a_personal_identifier_value_is_masked(self) -> None:
-        # slack_user_id is a personal identifier (NOT in SECRET_SETTINGS). Were it ever to
-        # land in a value band, its value must be masked — the same policy the settings
-        # editor applies. This is the cluster-9 drift: the config surface used to render it.
-        row = _band_row("slack_user_id", "U-OWNER-SECRET")
-        assert row.value == MASKED
-        assert "U-OWNER-SECRET" not in row.value
-
-    def test_the_value_mask_is_the_one_shared_token(self) -> None:
-        """One policy, one token. This surface used to redact a VALUE with the ENTRY-NAME mask."""
-        assert _band_row("slack_user_id", "U-OWNER-SECRET").value != MASKED_ENTRY_NAME
-
-    def test_an_ordinary_dial_value_renders(self) -> None:
-        assert _band_row("boost_concurrency", 4).value == "4"
-
-
-class TestBuildConfigView(TestCase):
+class TestBuildReadoutsView(TestCase):
     def test_surfaces_the_configured_model_and_effort(self) -> None:
         # ``resolve_agent_config`` reads the cold sqlite store directly, not the ORM,
         # so the pinned config is injected at the seam the surface consumes.
         patched = mock.patch(
-            "teatree.dash.config_surface.resolve_agent_config",
+            "teatree.dash.settings_readouts.resolve_agent_config",
             return_value=AgentConfig(
                 session_model="opusplan",
                 session_effort="xhigh",
@@ -100,7 +51,7 @@ class TestBuildConfigView(TestCase):
         patched.start()
         self.addCleanup(patched.stop)
 
-        view = build_config_view()
+        view = build_readouts_view()
 
         rendered = {row.name: row.value for row in view.models}
         assert rendered["session_model"] == "opusplan"
@@ -108,32 +59,23 @@ class TestBuildConfigView(TestCase):
         assert rendered["tier_effort[verification]"] == "high"
 
     def test_surfaces_the_real_resolved_model_pins_with_no_stub(self) -> None:
-        assert {row.name for row in build_config_view().models} >= {
+        assert {row.name for row in build_readouts_view().models} >= {
             "session_model",
             "session_effort",
             "honesty_model",
         }
 
-    def test_surfaces_the_tuned_concurrency_and_memory_caps(self) -> None:
-        ConfigSetting.objects.set_value("boost_concurrency", 4)
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 75)
+    def test_a_configured_credential_coordinate_is_listed_by_entry_name(self) -> None:
+        ConfigSetting.objects.set_value("openai_compatible_credential_entry", "router/key")
 
-        view = build_config_view()
+        view = build_readouts_view()
 
-        assert {row.name: row.value for row in view.concurrency}["boost_concurrency"] == "4"
-        assert {row.name: row.value for row in view.memory}["provision_ram_ceiling_percent"] == "75"
-
-    def test_surfaces_kill_switches(self) -> None:
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=False)
-
-        view = build_config_view()
-
-        assert {row.name: row.value for row in view.kill_switches}["loop_runner_enabled"] == "off"
+        assert {entry.entry_name for entry in view.credentials} >= {"router/key"}
 
     def test_never_renders_a_secret_value(self) -> None:
         ConfigSetting.objects.set_value("github_token_pass_key", "team/internal/token")
 
-        view = build_config_view()
+        view = build_readouts_view()
 
         assert all("team/internal/token" not in entry.entry_name for entry in view.credentials)
 
@@ -148,28 +90,28 @@ class TestBuildConfigView(TestCase):
             execution_reason=f"dispatch\n{repair.stamp()}",
         )
 
-        view = build_config_view()
+        view = build_readouts_view()
 
         assert [row.correction for row in view.self_repairs] == ["agent_harness=pydantic_ai"]
 
-    def test_a_broken_reader_degrades_the_page_to_an_error_not_a_500(self) -> None:
+    def test_a_broken_reader_degrades_to_an_error_panel_not_a_500(self) -> None:
         patched = mock.patch(
-            "teatree.dash.config_surface.get_effective_settings",
+            "teatree.dash.settings_readouts.get_effective_settings",
             side_effect=RuntimeError("boom"),
         )
         patched.start()
         self.addCleanup(patched.stop)
 
-        view = build_config_view()
+        view = build_readouts_view()
 
         assert view.error
 
 
 class TestSelfRepairRowsAreResilient(TestCase):
-    def test_a_failed_self_repair_read_omits_the_band(self) -> None:
-        # The band is advisory — a DB read failure drops it rather than 500-ing.
+    def test_a_failed_self_repair_read_omits_the_readout(self) -> None:
+        # The readout is advisory — a DB read failure drops it rather than 500-ing.
         patched = mock.patch(
-            "teatree.dash.config_surface.Task.objects.filter",
+            "teatree.dash.settings_readouts.Task.objects.filter",
             side_effect=RuntimeError("db down"),
         )
         patched.start()
@@ -190,20 +132,20 @@ class TestPassEntryResolves:
         assert _pass_entry_resolves("") is False
 
     def test_a_pass_probe_failure_degrades_to_unresolved(self) -> None:
-        with mock.patch("teatree.dash.config_surface.read_pass", side_effect=RuntimeError("no pass")):
+        with mock.patch("teatree.dash.settings_readouts.read_pass", side_effect=RuntimeError("no pass")):
             assert _pass_entry_resolves("team/token") is False
 
     def test_a_resolving_entry_reports_true(self) -> None:
-        with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret"):
+        with mock.patch("teatree.dash.settings_readouts.read_pass", return_value="secret"):
             assert _pass_entry_resolves("team/token") is True
 
 
 class TestCredentialProbeIsCached(TestCase):
-    """The credential band's ``pass show`` probe is a GPG decrypt — not once per poll.
+    """The credential readout's ``pass show`` probe is a GPG decrypt — not once per poll.
 
-    ``/dash/config`` auto-polls every 15s, and the band probes every configured
-    credential entry. Uncached that is one decrypt per entry per poll, all day, with
-    every decrypted value discarded — only "did it resolve" is ever rendered.
+    The readouts auto-poll every 15s and probe every configured credential entry.
+    Uncached that is one decrypt per entry per poll, all day, with every decrypted value
+    discarded — only "did it resolve" is ever rendered.
     """
 
     def setUp(self) -> None:
@@ -213,21 +155,21 @@ class TestCredentialProbeIsCached(TestCase):
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["one/oauth", "two/oauth"])
 
     def test_a_second_render_does_not_re_probe_the_pass_store(self) -> None:
-        with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret") as probe:
-            build_config_view()
+        with mock.patch("teatree.dash.settings_readouts.read_pass", return_value="secret") as probe:
+            build_readouts_view()
             after_first_render = probe.call_count
-            build_config_view()
+            build_readouts_view()
             after_second_render = probe.call_count
 
-        assert after_first_render > 0, "the band probed nothing — the test proves nothing"
+        assert after_first_render > 0, "the readout probed nothing — the test proves nothing"
         assert after_second_render == after_first_render
 
     def test_a_probe_result_still_resolves_after_the_cache_serves_it(self) -> None:
-        with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret"):
+        with mock.patch("teatree.dash.settings_readouts.read_pass", return_value="secret"):
             assert _pass_entry_resolves("some/entry") is True
             assert _pass_entry_resolves("some/entry") is True
 
     def test_each_entry_is_cached_under_its_own_name(self) -> None:
-        with mock.patch("teatree.dash.config_surface.read_pass", side_effect=["", "found"]):
+        with mock.patch("teatree.dash.settings_readouts.read_pass", side_effect=["", "found"]):
             assert _pass_entry_resolves("absent/entry") is False
             assert _pass_entry_resolves("present/entry") is True

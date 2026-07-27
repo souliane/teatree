@@ -1,4 +1,4 @@
-"""The model-driven settings-editor POSTs — list/edit every config key from the dashboard (D7).
+"""The ONE settings page and its POSTs — every config key, plus the live readouts (D7, #3664).
 
 Coordinate only: parse the POST, write through ``ConfigSetting.set_value`` (the same seam
 ``config_setting set`` uses, so the #258 coercion + #3688 cross-key checks fire), audit,
@@ -6,13 +6,17 @@ answer. Restore-to-default deletes the row; a safety-posture key needs the extra
 phrase; import previews with a dry-run before an explicit apply. A secret's value never
 enters the page — the editor surface masks it before the context is built.
 
+The retired ``/dash/config`` page is absorbed here: its resolved model / credential /
+self-repair readouts keep their own 15s htmx poll (:func:`settings_readouts`) beside the
+editable rows, and every dial it rendered read-only is now an editable row instead.
+
 The answer is the edited ROW for an htmx request (the browser swaps that one ``<tr>``, so
 the scroll position never moves) and the pre-htmx redirect otherwise, keeping the page
 usable with JavaScript off. Both paths run the identical write and audit first.
 """
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -23,18 +27,54 @@ from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_display import is_secret
-from teatree.core.config_migration import import_toml_to_db
+from teatree.core.config_migration import ConfigImport, import_toml_to_db
 from teatree.core.models import ConfigSetting
 from teatree.dash import audit
-from teatree.dash.settings_editor import build_setting_row, build_settings_editor, export_text, import_preview
+from teatree.dash.settings_editor import (
+    SettingsEditorView,
+    build_setting_row,
+    build_settings_editor,
+    export_text,
+    import_preview,
+)
+from teatree.dash.settings_readouts import ReadoutsView, build_readouts_view
 from teatree.dash.views.access import require_loopback_or_staff
-from teatree.dash.views.base import actor, nav_context
+from teatree.dash.views.base import NavContext, actor, nav_context
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
 
 #: The phrase an operator must type to change a safety-posture key (write-is-authorization).
 SAFETY_CONFIRM_PHRASE = "change-safety-posture"
+
+
+class ReadoutsContext(TypedDict):
+    readouts: ReadoutsView
+
+
+class SettingsPageContext(NavContext, ReadoutsContext):
+    editor: SettingsEditorView
+    confirm_phrase: str
+    # Present only on the answer to an import POST, which re-renders the whole page.
+    import_result: NotRequired[ConfigImport]
+    import_applied: NotRequired[bool]
+
+
+def _readouts_context() -> ReadoutsContext:
+    return {"readouts": build_readouts_view()}
+
+
+def _page_context(scope: str = "") -> SettingsPageContext:
+    """The whole settings page — nav, the grouped editable rows, and the live readouts."""
+    nav = nav_context("dash:settings")
+    return {
+        "nav_items": nav["nav_items"],
+        "nav_active": nav["nav_active"],
+        "instance_label": nav["instance_label"],
+        "readouts": build_readouts_view(),
+        "editor": build_settings_editor(scope),
+        "confirm_phrase": SAFETY_CONFIRM_PHRASE,
+    }
 
 
 def _audit_after(key: str, canonical: object) -> str:
@@ -70,11 +110,16 @@ def _written(request: "HttpRequest", key: str, scope: str) -> HttpResponse:
 @require_loopback_or_staff
 @require_GET
 def settings(request: "HttpRequest") -> "HttpResponse":
-    """The full model-driven editor — every schema key, secret values masked."""
+    """The one settings page — every schema key grouped, the live readouts, secrets masked."""
     scope = request.GET.get("scope", "").strip()
-    view = build_settings_editor(scope)
-    context = {**nav_context("dash:settings"), "editor": view, "confirm_phrase": SAFETY_CONFIRM_PHRASE}
-    return render(request, "dash/settings.html", context)
+    return render(request, "dash/settings.html", _page_context(scope))
+
+
+@require_loopback_or_staff
+@require_GET
+def settings_readouts(request: "HttpRequest") -> "HttpResponse":
+    """The resolved model / credential / self-repair readouts — the target of the htmx poll."""
+    return render(request, "dash/partials/_settings_readouts.html", _readouts_context())
 
 
 @require_loopback_or_staff
@@ -149,13 +194,9 @@ def settings_import(request: "HttpRequest") -> "HttpResponse":
     written = apply_now and not result.rejected
     if written:
         audit.record(actor=actor(request), action="settings:import", after=f"{len(result.written)} row(s)")
-    context = {
-        **nav_context("dash:settings"),
-        "editor": build_settings_editor(scope),
-        "confirm_phrase": SAFETY_CONFIRM_PHRASE,
-        "import_result": result,
-        "import_applied": written,
-    }
+    context = _page_context(scope)
+    context["import_result"] = result
+    context["import_applied"] = written
     return render(request, "dash/settings.html", context)
 
 
