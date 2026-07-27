@@ -10777,6 +10777,13 @@ Usage: t3 teatree config_setting import [OPTIONS]
  ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without
  writing.
 
+ Safety-posture keys import here without a confirm phrase: typing this command
+ IS the
+ operator's authorization, exactly as ``config_setting set`` is. The
+ dashboard's import
+ textarea is the surface that demands one, because a paste is not a per-key
+ intent.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --input          TEXT  Read the TOML dump from this path; omit to read       │
 │                        stdin.                                                │

@@ -7,6 +7,13 @@ from teatree.core.models import ConfigSetting
 from teatree.dash.views.settings import SAFETY_CONFIRM_PHRASE, settings
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+_SAFETY_TOML = '[teatree]\nautonomy = "full"\n'
+
+
+def _import_block(body: str) -> str:
+    """The import-result region only — the editor table below it mentions every safety key."""
+    start = body.index('class="import-result"')
+    return body[start : body.index("</section>", start)]
 
 
 class TestSettingsPage(TestCase):
@@ -103,6 +110,74 @@ class TestSettingsRestore(TestCase):
         self.client.post(reverse("dash:settings_restore"), {"key": "mode"}, **_LOOPBACK)
         assert ConfigSetting.objects.get_effective("mode") is None
 
+    def test_restore_rejects_an_unknown_key_instead_of_silently_no_opping(self) -> None:
+        response = self.client.post(reverse("dash:settings_restore"), {"key": "not_a_setting"}, **_LOOPBACK)
+        assert response.status_code == 400
+
+
+class TestHtmxRowSwap(TestCase):
+    """A toggle swaps its own row — no redirect, no second full-page render, no scroll jump."""
+
+    def _post(self, route: str, data: dict[str, str]):
+        return self.client.post(reverse(route), data, HTTP_HX_REQUEST="true", **_LOOPBACK)
+
+    def test_the_page_wires_each_row_form_to_swap_only_its_own_row(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")  # an override → the restore form renders too
+        body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
+        assert 'hx-post="/dash/settings/set/"' in body
+        assert 'hx-post="/dash/settings/restore/"' in body
+        assert 'hx-target="closest tr"' in body
+
+    def test_an_htmx_set_answers_the_row_alone_never_a_redirect_or_a_full_page(self) -> None:
+        response = self._post("dash:settings_set", {"key": "mode", "value": '"auto"'})
+        body = response.content.decode()
+        assert response.status_code == 200
+        assert body.lstrip().startswith("<tr")
+        assert "<html" not in body
+        assert "dash-nav" not in body
+
+    def test_the_swapped_row_reflects_the_value_just_written(self) -> None:
+        body = self._post("dash:settings_set", {"key": "mode", "value": '"auto"'}).content.decode()
+        assert ">auto<" in body
+        assert reverse("dash:settings_restore") in body  # now overridden → restore is offered
+
+    def test_an_htmx_restore_answers_the_row_back_at_its_default(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        body = self._post("dash:settings_restore", {"key": "mode"}).content.decode()
+        assert ConfigSetting.objects.get_effective("mode") is None
+        assert body.lstrip().startswith("<tr")
+        assert reverse("dash:settings_restore") not in body  # no row left to delete
+
+    def test_a_secret_never_reaches_the_swapped_fragment(self) -> None:
+        body = self._post("dash:settings_set", {"key": "banned_terms", "value": '["hushword"]'}).content.decode()
+        assert ConfigSetting.objects.get_effective("banned_terms") == ["hushword"]
+        assert "hushword" not in body
+        assert "***" in body
+
+    def test_a_refused_write_answers_the_row_carrying_the_reason(self) -> None:
+        response = self._post("dash:settings_set", {"key": "mode", "value": "not-json"})
+        body = response.content.decode()
+        assert response.status_code == 400
+        assert body.lstrip().startswith("<tr")
+        assert "invalid JSON" in body
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_safety_posture_key_still_needs_the_confirm_phrase_over_htmx(self) -> None:
+        response = self._post("dash:settings_set", {"key": "enforce_regulated_path", "value": "true"})
+        assert response.status_code == 400
+        assert SAFETY_CONFIRM_PHRASE in response.content.decode()
+        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is None
+
+    def test_a_scoped_htmx_write_keeps_the_scope_on_the_swapped_row(self) -> None:
+        body = self._post("dash:settings_set", {"key": "mode", "value": '"auto"', "scope": "proj"}).content.decode()
+        assert ConfigSetting.objects.get_effective("mode", scope="proj") == "auto"
+        assert 'name="scope" value="proj"' in body
+
+    def test_a_plain_form_post_still_redirects_for_the_no_javascript_path(self) -> None:
+        response = self.client.post(reverse("dash:settings_set"), {"key": "mode", "value": '"auto"'}, **_LOOPBACK)
+        assert response.status_code == 302
+        assert response["Location"] == reverse("dash:settings")
+
 
 class TestSettingsExport(TestCase):
     def test_export_downloads_a_dump_withholding_secrets(self) -> None:
@@ -126,6 +201,35 @@ class TestSettingsImport(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_apply_writes_the_rows(self) -> None:
+        self.client.post(
+            reverse("dash:settings_import"), {"toml": '[teatree]\nmode = "auto"\n', "apply": "1"}, **_LOOPBACK
+        )
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+
+    def test_a_safety_posture_key_is_not_written_without_the_confirm_phrase(self) -> None:
+        # The import textarea must not be the way around the confirm gate settings_set enforces.
+        response = self.client.post(reverse("dash:settings_import"), {"toml": _SAFETY_TOML, "apply": "1"}, **_LOOPBACK)
+        assert ConfigSetting.objects.get_effective("autonomy") is None
+        assert "safety-posture" in response.content.decode()
+
+    def test_a_safety_posture_key_is_written_with_the_confirm_phrase(self) -> None:
+        self.client.post(
+            reverse("dash:settings_import"),
+            {"toml": _SAFETY_TOML, "apply": "1", "confirm": SAFETY_CONFIRM_PHRASE},
+            **_LOOPBACK,
+        )
+        assert ConfigSetting.objects.get_effective("autonomy") == "full"
+
+    def test_the_dry_run_preview_flags_the_safety_posture_row(self) -> None:
+        response = self.client.post(reverse("dash:settings_import"), {"toml": _SAFETY_TOML, "apply": ""}, **_LOOPBACK)
+        # Scoped to the import block — the editor table below it labels every safety key,
+        # so an unscoped search would pass against a preview that flags nothing.
+        block = _import_block(response.content.decode())
+        assert "autonomy" in block
+        assert "safety-posture" in block
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_non_safety_key_still_imports_with_no_confirm(self) -> None:
         self.client.post(
             reverse("dash:settings_import"), {"toml": '[teatree]\nmode = "auto"\n', "apply": "1"}, **_LOOPBACK
         )

@@ -1,0 +1,33 @@
+{# method/action keeps the row usable with JavaScript off; hx-post upgrades it to a row swap. #}
+<tr class="{% if s.is_safety_posture %}stalled{% endif %}" id="setting-{{ s.name }}">
+  <td class="mono">{{ s.name }}{% if s.is_safety_posture %} <span class="muted">(safety-posture)</span>{% endif %}</td>
+  <td>{{ s.category }}</td>
+  <td class="mono">{{ s.value }}</td>
+  <td>
+    {% if row_error %}<p class="banner-red">{{ row_error }}</p>{% endif %}
+    <form class="row-actions" method="post" action="{% url 'dash:settings_set' %}"
+      hx-post="{% url 'dash:settings_set' %}" hx-target="closest tr" hx-swap="outerHTML">
+      {% csrf_token %}
+      <input type="hidden" name="key" value="{{ s.name }}">
+      <input type="hidden" name="scope" value="{{ scope }}">
+      {% if s.is_secret %}
+        <input type="password" name="value" placeholder="new JSON value (write-only)" autocomplete="off">
+      {% else %}
+        <input type="text" name="value" placeholder="JSON value, e.g. true / 3 / &quot;x&quot;">
+      {% endif %}
+      {% if s.is_safety_posture %}
+        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off">
+      {% endif %}
+      <button type="submit">Save</button>
+    </form>
+    {% if s.is_overridden %}
+      <form class="row-actions" method="post" action="{% url 'dash:settings_restore' %}"
+        hx-post="{% url 'dash:settings_restore' %}" hx-target="closest tr" hx-swap="outerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="key" value="{{ s.name }}">
+        <input type="hidden" name="scope" value="{{ scope }}">
+        <button type="submit">Restore default</button>
+      </form>
+    {% endif %}
+  </td>
+</tr>

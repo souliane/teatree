@@ -21,7 +21,7 @@ from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
-from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
@@ -249,7 +249,7 @@ class RejectedRow:
 
     scope: str
     key: str
-    reason: str  # "unknown key" / "secret (<class>)" / "removed (<why>)" / "invalid: <msg>"
+    reason: str  # "unknown key" / "secret (<class>)" / "removed (<why>)" / "invalid: <msg>" / "safety-posture"
 
 
 @dataclass(frozen=True)
@@ -259,6 +259,7 @@ class ImportedRow:
     scope: str
     key: str
     value: ConfigValue
+    is_safety_posture: bool = False
 
 
 @dataclass(frozen=True)
@@ -274,6 +275,11 @@ class ConfigImport:
     folded: tuple[tuple[str, str], ...]  # (retired alias, canonical replacement)
     rejected: tuple[RejectedRow, ...]
     dry_run: bool
+
+    @property
+    def safety_posture_keys(self) -> tuple[str, ...]:
+        """The safety-posture keys this run writes — what a preview must flag before an apply."""
+        return tuple(row.key for row in self.written if row.is_safety_posture)
 
 
 def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]:
@@ -305,30 +311,51 @@ def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]
     return candidates
 
 
-def _classify_import_row(key: str, value: ConfigValue, terms: tuple[str, ...]) -> tuple[str, ConfigValue]:
-    """Decide one row's disposition: ``("reject", reason)`` / ``("skip"|"write", canonical)``.
+def _unstorable_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:
+    """Why this row has no home in the store at all, else None.
 
-    Reject a removed key (loud, no home), an unknown key, and a secret/personal-identifier
-    row (reusing the export withhold rule so a shared TOML never smuggles customer data back
-    in). Otherwise coerce through the shared write-path validator; a value equal to the key's
-    EFFECTIVE default (:func:`~teatree.config.effective_default` — the resolver's own default,
-    the same authority the seed-skip consults) is redundant (``skip``), leaving
-    ``restore = delete row`` intact. An adopted-live ``defaults.toml`` value that diverges
-    from the code default is NOT redundant, so it is written rather than skipped-then-silently
-    resolving back to the code default (P1-A).
+    A removed key (loud, no home), an unknown key, and a secret/personal-identifier row
+    (reusing the export withhold rule so a shared TOML never smuggles customer data back in).
     """
     if key in REMOVED_SETTING_KEYS:
         entry = removed_setting(key)
-        return ("reject", f"removed ({entry.reason if entry is not None else 'the setting was removed'})")
+        return f"removed ({entry.reason if entry is not None else 'the setting was removed'})"
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
-        return ("reject", "unknown key")
+        return "unknown key"
     if (secret := _redaction_reason(key, value, terms)) is not None:
-        return ("reject", f"secret ({secret})")
+        return f"secret ({secret})"
+    return None
+
+
+def _classify_import_row(
+    key: str, value: ConfigValue, terms: tuple[str, ...], *, allow_safety_posture: bool
+) -> tuple[str, ConfigValue]:
+    """Decide one row's disposition: ``("reject", reason)`` / ``("skip"|"write", canonical)``.
+
+    A storable row is coerced through the shared write-path validator; a value equal to the
+    key's EFFECTIVE default (:func:`~teatree.config.effective_default` — the resolver's own
+    default, the same authority the seed-skip consults) is redundant (``skip``), leaving
+    ``restore = delete row`` intact. An adopted-live ``defaults.toml`` value that diverges
+    from the code default is NOT redundant, so it is written rather than skipped-then-silently
+    resolving back to the code default (P1-A).
+
+    A :data:`~teatree.config.setting_registries.SAFETY_POSTURE_KEYS` row that would actually
+    CHANGE the store is rejected unless the caller declares the operator authorized it — the
+    same boundary the settings editor's typed confirm and the MCP write-tool refusal enforce,
+    so a pasted TOML dump is not a quieter route to `autonomy = "full"`. A safety-posture value
+    equal to its default writes no row, so it stays a ``skip`` with nothing to authorize.
+    """
+    if (unstorable := _unstorable_reason(key, value, terms)) is not None:
+        return ("reject", unstorable)
     try:
         canonical = validate_config_write(key, value)
     except ConfigWriteError as exc:
         return ("reject", f"invalid: {exc}")
-    return ("skip", canonical) if canonical == effective_default(key) else ("write", canonical)
+    if canonical == effective_default(key):
+        return ("skip", canonical)
+    if key in SAFETY_POSTURE_KEYS and not allow_safety_posture:
+        return ("reject", "safety-posture")
+    return ("write", canonical)
 
 
 def import_toml_to_db(
@@ -336,6 +363,7 @@ def import_toml_to_db(
     *,
     dry_run: bool = False,
     scan_terms: tuple[str, ...] | None = None,
+    allow_safety_posture: bool = False,
 ) -> ConfigImport:
     """Load a ``config_setting export`` TOML dump into the ``ConfigSetting`` store — the export inverse.
 
@@ -346,6 +374,12 @@ def import_toml_to_db(
     zero-seed + ``restore = delete row`` property), so a dump of ``defaults.toml`` imports to
     zero rows. ``dry_run`` classifies without writing. Raises ``tomllib.TOMLDecodeError`` on
     malformed input.
+
+    ``allow_safety_posture`` declares that the operator authorized the safety-posture keys in
+    *text* — the dashboard passes it only when the typed confirm phrase is present, the CLI
+    passes it because a directly-typed ``config_setting import`` IS that authorization. It
+    defaults to False so a caller that never considered the question refuses those keys.
+    Each written row carries ``is_safety_posture`` so a dry-run preview can flag them.
     """
     doc = tomllib.loads(text)
     terms = scan_terms if scan_terms is not None else _resolve_export_scan_terms()
@@ -357,13 +391,14 @@ def import_toml_to_db(
         key = RENAMED_SETTING_KEYS.get(raw_key, raw_key)
         if key != raw_key:
             folded.append((raw_key, key))
-        kind, payload = _classify_import_row(key, value, terms)
+        kind, payload = _classify_import_row(key, value, terms, allow_safety_posture=allow_safety_posture)
+        safety = key in SAFETY_POSTURE_KEYS
         if kind == "reject":
             rejected.append(RejectedRow(scope, key, str(payload)))
         elif kind == "skip":
-            skipped.append(ImportedRow(scope, key, payload))
+            skipped.append(ImportedRow(scope, key, payload, is_safety_posture=safety))
         else:
-            to_write.append(ImportedRow(scope, key, payload))
+            to_write.append(ImportedRow(scope, key, payload, is_safety_posture=safety))
     if rejected:
         return ConfigImport((), tuple(skipped), tuple(folded), tuple(rejected), dry_run)
     if not dry_run:

@@ -712,7 +712,14 @@ the resolver's own registry parser. **Zero-row normalization:** a value equal to
 default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
 dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
 `export → import → export` is byte-stable; a shareable export withholds Secret values and
-keeps Personal ones.
+keeps Personal ones. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
+CHANGE the store is rejected unless the caller passes `allow_safety_posture`, which defaults
+to False so a caller that never considered the question refuses those keys — the same boundary
+the settings editor's typed confirm and the MCP write-tool refusal enforce, closing the route
+where a pasted dump set `autonomy = "full"` more quietly than editing it would. The CLI passes
+it (typing the command IS the authorization, exactly as `config_setting set` is); the
+dashboard passes it only with the typed confirm phrase, and its dry-run preview classifies as
+if authorized so each safety-posture row is listed and flagged before the operator applies.
 
 **Dashboard settings editor** (`/dash/settings/`). The model-driven, EDITABLE companion to
 the read-only `/dash/config/` page: it walks the schema so every key is listable with no
@@ -720,7 +727,11 @@ hand-kept list, writes each edit through `ConfigSetting.set_value` (the same val
 seam), restores-to-default by DELETING the row, gates a safety-posture key behind an extra
 confirm phrase, and offers export + a dry-run import preview. A SECRET value AND its shipped
 default are masked to `***` before the row enters the response context — pinned by a test
-asserting a configured secret never appears in the response bytes.
+asserting a configured secret never appears in the response bytes. Each row's Save/Restore
+answers the edited `<tr>` alone to an htmx request (`dash/partials/_settings_row.html`,
+`hx-target="closest tr"`), so an edit never re-renders the document and the scroll position
+never moves; a refused write answers 400 carrying that same row plus its reason. Both forms
+keep `method`/`action`, so with JavaScript off the pre-htmx redirect path still works.
 
 ### 10.4 Data Storage
 
