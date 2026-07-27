@@ -105,7 +105,7 @@
 #   failed-workflow-run email goes to the maintainer (Actions → Notifications) with
 #   no extra secret and no bot — that is the failure-notification mechanism here.
 #
-# RED-LEG DIAGNOSIS (souliane/teatree#3745)
+# RED-LEG DIAGNOSIS (souliane/teatree#3744)
 #   A metered leg is expensive to re-run (~2% of the subscription's weekly window per
 #   attempt), so a red leg MUST be diagnosable from the run it already spent — never
 #   by firing another one. Three artifacts back that, all uploaded `if: always()` and
@@ -474,7 +474,7 @@ jobs:
           # mount). The `publish` job merges every shard's summary into the public
           # dashboard; the transcript stays in the private `eval-report-*` artifact.
           #
-          # FAILURE OBSERVABILITY (#3745). A red leg used to emit ONLY the retry
+          # FAILURE OBSERVABILITY (#3744). A red leg used to emit ONLY the retry
           # action's `Child_process exited with error code 1` — no scenario name, no
           # pass@k line, no traceback — so every diagnostic re-run re-spent ~2% of the
           # subscription's weekly window for zero information. Two gaps caused that,

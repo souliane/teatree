@@ -40,6 +40,17 @@
 #   caller's default branch when it changed. The benchmark HTML is itself the
 #   publish-safe artifact. A red weekly run is surfaced by GitHub's NATIVE
 #   failed-run email (no extra secret, no bot).
+#
+# RED-LEG DIAGNOSIS (souliane/teatree#3744, mirroring `eval.yml`)
+#   A metered leg is expensive to re-run, so a red leg MUST be diagnosable from the
+#   run it already spent — never by firing another one. Two artifacts back that, both
+#   uploaded `if: always()` and both named per matrix leg (`<lane>-<shard>-<effort>`,
+#   so parallel legs cannot collide):
+#     * `eval-run-log-*`   — the raw teed stdout/stderr of EVERY attempt. Exists from
+#       the first byte, so it is the only one that survives a leg that dies mid-run.
+#     * `eval-benchmark-*` — the sanitized matrix dashboard (rendered at end of run).
+#   And the first diagnosis needs NO download: on a non-zero exit the eval step
+#   re-prints the captured tail into the job log, then re-raises the real exit code.
 # ============================================================
 
 # TRIGGER: workflow_call only — invoked by `eval-benchmark.yml` (manual dispatch)
@@ -350,18 +361,60 @@ jobs:
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
           EVAL_EFFORT: ${{ matrix.effort }}
-          SUMMARY_SUFFIX: ${{ steps.artifact.outputs.suffix }}
+          EVAL_SUFFIX: ${{ steps.artifact.outputs.suffix }}
         with:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
+          # FAILURE OBSERVABILITY (#3744) — the same contract `eval.yml` carries, on the
+          # leg that spends per-token credit. A red leg used to emit ONLY the retry
+          # action's `Child_process exited with error code 1`: no scenario name, no
+          # verdict, no traceback. Two gaps caused that, and `tee` closes both:
+          #   * The container's output was STREAMED but never STORED. `t3 eval run
+          #     --docker` does inherit the container's stdio and nick-fields/retry does
+          #     forward the child's stdout, so the bytes reach the live log — but nothing
+          #     wrote them to a file, so nothing could be uploaded, and anything lost to
+          #     the 80min SIGTERM kill was gone for good.
+          #   * The matrix dashboard is rendered from the COMPLETED rows (after
+          #     `collect_matrix_rows`), so a leg that dies mid-matrix NEVER writes it.
+          #     The upload step's `if: always()` was already correct; the file simply did
+          #     not exist, which is why the artifact looked un-uploaded on exactly the
+          #     failures that needed it.
+          # So the run is teed to a durable $RUNNER_TEMP log (uploaded as its own per-leg
+          # artifact below, and the ONLY artifact that survives a pre-dashboard death),
+          # and on non-zero exit the tail is re-printed from that file into the job log —
+          # the first diagnosis needs no download. The dashboard is an HTML file, useless
+          # catted into a log, so the block points at the uploaded artifact instead; its
+          # text twin (the matrix table `t3 eval run` echoes before writing the HTML) is
+          # already inside the tail. `set -o pipefail` keeps `tee` from masking the eval's
+          # exit code, and the block ends in `exit "$rc"`: this adds visibility, it never
+          # swallows the failure. Printing INSIDE the command block is what makes EACH
+          # attempt visible — attempt 1's tail lands before the retry's "Attempt 1 failed"
+          # line instead of being discarded when attempt 2 starts. `tee -a` keeps both
+          # attempts in the one uploaded log.
           command: |
+            set -o pipefail
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
+            TAIL_LINES=400
+            MATRIX_HTML="$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.html"
+            LOG="$RUNNER_TEMP/eval-run-$EVAL_SUFFIX.log"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" >> "$LOG"
             uv run t3 eval run --benchmark --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
-              --transcript-html "$RUNNER_TEMP/eval-benchmark-$SUMMARY_SUFFIX.html"
+              --transcript-html "$MATRIX_HTML" 2>&1 | tee -a "$LOG"
+            rc=$?
+            [ "$rc" -eq 0 ] && exit 0
+            echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
+            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            echo "::endgroup::"
+            if [ -s "$MATRIX_HTML" ]; then
+              echo "The matrix dashboard rendered: download artifact eval-benchmark-$EVAL_SUFFIX."
+            else
+              echo "No dashboard at $MATRIX_HTML: the run died before rendering one, so the tail above is the whole diagnosis."
+            fi
+            exit "$rc"
       # Publish the benchmark matrix HTML dashboard THIS leg emitted. The name is
       # per-lane-and-shard (and effort) so parallel matrix legs never collide. The
       # matrix HTML is itself sanitized (no reasoning/tool-call transcript — only
@@ -373,6 +426,21 @@ jobs:
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
+          if-no-files-found: warn
+      # The RAW captured stdout/stderr of every attempt (the `tee -a` target in the
+      # eval command). Unlike the matrix dashboard — rendered only if the run reaches
+      # its end — this file exists from the first byte, so it is the one artifact that
+      # survives a leg that died mid-run, which is precisely the failure class that
+      # used to leave a maintainer with nothing but "exit code 1". `if: always()`
+      # because a GREEN leg needs none of this; a red one needs all of it. NOT
+      # collected by the `publish` job (which globs `eval-benchmark-*` only) — it is
+      # unsanitized, so it stays out of the public dashboard.
+      - name: Upload the raw eval run log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-run-log-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
           if-no-files-found: warn
 
   # PUBLISH: collect every shard's benchmark matrix HTML into the public
