@@ -293,6 +293,15 @@ _DEFAULT_LOOPS = (
         False,
         False,
     ),
+    (
+        "memory_skim",
+        604800,
+        None,
+        None,
+        "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF.",
+        False,
+        False,
+    ),
 )
 
 
