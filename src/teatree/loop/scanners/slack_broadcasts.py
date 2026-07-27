@@ -92,17 +92,21 @@ _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
 class ConnectChannelBotRestrictedError(RuntimeError):
     """Raised when a broadcast in a Slack-Connect channel cannot be reacted to.
 
-    The bot token is rejected on Connect channels and the dual-token
-    fallback (post via the user ``xoxp``) is tracked in #1209 — until
-    that lands, the scanner must hard-fail loudly rather than silently
-    swallow the failed reaction. The error carries the channel id so
-    callers can surface a single actionable message.
+    A Connect channel rejects the bot token, so
+    :func:`teatree.backends.slack.token_policy.channel_token` already routes every
+    WRITE there to the personal ``xoxp``. Reaching this error therefore means that
+    routed token failed too — no user token is configured (the policy falls back to
+    the rejected bot token), or the user token lacks ``reactions:write`` or
+    membership of the partner channel. The scanner hard-fails rather than silently
+    swallowing the dropped reaction; the error carries the channel id so callers can
+    surface a single actionable message.
     """
 
     def __init__(self, channel: str) -> None:
         super().__init__(
-            f"Slack-Connect channel {channel!r} rejected the bot reaction "
-            "and the user-token fallback is not wired (tracked in #1209). "
+            f"Slack-Connect channel {channel!r} rejected the reaction under the routed "
+            "token. Provision the personal token with `t3 setup slack-user-token` and "
+            "confirm it carries reactions:write and membership of the channel. "
             "Scanner is failing loudly per #1131 to avoid silent drops.",
         )
         self.channel = channel
@@ -501,11 +505,10 @@ class SlackBroadcastsScanner:
         except ConnectChannelBotRestrictedError:
             raise
         except Exception as exc:
-            # A Slack-Connect channel rejecting the bot token is the
-            # specific failure #1131 must surface loudly until #1209
-            # lands; the backend reports it as a generic exception, so
-            # we lift it here. Any other reaction failure is logged
-            # and left to the next tick.
+            # A Connect channel rejecting the reaction is the specific failure
+            # #1131 must surface loudly; the backend reports it as a generic
+            # exception, so we lift it here. Any other reaction failure is
+            # logged and left to the next tick.
             if _looks_like_connect_restriction(exc):
                 raise ConnectChannelBotRestrictedError(channel) from exc
             logger.exception("Failed to react :%s: on %s/%s", emoji, channel, ts)
@@ -514,14 +517,15 @@ class SlackBroadcastsScanner:
 
 
 def _looks_like_connect_restriction(exc: BaseException) -> bool:
-    """Heuristic for the Slack-Connect bot-restricted error shape.
+    """Heuristic for the Slack-Connect restricted-reaction error shape.
 
-    Slack's API returns ``not_in_channel`` / ``channel_not_found`` /
-    ``is_archived`` for the Connect-bot-restricted case. The backend
-    wraps the response in a generic exception with the error code in
-    the message, so the scanner matches on the string. Once #1209
-    introduces typed errors on the backend the heuristic moves to an
-    ``isinstance`` check.
+    Slack returns ``not_in_channel`` / ``channel_not_found`` / ``is_ext_shared``
+    for the Connect-restricted case. ``SlackBotBackend.react`` posts
+    ``reactions.add`` through the transport directly rather than through
+    :mod:`teatree.backends.slack.reactions`, so the typed
+    :class:`~teatree.backends.slack.react_errors.SlackReactionError` never reaches
+    this scanner — the error code arrives only inside a generic exception's
+    message, which is what the match below reads.
     """
     message = str(exc)
     return any(token in message for token in ("not_in_channel", "channel_not_found", "is_ext_shared"))

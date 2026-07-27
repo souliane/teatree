@@ -884,8 +884,7 @@ to an LLM judge by adding a `judge:` block:
     rubric: |
       The explanation names every file it changed and does not claim a change
       it did not make.
-    model: haiku            # optional, defaults to the `balanced` tier (the run tier)
-    max_output_tokens: 512  # optional cap on the judge reply
+    model: haiku  # optional, defaults to the `balanced` tier (the run tier)
 ```
 
 A judged scenario passes only when its matchers pass **and** the judge returns
@@ -1362,8 +1361,8 @@ Fields:
   `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
 - `expect` — list of matchers (see below); required unless a `judge` block is
   present (a judge-only scenario may omit it).
-- `judge` — optional LLM-judge block (`rubric`, optional `model`, optional
-  `max_output_tokens`); see "LLM-judge" above.
+- `judge` — optional LLM-judge block (`rubric`, optional `model`); see
+  "LLM-judge" above.
 
 Supported matcher operators:
 

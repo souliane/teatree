@@ -125,12 +125,12 @@ class _ModeHarnessSettings:
     # credential lookup they haven't configured. An explicit ``subscription_oauth``
     # forces the plan's OAuth token (stripping the API key) — the ``claude_sdk``
     # default STANCE once pinned. ``api_key`` forces the metered key — the
-    # ``claude_sdk``-only opt-in. ``openai_compatible`` is the sole implemented
-    # ``pydantic_ai`` provider today — ``PydanticAiHarness`` does not yet branch
-    # on this field (there is only one option), so it ships wired for the
-    # constraint table and a future Vertex binding rather than as an active
-    # branch on that path. Per-overlay overridable; ``T3_AGENT_HARNESS_PROVIDER``
-    # env wins.
+    # ``claude_sdk``-only opt-in. On the ``pydantic_ai`` lane the harness builder
+    # branches on this field: ``anthropic_api`` selects the native Anthropic
+    # Messages-API binding (real ``cache_control``), anything else the generic
+    # OpenAI-compatible router binding. A Vertex Layer-2 provider is reserved and
+    # carries no enum member yet. Per-overlay overridable;
+    # ``T3_AGENT_HARNESS_PROVIDER`` env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
     # Whether this overlay's headless lane is the REGULATED path — carrying client/
     # bank data under EU data-residency & regulatory compliance (GDPR, data

@@ -99,7 +99,7 @@ def run(
         _update_baseline(outcome, allow_regression=allow_regression)
         return
 
-    code = BaselineRatchet.verdict(outcome, mode=settings.mode, baseline=settings.baseline_total)
+    code = BaselineRatchet.verdict(outcome, baseline=settings.baseline_total)
     if code != 0:
         raise typer.Exit(code=code)
 
