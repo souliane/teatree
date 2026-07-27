@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from claude_agent_sdk.types import EffortLevel
 from django.test import TestCase
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelMessage
@@ -27,9 +28,11 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 
 from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
+from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
+from teatree.core.models import ConfigSetting
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.pydantic_ai_runner import PydanticAiRunner
+from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner
 from teatree.eval.report import evaluate
 
 
@@ -192,6 +195,12 @@ class TestRunnerWithSettings(TestCase):
         # The eval runner tags its the OpenAI-compatible backend dispatch with the `eval` x-lane header.
         assert runner._backend.lane == LANE_EVAL
 
+    def test_make_runner_threads_the_configured_output_ceiling(self) -> None:
+        ConfigSetting.objects.set_value("pydantic_ai_max_tokens", value=24576)
+        runner = make_runner(PYDANTIC_AI_BACKEND)
+        assert isinstance(runner, PydanticAiRunner)
+        assert runner._caps.max_tokens == 24576
+
     def test_resolve_model_builds_the_configured_model_on_the_eval_lane(self) -> None:
         # With no injected model, `_resolve_model` builds a real OpenAI-compatible
         # model — mocked at the credential boundary so the test needs no live key
@@ -211,6 +220,35 @@ class TestRunnerWithSettings(TestCase):
         assert isinstance(model, OpenAIChatModel)
         # The abstract Claude id normalises UP to the CONFIGURED model id.
         assert model.model_name == "vendor/some-model"
+
+
+class TestOutputCeilingOnTheRouterLane:
+    """``max_tokens`` is a base settings key both bindings honour — it rides here too.
+
+    The Anthropic instruction-cache key is NOT: it is Anthropic-namespaced, and a
+    foreign key on an OpenAI-compatible request is at best ignored and at worst
+    rejected by the endpoint.
+    """
+
+    def _recorded_settings(self, *, effort: EffortLevel | None = None) -> ModelSettings:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        model = _RecordingOpenAIModel(_tool_call_then_text("uv run pytest", "done"))
+        PydanticAiRunner(model=model, caps=EvalDriveCaps(effort=effort)).run(spec)
+        assert model.recorded, "the model was never asked for a request"
+        settings = model.recorded[0]
+        assert settings is not None
+        return settings
+
+    def test_an_output_ceiling_is_always_sent(self) -> None:
+        assert self._recorded_settings().get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+
+    def test_the_anthropic_cache_key_never_reaches_the_router(self) -> None:
+        assert "anthropic_cache_instructions" not in self._recorded_settings(effort="high")
+
+    def test_the_ceiling_rides_alongside_the_openai_effort(self) -> None:
+        settings = self._recorded_settings(effort="high")
+        assert settings.get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+        assert settings.get("openai_reasoning_effort") == "high"
 
 
 class TestEvalToolset:

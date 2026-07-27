@@ -23,7 +23,8 @@ side effect.
 """
 
 import asyncio
-from typing import cast, get_args
+from dataclasses import dataclass
+from typing import Literal, cast, get_args
 
 from claude_agent_sdk import Message
 from claude_agent_sdk.types import EffortLevel
@@ -43,6 +44,7 @@ from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneCon
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import get_effective_settings
+from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
 from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_spec_model
@@ -59,6 +61,11 @@ _X_LANE_HEADER = "x-lane"
 #: ``pydantic_ai``'s own provider discriminator for the Anthropic transport
 #: (``AnthropicModel.system``) — the branch key for which settings class a model reads.
 _ANTHROPIC_SYSTEM = "anthropic"
+
+#: Prompt-cache TTL for the eval lane's system instructions. Every scenario sharing an
+#: ``agent_path`` sends a byte-identical system prompt, and the shortest TTL refreshes on
+#: each read, so a suite run keeps the entry warm at the cheaper 5-minute write rate.
+EVAL_CACHE_TTL: Literal["5m"] = "5m"
 
 
 def _inert_tool(**_kwargs: object) -> str:
@@ -93,37 +100,82 @@ def _system_prompt(spec: EvalSpec) -> str:
     return build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
 
 
-def _anthropic_effort_settings(resolved: ReasoningEffort) -> ModelSettings | None:
-    """Anthropic-keyed effort settings, or ``None`` for a rung Anthropic has no name for.
+def _anthropic_settings(resolved: ReasoningEffort | None, max_tokens: int) -> AnthropicModelSettings:
+    """Anthropic-keyed settings: the output ceiling, the instruction cache, the effort.
 
     ``AnthropicEffort`` carries no ``minimal`` rung, so the vocabulary is re-checked
     against the provider's own scale here — the harness guard only narrows to what
-    ``pydantic_ai`` accepts, which is the wider set.
+    ``pydantic_ai`` accepts, which is the wider set. A rung Anthropic has no name for
+    is dropped; the ceiling and the cache key still ride.
     """
-    if resolved not in get_args(AnthropicEffort):
-        return None
-    return AnthropicModelSettings(anthropic_effort=cast("AnthropicEffort", resolved))
+    settings = AnthropicModelSettings(anthropic_cache_instructions=EVAL_CACHE_TTL)
+    if max_tokens > 0:
+        settings["max_tokens"] = max_tokens
+    if resolved in get_args(AnthropicEffort):
+        settings["anthropic_effort"] = cast("AnthropicEffort", resolved)
+    return settings
 
 
-def _model_settings(model: Model, effort: EffortLevel | None) -> ModelSettings | None:
-    """Map a resolved reasoning effort onto the settings key *model*'s provider reads.
+def _openai_settings(resolved: ReasoningEffort | None, max_tokens: int) -> OpenAIChatModelSettings | None:
+    """OpenAI-keyed settings: the output ceiling plus the reasoning effort."""
+    settings = OpenAIChatModelSettings()
+    if max_tokens > 0:
+        settings["max_tokens"] = max_tokens
+    if resolved is not None:
+        settings["openai_reasoning_effort"] = resolved
+    return settings or None
+
+
+def _model_settings(model: Model, effort: EffortLevel | None, max_tokens: int) -> ModelSettings | None:
+    """The settings *model*'s provider actually reads: output ceiling, cache, effort.
+
+    ``max_tokens`` is a base :class:`~pydantic_ai.settings.ModelSettings` key both
+    bindings honour on the wire. Left unset, the Anthropic binding falls back to 4096
+    and truncates a long graded result envelope mid-JSON — on the lane whose whole job
+    is grading those envelopes. ``0`` is the documented escape hatch on
+    ``pydantic_ai_max_tokens`` and leaves the binding's own default.
 
     ``AnthropicModel`` reads ``anthropic_effort`` and has no ``openai_reasoning_effort``
     in its vocabulary at all — an OpenAI-keyed effort handed to it is accepted and
     discarded, so the run silently drops to the provider default while the report still
     names the pinned rung. The branch key is ``pydantic_ai``'s own provider
-    discriminator (:data:`_ANTHROPIC_SYSTEM`), never the model id.
+    discriminator (:data:`_ANTHROPIC_SYSTEM`), never the model id. The instruction-cache
+    key is Anthropic-namespaced and rides only that branch.
 
     Reuses the harness's effort-vocabulary guard (:func:`~teatree.agents.harness.resolve_effort`)
     so the ``pydantic_ai`` lane drops an out-of-vocabulary rung (``max``) exactly as
     a headless dispatch does, rather than handing the provider a level it rejects.
+
+    Deliberately NOT routed through the harness lane's
+    :func:`~teatree.agents.pydantic_ai_config.build_model_settings`: that builder branches
+    on the harness's ``PydanticAiBinding`` enum rather than on a ``Model`` (the eval lane
+    is handed injectable model doubles), maps efforts through
+    ``ANTHROPIC_THINKING_EFFORT_MAP`` where this lane drops an out-of-vocabulary rung, and
+    carries no cache key. Unifying them means changing the effort actually sent.
     """
     resolved = resolve_effort(HarnessOptions(effort=effort))
-    if resolved is None:
-        return None
     if model.system == _ANTHROPIC_SYSTEM:
-        return _anthropic_effort_settings(resolved)
-    return OpenAIChatModelSettings(openai_reasoning_effort=resolved)
+        return _anthropic_settings(resolved, max_tokens)
+    return _openai_settings(resolved, max_tokens)
+
+
+@dataclass(frozen=True, slots=True)
+class EvalDriveCaps:
+    """What bounds ONE eval drive, shared by both fresh-run lanes (composition).
+
+    *   ``turn_cap`` — an explicit ``--max-turns``; ``None`` defers to the backend's
+        per-run request-loop guardrail.
+    *   ``effort`` — the lane-level representative reasoning effort, applied when a
+        scenario declares no ``model@effort`` of its own (a declared effort wins).
+    *   ``max_tokens`` — the per-request output-token ceiling. Defaulted rather than
+        ``None`` so no construction path can silently fall back to the Anthropic
+        binding's 4096, which truncates a long graded result envelope mid-JSON. ``0``
+        is the documented escape hatch and leaves the binding's own default.
+    """
+
+    turn_cap: int | None = None
+    effort: EffortLevel | None = None
+    max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
 
 class PydanticAiRunner:
@@ -139,15 +191,11 @@ class PydanticAiRunner:
         self,
         *,
         model: Model | None = None,
-        max_turns_override: int | None = None,
-        effort: EffortLevel | None = None,
+        caps: EvalDriveCaps | None = None,
         backend: OpenAICompatibleLaneConfig | None = None,
     ) -> None:
         self._model = model
-        self._max_turns_override = max_turns_override
-        #: Lane-level representative reasoning effort applied when a scenario declares
-        #: no ``model@effort`` of its own (a declared effort wins).
-        self._effort = effort
+        self._caps = caps or EvalDriveCaps()
         self._backend = backend or OpenAICompatibleLaneConfig(lane=LANE_EVAL)
 
     def run(self, spec: EvalSpec) -> EvalRun:
@@ -189,18 +237,16 @@ class PydanticAiRunner:
 
     async def _drive(self, spec: EvalSpec, model: Model) -> list[Message]:
         variant = parse_model_variant(spec.model)
-        effort = variant.effort if variant.effort is not None else self._effort
+        effort = variant.effort if variant.effort is not None else self._caps.effort
         agent: Agent[None, str] = Agent(
             model,
             system_prompt=_system_prompt(spec),
-            model_settings=_model_settings(model, effort),
+            model_settings=_model_settings(model, effort, self._caps.max_tokens),
             toolsets=[build_eval_toolset(spec.tools)],
         )
         # An explicit ``--max-turns`` caps the request loop; else the backend
         # per-run guardrail; else uncapped (the watchdog is the hang backstop).
-        request_limit = (
-            self._max_turns_override if self._max_turns_override is not None else self._backend.request_limit
-        )
+        request_limit = self._caps.turn_cap if self._caps.turn_cap is not None else self._backend.request_limit
         # ``async with agent`` enters the model so the provider's HTTP client closes
         # cleanly on exit rather than leaking one per run.
         async with agent:
@@ -216,16 +262,15 @@ def build_pydantic_ai_eval_runner(
 ) -> PydanticAiRunner:
     """Build the ``pydantic_ai`` eval runner with the eval-lane backend knobs.
 
-    The DB-home backend settings (the per-run step cap, the endpoint, the model id,
-    the credential-store entry) are resolved SYNCHRONOUSLY here — never inside the
-    async ``run``, where a ``get_effective_settings`` read fails safe to defaults
-    under Django's async guard — and pinned to the ``eval`` dispatch lane
+    The DB-home backend settings (the per-run step cap, the output-token ceiling, the
+    endpoint, the model id, the credential-store entry) are resolved SYNCHRONOUSLY here
+    — never inside the async ``run``, where a ``get_effective_settings`` read fails safe
+    to defaults under Django's async guard — and pinned to the ``eval`` dispatch lane
     (``x-lane: eval``). This mirrors :func:`teatree.agents.harness.resolve_harness`.
     """
     settings = get_effective_settings()
     return PydanticAiRunner(
-        max_turns_override=max_turns_override,
-        effort=effort,
+        caps=EvalDriveCaps(turn_cap=max_turns_override, effort=effort, max_tokens=settings.pydantic_ai_max_tokens),
         backend=OpenAICompatibleLaneConfig(
             lane=LANE_EVAL,
             request_limit=settings.pydantic_ai_request_limit,
@@ -236,4 +281,4 @@ def build_pydantic_ai_eval_runner(
     )
 
 
-__all__ = ["PydanticAiRunner", "build_eval_toolset", "build_pydantic_ai_eval_runner"]
+__all__ = ["EvalDriveCaps", "PydanticAiRunner", "build_eval_toolset", "build_pydantic_ai_eval_runner"]

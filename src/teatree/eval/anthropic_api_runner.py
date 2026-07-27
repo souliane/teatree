@@ -40,7 +40,7 @@ from teatree.config import get_effective_settings
 from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.pydantic_ai_runner import PydanticAiRunner
+from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner
 from teatree.llm.credentials import AnthropicApiKeyCredential, Credential, CredentialError
 
 
@@ -69,19 +69,15 @@ class AnthropicApiRunner:
         self,
         *,
         model: Model | None = None,
-        turn_cap: int | None = None,
-        effort: EffortLevel | None = None,
+        caps: EvalDriveCaps | None = None,
         require_executed: bool = False,
         credential: Credential | None = None,
     ) -> None:
         self._model = model
-        #: The per-run request-loop cap for the delegated drive — an explicit
-        #: ``--max-turns`` else the eval-lane guardrail, folded to one value by
+        #: The bounds on the delegated drive. ``turn_cap`` folds an explicit
+        #: ``--max-turns`` and the eval-lane guardrail to one value in
         #: :func:`build_anthropic_api_eval_runner` (both bound the same loop).
-        self._turn_cap = turn_cap
-        #: Lane-level representative reasoning effort applied when a scenario declares
-        #: no ``model@effort`` of its own (a declared effort wins).
-        self._effort = effort
+        self._caps = caps or EvalDriveCaps()
         self._require_executed = require_executed
         self._credential = credential or AnthropicApiKeyCredential()
 
@@ -96,7 +92,7 @@ class AnthropicApiRunner:
         # Delegate the request loop + vocabulary mapping + watchdog to the pydantic_ai
         # lane, injecting the Anthropic model so its own model-resolution is
         # never reached; the turn cap bounds that loop.
-        delegate = PydanticAiRunner(model=model, max_turns_override=self._turn_cap, effort=self._effort)
+        delegate = PydanticAiRunner(model=model, caps=self._caps)
         return delegate.run(spec)
 
     def _resolve_model_or_skip(self, spec: EvalSpec) -> Model | None:
@@ -141,16 +137,17 @@ def build_anthropic_api_eval_runner(
 ) -> AnthropicApiRunner:
     """Build the ``anthropic_api`` eval runner with the eval-lane request-loop guardrail.
 
-    The DB-home per-run step cap is resolved SYNCHRONOUSLY here (never inside the
-    delegated async drive, where a ``get_effective_settings`` read fails safe to
-    defaults under Django's async guard), mirroring
+    The DB-home per-run step cap and output-token ceiling are resolved SYNCHRONOUSLY
+    here (never inside the delegated async drive, where a ``get_effective_settings``
+    read fails safe to defaults under Django's async guard), mirroring
     :func:`~teatree.eval.pydantic_ai_runner.build_pydantic_ai_eval_runner`. An
     explicit ``max_turns_override`` wins over the guardrail — both bound the same
     delegated request loop, so they fold to one ``turn_cap``.
     """
     settings = get_effective_settings()
     turn_cap = max_turns_override if max_turns_override is not None else settings.pydantic_ai_request_limit
-    return AnthropicApiRunner(turn_cap=turn_cap, effort=effort, require_executed=require_executed)
+    caps = EvalDriveCaps(turn_cap=turn_cap, effort=effort, max_tokens=settings.pydantic_ai_max_tokens)
+    return AnthropicApiRunner(caps=caps, require_executed=require_executed)
 
 
 __all__ = ["AnthropicApiKeyMissingError", "AnthropicApiRunner", "build_anthropic_api_eval_runner"]
