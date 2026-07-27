@@ -77,12 +77,3 @@
     </table>
   </section>
 {% endblock %}
-{% block extra_js %}
-  <script>
-    // A refused write answers 400 carrying the row plus its reason; htmx discards
-    // non-2xx bodies by default, so opt this page's row swaps into showing it.
-    document.body.addEventListener("htmx:beforeSwap", function (evt) {
-      if (evt.detail.xhr.status === 400) { evt.detail.shouldSwap = true; evt.detail.isError = false; }
-    });
-  </script>
-{% endblock %}

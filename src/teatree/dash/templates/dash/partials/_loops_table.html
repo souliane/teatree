@@ -25,7 +25,7 @@
           <td>{{ loop.deciding_layer }}</td>
           <td>
             <div class="mono">{{ loop.cadence_label }}</div>
-            <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}">
+            <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
               {% csrf_token %}
               <input type="hidden" name="name" value="{{ loop.name }}">
               {% if loop.is_daily %}
@@ -40,7 +40,7 @@
             </form>
             <div class="muted">{{ loop.bounds.note }}</div>
             {% if loop.bounds.daily_allowed %}
-              <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}">
+              <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
                 {% csrf_token %}
                 <input type="hidden" name="name" value="{{ loop.name }}">
                 {% if loop.is_daily %}
@@ -58,7 +58,7 @@
           <td>{{ loop.status }}</td>
           <td>
             {# Only the applicable verb of each pair — pause XOR resume, disable XOR enable. #}
-            <form class="row-actions" method="post" action="{% url 'dash:loop_action' %}">
+            <form class="row-actions" method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
               {% csrf_token %}
               <input type="hidden" name="name" value="{{ loop.name }}">
               {% if loop.status == "paused" %}

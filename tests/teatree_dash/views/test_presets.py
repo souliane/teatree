@@ -1,5 +1,6 @@
 """The dashboard editor writes through the sanctioned seams and reads the shared resolver (#3559)."""
 
+import datetime as dt
 from unittest import mock
 
 from django.test import Client, TestCase
@@ -197,3 +198,52 @@ class PresetEditorPageTestCase(TestCase):
         assert card is not None
         assert "review" in card.inherit_loops
         assert "inbox" not in card.inherit_loops
+
+
+class PresetsHtmxSwapTestCase(TestCase):
+    """Every preset/schedule POST answers the page body — never a full-document redirect."""
+
+    def _post(self, name: str, data: dict[str, str], *, htmx: bool = True) -> object:
+        headers = {"HTTP_HX_REQUEST": "true"} if htmx else {}
+        return self.client.post(reverse(name), data, **headers)
+
+    def test_every_mutating_form_on_the_page_is_wired_to_swap(self) -> None:
+        Mode.objects.get_or_create(name="engaged", defaults={"entries": {}})
+        schedule, _ = ModeSchedule.objects.get_or_create(name="weekly")
+        ModeScheduleSlot.objects.create(schedule=schedule, days=[0], start_time=dt.time(9, 0), preset_name="engaged")
+        body = self.client.get(reverse("dash:presets")).content.decode()
+        posts = (
+            "dash:preset_use",
+            "dash:preset_create",
+            "dash:preset_meta",
+            "dash:preset_rename",
+            "dash:preset_delete",
+            "dash:preset_entry",
+            "dash:schedule_activate",
+            "dash:schedule_slot",
+            "dash:schedule_slot_delete",
+        )
+        for action in posts:
+            assert f'hx-post="{reverse(action)}"' in body, f"{action} form is not wired to an htmx swap"
+
+    def test_an_htmx_create_answers_the_body_fragment(self) -> None:
+        response = self._post("dash:preset_create", {"name": "fresh", "description": "x"})
+        assert response.status_code == 200
+        body = response.content.decode()
+        assert "<!doctype html>" not in body.lower()
+        assert "fresh" in body
+
+    def test_a_no_js_create_keeps_the_redirect(self) -> None:
+        assert self._post("dash:preset_create", {"name": "plain", "description": ""}, htmx=False).status_code == 302
+
+    def test_a_refused_write_answers_the_body_with_its_reason(self) -> None:
+        response = self._post("dash:preset_create", {"name": "not a slug!", "description": ""})
+        assert response.status_code == 400
+        assert "invalid preset name" in response.content.decode()
+
+    def test_a_no_js_refusal_renders_a_page_with_navigation(self) -> None:
+        response = self._post("dash:preset_create", {"name": "not a slug!", "description": ""}, htmx=False)
+        assert response.status_code == 400
+        body = response.content.decode()
+        assert "<!doctype html>" in body.lower()
+        assert reverse("dash:presets") in body

@@ -7,7 +7,6 @@ CLI uses (never a raw field write), and records one audit line.
 
 from typing import TYPE_CHECKING, TypedDict
 
-from django.http import HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
@@ -24,7 +23,7 @@ from teatree.dash.loop_control import (
     build_loop_control,
 )
 from teatree.dash.views.access import require_loopback_or_staff
-from teatree.dash.views.base import actor, nav_context
+from teatree.dash.views.base import actor, error_page, is_htmx, nav_context
 from teatree.loops.loop_cadence_editing import CadenceEditError, set_loop_cadence
 
 if TYPE_CHECKING:
@@ -38,6 +37,20 @@ class LoopsContext(TypedDict):
     control: LoopControlView
     gate_confirm_phrase: str
     runner_confirm_phrase: str
+
+
+def _answer(request: "HttpRequest", *, error: str = "") -> "HttpResponse":
+    """The page body for an htmx request, the pre-htmx redirect (or error page) otherwise.
+
+    Every mutation here used to end in ``redirect("dash:loops")``, so acting on a loop
+    re-rendered the whole document and jumped to scroll 0. The body carries the header
+    bands AND the polled table, because the availability switch and both kill switches
+    can change a loop's effective verdict.
+    """
+    if not is_htmx(request):
+        return error_page(request, error, back="dash:loops") if error else redirect("dash:loops")
+    context = {**_loops_context(), "page_error": error}
+    return render(request, "dash/partials/_loops_body.html", context, status=400 if error else 200)
 
 
 def _loops_context() -> LoopsContext:
@@ -72,9 +85,9 @@ def loop_action(request: "HttpRequest") -> "HttpResponse":
     try:
         landed = apply_loop_action(action, name)
     except LoopActionError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, error=str(exc))
     audit.record(actor=actor(request), action=f"loop:{action}", target=name, after=landed)
-    return redirect("dash:loops")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -90,16 +103,16 @@ def availability(request: "HttpRequest") -> "HttpResponse":
     """
     mode = request.POST.get("mode", "").strip()
     if mode not in AVAILABILITY_ACTIONS:
-        return HttpResponseBadRequest(f"unknown availability mode {mode!r}")
+        return _answer(request, error=f"unknown availability mode {mode!r}")
     if mode == "auto":
         clear_mode_override(user_id=actor(request))
     else:
         try:
             set_mode_override(mode_name_for_availability(mode), user_id=actor(request))
         except LookupError as exc:
-            return HttpResponseBadRequest(str(exc))
+            return _answer(request, error=str(exc))
     audit.record(actor=actor(request), action="availability", after=mode)
-    return redirect("dash:loops")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -113,11 +126,11 @@ def gate_toggle(request: "HttpRequest") -> "HttpResponse":
     enable = request.POST.get("enable") in {"1", "true", "on"}
     confirm = request.POST.get("confirm", "").strip()
     if enable and confirm != GATE_CONFIRM_PHRASE:
-        return HttpResponseBadRequest(f"type {GATE_CONFIRM_PHRASE!r} to enable fail-open")
+        return _answer(request, error=f"type {GATE_CONFIRM_PHRASE!r} to enable fail-open")
     before = str(ConfigSetting.objects.get_effective(_GATE_KEY))
     ConfigSetting.objects.set_value(_GATE_KEY, value=enable)
     audit.record(actor=actor(request), action="gate:danger_gate_fail_open", before=before, after=str(enable))
-    return redirect("dash:loops")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -133,11 +146,11 @@ def runner_toggle(request: "HttpRequest") -> "HttpResponse":
     enable = request.POST.get("enable") in {"1", "true", "on"}
     confirm = request.POST.get("confirm", "").strip()
     if not enable and confirm != RUNNER_CONFIRM_PHRASE:
-        return HttpResponseBadRequest(f"type {RUNNER_CONFIRM_PHRASE!r} to stop the loop fleet")
+        return _answer(request, error=f"type {RUNNER_CONFIRM_PHRASE!r} to stop the loop fleet")
     before = str(ConfigSetting.objects.get_effective(_RUNNER_KEY))
     ConfigSetting.objects.set_value(_RUNNER_KEY, value=enable)
     audit.record(actor=actor(request), action=f"kill-switch:{_RUNNER_KEY}", before=before, after=str(enable))
-    return redirect("dash:loops")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -158,6 +171,6 @@ def loop_cadence(request: "HttpRequest") -> "HttpResponse":
             daily_at=request.POST.get("daily_at", "").strip(),
         )
     except (CadenceEditError, ValueError) as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, error=str(exc))
     audit.record(actor=actor(request), action="loop:cadence", target=name, after=landed.cadence_label)
-    return redirect("dash:loops")
+    return _answer(request)

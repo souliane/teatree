@@ -63,6 +63,11 @@
     document.addEventListener("DOMContentLoaded", function () {
       if (window.Idiomorph) { Idiomorph.defaults.ignoreActiveValue = true; }
     });
+    // A refused write answers 400 carrying the surface plus its reason; htmx discards
+    // non-2xx bodies by default, so opt every dash swap into showing it instead.
+    document.body.addEventListener("htmx:beforeSwap", function (evt) {
+      if (evt.detail.xhr.status === 400) { evt.detail.shouldSwap = true; evt.detail.isError = false; }
+    });
     (function () {
       // Theme toggle: flip data-theme, persist, and re-theme any live mermaid.
       function currentTheme() {
