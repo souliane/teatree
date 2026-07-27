@@ -1,7 +1,8 @@
 """``t3 outer`` — the T4 autoresearch outer-loop operator surface (T4-PR-3).
 
-Thin Typer wrapper: ``tick`` is the off-live-tick cron entry point (schedule it
-low-frequency, decoupled from the live loop); ``status`` / ``history`` are
+Thin Typer wrapper: ``tick`` is the off-live-tick entry point the worker's
+:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` chain fires (and an
+operator can run by hand); ``status`` / ``history`` are
 read-only; ``propose`` records an operator hypothesis. Each bootstraps Django and
 delegates to the ``outer`` management command via ``call_command`` (anything
 touching the ORM is a management command). The cron mechanics (cadence gate,

@@ -356,7 +356,9 @@ class Command(TyperCommand):
         ``run_deadlined_tick`` sets, so an in-process ``call_command`` (tests) NEVER
         hits it. Streams are flushed first because ``os._exit`` skips atexit flushing.
         """
-        from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER  # noqa: PLC0415 — deferred: keep import light
+        from teatree.loops.deadlined_tick import (  # noqa: PLC0415 — deferred: keep import light
+            TICK_SUBPROCESS_ENV_MARKER,
+        )
 
         if not os.environ.get(TICK_SUBPROCESS_ENV_MARKER):
             return

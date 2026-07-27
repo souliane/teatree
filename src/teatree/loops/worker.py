@@ -16,9 +16,11 @@ exiting; when a single executor exhausts its respawn budget the worker exits NON
 (loud, never silent) so the OS/container restarts it fresh rather than limping with a
 dead pool. The flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
 at most one worker per box. At startup the worker reconciles the loop-timer chains, seeds
-the maintenance chains, and expires the stale ``default``-queue backlog BEFORE spawning
-executors (so a box that queued days-old provision/ship jobs while no worker ran never
-blind-fires them on the default-ON flip), so a fresh or crash-recovered box catches up and
+the maintenance chains — including the ``drive_off_live_tick_loops`` chain that fires
+the tick command of every ``off_live_tick`` loop, the ONLY driver those loops have — and
+expires the stale ``default``-queue backlog BEFORE spawning executors (so a box that
+queued days-old provision/ship jobs while no worker ran never blind-fires them on the
+default-ON flip), so a fresh or crash-recovered box catches up and
 self-heals with no OS scheduler (no cron / launchd / systemd). The worker supervisor +
 reconciler IS the process-watchdog surface.
 """
@@ -32,7 +34,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from teatree.loop.queue_drain import expire_stale_default_jobs
-from teatree.loops.timer_chains import LoopRunnerState, kill_live_tick_process_groups, read_loop_runner_state
+from teatree.loops.deadlined_tick import kill_live_tick_process_groups
+from teatree.loops.timer_chains import LoopRunnerState, read_loop_runner_state
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 from teatree.utils.ram_probe import default_provision_concurrency
 from teatree.utils.thread_db import close_thread_db_connections

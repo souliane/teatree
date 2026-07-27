@@ -58,17 +58,13 @@ successors, so a double delivery never doubles the chain.
 import datetime as dt
 import enum
 import logging
-import os
-import signal
-import sys
-import threading
 import uuid
 from typing import TYPE_CHECKING, TypedDict
 
 from django.tasks import task
 from django.utils import timezone
 
-from teatree.utils.run import Popen, TimeoutExpired, spawn_session_leader
+from teatree.loops.deadlined_tick import run_deadlined_tick
 
 if TYPE_CHECKING:
     from django_tasks_db.models import DBTaskResult
@@ -76,13 +72,6 @@ if TYPE_CHECKING:
     from teatree.core.models import Loop
 
 logger = logging.getLogger(__name__)
-
-
-class TickOutcome(TypedDict):
-    """The result of one deadlined subprocess tick."""
-
-    timed_out: bool
-    returncode: int | None
 
 
 class TimerResult(TypedDict, total=False):
@@ -99,14 +88,6 @@ class TimerResult(TypedDict, total=False):
 #: ``default``-queue FSM/headless job. Mirrors the ``TASKS["default"]["QUEUES"]``
 #: allowlist in ``teatree.settings`` (parity-tested).
 LOOPS_QUEUE = "loops"
-
-#: Set in the deadlined tick subprocess's environment so the ``loops_tick`` command can
-#: ``os._exit`` right after rendering — a hung NON-daemon scanner thread would otherwise
-#: block interpreter shutdown (its ``ThreadPoolExecutor`` atexit join), pinning the
-#: subprocess (and one scarce ``loops`` executor slot) until the outer deadline SIGKILL.
-#: Only the spawned subprocess carries it — an in-process ``call_command`` never does, so
-#: tests never trip the hard exit.
-TICK_SUBPROCESS_ENV_MARKER = "T3_LOOPS_TICK_SUBPROCESS"
 
 #: A cadence-less (every-tick) loop has no interval, so its successor polls on this
 #: floor rather than busy-spinning.
@@ -148,7 +129,7 @@ def read_loop_runner_state() -> LoopRunnerState:
     connector blip) is ``UNREADABLE`` — NOT collapsed to OFF — logged at WARNING so the
     failure is loud, never a silent DEBUG line. The worker treats ``UNREADABLE`` as a
     retry-then-crash so the supervisor restarts it; the chain's fail-safe wrapper
-    (:func:`_loop_runner_enabled`) maps ``UNREADABLE`` to "not ON" so it still refuses
+    (:func:`loop_runner_enabled`) maps ``UNREADABLE`` to "not ON" so it still refuses
     to perpetuate a chain it cannot confirm should run.
     """
     try:
@@ -160,10 +141,11 @@ def read_loop_runner_state() -> LoopRunnerState:
         return LoopRunnerState.UNREADABLE
 
 
-def _loop_runner_enabled() -> bool:
+def loop_runner_enabled() -> bool:
     """Whether the kill-switch resolves ON (fail-safe: anything but ON is OFF).
 
-    The single boolean reader every :func:`loop_timer` fire consults, so the
+    The single boolean reader every work-driving chain fire consults — :func:`loop_timer`
+    and :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` — so the
     kill-switch can never be honoured by one path and silently bypassed by another. A
     read failure (``UNREADABLE``) degrades to False here: a kill-switch that cannot
     confirm it is ON must not keep the chain alive. The worker instead consults
@@ -318,108 +300,6 @@ def _loop_admitted(name: str, now: dt.datetime) -> bool:
     return name in admitted_loop_names(now, only=name)
 
 
-def _tick_argv(name: str) -> list[str]:
-    """The subprocess argv for one per-loop tick — ``python -m teatree loops_tick --loop <name>``."""
-    return [sys.executable, "-m", "teatree", "loops_tick", "--loop", name]
-
-
-#: The process-group ids of every tick subprocess currently in flight, so the
-#: worker's shutdown can SIGKILL any the executor-join timeout left orphaned. Keyed
-#: by pgid (a session leader's pgid == its own pid). The tick runs in an executor
-#: thread while the shutdown runs in the supervisor thread, so the set is lock-guarded.
-_LIVE_TICK_PGIDS: set[int] = set()
-_LIVE_TICK_LOCK = threading.Lock()
-
-
-def _register_tick_pgid(pgid: int) -> None:
-    with _LIVE_TICK_LOCK:
-        _LIVE_TICK_PGIDS.add(pgid)
-
-
-def _unregister_tick_pgid(pgid: int) -> None:
-    with _LIVE_TICK_LOCK:
-        _LIVE_TICK_PGIDS.discard(pgid)
-
-
-def kill_live_tick_process_groups() -> list[int]:
-    """SIGKILL every in-flight tick process group; return the pgids signalled.
-
-    The worker's shutdown daemon-joins its executors with a short timeout but that
-    join does not reach a tick subprocess: a kill-switch flip or a SIGTERM mid-tick
-    tears down the executor thread that owned the deadline, orphaning the tick with
-    no deadline owner (a no-zombie violation). This is called AFTER the join timeout
-    so any still-running tick group is killed rather than left orphaned.
-    """
-    with _LIVE_TICK_LOCK:
-        pgids = list(_LIVE_TICK_PGIDS)
-    for pgid in pgids:
-        _killpg(pgid)
-        _unregister_tick_pgid(pgid)
-    return pgids
-
-
-def run_deadlined_tick(name: str, *, deadline: float) -> TickOutcome:
-    """Run one per-loop tick as a deadlined subprocess in its OWN process group.
-
-    ``python -m teatree loops_tick --loop <name>`` is spawned with
-    ``start_new_session=True`` so it leads a fresh process group; on deadline expiry
-    the WHOLE group is ``SIGKILL``-ed (the tick plus any grandchildren it spawned),
-    so a hung tick can never outlive its deadline or strand children. The group is
-    registered while it runs so the worker's shutdown can kill it too (see
-    :func:`kill_live_tick_process_groups`). Standard over clever: a subprocess via
-    ``python -m teatree`` isolates a crash/hang from the worker executor thread and
-    gives an OS-level kill boundary an in-process ``call_command`` cannot.
-    """
-    proc = spawn_session_leader(_tick_argv(name), env={**os.environ, TICK_SUBPROCESS_ENV_MARKER: "1"})
-    pgid = _tick_pgid(proc)
-    if pgid is not None:
-        _register_tick_pgid(pgid)
-    try:
-        returncode = proc.wait(timeout=deadline)
-    except TimeoutExpired:
-        _kill_process_group(proc)
-        logger.warning("loop_timer %r tick exceeded its %.0fs deadline — killed the process group", name, deadline)
-        return {"timed_out": True, "returncode": None}
-    finally:
-        if pgid is not None:
-            _unregister_tick_pgid(pgid)
-    return {"timed_out": False, "returncode": returncode}
-
-
-def _tick_pgid(proc: Popen[str]) -> int | None:
-    """The tick subprocess's own process-group id, or ``None`` if it already exited."""
-    try:
-        return os.getpgid(proc.pid)
-    except ProcessLookupError:
-        return None
-
-
-def _killpg(pgid: int) -> None:
-    """SIGKILL a whole process group; best-effort, never raise.
-
-    Tolerates a group that is already gone (``ProcessLookupError``) and one whose
-    leader's pid was recycled to a foreign-owned process (``PermissionError`` / EPERM)
-    — in the shutdown sweep such a pgid is no longer our tick, and a single un-killable
-    group must not abort killing the others.
-    """
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        return
-
-
-def _kill_process_group(proc: Popen[str]) -> None:
-    """SIGKILL the subprocess's whole process group and reap it, tolerating a dead child."""
-    pgid = _tick_pgid(proc)
-    if pgid is None:
-        return
-    _killpg(pgid)
-    try:
-        proc.wait(timeout=10)
-    except TimeoutExpired:
-        logger.exception("loop tick process group for pid %s did not die after SIGKILL", proc.pid)
-
-
 def _outranked_by_running(running: "list[DBTaskResult]", *, my_id: str | uuid.UUID) -> bool:
     """Whether any RUNNING duplicate in *running* outranks this fire (lower id wins the tiebreak).
 
@@ -458,7 +338,7 @@ def loop_timer(context: object, name: str) -> TimerResult:
     # do NOT re-enqueue a successor. The worker supervisor also stops on a flip-off, but
     # honouring the switch here means a timer claimed just before the flip cannot
     # perpetuate the chain, and neither can a stray inline drain of a loops-queue row.
-    if not _loop_runner_enabled():
+    if not loop_runner_enabled():
         return {"loop": name, "action": "halted"}
 
     # (1) self-dedup — a queued (READY) successor OR a lower-id concurrent RUNNING

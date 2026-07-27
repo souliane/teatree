@@ -151,17 +151,27 @@ def run_tick(
 
 
 def _drain_intake(actives: list[Directive], *, budget: int, stepped: set[int]) -> list[DirectiveTickResult]:
-    """Advance each pre-admission directive one step, up to *budget* directives."""
+    """Advance each pre-admission directive one step, spending *budget* on PROGRESS only.
+
+    The budget bounds the EXPENSIVE arm — a dispatched interpreter is a metered headless
+    run — so a step that moved nothing must not consume it. Counting the no-progress ones
+    starved the queue permanently: once ``budget`` directives park in ``RATIFY_PENDING``
+    waiting on the human, every re-tick spent its whole budget re-reporting them
+    ``pending`` and never reached a single younger directive, while the tick still
+    reported healthy.
+    """
     results: list[DirectiveTickResult] = []
+    spent = 0
     for directive in actives:
-        if len(results) >= budget:
+        if spent >= budget:
             break
         if directive.state not in _INTAKE_STATES:
             continue
         result = _advance_intake(directive)
-        if result is not None:
-            stepped.add(directive.pk)
-            results.append(result)
+        stepped.add(directive.pk)
+        results.append(result)
+        if result.action not in _NO_PROGRESS_ACTIONS:
+            spent += 1
     return results
 
 
@@ -210,20 +220,26 @@ def _refused(reason: str, *, directive_id: int | None = None) -> DirectiveTickRe
     return DirectiveTickResult(action="refused", reason=reason, directive_id=directive_id)
 
 
-def _advance_intake(directive: Directive) -> DirectiveTickResult | None:
-    """The pre-admission arc (interpret → clarify → ratify → admit); ``None`` past ADMITTED."""
+def _advance_intake(directive: Directive) -> DirectiveTickResult:
+    """The pre-admission arc (interpret → clarify → ratify → admit); one step.
+
+    Total over ``_INTAKE_STATES``, which is the only set the caller passes it — so
+    ``RATIFY_PENDING`` is the unconditional tail, mirroring :func:`_advance_execution`.
+    """
     state = Directive.State
     if directive.state == state.CAPTURED:
-        dispatch_interpretation(directive)
+        # A ``None`` return is the dedup: this generation's interpreter is still in
+        # flight, so nothing was armed. Reporting that as a dispatch both over-stated
+        # progress and spent a budget slot no work consumed.
+        if dispatch_interpretation(directive) is None:
+            return DirectiveTickResult(action="waiting", reason="interpreter_in_flight", directive_id=directive.pk)
         return DirectiveTickResult(action="interpret_dispatched", directive_id=directive.pk)
     if directive.state == state.CLARIFYING:
         return _advance_clarifying(directive)
     if directive.state == state.INTERPRETED:
         ask_ratification(directive)
         return DirectiveTickResult(action="ratify_asked", directive_id=directive.pk)
-    if directive.state == state.RATIFY_PENDING:
-        return DirectiveTickResult(action=try_admit(directive), directive_id=directive.pk)
-    return None
+    return DirectiveTickResult(action=try_admit(directive), directive_id=directive.pk)
 
 
 def _advance_execution(

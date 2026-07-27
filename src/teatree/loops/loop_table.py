@@ -31,7 +31,9 @@ column, not by its name.
 
 An ``off_live_tick`` loop (the heavy ``dream`` distiller pass, #1933 § 3) is
 NEVER picked up here — the live tick must not invoke its ``build_jobs`` or bump
-its ``last_run_at``; it is driven by its own low-frequency cron. The combined
+its ``last_run_at``; it is driven by
+:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` firing its own
+tick command. The combined
 enable verdict (the ``LoopState`` hold check) runs BEFORE the cadence claim so a
 held loop is neither dispatched nor cadence-bumped — its anchor is preserved, not
 silently consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_run_at``
@@ -122,8 +124,9 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
 def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> bool:
     """The unified enabled+due+reachable verdict for one loop — no cadence claim.
 
-    A loop is admitted iff it is NOT ``off_live_tick`` (the heavy ``dream`` pass is
-    driven by its own low-frequency cron), it HAS a ``Loop`` row that is
+    A loop is admitted iff it is NOT ``off_live_tick`` (those loops are driven by
+    :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops`), it HAS a ``Loop``
+    row that is
     ``is_due(now)``, it is NOT ``colleague_facing`` while *ctx.resolution*
     ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND the
     combined enable verdict :func:`teatree.loop.loop_state_db.loop_state_admits`

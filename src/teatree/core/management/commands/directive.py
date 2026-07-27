@@ -3,7 +3,8 @@
 ``capture`` records a plain-language directive as a ``CAPTURED`` :class:`Directive`
 verbatim — always available, even while the loop is dark, because it is the EXPLICIT
 operator path (the ``DIRECTIVE``-intent router stays parity-off until
-``directive_loop_enabled`` is on). ``tick`` (PR-7) is the off-live-tick cron entry: it
+``directive_loop_enabled`` is on). ``tick`` (PR-7) is the off-live-tick entry the
+worker's ``drive_off_live_tick_loops`` chain fires: it
 advances the oldest active directive ONE guarded FSM step only when the
 ``directive_loop`` :class:`Loop` row is enabled AND its cadence has elapsed, behind the
 ``directive-loop-tick`` lease. ``resolve-revert`` closes a ``REVERT_PENDING`` directive

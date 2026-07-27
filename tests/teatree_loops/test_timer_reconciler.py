@@ -14,7 +14,7 @@ from django_tasks_db.models import DBTaskResult, get_date_max
 
 from teatree.core.models import Loop, Session, Task, Ticket
 from teatree.core.tasks import execute_headless_task
-from teatree.loops import timer_chains, timer_reconciler
+from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_headless_runs
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
@@ -84,7 +84,7 @@ class TestEnsureLoopTimers(django.test.TestCase):
         assert len(timer_chains.pending_loop_timers("inbox")) == 1
 
     def test_off_live_tick_loop_gets_no_chain(self) -> None:
-        # ``dream`` is a registered off_live_tick loop — driven by its own cron, never a timer.
+        # ``dream`` is off_live_tick — the driver chain fires its tick command, never a timer.
         Loop.objects.create(
             name="dream",
             daily_at=dt.time(3, 0),
@@ -110,12 +110,22 @@ class TestMaintenanceChains(django.test.TestCase):
         # #10: the headless-queue drain chain is seeded too (it had no other home).
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_headless_chain.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_slack_answer.module_path).count() == 1
+        # The off-live-tick driver: without it directive_loop / dream / outer_loop have
+        # NO driver at all — the live fan-out excludes them and no cron exists.
+        assert (
+            DBTaskResult.objects.filter(task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path).count()
+            == 1
+        )
         # Idempotent: a second call adds no duplicates.
         timer_reconciler.ensure_maintenance_chains()
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.drain_headless_chain.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.run_slack_answer.module_path).count() == 1
+        assert (
+            DBTaskResult.objects.filter(task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path).count()
+            == 1
+        )
 
     def test_drain_headless_chain_reschedules_itself(self) -> None:
         result = timer_reconciler.drain_headless_chain.func()

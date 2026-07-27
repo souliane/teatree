@@ -260,3 +260,37 @@ class TestCheckIntentFreshness(TestCase):
         ok, out = _run()
         assert ok is True
         assert out == ""
+
+
+class TestDirectiveConsumerNeedsADriver(TestCase):
+    """A consumer with no driver is not live, however clear its mask and guards read.
+
+    The incident this closes: ``directive_loop`` is ``off_live_tick``, so the live
+    fan-out never built it a job and the timer reconciler never built it a chain — and
+    the promised cron was never installed. This check, written for that exact incident,
+    saw an unmasked row with clear intake guards and degraded to a NON-gating WARN for
+    two weeks while 39 directives sat unprocessed.
+    """
+
+    _SEAM = "teatree.loops.loop_staleness.driverless_loops"
+
+    def test_a_driverless_loop_gates_even_with_the_mask_and_guards_clear(self) -> None:
+        Loop.objects.filter(name="directive_loop").update(enabled=True)
+        directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
+        _backdate_directive(directive, hours=200)
+        with mock.patch(self._SEAM, return_value=("directive_loop",)):
+            ok, out = _run(open_directive_consumer=True)
+        assert ok is False
+        assert "FAIL" in out
+        assert f"directive #{directive.pk}" in out
+        assert "driver" in out
+
+    def test_a_driven_loop_with_clear_guards_stays_a_non_gating_warn(self) -> None:
+        Loop.objects.filter(name="directive_loop").update(enabled=True)
+        directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
+        _backdate_directive(directive, hours=30)
+        with mock.patch(self._SEAM, return_value=()):
+            ok, out = _run(open_directive_consumer=True)
+        assert ok is True
+        assert "WARN" in out
+        assert "FAIL" not in out

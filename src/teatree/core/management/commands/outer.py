@@ -1,13 +1,13 @@
-"""``manage.py outer`` — drive the T4 autoresearch outer-loop cron + operator verbs.
+"""``manage.py outer`` — drive the T4 autoresearch outer loop + operator verbs.
 
-Mirrors the ``dream`` off-live-tick cron shape: ``tick`` runs one guarded step
+Mirrors the ``dream`` off-live-tick shape: ``tick`` runs one guarded step
 only when the ``outer_loop`` :class:`Loop` row is enabled AND its cadence has
 elapsed (the ONE ``is_due`` / ``last_run_at`` ledger), behind the in-flight
 ``outer-loop-tick`` lease so two ticks never overlap. ``status`` / ``history`` are
 read-only; ``propose`` records an operator hypothesis (refused while the flag is
 off, so the surface stays inert at defaults). All experiment mutation flows
 through :func:`teatree.loops.outer_loop.tick.run_tick` and the guarded
-``OuterLoopExperiment`` helpers — this command owns only the cron mechanics.
+``OuterLoopExperiment`` helpers — this command owns only the tick mechanics.
 """
 
 import os

@@ -20,7 +20,7 @@ from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.tasks import refresh_followup_snapshot
-from teatree.loops import timer_chains
+from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
 from teatree.loops.timer_chains import LoopRunnerState
 from teatree.loops.worker import (
@@ -247,19 +247,19 @@ def test_shutdown_kills_in_flight_tick_process_groups() -> None:
     # A kill-switch flip / SIGTERM mid-tick tears down the executor thread that owned
     # the deadline, orphaning the tick subprocess with no deadline owner. The worker's
     # shutdown must SIGKILL any in-flight tick process group after the join timeout.
-    timer_chains._LIVE_TICK_PGIDS.clear()  # process-global registry — isolate from other tests
+    deadlined_tick._LIVE_TICK_PGIDS.clear()  # process-global registry — isolate from other tests
     proc = spawn_session_leader(["sleep", "30"])  # stands in for an in-flight tick
     pgid = os.getpgid(proc.pid)
-    timer_chains._register_tick_pgid(pgid)
+    deadlined_tick._register_tick_pgid(pgid)
     try:
         worker, _, _ = _make_worker(enabled=lambda: False, sleep=lambda _s: None)  # shut down at once
         worker.run()
-        with contextlib.suppress(timer_chains.TimeoutExpired):
+        with contextlib.suppress(deadlined_tick.TimeoutExpired):
             proc.wait(timeout=5)
         assert not pid_alive(proc.pid)  # the orphaned group was killed, not left running
     finally:
-        timer_chains._unregister_tick_pgid(pgid)
-        timer_chains._killpg(pgid)
+        deadlined_tick._unregister_tick_pgid(pgid)
+        deadlined_tick._killpg(pgid)
 
 
 _DB_BACKEND = {

@@ -175,7 +175,9 @@ EXEMPT: dict[str, str] = {
         "(the file is immutable in production and no test rebinds _DEFAULTS_TOML), so resetting it would "
         "only rebuild the identical model"
     ),
-    "teatree.loops.timer_chains:_LIVE_TICK_PGIDS": "live tick subprocess PGIDs; process-lifecycle, not a per-test memo",
+    "teatree.loops.deadlined_tick:_LIVE_TICK_PGIDS": (
+        "live tick subprocess PGIDs; process-lifecycle, not a per-test memo"
+    ),
 }
 
 
