@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from claude_agent_sdk.types import EffortLevel
 from django.test import TestCase
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
@@ -25,6 +26,8 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 
+from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
+from teatree.core.models import ConfigSetting
 from teatree.eval.anthropic_api_runner import (
     AnthropicApiKeyMissingError,
     AnthropicApiRunner,
@@ -32,6 +35,7 @@ from teatree.eval.anthropic_api_runner import (
 )
 from teatree.eval.backends import ANTHROPIC_API_BACKEND, KNOWN_BACKENDS, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
+from teatree.eval.pydantic_ai_runner import EVAL_CACHE_TTL, EvalDriveCaps
 from teatree.eval.report import evaluate
 from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialSpec
 
@@ -187,7 +191,7 @@ class TestReasoningEffortReachesTheAnthropicModel:
 
     def _recorded_settings(self, *, spec: EvalSpec, effort: str | None) -> ModelSettings:
         model = _RecordingAnthropicModel(_tool_call_then_text("uv run pytest", "done"))
-        AnthropicApiRunner(model=model, effort=effort).run(spec)
+        AnthropicApiRunner(model=model, caps=EvalDriveCaps(effort=effort)).run(spec)
         assert model.recorded, "the model was never asked for a request"
         settings = model.recorded[0]
         assert settings is not None
@@ -212,6 +216,56 @@ class TestReasoningEffortReachesTheAnthropicModel:
         spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
         settings = self._recorded_settings(spec=spec, effort="high")
         assert "openai_reasoning_effort" not in settings
+
+
+class TestOutputCeilingAndCachingReachTheAnthropicModel:
+    """The graded envelope must not be capped at the binding's 4096 default.
+
+    ``AnthropicModel`` reads ``max_tokens`` off the settings dict and falls back to
+    4096 when it is absent, so an unset ceiling truncates a long result envelope
+    mid-JSON — on the one lane whose whole job is grading those envelopes. The
+    system prompt is byte-identical across every scenario sharing an ``agent_path``,
+    so the same settings dict also carries the instruction-cache key.
+    """
+
+    def _recorded_settings(
+        self, *, effort: EffortLevel | None = None, max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
+    ) -> ModelSettings:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        model = _RecordingAnthropicModel(_tool_call_then_text("uv run pytest", "done"))
+        caps = EvalDriveCaps(effort=effort, max_tokens=max_tokens)
+        AnthropicApiRunner(model=model, caps=caps).run(spec)
+        assert model.recorded, "the model was never asked for a request"
+        settings = model.recorded[0]
+        assert settings is not None
+        return settings
+
+    def test_an_output_ceiling_is_always_sent(self) -> None:
+        settings = self._recorded_settings()
+        assert settings.get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+
+    def test_an_explicit_ceiling_wins(self) -> None:
+        settings = self._recorded_settings(max_tokens=32768)
+        assert settings.get("max_tokens") == 32768
+
+    def test_a_zero_ceiling_leaves_the_binding_default(self) -> None:
+        # `0` is the documented escape hatch on `pydantic_ai_max_tokens`; it must not
+        # reach the wire as a literal 0-token ceiling.
+        settings = self._recorded_settings(max_tokens=0, effort="high")
+        assert "max_tokens" not in settings
+
+    def test_the_instruction_cache_key_is_sent(self) -> None:
+        settings = self._recorded_settings()
+        assert settings.get("anthropic_cache_instructions") == EVAL_CACHE_TTL
+
+    def test_the_ceiling_rides_alongside_the_effort(self) -> None:
+        settings = self._recorded_settings(effort="high")
+        assert settings.get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+        assert settings.get("anthropic_effort") == "high"
+
+    def test_no_openai_key_reaches_the_anthropic_model(self) -> None:
+        settings = self._recorded_settings(effort="high")
+        assert not [key for key in settings if key.startswith("openai_")]
 
 
 class TestMissingKeyGate:
@@ -240,3 +294,7 @@ class TestRunnerWithSettings(TestCase):
     def test_the_build_factory_threads_require_executed(self) -> None:
         runner = build_anthropic_api_eval_runner(require_executed=True)
         assert runner._require_executed is True
+
+    def test_the_build_factory_threads_the_configured_output_ceiling(self) -> None:
+        ConfigSetting.objects.set_value("pydantic_ai_max_tokens", value=24576)
+        assert build_anthropic_api_eval_runner()._caps.max_tokens == 24576
