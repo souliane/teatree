@@ -23,14 +23,15 @@ side effect.
 """
 
 import asyncio
-from typing import cast
+from typing import cast, get_args
 
 from claude_agent_sdk import Message
 from claude_agent_sdk.types import EffortLevel
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
+from pydantic_ai.models.anthropic import AnthropicEffort, AnthropicModelSettings
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
@@ -54,6 +55,10 @@ from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_op
 
 #: The dispatch-lane header (mirrors ``teatree.agents.harness._X_LANE_HEADER``).
 _X_LANE_HEADER = "x-lane"
+
+#: ``pydantic_ai``'s own provider discriminator for the Anthropic transport
+#: (``AnthropicModel.system``) — the branch key for which settings class a model reads.
+_ANTHROPIC_SYSTEM = "anthropic"
 
 
 def _inert_tool(**_kwargs: object) -> str:
@@ -88,8 +93,26 @@ def _system_prompt(spec: EvalSpec) -> str:
     return build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
 
 
-def _model_settings(effort: EffortLevel | None) -> ModelSettings | None:
-    """Map a resolved reasoning effort to OpenAI-compatible model settings, or ``None``.
+def _anthropic_effort_settings(resolved: ReasoningEffort) -> ModelSettings | None:
+    """Anthropic-keyed effort settings, or ``None`` for a rung Anthropic has no name for.
+
+    ``AnthropicEffort`` carries no ``minimal`` rung, so the vocabulary is re-checked
+    against the provider's own scale here — the harness guard only narrows to what
+    ``pydantic_ai`` accepts, which is the wider set.
+    """
+    if resolved not in get_args(AnthropicEffort):
+        return None
+    return AnthropicModelSettings(anthropic_effort=cast("AnthropicEffort", resolved))
+
+
+def _model_settings(model: Model, effort: EffortLevel | None) -> ModelSettings | None:
+    """Map a resolved reasoning effort onto the settings key *model*'s provider reads.
+
+    ``AnthropicModel`` reads ``anthropic_effort`` and has no ``openai_reasoning_effort``
+    in its vocabulary at all — an OpenAI-keyed effort handed to it is accepted and
+    discarded, so the run silently drops to the provider default while the report still
+    names the pinned rung. The branch key is ``pydantic_ai``'s own provider
+    discriminator (:data:`_ANTHROPIC_SYSTEM`), never the model id.
 
     Reuses the harness's effort-vocabulary guard (:func:`~teatree.agents.harness.resolve_effort`)
     so the ``pydantic_ai`` lane drops an out-of-vocabulary rung (``max``) exactly as
@@ -98,6 +121,8 @@ def _model_settings(effort: EffortLevel | None) -> ModelSettings | None:
     resolved = resolve_effort(HarnessOptions(effort=effort))
     if resolved is None:
         return None
+    if model.system == _ANTHROPIC_SYSTEM:
+        return _anthropic_effort_settings(resolved)
     return OpenAIChatModelSettings(openai_reasoning_effort=resolved)
 
 
@@ -168,7 +193,7 @@ class PydanticAiRunner:
         agent: Agent[None, str] = Agent(
             model,
             system_prompt=_system_prompt(spec),
-            model_settings=_model_settings(effort),
+            model_settings=_model_settings(model, effort),
             toolsets=[build_eval_toolset(spec.tools)],
         )
         # An explicit ``--max-turns`` caps the request loop; else the backend

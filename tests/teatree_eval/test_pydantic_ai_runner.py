@@ -9,6 +9,7 @@ no network, no the OpenAI-compatible backend credential, and zero tokens.
 import asyncio
 import dataclasses
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,9 +17,14 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import RunContext
 
 from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
@@ -54,6 +60,34 @@ def _tool_call_then_text(command: str, text: str) -> FunctionModel:
             yield text
 
     return FunctionModel(stream_function=stream_fn)
+
+
+class _RecordingOpenAIModel(OpenAIChatModel):
+    """A REAL ``OpenAIChatModel`` whose requests are served offline, recording their settings.
+
+    Subclassing the real provider model keeps the runner's provider branch honest —
+    the settings class is chosen from the model, so a stand-in would grade the test's
+    own guess. Requests go to *offline*, so no key and no network are used.
+    """
+
+    def __init__(self, offline: Model) -> None:
+        super().__init__("gpt-5", provider=OpenAIProvider(api_key="offline-double"))
+        self._offline = offline
+        self.recorded: list[ModelSettings | None] = []
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[None] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        self.recorded.append(model_settings)
+        async with self._offline.request_stream(
+            messages, model_settings, model_request_parameters, run_context
+        ) as response:
+            yield response
 
 
 class TestBackendSelection:
@@ -128,8 +162,9 @@ class TestNonClaudeScenarioRunsGreen:
         assert run.terminal_reason == "success"
 
     def test_a_scenario_effort_pin_is_carried_into_the_run(self) -> None:
-        # A `model@effort` pin resolves to OpenAI reasoning-effort model settings
-        # (dropped for a text/function double, but the effort-settings path is taken).
+        # A `model@effort` pin must reach the model under the key an OpenAI-compatible
+        # provider reads — asserted on the settings the model was handed, since a run
+        # that merely finishes proves nothing about a setting the provider ignores.
         spec = EvalSpec(
             name="effort_scenario",
             scenario="run with high effort",
@@ -139,9 +174,13 @@ class TestNonClaudeScenarioRunsGreen:
             source_path=Path("/tmp/spec.yaml"),
             model="claude-sonnet-5@high",
         )
-        runner = PydanticAiRunner(model=_tool_call_then_text("uv run pytest", "done"))
-        run = runner.run(spec)
+        model = _RecordingOpenAIModel(_tool_call_then_text("uv run pytest", "done"))
+        run = PydanticAiRunner(model=model).run(spec)
         assert run.terminal_reason == "success"
+        assert model.recorded, "the model was never asked for a request"
+        assert model.recorded[0] is not None
+        assert model.recorded[0].get("openai_reasoning_effort") == "high"
+        assert "anthropic_effort" not in model.recorded[0]
 
 
 class TestRunnerWithSettings(TestCase):
