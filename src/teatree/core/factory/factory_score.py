@@ -51,7 +51,7 @@ class ScoredSignalDict(TypedDict):
 
 
 class FactoryScoreDict(TypedDict):
-    """The wire shape of a :class:`FactoryScore` — what ``t3 recipe score --json`` emits."""
+    """The wire shape of a :class:`FactoryScore` — what ``t3 <overlay> recipe score --json`` emits."""
 
     aggregate: float | None
     verdict: str

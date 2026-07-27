@@ -583,6 +583,10 @@ Backfill Ticket.extra['issue_title'] from the forge for existing tickets.
 
 Generate Ticket.short_description (#1156).
 
+## `tokens`
+
+Show per-account Anthropic 5h / weekly token utilization + status.
+
 ## `tool`
 
 | Subcommand | Description |

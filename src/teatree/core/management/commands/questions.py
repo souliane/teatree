@@ -35,7 +35,7 @@ from teatree.core.table_output import print_table
 
 
 class DeferredQuestionRow(TypedDict):
-    """One row of ``t3 questions list --json``."""
+    """One row of ``t3 <overlay> questions list --json``."""
 
     id: int
     status: str

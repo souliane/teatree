@@ -15,6 +15,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.factory.factory_recipe import recipe_sha
+from teatree.core.factory.factory_score import FactoryScoreDict, ScoredSignalDict
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
@@ -82,3 +83,11 @@ class TestApprove(TestCase):
         stored = ConfigSetting.objects.get_effective("approved_recipe_sha", scope="")
         assert stored == recipe_sha()
         assert recipe_sha()[:12] in out.getvalue()
+
+
+class TestScorePayloadShape(TestCase):
+    def test_json_matches_the_declared_wire_shapes(self) -> None:
+        payload = json.loads(_score_json())
+        assert set(payload) == set(FactoryScoreDict.__annotations__)
+        for row in payload["signals"]:
+            assert set(row) == set(ScoredSignalDict.__annotations__)

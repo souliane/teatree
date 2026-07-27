@@ -39,8 +39,11 @@ def _in_process_managepy_core(*args: str, overlay_name: str = "") -> None:
     child's stdout up; the child sets ``T3_OVERLAY_NAME`` on its env and
     django-typer prints the ``handle`` return. Here that whole boundary collapses
     to a ``call_command`` against the test DB with ``T3_OVERLAY_NAME`` set —
-    django-typer prints the ``handle`` return to the ``CliRunner``-captured
-    stdout, the same document a front-end would parse.
+    ``signals`` routes through the machine-output seam, so under ``--json`` the
+    JSON document lands on the ``CliRunner``-captured stdout and the human view
+    lands on stderr. ``CliRunner(mix_stderr=...)`` is not in play here — the
+    runner merges both into ``result.output``, so the human-view assertion reads
+    that while the JSON assertions read ``result.stdout``.
     """
     overrides = {"T3_OVERLAY_NAME": overlay_name} if overlay_name else {}
     with patched_environ(overrides):
@@ -79,4 +82,4 @@ class TestSignalsCliSurface(TestCase):
     def test_default_human_view_renders_the_scoped_markdown_header(self) -> None:
         result = runner.invoke(_app(), ["signals"])
         assert result.exit_code == 0, result.output
-        assert f"scope: {_OVERLAY}" in result.stdout
+        assert f"scope: {_OVERLAY}" in result.output

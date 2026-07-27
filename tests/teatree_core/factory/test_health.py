@@ -12,6 +12,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.factory.operational_health import HealthSignal
+from teatree.core.management.commands.health import HealthPayload
 from teatree.core.models.known_issue import KnownIssue
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -98,3 +99,7 @@ class TestMachineOutputChannel:
         out, err = self._channels("--json")
         assert json.loads(out) is not None
         assert err == ""
+
+    def test_show_returns_exactly_the_declared_payload_shape(self) -> None:
+        payload = call_command("health", "show", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(HealthPayload.__annotations__)

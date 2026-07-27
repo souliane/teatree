@@ -1179,6 +1179,11 @@
       "subcommands": []
     },
     {
+      "help": "Show per-account Anthropic 5h / weekly token utilization + status.",
+      "name": "tokens",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "tool",
       "subcommands": [

@@ -4,12 +4,15 @@ import json
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import pytest
 from django.core.management import call_command
 from typer.testing import CliRunner
 
+from teatree.core.management.commands.availability import AvailabilityPayload
 from teatree.core.management.commands.availability import Command as AvailabilityCommand
+from teatree.core.management.commands.questions import DeferredQuestionRow
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models import Mode, ModeOverride
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -142,3 +145,15 @@ class TestMachineOutputChannel:
         out, err = self._channels("questions", "list", "--json")
         assert json.loads(out) == []
         assert err == ""
+
+    @pytest.mark.usefixtures("override_file")
+    def test_show_returns_exactly_the_declared_payload_shape(self) -> None:
+        payload = call_command("availability", "show", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(AvailabilityPayload.__annotations__)
+
+    def test_questions_list_rows_match_the_declared_shape(self) -> None:
+        call_command("questions", "record", "Ship?", stdout=StringIO(), stderr=StringIO())
+        rows = cast(
+            "list[DeferredQuestionRow]", call_command("questions", "list", stdout=StringIO(), stderr=StringIO())
+        )
+        assert [set(row) for row in rows] == [set(DeferredQuestionRow.__annotations__)]

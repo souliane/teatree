@@ -10,6 +10,7 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 
+from teatree.core.management.commands.waiting import WaitingPayload
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.core.waiting import WaitingKind
@@ -88,3 +89,7 @@ class TestMachineOutputChannel:
         out, err = self._channels("--json")
         assert json.loads(out) is not None
         assert err == ""
+
+    def test_list_returns_exactly_the_declared_payload_shape(self) -> None:
+        payload = call_command("waiting", "list", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(WaitingPayload.__annotations__)

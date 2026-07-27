@@ -13,14 +13,12 @@ The rows are routed through the machine-output seam — JSON on stdout under
 ``--json``, the human table on stderr — and returned as the typed payload.
 """
 
-from typing import IO, TYPE_CHECKING, Annotated, cast
+from typing import IO, Annotated, cast
 
 import typer
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-
-if TYPE_CHECKING:
-    from teatree.token_report import TokenAccountPayload
+from teatree.token_report import TokenAccountPayload
 
 _ADHOC_HELP = (
     "Ad-hoc Anthropic token to health-probe as an extra row (repeatable) — for checking a "
@@ -38,7 +36,7 @@ class Command(MachineOutputCommand):
             typer.Option("--json", help="Emit the structured report as JSON instead of the human table."),
         ] = False,
         tokens: Annotated[list[str] | None, typer.Option("--token", help=_ADHOC_HELP)] = None,
-    ) -> "list[TokenAccountPayload]":
+    ) -> list[TokenAccountPayload]:
         """Show per-account Anthropic 5h / weekly token utilization + status."""
         from teatree.token_report import TokenReport, render_table  # noqa: PLC0415 — deferred: lazy command import
 

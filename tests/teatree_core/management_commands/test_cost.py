@@ -8,6 +8,7 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
+from teatree.core.management.commands.cost import CostPayload
 from teatree.core.models import Session, Task, TaskAttempt
 from tests.factories import TicketFactory
 
@@ -106,3 +107,7 @@ class TestCostCommand:
         self._attempt(cost=1.0, when=timezone.now(), model="opus", input_tokens=1000)
         out = _call_human()
         assert "effective tokens (ET): 1,000" in out
+
+    def test_returns_exactly_the_declared_payload_shape(self) -> None:
+        payload = call_command("cost", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(CostPayload.__annotations__)

@@ -9,6 +9,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import _e2e_lanes as _lanes
+from teatree.core.management.commands._e2e_lanes import LaneOptions, run_lanes
 from teatree.core.overlay import OverlayE2E
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -84,3 +85,11 @@ class TestLanesCommand(TestCase):
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = cast("dict[str, list[str]]", call_command("e2e", "lanes", json_output=True))
         assert result["smoke"] == ["e2e/specs/checkout.spec.ts", "e2e/specs/login.spec.ts"]
+
+
+class TestRunLanesDirectImport(TestCase):
+    """The seam is importable by name, not only through the module alias."""
+
+    def test_returns_the_same_split_as_lane_split(self) -> None:
+        out, err = StringIO(), StringIO()
+        assert run_lanes(LaneOptions(), overlay=_LanesOverlay(), out=out, err=err) == _lanes.lane_split(_LanesOverlay())
