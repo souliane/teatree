@@ -7,9 +7,8 @@ cap; re-exported from ``teatree.config``.
 
 The #1775 partition: every ``UserSettings`` field has exactly one home (see
 ``config/homes.py``). The per-install file config tier was removed, so every field
-is DB-home now — the ``SettingHome.TOML`` carve-out is retained but EMPTY (a future
-per-install file tier would be a deliberate, tested re-introduction). A DB-home
-field's OVERRIDE tiers are the ``ConfigSetting`` store (``_db_setting_overrides``:
+is DB-home. A DB-home field's OVERRIDE tiers are the ``ConfigSetting`` store
+(``_db_setting_overrides``:
 global rows then the active overlay's rows on top) + ``T3_*`` env ONLY. A DB-home
 key mistakenly placed in the DB overlays-registry entry (the ``[overlays.<name>]``
 table in ``config.raw``) is NOT one of its homes, so it is dropped on read
@@ -109,9 +108,8 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     """Return the user settings under the #1775 DB-home partition + env.
 
     Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``).
-    The per-install file config tier was removed, so every field is DB-home now (the
-    ``SettingHome.TOML`` carve-out is retained but empty). A DB-home field
-    resolves, first match wins:
+    The per-install file config tier was removed, so every field is DB-home. A
+    DB-home field resolves, first match wins:
 
         env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> TOML default.
 
@@ -129,10 +127,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
 
     The per-overlay overlays-registry override layer is filtered by home
     (``setting_layers.drop_db_home_overlay_keys`` / ``toml_home``) so a ``[overlays.<name>]``
-    value for a DB-home key never leaks in — with the TOML carve-out empty, that
-    drops every such key with a loud WARN. That carve-out is about a field's
-    OVERRIDE home and is orthogonal to the TOML default tier, which is a shipped
-    base under every field. The DB read fails safe to ``{}`` whenever Django is not
+    value for a DB-home key never leaks in: every such key is dropped with a loud
+    WARN. That home filter governs a field's OVERRIDE tier and is orthogonal to the
+    TOML default tier, which is a shipped base under every field. The DB read fails
+    safe to ``{}`` whenever Django is not
     configured or the table does not exist yet, so an empty table resolves every
     DB-home field to its shipped default.
 
@@ -174,11 +172,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     else:
         active = _active_overlay_entry()
         overrides = dict(active.overrides) if active is not None else {}
-    # The #1775 partition: the per-overlay overlays-registry override layer applies
-    # ONLY to TOML-home keys — an empty carve-out today, so every ``[overlays.<name>]``
-    # value for a DB-home key is dropped on read (that field's authoritative tier is
-    # the DB store below). The drop is made LOUD (never silent) so an operator who set
-    # a DB-home key in their overlays-registry entry is told the value had no effect.
+    # The #1775 partition: every ``[overlays.<name>]`` value for a DB-home key is dropped
+    # on read (that field's authoritative override tier is the DB store below). The drop
+    # is LOUD (never silent) so an operator who set a DB-home key in their
+    # overlays-registry entry is told the value had no effect.
     overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
     # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
     # including for ``mode``) is the per-overlay override layer so far. DB-home fields

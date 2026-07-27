@@ -53,8 +53,8 @@ def shipped_defaults_base(base: UserSettings, layers: SettingLayers) -> UserSett
     dataclass default (``config/loader.py``), which carries no opinion of its own, so
     there the whole shipped table applies — scalars via ``replace`` and the two nested
     tables via the same parsers a stored row uses. Any other base is a caller-staged
-    opinion (the ``load_config`` patch seam, a structural-subset stub, a future loader
-    that resolves values itself) and is returned untouched: a staged value always wins
+    opinion (the ``load_config`` patch seam, a structural-subset stub, a loader that
+    resolves values itself) and is returned untouched: a staged value always wins
     over a shipped default, and the resolver keeps reading only the fields it needs off
     the base rather than every field the shipped table names.
 
@@ -106,13 +106,12 @@ def _merge_speak_layers(row_layers: tuple[dict[str, Any], ...], base: SpeakConfi
 def toml_home(key: str) -> bool:
     """Whether *key* is a TOML-home ``UserSettings`` field (#1775 partition).
 
-    The TOML-home carve-out is currently EMPTY (the per-install file config tier was
-    removed), so this returns ``False`` for every live key — the per-overlay
-    overlays-registry override layer then drops it, since its authoritative override
-    tier is the ``ConfigSetting`` store, never the ``[overlays.<name>]`` registry entry.
-    Kept as the carve-out predicate so a future file-tier re-introduction is a
-    deliberate, tested change (``config/homes.py``). Orthogonal to the shipped
-    ``defaults.toml`` DEFAULTS tier, which is a base under every field's overrides.
+    The per-install file config tier was removed, so every ``UserSettings`` field is
+    DB-home (``config/homes.py``) and this returns ``False`` for every live key: the
+    per-overlay overlays-registry override layer drops it, since a field's
+    authoritative override tier is the ``ConfigSetting`` store, never the
+    ``[overlays.<name>]`` registry entry. Orthogonal to the shipped ``defaults.toml``
+    DEFAULTS tier, which is a base under every field's overrides.
     """
     return SETTING_HOMES.get(key) is SettingHome.TOML
 
@@ -127,8 +126,8 @@ def drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> d
     resolver drops the registry value. With NO DB row beneath it the dropped value also
     has no effect, and nothing told the operator their override was ignored. Surfacing
     the drop loud (one aggregated WARN naming every dropped key and the migration path)
-    makes the no-op visible. With the TOML carve-out empty, every override key is
-    DB-home, so this keeps nothing and returns ``{}``.
+    makes the no-op visible. Every ``UserSettings`` field is DB-home, so this keeps
+    nothing and returns ``{}``.
 
     Unknown keys (not in the home registry at all) are NOT warned — a stray key is
     a different concern; only a genuine DB-home ``UserSettings`` field flagged here.
