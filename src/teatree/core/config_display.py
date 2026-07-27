@@ -1,7 +1,7 @@
 """Shared config-display helpers for every surface that renders a setting (#3664, D7).
 
-The settings editor (:mod:`teatree.dash.settings_editor`), the read-only config surface
-(:mod:`teatree.dash.config_surface`) and the Django admin's ``ConfigSettingAdmin`` all
+The settings editor (:mod:`teatree.dash.settings_editor`), the live readouts beside it
+(:mod:`teatree.dash.settings_readouts`) and the Django admin's ``ConfigSettingAdmin`` all
 turn a setting's value into display text and decide which values must never reach the
 response. This is the ONE source of truth for all three, so no surface can drift into
 divergent render or masking. It sits in ``core`` rather than ``dash`` because the admin
@@ -15,8 +15,8 @@ is a layer BELOW the dashboard and may not import it:
     regress toward exposure.
 - :func:`masked_display` — the two composed: the mask for a secret key, else the text.
 
-Masking a credential ENTRY NAME (the ``pass`` coordinate the config surface's credential
-band shows) is a DIFFERENT question — "does this coordinate NAME carry an internal
+Masking a credential ENTRY NAME (the ``pass`` coordinate the credentials readout shows)
+is a DIFFERENT question — "does this coordinate NAME carry an internal
 namespace" — answered by ``SECRET_SETTINGS`` membership alone, not by this taxonomy:
 broadening it to :func:`is_secret` would hide every credential name (they are all
 credential coordinates) and defeat the band. See ``CredentialEntry.mask_if_private``.

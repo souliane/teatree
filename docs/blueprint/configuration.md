@@ -804,13 +804,32 @@ it (typing the command IS the authorization, exactly as `config_setting set` is)
 dashboard passes it only with the typed confirm phrase, and its dry-run preview classifies as
 if authorized so each safety-posture row is listed and flagged before the operator applies.
 
-**Dashboard settings editor** (`/dash/settings/`). The model-driven, EDITABLE companion to
-the read-only `/dash/config/` page: it walks the schema so every key is listable with no
-hand-kept list, writes each edit through `ConfigSetting.set_value` (the same validating
-seam), restores-to-default by DELETING the row, gates a safety-posture key behind an extra
-confirm phrase, and offers export + a dry-run import preview. A SECRET value AND its shipped
-default are masked to `***` before the row enters the response context — pinned by a test
-asserting a configured secret never appears in the response bytes.
+**The one settings page** (`/dash/settings/`). Model-driven and EDITABLE: it walks the
+schema so every key is listable with no hand-kept list, writes each edit through
+`ConfigSetting.set_value` (the same validating seam), restores-to-default by DELETING the
+row, gates a safety-posture key behind an extra confirm phrase, and offers export + a
+dry-run import preview. A SECRET value AND its shipped default are masked to `***` before
+the row enters the response context — pinned by a test asserting a configured secret never
+appears in the response bytes.
+
+Rows are grouped by `config.setting_groups.setting_group`, whose membership is DERIVED from
+the `UserSettings` declaration bases (`tests/config/test_settings_group_partition.py` pins
+them pairwise-disjoint and exhaustive) and, for a key no base declares, from the registry
+that registers it — so a newly-added key is grouped by the declaration it already carries.
+The grouping is TOTAL: `settings_editor.group_rows` partitions the flat row set, and a key
+whose group is unknown collects in a visible leftovers section rather than being dropped.
+That is the fix for the retired `/dash/config` page, whose name-shaped band classifier
+returned `""` for 130 of 184 `UserSettings` fields and `continue`d each one out of the page
+— 185 of the 236 schema keys never rendered there at all.
+
+`/dash/config/` is retired into this page and redirects to it. Its readouts that are NOT
+`ConfigSetting` rows — the resolved model / reasoning-effort pins, the `pass` entry each
+credential reads plus whether it resolves, and the self-repairs the loop applied without
+paging anyone ([#3665](https://github.com/souliane/teatree/issues/3665)) — live in
+`dash.settings_readouts` and render above the editable groups on their own 15s htmx poll
+(`/dash/settings/readouts/`), keeping their live-value freshness. Every OTHER dial that page
+rendered read-only (kill switches, concurrency and memory caps, the agent / mode / wip /
+autonomy band) is now an editable row under its group.
 
 Each row ALSO carries the shipped default `config/defaults.toml` ships for that key, beside
 a verdict saying whether the effective value still matches it — `✓ same as default` or

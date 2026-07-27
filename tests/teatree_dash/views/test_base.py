@@ -40,7 +40,7 @@ class InstanceLabelTestCase(TestCase):
 class ShellAccessibilityTestCase(TestCase):
     """Landmarks a screen-reader and keyboard user need before any page content."""
 
-    PAGES = ("dash:board", "dash:health", "dash:loops", "dash:presets", "dash:config", "dash:settings")
+    PAGES = ("dash:board", "dash:health", "dash:loops", "dash:presets", "dash:settings")
 
     def test_every_page_has_exactly_one_h1(self) -> None:
         for name in self.PAGES:
@@ -92,7 +92,7 @@ class HtmxFormSubmitterTestCase(TestCase):
     in a hidden input instead, one form per action.
     """
 
-    PAGES = ("dash:board", "dash:health", "dash:loops", "dash:presets", "dash:config", "dash:settings")
+    PAGES = ("dash:board", "dash:health", "dash:loops", "dash:presets", "dash:settings")
 
     def setUp(self) -> None:
         Loop.objects.create(name="submitter-probe", delay_seconds=60, script="run.py", enabled=True)
