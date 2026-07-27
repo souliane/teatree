@@ -17,7 +17,8 @@ one from the output alone.
 
 import json
 import os
-from typing import Any
+from io import StringIO
+from typing import Any, cast
 from unittest import mock
 
 from django.core.management import call_command
@@ -30,10 +31,13 @@ _OVERLAY = "t3-teatree"
 
 def _cli_json(overlay: str) -> dict[str, Any]:
     # The CLI reads its scope from T3_OVERLAY_NAME (empty => global), exactly as
-    # the `t3 <overlay> signals` bridge sets it. `call_command` returns the same
-    # JSON document django-typer prints to stdout for a front-end.
+    # the `t3 <overlay> signals` bridge sets it. Reading the JSON off stdout (not
+    # the typed return) is what a front-end actually parses, so the assertion
+    # exercises the machine channel the seam guarantees.
+    out = StringIO()
     with mock.patch.dict(os.environ, {"T3_OVERLAY_NAME": overlay}):
-        return json.loads(call_command("signals", "--json"))
+        call_command("signals", "--json", stdout=out)
+    return cast("dict[str, Any]", json.loads(out.getvalue()))
 
 
 def _schema(payload: dict[str, Any]) -> Any:

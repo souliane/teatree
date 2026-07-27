@@ -430,7 +430,20 @@ class TokensCommandTest(TestCase):
             patch("teatree.token_report.read_pass", secrets),
             patch("teatree.token_report.read_rate_limits", reader),
         ):
-            call_command("tokens", stdout=buf, **kwargs)
+            call_command("tokens", stderr=buf, **kwargs)
+        return buf.getvalue()
+
+    def _run_json(self, **kwargs: object) -> str:
+        """Stdout under ``--json`` — the machine channel the seam guarantees."""
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/exhausted"])
+        secrets = RecordingSecretReader({"anthropic/oauth/exhausted": "SECRET-CLI-TOKEN"})
+        reader = FakeReader({"SECRET-CLI-TOKEN": _snapshot(org="org-cli", u5h=0.2, u7d=0.995)})
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.token_report.read_rate_limits", reader),
+        ):
+            call_command("tokens", json_output=True, stdout=buf, **kwargs)
         return buf.getvalue()
 
     def test_table_renders_and_hides_tokens(self) -> None:
@@ -440,7 +453,7 @@ class TokensCommandTest(TestCase):
         assert "SECRET-CLI-TOKEN" not in out
 
     def test_json_output_is_token_free(self) -> None:
-        out = self._run(json_output=True)
+        out = self._run_json()
         payload = json.loads(out)
         assert payload[0]["account"] == "anthropic/oauth/exhausted"
         assert payload[0]["source"] == "pass"
@@ -633,7 +646,21 @@ class TokensCommandAdHocTest(TestCase):
             patch("teatree.token_report.read_rate_limits", reader),
             patch("teatree.token_report.read_api_key_status", api_key_reader),
         ):
-            call_command("tokens", stdout=buf, tokens=tokens, **kwargs)
+            call_command("tokens", stderr=buf, tokens=tokens, **kwargs)
+        return buf.getvalue()
+
+    def _run_json(self, tokens: list[str], **kwargs: object) -> str:
+        """Stdout under ``--json`` — the machine channel the seam guarantees."""
+        secrets = RecordingSecretReader({})
+        reader = FakeReader({_OAUTH_TOKEN: _snapshot(org="org-cli-adhoc", u5h=0.1, u7d=0.1)})
+        api_key_reader = FakeApiKeyReader({_API_KEY_TOKEN: _metered(org="org-cli-metered")})
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.token_report.read_rate_limits", reader),
+            patch("teatree.token_report.read_api_key_status", api_key_reader),
+        ):
+            call_command("tokens", json_output=True, stdout=buf, tokens=tokens, **kwargs)
         return buf.getvalue()
 
     def test_table_renders_ad_hoc_row_and_hides_the_token(self) -> None:
@@ -643,7 +670,7 @@ class TokensCommandAdHocTest(TestCase):
         assert _OAUTH_TOKEN not in out
 
     def test_json_reports_ad_hoc_row_with_source_and_hides_the_token(self) -> None:
-        payload = json.loads(self._run([_API_KEY_TOKEN], json_output=True))
+        payload = json.loads(self._run_json([_API_KEY_TOKEN]))
         assert payload[0]["account"] == "token[1]"
         assert payload[0]["source"] == "token"
         assert payload[0]["kind"] == "api_key"
@@ -661,7 +688,7 @@ class TokensCommandAdHocTest(TestCase):
             patch("teatree.token_report.read_pass", secrets),
             patch("teatree.token_report.read_rate_limits", reader),
         ):
-            call_command("tokens", stdout=buf, tokens=None)
+            call_command("tokens", stderr=buf, tokens=None)
         out = buf.getvalue()
         assert "anthropic/oauth/only-pass" in out
         assert "token[1]" not in out

@@ -44,8 +44,15 @@ def _make_loop(name: str, cadence: int, *, last_run_at: dt.datetime | None = Non
 
 
 def _run(*args: str) -> str:
+    """The human view — the seam routes it to stderr; stdout is the JSON channel."""
+    err = io.StringIO()
+    call_command("loop_list", *args, stderr=err)
+    return err.getvalue()
+
+
+def _run_json(*args: str) -> str:
     out = io.StringIO()
-    call_command("loop_list", *args, stdout=out)
+    call_command("loop_list", "--json", *args, stdout=out)
     return out.getvalue()
 
 
@@ -164,7 +171,7 @@ class TestLoopListJson(django.test.TestCase):
             acquired_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
-        payload = json.loads(_run("--json"))
+        payload = json.loads(_run_json())
         assert {"infra_slots", "mini_loops", "owner", "stalled", "tick_cadence_seconds"} <= payload.keys()
         dispatch = next(e for e in payload["mini_loops"] if e["name"] == "dispatch")
         assert dispatch["kind"] == "mini-loop"
@@ -178,7 +185,7 @@ class TestLoopListJson(django.test.TestCase):
     def test_json_never_fired_has_empty_timestamps(self) -> None:
         Loop.objects.all().delete()
         _make_loop("inbox", 60)
-        payload = json.loads(_run("--json"))
+        payload = json.loads(_run_json())
         inbox = next(e for e in payload["mini_loops"] if e["name"] == "inbox")
         assert inbox["last_fired_at"] == ""
         assert inbox["next_fire_at"] == ""
@@ -188,7 +195,7 @@ class TestLoopListJson(django.test.TestCase):
         Loop.objects.all().delete()
         _make_loop("review", 300, last_run_at=timezone.now())
         LoopState.objects.pause("review")
-        payload = json.loads(_run("--json"))
+        payload = json.loads(_run_json())
         review = next(e for e in payload["mini_loops"] if e["name"] == "review")
         assert review["held"] is True
         assert review["enabled"] is True
@@ -196,7 +203,7 @@ class TestLoopListJson(django.test.TestCase):
     def test_json_running_loop_reports_held_false(self) -> None:
         Loop.objects.all().delete()
         _make_loop("dispatch", 300, last_run_at=timezone.now())
-        payload = json.loads(_run("--json"))
+        payload = json.loads(_run_json())
         dispatch = next(e for e in payload["mini_loops"] if e["name"] == "dispatch")
         assert dispatch["held"] is False
 
@@ -239,7 +246,7 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
         Loop.objects.all().delete()
         _make_loop("review", 300, last_run_at=timezone.now())
         self._activate("heads-down", {"review": False})
-        review = next(e for e in json.loads(_run("--json"))["mini_loops"] if e["name"] == "review")
+        review = next(e for e in json.loads(_run_json())["mini_loops"] if e["name"] == "review")
         assert review["admitted"] is False
         assert review["enabled"] is True
 
@@ -249,7 +256,7 @@ class TestLoopListIsReadOnly(django.test.TestCase):
     def test_no_rows_created_or_mutated(self) -> None:
         loop_count_before = Loop.objects.count()
         _run()
-        _run("--json")
+        _run_json()
         _run("--all")
         assert Loop.objects.count() == loop_count_before
         assert not LoopLease.objects.exclude(session_id="").exists()
@@ -363,7 +370,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
     def test_all_json_includes_per_loop_owners(self) -> None:
         self._seed_per_loop_owners()
         with _session("sess-dispatch"):
-            payload = json.loads(_run("--all", "--json"))
+            payload = json.loads(_run_json("--all"))
         assert "per_loop_owners" in payload
         slots = {o["slot"] for o in payload["per_loop_owners"]}
         assert slots == {"loop:dispatch", "loop:review"}
@@ -376,7 +383,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
         """The default ``--json`` per_loop_owners block is scoped to the current session."""
         self._seed_per_loop_owners()
         with _session("sess-dispatch"):
-            payload = json.loads(_run("--json"))
+            payload = json.loads(_run_json())
         assert {o["slot"] for o in payload["per_loop_owners"]} == {"loop:dispatch"}
 
     def test_default_json_byte_identical_to_today_when_no_per_loop_rows(self) -> None:
@@ -393,6 +400,6 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
         with _session("sess-dispatch"):
-            payload = json.loads(_run("--json"))
+            payload = json.loads(_run_json())
         assert "per_loop_owners" not in payload
         assert set(payload["owner"].keys()) == {"session_id", "owner_pid", "pid_is_alive", "is_live"}

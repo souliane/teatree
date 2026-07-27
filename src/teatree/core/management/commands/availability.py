@@ -18,13 +18,13 @@ Prefer ``t3 loop preset use <mode>`` / ``t3 loop preset auto`` — the mode IS t
 availability. The command prints the resolved mode + source so the effect is clear.
 """
 
-import json
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.mode_resolution import (
     clear_mode_override,
     mode_name_for_availability,
@@ -46,13 +46,18 @@ def _parse_until(raw: str) -> datetime | None:
     return parsed
 
 
+class AvailabilityPayload(TypedDict):
+    mode: str
+    source: str
+
+
 def _render(prefix: str = "") -> str:
     resolved = resolve_active_mode()
     line = f"availability: mode={resolved.name} source={resolved.source}"
     return f"{prefix}{line}" if prefix else line
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     @initialize()
     def init(self) -> None:
         """``t3 teatree availability`` group root."""
@@ -129,9 +134,16 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the resolved mode/source as JSON instead of the human line."),
         ] = False,
-    ) -> str:
+    ) -> AvailabilityPayload:
         """Print the current resolved mode and which layer decided it."""
         resolved = resolve_active_mode()
-        if json_output:
-            return json.dumps({"mode": resolved.name, "source": resolved.source})
-        return _render()
+        payload: AvailabilityPayload = {"mode": resolved.name, "source": resolved.source}
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render(),
+        )
+        return payload

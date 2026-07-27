@@ -101,6 +101,8 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 
 ## `e2e`
 
+Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
+
 | Subcommand | Description |
 | --- | --- |
 | `run` | Run E2E tests — the one command that works for every overlay |
@@ -408,6 +410,8 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | `expire-stale` | Retire stale READY jobs to FAILED so a drainer never runs them |
 
 ## `recipe`
+
+Score the factory against the committed recipe, and pin an approved recipe sha.
 
 | Subcommand | Description |
 | --- | --- |

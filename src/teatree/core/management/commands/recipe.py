@@ -20,14 +20,15 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under ``call_command``.
 import hashlib
 import json
 import os
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
 from teatree.config import get_effective_settings
 from teatree.core.factory.factory_recipe import load_recipe
-from teatree.core.factory.factory_score import FactoryScore, score
+from teatree.core.factory.factory_score import FactoryScore, FactoryScoreDict, score
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
@@ -77,7 +78,9 @@ def _queue_recipe_approval(recipe_sha: str, overlay: str) -> bool:
     return True
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
+    """Score the factory against the committed recipe, and pin an approved recipe sha."""
+
     @command()
     def score(
         self,
@@ -94,7 +97,7 @@ class Command(TyperCommand):
             bool,
             typer.Option("--record", help="Persist a FactoryScoreSnapshot (refused unless factory_score_enabled)."),
         ] = False,
-    ) -> str:
+    ) -> FactoryScoreDict:
         """Compute the recipe-weighted factory score over the trailing window.
 
         Read-only by default (safe for calibration even when the flag is OFF).
@@ -119,9 +122,16 @@ class Command(TyperCommand):
             FactoryScoreSnapshot.objects.record_snapshot(result, tree_sha=_safe_head_sha(), overlay=overlay)
             if not result.recipe_approved and _queue_recipe_approval(result.recipe_sha, overlay):
                 self.stderr.write(f"  recipe {result.recipe_sha[:12]} unapproved — queued one approval question.")
-        if json_output:
-            return json.dumps(result.to_dict())
-        return _render(result)
+        payload = result.to_dict()
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render(result),
+        )
+        return payload
 
     @command()
     def approve(self) -> str:

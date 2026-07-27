@@ -8,6 +8,7 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
+from teatree.core.management.commands.cost import CostPayload
 from teatree.core.models import Session, Task, TaskAttempt
 from tests.factories import TicketFactory
 
@@ -16,8 +17,16 @@ pytestmark = pytest.mark.django_db
 
 
 def _call(*args: str, **kwargs: object) -> str:
+    """Stdout — the machine channel (JSON under ``--json``, empty otherwise)."""
     buf = StringIO()
     call_command("cost", *args, stdout=buf, **kwargs)
+    return buf.getvalue()
+
+
+def _call_human(*args: str, **kwargs: object) -> str:
+    """Stderr — where the seam routes the human view."""
+    buf = StringIO()
+    call_command("cost", *args, stderr=buf, **kwargs)
     return buf.getvalue()
 
 
@@ -78,7 +87,7 @@ class TestCostCommand:
 
     def test_human_output_shows_credit_and_projection(self) -> None:
         self._attempt(cost=20.0, when=timezone.now())
-        out = _call()
+        out = _call_human()
         assert "cycle-to-date:" in out
         assert "$200 credit" in out
         assert "projected end-of-cycle:" in out
@@ -96,5 +105,9 @@ class TestCostCommand:
 
     def test_human_output_shows_effective_tokens(self) -> None:
         self._attempt(cost=1.0, when=timezone.now(), model="opus", input_tokens=1000)
-        out = _call()
+        out = _call_human()
         assert "effective tokens (ET): 1,000" in out
+
+    def test_returns_exactly_the_declared_payload_shape(self) -> None:
+        payload = call_command("cost", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(CostPayload.__annotations__)

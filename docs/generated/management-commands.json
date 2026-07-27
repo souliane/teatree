@@ -200,7 +200,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Run E2E specs and post their evidence \u2014 the overlay-agnostic e2e verbs.",
       "name": "e2e",
       "subcommands": [
         {
@@ -811,7 +811,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Score the factory against the committed recipe, and pin an approved recipe sha.",
       "name": "recipe",
       "subcommands": [
         {

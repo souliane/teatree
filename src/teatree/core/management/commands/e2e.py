@@ -4,12 +4,13 @@ import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
 from teatree.core.intake.resolve import resolve_worktree
+from teatree.core.machine_output import MachineOutputCommand
 from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_lanes as _lanes
 from teatree.core.management.commands import _e2e_run_workitem as _workitem
@@ -63,7 +64,9 @@ class DispatchOptions:
     branch: str = ""
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
+    """Run E2E specs and post their evidence — the overlay-agnostic e2e verbs."""
+
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def run(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
@@ -510,8 +513,12 @@ class Command(TyperCommand):
         ``--json`` prints the object (a CI matrix); ``--names`` prints every spec
         one per line (a shell loop); ``--lane <n>`` filters to one lane.
         """
+        self.print_result = False
         return _lanes.run_lanes(
-            as_json=json_output, names=names, lane=lane, overlay=get_overlay(), write_out=self.stdout.write
+            _lanes.LaneOptions(as_json=json_output, names=names, lane=lane),
+            overlay=get_overlay(),
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
         )
 
     @command(name="retract-evidence")
