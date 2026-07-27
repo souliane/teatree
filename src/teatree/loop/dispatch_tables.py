@@ -104,6 +104,10 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # to promote and which to drop, so the signal IS a pending owner decision — the
     # generic in_flight fallback would file it under work-in-progress instead.
     "memory.skim_promotable": "action_needed",
+    # The recurring question digest exists BECAUSE the first posts (the in_flight
+    # ``deferred_question.mirrored`` above) did not get an answer, so the nag is the
+    # escalation and belongs where the owner looks for what they owe.
+    "deferred_question.resurfaced": "action_needed",
     # Only the CI-green-gate skips reach here (see is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
