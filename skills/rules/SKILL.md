@@ -97,7 +97,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Design principles**
 
 39. [Prefer Standard Over Clever](#prefer-standard-over-clever)
-40. [Never Slim Skills](#never-slim-skills)
+40. [Split Long Skills With Progressive Disclosure](#split-long-skills-with-progressive-disclosure)
 41. [Session Scope Management](#session-scope-management)
 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
 43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
@@ -1044,42 +1044,12 @@ Edit(file_path="module.py", old_string="<the tangled function>", new_string="<th
 
 The DB-home `mode` setting (`t3 <overlay> config_setting set mode <interactive|auto>`, or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
-### Resolve the effective mode before every publishing decision
+**Resolve the effective mode before every publishing decision — never assume `interactive`.** The chain is `T3_MODE` → per-overlay `mode` → global `mode` → per-repo memory overrides → `interactive`. The recurring failure is skipping that resolution and saying "not pushed, interactive mode" on a repo the user already opted into `auto`; that reads as ignoring their configured preference. Once it resolves to `auto`, do not ask "should I push?" — push and open the PR.
 
-Do not assume interactive mode. Before saying "not pushed, your call", before asking "push?", and before prompting for any publishing confirmation, **actively resolve the effective mode in this order** (first match wins):
+- **`interactive`:** each publishing action needs its own explicit confirmation. Commit approval ≠ push approval; rebase approval ≠ force-push approval; "recheck" is verify-only and never re-authorizes an approval.
+- **`auto`:** ship end to end without confirm prompts — push, open the PR, watch CI, then merge via the §17.4 keystone (`t3 <overlay> ticket clear …` → `t3 <overlay> ticket merge <clear_id>`, never raw `gh pr merge`). The one place you still stop is the merge, and only while `require_human_approval_to_merge` is `true` for the active overlay. Quality gates still run — `auto` drops the confirmation, not the checks.
 
-1. `T3_MODE` environment variable (`auto` or `interactive`).
-2. Active overlay's per-overlay `mode` value in the `ConfigSetting` DB store (`config_setting set mode … --overlay <active>`, where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay). The `[overlays.<active>] mode` TOML key is ignored on read.
-3. Global `mode` value in the `ConfigSetting` DB store (`config_setting set mode …`). The `[teatree] mode` TOML key is ignored on read.
-4. Per-repo overrides from agent memory / personal config (e.g. "this repo is auto — don't ask"). These supplement the config.
-5. If nothing matched: default to `interactive`.
-
-If the effective mode resolves to `auto`, apply the auto-mode doctrine below — do not ask for push confirmation, do not phrase the end-of-task as "your call", just push.
-
-The most common failure mode is defaulting to `interactive` without performing steps 1-4 — saying "not pushed, interactive mode" on a repo the user has already opted into auto. That reads as the agent ignoring the user's configured preference and forces them to repeat it every session.
-
-### Interactive mode (default)
-
-Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
-
-- Every publishing action (push, PR create/update, PR merge, PR approve/unapprove, remote branch delete, Slack post) requires a separate explicit confirmation. "Recheck" / "re-review" / "look again" are verify-only instructions — they do **not** authorize re-approval.
-- **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
-
-### Auto mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`)
-
-The user has opted into end-to-end autonomy. The agent ships complete features without pausing for confirm prompts on the publishing actions listed above. In particular:
-
-- Push the feature branch after local quality gates pass (lint, tests, `makemigrations --dry-run --check`).
-- Open the PR, watch the pipeline, then **merge via the §17.4 keystone** (orchestrator `t3 <overlay> ticket clear …` → loop `t3 <overlay> ticket merge <clear_id>`; never raw `gh pr merge`) **when green unless `require_human_approval_to_merge` is `true` for the active overlay**, delete the remote branch.
-- Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
-
-**`require_human_approval_to_merge` is the merge-only carve-out.** Some overlays opt into auto-push but keep auto-merge gated because the upstream enforces a human-review gate (e.g., GitLab Code Review approval rules where CI green is necessary but not sufficient). The setting lives on `UserSettings` (DB-home) and is overridable per-overlay via `t3 <overlay> config_setting set require_human_approval_to_merge true --overlay <name>`. When `true`, the agent pushes and opens the PR/MR without asking but stops before issuing the per-diff CLEAR (`t3 <overlay> ticket clear …`) or running the keystone merge (`t3 <overlay> ticket merge <clear_id>`) — raw `gh pr merge` / `glab mr merge` are mechanically blocked regardless. The user flips it to `false` once they're comfortable trusting CI green alone. Default is `true` (training wheel on). The setting is intentionally orthogonal to `mode`: `mode = "auto"` everywhere is fine while `require_human_approval_to_merge` stays `true` on client/team overlays.
-
-**Mode is per-overlay.** A per-overlay `mode` value (`config_setting set mode … --overlay <name>`) overrides the global `mode` value. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
-
-**Quality gates still run — they just don't depend on user confirmation.** The objection auto mode answers is "stop gating on _confirmation_," not "skip quality checks."
-
-**Don't ask after resolving to `auto`.** Once steps 1–3 of the resolution order resolve to `auto`, asking "should I push?" or "should I open the PR?" reads as ignoring the user's configured preference and forces them to repeat it every session. Just push and open the PR. The only place you still ask is the merge step, and only when `require_human_approval_to_merge` is `true` for the active overlay.
+The resolution order in full, the per-mode expansion, and the `require_human_approval_to_merge` carve-out are in [`skills/rules/references/publishing-mode-doctrine.md`](references/publishing-mode-doctrine.md).
 
 ### Always-Gated Actions (Non-Negotiable, both modes)
 
@@ -1182,9 +1152,14 @@ When posting inline PR comments, target **added lines only** — not context or 
 
 When choosing between a clever in-process approach and the framework's standard approach, choose the standard. Prefer explicit/standard/boring over clever/implicit. If you're uncertain which is better, that uncertainty is the signal to go standard. Django's `setup()` is designed to be called once per process — subprocess via `__main__.py` beats in-process `call_command()` for entry-point overlays.
 
-## Never Slim Skills
+## Split Long Skills With Progressive Disclosure
 
-Never extract SKILL.md content into `references/` files to save tokens. Agents don't reliably load reference files on demand, so critical instructions get ignored. When optimizing context consumption, focus on phase-scoped loading (only embed the skills needed for the task), not on shrinking individual skills.
+A long `SKILL.md` keeps only its **decision-relevant spine** — the rules that change what an agent does — and moves the mechanics behind them into `references/*.md`. Split largest-section-first; a skill that outgrows its budget is split, never left whole.
+
+- **A rule that changes a decision stays in the spine.** The trigger ("when does this apply"), the verdict ("do X, never Y"), and any always-gated safety list are spine content. The step-by-step procedure, the config precedence chain, the per-flag rationale, and the worked recipes are reference content.
+- **Every spine entry names its reference by repo-relative path** (`skills/<skill>/references/<file>.md`), so a dispatch with no Skill tool can still reach it with `Read`. A pointer that only says "see the reference" without a path is not loadable.
+- **Move, never delete.** A safety rule that leaves the spine lands in a reference file intact. Deleting it is a separate, reviewed decision — a reference file is still loaded; a deleted rule is gone.
+- **Phase-scoped loading still matters** and is not a substitute: embed only the skills a phase needs, _and_ keep each of those skills split. The two levers compose.
 
 ## Session Scope Management
 
