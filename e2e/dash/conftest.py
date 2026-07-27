@@ -19,12 +19,23 @@ os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
 import pytest
 from playwright.sync_api import Page
 
+from e2e.dash.browser_launch import BROWSER_EXECUTABLE_ENV, browser_launch_overrides
 from e2e.dash.pom import ConsoleGuard, SeededBoard
 from teatree.core.models.loop import Loop
 from teatree.core.models.ticket import Ticket
 from tests.factories import PullRequestFactory, TicketFactory, TicketTransitionFactory
 
 State = Ticket.State
+
+
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args: dict[str, object]) -> dict[str, object]:
+    """Honor ``E2E_CHROMIUM_EXECUTABLE`` so a host without a Playwright build can run the lane.
+
+    Unset (CI, where the job installs Playwright's own chromium) this returns the
+    plugin's arguments untouched, so the lane runs byte-identically to before.
+    """
+    return {**browser_type_launch_args, **browser_launch_overrides(os.environ.get(BROWSER_EXECUTABLE_ENV))}
 
 
 @pytest.fixture
