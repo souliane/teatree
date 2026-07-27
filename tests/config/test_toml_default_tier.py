@@ -32,7 +32,7 @@ from teatree.config import (
     mr_reminder_from_table,
     speak_from_subtable,
 )
-from teatree.config.cold_defaults import DEFAULTS_TOML, default_for, shipped_defaults_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.overlay_code_defaults import PROMOTED_OVERLAY_CODE_DEFAULT_KEYS
 from teatree.config.registries import COLD_SETTINGS
@@ -107,12 +107,12 @@ class TestTomlDefaultTier(TestCase):
         assert effective_default("session_stale_after_hours") == UserSettings().session_stale_after_hours
 
 
-def test_the_tier_and_the_cold_reader_serve_the_same_shipped_file() -> None:
-    # One path constant, one parse — the resolver's DEFAULTS tier and the cold hook
-    # reader can never disagree about what the shipped default IS.
+def test_the_stdlib_tier_and_the_model_authority_serve_the_same_shipped_file() -> None:
+    # One path constant, one file — the resolver's DEFAULTS tier (stdlib ``cold_defaults``)
+    # and ``effective_default`` (the pydantic model) can never disagree about what the
+    # shipped default IS.
     assert DEFAULTS_TOML.name == "defaults.toml"
     table = shipped_defaults_table(DEFAULTS_TOML)
-    assert default_for("provision_ram_ceiling_percent") == table["provision_ram_ceiling_percent"]
     assert effective_default("provision_ram_ceiling_percent") == table["provision_ram_ceiling_percent"]
 
 
@@ -240,13 +240,16 @@ class TestEveryShippedKeyIsPinned:
         assert not overlapping, f"shipped keys claimed by two tiers: {sorted(overlapping)}"
 
     def test_cold_hook_keys_ship_their_registered_default(self) -> None:
+        # Driven from the REGISTRY, not the table, so an absent key is drift too: a cold-hook
+        # gate the file stops shipping would otherwise leave this guard silently vacuous.
         table = shipped_defaults_table()
+        missing = object()
         drift = {
-            key: (table[key], COLD_HOOK_SETTINGS[key].default)
-            for key in table
-            if key in COLD_HOOK_SETTINGS and table[key] != COLD_HOOK_SETTINGS[key].default
+            key: (table.get(key, missing), setting.default)
+            for key, setting in COLD_HOOK_SETTINGS.items()
+            if table.get(key, missing) != setting.default
         }
-        assert not drift, f"a cold-hook key ships a value its registry does not declare: {drift}"
+        assert not drift, f"a cold-hook key is absent from the shipped file or ships a foreign value: {drift}"
 
     def test_cold_keys_ship_their_unset_sentinel(self) -> None:
         # Each cold key's reader treats an absent row / empty string / non-explicit-true as

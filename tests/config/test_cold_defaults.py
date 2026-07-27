@@ -1,11 +1,11 @@
 # test-path: cross-cutting
-"""The stdlib cold reader for ``defaults.toml`` — behavior, mtime cache, and coherence.
+"""The stdlib reader the resolver's DEFAULTS tier parses ``defaults.toml`` through.
 
-``cold_defaults`` is the cold-path twin of ``schema.shipped_defaults``: it reads the same
-shipped ``defaults.toml`` with ``tomllib`` (no pydantic, no Django), so a hook leaf gets a
-key's shipped default without the ~110ms model import. The load-bearing guard is the
-COHERENCE test — the stdlib default equals the model default for every Default-category key —
-plus the CONTROL that importing the module never pulls pydantic onto the cold path.
+``cold_defaults`` reads the shipped file with ``tomllib`` (no pydantic, no Django) because
+``teatree.config``'s package init imports ``resolution`` and the cold hook path loads that
+init. The load-bearing guard is therefore the CONTROL that importing the module never pulls
+pydantic or Django onto the cold path; the table's CONTENT (which keys ship, at which
+values) is pinned against the resolver and the registries in ``test_toml_default_tier``.
 """
 
 import os
@@ -14,12 +14,9 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
 from teatree.config import cold_defaults
-from teatree.config.cold_defaults import default_for, shipped_defaults_table
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
-from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta, shipped_defaults
+from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
 
 _FIELDS = TeatreeSettingsSchema.model_fields
 _DEFAULT_KEYS = sorted(k for k in _FIELDS if setting_meta(k).category is Category.DEFAULT)
@@ -27,41 +24,36 @@ _NON_DEFAULT_KEYS = sorted(k for k in _FIELDS if setting_meta(k).category is not
 
 
 class TestReadsTheShippedTable:
-    def test_table_carries_the_default_category_keys(self) -> None:
+    def test_table_carries_exactly_the_default_category_keys(self) -> None:
+        # Secret/Personal keys are absent by construction — they hold their empty code
+        # default and are never written to a shareable file.
         assert set(shipped_defaults_table()) == set(_DEFAULT_KEYS)
+        assert not set(shipped_defaults_table()) & set(_NON_DEFAULT_KEYS)
 
-    def test_default_for_scalar_key(self) -> None:
-        assert default_for("agent_harness") == "claude_sdk"
-
-    def test_default_for_sub_table_key(self) -> None:
-        assert cold_defaults.default_for("speak") == {"local": "off", "slack": False}
-
-    def test_absent_key_returns_fallback(self) -> None:
-        # A Secret/Personal key is absent from the file by construction → its empty code default.
-        assert cold_defaults.default_for("slack_user_id", "") == ""
-        assert cold_defaults.default_for("banned_terms", []) == []
+    def test_a_scalar_and_a_sub_table_key_both_parse(self) -> None:
+        table = shipped_defaults_table()
+        assert table["agent_harness"] == "claude_sdk"
+        assert table["speak"] == {"local": "off", "slack": False}
 
     def test_returned_table_is_a_copy(self) -> None:
-        table = cold_defaults.shipped_defaults_table()
-        table["agent_harness"] = "__mutated__"
-        assert cold_defaults.default_for("agent_harness") == "claude_sdk"
+        shipped_defaults_table()["agent_harness"] = "__mutated__"
+        assert shipped_defaults_table()["agent_harness"] == "claude_sdk"
 
 
 class TestMtimeKeyedCache:
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
-        assert cold_defaults.shipped_defaults_table(tmp_path / "nope.toml") == {}
-        assert cold_defaults.default_for("agent_harness", "fb", path=tmp_path / "nope.toml") == "fb"
+        assert shipped_defaults_table(tmp_path / "nope.toml") == {}
 
     def test_rewrite_with_new_mtime_is_reparsed(self, tmp_path: Path) -> None:
         toml = tmp_path / "defaults.toml"
         toml.write_text('[teatree]\nagent_harness = "first"\n')
 
         os.utime(toml, ns=(1_000_000_000, 1_000_000_000))
-        assert cold_defaults.default_for("agent_harness", path=toml) == "first"
+        assert shipped_defaults_table(toml)["agent_harness"] == "first"
 
         toml.write_text('[teatree]\nagent_harness = "second"\n')
         os.utime(toml, ns=(2_000_000_000, 2_000_000_000))
-        assert cold_defaults.default_for("agent_harness", path=toml) == "second"
+        assert shipped_defaults_table(toml)["agent_harness"] == "second"
 
     def test_same_mtime_serves_the_cached_parse(self, tmp_path: Path) -> None:
         # Control: with the mtime pinned, a content change is NOT observed — proving the
@@ -70,29 +62,20 @@ class TestMtimeKeyedCache:
         toml = tmp_path / "defaults.toml"
         toml.write_text('[teatree]\nagent_harness = "first"\n')
         os.utime(toml, ns=(5_000_000_000, 5_000_000_000))
-        assert cold_defaults.default_for("agent_harness", path=toml) == "first"
+        assert shipped_defaults_table(toml)["agent_harness"] == "first"
 
         toml.write_text('[teatree]\nagent_harness = "second"\n')
         os.utime(toml, ns=(5_000_000_000, 5_000_000_000))
-        assert cold_defaults.default_for("agent_harness", path=toml) == "first"
+        assert shipped_defaults_table(toml)["agent_harness"] == "first"
 
 
-class TestCoherenceWithTheModel:
-    """The cold stdlib default equals the pydantic model default, per key."""
-
-    @pytest.mark.parametrize("key", _DEFAULT_KEYS)
-    def test_cold_default_equals_model_default(self, key: str) -> None:
-        assert cold_defaults.default_for(key, "__MISSING__") == getattr(shipped_defaults(), key)
-
-    @pytest.mark.parametrize("key", _NON_DEFAULT_KEYS)
-    def test_non_default_key_absent_from_the_cold_table(self, key: str) -> None:
-        assert cold_defaults.default_for(key, "__SENTINEL__") == "__SENTINEL__"
-
-    @pytest.mark.parametrize("key", sorted(COLD_HOOK_SETTINGS))
-    def test_cold_default_equals_cold_hook_hand_default(self, key: str) -> None:
-        # The stdlib reader can serve the cold-hook default tier: its value equals the
-        # hand-maintained ``ColdHookSetting.default`` for every cold-hook gate flag / budget.
-        assert cold_defaults.default_for(key, "__MISSING__") == COLD_HOOK_SETTINGS[key].default
+def test_the_module_exposes_only_what_the_resolver_consumes() -> None:
+    # A reader nothing calls is the inverse-drift class this package now ratchets: the
+    # module's public surface is exactly the path constant + the table the DEFAULTS tier
+    # (``resolution._toml_default_rows``) and ``schema`` resolve the file through.
+    assert set(cold_defaults.__all__) == {"DEFAULTS_TOML", "shipped_defaults_table"}
+    public = {name for name in vars(cold_defaults) if not name.startswith("_")}
+    assert public - set(cold_defaults.__all__) <= {"Any", "Path", "threading", "tomllib"}
 
 
 def test_import_does_not_load_pydantic_or_django() -> None:
