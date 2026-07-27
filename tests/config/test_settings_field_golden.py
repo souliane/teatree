@@ -185,6 +185,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "stale_stack_min_age_minutes",
         "statusline_chain",
         "statusline_engaged_render",
+        "subagent_spawn_ceiling",
         "substrate_auto_merge_authorized_by",
         "substrate_self_signoff",
         "task_attempt_retention_days",

@@ -26,6 +26,8 @@ from teatree.agents.model_tiering import (
 )
 from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
+from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
@@ -180,11 +182,22 @@ def _build_options(
     )
     if env is not None:
         options.env = env
+    options.hooks = spawn_ceiling_hooks(SpawnCeiling(limit=resolve_spawn_ceiling()))
     if is_reader_phase(phase):
         _apply_reader_tool_lockdown(options)
     else:
         _wire_teatree_mcp_server(options)
     return options
+
+
+def resolve_spawn_ceiling() -> int:
+    """The configured per-run sub-agent spawn ceiling; ``0`` disables the gate.
+
+    Resolved ONCE here rather than inside the hook: the hook runs on the SDK's
+    async path, where a DB read would be both a per-tool-call cost and an
+    async-context hazard. The dispatch closes over the resolved int instead.
+    """
+    return get_effective_settings().subagent_spawn_ceiling
 
 
 def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:

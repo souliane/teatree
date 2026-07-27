@@ -224,6 +224,11 @@ class _ModeHarnessSettings:
     # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.
     # ``0.0`` disables the cap. Per-overlay overridable.
     ticket_budget_max_cost_usd: float = 0.0
+    # Deterministic ceiling on how many sub-agents ONE headless run may spawn
+    # (``agents/subagent_ceiling.py``). The runtime watchdog bounds a run's duration,
+    # not its fan-out, so a wall clock cannot see a delegation runaway. ``0`` disables
+    # the gate, matching the watchdog convention above. Per-overlay overridable.
+    subagent_spawn_ceiling: int = 20
 
 
 @dataclass
