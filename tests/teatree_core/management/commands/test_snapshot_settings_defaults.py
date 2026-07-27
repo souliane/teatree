@@ -16,11 +16,12 @@ from unittest import mock
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from django_typer.management import TyperCommand
 
 from teatree.config import cold_defaults
 from teatree.config.defaults_approvals import read_approvals
-from teatree.config.defaults_snapshot import plan_fingerprint, plan_snapshot
+from teatree.config.defaults_snapshot import ShippedFile, plan_fingerprint, plan_snapshot
 from teatree.core.management.commands import snapshot_settings_defaults as command_module
 from teatree.core.management.commands.snapshot_settings_defaults import Command
 from teatree.core.models import ConfigSetting
@@ -49,10 +50,8 @@ class SnapshotCommandTestCase(TestCase):
         return out.getvalue() + err.getvalue()
 
     def _fingerprint(self) -> str:
-        shipped = self._shipped()
         plan = plan_snapshot(
-            shipped=shipped,
-            code_defaults=shipped,
+            shipped=ShippedFile(table=self._shipped(), text=self.defaults.read_text(encoding="utf-8")),
             live_global=ConfigSetting.objects.overrides_for_scope(""),
             overlay_scope_rows=[],
             banned_scan=lambda _text: None,
@@ -188,3 +187,20 @@ class TestPinnedKeysCannotMoveThroughThisPath(SnapshotCommandTestCase):
     def test_a_pinned_override_is_reported_as_declined(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full")
         assert "safety-posture" in self._run()
+
+
+class TestSiblingSeedTablesSurviveAnApply(SnapshotCommandTestCase):
+    """An approved write re-renders `[teatree]` alone — it never drops the seed tables."""
+
+    def test_the_written_file_keeps_every_seed_table(self) -> None:
+        ConfigSetting.objects.set_value(_TUNABLE, 42)
+        before = tomllib.loads(self.defaults.read_text(encoding="utf-8"))
+        self._run()
+        DeferredQuestion.objects.update(answer_text="approve", answered_at=timezone.now())
+
+        self._run("--apply")
+
+        after = tomllib.loads(self.defaults.read_text(encoding="utf-8"))
+        assert after["teatree"][_TUNABLE] == 42
+        for table in ("loops", "modes", "schedules"):
+            assert after[table] == before[table]

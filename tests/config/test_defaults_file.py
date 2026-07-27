@@ -49,6 +49,13 @@ def _toml_teatree() -> dict[str, Any]:
     return tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"]
 
 
+def _settings_table_text() -> str:
+    """The raw text of the ``[teatree]`` section, up to the first sibling top-level table."""
+    raw = _DEFAULTS_TOML.read_text()
+    section = raw[raw.index("\n[teatree]\n") :]
+    return section[: section.index("\n[loops.")]
+
+
 def _default_keys() -> set[str]:
     return {k for k in ALL_KNOWN_CONFIG_SETTINGS if setting_meta(k).category is Category.DEFAULT}
 
@@ -73,13 +80,21 @@ class TestDefaultsFileShape:
     def test_defaults_file_keys_are_exactly_the_default_category(self) -> None:
         assert set(_toml_teatree()) == _default_keys()
 
-    def test_no_secret_or_personal_key_name_appears_in_the_file(self) -> None:
-        raw = _DEFAULTS_TOML.read_text()
+    def test_the_file_carries_the_settings_table_and_the_three_seed_tables(self) -> None:
+        # The shipped file is one file, several top-level tables: the `[teatree]` settings
+        # the resolver's DEFAULTS tier reads, plus a seed table per object family. A table
+        # nobody declared here would be read by nothing.
+        assert set(tomllib.loads(_DEFAULTS_TOML.read_text())) == {"teatree", "loops", "modes", "schedules"}
+
+    def test_no_secret_or_personal_key_name_appears_in_the_settings_table(self) -> None:
+        raw = _settings_table_text()
         for key in _KEYS:
             if setting_meta(key).category is Category.DEFAULT:
                 continue
-            # A byte scan: a secret/personal key must never surface as a `key =` / `[..key]`
-            # assignment line in the shipped file.
+            # A byte scan over the `[teatree]` section: a secret/personal key must never
+            # surface as a `key =` / `[..key]` assignment line. Scoped to that section
+            # because the sibling seed tables are a different namespace — `[loops.<name>]`
+            # names LOOPS, and one of them may legitimately collide with a setting key.
             assert f"\n{key} =" not in raw
             assert f"{key}]" not in raw
 

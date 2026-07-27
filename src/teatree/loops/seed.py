@@ -1,10 +1,12 @@
 """Canonical default loops + prompts, and their idempotent seed (#2513).
 
-The single source of truth for which autonomous :class:`Loop` rows ship by
-default and how each is invoked (its on-disk ``script`` or its reusable
-:class:`Prompt`). Migrations seeded these at migrate-time; this module is the
-install-time seed ``t3 setup`` runs so a fresh — or squashed-migration — install
-has them present regardless of migration history.
+Which autonomous :class:`Loop` rows ship by default — and how each is invoked (its
+on-disk ``script`` or its reusable :class:`Prompt`) — is SHIPPED DATA, not code: the
+values live in the ``[loops.<name>]`` tables of ``src/teatree/config/defaults.toml``
+alongside every other shipped default an operator tunes, and this module builds the
+:class:`LoopSeedSpec` set from them. Migrations seeded these at migrate-time; this
+module is the install-time seed ``t3 setup`` runs so a fresh — or squashed-migration —
+install has them present regardless of migration history.
 
 The seed is **idempotent**: it ``get_or_create``s by ``name``, so re-running it
 creates nothing new and NEVER clobbers an operator-edited row (a disabled loop,
@@ -30,16 +32,11 @@ fan out (the seed/registry parity this module's test pins).
 
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 
-#: The architectural-review prompt body — a real instruction telling the
-#: sub-agent to run an architectural review using the ``ac-reviewing-codebase``
-#: skill (owner's explicit decision). Shared with the data migration so the
-#: install-seed and the migrate-time seed agree.
-ARCH_REVIEW_PROMPT_BODY = (
-    "Run an architectural review of the codebase using the ac-reviewing-codebase skill. "
-    "Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, "
-    "codebase-wide architectural review, surfacing findings as the skill prescribes."
-)
+from teatree.config.seed_defaults import shipped_seed_table
+
+_LOOPS_TABLE = "loops"
 
 
 def script_entry_point_for(name: str) -> str:
@@ -89,186 +86,37 @@ class LoopSeedSpec:
         return script_entry_point_for(self.name)
 
 
-# One autonomous loop per row, each on its own cadence. Every script-backed loop
-# points at its OWN module; ``arch_review`` is the single prompt-backed default.
-DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
-    LoopSeedSpec(
-        "inbox",
-        60,
-        "Drains inbound Slack mentions, DMs, review-intent and RED-CARD reactions "
-        "(plus the Notion view) into the DB every 1m and routes them.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "idle_stack_reaper",
-        60,
-        "Stops local dev stacks left idle past their threshold to free a concurrency slot; checks every 1m.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "local_stack_queue",
-        60,
-        "Drains the local-stack acquisition queue, starting the next queued worktree "
-        "stack whose backoff retry is due; checks every 1m.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "resource_pressure",
-        60,
-        "Auto-frees host disk and RAM when they cross the pressure threshold; "
-        "checks every 1m on its own ~5m internal cadence.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "snapshot_warmer",
-        86400,
-        "Refreshes each overlay-declared reference DB's DSLR snapshot out-of-band once a day "
-        "so a ticket-critical-path provision never pays the slow restore+migrate path.",
-    ),
-    # NOTE: the reactive infra loops (``slack_answer`` / ``self_improve`` /
-    # ``drain_queue``) are intentionally absent — they have no registry MiniLoop
-    # and each runs as its own dedicated `/loop` (`t3 loop <slot> run`), never via
-    # a per-loop tick (see the module docstring). A seeded row would be an orphan.
-    LoopSeedSpec(
-        "dispatch",
-        300,
-        "Runs the always-on global scanners every 5m: dispatches pending headless Tasks "
-        "to phase sub-agents, ingests incoming events, redelivers undelivered notifies, "
-        "and posts deferred questions.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "tickets",
-        300,
-        "Scans the local Ticket DB and each code host every 5m — surfacing active and "
-        "stale tickets, dispositioning issues, and marking completed ones.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "review",
-        300,
-        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always "
-        "(per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. "
-        "Always runs (not colleague-facing); self-review keeps going unattended.",
-    ),
-    LoopSeedSpec(
-        "ship",
-        300,
-        "Sweeps your own-authored + same-repo open PRs every 5m: folds in approvals/CI, arms "
-        "the cold review, and executes the keystone merge (consumes the orchestrator's MergeClear). "
-        "Runs under autonomous_away so the merge path never starves.",
-    ),
-    LoopSeedSpec(
-        "issue_disposition",
-        300,
-        "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) "
-        "every 5m; default-off behind auto_disposition_enabled, bounded per tick.",
-    ),
-    LoopSeedSpec(
-        "audit",
-        1800,
-        "Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m.",
-    ),
-    LoopSeedSpec(
-        "followup",
-        1800,
-        "Intakes newly-assigned issues (auto-starting ready ones) and fires the review-request nag every 30m.",
-        colleague_facing=True,
-    ),
-    LoopSeedSpec(
-        "issue_implementer",
-        1800,
-        "Discovers and claims labelled backlog issues to auto-implement, kicking off the "
-        "maker pipeline; every 30m, default-off behind a triple gate.",
-    ),
-    LoopSeedSpec(
-        "triage_assessor",
-        3600,
-        "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations "
-        "behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval.",
-    ),
-    LoopSeedSpec(
-        "dm_sweep",
-        3600,
-        "Sweeps the owner's DM threads hourly and resolves the ones that no longer need "
-        "them (owner already replied, subject merged/closed, duplicate of an open thread); "
-        "leaves anything older than a day for the resurfacing side, and says nothing when "
-        "it resolved nothing.",
-    ),
-    LoopSeedSpec(
-        "housekeeping",
-        3600,
-        "Fast-forwards the editable teatree and overlay installs (self-update) and pulls "
-        "each overlay's main clone hourly.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "arch_review",
-        10800,
-        "Dispatches a sub-agent every 3h to run a holistic, codebase-wide architectural "
-        "review via the ac-reviewing-codebase skill.",
-        prompt_body=ARCH_REVIEW_PROMPT_BODY,
-    ),
-    LoopSeedSpec(
-        "dogfood",
-        86400,
-        "Runs the overlay provisioning smoke test once a day to catch broken worktree setup.",
-    ),
-    LoopSeedSpec(
-        "eval_local",
-        86400,
-        "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily).",
-    ),
-    LoopSeedSpec(
-        "db_backup",
-        86400,
-        "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention "
-        "(directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled.",
-        default_enabled=True,
-    ),
-    LoopSeedSpec(
-        "backlog_sweep",
-        86400,
-        "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) "
-        "behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes.",
-    ),
-    LoopSeedSpec(
-        "news",
-        86400,
-        "Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas.",
-        daily_at=dt.time(8, 0),
-    ),
-    LoopSeedSpec(
-        "dream",
-        86400,
-        "Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, "
-        "reindex MEMORY.md, decay — off the live tick.",
-        daily_at=dt.time(3, 0),
-    ),
-    LoopSeedSpec(
-        "outer_loop",
-        86400,
-        "Advances at most one T4 autoresearch experiment one step per day (propose, "
-        "ratify, implement, measure, keep-only-if-better), off the live tick; ships "
-        "disabled behind the outer_loop_enabled flag and the critic-live guard.",
-    ),
-    LoopSeedSpec(
-        "directive_loop",
-        3600,
-        "Hourly, off the live tick: interprets captured owner directives up to "
-        "directive_intake_per_tick per pass and stops at the human ratify gate, then advances "
-        "one ratified directive one step (implement, configure, verify, keep-only-if-verified, "
-        "else human-asked revert); ships disabled behind the directive_loop_enabled flag, and "
-        "the execution arc additionally needs the critic-live guard.",
-    ),
-    LoopSeedSpec(
-        "ci_eval_heal",
-        300,
-        "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the "
-        "behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. "
-        "Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row.",
-    ),
-)
+def load_loop_specs(path: Path | None = None) -> tuple[LoopSeedSpec, ...]:
+    """The shipped ``[loops]`` table as specs, in the file's table order.
+
+    File order IS seed order: the frozen ``0001_initial`` copy is pinned against this
+    tuple, so a reordering of the tables is a reviewed change, not a formatting whim.
+    An omitted optional field falls back to the dataclass default, so a loop that is
+    neither prompt-backed nor daily-scheduled needs only its cadence and description.
+    """
+    return tuple(
+        LoopSeedSpec(
+            name=name,
+            delay_seconds=entry["delay_seconds"],
+            description=entry["description"],
+            daily_at=entry.get("daily_at"),
+            prompt_body=entry.get("prompt_body"),
+            colleague_facing=entry.get("colleague_facing", False),
+            default_enabled=entry.get("default_enabled", False),
+        )
+        for name, entry in shipped_seed_table(_LOOPS_TABLE, path).items()
+    )
+
+
+#: One autonomous loop per row, each on its own cadence. Every script-backed loop
+#: points at its OWN module; ``arch_review`` is the single prompt-backed default.
+DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = load_loop_specs()
+
+#: The architectural-review prompt body — a real instruction telling the sub-agent to run
+#: an architectural review using the ``ac-reviewing-codebase`` skill (owner's explicit
+#: decision). Shared with the data migration so the install-seed and the migrate-time seed
+#: agree; shipped in ``[loops.arch_review] prompt_body``.
+ARCH_REVIEW_PROMPT_BODY: str = next(spec.prompt_body or "" for spec in DEFAULT_LOOPS if spec.is_prompt_backed)
 
 
 @dataclass(frozen=True, slots=True)

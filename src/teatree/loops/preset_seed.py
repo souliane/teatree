@@ -1,11 +1,15 @@
-"""Idempotent seed of the default loop presets + schedules (#3159).
+"""Idempotent seed of the default loop modes + schedules (#3159).
 
-The 7 curated presets and the two shipped schedules (``standard`` /
-``always-unattended``) as owner-editable DB DATA, not code. Named for what the
-mode *does*, grounded in the seed taxonomy (:data:`teatree.loops.seed.DEFAULT_LOOPS`).
+The 7 curated modes and the two shipped schedules (``standard`` /
+``always-unattended``) as owner-editable data. The shipped VALUES live in the
+``[modes.<name>]`` / ``[schedules.<name>]`` tables of
+``src/teatree/config/defaults.toml`` — the same packaged file every other shipped
+default an operator tunes lives in — and this module seeds them into owner-editable
+DB rows. Named for what the mode *does*, grounded in the seed taxonomy
+(``[loops]``, read by :data:`teatree.loops.seed.DEFAULT_LOOPS`).
 
 **Idempotent, never clobbering edits:** ``get_or_create`` by ``name`` so a
-re-run creates nothing new and leaves an operator-edited preset/schedule exactly
+re-run creates nothing new and leaves an operator-edited mode/schedule exactly
 as-is. Slots are only materialised for a NEWLY-created schedule, so an operator
 who re-arranged a schedule's slots keeps that arrangement.
 
@@ -17,118 +21,21 @@ fresh install runs the owner's working-hours calendar out of the box — Mon-Fri
 box and PRESERVES an operator who switched to another calendar (or cleared it),
 so a re-seed never overrides the owner's choice.
 
-Dark/destructive-opt-in loops (``issue_implementer`` / ``issue_disposition`` /
-``backlog_sweep`` / ``outer_loop`` / ``directive_loop``) stay *inherit* in every
-preset except ``low-power`` / ``off`` — a mode switch never silently re-enables
+A loop ABSENT from a mode's ``entries`` table INHERITS its own enabled flag, which is
+how the dark/destructive-opt-in loops (``issue_implementer`` / ``issue_disposition`` /
+``backlog_sweep`` / ``outer_loop`` / ``directive_loop``) stay untouched by every mode
+except ``low-power`` / ``off`` / ``offline`` — a mode switch never silently re-enables
 the owner's explicit opt-in on a destructive-capable loop.
 """
 
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 
-from teatree.loops.seed import DEFAULT_LOOPS
+from teatree.config.seed_defaults import shipped_seed_table
 
-# The deterministic, model-free local loops ``low-power`` keeps up (capture via
-# inbox continues, cheap and lossless); every other loop is forced off.
-_LOW_POWER_ON: frozenset[str] = frozenset(
-    {"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}
-)
-
-# The explicit tri-state entries per preset (absent key = inherit the base config).
-# Mirrors the design's curated table; ``low-power`` / ``off`` are built
-# programmatically below so they cover EVERY seeded loop.
-_ENGAGED = dict.fromkeys(
-    (
-        "inbox",
-        "dispatch",
-        "tickets",
-        "ship",
-        "review",
-        "followup",
-        "audit",
-        "news",
-        "arch_review",
-        "dream",
-        "eval_local",
-        "dogfood",
-        "snapshot_warmer",
-        "housekeeping",
-        "idle_stack_reaper",
-        "local_stack_queue",
-        "resource_pressure",
-    ),
-    True,
-)
-_HEADS_DOWN = {
-    **dict.fromkeys(
-        (
-            "inbox",
-            "dispatch",
-            "tickets",
-            "ship",
-            "dream",
-            "snapshot_warmer",
-            "housekeeping",
-            "idle_stack_reaper",
-            "local_stack_queue",
-            "resource_pressure",
-        ),
-        True,
-    ),
-    **dict.fromkeys(("review", "followup", "audit", "news", "arch_review", "eval_local", "dogfood"), False),
-}
-_UNATTENDED = {
-    **dict.fromkeys(
-        (
-            "inbox",
-            "dispatch",
-            "tickets",
-            "ship",
-            # #3569: ``review`` is UNMASKED when unattended — forced ON so self-review
-            # keeps reviewing the owner's own PRs autonomously (it is no longer
-            # colleague_facing, so the away-gate does not skip it). Colleague
-            # admission is gated upstream by ``admit_colleague_prs_to_board``, not
-            # by the preset.
-            "review",
-            "audit",
-            "news",
-            "arch_review",
-            "dream",
-            "snapshot_warmer",
-            "housekeeping",
-            "idle_stack_reaper",
-            "local_stack_queue",
-            "resource_pressure",
-        ),
-        True,
-    ),
-    # ``followup`` stays masked (its review-request nag is colleague-facing).
-    **dict.fromkeys(("followup",), False),
-}
-_MAINTENANCE = {
-    **dict.fromkeys(
-        (
-            "inbox",
-            "dispatch",
-            "dream",
-            "eval_local",
-            "dogfood",
-            "arch_review",
-            "news",
-            "snapshot_warmer",
-            "housekeeping",
-            "idle_stack_reaper",
-            "local_stack_queue",
-            "resource_pressure",
-        ),
-        True,
-    ),
-    **dict.fromkeys(("tickets", "ship", "review", "followup", "audit"), False),
-}
-
-
-def _all_loop_names() -> tuple[str, ...]:
-    return tuple(spec.name for spec in DEFAULT_LOOPS)
+_MODES_TABLE = "modes"
+_SCHEDULES_TABLE = "schedules"
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,73 +68,35 @@ class ScheduleSpec:
     timezone: str = ""
 
 
-def default_preset_specs() -> tuple[PresetSpec, ...]:
-    names = _all_loop_names()
-    return (
+def default_preset_specs(path: Path | None = None) -> tuple[PresetSpec, ...]:
+    """The shipped ``[modes]`` table as specs, in the file's table order."""
+    return tuple(
         PresetSpec(
-            "engaged", "Full working-hours mode: deliver, interact, keep improvement loops warm.", dict(_ENGAGED)
-        ),
-        PresetSpec(
-            "heads-down", "Deep work: deliver without touching colleagues (review/followup off).", dict(_HEADS_DOWN)
-        ),
-        PresetSpec(
-            "unattended",
-            "The factory keeps producing while the human is unreachable; colleague-facing loops off.",
-            dict(_UNATTENDED),
-            availability_mode="autonomous_away",
-            defers_questions=True,
-        ),
-        PresetSpec(
-            "maintenance",
-            "Nights: self-maintenance + self-improvement only, no ticket/colleague/delivery work.",
-            dict(_MAINTENANCE),
-            defers_questions=True,
-        ),
-        PresetSpec(
-            "low-power",
-            "Token-budget guard: only deterministic model-free local loops stay up.",
-            {name: name in _LOW_POWER_ON for name in names},
-            defers_questions=True,
-        ),
-        PresetSpec(
-            "off",
-            "Every Loop-table loop off (the reversible 'calendar says nothing runs' mode).",
-            dict.fromkeys(names, False),
-        ),
-        PresetSpec(
-            "offline",
-            "Holiday: every loop off, questions defer AND the self-pump pauses (was 'off' preset + 'away').",
-            dict.fromkeys(names, False),
-            availability_mode="away",
-            defers_questions=True,
-            pauses_self_pump=True,
-            presence_sensitive=False,
-        ),
+            name=name,
+            description=entry["description"],
+            entries={loop: bool(value) for loop, value in entry.get("entries", {}).items()},
+            availability_mode=entry.get("availability_mode", ""),
+            defers_questions=entry.get("defers_questions", False),
+            pauses_self_pump=entry.get("pauses_self_pump", False),
+            presence_sensitive=entry.get("presence_sensitive", True),
+        )
+        for name, entry in shipped_seed_table(_MODES_TABLE, path).items()
     )
 
 
-def default_schedule_specs() -> tuple[ScheduleSpec, ...]:
-    weekdays = [0, 1, 2, 3, 4]
-    weekend = [5, 6]
-    all_week = [0, 1, 2, 3, 4, 5, 6]
-    return (
+def default_schedule_specs(path: Path | None = None) -> tuple[ScheduleSpec, ...]:
+    """The shipped ``[schedules]`` table as specs, each slot in its declared order."""
+    return tuple(
         ScheduleSpec(
-            "standard",
-            "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → engaged "
-            "(attended); all other times (weekday evenings/nights + weekends) → "
-            "unattended (autonomous-away).",
-            (
-                SlotSpec(weekdays, dt.time(9, 0), "engaged"),
-                SlotSpec(weekdays, dt.time(16, 0), "unattended"),
-                SlotSpec(weekend, dt.time(0, 0), "unattended"),
+            name=name,
+            description=entry["description"],
+            slots=tuple(
+                SlotSpec(days=slot["days"], start_time=slot["start_time"], preset_name=slot["preset_name"])
+                for slot in entry.get("slots", ())
             ),
-            timezone="Europe/Vienna",
-        ),
-        ScheduleSpec(
-            "always-unattended",
-            "The holiday calendar: unattended all week.",
-            (SlotSpec(all_week, dt.time(0, 0), "unattended"),),
-        ),
+            timezone=entry.get("timezone", ""),
+        )
+        for name, entry in shipped_seed_table(_SCHEDULES_TABLE, path).items()
     )
 
 

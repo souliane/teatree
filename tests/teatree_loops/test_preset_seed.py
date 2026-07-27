@@ -10,13 +10,22 @@ Integration-first against the real DB.
 import datetime as dt
 import io
 import zoneinfo
+from pathlib import Path
 
 import django.test
 from django.core.management import call_command
 
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.models import ConfigSetting, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING, resolve_active_preset
-from teatree.loops.preset_seed import default_preset_specs, seed_default_presets_and_schedules
+from teatree.loops.preset_seed import (
+    PresetSpec,
+    ScheduleSpec,
+    SlotSpec,
+    default_preset_specs,
+    default_schedule_specs,
+    seed_default_presets_and_schedules,
+)
 from teatree.loops.seed import DEFAULT_LOOPS
 
 _EXPECTED_PRESETS = {"engaged", "heads-down", "unattended", "maintenance", "low-power", "off", "offline"}
@@ -178,3 +187,207 @@ class TestSeededStandardScheduleResolvesViennaHours(django.test.TestCase):
         out = io.StringIO()
         call_command("seed_loops", stdout=out)
         assert "presets:" in out.getvalue()
+
+
+#: The shipped mask of every mode, as (forced ON, forced OFF) loop names — a loop in
+#: NEITHER set is absent from the mode and inherits its own enabled flag. Transcribed from
+#: the pre-move in-code constants and pinned here so relocating the data into
+#: ``defaults.toml`` cannot retune a single loop.
+_SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "engaged": (
+        frozenset(
+            {
+                "inbox",
+                "dispatch",
+                "tickets",
+                "ship",
+                "review",
+                "followup",
+                "audit",
+                "news",
+                "arch_review",
+                "dream",
+                "eval_local",
+                "dogfood",
+                "snapshot_warmer",
+                "housekeeping",
+                "idle_stack_reaper",
+                "local_stack_queue",
+                "resource_pressure",
+            }
+        ),
+        frozenset(),
+    ),
+    "heads-down": (
+        frozenset(
+            {
+                "inbox",
+                "dispatch",
+                "tickets",
+                "ship",
+                "dream",
+                "snapshot_warmer",
+                "housekeeping",
+                "idle_stack_reaper",
+                "local_stack_queue",
+                "resource_pressure",
+            }
+        ),
+        frozenset({"review", "followup", "audit", "news", "arch_review", "eval_local", "dogfood"}),
+    ),
+    "unattended": (
+        frozenset(
+            {
+                "inbox",
+                "dispatch",
+                "tickets",
+                "ship",
+                "review",
+                "audit",
+                "news",
+                "arch_review",
+                "dream",
+                "snapshot_warmer",
+                "housekeeping",
+                "idle_stack_reaper",
+                "local_stack_queue",
+                "resource_pressure",
+            }
+        ),
+        frozenset({"followup"}),
+    ),
+    "maintenance": (
+        frozenset(
+            {
+                "inbox",
+                "dispatch",
+                "dream",
+                "eval_local",
+                "dogfood",
+                "arch_review",
+                "news",
+                "snapshot_warmer",
+                "housekeeping",
+                "idle_stack_reaper",
+                "local_stack_queue",
+                "resource_pressure",
+            }
+        ),
+        frozenset({"tickets", "ship", "review", "followup", "audit"}),
+    ),
+    "low-power": (
+        frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
+        frozenset(spec.name for spec in DEFAULT_LOOPS)
+        - frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
+    ),
+    "off": (frozenset(), frozenset(spec.name for spec in DEFAULT_LOOPS)),
+    "offline": (frozenset(), frozenset(spec.name for spec in DEFAULT_LOOPS)),
+}
+
+#: ``(availability_mode, defers_questions, pauses_self_pump, presence_sensitive)`` per mode.
+_SHIPPED_POSTURES: dict[str, tuple[str, bool, bool, bool]] = {
+    "engaged": ("", False, False, True),
+    "heads-down": ("", False, False, True),
+    "unattended": ("autonomous_away", True, False, True),
+    "maintenance": ("", True, False, True),
+    "low-power": ("", True, False, True),
+    "off": ("", False, False, True),
+    "offline": ("away", True, True, False),
+}
+
+
+class TestShippedSpecsAreUnchangedByTheMoveIntoTheFile:
+    """The relocation into ``defaults.toml`` retunes nothing — every mask and posture holds."""
+
+    def test_every_mode_ships_its_recorded_mask(self) -> None:
+        by_name = {spec.name: spec.entries for spec in default_preset_specs()}
+        assert set(by_name) == set(_SHIPPED_MASKS)
+        for name, (on, off) in _SHIPPED_MASKS.items():
+            entries = by_name[name]
+            assert {loop for loop, value in entries.items() if value} == on, name
+            assert {loop for loop, value in entries.items() if not value} == off, name
+
+    def test_every_mode_ships_its_recorded_availability_posture(self) -> None:
+        for spec in default_preset_specs():
+            posture = (spec.availability_mode, spec.defers_questions, spec.pauses_self_pump, spec.presence_sensitive)
+            assert posture == _SHIPPED_POSTURES[spec.name], spec.name
+
+    def test_the_exhaustive_modes_name_every_shipped_loop(self) -> None:
+        # `low-power` / `off` / `offline` used to be built programmatically over every seed
+        # spec, so a new loop was covered automatically. As shipped DATA they must name each
+        # loop explicitly — an omitted one would silently INHERIT instead of being masked off.
+        shipped = {spec.name for spec in DEFAULT_LOOPS}
+        for name in ("low-power", "off", "offline"):
+            entries = next(spec.entries for spec in default_preset_specs() if spec.name == name)
+            assert set(entries) == shipped, name
+
+    def test_always_unattended_is_one_all_week_slot(self) -> None:
+        holiday = next(spec for spec in default_schedule_specs() if spec.name == "always-unattended")
+        assert holiday.timezone == ""
+        assert [(slot.days, slot.start_time, slot.preset_name) for slot in holiday.slots] == [
+            ([0, 1, 2, 3, 4, 5, 6], dt.time(0, 0), "unattended")
+        ]
+
+
+class TestSpecsAreShippedDataNotCode:
+    """The mode / schedule specs are built from the shipped ``defaults.toml`` tables."""
+
+    def test_mode_specs_are_loaded_from_the_file_they_are_pointed_at(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "defaults.toml"
+        fixture.write_text(
+            "[modes.sentinel]\n"
+            'description = "a synthetic mode"\n'
+            'availability_mode = "away"\n'
+            "defers_questions = true\n"
+            "pauses_self_pump = true\n"
+            "presence_sensitive = false\n"
+            "[modes.sentinel.entries]\n"
+            "inbox = true\n"
+            "dispatch = false\n",
+            encoding="utf-8",
+        )
+        (spec,) = default_preset_specs(fixture)
+        assert spec == PresetSpec(
+            name="sentinel",
+            description="a synthetic mode",
+            entries={"inbox": True, "dispatch": False},
+            availability_mode="away",
+            defers_questions=True,
+            pauses_self_pump=True,
+            presence_sensitive=False,
+        )
+
+    def test_schedule_specs_are_loaded_from_the_file_they_are_pointed_at(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "defaults.toml"
+        fixture.write_text(
+            "[schedules.sentinel]\n"
+            'description = "a synthetic calendar"\n'
+            'timezone = "UTC"\n'
+            "[[schedules.sentinel.slots]]\n"
+            "days = [2, 3]\n"
+            "start_time = 07:15:00\n"
+            'preset_name = "engaged"\n',
+            encoding="utf-8",
+        )
+        (spec,) = default_schedule_specs(fixture)
+        assert spec == ScheduleSpec(
+            name="sentinel",
+            description="a synthetic calendar",
+            slots=(SlotSpec(days=[2, 3], start_time=dt.time(7, 15), preset_name="engaged"),),
+            timezone="UTC",
+        )
+
+    def test_an_omitted_optional_field_falls_back_to_the_dataclass_default(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "defaults.toml"
+        fixture.write_text(
+            '[modes.sentinel]\ndescription = "x"\n[schedules.cal]\ndescription = "y"\n', encoding="utf-8"
+        )
+        (mode,) = default_preset_specs(fixture)
+        (schedule,) = default_schedule_specs(fixture)
+        assert (mode.entries, mode.availability_mode, mode.defers_questions) == ({}, "", False)
+        assert (mode.pauses_self_pump, mode.presence_sensitive) == (False, True)
+        assert (schedule.slots, schedule.timezone) == ((), "")
+
+    def test_every_shipped_mode_and_schedule_name_matches_the_file(self) -> None:
+        assert {spec.name for spec in default_preset_specs()} == set(shipped_seed_table("modes"))
+        assert {spec.name for spec in default_schedule_specs()} == set(shipped_seed_table("schedules"))

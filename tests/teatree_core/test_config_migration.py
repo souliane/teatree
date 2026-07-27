@@ -19,8 +19,10 @@ from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
 from teatree.config.schema import _DEFAULTS_TOML, shipped_defaults
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
+from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
 
 class TestExportDbToToml(TestCase):
@@ -386,3 +388,150 @@ class TestExportImportRoundTripIsByteStable(TestCase):
         assert "/tmp/ws" in dump  # Personal kept
         # And the withheld Secret never round-trips back in.
         assert import_toml_to_db(dump, scan_terms=()).rejected == ()
+
+
+class _SeedRowsTestCase(TestCase):
+    """Migrations seed the ``Loop`` rows; the modes/schedules come from the install seed."""
+
+    def setUp(self) -> None:
+        seed_default_presets_and_schedules()
+
+
+class TestSeedTableExport(_SeedRowsTestCase):
+    """The loop / mode / schedule rows export as DIVERGENCES from the shipped seed.
+
+    A ``ConfigSetting`` row exists only where an operator moved a value off its default, so
+    the seed families follow the same rule: a box running the shipped seed exports no seed
+    table at all, and a returned object exports exactly the fields it was tuned away from.
+    """
+
+    def test_an_untouched_box_exports_no_seed_table(self) -> None:
+        doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
+        assert not {"loops", "modes", "schedules"} & set(doc)
+
+    def test_a_retuned_loop_exports_only_the_diverging_field(self) -> None:
+        Loop.objects.filter(name="inbox").update(delay_seconds=90)
+        doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
+        assert doc["loops"] == {"inbox": {"delay_seconds": 90}}
+
+    def test_a_disabled_loop_exports_its_default_enabled_flag(self) -> None:
+        Loop.objects.filter(name="inbox").update(enabled=False)
+        doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
+        assert doc["loops"] == {"inbox": {"default_enabled": False}}
+
+    def test_a_retuned_mode_and_schedule_export_their_diverging_fields(self) -> None:
+        Mode.objects.filter(name="off").update(defers_questions=True)
+        ModeSchedule.objects.filter(name="standard").update(timezone="UTC")
+        doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
+        assert doc["modes"] == {"off": {"defers_questions": True}}
+        assert doc["schedules"] == {"standard": {"timezone": "UTC"}}
+
+    def test_an_overlay_scoped_export_carries_no_seed_table(self) -> None:
+        # The seed objects are global; an `--overlay` dump is scoped to that overlay's rows.
+        Loop.objects.filter(name="inbox").update(delay_seconds=90)
+        ConfigSetting.objects.set_value("mode", "auto", scope="myproj")
+        doc = tomllib.loads(export_db_to_toml(overlay="myproj", scan_terms=()).toml)
+        assert "loops" not in doc
+
+
+class TestSeedTableImport(_SeedRowsTestCase):
+    """``[loops]`` / ``[modes]`` / ``[schedules]`` import back onto the rows they name.
+
+    Understood PER TABLE, not ignored: an unknown entry, an unknown field or a wrong-typed
+    value refuses the whole import, and a value equal to the shipped seed writes nothing.
+    """
+
+    def test_a_diverging_loop_field_writes_onto_the_row(self) -> None:
+        result = import_toml_to_db("[loops.inbox]\ndelay_seconds = 90\n", scan_terms=())
+        assert result.rejected == ()
+        assert [(r.scope, r.key, r.value) for r in result.written] == [("loops.inbox", "delay_seconds", 90)]
+        assert Loop.objects.get(name="inbox").delay_seconds == 90
+
+    def test_a_mode_and_a_schedule_field_write_onto_their_rows(self) -> None:
+        toml = '[modes.off]\ndefers_questions = true\n\n[schedules.standard]\ntimezone = "UTC"\n'
+        assert import_toml_to_db(toml, scan_terms=()).rejected == ()
+        assert Mode.objects.get(name="off").defers_questions is True
+        assert ModeSchedule.objects.get(name="standard").timezone == "UTC"
+
+    def test_a_shipped_entry_with_no_row_yet_is_rejected_not_raised(self) -> None:
+        # A box that never ran the install seed carries no Mode rows, so the write has
+        # nothing to land on. Refuse the whole import and say so, rather than raise
+        # DoesNotExist halfway through and leave a partly-written store behind.
+        Mode.objects.all().delete()
+        result = import_toml_to_db("[modes.off]\ndefers_questions = true\n", scan_terms=())
+        assert [(r.scope, r.reason) for r in result.rejected] == [
+            ("modes.off", "no modes row yet — run `t3 setup` to seed it")
+        ]
+        assert result.written == ()
+
+    def test_a_value_equal_to_the_shipped_seed_writes_nothing(self) -> None:
+        result = import_toml_to_db("[loops.inbox]\ndelay_seconds = 60\n", scan_terms=())
+        assert result.written == ()
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("loops.inbox", "delay_seconds")]
+
+    def test_an_unknown_entry_rejects_the_whole_import(self) -> None:
+        result = import_toml_to_db(
+            "[loops.inbox]\ndelay_seconds = 90\n\n[loops.nope]\ndelay_seconds = 1\n", scan_terms=()
+        )
+        assert [(r.scope, r.reason) for r in result.rejected] == [("loops.nope", "unknown loops entry")]
+        assert result.written == ()
+        assert Loop.objects.get(name="inbox").delay_seconds == 60
+
+    def test_an_unknown_field_is_rejected(self) -> None:
+        result = import_toml_to_db("[loops.inbox]\nlast_run_at = 1\n", scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [("last_run_at", "unknown field")]
+
+    def test_a_diverging_shipped_only_field_is_rejected(self) -> None:
+        # `prompt_body` seeds a separate Prompt row and `slots` are child rows with their
+        # own editor — neither has a row to write onto, so moving one means editing the file.
+        result = import_toml_to_db('[loops.arch_review]\nprompt_body = "x"\n', scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [
+            ("prompt_body", "shipped-only field — tune it in config/defaults.toml")
+        ]
+
+    def test_a_shipped_only_field_at_its_shipped_value_is_a_no_op(self) -> None:
+        body = shipped_seed_table("loops")["arch_review"]["prompt_body"]
+        result = import_toml_to_db(f"[loops.arch_review]\nprompt_body = {body!r}\n", scan_terms=())
+        assert result.rejected == ()
+        assert result.written == ()
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("loops.arch_review", "prompt_body")]
+
+    def test_a_wrong_typed_value_is_rejected(self) -> None:
+        result = import_toml_to_db("[loops.inbox]\ndelay_seconds = true\n", scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [("delay_seconds", "invalid: expected int")]
+
+    def test_a_non_table_seed_entry_is_skipped_not_fatal(self) -> None:
+        result = import_toml_to_db('[loops]\ninbox = "bogus"\n', scan_terms=())
+        assert result.rejected == ()
+        assert result.written == ()
+
+    def test_dry_run_classifies_a_seed_row_without_writing(self) -> None:
+        result = import_toml_to_db("[loops.inbox]\ndelay_seconds = 90\n", scan_terms=(), dry_run=True)
+        assert [(r.scope, r.key) for r in result.written] == [("loops.inbox", "delay_seconds")]
+        assert Loop.objects.get(name="inbox").delay_seconds == 60
+
+    def test_the_shipped_file_imports_to_zero_writes_per_seed_table(self) -> None:
+        # The zero-write invariant now holds per-table rather than by silent exclusion: the
+        # importer UNDERSTANDS every seed entry in the file and finds each equal to what is
+        # shipped. The control is the reject cases above — an entry the file does not carry
+        # is refused, so "no writes" cannot be an artefact of the tables being ignored.
+        result = import_toml_to_db(_DEFAULTS_TOML.read_text(encoding="utf-8"), scan_terms=())
+        assert result.rejected == ()
+        assert result.written == ()
+        seeded = {row.scope.split(".", 1)[0] for row in result.skipped_default if "." in row.scope}
+        assert seeded == {"loops", "modes", "schedules"}
+
+
+class TestSeedTableRoundTripIsByteStable(_SeedRowsTestCase):
+    def test_export_import_export_is_byte_identical_for_a_retuned_box(self) -> None:
+        Loop.objects.filter(name="inbox").update(delay_seconds=90, colleague_facing=True)
+        Mode.objects.filter(name="off").update(defers_questions=True)
+        ModeSchedule.objects.filter(name="standard").update(timezone="UTC")
+        export1 = export_db_to_toml(scan_terms=()).toml
+
+        Loop.objects.filter(name="inbox").update(delay_seconds=60, colleague_facing=False)
+        Mode.objects.filter(name="off").update(defers_questions=False)
+        ModeSchedule.objects.filter(name="standard").update(timezone="Europe/Vienna")
+        assert import_toml_to_db(export1, scan_terms=()).rejected == ()
+
+        assert export_db_to_toml(scan_terms=()).toml == export1
