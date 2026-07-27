@@ -185,6 +185,13 @@ class LoopsHtmxSwapTestCase(TestCase):
         assert 'value="resume"' in row
         assert 'value="pause"' not in row
 
+    def test_the_e2e_fixture_loop_shape_also_swaps_to_the_resume_verb(self) -> None:
+        """The browser lane's loop carries a REGISTRY script name — reproduce it exactly."""
+        Loop.objects.create(name="e2e_loop", script="teatree.loops.review", delay_seconds=60)
+        response = self._post("dash:loop_action", {"name": "e2e_loop", "action": "pause"})
+        row = next(r for r in re.findall(r"<tr>.*?</tr>", response.content.decode(), re.DOTALL) if ">e2e_loop<" in r)
+        assert 'value="resume"' in row
+
     def test_a_no_js_loop_action_keeps_the_redirect(self) -> None:
         response = self._post("dash:loop_action", {"name": "demo", "action": "pause"}, htmx=False)
         assert response.status_code == 302

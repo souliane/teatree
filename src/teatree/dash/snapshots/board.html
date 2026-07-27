@@ -248,11 +248,18 @@
   </script>
 
   <script>
-    // Idiomorph writes the DOM value PROPERTY during a morph, which bypasses the
-    // dirty-value flag, and ignoreActiveValue is falsy by default — so a polled swap
-    // resets whatever field has focus. Deferred scripts run before this event.
+    // A morph writes the DOM value PROPERTY, bypassing the dirty-value flag, so a
+    // polled swap resets whatever field has focus. Idiomorph's own ignoreActiveValue
+    // is too blunt for that: it ALSO skips morphing the active element's children,
+    // freezing the label of the button you just clicked. Guard a focused text
+    // field's value only. Deferred scripts run before this event.
     document.addEventListener("DOMContentLoaded", function () {
-      if (window.Idiomorph) { Idiomorph.defaults.ignoreActiveValue = true; }
+      if (!window.Idiomorph) { return; }
+      Idiomorph.defaults.callbacks.beforeAttributeUpdated = function (name, node) {
+        var active = document.activeElement;
+        var editable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+        return !(name === "value" && node === active && editable);
+      };
     });
     // A refused write answers 400 carrying the surface plus its reason; htmx discards
     // non-2xx bodies by default, so opt every dash swap into showing it instead.

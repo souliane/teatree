@@ -62,13 +62,19 @@ class MorphConfigTestCase(TestCase):
     """A polled surface must not overwrite the input the operator is typing into.
 
     Idiomorph assigns the DOM ``value`` PROPERTY during a morph, which bypasses the
-    dirty-value flag, and its ``ignoreActiveValue`` default is falsy — so a focused
-    field inside a polled region is reset on every tick unless the default is flipped.
+    dirty-value flag, so a focused field inside a polled region is reset on every tick.
+
+    ``ignoreActiveValue`` is the wrong instrument for that: the vendored bundle also
+    consults it to skip morphing the active element's CHILDREN, so with it on, the
+    label of the button just clicked never updates — pause stays "pause" after its own
+    swap. The guard must name the value attribute of a focused text field, nothing else.
     """
 
-    def test_the_shell_opts_every_morph_swap_out_of_clobbering_the_focused_field(self) -> None:
+    def test_the_shell_guards_a_focused_fields_value_and_nothing_else(self) -> None:
         body = self.client.get(reverse("dash:loops")).content.decode()
-        assert "Idiomorph.defaults.ignoreActiveValue = true" in body
+        assert "beforeAttributeUpdated" in body
+        assert 'name === "value"' in body
+        assert "Idiomorph.defaults.ignoreActiveValue" not in body
 
 
 class HtmxFormSubmitterTestCase(TestCase):
