@@ -47,7 +47,13 @@ never happened, and it is refused.
 Allowed values, exactly as written — anything else is refused:
 
 - `verdict`: `merge_safe` or `hold`. Not `PASS`, not `LGTM`, not `approve`.
-  Use `hold` with the blocking findings when the change must not merge yet.
+- `findings`: Record in "findings" what you actually observed — the low-severity
+  and the uncertain ones too, and anything you could not check — whatever verdict
+  you reach. Nothing here is published, so an omitted observation is a lost record
+  rather than spared noise: "findings" is what you looked at, "verdict" is the
+  separate judgement. A "hold" carries the observations that block. A "merge_safe"
+  with an empty "findings" asserts you looked and found nothing worth recording,
+  so emit that only when it is true.
 - `gh_verify_result`: `green`, `pending`, or `failed` — the CI state you
   observed. `merge_safe` can never carry `failed`.
 - `blast_class`: `substrate`, `logic`, or `docs`.
