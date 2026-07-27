@@ -705,16 +705,23 @@ from `defaults.toml`, so a malformed file fails once, loudly.
   hand-maintained counterpart key-for-key and coercer-for-coercer, so the model's taxonomy
   is the authoritative partition. The runtime dicts stay hand-maintained only because they
   sit on the cold path (below) — the model binds them by test, not at runtime.
-* **Two default readers, one file.** The Django / hot path reads defaults through the
-  pydantic model (~110ms). The pre-Django cold path (hook leaves, statusline) reads the
-  SAME `defaults.toml` through `config/cold_defaults.py` — stdlib `tomllib` only, an
-  mtime-keyed process cache, ~2ms — so a cold leaf never pays the pydantic import. Both
-  resolve the file from one `cold_defaults.DEFAULTS_TOML` path constant. A coherence test
-  pins the cold default equal to the model default for every Default-category key. The
-  resolver's TOML-default tier reads through the COLD one on purpose: `teatree.config`'s
-  package init imports `resolution`, and the cold hook path imports that package, so a
-  pydantic read there would put the ~110ms on every hook invocation
+* **Two default readers, one file.** `effective_default` (the seed-skip / import-skip
+  authority) and the dashboard settings editor read a key's shipped default through the
+  pydantic model, `schema.shipped_defaults()` (~110ms). The resolver's DEFAULTS tier
+  (`resolution._toml_default_rows`) reads the SAME `defaults.toml` through
+  `config/cold_defaults.py` instead — stdlib `tomllib` only, an mtime-keyed process cache,
+  ~2ms. That split is not an optimisation of one call: `teatree.config`'s package init
+  imports `resolution`, and the pre-Django cold path (hook leaves, statusline) loads that
+  package init, so a pydantic read in the tier would put the ~110ms on EVERY hook
+  invocation. Both readers resolve the file from one `cold_defaults.DEFAULTS_TOML` path
+  constant, and a subprocess control pins that importing the stdlib reader pulls in neither
+  pydantic nor Django
   (`tests/config/test_cold_defaults.py::test_import_does_not_load_pydantic_or_django`).
+  The cold hook leaves themselves do NOT read this file — each gate flag resolves from the
+  `ConfigSetting` store via `cold_reader`, falling back to its compiled-in
+  `COLD_HOOK_SETTINGS` default, so the never-lockout fallback depends on no packaged data
+  file. `tests/config/test_toml_default_tier.py` pins each shipped cold-hook value equal to
+  that registered default.
 
 **Import (`import_toml_to_db(text, dry_run)` + `t3 <overlay> config_setting import`).** The
 precise inverse of `export`: it loads a dump back into the store. Retired aliases fold onto
