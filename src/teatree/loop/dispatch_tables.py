@@ -100,6 +100,10 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # #129 task-sweep — an orphaned (unverifiable) teatree task surfaces for
     # operator review; the completion path routes through the mechanical handler below.
     "task.orphaned": "action_needed",
+    # Directive 32's weekly skim: the question it records asks the owner which memories
+    # to promote and which to drop, so the signal IS a pending owner decision — the
+    # generic in_flight fallback would file it under work-in-progress instead.
+    "memory.skim_promotable": "action_needed",
     # Only the CI-green-gate skips reach here (see is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",

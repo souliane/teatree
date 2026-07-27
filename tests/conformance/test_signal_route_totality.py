@@ -44,11 +44,6 @@ INTENTIONAL_FALLBACK_KINDS: frozenset[str] = frozenset(
         "deferred_question.mirrored",
         "eval_local.queued",
         "incoming_event.dead_letter",
-        # The skim's side effect (a durable promote-or-drop question) is already
-        # recorded when the signal is emitted, so there is nothing to route — the
-        # statusline row IS the outcome, and the question itself is what carries the
-        # owner's decision. Bounded to one per ISO week.
-        "memory.skim_promotable",
         "notify.redelivered",
         "pr.approved",
         "waiting.digest",
