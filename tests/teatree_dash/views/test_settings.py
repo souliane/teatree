@@ -1,8 +1,13 @@
 """The settings-editor POSTs write through the validating seam, mask secrets, gate safety keys (D7)."""
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from django.test import TestCase
 from django.urls import resolve, reverse
 
+from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.schema import shipped_defaults
 from teatree.core.models import ConfigSetting
 from teatree.dash.views.settings import SAFETY_CONFIRM_PHRASE, settings
 
@@ -244,3 +249,52 @@ class TestSettingsImport(TestCase):
         assert response.status_code == 200
         assert "rejected" in response.content.decode()
         assert ConfigSetting.objects.count() == 0
+
+
+class TestShippedDefaultColumn(TestCase):
+    """The page shows each key's shipped default and whether the effective value matches."""
+
+    def _body(self) -> str:
+        return self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
+
+    def test_the_column_and_a_matching_verdict_render(self) -> None:
+        body = self._body()
+        assert "shipped default" in body
+        assert "same as default" in body
+
+    def test_an_override_renders_the_differing_verdict(self) -> None:
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
+        body = self._body()
+        assert "differs from default" in body
+        assert "default-differs" in body
+
+    def test_the_verdict_is_never_colour_alone(self) -> None:
+        # Each coloured span carries a text icon AND its own words, so the verdict survives
+        # greyscale, colour blindness, and a screen reader.
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
+        body = self._body()
+        for css_class, icon, words in (
+            ("default-match", "&#10003;", "same as default"),
+            ("default-differs", "&#9679;", "differs from default"),
+        ):
+            span = body[body.index(css_class) :][:200]
+            assert icon in span, css_class
+            assert words in span, css_class
+
+    def test_a_secret_shipped_default_never_reaches_the_response_bytes(self) -> None:
+        # The masking contract extends to the new column. Both default sources are forced
+        # to carry a value here — the shipped table (which drives "has a default") and the
+        # model accessor the column reads — so an unmasked column would serialise it.
+        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
+        leaky = SimpleNamespace(**{**shipped_defaults().model_dump(), "banned_terms": ["anotherhushword"]})
+        with (
+            patch(
+                "teatree.dash.settings_editor.shipped_defaults_table",
+                return_value={**shipped_defaults_table(), "banned_terms": ["anotherhushword"]},
+            ),
+            patch("teatree.dash.settings_editor.shipped_defaults", return_value=leaky),
+        ):
+            body = self._body()
+        assert "supersecretcodename" not in body
+        assert "anotherhushword" not in body
+        assert "banned_terms" in body

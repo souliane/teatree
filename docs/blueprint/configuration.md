@@ -748,7 +748,21 @@ hand-kept list, writes each edit through `ConfigSetting.set_value` (the same val
 seam), restores-to-default by DELETING the row, gates a safety-posture key behind an extra
 confirm phrase, and offers export + a dry-run import preview. A SECRET value AND its shipped
 default are masked to `***` before the row enters the response context — pinned by a test
-asserting a configured secret never appears in the response bytes. Each row's Save/Restore
+asserting a configured secret never appears in the response bytes.
+
+Each row ALSO carries the shipped default `config/defaults.toml` ships for that key, beside
+a verdict saying whether the effective value still matches it — `✓ same as default` or
+`● differs from default` — so an operator can see at a glance which dials this box has
+moved off the ship values. Colour is never the only signal: each verdict carries a text icon
+AND its own words, so it survives greyscale, colour blindness and a screen reader, and its
+two palette tokens are computed against every surface in both themes rather than assumed
+(`tests/teatree_dash/test_static_assets.py`). The default is read through
+`cold_defaults.shipped_defaults_table()` (which keys carry one) and `schema.shipped_defaults()`
+(the value), never by re-reading the file. A Secret/Personal key is absent from the shipped
+file by construction, so it has no default to compare against and offers no verdict — and its
+default is masked before the row is built either way, exactly as its value is.
+
+Each row's Save/Restore
 answers the edited `<tr>` alone to an htmx request (`dash/partials/_settings_row.html`,
 `hx-target="closest tr"`), so an edit never re-renders the document and the scroll position
 never moves; a refused write answers 400 carrying that same row plus its reason. Both forms
