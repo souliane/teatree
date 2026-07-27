@@ -2,7 +2,8 @@
   <div class="transcript-head">
     <span class="chip mono">{{ session_id }}</span>
     <span class="muted small">redacted tail · most recent lines only</span>
-    <button type="button" class="drawer-close" onclick="document.getElementById('transcript-viewer').innerHTML=''" aria-label="Close transcript">×</button>
+    {# Absent on the standalone page, which is a document rather than a drawer slot. #}
+    <button type="button" class="drawer-close" data-transcript-close aria-label="Close transcript">×</button>
   </div>
   {% if entries %}
     <ol class="transcript-lines">

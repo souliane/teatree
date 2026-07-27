@@ -90,14 +90,28 @@ class ScheduleCard:
 
 
 @dataclass(frozen=True, slots=True)
-class PresetEditorView:
-    """Everything the editor page renders: preset tabs, schedules, and the live handles."""
+class PresetTab:
+    """A preset as the tab strip, the switch buttons and the slot picker need it: name + active.
 
-    presets: tuple[PresetCard, ...]
+    Deliberately NOT a :class:`PresetCard`. A card carries per-loop entries and a
+    ``preset_referrers`` read; building one per preset to render a single open tab put a
+    per-preset multiplier on every page load.
+    """
+
+    name: str
+    active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PresetEditorView:
+    """Everything the editor page renders: preset tabs, the open card, schedules, live handles."""
+
+    presets: tuple[PresetTab, ...]
     schedules: tuple[ScheduleCard, ...]
     active_preset: PresetSummary | None
     active_schedule: str
     selected_preset: str
+    selected_card: PresetCard | None = None
     entry_states: tuple[str, str, str] = (ENTRY_ON, ENTRY_OFF, ENTRY_INHERIT)
     weekdays: tuple[tuple[int, str], ...] = tuple(enumerate(WEEKDAY_LABELS))
     pin_choices: tuple[str, ...] = tuple(sorted(PIN_MODES))
@@ -106,14 +120,22 @@ class PresetEditorView:
 def build_preset_editor(*, selected: str = "") -> PresetEditorView:
     """The whole editor read model, with *selected* naming the open preset tab."""
     summary = active_summary()
-    loops = tuple(Loop.objects.all())
-    presets = tuple(_preset_card(preset, loops, active_name=summary.name if summary else "") for preset in _presets())
+    active_name = summary.name if summary else ""
+    presets = _presets()
+    tabs = tuple(PresetTab(name=preset.name, active=preset.name == active_name) for preset in presets)
+    open_name = _selected_name(selected, tabs)
+    open_preset = next((preset for preset in presets if preset.name == open_name), None)
     return PresetEditorView(
-        presets=presets,
+        presets=tabs,
         schedules=_schedule_cards(),
         active_preset=summary,
         active_schedule=active_schedule_name(),
-        selected_preset=_selected_name(selected, presets),
+        selected_preset=open_name,
+        selected_card=(
+            _preset_card(open_preset, tuple(Loop.objects.all()), active_name=active_name)
+            if open_preset is not None
+            else None
+        ),
     )
 
 
@@ -166,12 +188,12 @@ def _slot_row(slot: ModeScheduleSlot) -> SlotRow:
     )
 
 
-def _selected_name(selected: str, presets: tuple[PresetCard, ...]) -> str:
+def _selected_name(selected: str, tabs: tuple[PresetTab, ...]) -> str:
     """The open tab: the requested preset, else the active one, else the first."""
-    names = [preset.name for preset in presets]
+    names = [tab.name for tab in tabs]
     if selected in names:
         return selected
-    active = next((preset.name for preset in presets if preset.active), "")
+    active = next((tab.name for tab in tabs if tab.active), "")
     return active or (names[0] if names else "")
 
 
@@ -180,6 +202,7 @@ __all__ = [
     "PresetCard",
     "PresetEditorView",
     "PresetEntryRow",
+    "PresetTab",
     "ScheduleCard",
     "SlotRow",
     "build_preset_editor",

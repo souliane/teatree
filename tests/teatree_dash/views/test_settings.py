@@ -9,6 +9,7 @@ from django.urls import resolve, reverse
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import shipped_defaults
 from teatree.core.models import ConfigSetting
+from teatree.dash.settings_editor import build_settings_editor
 from teatree.dash.views.settings import SAFETY_CONFIRM_PHRASE, settings
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
@@ -298,3 +299,42 @@ class TestShippedDefaultColumn(TestCase):
         assert "supersecretcodename" not in body
         assert "anotherhushword" not in body
         assert "banned_terms" in body
+
+
+class SettingsScopeControlTestCase(TestCase):
+    """The ``?scope=`` parameter is reachable from the UI, and an import keeps it.
+
+    The view honoured ``?scope=`` and threaded it through every hidden input, but no
+    control set it and ``settings_import`` always answered the global scope.
+
+    The scope is real — the store is keyed ``(scope, key)`` and ``config_setting set
+    --overlay`` writes it — so the honest fix is to surface it, not to delete it.
+    """
+
+    def test_the_page_offers_a_scope_picker(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "scoped", scope="demo-overlay")
+        body = self.client.get(reverse("dash:settings")).content.decode()
+        assert 'name="scope"' in body
+        assert "demo-overlay" in body
+
+    def test_the_picker_offers_the_global_scope_and_every_scope_holding_rows(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", "a", scope="alpha")
+        ConfigSetting.objects.set_value("issue_implementer_label", "b", scope="beta")
+        editor = build_settings_editor()
+        assert editor.available_scopes[0] == ""
+        assert "alpha" in editor.available_scopes
+        assert "beta" in editor.available_scopes
+
+    def test_an_import_re_renders_the_scope_the_operator_was_editing(self) -> None:
+        """The dump's own tables decide each row's scope; the PAGE scope decides the view.
+
+        Answering the global editor after an overlay-scoped import silently moved the
+        operator somewhere they did not navigate to.
+        """
+        ConfigSetting.objects.set_value("issue_implementer_label", "scoped", scope="demo-overlay")
+        response = self.client.post(
+            reverse("dash:settings_import"),
+            {"toml": '[teatree]\nissue_implementer_label = "x"\n', "scope": "demo-overlay", "apply": ""},
+        )
+        assert response.status_code == 200
+        assert response.context["editor"].scope == "demo-overlay"

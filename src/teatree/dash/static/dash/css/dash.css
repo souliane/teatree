@@ -59,6 +59,36 @@ select:focus-visible,
 .dash-brand svg {
   color: var(--brand);
 }
+.dash-instance {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--ink-muted);
+  padding: 0 var(--sp-2);
+  border-left: 1px solid var(--line);
+}
+/* Off-screen until focused — a keyboard user's first Tab reaches the content. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--brand);
+}
+.skip-link:focus {
+  left: var(--sp-3);
+}
+.dash-h1 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0 0 var(--sp-3);
+  color: var(--ink-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .dash-nav {
   display: flex;
   gap: var(--sp-4);

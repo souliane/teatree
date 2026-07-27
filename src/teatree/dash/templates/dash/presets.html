@@ -1,5 +1,6 @@
 {% extends "dash/base.html" %}
 {% block title %}Schedule{% endblock %}
+{% block heading %}Schedule &amp; presets{% endblock %}
 {% block content %}
   <section class="band">
     <h2>What is deciding right now</h2>
@@ -43,8 +44,8 @@
       {% endfor %}
     </div>
 
-    {% for preset in editor.presets %}
-      {% if preset.name == editor.selected_preset %}
+    {% with preset=editor.selected_card %}
+      {% if preset %}
         <h3>{{ preset.name }}{% if preset.active %} — active{% endif %}</h3>
         <p class="muted">{{ preset.description }}</p>
         <p class="muted">on {{ preset.on_count }} · off {{ preset.off_count }} · no opinion {{ preset.inherit_count }}{% if preset.availability_pin %} · pins availability {{ preset.availability_pin }}{% endif %}</p>
@@ -112,10 +113,10 @@
             {% endfor %}
           </tbody>
         </table>
+      {% else %}
+        <p class="muted">No presets defined. Run <code>t3 setup</code> to seed the defaults.</p>
       {% endif %}
-    {% empty %}
-      <p class="muted">No presets defined. Run <code>t3 setup</code> to seed the defaults.</p>
-    {% endfor %}
+    {% endwith %}
 
     <h3>New preset</h3>
     <form class="toolbar" method="post" action="{% url 'dash:preset_create' %}">

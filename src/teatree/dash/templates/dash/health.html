@@ -1,5 +1,6 @@
 {% extends "dash/base.html" %}
 {% block title %}Health{% endblock %}
+{% block heading %}Health{% endblock %}
 {% block content %}
   <div id="health-bands"
     hx-get="{% url 'dash:health_bands' %}"

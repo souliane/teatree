@@ -83,6 +83,7 @@ contribute = false
 contribute_plugin_dir = false
 critic_gate_mode = "off"
 danger_gate_fail_open = false
+dashboard_instance_label = ""
 db_backup_cadence_hours = 24
 db_backup_disabled = false
 db_backup_retention_days = 7

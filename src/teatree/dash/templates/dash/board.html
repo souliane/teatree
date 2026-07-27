@@ -1,5 +1,6 @@
 {% extends "dash/base.html" %}
 {% block title %}Board{% endblock %}
+{% block heading %}Board{% endblock %}
 {% block content %}
   <form class="dash-filters" method="get" action="{% url 'dash:board' %}">
     <input type="text" name="text" value="{{ filters.text }}" placeholder="search #/description">

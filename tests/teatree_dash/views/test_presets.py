@@ -193,6 +193,7 @@ class PresetEditorPageTestCase(TestCase):
 
     def test_read_model_names_the_loops_the_preset_leaves_undecided(self) -> None:
         _loop("review")
-        card = next(c for c in build_preset_editor(selected="engaged").presets if c.name == "engaged")
+        card = build_preset_editor(selected="engaged").selected_card
+        assert card is not None
         assert "review" in card.inherit_loops
         assert "inbox" not in card.inherit_loops

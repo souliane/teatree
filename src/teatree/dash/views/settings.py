@@ -141,6 +141,7 @@ def settings_import(request: "HttpRequest") -> "HttpResponse":
     refused wholesale with the offending key named.
     """
     text = request.POST.get("toml", "")
+    scope = request.POST.get("scope", "").strip()
     confirmed = request.POST.get("confirm", "").strip() == SAFETY_CONFIRM_PHRASE
     preview = import_preview(text)
     apply_now = request.POST.get("apply", "").strip() == "1" and not preview.rejected
@@ -150,7 +151,7 @@ def settings_import(request: "HttpRequest") -> "HttpResponse":
         audit.record(actor=actor(request), action="settings:import", after=f"{len(result.written)} row(s)")
     context = {
         **nav_context("dash:settings"),
-        "editor": build_settings_editor(),
+        "editor": build_settings_editor(scope),
         "confirm_phrase": SAFETY_CONFIRM_PHRASE,
         "import_result": result,
         "import_applied": written,

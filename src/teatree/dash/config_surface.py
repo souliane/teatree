@@ -22,6 +22,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from django.core.cache import cache
+
 from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import resolve_agent_config
 from teatree.config.secret_settings import SECRET_SETTINGS, is_credential_reference
@@ -39,6 +41,11 @@ MASKED_ENTRY_NAME = "<private>"
 
 #: How many self-repairs the band lists, newest first.
 _SELF_REPAIR_LIMIT = 20
+
+#: Cache coordinates for the per-entry ``pass`` resolve probe. Keyed by entry NAME so
+#: one absent credential never masks another as resolving.
+_PROBE_CACHE_PREFIX = "dash:config:entry_resolves:"
+_PROBE_CACHE_TTL = 300
 
 _AGENT_SETTINGS = frozenset({"agent_runtime", "agent_harness", "agent_harness_provider", "mode", "wip", "autonomy"})
 _KILL_SWITCH_RE = re.compile(r"(_enabled|_disabled)$")
@@ -218,9 +225,26 @@ def _correction_from(execution_reason: str) -> str:
 
 
 def _pass_entry_resolves(entry_name: str) -> bool:
-    """Whether the ``pass`` store yields anything for *entry_name* — the value is discarded."""
+    """Whether the ``pass`` store yields anything for *entry_name* — cached, value discarded.
+
+    Each probe is a GPG decrypt, and the page auto-polls every 15s, so an open tab
+    would decrypt every configured credential ~240 times an hour to answer one boolean.
+    Only the BOOLEAN is cached; the decrypted value is discarded here as it always was,
+    so nothing secret enters the cache. The TTL is long enough to collapse the poll
+    storm and short enough that a re-inserted entry turns the row green on its own.
+    """
     if not entry_name:
         return False
+    key = f"{_PROBE_CACHE_PREFIX}{entry_name}"
+    cached = cache.get(key)
+    if cached is not None:
+        return bool(cached)
+    resolves = _probe_pass_entry(entry_name)
+    cache.set(key, resolves, _PROBE_CACHE_TTL)
+    return resolves
+
+
+def _probe_pass_entry(entry_name: str) -> bool:
     try:
         return bool(read_pass(entry_name))
     except Exception:
