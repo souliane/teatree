@@ -2,13 +2,30 @@
   <section class="band">
     <h2>Availability</h2>
     <p>Current — <strong>{{ control.availability_mode }}</strong> (decided by {{ control.availability_source }})</p>
-    <form class="toolbar" method="post" action="{% url 'dash:availability' %}" hx-post="{% url 'dash:availability' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-      {% csrf_token %}
-      <button class="dash-btn" name="mode" value="present">present</button>
-      <button class="dash-btn" name="mode" value="away">away</button>
-      <button class="dash-btn" name="mode" value="autonomous_away">autonomous-away</button>
-      <button class="dash-btn" name="mode" value="auto">auto</button>
-    </form>
+    {# One form per mode: the vendored htmx drops the clicked submitter, so the value
+    rides in a hidden input rather than on the button. #}
+    <div class="toolbar">
+      <form method="post" action="{% url 'dash:availability' %}" hx-post="{% url 'dash:availability' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="mode" value="present">
+        <button class="dash-btn" type="submit">present</button>
+      </form>
+      <form method="post" action="{% url 'dash:availability' %}" hx-post="{% url 'dash:availability' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="mode" value="away">
+        <button class="dash-btn" type="submit">away</button>
+      </form>
+      <form method="post" action="{% url 'dash:availability' %}" hx-post="{% url 'dash:availability' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="mode" value="autonomous_away">
+        <button class="dash-btn" type="submit">autonomous-away</button>
+      </form>
+      <form method="post" action="{% url 'dash:availability' %}" hx-post="{% url 'dash:availability' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="mode" value="auto">
+        <button class="dash-btn" type="submit">auto</button>
+      </form>
+    </div>
   </section>
 
   <section class="band">
@@ -17,7 +34,8 @@
     {% if control.gate_fail_open %}
       <form class="toolbar" method="post" action="{% url 'dash:gate_toggle' %}" hx-post="{% url 'dash:gate_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
         {% csrf_token %}
-        <button class="dash-btn primary" name="enable" value="0">turn OFF (restore gates)</button>
+        <input type="hidden" name="enable" value="0">
+        <button class="dash-btn primary" type="submit">turn OFF (restore gates)</button>
       </form>
     {% else %}
       <form class="toolbar danger" method="post" action="{% url 'dash:gate_toggle' %}" hx-post="{% url 'dash:gate_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
@@ -43,7 +61,8 @@
     {% else %}
       <form class="toolbar" method="post" action="{% url 'dash:runner_toggle' %}" hx-post="{% url 'dash:runner_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
         {% csrf_token %}
-        <button class="dash-btn primary" name="enable" value="1">restart the loop fleet</button>
+        <input type="hidden" name="enable" value="1">
+        <button class="dash-btn primary" type="submit">restart the loop fleet</button>
       </form>
       <p class="muted">The fleet is stopped. No loop will tick until it is restarted.</p>
     {% endif %}

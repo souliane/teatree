@@ -11,16 +11,21 @@
 
   <section class="band">
     <h2>Debug commands</h2>
-    <form class="toolbar" method="post" action="{% url 'dash:command_run' %}" hx-post="{% url 'dash:command_run' %}" hx-target="#command-result" hx-swap="innerHTML">
-      {% csrf_token %}
+    {# One form per command: the vendored htmx drops the clicked submitter, so a shared
+    form posted an empty `command` and every button was refused. #}
+    <div class="toolbar">
       {% for spec in command_buttons %}
-        {% if spec.needs_loop %}
-          <span class="field-group"><input type="text" name="loop" placeholder="loop name"><button class="dash-btn" name="command" value="{{ spec.key }}" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button></span>
-        {% else %}
-          <button class="dash-btn" name="command" value="{{ spec.key }}" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button>
-        {% endif %}
+        <form method="post" action="{% url 'dash:command_run' %}" hx-post="{% url 'dash:command_run' %}" hx-target="#command-result" hx-swap="innerHTML">
+          {% csrf_token %}
+          <input type="hidden" name="command" value="{{ spec.key }}">
+          {% if spec.needs_loop %}
+            <span class="field-group"><input type="text" name="loop" placeholder="loop name"><button class="dash-btn" type="submit" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button></span>
+          {% else %}
+            <button class="dash-btn" type="submit" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button>
+          {% endif %}
+        </form>
       {% endfor %}
-    </form>
+    </div>
     <div id="command-result"></div>
   </section>
 {% endblock %}

@@ -20,14 +20,20 @@ def test_every_page_exposes_exactly_one_level_one_heading(live_server: LiveServe
 
 
 def test_the_skip_link_is_offscreen_until_focused_then_reaches_main(live_server: LiveServer, page: Page) -> None:
+    """Off-screen is a POSITION, not Playwright's notion of hidden.
+
+    An absolutely-positioned element parked at ``left: -9999px`` still has a non-empty
+    box and no ``display:none`` / ``visibility:hidden``, so Playwright reports it
+    VISIBLE. Assert the position the pattern actually relies on.
+    """
     page.goto(f"{live_server.url}/dash/board/")
     skip = page.get_by_role("link", name="Skip to main content")
 
-    expect(skip).to_be_hidden()
+    expect(skip).to_have_css("left", "-9999px")
 
     page.keyboard.press("Tab")
     expect(skip).to_be_focused()
-    expect(skip).to_be_visible()
+    expect(skip).not_to_have_css("left", "-9999px")
 
     skip.press("Enter")
     expect(page.locator("#dash-main")).to_be_visible()

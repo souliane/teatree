@@ -6,12 +6,14 @@ polled morph swap is allowed to overwrite what someone is typing.
 """
 
 import socket
+from html.parser import HTMLParser
 
 from django.test import TestCase
 from django.urls import reverse
 
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.dash.views.base import instance_label, nav_context
+from tests.factories import TicketFactory
 
 
 class InstanceLabelTestCase(TestCase):
@@ -67,3 +69,66 @@ class MorphConfigTestCase(TestCase):
     def test_the_shell_opts_every_morph_swap_out_of_clobbering_the_focused_field(self) -> None:
         body = self.client.get(reverse("dash:loops")).content.decode()
         assert "Idiomorph.defaults.ignoreActiveValue = true" in body
+
+
+class HtmxFormSubmitterTestCase(TestCase):
+    """An ``hx-post`` form must not depend on WHICH submit button was clicked.
+
+    The vendored htmx (``htmx-2.0.4.min.js``) has no ``submitter`` support — grep the
+    bundle and the word does not appear, and it is a native DOM property name a
+    minifier never renames. A native form POST sends only the clicked button's
+    ``name``/``value``; htmx serializes the form's fields and drops it. So a form
+    carrying two ``<button name="action">`` submitters silently posts NO action once
+    ``hx-post`` is added, and the view refuses every click.
+
+    The Django test client posts a dict directly, so it can never reproduce that —
+    which is why this asserts the MARKUP rather than the round-trip. Carry the value
+    in a hidden input instead, one form per action.
+    """
+
+    PAGES = ("dash:board", "dash:health", "dash:loops", "dash:presets", "dash:config", "dash:settings")
+
+    def setUp(self) -> None:
+        Loop.objects.create(name="submitter-probe", delay_seconds=60, script="run.py", enabled=True)
+        Mode.objects.get_or_create(name="engaged", defaults={"entries": {}})
+        ModeSchedule.objects.get_or_create(name="weekly")
+
+    def test_no_htmx_form_carries_a_named_submit_button(self) -> None:
+        offenders: list[str] = []
+        for name in self.PAGES:
+            body = self.client.get(reverse(name)).content.decode()
+            offenders.extend(f"{name}: {button}" for button in _named_submitters_in_htmx_forms(body))
+        drawer = self.client.get(reverse("dash:ticket_drawer", args=[TicketFactory().pk])).content.decode()
+        offenders.extend(f"drawer: {button}" for button in _named_submitters_in_htmx_forms(drawer))
+        assert not offenders, (
+            "the vendored htmx drops the clicked submitter, so these buttons post nothing:\n" + "\n".join(offenders)
+        )
+
+    def test_the_probe_detects_a_planted_violation(self) -> None:
+        planted = '<form hx-post="/x"><button name="action" value="pause">pause</button></form>'
+        assert _named_submitters_in_htmx_forms(planted) == ['button name="action" value="pause"']
+
+
+def _named_submitters_in_htmx_forms(html_text: str) -> list[str]:
+    """Every named submit button sitting inside a form wired with ``hx-post``."""
+
+    class _Finder(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_htmx_form = False
+            self.found: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            attributes = dict(attrs)
+            if tag == "form":
+                self.in_htmx_form = "hx-post" in attributes
+            elif tag == "button" and self.in_htmx_form and attributes.get("name"):
+                self.found.append(f'button name="{attributes["name"]}" value="{attributes.get("value", "")}"')
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag == "form":
+                self.in_htmx_form = False
+
+    finder = _Finder()
+    finder.feed(html_text)
+    return finder.found

@@ -9,22 +9,36 @@
     <p>Active schedule — <strong>{{ editor.active_schedule|default:"none" }}</strong></p>
 
     <h3>Switch the active preset</h3>
-    <form class="toolbar" method="post" action="{% url 'dash:preset_use' %}" hx-post="{% url 'dash:preset_use' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
-      {% csrf_token %}
+    <div class="toolbar">
       {% for preset in editor.presets %}
-        <button class="dash-btn {% if preset.active %}primary{% endif %}" name="preset" value="{{ preset.name }}">{{ preset.name }}</button>
+        <form method="post" action="{% url 'dash:preset_use' %}" hx-post="{% url 'dash:preset_use' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
+          {% csrf_token %}
+          <input type="hidden" name="preset" value="{{ preset.name }}">
+          <button class="dash-btn {% if preset.active %}primary{% endif %}" type="submit">{{ preset.name }}</button>
+        </form>
       {% endfor %}
-      <button class="dash-btn" name="preset" value="auto">auto (let the schedule decide)</button>
-    </form>
+      <form method="post" action="{% url 'dash:preset_use' %}" hx-post="{% url 'dash:preset_use' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="preset" value="auto">
+        <button class="dash-btn" type="submit">auto (let the schedule decide)</button>
+      </form>
+    </div>
 
     <h3>Switch the active schedule</h3>
-    <form class="toolbar" method="post" action="{% url 'dash:schedule_activate' %}" hx-post="{% url 'dash:schedule_activate' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
-      {% csrf_token %}
+    <div class="toolbar">
       {% for schedule in editor.schedules %}
-        <button class="dash-btn {% if schedule.active %}primary{% endif %}" name="schedule" value="{{ schedule.name }}">{{ schedule.name }}</button>
+        <form method="post" action="{% url 'dash:schedule_activate' %}" hx-post="{% url 'dash:schedule_activate' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
+          {% csrf_token %}
+          <input type="hidden" name="schedule" value="{{ schedule.name }}">
+          <button class="dash-btn {% if schedule.active %}primary{% endif %}" type="submit">{{ schedule.name }}</button>
+        </form>
       {% endfor %}
-      <button class="dash-btn" name="schedule" value="none">none</button>
-    </form>
+      <form method="post" action="{% url 'dash:schedule_activate' %}" hx-post="{% url 'dash:schedule_activate' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="schedule" value="none">
+        <button class="dash-btn" type="submit">none</button>
+      </form>
+    </div>
   </section>
 
   <section class="band">
@@ -94,15 +108,17 @@
                 </td>
                 <td class="{% if entry.base_enabled %}eff-yes{% else %}eff-no{% endif %}">{{ entry.base_enabled|yesno:"enabled,disabled" }}</td>
                 <td>
-                  <form class="row-actions" method="post" action="{% url 'dash:preset_entry' %}" hx-post="{% url 'dash:preset_entry' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
-                    {% csrf_token %}
-                    <input type="hidden" name="preset" value="{{ preset.name }}">
-                    <input type="hidden" name="loop" value="{{ entry.loop_name }}">
+                  <div class="row-actions">
                     {% for state in editor.entry_states %}
-                      <button class="dash-btn seg-{{ state }} {% if entry.state == state %}primary{% endif %}"
-                              name="state" value="{{ state }}">{% if state == "inherit" %}no opinion{% else %}{{ state }}{% endif %}</button>
+                      <form method="post" action="{% url 'dash:preset_entry' %}" hx-post="{% url 'dash:preset_entry' %}" hx-target="#presets-body" hx-swap="morph:innerHTML">
+                        {% csrf_token %}
+                        <input type="hidden" name="preset" value="{{ preset.name }}">
+                        <input type="hidden" name="loop" value="{{ entry.loop_name }}">
+                        <input type="hidden" name="state" value="{{ state }}">
+                        <button class="dash-btn seg-{{ state }} {% if entry.state == state %}primary{% endif %}" type="submit">{% if state == "inherit" %}no opinion{% else %}{{ state }}{% endif %}</button>
+                      </form>
                     {% endfor %}
-                  </form>
+                  </div>
                 </td>
               </tr>
             {% empty %}
