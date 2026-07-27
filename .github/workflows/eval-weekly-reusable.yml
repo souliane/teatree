@@ -41,7 +41,7 @@
 #   publish-safe artifact. A red weekly run is surfaced by GitHub's NATIVE
 #   failed-run email (no extra secret, no bot).
 #
-# RED-LEG DIAGNOSIS (souliane/teatree#3745, mirroring `eval.yml`)
+# RED-LEG DIAGNOSIS (souliane/teatree#3744, mirroring `eval.yml`)
 #   A metered leg is expensive to re-run, so a red leg MUST be diagnosable from the
 #   run it already spent — never by firing another one. Two artifacts back that, both
 #   uploaded `if: always()` and both named per matrix leg (`<lane>-<shard>-<effort>`,
@@ -366,7 +366,7 @@ jobs:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
-          # FAILURE OBSERVABILITY (#3745) — the same contract `eval.yml` carries, on the
+          # FAILURE OBSERVABILITY (#3744) — the same contract `eval.yml` carries, on the
           # leg that spends per-token credit. A red leg used to emit ONLY the retry
           # action's `Child_process exited with error code 1`: no scenario name, no
           # verdict, no traceback. Two gaps caused that, and `tee` closes both:
