@@ -229,6 +229,15 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 ### Giving Code Review
 
+#### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
+
+This chapter's deliverable is one of two things, and the reporting rules are **opposite** between them. Decide which before drafting anything.
+
+- **Colleague-facing post** — a comment, discussion, or approval published on someone else's MR/PR **under the owner's identity**. Noise costs real credibility here, so the suppression rules below are binding on this lane: scale severity to confidence, say nothing on a check that came back clean, don't police formatting, don't block on style.
+- **Verdict envelope** — the headless cold reviewer's `review_verdict` result (`teatree.agents.result_schema.ReviewVerdictEnvelope`), recorded server-side as the durable `ReviewVerdict` the merge gate reads. Nothing is published and `findings` is schema-optional, so suppression here buys nothing and costs only recall.
+
+**In the envelope, record what you actually observed** — every finding, including the uncertain and the low-severity ones, each carrying its severity and your confidence. Coverage is your job; filtering is the merge gate's, downstream. Silence on a check you performed is a **missing record**, not a clean bill of health. `verdict: merge_safe` with an empty `findings` array asserts you looked and found nothing worth saying — emit it only when that is true, and record anything you could not check as a finding rather than leaving the array empty.
+
 #### Fetch-Only vs Comprehensive Review — Pick the Right Entry Command (do X — never Y)
 
 A colleague-authored MR on a **shared product repo** (a repo you do NOT solely own — shared with colleagues, gated on their review) is **review work, not merge work**. The action when you are handed one is to **fetch its diff and review it** — never to land it yourself. Do X (fetch + review); never Y (merge a teammate's product-repo MR):
@@ -342,9 +351,9 @@ Investigate first by exhausting the sources you **can** reach:
 
 Only after all reachable sources are exhausted can you post a question-style comment — and only when the answer truly requires access you do not have (partner portal behind SSO, vendor-only documentation, product owner's desk knowledge). State what you checked and why the answer isn't reachable, so the author sees you did the work.
 
-**Scale severity to confidence.** A speculative "maybe wrong?" is a nit at best; drop it. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review.
+**Scale severity to confidence — on a colleague-facing post, drop what stays speculative.** A speculative "maybe wrong?" is a nit at best; do not post it under the owner's name. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review. In the **verdict envelope** the disposal is the opposite: record the uncertain observation with its confidence rather than dropping it.
 
-**When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR.
+**When the investigation confirms the code is correct, post nothing — on a colleague-facing post.** Silence on a check you performed is the correct outcome there, not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR. In the **verdict envelope** that same clean check is *recorded*, not silenced: name what you checked and that it came back clean.
 
 **Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
 
@@ -420,7 +429,7 @@ When posting on the PR, prefer **inline** (line-anchored) discussions over **gen
 
 **Step 2 — Review Tone & Formatting:**
 
-Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?"
+Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?" That governs the **verdict**, not the record: a style preference is not a reason to `hold`, and it is still worth recording as a low-severity finding in the verdict envelope.
 
 Comments are posted under the user's name. They must sound like a **real human colleague** wrote them — not an AI, not a linter, not a manager.
 
@@ -474,7 +483,7 @@ This step is the **`autonomy = "babysit"`** flow (the conservative default). Und
 
 This prevents noise from multiple review passes or multiple reviewers covering the same ground.
 
-**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
+**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. A draft note is colleague-invisible until the user submits it, so the user is the filter here exactly as the merge gate is on the verdict envelope — the suppression rules bind on what reaches a colleague, never on what reaches a curator. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
