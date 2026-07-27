@@ -25,6 +25,10 @@ from teatree.dash.views.settings import (
 )
 
 _ROW_ID = re.compile(r'id="setting-([a-z0-9_]+)"')
+_H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
+
+#: The live-readout panels the retired config page contributed, by heading.
+_READOUT_HEADINGS = ("Model &amp; reasoning effort", "Credentials", "Self-repairs")
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SAFETY_TOML = '[teatree]\nautonomy = "full"\n'
@@ -110,6 +114,14 @@ class TestTheOneSettingsPage(TestCase):
         body = self._body()
         assert reverse("dash:settings_readouts") in body
         assert 'hx-trigger="every 15s"' in body
+
+    def test_no_group_heading_repeats_a_readout_heading(self) -> None:
+        # A readout answers "which account, and does it work"; a group holds that
+        # coordinate's editable rows. Two panels headed identically would leave a reader
+        # unable to tell which is which — and a browser locator unable to either.
+        headings = [" ".join(h.split()) for h in _H2.findall(self._body())]
+        for readout in _READOUT_HEADINGS:
+            assert headings.count(readout) == 1, f"{readout!r} heads more than one panel: {headings}"
 
     def test_the_readouts_fragment_is_pollable_on_its_own(self) -> None:
         response = self.client.get(reverse("dash:settings_readouts"), **_LOOPBACK)
