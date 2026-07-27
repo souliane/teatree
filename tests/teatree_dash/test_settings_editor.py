@@ -7,7 +7,7 @@ from django.test import TestCase
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.core.models import ConfigSetting
 from teatree.dash.config_display import MASKED
-from teatree.dash.settings_editor import build_settings_editor, export_text, import_preview
+from teatree.dash.settings_editor import build_setting_row, build_settings_editor, export_text, import_preview
 
 
 class TestBuildSettingsEditor(TestCase):
@@ -60,6 +60,26 @@ class TestBuildSettingsEditor(TestCase):
         assert view.settings == ()
         assert view.error is not None
         assert "read failed" in view.error
+
+
+class TestBuildSettingRow(TestCase):
+    """The single-row rebuild the htmx swap answers with — same policy as the whole page."""
+
+    def test_it_matches_the_row_the_full_page_builds(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        page_row = next(s for s in build_settings_editor().settings if s.name == "mode")
+        assert build_setting_row("mode") == page_row
+
+    def test_a_secret_row_is_masked(self) -> None:
+        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
+        row = build_setting_row("banned_terms")
+        assert row.is_secret is True
+        assert row.value == MASKED
+
+    def test_it_reads_the_requested_scope(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto", scope="proj")
+        assert build_setting_row("mode", "proj").is_overridden is True
+        assert build_setting_row("mode").is_overridden is False
 
 
 class TestExportAndPreview(TestCase):
