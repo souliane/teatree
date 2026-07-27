@@ -325,6 +325,7 @@ class TeatreeSettingsSchema(BaseSettings):
     statusline_engaged_render: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     substrate_auto_merge_authorized_by: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     substrate_self_signoff: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    subagent_spawn_ceiling: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     task_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     task_sweep_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     task_sweep_recheck_interval_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
