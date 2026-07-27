@@ -21,8 +21,15 @@ from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
 
 
 def _score(*args: str) -> str:
+    """The human view — the seam routes it to stderr; stdout is the JSON channel."""
+    err = StringIO()
+    call_command("recipe", "score", *args, stderr=err)
+    return err.getvalue()
+
+
+def _score_json(*args: str) -> str:
     out = StringIO()
-    call_command("recipe", "score", *args, stdout=out)
+    call_command("recipe", "score", "--json", *args, stdout=out)
     return out.getvalue()
 
 
@@ -39,7 +46,7 @@ class TestFlagOff(TestCase):
         assert FactoryScoreSnapshot.objects.count() == 0
 
     def test_json_output_carries_the_payload_shape(self) -> None:
-        payload = json.loads(_score("--json"))
+        payload = json.loads(_score_json())
         for key in ("aggregate", "verdict", "coverage", "recipe_sha", "recipe_approved", "signals"):
             assert key in payload
 

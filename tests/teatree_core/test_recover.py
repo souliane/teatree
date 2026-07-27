@@ -200,12 +200,12 @@ class TestRecoverCommand(TestCase):
     def test_dry_run_mutates_nothing(self) -> None:
         task = _failed_outage_task(url="https://x/i/4")
         with _mocked_probes():
-            out = StringIO()
-            call_command("recover", stdout=out)
+            err = StringIO()
+            call_command("recover", stderr=err)
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert "DRY RUN" in out.getvalue()
+        assert "DRY RUN" in err.getvalue()
 
     def test_requeue_flag_reopens_outage_task(self) -> None:
         task = _failed_outage_task(url="https://x/i/5")

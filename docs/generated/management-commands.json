@@ -200,7 +200,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Run E2E specs and post their evidence \u2014 the overlay-agnostic e2e verbs.",
       "name": "e2e",
       "subcommands": [
         {
@@ -811,7 +811,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Score the factory against the committed recipe, and pin an approved recipe sha.",
       "name": "recipe",
       "subcommands": [
         {
@@ -1176,11 +1176,6 @@
     {
       "help": "Generate Ticket.short_description (#1156).",
       "name": "ticket_short_describe",
-      "subcommands": []
-    },
-    {
-      "help": "Show per-account Anthropic 5h / weekly token utilization + status.",
-      "name": "tokens",
       "subcommands": []
     },
     {

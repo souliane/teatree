@@ -13,26 +13,33 @@ advancing each overlay's marker independently after gathering. ``--this-overlay`
 restores the pre-existing single-overlay scope (backward-compat).
 
 Read-only: every query underneath is a select; the command never transitions a
-ticket nor writes any row except the checkpoint marker. The return value is the
-output channel (``django-typer`` serialises it) — JSON when ``--json``, else
-the terse human view.
+ticket nor writes any row except the checkpoint marker. The report is routed
+through the machine-output seam — JSON on stdout under ``--json``, the terse
+human view on stderr — and returned as the typed payload.
 """
 
 import hashlib
 import io
-import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django.utils import timezone
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
 from teatree.backends.slack.table_format import render_table_message
-from teatree.core.checking import DEFAULT_CAP, CheckGroup, gather_all_overlays_report, gather_checking_report
+from teatree.core.checking import (
+    DEFAULT_CAP,
+    AllOverlaysReportDict,
+    CheckGroup,
+    CheckingReportDict,
+    gather_all_overlays_report,
+    gather_checking_report,
+)
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.ref_render import render_ref
@@ -124,7 +131,7 @@ def _maybe_notify_recap(groups: list[CheckGroup], *, header: str, scope: str, no
     )
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     @initialize()
     def init(self) -> None:
         """``t3 <overlay> checking`` group root."""
@@ -159,7 +166,7 @@ class Command(TyperCommand):
                 help="Also DM the recap to you as a Slack table (native Block Kit + monospace fence fallback).",
             ),
         ] = False,
-    ) -> str:
+    ) -> CheckingReportDict | AllOverlaysReportDict:
         """Print a terse, grouped, clickable report of changes since the last check."""
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
@@ -171,7 +178,7 @@ class Command(TyperCommand):
             return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
         return self._show_all_overlays(now=now, flags=flags)
 
-    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> str:
+    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> CheckingReportDict:
         """Single-overlay path (``--this-overlay`` or backward-compat)."""
         window_start = resolve_window_start(since=flags.since, now=now)
         report = gather_checking_report(
@@ -187,11 +194,9 @@ class Command(TyperCommand):
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
         groups = [report.merged, report.in_flight, report.needs_you]
         _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
-        if flags.json_output:
-            return json.dumps(report.to_dict())
-        return _render_groups_tables(groups, header=header, stamp=stamp)
+        return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
 
-    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> str:
+    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> AllOverlaysReportDict:
         """All-overlays path (default): aggregate every configured overlay."""
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
@@ -222,9 +227,26 @@ class Command(TyperCommand):
         header = f"Since {stamp} · all overlays"
         groups = [report.merged, report.in_flight, report.needs_you]
         _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
-        if flags.json_output:
-            return json.dumps(report.to_dict())
-        return _render_groups_tables(groups, header=header, stamp=stamp)
+        return self._emit(report.to_dict(), groups, header=header, stamp=stamp, flags=flags)
+
+    def _emit[ReportT: (CheckingReportDict, AllOverlaysReportDict)](
+        self,
+        payload: ReportT,
+        groups: list[CheckGroup],
+        *,
+        header: str,
+        stamp: str,
+        flags: _ShowFlags,
+    ) -> ReportT:
+        self.print_result = False
+        emit(
+            payload,
+            json_output=flags.json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_groups_tables(groups, header=header, stamp=stamp),
+        )
+        return payload
 
     @staticmethod
     def _resolve_code_host() -> str:

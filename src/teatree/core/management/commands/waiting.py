@@ -11,16 +11,45 @@ approve the MR).
 """
 
 import io
-import json
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
 from teatree.core.waiting import WaitingEntry, format_age, gather_waiting
+
+
+class _WaitingRow(TypedDict):
+    id: int | None
+    kind: str
+    ref: str
+    url: str
+    age_seconds: int
+
+
+class WaitingPayload(TypedDict):
+    count: int
+    entries: list[_WaitingRow]
+
+
+def _payload(entries: list[WaitingEntry]) -> WaitingPayload:
+    return {
+        "count": len(entries),
+        "entries": [
+            {
+                "id": entry.entry_id,
+                "kind": entry.kind,
+                "ref": entry.ref,
+                "url": entry.url,
+                "age_seconds": int(entry.age.total_seconds()),
+            }
+            for entry in entries
+        ],
+    }
 
 
 def _render_list(entries: list[WaitingEntry]) -> str:
@@ -41,7 +70,7 @@ def _render_list(entries: list[WaitingEntry]) -> str:
     return buffer.getvalue().rstrip("\n")
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     @initialize()
     def init(self) -> None:
         """``t3 teatree waiting`` group root."""
@@ -58,26 +87,19 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the entries as JSON instead of the table view."),
         ] = False,
-    ) -> str:
+    ) -> WaitingPayload:
         """List everything currently waiting on the user."""
         entries = gather_waiting(overlay)
-        if json_output:
-            return json.dumps(
-                {
-                    "count": len(entries),
-                    "entries": [
-                        {
-                            "id": entry.entry_id,
-                            "kind": entry.kind,
-                            "ref": entry.ref,
-                            "url": entry.url,
-                            "age_seconds": int(entry.age.total_seconds()),
-                        }
-                        for entry in entries
-                    ],
-                },
-            )
-        return _render_list(entries)
+        payload = _payload(entries)
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_list(entries),
+        )
+        return payload
 
     @command()
     def add(

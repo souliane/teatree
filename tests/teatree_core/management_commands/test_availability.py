@@ -1,5 +1,6 @@
 """Tests for ``t3 availability`` and ``t3 questions`` management commands (#58)."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
@@ -33,8 +34,15 @@ def override_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _call(*args: str) -> str:
+    """Both channels merged: these are CONTENT tests, not channel tests.
+
+    Converted verbs route their human view to stderr through the machine-output
+    seam while unconverted siblings still return it for stdout, so a content
+    assertion must read both. The channel split itself is asserted by the
+    dedicated tests below and by ``tests/quality/test_machine_output_seam.py``.
+    """
     buf = StringIO()
-    call_command(*args, stdout=buf)
+    call_command(*args, stdout=buf, stderr=buf)
     return buf.getvalue()
 
 
@@ -102,3 +110,35 @@ class TestQuestionsCommand:
         row.refresh_from_db()
         assert row.dismissed_at is not None
         assert row.audits.filter(action="dismissed").exists()
+
+
+class TestMachineOutputChannel:
+    """``availability show`` / ``questions list`` are seam verbs: stdout is JSON or nothing."""
+
+    @staticmethod
+    def _channels(*args: str) -> tuple[str, str]:
+        out, err = StringIO(), StringIO()
+        call_command(*args, stdout=out, stderr=err)
+        return out.getvalue(), err.getvalue()
+
+    @pytest.mark.usefixtures("override_file")
+    def test_availability_show_human_leaves_stdout_empty(self) -> None:
+        out, err = self._channels("availability", "show")
+        assert out == ""
+        assert "availability:" in err
+
+    @pytest.mark.usefixtures("override_file")
+    def test_availability_show_json_is_stdout_only(self) -> None:
+        out, err = self._channels("availability", "show", "--json")
+        assert set(json.loads(out)) == {"mode", "source"}
+        assert err == ""
+
+    def test_questions_list_human_leaves_stdout_empty(self) -> None:
+        out, err = self._channels("questions", "list")
+        assert out == ""
+        assert "no deferred questions." in err
+
+    def test_questions_list_json_is_stdout_only(self) -> None:
+        out, err = self._channels("questions", "list", "--json")
+        assert json.loads(out) == []
+        assert err == ""

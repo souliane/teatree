@@ -9,15 +9,18 @@ reused with no network; a
 stale/absent one triggers one live probe (an explicit report, so a refresh is
 fine). The token that signs a probe is never rendered.
 
-The structured value is the return (django-typer serialises it) — JSON when
-``--json``, else the human table.
+The rows are routed through the machine-output seam — JSON on stdout under
+``--json``, the human table on stderr — and returned as the typed payload.
 """
 
-import json
-from typing import Annotated
+from typing import IO, TYPE_CHECKING, Annotated, cast
 
 import typer
-from django_typer.management import TyperCommand
+
+from teatree.core.machine_output import MachineOutputCommand, emit
+
+if TYPE_CHECKING:
+    from teatree.token_report import TokenAccountPayload
 
 _ADHOC_HELP = (
     "Ad-hoc Anthropic token to health-probe as an extra row (repeatable) — for checking a "
@@ -26,7 +29,7 @@ _ADHOC_HELP = (
 )
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     def handle(
         self,
         *,
@@ -35,11 +38,18 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the structured report as JSON instead of the human table."),
         ] = False,
         tokens: Annotated[list[str] | None, typer.Option("--token", help=_ADHOC_HELP)] = None,
-    ) -> str:
+    ) -> "list[TokenAccountPayload]":
         """Show per-account Anthropic 5h / weekly token utilization + status."""
         from teatree.token_report import TokenReport, render_table  # noqa: PLC0415 — deferred: lazy command import
 
         rows = TokenReport(ad_hoc_tokens=tokens).rows()
-        if json_output:
-            return json.dumps([row.as_dict() for row in rows])
-        return render_table(rows)
+        payload = [row.as_dict() for row in rows]
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=render_table(rows),
+        )
+        return payload

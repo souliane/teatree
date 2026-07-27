@@ -101,6 +101,8 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 
 ## `e2e`
 
+Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
+
 | Subcommand | Description |
 | --- | --- |
 | `run` | Run E2E tests — the one command that works for every overlay |
@@ -409,6 +411,8 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 ## `recipe`
 
+Score the factory against the committed recipe, and pin an approved recipe sha.
+
 | Subcommand | Description |
 | --- | --- |
 | `score` | Compute the recipe-weighted factory score over the trailing window |
@@ -578,10 +582,6 @@ Backfill Ticket.extra['issue_title'] from the forge for existing tickets.
 ## `ticket_short_describe`
 
 Generate Ticket.short_description (#1156).
-
-## `tokens`
-
-Show per-account Anthropic 5h / weekly token utilization + status.
 
 ## `tool`
 

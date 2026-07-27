@@ -8,16 +8,22 @@ boot sweeps (replay/reclaim/reap) always run — they are idempotent recovery.
 Stranded work is surfaced for salvage (push to a PR), never auto-captured.
 """
 
-import json
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
-from teatree.core.worktree.recover import gather_recover_report, requeue_failed_tasks
+from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.worktree.recover import RecoverReportDict, gather_recover_report, requeue_failed_tasks
 
 
-class Command(TyperCommand):
+class RecoverPayload(RecoverReportDict):
+    """The report plus the task pks ``--requeue`` reopened (empty on the dry run)."""
+
+    reopened_task_pks: list[int]
+
+
+class Command(MachineOutputCommand):
     @command()
     def recover(
         self,
@@ -30,7 +36,7 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the structured report as JSON."),
         ] = False,
-    ) -> str:
+    ) -> RecoverPayload:
         """Report (and optionally recover) work stranded by an outage."""
         dry_run = not requeue
         report = gather_recover_report()
@@ -39,11 +45,16 @@ class Command(TyperCommand):
         if requeue:
             reopened = requeue_failed_tasks(report)
 
-        if json_output:
-            payload = {**report.to_dict(), "reopened_task_pks": reopened}
-            return json.dumps(payload)
-
+        payload = RecoverPayload(**report.to_dict(), reopened_task_pks=reopened)
         lines = [report.to_terse(dry_run=dry_run)]
         if requeue:
             lines.append(f"Reopened {len(reopened)} task(s): {', '.join(f'#{pk}' for pk in reopened) or '(none)'}")
-        return "\n".join(lines)
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(lines),
+        )
+        return payload

@@ -29,6 +29,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.config import get_effective_settings
+from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
@@ -209,7 +210,7 @@ async def _factory_signals(*, overlay: str | None = None, window_days: int = 28)
     )
 
 
-async def _factory_score(*, overlay: str | None = None, window_days: int = 28) -> dict[str, Any]:
+async def _factory_score(*, overlay: str | None = None, window_days: int = 28) -> FactoryScoreDict:
     """The recipe-weighted factory score over the trailing window (read-only).
 
     Returns the aggregate (``None`` when untrustworthy), the ``ok`` / ``regressing``

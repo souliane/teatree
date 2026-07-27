@@ -21,17 +21,26 @@ on its next turn.
 """
 
 import io
-import json
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django.db import transaction
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.task_handoff import schedule_headless_resume
 from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.core.table_output import print_table
+
+
+class DeferredQuestionRow(TypedDict):
+    """One row of ``t3 questions list --json``."""
+
+    id: int
+    status: str
+    question: str
+    created_at: str | None
 
 
 def _render_questions_table(rows: list[DeferredQuestion]) -> str:
@@ -50,7 +59,7 @@ def _render_questions_table(rows: list[DeferredQuestion]) -> str:
     return buffer.getvalue()
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     @initialize()
     def init(self) -> None:
         """``t3 teatree questions`` group root."""
@@ -91,24 +100,27 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the deferred questions as JSON instead of the human view."),
         ] = False,
-    ) -> str:
+    ) -> list[DeferredQuestionRow]:
         """List pending deferred questions, oldest first."""
         rows = list(DeferredQuestion.objects.order_by("-created_at")) if all_rows else list(DeferredQuestion.pending())
-        if json_output:
-            return json.dumps(
-                [
-                    {
-                        "id": row.pk,
-                        "status": row.status,
-                        "question": row.question,
-                        "created_at": row.created_at.isoformat() if row.created_at is not None else None,
-                    }
-                    for row in rows
-                ]
-            )
-        if not rows:
-            return "no deferred questions."
-        return _render_questions_table(rows)
+        payload: list[DeferredQuestionRow] = [
+            {
+                "id": row.pk,
+                "status": row.status,
+                "question": row.question,
+                "created_at": row.created_at.isoformat() if row.created_at is not None else None,
+            }
+            for row in rows
+        ]
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_questions_table(rows) if rows else "no deferred questions.",
+        )
+        return payload
 
     @command()
     def answer(

@@ -19,8 +19,15 @@ pytestmark = pytest.mark.django_db
 
 
 def _call(*args: str) -> str:
+    """Both channels merged: these are CONTENT tests, not channel tests.
+
+    Converted verbs route their human view to stderr through the machine-output
+    seam while unconverted siblings still return it for stdout, so a content
+    assertion must read both. The channel split itself is asserted by the
+    dedicated tests below and by ``tests/quality/test_machine_output_seam.py``.
+    """
     buf = StringIO()
-    call_command(*args, stdout=buf)
+    call_command(*args, stdout=buf, stderr=buf)
     return buf.getvalue()
 
 
@@ -71,3 +78,23 @@ class TestAddAndDismiss:
     def test_dismiss_absent(self) -> None:
         out = _call("health", "dismiss", "9999")
         assert "no open known-issue 9999" in out
+
+
+class TestMachineOutputChannel:
+    """``health show`` is a seam command: stdout carries JSON or nothing at all."""
+
+    @staticmethod
+    def _channels(*args: str) -> tuple[str, str]:
+        out, err = StringIO(), StringIO()
+        call_command("health", "show", *args, stdout=out, stderr=err)
+        return out.getvalue(), err.getvalue()
+
+    def test_human_mode_leaves_stdout_empty(self) -> None:
+        out, err = self._channels()
+        assert out == ""
+        assert err != ""
+
+    def test_json_mode_puts_only_json_on_stdout(self) -> None:
+        out, err = self._channels("--json")
+        assert json.loads(out) is not None
+        assert err == ""
