@@ -1,6 +1,6 @@
 """Every DB-home settings key that no longer names a live ``UserSettings`` field.
 
-souliane/teatree#3527: a retired key is invisible to the resolver — ``_coerce_db_rows``
+souliane/teatree#3527: a retired key is invisible to the resolver — ``_coerce_setting_rows``
 drops any row whose key is not in the DB-home parser registry — so removing a
 setting silently reverted an operator's explicitly-configured value to the
 dataclass default. The removal of ``eval_credential`` reverted the configured

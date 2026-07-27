@@ -28,13 +28,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import lru_cache
-from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import BeforeValidator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
 
 from teatree.config.agent_enums import AgentHarnessProvider, AgentRuntime, parse_harness_name
+from teatree.config.cold_defaults import DEFAULTS_TOML as _DEFAULTS_TOML
 from teatree.config.cold_hook_settings import ColdHookSetting
 from teatree.config.enums import (
     Autonomy,
@@ -59,8 +59,6 @@ from teatree.config.setting_parsers import (
 )
 from teatree.config.speak import parse_speak_setting
 from teatree.types import SlackVoiceClassifierMode
-
-_DEFAULTS_TOML = Path(__file__).with_name("defaults.toml")
 
 
 class Category(StrEnum):

@@ -6,15 +6,23 @@ named-overlay paths share), ``cadence_seconds``, and the autonomy-collapse
 cap; re-exported from ``teatree.config``.
 
 The #1775 partition: every ``UserSettings`` field has exactly one home (see
-``config/homes.py``). The file config tier was removed, so every field is DB-home
-now — the ``SettingHome.TOML`` carve-out is retained but EMPTY (a future file tier
-would be a deliberate, tested re-introduction). A DB-home field resolves from the
-``ConfigSetting`` store (``_db_setting_overrides``: global rows then the active
-overlay's rows on top) + ``T3_*`` env ONLY. A DB-home key mistakenly placed in the
-DB overlays-registry entry (the ``[overlays.<name>]`` table in ``config.raw``) is
-NOT one of its homes, so it is dropped on read (``_drop_db_home_overlay_keys``).
-The DB read is fail-safe (an absent/empty table or unconfigured Django yields no
-overrides) so an empty table resolves every DB-home field to its dataclass default.
+``config/homes.py``). The per-install file config tier was removed, so every field
+is DB-home now — the ``SettingHome.TOML`` carve-out is retained but EMPTY (a future
+per-install file tier would be a deliberate, tested re-introduction). A DB-home
+field's OVERRIDE tiers are the ``ConfigSetting`` store (``_db_setting_overrides``:
+global rows then the active overlay's rows on top) + ``T3_*`` env ONLY. A DB-home
+key mistakenly placed in the DB overlays-registry entry (the ``[overlays.<name>]``
+table in ``config.raw``) is NOT one of its homes, so it is dropped on read
+(``drop_db_home_overlay_keys``). The DB read is fail-safe (an absent/empty table or
+unconfigured Django yields no overrides) so an empty table resolves every DB-home
+field to its shipped default.
+
+Beneath every override sits the DEFAULTS base: the shipped, committed
+``config/defaults.toml`` (``_toml_default_rows``) — packaged data, never per-install
+config. It is read with stdlib ``tomllib`` through ``cold_defaults``, NEVER through
+``schema.shipped_defaults``: ``teatree.config``'s package init imports this module
+and the cold hook path imports that package, so a pydantic read here would put
+~110ms on every hook invocation.
 """
 
 import logging
@@ -23,29 +31,39 @@ from dataclasses import replace
 from typing import Any
 
 import teatree.config as _facade
+from teatree.config import cold_defaults
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
-from teatree.config.homes import SETTING_HOMES, SettingHome
-from teatree.config.mr_reminder import mr_reminder_from_table
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.retired_settings import RENAMED_SETTING_KEYS, removed_setting, warn_removed_setting
+from teatree.config.setting_layers import SettingLayers, apply_structured_settings, drop_db_home_overlay_keys
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.config.settings import OverlayEntry, UserSettings
-from teatree.config.speak import speak_from_subtable
-from teatree.types import SpeakConfig
 
 _logger = logging.getLogger("teatree.config")
 
 # The structured nested settings: stored as a JSON
-# dict ConfigSetting, NOT a scalar. ``_coerce_db_rows`` SKIPS them — a bare dict
+# dict ConfigSetting, NOT a scalar. ``_coerce_setting_rows`` SKIPS them — a bare dict
 # cannot flat-replace the dataclass field — and ``get_effective_settings`` resolves
-# them bespoke from the raw rows (``_apply_structured_db_settings``): ``mr_reminder``
-# overlay-then-global, ``speak`` as a per-overlay MERGE onto the global base.
+# them bespoke from the raw row layers (``setting_layers.apply_structured_settings``):
+# ``mr_reminder`` highest-layer-wins, ``speak`` as a MERGE up the layers.
 _BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
 
 # Sentinel for "no shipped default at all" — never equals a real value, so a
 # seed/import of such a key is always written.
 _NO_EFFECTIVE_DEFAULT: object = object()
+
+
+def _toml_default_rows() -> dict[str, Any]:
+    """The shipped ``defaults.toml`` ``[teatree]`` table — the DEFAULTS base of every tier chain.
+
+    Read through ``cold_defaults`` (stdlib ``tomllib``, mtime-cached), never through
+    ``schema.shipped_defaults``: this module sits on ``teatree.config``'s package init,
+    which the cold hook path imports, so a pydantic read here would cost ~110ms per hook
+    invocation. The path is read off the module at call time so a test can point the tier
+    at a fixture file.
+    """
+    return cold_defaults.shipped_defaults_table(cold_defaults.DEFAULTS_TOML)
 
 
 def effective_default(key: str) -> object:
@@ -55,13 +73,10 @@ def effective_default(key: str) -> object:
     (``config_migration``), and the resolver all agree on, so a row equal to it is
     provably redundant: writing it and clearing it resolve to the SAME value.
 
-    A ``UserSettings`` scalar field resolves to its DATACLASS default: the resolver
-    base (``load_config().user`` is always a bare ``UserSettings()``), NOT the
-    ``defaults.toml``/pydantic value. The TOML-default tier is NOT wired into the
-    resolver (a later phase — ``config/schema.py``), so ``defaults.toml`` adopting a
-    live value (e.g. ``provision_ram_ceiling_percent = 75``) that differs from the
-    conservative code default (``85``) MUST write a row on import/seed — else the
-    value would be skipped-as-default and then silently resolve to ``85``.
+    A ``UserSettings`` scalar field resolves to its ``defaults.toml`` value — the
+    resolver's own DEFAULTS base (``_toml_default_rows``, coerced by the same registry
+    parsers a DB row goes through). A key the shipped file does not carry (a
+    Secret/Personal key, absent by construction) falls back to the dataclass default.
 
     A structured field (``speak`` / ``mr_reminder``) is stored as a dict the resolver
     rebuilds bespoke; its stored-form default is the ``shipped_defaults`` dict (equal
@@ -74,6 +89,9 @@ def effective_default(key: str) -> object:
     seed/import is always written.
     """
     if key not in _BESPOKE_STRUCTURED_FIELDS:
+        toml_default = _coerce_setting_rows(_toml_default_rows()).get(key, _NO_EFFECTIVE_DEFAULT)
+        if toml_default is not _NO_EFFECTIVE_DEFAULT:
+            return toml_default
         dataclass_default = getattr(UserSettings(), key, _NO_EFFECTIVE_DEFAULT)
         if dataclass_default is not _NO_EFFECTIVE_DEFAULT:
             return dataclass_default
@@ -86,28 +104,32 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     """Return the user settings under the #1775 DB-home partition + env.
 
     Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``).
-    The file config tier was removed, so every field is DB-home now (the
+    The per-install file config tier was removed, so every field is DB-home now (the
     ``SettingHome.TOML`` carve-out is retained but empty). A DB-home field
     resolves, first match wins:
 
-            env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> default.
+        env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> TOML default.
 
     ``T3_*`` env var, then the ``ConfigSetting`` store (overlay-scope row, then
     global-scope row), then — for a key promoted to an overlay code default (#36,
     ``overlay_code_defaults``) — the active overlay's ``OverlayConfig`` value, then
-    the dataclass default. A value for the field in the DB overlays-registry entry
-    (its ``[overlays.<name>]`` table in ``config.raw``) is NOT one of its homes and
-    is dropped on read. The overlay-code-default tier is a DEFAULT (never a hard
-    pin), so it sits below every DB / env override and above the dataclass default;
-    a key with no promoted code default skips it and resolves to the dataclass
-    default as before.
+    the shipped ``defaults.toml`` value (:func:`_toml_default_rows`, coerced through
+    the same registry parsers a stored row goes through). A field the shipped file
+    does not carry — a Secret/Personal key, absent by construction — keeps its
+    dataclass default, which is the resolver base. A value for the field in the DB
+    overlays-registry entry (its ``[overlays.<name>]`` table in ``config.raw``) is
+    NOT one of its homes and is dropped on read. Both default tiers are DEFAULTS
+    (never hard pins), so they sit below every DB / env override and must not defeat
+    the autonomy collapse.
 
     The per-overlay overlays-registry override layer is filtered by home
-    (``_drop_db_home_overlay_keys`` / ``_toml_home``) so a ``[overlays.<name>]``
+    (``setting_layers.drop_db_home_overlay_keys`` / ``toml_home``) so a ``[overlays.<name>]``
     value for a DB-home key never leaks in — with the TOML carve-out empty, that
-    drops every such key with a loud WARN. The DB read fails safe to ``{}``
-    whenever Django is not configured or the table does not exist yet, so an empty
-    table resolves every DB-home field to its dataclass default.
+    drops every such key with a loud WARN. That carve-out is about a field's
+    OVERRIDE home and is orthogonal to the TOML default tier, which is a shipped
+    base under every field. The DB read fails safe to ``{}`` whenever Django is not
+    configured or the table does not exist yet, so an empty table resolves every
+    DB-home field to its shipped default.
 
     The DB tier has TWO scopes: a GLOBAL ``ConfigSetting`` row (``scope=""``)
     applies to every overlay, and an OVERLAY-scoped row (``scope=<overlay name>``)
@@ -130,10 +152,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     ``ENV_SETTING_OVERRIDES`` (env); the resolver picks it up generically via
     ``dataclasses.replace``. The two non-generic fields are the nested structured
     tables ``speak`` / ``mr_reminder`` (``_BESPOKE_STRUCTURED_FIELDS``): they are
-    stored as JSON dicts, so ``_coerce_db_rows`` skips them and
-    :func:`_apply_structured_db_settings` rebuilds the dataclass from the raw rows —
-    ``mr_reminder`` overlay-then-global, ``speak`` as a per-overlay MERGE onto the
-    global base (a partial overlay ``speak`` row overrides only the keys it sets).
+    stored as JSON dicts, so ``_coerce_setting_rows`` skips them and
+    ``setting_layers.apply_structured_settings`` rebuilds the dataclass from the raw row
+    layers (TOML default, DB global, DB overlay) — ``mr_reminder`` highest-layer-wins,
+    ``speak`` as a MERGE up the layers (a partial row overrides only the keys it sets).
 
     As a final step the single ``autonomy`` switch is applied: under
     :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the three approval gates
@@ -152,92 +174,48 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     # value for a DB-home key is dropped on read (that field's authoritative tier is
     # the DB store below). The drop is made LOUD (never silent) so an operator who set
     # a DB-home key in their overlays-registry entry is told the value had no effect.
-    overrides = _drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
+    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
     # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
     # including for ``mode``) is the per-overlay override layer so far. DB-home fields
     # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
     # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
     # pin), env beats both.
     resolved_overlay = _resolved_overlay_name(overlay_name)
-    # Read the raw rows ONCE: the coerced tier drives the generic ``replace`` below,
-    # and the raw dicts feed the bespoke structured resolution (speak / mr_reminder
-    # are JSON dicts that ``_coerce_db_rows`` skips — see ``_BESPOKE_STRUCTURED_FIELDS``).
-    global_rows = _load_global_rows()
-    overlay_rows = _load_overlay_rows(resolved_overlay)
-    global_db = _coerce_db_rows(global_rows)
-    overlay_db = _coerce_db_rows(overlay_rows)
+    layers = _read_setting_layers(resolved_overlay)
     # The overlay-code-default tier (#36): promoted constants the active overlay
-    # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE
-    # the dataclass default (with no row the code default wins). It is never a
-    # hard pin — it is a default, so it must not defeat the autonomy collapse.
+    # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE the
+    # shipped TOML default (with no row the code default wins). Neither default tier is
+    # a hard pin, so neither may defeat the autonomy collapse.
     code_defaults = overlay_code_defaults(resolved_overlay)
-    hard_pinned = set(overrides) | set(overlay_db)
-    overrides.update(global_db)
-    overrides.update(overlay_db)
+    hard_pinned = set(overrides) | set(layers.overlay_db)
+    overrides.update(layers.global_db)
+    overrides.update(layers.overlay_db)
     if overlay_name is None:
         env_overrides = _env_setting_overrides()
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)
-    layered = {**code_defaults, **overrides}
+    layered = {**layers.toml_defaults, **code_defaults, **overrides}
     settings = base if not layered else replace(base, **layered)
-    settings = _apply_structured_db_settings(settings, global_rows, overlay_rows, base.speak)
-    # ``global_pinned`` MUST be the FOLDED field names (``global_db``), not the raw
-    # row keys (``global_rows``): a global row stored under a retired alias
-    # (``_LEGACY_SETTING_ALIASES``) resolves its VALUE onto the current field via
-    # ``_coerce_db_rows``, so its pin must be recorded under that same current field
-    # name. Keying the pin set off the raw row keys would let a renamed approval-gate
-    # field's value resolve while its pin silently vanished — the autonomy collapse
-    # would then override an explicitly-stored gate (config §3d #1).
+    settings = apply_structured_settings(settings, layers.raw, base.speak)
+    # ``global_pinned`` MUST be the FOLDED field names (``layers.global_db``), not the raw
+    # row keys: a global row stored under a retired alias (``_LEGACY_SETTING_ALIASES``)
+    # resolves its VALUE onto the current field via ``_coerce_setting_rows``, so its pin
+    # must be recorded under that same current field name. Keying the pin set off the raw
+    # row keys would let a renamed approval-gate field's value resolve while its pin
+    # silently vanished — the autonomy collapse would then override an explicitly-stored
+    # gate (config §3d #1).
     return _apply_autonomy(
         settings,
         hard_pinned=hard_pinned,
-        global_pinned=set(global_db),
+        global_pinned=set(layers.global_db),
     )
 
 
-def _apply_structured_db_settings(
-    settings: UserSettings,
-    global_rows: dict[str, Any],
-    overlay_rows: dict[str, Any],
-    base_speak: SpeakConfig,
-) -> UserSettings:
-    """Resolve the nested-table DB-home fields from the raw rows (#1775).
-
-    ``mr_reminder`` is global-or-overlay (an overlay row wins, no merge — it has no
-    per-overlay merge layer). ``speak`` is the one non-generic override: the
-    per-overlay ``speak`` row MERGES onto the global ``speak`` base so a partial
-    overlay row overrides only the keys it sets.
-    """
-    mr = overlay_rows.get("mr_reminder")
-    if not isinstance(mr, dict):
-        mr = global_rows.get("mr_reminder")
-    if isinstance(mr, dict):
-        settings = replace(settings, mr_reminder=mr_reminder_from_table(mr))
-    speak = _resolve_speak_db(global_rows, overlay_rows, base_speak)
-    if speak is not None:
-        settings = replace(settings, speak=speak)
-    return settings
-
-
-def _resolve_speak_db(
-    global_rows: dict[str, Any],
-    overlay_rows: dict[str, Any],
-    base: SpeakConfig,
-) -> SpeakConfig | None:
-    """Merge the per-overlay ``speak`` DB row onto the global ``speak`` base (#2050 semantics).
-
-    ``None`` (no ``speak`` row in either scope) → the dataclass default stands. A
-    global row sets the base; an overlay row merges onto it so only the keys it
-    carries override — the partial-merge shape of :func:`speak_from_subtable`.
-    """
-    global_speak = global_rows.get("speak")
-    overlay_speak = overlay_rows.get("speak")
-    if not isinstance(global_speak, dict) and not isinstance(overlay_speak, dict):
-        return None
-    merged = speak_from_subtable(global_speak, base=base) if isinstance(global_speak, dict) else base
-    if isinstance(overlay_speak, dict):
-        merged = speak_from_subtable(overlay_speak, base=merged)
-    return merged
+def _read_setting_layers(overlay_name: str) -> SettingLayers:
+    """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once."""
+    raw = (_toml_default_rows(), _load_global_rows(), _load_overlay_rows(overlay_name))
+    toml_defaults, global_db, overlay_db = (_coerce_setting_rows(rows) for rows in raw)
+    return SettingLayers(raw, toml_defaults, global_db, overlay_db)
 
 
 def _active_overlay_overrides() -> dict[str, Any]:
@@ -250,7 +228,7 @@ def _active_overlay_overrides() -> dict[str, Any]:
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
-    overrides = _drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
+    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
     overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
     overrides.update(_env_setting_overrides())
     return overrides
@@ -303,9 +281,9 @@ def _db_global_overrides() -> dict[str, Any]:
     The DB twin of the global ``[teatree]`` table: applies to every overlay. A
     global ``mode`` row is a workspace default that does NOT pin ``mode`` against
     the autonomy collapse (mirroring the old global-``[teatree] mode`` rule). See
-    :func:`_coerce_db_rows` for the type coercion and the loud-on-corruption rule.
+    :func:`_coerce_setting_rows` for the type coercion and the loud-on-corruption rule.
     """
-    return _coerce_db_rows(_load_global_rows())
+    return _coerce_setting_rows(_load_global_rows())
 
 
 def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
@@ -317,7 +295,7 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     request for ``teatree`` also reads the ``t3-teatree`` entry-point overlay's
     rows and vice versa) so a row written under either spelling resolves.
     """
-    return _coerce_db_rows(_load_overlay_rows(overlay_name))
+    return _coerce_setting_rows(_load_overlay_rows(overlay_name))
 
 
 # Retired ConfigSetting keys mapped to their current ``UserSettings`` field, and
@@ -330,14 +308,20 @@ _LEGACY_SETTING_ALIASES: dict[str, str] = RENAMED_SETTING_KEYS
 _RETIRED_SETTING_KEYS: frozenset[str] = frozenset(RENAMED_SETTING_KEYS)
 
 
-def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
-    """Coerce stored ``ConfigSetting`` values via the DB-home parser registry.
+def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a ``{key: stored value}`` table via the DB-home parser registry.
 
-    Returns ``{field: coerced}`` for every row whose key is a registered
-    ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; rows for unknown / non-DB
-    keys are dropped so a stray row never mutates the resolved settings. A row
-    written under a retired key (``_LEGACY_SETTING_ALIASES``) is folded onto its
-    current field name; the canonical key wins when both rows are present.
+    Shared by every tier that arrives in stored form: the ``ConfigSetting`` rows of
+    both scopes AND the shipped ``defaults.toml`` table — ``defaults.toml`` is written
+    in exactly the ``config_setting export``/``import`` shape, so one coercer keeps the
+    defaults tier and the override tiers provably type-identical.
+
+    Returns ``{field: coerced}`` for every key that is a registered
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; unknown / non-DB keys are
+    dropped so neither a stray row nor a cold-hook-only ``defaults.toml`` key ever
+    mutates the resolved settings. A key written under a retired name
+    (``_LEGACY_SETTING_ALIASES``) is folded onto its current field name; the canonical
+    key wins when both are present.
 
     A row under a REMOVED key (``retired_settings.REMOVED_SETTING_KEYS``) has no
     field to resolve onto, so it is reported on stderr naming the key, the reason
@@ -515,55 +499,6 @@ _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
 
 
 _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
-
-
-def _toml_home(key: str) -> bool:
-    """Whether *key* is a TOML-home ``UserSettings`` field (#1775 partition).
-
-    The TOML-home carve-out is currently EMPTY (the file config tier was removed),
-    so this returns ``False`` for every live key — the per-overlay overlays-registry
-    override layer then drops it, since its authoritative tier is the
-    ``ConfigSetting`` store, never the ``[overlays.<name>]`` registry entry. Kept as
-    the carve-out predicate so a future file-tier re-introduction is a deliberate,
-    tested change (``config/homes.py``).
-    """
-    return SETTING_HOMES.get(key) is SettingHome.TOML
-
-
-def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> dict[str, Any]:
-    """Keep only TOML-home override keys, WARNING loud on each dropped DB-home key.
-
-    The footgun the warning closes (the silent-drop the maintainer flagged): a DB
-    overlays-registry entry (``[overlays.<name>]`` in ``config.raw``) carries a
-    DB-home key (e.g. ``mode = "auto"``) that the operator expects to take effect,
-    but a DB-home field's sole home is the ``ConfigSetting`` store — so the resolver
-    drops the registry value. With NO DB row beneath it the dropped value also has
-    no effect, and nothing told the operator their override was ignored. Surfacing
-    the drop loud (one aggregated WARN naming every dropped key and the migration
-    path) makes the no-op visible. With the TOML carve-out empty, every override
-    key is DB-home, so this keeps nothing and returns ``{}``.
-
-    Unknown keys (not in the home registry at all) are NOT warned — a stray key is
-    a different concern; only a genuine DB-home ``UserSettings`` field flagged here.
-    """
-    kept: dict[str, Any] = {}
-    dropped: list[str] = []
-    for key, value in overrides.items():
-        if _toml_home(key):
-            kept[key] = value
-        elif SETTING_HOMES.get(key) is SettingHome.DB:
-            dropped.append(key)
-    if dropped:
-        scope = overlay_name or "(active overlay)"
-        _logger.warning(
-            "Config override keys for overlay %s are DB-home settings, so a stray non-DB value is "
-            "IGNORED on read and had NO effect: %s. Their authoritative home is the ConfigSetting "
-            "store — set them with `t3 <overlay> config_setting set <key> <value> --overlay %s`.",
-            scope,
-            ", ".join(sorted(dropped)),
-            scope,
-        )
-    return kept
 
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:

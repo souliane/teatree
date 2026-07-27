@@ -3,7 +3,7 @@
 
 souliane/teatree#3527: dropping ``eval_credential`` reverted a configured
 operator to the default with no migration and no warning, because
-``_coerce_db_rows`` drops every row whose key is not a live field. Silence is the
+``_coerce_setting_rows`` drops every row whose key is not a live field. Silence is the
 bug: an operator who explicitly configured a setting cannot tell a removal apart
 from "my value took effect".
 
