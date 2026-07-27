@@ -64,7 +64,7 @@ SEED_ROW_FIELDS: dict[str, dict[str, tuple[str, type]]] = {
 SHIPPED_ONLY_FIELDS: dict[str, tuple[str, ...]] = {"loops": ("prompt_body",), "schedules": ("slots",)}
 
 _lock = threading.Lock()
-_cache: dict[int, dict[str, Any]] = {}
+_cache: dict[tuple[Path, int], dict[str, Any]] = {}
 
 __all__ = [
     "DEFAULTS_TOML",
@@ -72,9 +72,16 @@ __all__ = [
     "SEED_TABLES",
     "SHIPPED_ONLY_FIELDS",
     "classify_seed_field",
+    "reset_seed_defaults_cache",
     "seed_divergences",
     "shipped_seed_table",
 ]
+
+
+def reset_seed_defaults_cache() -> None:
+    """Drop the parsed-document memo — the conftest autouse reset (TSH-2/TSH-7)."""
+    with _lock:
+        _cache.clear()
 
 
 def shipped_seed_table(table: str, path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -93,17 +100,22 @@ def shipped_seed_table(table: str, path: Path | None = None) -> dict[str, dict[s
 
 
 def _document(path: Path) -> dict[str, Any]:
-    """The whole parsed file, cached per file mtime; a missing file reads as empty."""
+    """The whole parsed file, memoised per ``(path, mtime)``; a missing file reads as empty.
+
+    The path belongs in the key: an mtime-only key lets a fixture's parse answer for the
+    shipped file whenever the two share an mtime — which a coarse-granularity filesystem,
+    or a test pinning ``os.utime``, makes real rather than theoretical.
+    """
     try:
-        mtime = path.stat().st_mtime_ns
+        key = (path, path.stat().st_mtime_ns)
     except OSError:
         return {}
     with _lock:
-        document = _cache.get(mtime)
+        document = _cache.get(key)
         if document is None:
             document = tomllib.loads(path.read_text(encoding="utf-8"))
-            _cache.clear()  # only the current-mtime parse is worth keeping
-            _cache[mtime] = document
+            _cache.clear()  # only the current parse is worth keeping
+            _cache[key] = document
     return document
 
 

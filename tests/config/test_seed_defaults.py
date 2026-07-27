@@ -22,6 +22,7 @@ from teatree.config.seed_defaults import (
     SEED_TABLES,
     SHIPPED_ONLY_FIELDS,
     classify_seed_field,
+    reset_seed_defaults_cache,
     seed_divergences,
     shipped_seed_table,
 )
@@ -124,6 +125,33 @@ class TestMtimeKeyedCache:
         toml.write_text("[loops.inbox]\ndelay_seconds = 2\n")
         os.utime(toml, ns=(7_000_000_000, 7_000_000_000))
         assert shipped_seed_table("loops", toml)["inbox"]["delay_seconds"] == 1
+
+    def test_two_files_sharing_an_mtime_do_not_serve_each_others_parse(self, tmp_path: Path) -> None:
+        # An mtime-ONLY key collides across files: a coarse-granularity filesystem, or a
+        # test that pins `os.utime`, makes one fixture's parse win for a file it was never
+        # read from. The path is part of the identity, so it is part of the key.
+        first, second = tmp_path / "a.toml", tmp_path / "b.toml"
+        first.write_text("[loops.inbox]\ndelay_seconds = 1\n")
+        second.write_text("[loops.inbox]\ndelay_seconds = 2\n")
+        for path in (first, second):
+            os.utime(path, ns=(9_000_000_000, 9_000_000_000))
+
+        assert shipped_seed_table("loops", first)["inbox"]["delay_seconds"] == 1
+        assert shipped_seed_table("loops", second)["inbox"]["delay_seconds"] == 2
+
+    def test_the_reset_clears_the_memo_so_a_rewritten_fixture_is_re_read(self, tmp_path: Path) -> None:
+        # The disposition the roster records: the conftest autouse reset must actually
+        # empty the memo, so a fixture parsed in one test cannot survive into the next.
+        toml = tmp_path / "defaults.toml"
+        toml.write_text("[loops.inbox]\ndelay_seconds = 1\n")
+        os.utime(toml, ns=(8_000_000_000, 8_000_000_000))
+        assert shipped_seed_table("loops", toml)["inbox"]["delay_seconds"] == 1
+
+        reset_seed_defaults_cache()
+
+        toml.write_text("[loops.inbox]\ndelay_seconds = 2\n")
+        os.utime(toml, ns=(8_000_000_000, 8_000_000_000))
+        assert shipped_seed_table("loops", toml)["inbox"]["delay_seconds"] == 2
 
 
 def test_a_non_table_entry_is_skipped_rather_than_returned(tmp_path: Path) -> None:
