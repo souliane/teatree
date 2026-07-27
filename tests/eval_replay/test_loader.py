@@ -604,22 +604,12 @@ class TestJudgeBlock:
         assert spec.judge is not None
         assert spec.judge.rubric == "The explanation is faithful to the diff."
         assert spec.judge.model == "claude-sonnet-5"
-        assert spec.judge.max_output_tokens == 512
         assert spec.matchers == ()
 
-    def test_judge_overrides_model_and_tokens(self, tmp_path: Path) -> None:
-        body = (
-            "- name: judged\n"
-            "  scenario: needs a judge\n"
-            "  prompt: do\n"
-            "  judge:\n"
-            "    rubric: r\n"
-            "    model: sonnet\n"
-            "    max_output_tokens: 128\n"
-        )
+    def test_judge_overrides_the_model(self, tmp_path: Path) -> None:
+        body = "- name: judged\n  scenario: needs a judge\n  prompt: do\n  judge:\n    rubric: r\n    model: sonnet\n"
         spec = load_eval_yaml(_write(tmp_path, body))[0]
         assert spec.judge.model == "sonnet"
-        assert spec.judge.max_output_tokens == 128
 
     def test_judge_and_matchers_coexist(self, tmp_path: Path) -> None:
         body = (
@@ -641,12 +631,6 @@ class TestJudgeBlock:
         with pytest.raises(EvalSpecError) as exc:
             load_eval_yaml(_write(tmp_path, body))
         assert "rubric" in str(exc.value)
-
-    def test_rejects_bad_max_output_tokens(self, tmp_path: Path) -> None:
-        body = "- name: bad\n  scenario: bad\n  prompt: do\n  judge:\n    rubric: r\n    max_output_tokens: 0\n"
-        with pytest.raises(EvalSpecError) as exc:
-            load_eval_yaml(_write(tmp_path, body))
-        assert "max_output_tokens" in str(exc.value)
 
     def test_missing_both_expect_and_judge_rejected(self, tmp_path: Path) -> None:
         body = "- name: bad\n  scenario: bad\n  prompt: do\n"

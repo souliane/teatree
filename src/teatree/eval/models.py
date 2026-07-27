@@ -192,14 +192,14 @@ class JudgeSpec:
     (e.g. "the explanation is faithful to the diff", "the tone is non-blaming").
     A judge model reads the captured transcript and the ``rubric`` and returns
     a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the mid run
-    tier) and ``max_output_tokens`` caps the judge's reply — both cost controls.
+    tier) — the per-scenario cost control, alongside the per-call
+    ``JUDGE_DEFAULT_BUDGET_USD`` cap and the process-wide ``JudgeBudget``.
     """
 
     rubric: str
     #: DERIVED from the tier catalog (the conservative mid tier), never pinned —
     #: a hardcoded id would leave the judge a generation behind the runs it grades.
     model: str = TIER_MODELS[DEFAULT_TIER]
-    max_output_tokens: int = 512
 
 
 @dataclasses.dataclass(frozen=True)

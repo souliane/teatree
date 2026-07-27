@@ -78,10 +78,11 @@ class SignalTrust:
 
 @dataclass(frozen=True, slots=True)
 class GuardSeams:
-    """Injectable seams so the guard chain is exercisable without a live critic.
+    """Injectable seams so each guard is exercisable in isolation.
 
-    Each is ``None`` in production (the real probe applies); tests supply fakes to
-    drive the positive path the shipped state cannot reach yet.
+    Each is ``None`` in production (the real probe applies); tests supply fakes so
+    a guard can be driven without standing up critic verdicts, factory-signal
+    providers, and a self-improve budget.
     """
 
     critic_probe: Callable[[], CriticLiveness] | None = None
@@ -106,10 +107,11 @@ class OuterLoopSettings(Protocol):
 def probe_critic_liveness() -> CriticLiveness:
     """Defensive lazy lookup of the critic gate — fail CLOSED when unconfirmable.
 
-    The sibling self-catching critic PR registers a ``CriticVerdict`` model and a
-    ``critic`` gate. Until then (and on ANY lookup failure) this reports NOT live,
-    so G2 refuses every tick — the intended shipped state. When the critic lands,
-    the same probe reports live once it has ``>= MIN_CRITIC_SAMPLE`` verdict rows.
+    ``CriticVerdict`` is a registered model and ``critic`` a registered gate, so the
+    probe reports live once the table holds ``>= MIN_CRITIC_SAMPLE`` verdict rows.
+    The lazy ``getattr`` and the broad ``except`` are the fail-CLOSED path: on ANY
+    lookup failure the probe reports NOT live and G2 refuses the tick rather than
+    letting an unconfirmed supervisor pass.
     """
     model = getattr(core_models, "CriticVerdict", None)
     if model is None:

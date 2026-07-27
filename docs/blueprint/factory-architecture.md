@@ -169,16 +169,16 @@ A `tach check` passing is a necessary condition for merge, but it is not suffici
 
 - Any module with `interfaces = []` (empty public API) — this means tach enforces no actual encapsulation; the module's internals are effectively public
 - Any dependency cycle laundered through a `tach.toml` exclusion or `ignore_type_checking_imports = true` blanket — cycles that the config hides rather than removes
-- A dependency direction that violates the declared level ordering — an import from a lower layer to a higher layer (e.g., `teatree.config` importing from `teatree.cli`) without an explicit architectural justification in a comment. The level ordering is read from tach's own `layers:` directive in `tach.toml` (established as the level-ordering source under [#724](https://github.com/souliane/teatree/issues/724)); the gate does not invent its own ordering, it enforces the one tach already declares.
+- A dependency direction that violates the declared level ordering — an import from a lower layer to a higher layer (e.g., `teatree.config` importing from `teatree.cli`). The level ordering is tach's own `layers:` directive in `tach.toml`, and every `[[modules]]` entry declares its `layer`, so `tach check` rejects the lower→higher edge itself; nothing here invents a second ordering.
 
 **What the gate requires:**
 
 1. `tach check` passes (necessary but not sufficient)
 2. The dependency graph is acyclic after removing any `ignore_type_checking_imports` exemptions
 3. Any new `ignore_type_checking_imports = true` entry added in the diff is accompanied by a comment in `tach.toml` explaining why the TYPE_CHECKING-only import is unavoidable
-4. The `layers:` ordering in `tach.toml` is respected (no lower→higher import without a justifying comment)
+4. The `layers:` ordering in `tach.toml` is respected (no lower→higher import)
 
-**Shipped subset ([#850](https://github.com/souliane/teatree/issues/850)).** The `gate-relaxation` scan enforces the two deterministic, diff-local tach-soundness checks: a new `interfaces = []` added on a touched `[[modules]]` block (diff-local — a pre-existing empty interface is exempt, only a newly-added one is a finding) and a new `ignore_type_checking_imports = true` added without an accompanying comment (requirement 3). The graph-acyclicity check (requirement 2) stays covered by `tach check` itself (a necessary condition, run in prek + CI), and the full `layers:` lower→higher import-direction analysis (requirement 4) remains future work under #724/#725 — the diff-local gate does not front-run it.
+**Shipped subset ([#850](https://github.com/souliane/teatree/issues/850)).** The `gate-relaxation` scan enforces the two deterministic, diff-local tach-soundness checks: a new `interfaces = []` added on a touched `[[modules]]` block (diff-local — a pre-existing empty interface is exempt, only a newly-added one is a finding) and a new `ignore_type_checking_imports = true` added without an accompanying comment (requirement 3). The graph-acyclicity check (requirement 2) and the `layers:` import-direction check (requirement 4) both stay covered by `tach check` itself (a necessary condition, run in prek + CI): `forbid_circular_dependencies` is on and every `[[modules]]` entry declares its `layer`, so a cycle or a lower→higher import fails there. The diff-local gate does not duplicate a whole-tree check `tach check` already makes binding.
 
 #### 17.6.3 Gate placement
 

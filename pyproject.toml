@@ -523,7 +523,6 @@ baseline_file = "tests/skill_cli_ratchet_grandfathered.txt"
 # ``tests/quality/test_mutation.py`` caps the registry size.
 
 [tool.teatree.mutation]
-mode = "warn"
 timeout_seconds = 540
 high_value_modules = [
   "src/teatree/on_behalf_gate.py",
