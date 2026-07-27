@@ -12,6 +12,7 @@ from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
 import teatree.core.management.commands.tasks as tasks_cmd
+import teatree.core.management.commands.tasks_interactive_launch as tasks_launch
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -1484,7 +1485,7 @@ class TestTasksStartCommand(TestCase):
     def _patch_env(run_mock: MagicMock) -> list[AbstractContextManager[object]]:
         return [
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(tasks_cmd.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(tasks_launch.shutil, "which", return_value="/usr/bin/claude"),
             patch("teatree.utils.run.run_streamed", new=run_mock),
         ]
 

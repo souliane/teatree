@@ -13,6 +13,8 @@ when nothing is registered.
 
 from typing import TYPE_CHECKING, Protocol
 
+from teatree.core.modelkit.phases import subagent_for_phase
+
 if TYPE_CHECKING:
     from teatree.core.models import Task, TaskAttempt
     from teatree.types import SkillMetadata
@@ -52,7 +54,7 @@ def runs_in_session(*, role: str, phase: str) -> bool:
     The single predicate every dispatch gate consults (the save-time routing
     chokepoint, the auto-enqueue signal, the queue-drain safety net, and
     :func:`loop_dispatch_refusal`): a ``(role, phase)`` with a registered phase
-    agent (``Task.loop_dispatched``) runs in-session ONLY when the
+    agent (:func:`has_registered_phase_agent`) runs in-session ONLY when the
     ``agent_runtime`` setting selects ``interactive`` (the default). Under the
     ``headless`` lane the SAME phase work runs headless via ``agents/headless.py``
     behind the two-layer ``agent_harness`` / ``agent_harness_provider`` pair
@@ -61,11 +63,21 @@ def runs_in_session(*, role: str, phase: str) -> bool:
     registered agent) is never in-session.
     """
     from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
-    from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
         return False
-    return Task.loop_dispatched(role=role, phase=phase)
+    return has_registered_phase_agent(role=role, phase=phase)
+
+
+def has_registered_phase_agent(*, role: str, phase: str) -> bool:
+    """True iff ``(role, phase)`` is a dispatched pair in the ``SUBAGENT_BY_PHASE`` registry.
+
+    Pure registry membership over the ``core.modelkit`` leaf — no ORM, so the
+    ``teatree.core`` → ``teatree.core.modelkit`` edge is a declared tach edge
+    rather than a function-scoped import tach's acyclic guard cannot see.
+    ``Task.loop_dispatched`` is the ORM-side spelling of the same lookup.
+    """
+    return bool(subagent_for_phase(role, phase))
 
 
 def loop_dispatch_refusal(task: "Task") -> str | None:
@@ -92,4 +104,39 @@ def loop_dispatch_refusal(task: "Task") -> str | None:
         f"(role={task.ticket.role!r}, phase={task.phase!r}): "
         "this task runs INTERACTIVE in the /loop slot under agent_runtime=interactive "
         "(set agent_runtime=headless to run it headless)"
+    )
+
+
+def interactive_claim_refusal(task: "Task") -> str | None:
+    """Reason an IN-SESSION claim of ``task`` is refused, or ``None`` to proceed.
+
+    The mirror of :func:`loop_dispatch_refusal`, closing the other direction of
+    the ``agent_runtime`` split: under ``agent_runtime=headless`` a
+    loop-dispatched phase task is owned by the headless factory, so an
+    interactive session must not claim it and hand-do the work. Under
+    ``agent_runtime=interactive`` (the default) the in-session ``/loop`` slot IS
+    that owner, so this returns ``None`` and the claim proceeds. Free-form work
+    (no registered phase agent) is never headless-reserved.
+
+    The verdict is read from the LIVE ``agent_runtime`` setting, not from the
+    row's stored ``execution_target``. That column is written at insert time, so
+    a phase task created before the runtime was flipped to ``headless`` stays
+    ``INTERACTIVE`` and would otherwise remain claimable in-session — the exact
+    hole this guard closes.
+
+    Scope is deliberately narrow: ONLY the claim of a loop-dispatched phase
+    task. Ordinary interactive work — editing, testing, committing, ad-hoc
+    tasks, every ``t3`` diagnostic — is untouched under either runtime.
+    """
+    role = task.ticket.role
+    if runs_in_session(role=role, phase=task.phase):
+        return None
+    if not has_registered_phase_agent(role=role, phase=task.phase):
+        return None
+    return (
+        f"refused in-session claim of a headless-owned phase "
+        f"(role={role!r}, phase={task.phase!r}): "
+        "the headless factory owns loop-dispatched phase work under agent_runtime=headless. "
+        "Run `t3 <overlay> tasks work-next-headless` to let the headless lane take it, "
+        "or set agent_runtime=interactive to work it in the /loop slot"
     )

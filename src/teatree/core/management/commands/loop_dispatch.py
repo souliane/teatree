@@ -49,7 +49,18 @@ def _dispatchable_q() -> Q:
     in-session AND run headless. The admit-budget count deliberately does NOT
     apply this narrowing (``_admit_budget_exhausted``), so a headless claim in
     flight still consumes the boost budget.
+
+    ``execution_target`` alone is not sufficient, because it is written at
+    INSERT time: a phase task created before the runtime was flipped to
+    ``headless`` keeps ``INTERACTIVE`` and would stay claimable in-session. So
+    the LIVE ``agent_runtime`` decides first — under a headless runtime the
+    headless factory owns EVERY loop-dispatched phase, and the in-session
+    claimer matches nothing at all.
     """
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+
+    if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
+        return Q(pk__in=[])
     return Task.dispatchable_q() & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
 

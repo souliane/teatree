@@ -46,7 +46,6 @@
 # empty — Worktree / Ticket / PullRequest / LoopLease / SessionHandover are all ORM
 # reads that must resolve after the app registry is ready, so each stays call-time.
 "src/teatree/core/handover.py" = 6
-"src/teatree/core/headless_dispatch.py" = 1
 # _reenqueue_provision defers `from teatree.core.tasks import execute_provision`
 # (call-time, kept lazy) — tasks.py pulls the whole task-execution graph
 # (backend_factory / gates / runners / worktree); a top-level import from this
@@ -80,7 +79,9 @@
 "src/teatree/core/management/commands/review_request_post.py" = 4
 "src/teatree/core/management/commands/speak.py" = 1
 "src/teatree/core/management/commands/standing_goal.py" = 3
-"src/teatree/core/management/commands/tasks.py" = 2
+# 1: both headless_dispatch refusals became a declared top-level edge; the one left
+# is `review.completion_evidence`, which pulls the review graph at command load.
+"src/teatree/core/management/commands/tasks.py" = 1
 # 4: the sweep subcommands split out to _sweep_commands.py in the ticket
 # god-module split, taking one deferred teatree.core import with them; the four
 # left here (DodE2EOverride, E2EBypassApproval, two get_all_overlays) are real.
