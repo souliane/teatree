@@ -33,6 +33,8 @@ point.
 
 from claude_agent_sdk.types import EffortLevel
 from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from teatree.config import get_effective_settings
 from teatree.eval.model_resolution import resolve_spec_model
@@ -124,13 +126,9 @@ class AnthropicApiRunner:
 def _build_anthropic_model(spec: EvalSpec, api_key: str) -> Model:
     """Build the ``pydantic_ai`` Anthropic model that talks to the Messages API directly.
 
-    Imported at call time (not module top) so this module imports without the
-    ``anthropic`` package present — a test that injects a model never triggers it,
-    and the ``import`` chain stays light until a real Anthropic run is requested.
+    ``teatree.eval.backends.make_runner`` imports this module lazily, so the eval CLI
+    import chain stays ``anthropic``-free until an ``anthropic_api`` run is requested.
     """
-    from pydantic_ai.models.anthropic import AnthropicModel  # noqa: PLC0415 — deferred lazy import
-    from pydantic_ai.providers.anthropic import AnthropicProvider  # noqa: PLC0415 — deferred lazy import
-
     model_name = parse_model_variant(spec.model).model
     return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
 

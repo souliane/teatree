@@ -15,6 +15,7 @@ from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.ladder import LadderPolicy, laddered_tier_models, resolve_ladder_tiers, run_escalation_ladder
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.report import MatcherResult, ScenarioResult
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 _HAIKU = TIER_MODELS["cheap"]
 _SONNET = TIER_MODELS["balanced"]
@@ -76,6 +77,9 @@ class _RecordingTrial:
         if outcome == "raise":
             msg = "transient runner blip"
             raise RuntimeError(msg)
+        if outcome == "credit_exhausted":
+            msg = "Credit balance is too low — top up at console.anthropic.com"
+            raise CreditExhaustedError(msg)
         if outcome == "skip":
             return _result(spec, passed=False, skipped=True)
         return _result(spec, passed=bool(outcome))
@@ -216,6 +220,27 @@ class TestResilientCellSurvivesTransientExceptions:
         trial = _RecordingTrial({("alpha", _HAIKU): ["raise", "raise", "raise"]})
         rows = run_escalation_ladder([_spec("alpha")], _LADDER, run_trial=trial)
         assert resolve_ladder_tiers(rows) == {"alpha": None}
+
+
+class TestCreditExhaustionAbortsTheLadder:
+    """A dead metered key is terminal for the run, never a per-cell transient.
+
+    ``CreditExhaustedError`` is a ``RuntimeError``, so the cell-isolation
+    ``except Exception`` would otherwise retry it three times per tier across every
+    scenario — burning the whole metered baseline generation on a permanent config
+    fault no retry can clear.
+    """
+
+    def test_credit_exhaustion_propagates_instead_of_erroring_the_cell(self) -> None:
+        trial = _RecordingTrial({("alpha", _HAIKU): ["credit_exhausted"]})
+        with pytest.raises(CreditExhaustedError, match=r"console\.anthropic\.com"):
+            run_escalation_ladder([_spec("alpha"), _spec("beta")], _LADDER, run_trial=trial)
+
+    def test_the_dead_key_is_hit_once_not_retried(self) -> None:
+        trial = _RecordingTrial({("alpha", _HAIKU): ["credit_exhausted"]})
+        with pytest.raises(CreditExhaustedError):
+            run_escalation_ladder([_spec("alpha")], _LADDER, run_trial=trial)
+        assert trial.models_for("alpha") == [_HAIKU]
 
 
 class TestRejectsBadPolicy:

@@ -9,14 +9,21 @@ tokens; the direct-API transport itself is proved by building the real
 """
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 from django.test import TestCase
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import RunContext
 
 from teatree.eval.anthropic_api_runner import (
     AnthropicApiKeyMissingError,
@@ -70,6 +77,35 @@ def _tool_call_then_text(command: str, text: str) -> FunctionModel:
             yield text
 
     return FunctionModel(stream_function=stream_fn)
+
+
+class _RecordingAnthropicModel(AnthropicModel):
+    """A REAL ``AnthropicModel`` whose requests are served offline, recording their settings.
+
+    Subclassing the real provider model is what gives this double its teeth: the runner
+    picks the settings class from the model it was handed, so a stand-in that merely
+    claims to be Anthropic would grade the test's own guess instead of the runner's
+    branch. Every request is delegated to *offline*, so no key and no network are used.
+    """
+
+    def __init__(self, offline: Model) -> None:
+        super().__init__("claude-sonnet-5", provider=AnthropicProvider(api_key="offline-double"))
+        self._offline = offline
+        self.recorded: list[ModelSettings | None] = []
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[None] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        self.recorded.append(model_settings)
+        async with self._offline.request_stream(
+            messages, model_settings, model_request_parameters, run_context
+        ) as response:
+            yield response
 
 
 class TestBackendSelection:
@@ -137,6 +173,45 @@ class TestTransportIsTheAnthropicApiNotTheCli:
         model = runner._resolve_model_or_skip(spec)
         assert isinstance(model, AnthropicModel)
         assert model.model_name == "claude-sonnet-5"
+
+
+class TestReasoningEffortReachesTheAnthropicModel:
+    """The resolved effort must land under the key ``AnthropicModel`` actually reads.
+
+    ``AnthropicModel`` consults ``anthropic_effort``; ``openai_reasoning_effort`` is
+    not in its settings vocabulary, so an OpenAI-keyed effort is accepted, resolved,
+    passed, and silently discarded — the lane runs at the provider default while the
+    report claims the pinned effort. These assertions read the settings the model was
+    handed, so a "no exception" green cannot stand in for a delivered effort.
+    """
+
+    def _recorded_settings(self, *, spec: EvalSpec, effort: str | None) -> ModelSettings:
+        model = _RecordingAnthropicModel(_tool_call_then_text("uv run pytest", "done"))
+        AnthropicApiRunner(model=model, effort=effort).run(spec)
+        assert model.recorded, "the model was never asked for a request"
+        settings = model.recorded[0]
+        assert settings is not None
+        return settings
+
+    def test_the_lane_effort_lands_under_the_anthropic_key(self) -> None:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        settings = self._recorded_settings(spec=spec, effort="high")
+        assert settings.get("anthropic_effort") == "high"
+
+    def test_a_scenario_effort_pin_lands_under_the_anthropic_key(self) -> None:
+        # A scenario's own `model@effort` pin wins over the lane default, and must
+        # reach the model on the same key.
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        spec = dataclasses.replace(spec, model="claude-sonnet-5@low")
+        settings = self._recorded_settings(spec=spec, effort="high")
+        assert settings.get("anthropic_effort") == "low"
+
+    def test_the_openai_key_is_never_sent_to_an_anthropic_model(self) -> None:
+        # The OpenAI-shaped key is not merely redundant here — it is the whole bug:
+        # the model ignores it, so its presence would mean the effort never arrived.
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        settings = self._recorded_settings(spec=spec, effort="high")
+        assert "openai_reasoning_effort" not in settings
 
 
 class TestMissingKeyGate:

@@ -25,6 +25,7 @@ from teatree.cli.eval.run_modes import (
     require_persist_for_history_gates,
     with_model,
 )
+from teatree.eval.api_errors import NEVER_RETRY_ERRORS
 from teatree.eval.api_runner import MAX_BUDGET_USD
 from teatree.eval.backends import API_BACKEND, ApiRunnerParams, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
@@ -451,7 +452,10 @@ def _resilient_matrix_trial(
     that fail-loud). ``KeyboardInterrupt``/``SystemExit`` are ``BaseException``s
     and propagate; ``typer.Exit`` subclasses ``RuntimeError`` (an ``Exception``)
     but is a control-flow signal, so it is re-raised explicitly rather than
-    isolated. (``TerminalResultError``/``TimeoutError`` are already handled
+    isolated. :data:`~teatree.eval.api_errors.NEVER_RETRY_ERRORS` — a dead metered
+    key — is terminal for the WHOLE matrix, so it propagates instead of burning
+    every remaining cell on a permanent config fault.
+    (``TerminalResultError``/``TimeoutError`` are already handled
     inside ``run()`` and never reach here.) After :data:`MAX_MATRIX_CELL_RETRIES`
     retries still fail, the cell is logged loudly to stderr and recorded
     ``errored=True`` so the rest of the matrix survives.
@@ -460,7 +464,7 @@ def _resilient_matrix_trial(
     for attempt in range(MAX_MATRIX_CELL_RETRIES + 1):
         try:
             return _matrix_trial(runner, cell, grader=grader)
-        except typer.Exit:
+        except (typer.Exit, *NEVER_RETRY_ERRORS):
             raise
         except Exception as exc:  # noqa: BLE001 — isolate THIS cell; genuine errors already re-raised in run().
             last_exc = exc

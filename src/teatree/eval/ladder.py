@@ -31,6 +31,7 @@ import sys
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.cost import tier_rank
+from teatree.eval.api_errors import NEVER_RETRY_ERRORS
 from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, TrialRunner, run_pass_at_k, validate_pass_at_k_args
@@ -108,7 +109,10 @@ def _resilient_ladder_cell(spec: EvalSpec, model: str, *, run_trial: TrialRunner
     """Run one tier's whole pass@k cell with bounded retries; on persistent failure, an ERRORED row.
 
     Mirrors ``teatree.cli.eval.multi_trial._resilient_matrix_trial``: only an
-    *unexpected* ``Exception`` from the runner is caught and retried; after
+    *unexpected* ``Exception`` from the runner is caught and retried, and
+    :data:`~teatree.eval.api_errors.NEVER_RETRY_ERRORS` — a dead metered key — is
+    terminal for the WHOLE ladder, so it propagates rather than burning every
+    remaining tier and scenario on a permanent config fault. After
     :data:`MAX_LADDER_CELL_RETRIES` retries still fail, the cell is logged loudly
     to stderr and recorded ``errored=True`` so the rest of the ladder (every
     other scenario, and this scenario's already-recorded cheaper-tier rows)
@@ -121,6 +125,8 @@ def _resilient_ladder_cell(spec: EvalSpec, model: str, *, run_trial: TrialRunner
                 dataclasses.replace(spec, model=model), run_trial, k=policy.trials, require=policy.require
             )
             return _row_from(result, model=model)
+        except NEVER_RETRY_ERRORS:
+            raise
         except Exception as exc:  # noqa: BLE001 — isolate THIS cell; genuine errors already re-raised in run().
             last_exc = exc
             print(  # noqa: T201 — loud per-attempt visibility on stderr, never swallowed.
