@@ -47,6 +47,7 @@ from teatree.loop.scanners import (
     OutboundAuditScanner,
     PendingTasksScanner,
     PrApprovalScanner,
+    QuestionBacklogNagScanner,
     RedCardScanner,
     ReviewDoneAckScanner,
     ReviewedPrHeadScanner,
@@ -90,8 +91,9 @@ def default_drift_notifier(alert_text: str, idempotency_key: str) -> None:
 def _global_dispatch_jobs() -> list[_ScannerJob]:
     """The always-on global set ``build_default_jobs`` fans out once per tick.
 
-    The two owner-DM delivery scanners (``UndeliveredNotifyScanner`` and
-    ``DeferredQuestionPosterScanner``) are handed an explicit messaging backend +
+    The three owner-DM delivery scanners (``UndeliveredNotifyScanner``,
+    ``DeferredQuestionPosterScanner`` and ``QuestionBacklogNagScanner``) are
+    handed an explicit messaging backend +
     user id resolved from the active overlay — the same source
     ``_pr_sweep_scanner_for`` uses — so a global tick with no ``T3_OVERLAY_NAME``
     can still DELIVER the allowed owner-audience DMs instead of no-opping on an
@@ -106,6 +108,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id), overlay=""),
+        _ScannerJob(scanner=QuestionBacklogNagScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=WaitingDigestScanner(), overlay=""),
         # SELFCATCH-1: global (walks every ticket across overlays via
         # ``reconcile_work_state_all``), so it runs once per tick here rather

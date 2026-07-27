@@ -139,7 +139,10 @@ class TestResurfaceText:
         assert "Ship?" in text
         assert "Yes — go" in text
         assert "No" in text
-        assert "reply in this thread to answer" in text
+        # Still guarantees the message says HOW to answer, and now also that a TYPED
+        # reply is the recorded one — an emoji reaction on the question reaches no consumer.
+        assert "Reply in this thread" in text
+        assert "typed reply" in text
 
     def test_malformed_options_json_is_tolerated(self) -> None:
         row = DeferredQuestion.record("Broken?", options_json="{not json", session_id="s-1")
