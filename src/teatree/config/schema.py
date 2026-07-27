@@ -92,12 +92,12 @@ class SettingMeta:
 
     Instances are shared per ``(category, registry)`` combo (the ``_<CAT>_<REG>``
     module constants below) so each field declaration stays one line under the
-    120-col cap; ``doc`` is reserved for a later phase (owner decision N2).
+    120-col cap. Per-field prose would have to un-share them, so it belongs on a
+    surface keyed by field name rather than on this marker.
     """
 
     category: Category
     registry: Registry
-    doc: str = ""
 
 
 _DEFAULT_OVERLAY = SettingMeta(Category.DEFAULT, Registry.OVERLAY)
