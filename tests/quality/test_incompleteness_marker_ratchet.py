@@ -112,12 +112,13 @@ class TestHistoricalCase:
         _write_module(tmp_path, FINISHED_DOCSTRING)
         assert scan_tree(tmp_path) == []
 
-    def test_still_present_in_this_tree_under_its_peg(self, tree_markers: list[Marker]) -> None:
-        # Anti-vacuous against the live tree, not only a fixture: the historical
-        # statements are still shipped, so the gate has a real subject, and the
-        # peg has to be paid down by whichever change resolves the prose.
+    def test_the_historical_statements_stay_resolved_in_this_tree(self, tree_markers: list[Marker]) -> None:
+        # The change that motivated this gate wired the TOML tier in and deleted the
+        # prose, so the live tree carries none of those statements and the peg is gone.
+        # Pinned here rather than dropped: the fixture cases above prove the detector
+        # discriminates, and this proves the real file it was built for stays clean.
         live = [marker for marker in tree_markers if marker.path == "src/teatree/config/resolution.py"]
-        assert {marker.pattern_id for marker in live} == {"retained-but-empty", "not-wired", "later-phase"}
+        assert live == [], [marker.describe() for marker in live]
 
 
 class TestMarkerRatchet:

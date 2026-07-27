@@ -56,7 +56,6 @@
 # documented as absent from its resolver, beside a carve-out documented as kept
 # and empty, each said twice. A sibling change resolves the prose; this entry
 # drops to 0 with it.
-"src/teatree/config/resolution.py" = 4
 "src/teatree/config/schema.py" = 1
 "src/teatree/config/settings_loop_flags.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
