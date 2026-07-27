@@ -1,11 +1,12 @@
 """The per-phase trailing blocks of the headless system context.
 
 ``prompt.build_system_context`` assembles the append; this module owns the block
-it appends LAST — the directive set for the dispatched phase. Each shell-denied
-phase (reviewing / answering / planning / scanning_news) must RETURN its evidence
-in the result envelope rather than write it through a CLI, and the phase evidence
-gate refuses a run whose envelope omits it, so each block carries the envelope
-directive that keeps the run from being wasted.
+it appends LAST — the directive set for the dispatched phase. Reviewing, answering,
+planning and scanning_news must each RETURN their evidence in the result envelope
+rather than write it through a CLI — some because the phase has no shell, reviewing
+because maker≠checker reserves the write for a different actor — and the phase
+evidence gate refuses a run whose envelope omits it, so each block carries the
+envelope directive that keeps the run from being wasted.
 """
 
 import json
@@ -20,6 +21,7 @@ from teatree.agents.dispatch_preflight import (
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.config.agent_spawn import resolve_agent_config
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
+from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
@@ -33,20 +35,20 @@ _VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
     "   correctness | robustness (failure modes) | maintainability | coherence | reliability | proactivity.",
 )
 
-# The reviewing phase is denied the shell, so it CANNOT run `t3 <overlay> review
-# record`. It returns the verdict in the result envelope instead; the orchestrator
-# records it server-side (maker≠checker: a different actor writes the row).
+# The reviewer returns its verdict in the result envelope rather than writing the
+# row itself: maker≠checker requires a different actor, so the orchestrator records
+# it server-side. The phase carries the shell (``phase_tools.VERDICT_REVIEW_PHASES``).
 _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "",
-    "RECORD YOUR VERDICT BY RETURNING IT (this phase has no shell — do NOT try `t3 <overlay> review record`):",
-    "add a `review_verdict` object to your final JSON result. The orchestrator records the",
-    "ReviewVerdict server-side and releases the review lock:",
+    "RECORD YOUR VERDICT BY RETURNING IT (do NOT try `t3 <overlay> review record` — maker≠checker",
+    "requires a different actor to write the row): add a `review_verdict` object to your final JSON",
+    "result. The orchestrator records the ReviewVerdict server-side and releases the review lock:",
     '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
     '                     "reviewer_identity": "<your reviewer id, NOT a maker/loop role>",',
     '                     "gh_verify_result": "green"|"pending"|"failed",',
     '                     "blast_class": "substrate"|"logic"|"docs",',
     '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
-    "Use verdict=hold with the blocking findings when the change must not merge yet.",
+    ENVELOPE_FINDINGS_RULE,
     "`verdict` accepts ONLY merge_safe or hold — PASS/LGTM/approve are refused and record nothing.",
     "`reviewed_sha` MUST be the full 40-char SHA of the head you reviewed (`git rev-parse HEAD`):",
     "the merge gate compares it against the forge's live head, so a short or stale SHA vouches for nothing.",

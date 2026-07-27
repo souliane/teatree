@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TypedDict, cast
 
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
 
 
@@ -98,7 +99,9 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     maker≠checker reserves that write for another actor. It RETURNS this instead: the orchestrator
     (a different actor) records the ``ReviewVerdict`` from it, so maker≠checker
     holds by construction. ``reviewed_sha`` is the full 40-char SHA the review
-    bound to; ``verdict`` is ``merge_safe`` / ``hold``.
+    bound to; ``verdict`` is ``merge_safe`` / ``hold``; ``findings`` is the record of
+    what the reviewer observed, independent of the verdict it reached
+    (:data:`~teatree.core.modelkit.review_contract.ENVELOPE_FINDINGS_RULE`).
     """
 
     verdict: str
@@ -248,6 +251,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "blast_class": {"type": "string", "enum": ["substrate", "logic", "docs"]},
                 "findings": {
                     "type": "array",
+                    "description": ENVELOPE_FINDINGS_RULE,
                     "items": {
                         "type": "object",
                         "properties": {

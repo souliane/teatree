@@ -40,7 +40,9 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
             "reviewer_identity": "<your reviewer id>",
             "gh_verify_result": "green",
             "blast_class": "logic",
-            "findings": [],
+            # Non-empty on a PASS: the example a reviewer copies outranks the prose
+            # beside it (``modelkit.review_contract.ENVELOPE_FINDINGS_RULE``).
+            "findings": [{"severity": "low", "summary": "<what you observed>", "file": "src/x.py", "line": 42}],
         }
     },
     "critic_verdict": {
