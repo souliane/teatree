@@ -6,7 +6,7 @@ chromium is installed. `E2E_CHROMIUM_EXECUTABLE` points the lane at that binary.
 leaves it unset and must keep launching exactly as before.
 """
 
-from e2e.dash.conftest import browser_launch_overrides
+from e2e.dash.browser_launch import browser_launch_overrides
 
 
 class TestBrowserLaunchOverrides:

@@ -19,35 +19,13 @@ os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
 import pytest
 from playwright.sync_api import Page
 
+from e2e.dash.browser_launch import BROWSER_EXECUTABLE_ENV, browser_launch_overrides
 from e2e.dash.pom import ConsoleGuard, SeededBoard
 from teatree.core.models.loop import Loop
 from teatree.core.models.ticket import Ticket
 from tests.factories import PullRequestFactory, TicketFactory, TicketTransitionFactory
 
 State = Ticket.State
-
-BROWSER_EXECUTABLE_ENV = "E2E_CHROMIUM_EXECUTABLE"
-
-
-def browser_launch_overrides(executable: str | None) -> dict[str, object]:
-    """Launch-arg overrides for an externally-provided chromium, or none when unset.
-
-    Playwright ships browser builds per distro and has none for every host it can
-    otherwise run on — ``playwright install`` refuses outright on an unrecognised
-    platform, so the lane is unrunnable there even though a perfectly good chromium
-    is installed. Pointing Playwright at that binary is the supported escape.
-
-    ``--no-sandbox`` is required because a distro chromium's SUID sandbox helper is
-    not installed at the path Playwright's own build uses; the other two flags avoid
-    a GPU probe and a shared-memory sizing assumption that headless containers and
-    confined desktop packages both break on.
-    """
-    if not executable:
-        return {}
-    return {
-        "executable_path": executable,
-        "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-    }
 
 
 @pytest.fixture(scope="session")
