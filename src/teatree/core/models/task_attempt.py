@@ -14,6 +14,41 @@ if TYPE_CHECKING:
 
 
 class TaskAttemptQuerySet(models.QuerySet):
+    def create(self, **kwargs: object) -> "TaskAttempt":
+        """Record an attempt — folding a REPEATED, unchanged usage-window park into one row.
+
+        A limit-park is a scheduling event on an unchanged condition, and every writer that
+        re-derives it (the admission guard, the all-accounts-exhausted park) runs on a
+        poll cadence, so appending one audit row per poll narrates a static state forever:
+        the measured residue was 338,741 park rows against 1,203 real dispatches, in a
+        1.2 GB control DB. When the task's most recent attempt is a park carrying the
+        IDENTICAL reason, this bumps that row's ``park_repeats`` and refreshes its
+        ``ended_at`` instead — one row saying "still parked, N polls later".
+
+        A changed reason, an intervening real attempt, and any non-park attempt all insert
+        normally, so the audit trail still shows every genuine transition.
+        """
+        coalesced = self._coalesce_repeated_park(
+            task=kwargs.get("task"),
+            error=kwargs.get("error"),
+            ended_at=kwargs.get("ended_at"),
+        )
+        return coalesced if coalesced is not None else super().create(**kwargs)
+
+    def _coalesce_repeated_park(self, *, task: object, error: object, ended_at: object) -> "TaskAttempt | None":
+        """The preceding park row this insert repeats verbatim, bumped — or ``None`` to insert."""
+        if task is None or not isinstance(error, str) or not error.startswith(LIMIT_PARKED_PREFIX):
+            return None
+        latest = self.model.objects.filter(task=task).order_by("-started_at", "-pk").first()
+        if latest is None or latest.error != error:
+            return None
+        self.model.objects.filter(pk=latest.pk).update(
+            park_repeats=models.F("park_repeats") + 1,
+            ended_at=ended_at if isinstance(ended_at, datetime) else latest.ended_at,
+        )
+        latest.refresh_from_db()
+        return latest
+
     def prunable(self, cutoff: datetime) -> "TaskAttemptQuerySet":
         """Attempts safe to delete (#3693): the conservative double guard.
 
@@ -154,6 +189,11 @@ class TaskAttempt(models.Model):
     # historical row keeps the blank/empty defaults, never backfilled.
     reasoning_effort = models.CharField(max_length=16, blank=True, default="")
     skills_loaded = models.JSONField(default=list, blank=True)
+    # How many further polls re-derived this row's unchanged ``limit_parked:`` reason
+    # after it was written (see TaskAttemptQuerySet.create). 0 on every non-park row and
+    # on a park observed once, so "how long has this been parked" is a field read rather
+    # than a row count over an unbounded append log.
+    park_repeats = models.PositiveIntegerField(default=0)
 
     objects = TaskAttemptQuerySet.as_manager()
 

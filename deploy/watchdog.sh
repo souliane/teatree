@@ -72,7 +72,16 @@ DEPLOY_LOCK="${TEATREE_WATCHDOG_DEPLOY_LOCK:-${TEATREE_DEPLOY_LOCK:-/tmp/teatree
 DEPLOY_RECREATE_WINDOW="${TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW:-$INTERVAL}"
 DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-watchdog-deploy-sensitive.state}"
 
+# Re-surface ledger: "<episode> <digest>" of the LAST observed red finding set. The
+# episode counts green→red transitions, so a finding set that CLEARS and later returns
+# is a new incident rather than a repeat of its own pre-clear key.
+RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-/var/tmp/teatree-watchdog-red.state}"
+
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
+
+# The UTC day the DM keys bucket on — the deliberate long re-surface interval. Overridable
+# so the multi-day re-surface behaviour is testable without waiting a day.
+day_bucket() { printf '%s' "${TEATREE_WATCHDOG_DAY_BUCKET:-$(date -u +%Y%m%d)}"; }
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
 
@@ -298,6 +307,38 @@ deploy_in_flight() {
   return 1
 }
 
+# The re-surface ledger, "<episode> <digest>". Absent/unreadable reads as episode 0 with
+# no digest — i.e. "the last pass was green", so a red pass still pages.
+_read_red_state() { cat "$RED_STATE" 2>/dev/null || printf '0'; }
+
+# Best-effort, exactly like the deploy-sensitive ledger: losing it costs one extra DM,
+# never the supervisor.
+_write_red_state() {
+  printf '%s %s' "$1" "$2" >"$RED_STATE" 2>/dev/null ||
+    log "could not persist the re-surface ledger at $RED_STATE"
+}
+
+# Record that the box is red with finding digest $1, and echo the current episode.
+_observe_red() {
+  local episode digest
+  read -r episode digest <<<"$(_read_red_state)"
+  _write_red_state "${episode:-0}" "$1"
+  printf '%s' "${episode:-0}"
+}
+
+# Announce ONCE that a previously-reported finding set has cleared, and open the next
+# episode. Silent when the last pass was already green (nothing to un-say). The episode
+# bump is what lets the SAME finding set page again if it returns: without it the
+# returning set would reuse its own pre-clear key and the notify seam would swallow it.
+_announce_findings_cleared() {
+  local episode digest
+  read -r episode digest <<<"$(_read_red_state)"
+  [ -n "${digest:-}" ] || return 0
+  printf 'teatree watchdog: the red findings previously reported (%s) have CLEARED — the box is green again.' "$digest" \
+    | notify_owner "watchdog:cleared:$digest:$episode"
+  _write_red_state "$((${episode:-0} + 1))" ""
+}
+
 _read_pending_findings() { cat "$DEPLOY_PENDING_STATE" 2>/dev/null || true; }
 
 # Best-effort: an unwritable state root must never retire the only supervisor.
@@ -392,12 +433,16 @@ run_pass() {
       log "doctor: all green"
       # "Two CONSECUTIVE passes": a green pass resets the two-strikes ledger.
       _write_pending_findings ""
+      _announce_findings_cleared
       return 0
       ;;
   esac
 
-  # Red: build the DM body (FAIL findings) and a stable idempotency key from them.
-  local fails body key
+  # Red: build the DM body from the FAIL messages and the idempotency key from their
+  # volatility-normalized IDENTITIES, which is what makes "same findings as last pass"
+  # cheap and exact. Keying on the rendered body instead re-paged an unchanged condition
+  # on every pass, because several FAIL lines carry a counter that ticks between passes.
+  local fails body digest key
   fails="$(printf '%s' "$json" | _fail_messages)"
   if [ -n "$fails" ]; then
     fails="$(printf '%s\n' "$fails" | _findings_that_page)"
@@ -405,12 +450,14 @@ run_pass() {
       log "every red finding was deploy-sensitive and gated this pass — not paging"
       return 0
     fi
-    body="$(printf '%s\n' "$fails" | sed 's/^/- /')"
+    body="$(printf '%s\n' "$fails" | cut -f2- | sed 's/^/- /')"
+    digest="$(printf '%s\n' "$fails" | cut -f1 | sort -u | _stable_key)"
   else
     # Nothing to classify — a red verdict is never silently dropped.
     body="$(_generic_fail_body)"
+    digest="$(printf '%s' "$body" | _stable_key)"
   fi
-  key="watchdog:red:$(printf '%s' "$body" | _stable_key)"
+  key="watchdog:red:$digest:$(_observe_red "$digest"):$(day_bucket)"
   log "doctor RED — DMing owner"
   printf 'teatree watchdog found red findings on the box:\n\n%s\n\nThe stack was already `up -d`-restarted this pass; SSH in if it persists.' "$body" \
     | notify_owner "$key"
@@ -428,23 +475,29 @@ run_loop() {
   done
 }
 
-# Extract the FAIL messages from the doctor JSON (read on stdin), one per line, so
-# each can be classified for deploy-sensitivity. Empty when there are none or when
-# python3 is absent; the caller then falls back to `_generic_fail_body`. Uses
-# `python3 -c` rather than a `-` heredoc: a `python3 - <<'PY'` feeds the heredoc as
-# the PROGRAM on stdin, leaving `sys.stdin` at EOF so the piped verdict is never
-# read — every body would be the generic fallback.
+# Extract the FAIL findings from the doctor JSON (read on stdin) as `<identity>\t<message>`
+# lines, so each can be classified for deploy-sensitivity (on the message) and digested
+# for the DM key (on the identity). `identity` is the doctor's volatility-normalized form
+# — see teatree.cli.doctor.finding_digest — and falls back to the message itself, so a
+# rolling deploy where the worker still runs an older doctor keeps paging normally rather
+# than going silent. Empty when there are no FAILs or python3 is absent; the caller then
+# falls back to `_generic_fail_body`. Uses `python3 -c` rather than a `-` heredoc: a
+# `python3 - <<'PY'` feeds the heredoc as the PROGRAM on stdin, leaving `sys.stdin` at EOF
+# so the piped verdict is never read — every body would be the generic fallback.
 _fail_messages() {
   command -v python3 >/dev/null 2>&1 || return 0
   python3 -c '
 import json, sys
+def flat(text):
+    return " ".join(str(text).split())
 try:
     data = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 for f in data.get("findings", []):
     if f.get("level") == "FAIL":
-        print(f.get("message", "").replace("\n", " "))
+        message = flat(f.get("message", ""))
+        print(flat(f.get("identity") or message) + "\t" + message)
 '
 }
 

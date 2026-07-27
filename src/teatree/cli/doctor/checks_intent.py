@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 INTENT_FRESHNESS_THRESHOLD = timedelta(hours=24)
 
 #: How many queued refs a finding names before it collapses into "and N more". The
-#: message is content-hashed into the watchdog's idempotency key, so it stays bounded
+#: message is digested into the watchdog's idempotency key, so it stays bounded
 #: however deep the queue gets.
 INTENT_ITEM_CAP = 5
 
@@ -83,10 +83,10 @@ class IntentFinding:
 def _name_items(items: Sequence[IntentItem]) -> str:
     """Name at most :data:`INTENT_ITEM_CAP` refs, with an "and N more" tail.
 
-    Deliberately age-free: the watchdog content-hashes the finding into its
-    idempotency key, so an age that ticks hourly would re-DM the owner every hour
-    the queue sits. The refs are stable identity; the threshold in the WARN text
-    already carries the "how long" the reader needs.
+    Deliberately age-free. The watchdog's identity normalizer now absorbs a ticking
+    number, so an age here would no longer re-DM the owner hourly — but the refs are
+    what identifies the queue, and the threshold in the WARN text already carries the
+    "how long" the reader needs, so naming an age buys the reader nothing.
     """
     named = ", ".join(item.ref for item in items[:INTENT_ITEM_CAP])
     remaining = len(items) - INTENT_ITEM_CAP

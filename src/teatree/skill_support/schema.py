@@ -14,12 +14,18 @@ explicit skill loading; a stale one fails validation loud so a skill file never
 silently carries a dead mechanism. ``companions`` is distinct and recognised: an
 optional SOFT suggestion list (complementary-not-mandatory), the counterpart to
 the hard, transitive ``requires`` dependency edge.
+
+Both list fields resolve against BOTH provisioning sources — the apm-installed agent
+skills dir and the teatree plugin's own ``skills/`` tree (see
+:func:`installed_skill_names`) — so a plugin-provided target is not mistaken for a typo.
 """
 
 import sys
 from pathlib import Path
 
 import typer
+
+from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
 
 _KNOWN_TOP_LEVEL = frozenset(
     {
@@ -117,10 +123,25 @@ def validate_skill_md(path: Path, *, known_skills: set[str] | None = None) -> tu
 
     # Validate requires + companions references (both name skills).
     if known_skills is not None:
-        _validate_list_field_refs(path, frontmatter, "requires", known_skills, errors)
-        _validate_list_field_refs(path, frontmatter, "companions", known_skills, errors)
+        resolvable = known_skills | installed_skill_names()
+        _validate_list_field_refs(path, frontmatter, "requires", resolvable, errors)
+        _validate_list_field_refs(path, frontmatter, "companions", resolvable, errors)
 
     return errors, warnings
+
+
+def installed_skill_names() -> set[str]:
+    """Every skill name installed on this machine, across BOTH provisioning sources.
+
+    A ``requires:``/``companions:`` target resolves whether it was apm-installed into the
+    agent skills dir or ships with the teatree plugin's own ``skills/`` tree; a validator
+    whose known set is only the directory it happens to be walking calls the
+    plugin-provided half broken. Enumerated through the same canonical seam the
+    skill-loading hook and the dangling-reference validator read
+    (:func:`~teatree.skill_support.ref_validator.canonical_skill_names`), so the three can
+    never disagree about which skills exist.
+    """
+    return canonical_skill_names(default_search_dirs())
 
 
 def _extract_top_level_fields(frontmatter: str) -> set[str]:

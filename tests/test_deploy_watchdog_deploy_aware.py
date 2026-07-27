@@ -110,8 +110,10 @@ def _run_pass(tmp_path: Path, *, label: str = "1", **stub_env: str) -> str:
     env["STUB_DOCKER_LOG"] = str(tmp_path / "docker.log")
     env.setdefault("STUB_CREATED", "")
     env.setdefault("STUB_DOCTOR_JSON", '{"ok": true, "findings": []}')
-    # Shared across passes so the two-strikes ledger is exercised for real.
+    # Shared across passes so the two-strikes ledger is exercised for real, and per-test
+    # so a red pass here can never make another test's green pass announce a clear.
     env.setdefault("TEATREE_WATCHDOG_DEPLOY_PENDING_STATE", str(tmp_path / "pending.state"))
+    env.setdefault("TEATREE_WATCHDOG_RED_STATE", str(tmp_path / "red.state"))
     env.setdefault("TEATREE_WATCHDOG_DEPLOY_LOCK", str(tmp_path / "absent-deploy.lock"))
     env.update(stub_env)
     subprocess.run([_BASH, str(harness)], capture_output=True, text=True, check=False, env=env)

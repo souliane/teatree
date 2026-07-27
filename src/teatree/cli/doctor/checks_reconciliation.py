@@ -110,18 +110,25 @@ def _now(now: dt.datetime | None) -> dt.datetime:
 
 
 def _check_park_spin(now: dt.datetime | None = None) -> ReconciliationFinding:
-    """ALARM when limit-park task attempts in 24h exceed the park-spin threshold.
+    """ALARM when limit-park OBSERVATIONS in 24h exceed the park-spin threshold.
 
     Query: ``TaskAttempt`` rows whose ``error`` carries ``LIMIT_PARKED_PREFIX``,
     ``started_at`` within 24h. Threshold: :data:`MAX_PARK_ROWS_PER_DAY`.
+
+    Counts observations, not rows: an unchanged park repeated by a poller folds into one
+    row carrying ``park_repeats`` (see ``TaskAttempt.objects.create``), so a row count
+    would read the very spin this detector exists to catch as a single quiet row.
     """
     check_id = "park_rows_per_day"
     try:
+        from django.db.models import Sum  # noqa: PLC0415 — deferred: keeps this module Django-free at import
+
         from teatree.core.models import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
         from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX  # noqa: PLC0415 — ORM-adjacent constant
 
         cutoff = _now(now) - _DAY
-        count = TaskAttempt.objects.filter(error__startswith=LIMIT_PARKED_PREFIX, started_at__gte=cutoff).count()
+        parked = TaskAttempt.objects.filter(error__startswith=LIMIT_PARKED_PREFIX, started_at__gte=cutoff)
+        count = parked.count() + (parked.aggregate(repeats=Sum("park_repeats"))["repeats"] or 0)
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
     if count <= MAX_PARK_ROWS_PER_DAY:
