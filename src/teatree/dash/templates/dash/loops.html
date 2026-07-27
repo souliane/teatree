@@ -1,60 +1,8 @@
 {% extends "dash/base.html" %}
 {% block title %}Loops{% endblock %}
+{% block heading %}Loops{% endblock %}
 {% block content %}
-  <section class="band">
-    <h2>Availability</h2>
-    <p>Current — <strong>{{ control.availability_mode }}</strong> (decided by {{ control.availability_source }})</p>
-    <form class="toolbar" method="post" action="{% url 'dash:availability' %}">
-      {% csrf_token %}
-      <button class="dash-btn" name="mode" value="present">present</button>
-      <button class="dash-btn" name="mode" value="away">away</button>
-      <button class="dash-btn" name="mode" value="autonomous_away">autonomous-away</button>
-      <button class="dash-btn" name="mode" value="auto">auto</button>
-    </form>
-  </section>
-
-  <section class="band">
-    <h2>Master fail-open switch</h2>
-    <p>danger_gate_fail_open — <strong class="{% if control.gate_fail_open %}eff-no{% else %}eff-yes{% endif %}">{{ control.gate_fail_open|yesno:"ON,off" }}</strong></p>
-    {% if control.gate_fail_open %}
-      <form class="toolbar" method="post" action="{% url 'dash:gate_toggle' %}">
-        {% csrf_token %}
-        <button class="dash-btn primary" name="enable" value="0">turn OFF (restore gates)</button>
-      </form>
-    {% else %}
-      <form class="toolbar danger" method="post" action="{% url 'dash:gate_toggle' %}">
-        {% csrf_token %}
-        <input type="hidden" name="enable" value="1">
-        <input type="text" name="confirm" placeholder="type &quot;{{ gate_confirm_phrase }}&quot; to confirm">
-        <button class="dash-btn danger" type="submit">turn ON (relax all over-deny gates)</button>
-      </form>
-    {% endif %}
-  </section>
-
-  <section class="band">
-    <h2>Global loop kill-switch</h2>
-    <p>loop_runner_enabled — <strong class="{% if control.runner_enabled %}eff-yes{% else %}eff-no{% endif %}">{{ control.runner_enabled|yesno:"ON,off" }}</strong></p>
-    {% if control.runner_enabled %}
-      <form class="toolbar danger" method="post" action="{% url 'dash:runner_toggle' %}">
-        {% csrf_token %}
-        <input type="hidden" name="enable" value="0">
-        <input type="text" name="confirm" placeholder="type &quot;{{ runner_confirm_phrase }}&quot; to confirm">
-        <button class="dash-btn danger" type="submit">stop the loop fleet</button>
-      </form>
-      <p class="muted">Stopping the fleet halts every loop. Nothing errors when it is off — work simply stops arriving, which is why it takes a typed confirmation. Both directions are audited.</p>
-    {% else %}
-      <form class="toolbar" method="post" action="{% url 'dash:runner_toggle' %}">
-        {% csrf_token %}
-        <button class="dash-btn primary" name="enable" value="1">restart the loop fleet</button>
-      </form>
-      <p class="muted">The fleet is stopped. No loop will tick until it is restarted.</p>
-    {% endif %}
-  </section>
-
-  <div id="loops-table"
-    hx-get="{% url 'dash:loops_table' %}"
-    hx-trigger="every 5s"
-    hx-swap="morph:innerHTML">
-    {% include "dash/partials/_loops_table.html" %}
+  <div id="loops-body">
+    {% include "dash/partials/_loops_body.html" %}
   </div>
 {% endblock %}

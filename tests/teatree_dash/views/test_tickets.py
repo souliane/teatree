@@ -83,3 +83,51 @@ class TicketDrawerGetTestCase(TestCase):
         body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
         assert "hx-confirm=" in body
         assert "Start a loopback debug session?" in body
+
+
+class TicketTransitionSwapTestCase(TestCase):
+    """Acting inside the drawer must not close the drawer.
+
+    ``ticket_transition`` redirected to ``dash:board``, so a transition triggered from
+    the side panel navigated away from it — the worst of the five full-reload POSTs,
+    because the panel is the only place the action exists.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = TicketFactory(state=State.NOT_STARTED)
+
+    def _post(self, action: str, *, htmx: bool = True) -> object:
+        headers = {"HTTP_HX_REQUEST": "true"} if htmx else {}
+        url = reverse("dash:ticket_transition", args=[self.ticket.pk])
+        return self.client.post(url, {"action": action}, **headers)
+
+    def test_an_htmx_transition_answers_the_refreshed_drawer(self) -> None:
+        action = legal_transition_names(self.ticket)[0]
+        response = self._post(action)
+        assert response.status_code == 200
+        body = response.content.decode()
+        assert "<!doctype html>" not in body.lower()
+        assert 'class="drawer"' in body
+
+    def test_a_no_js_transition_keeps_the_board_redirect(self) -> None:
+        action = legal_transition_names(self.ticket)[0]
+        assert self._post(action, htmx=False).status_code == 302
+
+    def test_an_illegal_transition_answers_the_drawer_with_its_reason(self) -> None:
+        response = self._post("not_a_transition")
+        assert response.status_code == 400
+        body = response.content.decode()
+        assert 'class="drawer"' in body
+        assert "not_a_transition" in body
+
+    def test_a_no_js_illegal_transition_renders_a_page_with_navigation(self) -> None:
+        response = self._post("not_a_transition", htmx=False)
+        assert response.status_code == 400
+        body = response.content.decode()
+        assert "<!doctype html>" in body.lower()
+        assert reverse("dash:board") in body
+
+    def test_the_drawer_form_is_wired_to_swap_the_drawer(self) -> None:
+        body = self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk])).content.decode()
+        assert f'hx-post="{reverse("dash:ticket_transition", args=[self.ticket.pk])}"' in body
+        assert 'hx-target="#drawer"' in body

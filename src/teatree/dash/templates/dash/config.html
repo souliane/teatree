@@ -1,5 +1,6 @@
 {% extends "dash/base.html" %}
 {% block title %}Config{% endblock %}
+{% block heading %}Configuration{% endblock %}
 {% block content %}
   <div id="config-bands"
     hx-get="{% url 'dash:config_bands' %}"

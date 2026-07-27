@@ -167,3 +167,36 @@ def test_settings_default_verdict_colours_meet_the_body_text_ratio() -> None:
         if _contrast(tokens[fg], tokens[bg]) < _BODY_TEXT_MINIMUM
     ]
     assert not failures, "the settings default-verdict colours miss 4.5:1:\n" + "\n".join(failures)
+
+
+#: Body text, as distinct from the verdict colours above — ``tokens.css`` claimed 4.5:1 for
+#: every pair in a comment nobody could check, and light-mode ``--ink-muted`` on
+#: ``--surface-2`` was 4.42:1, so the claim was wrong rather than the palette being right.
+_BODY_FOREGROUNDS = ("--ink", "--ink-muted", "--brand")
+
+
+def _theme_blocks(css: str) -> dict[str, dict[str, str]]:
+    """Each ``{ … }`` block's token map, keyed by the selector text before it."""
+    blocks: dict[str, dict[str, str]] = {}
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        tokens = dict(re.findall(r"(--[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{6})", body))
+        if tokens:
+            blocks[selector.strip()[-60:]] = tokens
+    return blocks
+
+
+def test_every_body_text_pair_meets_the_documented_ratio() -> None:
+    css = (_REPO_ROOT / "src/teatree/dash/static/dash/css/tokens.css").read_text(encoding="utf-8")
+    blocks = _theme_blocks(css)
+    wanted = set(_BODY_FOREGROUNDS + _SURFACES)
+    assert any(wanted <= set(tokens) for tokens in blocks.values()), "no complete palette block in tokens.css"
+
+    failures = [
+        f"{selector}: {fg} on {bg} = {_contrast(tokens[fg], tokens[bg]):.2f}"
+        for selector, tokens in blocks.items()
+        if wanted <= set(tokens)
+        for fg in _BODY_FOREGROUNDS
+        for bg in _SURFACES
+        if _contrast(tokens[fg], tokens[bg]) < _BODY_TEXT_MINIMUM
+    ]
+    assert not failures, "tokens.css claims 4.5:1 for body text; these pairs do not:\n" + "\n".join(failures)

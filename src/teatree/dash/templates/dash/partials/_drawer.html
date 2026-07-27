@@ -22,13 +22,19 @@
   </div>
 
   <h3>Actions</h3>
+  {% if drawer_error %}<p class="banner-red" role="alert">{{ drawer_error }}</p>{% endif %}
   {% if detail.available_transitions %}
-    <form class="toolbar" method="post" action="{% url 'dash:ticket_transition' detail.ticket_id %}">
-      {% csrf_token %}
+    {# One form per transition: the vendored htmx drops the clicked submitter. #}
+    <div class="toolbar">
       {% for name in detail.available_transitions %}
-        <button class="dash-btn primary" name="action" value="{{ name }}" onclick="return confirm('Transition #{{ detail.number|escapejs }} to {{ name|escapejs }}?')">{{ name }}</button>
+        <form method="post" action="{% url 'dash:ticket_transition' detail.ticket_id %}"
+          hx-post="{% url 'dash:ticket_transition' detail.ticket_id %}" hx-target="#drawer" hx-swap="innerHTML">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="{{ name }}">
+          <button class="dash-btn primary" type="submit" onclick="return confirm('Transition #{{ detail.number|escapejs }} to {{ name|escapejs }}?')">{{ name }}</button>
+        </form>
       {% endfor %}
-    </form>
+    </div>
   {% else %}
     <p class="muted">No legal transitions from {{ detail.state }}.</p>
   {% endif %}

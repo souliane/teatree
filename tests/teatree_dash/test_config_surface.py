@@ -1,8 +1,10 @@
 """The dashboard answers "what is this box configured to do?" without an SSH session (#3664)."""
 
+from collections.abc import Iterator
 from unittest import mock
 
 import pytest
+from django.core.cache import cache
 from django.test import TestCase
 
 from teatree.config.agent_spawn import AgentConfig
@@ -177,6 +179,13 @@ class TestSelfRepairRowsAreResilient(TestCase):
 
 
 class TestPassEntryResolves:
+    @pytest.fixture(autouse=True)
+    def _isolate_probe_cache(self) -> Iterator[None]:
+        """The probe memoises per entry name, and the locmem cache outlives one test."""
+        cache.clear()
+        yield
+        cache.clear()
+
     def test_an_empty_entry_name_never_resolves(self) -> None:
         assert _pass_entry_resolves("") is False
 
@@ -187,3 +196,38 @@ class TestPassEntryResolves:
     def test_a_resolving_entry_reports_true(self) -> None:
         with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret"):
             assert _pass_entry_resolves("team/token") is True
+
+
+class TestCredentialProbeIsCached(TestCase):
+    """The credential band's ``pass show`` probe is a GPG decrypt — not once per poll.
+
+    ``/dash/config`` auto-polls every 15s, and the band probes every configured
+    credential entry. Uncached that is one decrypt per entry per poll, all day, with
+    every decrypted value discarded — only "did it resolve" is ever rendered.
+    """
+
+    def setUp(self) -> None:
+        cache.clear()
+        self.addCleanup(cache.clear)
+        ConfigSetting.objects.set_value("openai_compatible_credential_entry", "router/key")
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["one/oauth", "two/oauth"])
+
+    def test_a_second_render_does_not_re_probe_the_pass_store(self) -> None:
+        with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret") as probe:
+            build_config_view()
+            after_first_render = probe.call_count
+            build_config_view()
+            after_second_render = probe.call_count
+
+        assert after_first_render > 0, "the band probed nothing — the test proves nothing"
+        assert after_second_render == after_first_render
+
+    def test_a_probe_result_still_resolves_after_the_cache_serves_it(self) -> None:
+        with mock.patch("teatree.dash.config_surface.read_pass", return_value="secret"):
+            assert _pass_entry_resolves("some/entry") is True
+            assert _pass_entry_resolves("some/entry") is True
+
+    def test_each_entry_is_cached_under_its_own_name(self) -> None:
+        with mock.patch("teatree.dash.config_surface.read_pass", side_effect=["", "found"]):
+            assert _pass_entry_resolves("absent/entry") is False
+            assert _pass_entry_resolves("present/entry") is True

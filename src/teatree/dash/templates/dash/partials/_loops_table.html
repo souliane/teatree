@@ -25,7 +25,7 @@
           <td>{{ loop.deciding_layer }}</td>
           <td>
             <div class="mono">{{ loop.cadence_label }}</div>
-            <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}">
+            <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
               {% csrf_token %}
               <input type="hidden" name="name" value="{{ loop.name }}">
               {% if loop.is_daily %}
@@ -40,7 +40,7 @@
             </form>
             <div class="muted">{{ loop.bounds.note }}</div>
             {% if loop.bounds.daily_allowed %}
-              <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}">
+              <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
                 {% csrf_token %}
                 <input type="hidden" name="name" value="{{ loop.name }}">
                 {% if loop.is_daily %}
@@ -58,20 +58,38 @@
           <td>{{ loop.status }}</td>
           <td>
             {# Only the applicable verb of each pair — pause XOR resume, disable XOR enable. #}
-            <form class="row-actions" method="post" action="{% url 'dash:loop_action' %}">
-              {% csrf_token %}
-              <input type="hidden" name="name" value="{{ loop.name }}">
+            <div class="row-actions">
               {% if loop.status == "paused" %}
-                <button class="dash-btn" name="action" value="resume">resume</button>
+                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+                  {% csrf_token %}
+                  <input type="hidden" name="name" value="{{ loop.name }}">
+                  <input type="hidden" name="action" value="resume">
+                  <button class="dash-btn" type="submit">resume</button>
+                </form>
               {% else %}
-                <button class="dash-btn" name="action" value="pause">pause</button>
+                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+                  {% csrf_token %}
+                  <input type="hidden" name="name" value="{{ loop.name }}">
+                  <input type="hidden" name="action" value="pause">
+                  <button class="dash-btn" type="submit">pause</button>
+                </form>
               {% endif %}
               {% if loop.enabled %}
-                <button class="dash-btn danger" name="action" value="disable">disable</button>
+                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+                  {% csrf_token %}
+                  <input type="hidden" name="name" value="{{ loop.name }}">
+                  <input type="hidden" name="action" value="disable">
+                  <button class="dash-btn danger" type="submit">disable</button>
+                </form>
               {% else %}
-                <button class="dash-btn" name="action" value="enable">enable</button>
+                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+                  {% csrf_token %}
+                  <input type="hidden" name="name" value="{{ loop.name }}">
+                  <input type="hidden" name="action" value="enable">
+                  <button class="dash-btn" type="submit">enable</button>
+                </form>
               {% endif %}
-            </form>
+            </div>
           </td>
         </tr>
       {% empty %}

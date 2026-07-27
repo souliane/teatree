@@ -1,12 +1,22 @@
 {% extends "dash/base.html" %}
 {% block title %}Settings{% endblock %}
+{% block heading %}Settings{% endblock %}
 {% block content %}
   <section class="band">
     <h2>Settings</h2>
     <p class="muted">Every config key, from the schema. Edits write to the DB store; a secret value is never shown (<span class="mono">***</span>) and its input is write-only. Restore-to-default deletes the row. The <em>shipped default</em> column shows what <span class="mono">config/defaults.toml</span> ships, with <span class="default-match">&#10003; same as default</span> or <span class="default-differs">&#9679; differs from default</span> next to it.</p>
-    <p class="toolbar">
+    <form class="toolbar" method="get" action="{% url 'dash:settings' %}">
+      <label for="scope-picker">Scope</label>
+      <select id="scope-picker" name="scope" onchange="this.form.submit()">
+        {% for name in editor.available_scopes %}
+          <option value="{{ name }}" {% if name == editor.scope %}selected{% endif %}>{{ name|default:"global (every overlay)" }}</option>
+        {% endfor %}
+      </select>
+      <button class="dash-btn" type="submit">Show</button>
       <a class="btn" href="{% url 'dash:settings_export' %}">Export (secrets withheld)</a>
-    </p>
+    </form>
+    <p class="muted">A row in an overlay scope beats the global row for that overlay. The picker lists
+      every registered overlay plus any scope that already holds rows.</p>
   </section>
 
   <section class="band">
@@ -14,13 +24,17 @@
     <form method="post" action="{% url 'dash:settings_import' %}">
       {% csrf_token %}
       <textarea name="toml" rows="6" class="mono" placeholder="paste a config_setting export dump"></textarea>
+      <input type="hidden" name="scope" value="{{ editor.scope }}">
       <p class="toolbar">
         <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
           aria-label="safety-posture confirm phrase">
         <button type="submit" name="apply" value="">Preview (dry-run)</button>
         <button type="submit" name="apply" value="1">Apply</button>
       </p>
-      <p class="muted">A dump carrying a safety-posture key needs the confirm phrase, exactly as editing one below does.</p>
+      <p class="muted">A dump carrying a safety-posture key needs the confirm phrase, exactly as editing one below does.
+        Each row lands in the scope its own table names (<span class="mono">[teatree]</span> is global,
+        <span class="mono">[overlays.&lt;name&gt;]</span> is that overlay) — the picker above chooses what you are
+        looking at, never where a pasted row goes.</p>
     </form>
     {% if import_result %}
       <div class="import-result">
@@ -62,13 +76,4 @@
       </tbody>
     </table>
   </section>
-{% endblock %}
-{% block extra_js %}
-  <script>
-    // A refused write answers 400 carrying the row plus its reason; htmx discards
-    // non-2xx bodies by default, so opt this page's row swaps into showing it.
-    document.body.addEventListener("htmx:beforeSwap", function (evt) {
-      if (evt.detail.xhr.status === 400) { evt.detail.shouldSwap = true; evt.detail.isError = false; }
-    });
-  </script>
 {% endblock %}

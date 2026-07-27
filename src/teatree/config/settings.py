@@ -1066,6 +1066,10 @@ class _PrePublishGateSettings:
     # operator explicitly opts into a headed browser. Per-overlay overridable (DB-home).
     chrome_devtools_headless: bool = True
     colleague_repo_url_pattern: str = ""
+    # Names THIS box in the dashboard header. Empty ships as the default because a
+    # machine name cannot be a shipped constant; the header resolves empty to the
+    # hostname, so a multi-machine operator can tell two dashboards apart unconfigured.
+    dashboard_instance_label: str = ""
     solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
     # gh/glab network call (#1540). A non-matching title is rejected with the

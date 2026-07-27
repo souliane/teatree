@@ -28,7 +28,8 @@ from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, is_secret, render_value
 from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
-from teatree.core.models.config_setting import ConfigValue
+from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigValue
+from teatree.core.overlay_loader import get_all_overlays
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class SettingsEditorView:
 
     settings: tuple[EditableSetting, ...] = ()
     scope: str = ""
+    available_scopes: tuple[str, ...] = ("",)
     error: str = ""
 
 
@@ -112,10 +114,27 @@ def build_settings_editor(scope: str = "") -> SettingsEditorView:
         overrides = ConfigSetting.objects.overrides_for_scope(scope)
         shipped_keys = frozenset(shipped_defaults_table())
         rows = [_row(key, overrides, shipped_keys) for key in sorted(TeatreeSettingsSchema.model_fields)]
+        scopes = available_scopes()
     except Exception:
         logger.warning("dash settings editor read failed — degrading to an error page", exc_info=True)
         return SettingsEditorView(scope=scope, error="settings unavailable — read failed")
-    return SettingsEditorView(settings=tuple(rows), scope=scope)
+    return SettingsEditorView(settings=tuple(rows), scope=scope, available_scopes=scopes)
+
+
+def available_scopes() -> tuple[str, ...]:
+    """Global first, then every overlay scope the operator can edit.
+
+    The union of the registered overlays and the scopes that already hold rows, so a
+    scope written by ``config_setting set --overlay`` before its overlay was registered
+    (or after it was uninstalled) is still reachable rather than stranded.
+    """
+    stored = ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).values_list("scope", flat=True).distinct()
+    try:
+        registered = get_all_overlays().keys()
+    except Exception:
+        logger.warning("overlay discovery failed — offering only the scopes holding rows", exc_info=True)
+        registered = ()
+    return (GLOBAL_SCOPE, *sorted({*stored, *registered}))
 
 
 def build_setting_row(key: str, scope: str = "") -> EditableSetting:
@@ -142,6 +161,7 @@ __all__ = [
     "MASKED",
     "EditableSetting",
     "SettingsEditorView",
+    "available_scopes",
     "build_setting_row",
     "build_settings_editor",
     "export_text",

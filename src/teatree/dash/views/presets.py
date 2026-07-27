@@ -10,14 +10,13 @@ call the seam, audit, redirect.
 
 from typing import TYPE_CHECKING
 
-from django.http import HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from teatree.dash import audit
 from teatree.dash.preset_editor import build_preset_editor
 from teatree.dash.views.access import require_loopback_or_staff
-from teatree.dash.views.base import actor, nav_context
+from teatree.dash.views.base import actor, error_page, is_htmx, nav_context
 from teatree.loops.preset_admin import create_preset, delete_preset, rename_preset, update_preset_meta
 from teatree.loops.preset_editing import PresetEditError, activate_preset, clear_preset_override, set_preset_entry
 from teatree.loops.schedule_editing import (
@@ -39,6 +38,19 @@ def presets(request: "HttpRequest") -> "HttpResponse":
     return render(request, "dash/presets.html", {**nav_context("dash:presets"), "editor": view})
 
 
+def _answer(request: "HttpRequest", preset: str = "", *, error: str = "") -> "HttpResponse":
+    """The page body for an htmx request, the pre-htmx redirect (or error page) otherwise.
+
+    One target for all eleven POSTs: an entry flip changes the tallies and the
+    no-opinion banner, a rename moves every referrer, and a schedule edit changes what
+    is deciding — none of them are confined to the control that was clicked.
+    """
+    if not is_htmx(request):
+        return error_page(request, error, back="dash:presets") if error else _back_to_preset(preset)
+    context = {"editor": build_preset_editor(selected=preset), "page_error": error}
+    return render(request, "dash/partials/_presets_body.html", context, status=400 if error else 200)
+
+
 @require_loopback_or_staff
 @require_POST
 def preset_entry(request: "HttpRequest") -> "HttpResponse":
@@ -49,9 +61,9 @@ def preset_entry(request: "HttpRequest") -> "HttpResponse":
     try:
         set_preset_entry(preset, loop, state)
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:entry", target=f"{preset}/{loop}", after=state)
-    return _back_to_preset(preset)
+    return _answer(request, preset)
 
 
 @require_loopback_or_staff
@@ -65,9 +77,9 @@ def preset_use(request: "HttpRequest") -> "HttpResponse":
         else:
             activate_preset(name, hold=True, reason="dashboard", user_id=actor(request))
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:use", after=name)
-    return _back_to_preset("" if name == "auto" else name)
+    return _answer(request, "" if name == "auto" else name)
 
 
 @require_loopback_or_staff
@@ -78,9 +90,9 @@ def preset_create(request: "HttpRequest") -> "HttpResponse":
     try:
         create_preset(name, description=request.POST.get("description", "").strip())
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:create", target=name)
-    return _back_to_preset(name)
+    return _answer(request, name)
 
 
 @require_loopback_or_staff
@@ -95,9 +107,9 @@ def preset_meta(request: "HttpRequest") -> "HttpResponse":
             availability_pin=request.POST.get("availability_pin", ""),
         )
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:meta", target=name)
-    return _back_to_preset(name)
+    return _answer(request, name)
 
 
 @require_loopback_or_staff
@@ -109,9 +121,9 @@ def preset_rename(request: "HttpRequest") -> "HttpResponse":
     try:
         rename_preset(name, new_name)
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:rename", target=name, after=new_name)
-    return _back_to_preset(new_name)
+    return _answer(request, new_name)
 
 
 @require_loopback_or_staff
@@ -122,9 +134,9 @@ def preset_delete(request: "HttpRequest") -> "HttpResponse":
     try:
         delete_preset(name)
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:delete", target=name)
-    return redirect("dash:presets")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -138,9 +150,9 @@ def schedule_activate(request: "HttpRequest") -> "HttpResponse":
         else:
             set_active_schedule(name)
     except PresetEditError as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="schedule:set-active", after=name)
-    return redirect("dash:presets")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -158,9 +170,9 @@ def schedule_slot(request: "HttpRequest") -> "HttpResponse":
             preset_name=request.POST.get("preset", "").strip(),
         )
     except (PresetEditError, ValueError) as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="schedule:slot", target=schedule, after=raw_slot_id or "new")
-    return redirect("dash:presets")
+    return _answer(request)
 
 
 @require_loopback_or_staff
@@ -172,9 +184,14 @@ def schedule_slot_delete(request: "HttpRequest") -> "HttpResponse":
     try:
         delete_schedule_slot(schedule, int(raw_slot_id))
     except (PresetEditError, ValueError) as exc:
-        return HttpResponseBadRequest(str(exc))
+        return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="schedule:slot-delete", target=schedule, after=raw_slot_id)
-    return redirect("dash:presets")
+    return _answer(request)
+
+
+def _posted_preset(request: "HttpRequest") -> str:
+    """The tab a refused POST should leave open — the preset it names, if any."""
+    return request.POST.get("preset", "").strip()
 
 
 def _back_to_preset(name: str) -> "HttpResponse":
