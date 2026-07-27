@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from teatree.skill_support.schema import validate_directory, validate_skill_md
+from teatree.skill_support.schema import installed_skill_names, validate_directory, validate_skill_md
 
 
 class TestValidateSkillMd:
@@ -187,6 +187,13 @@ class TestPluginProvidedRequiresResolve:
         errors, _ = validate_skill_md(skill_md, known_skills=set())
 
         assert errors == []
+
+    def test_installed_skill_names_enumerates_every_search_dir(self, tmp_path: Path, monkeypatch):
+        plugin = self._plugin_tree(tmp_path / "plugin-skills", "review", "ship")
+        apm = self._plugin_tree(tmp_path / "apm-skills", "ac-python")
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", f"{plugin}:{apm}")
+
+        assert installed_skill_names() == {"review", "ship", "ac-python"}
 
     def test_a_genuinely_absent_target_still_fails(self, tmp_path: Path, monkeypatch):
         plugin = self._plugin_tree(tmp_path / "plugin-skills", "review")
