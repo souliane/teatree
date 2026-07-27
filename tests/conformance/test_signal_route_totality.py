@@ -42,6 +42,12 @@ _LOOP_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "loop"
 INTENTIONAL_FALLBACK_KINDS: frozenset[str] = frozenset(
     {
         "deferred_question.mirrored",
+        # The nag's digest is the recurring peer of ``mirrored`` above and takes the
+        # same decision: the side effect (an owner DM) is already done when the signal
+        # is emitted, so there is no work to route — the statusline row IS the outcome.
+        # Bounded to one per interval bucket, so it cannot flood the way a per-item
+        # kind would.
+        "deferred_question.resurfaced",
         "eval_local.queued",
         "incoming_event.dead_letter",
         "notify.redelivered",
