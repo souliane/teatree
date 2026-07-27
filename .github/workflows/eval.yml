@@ -330,10 +330,15 @@ jobs:
       # for the CLI-free `anthropic_api` backend (#3222), which talks to the
       # Anthropic Messages API directly and spawns no `claude` child — a scheduled
       # run (empty input) keeps the default 'api' backend and still installs it.
+      # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
+      # runner actually execs (`_find_cli` returns the bundle first; this global install
+      # is only the presence-gate). Matching it stops the two CLIs in one image from
+      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
+      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         if: ${{ (inputs.backend || 'api') == 'api' }}
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.169
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input

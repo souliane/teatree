@@ -20,6 +20,13 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # daemon over the mounted socket. The npm `pyright` package provides the
 # `pyright-langserver` binary the pyright-lsp Claude plugin execs to give factory
 # agents live Python type diagnostics while coding (`t3 setup` enables the plugin).
+#
+# The claude CLI pin here is DELIBERATELY NOT the generation `claude-agent-sdk`
+# bundles (which every eval/test image pins). This image feeds the paths that exec
+# the GLOBAL binary — `t3 loop start`'s os.execv, the agent command, the ttyd web
+# terminal, the tasks command — so it needs a current known-good release; the
+# bundle's 2.1.169 predates `claude-opus-5`, which model_tiering resolves as the
+# `frontier` tier. Both tiers are guarded by tests/test_claude_cli_pin.py.
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         ca-certificates curl direnv git gnupg jq pass sqlite3 ttyd && \
@@ -38,7 +45,7 @@ RUN apt-get update -qq && \
         > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin && \
-    npm install -g @anthropic-ai/claude-code pyright && \
+    npm install -g @anthropic-ai/claude-code@2.1.220 pyright@1.1.411 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 
