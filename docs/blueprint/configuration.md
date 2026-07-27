@@ -667,8 +667,10 @@ Every term-scanning gate resolves through one class-tagged source: the DB-home `
 ### 10.7 Shipped defaults + the unified settings schema
 
 The shipped default VALUES live in one hand-editable, committed file —
-`src/teatree/config/defaults.toml` — in EXACTLY the `config_setting export` / `import`
-shape (a `[teatree]` table with `speak` / `mr_reminder` sub-tables). It is NOT a
+`src/teatree/config/defaults.toml`. Its `[teatree]` table is EXACTLY the
+`config_setting export` / `import` shape (with `speak` / `mr_reminder` sub-tables); three
+sibling top-level tables — `[loops]`, `[modes]`, `[schedules]` — carry the seed defaults
+for the loop / mode / schedule objects (below). It is NOT a
 per-install config file (there is still nothing to edit per box — operator config lives
 in the DB store); it is the shipped **code-default layer**, the last tier of every
 resolution chain above, and the resolver READS it: `resolution._toml_default_rows` layers
@@ -698,6 +700,38 @@ diff IS the review. `tests/config/test_toml_default_tier.py` carries the resolve
 half of the same contract: a field's TYPE may never move, and its VALUE only where the
 ledger approves it.
 
+**The loop / mode / schedule seed defaults are settings too, in the same file.** A shipped
+default an operator tunes to kickstart a box IS a setting whatever table it lives in, so
+the 26 default loops, the 7 curated modes and the 2 weekly schedules ship as data beside
+the `[teatree]` keys rather than as Python literals: `[loops.<name>]` (cadence, optional
+`daily_at`, `colleague_facing`, `default_enabled`, `description`, and `prompt_body` for the
+one prompt-backed loop), `[modes.<name>]` (availability posture plus an `entries` table
+masking each loop — a loop ABSENT from `entries` inherits its own enabled flag, which is how
+a destructive-capable loop is never silently re-enabled by a mode switch), and
+`[schedules.<name>]` with its `[[...slots]]` array. `teatree.loops.seed.DEFAULT_LOOPS` and
+`preset_seed.default_preset_specs` / `default_schedule_specs` build their spec dataclasses
+from these tables through `config/seed_defaults.py` — the stdlib-`tomllib` sibling of
+`cold_defaults`, held to the same no-pydantic / no-Django contract by its own subprocess
+control. The `[loops]` table ORDER is the seed order, pinned against the frozen
+`0001_initial` inlined copy by `tests/teatree_core/test_initial_migration_seed.py`; that
+pin is what proves relocating the data retunes nothing. `defaults.toml` is excluded from
+`toml-sort` because that layout is load-bearing. Seeding is unchanged — `get_or_create` by
+name, so editing a seed table changes what a FRESH install gets and never overwrites a row
+an operator already edited.
+
+**The seed rows ride the same export / import as a setting.** `export_db_to_toml` emits
+`[loops.<name>]` / `[modes.<name>]` / `[schedules.<name>]` carrying only the fields a live
+row was tuned AWAY from its shipped seed — the same override rule that makes a
+`ConfigSetting` row exist only off-default — so an untouched box exports no seed table at
+all. `import_toml_to_db` classifies each seed field against what the file ships: equal to
+the seed writes nothing, and an unknown entry, an unknown field or a wrong-typed value
+refuses the WHOLE import. The "`defaults.toml` imports to zero rows" invariant therefore
+holds because every seed entry is UNDERSTOOD, not because the tables are ignored. Two seed
+fields are shipped-only and excluded from the row interchange (`config/seed_defaults.py`'s
+`SHIPPED_ONLY_FIELDS`): a schedule's `slots` are child rows with their own editor, and a
+loop's `prompt_body` seeds a separate `Prompt` row — importing either at its shipped value
+is a no-op, and moving one means editing the file.
+
 **Snapshotting the live box goes through the owner.** `manage.py snapshot_settings_defaults`
 proposes the live GLOBAL-scope `ConfigSetting` values ONTO the current file (the file is
 the base, so a hand-edited value the box does not override survives). It renders the diff —
@@ -707,7 +741,10 @@ existing seam (`t3 teatree questions list`, then `t3 teatree questions answer <i
 approve`) — the same human-approval primitive the directive loop's ratify step uses — and
 only then does `--apply` write the file and reconcile the approval ledger. An approval does
 not carry over to a different diff: `--apply` re-derives the fingerprint and refuses a
-mismatch. Safety-posture keys, dark feature-flags and the owner-workflow / engagement keys
+mismatch. The planner re-renders the `[teatree]` table INTO the current file text
+(`ShippedFile.text`), so every sibling seed table and every hand-written comment survives a
+snapshot run byte-for-byte — a fresh document holding only `[teatree]` would silently delete
+them. Safety-posture keys, dark feature-flags and the owner-workflow / engagement keys
 are declined by the planner, so a live override of one is reported and never written.
 
 `src/teatree/config/schema.py` is the single source of truth for the key set, the value

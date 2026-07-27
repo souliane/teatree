@@ -1,4 +1,4 @@
-"""``ConfigSetting`` store -> TOML export — the personal-backup serialiser.
+"""``ConfigSetting`` store + seed rows -> TOML export, and its inverse.
 
 ``config_setting export`` dumps the DB config store to TOML text (stdout or a
 file) so an operator has a human-readable, re-importable backup of their private
@@ -6,6 +6,13 @@ config. It is NOT the config home — teatree reads config only from the DB — 
 a one-way dump for backup/inspection. The secret guard withholds customer/brand
 rows from a SHARED export by default (``SECRET_SETTINGS`` + a live banned-term
 content scan); ``--include-private`` exports everything for a personal backup.
+
+The shipped defaults an operator tunes are not only ``ConfigSetting`` keys: the loops,
+modes and schedules are too, so the same command carries them. They ride the SAME
+override rule as a setting — a ``ConfigSetting`` row exists only where a value moved off
+its default, so the ``[loops]`` / ``[modes]`` / ``[schedules]`` tables carry only the
+fields a live row was tuned away from its ``defaults.toml`` seed. An untouched box
+exports none of them, and re-importing ``defaults.toml`` itself writes nothing.
 """
 
 import json
@@ -21,9 +28,10 @@ from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
+from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_seed_field, seed_divergences
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.core.models.config_setting import ConfigValue
 from teatree.hooks.term_match import matched_term
 
@@ -31,6 +39,9 @@ GLOBAL_SCOPE = ""
 _TEATREE_TABLE = "teatree"
 _OVERLAYS_TABLE = "overlays"
 _E2E_REPOS_TABLE = "e2e_repos"
+
+#: The model each seed table's rows live in — the DB half of ``SEED_ROW_FIELDS``.
+_SEED_MODELS = {"loops": Loop, "modes": Mode, "schedules": ModeSchedule}
 
 
 @dataclass(frozen=True)
@@ -165,7 +176,34 @@ def export_db_to_toml(
     )
     _emit_overlay_tables(document, scopes, overlays_registry, guard=guard)
     _emit_e2e_repos_tables(document, e2e_repos_registry, guard=guard)
+    _emit_seed_tables(document)
     return ConfigExport(tomlkit.dumps(document), tuple(guard.redacted))
+
+
+def _live_seed_rows(table: str) -> dict[str, dict[str, ConfigValue]]:
+    """Every row of *table*'s model as ``{name: {seed field: value}}``."""
+    fields = SEED_ROW_FIELDS[table]
+    return {
+        row.name: {seed_field: getattr(row, attr) for seed_field, (attr, _type) in fields.items()}
+        for row in _SEED_MODELS[table].objects.all()
+    }
+
+
+def _emit_seed_tables(document: tomlkit.TOMLDocument) -> None:
+    """Attach a ``[<family>.<name>]`` sub-table per seed row that diverges from its default.
+
+    The seed rows carry no operator secrets (names, cadences and descriptions teatree
+    itself ships), so they take the same path in a shared and a private export — unlike a
+    ``ConfigSetting`` row, which the secret guard may withhold.
+    """
+    for table in SEED_TABLES:
+        diverged = seed_divergences(table, _live_seed_rows(table))
+        if not diverged:
+            continue
+        family = tomlkit.table(is_super_table=True)
+        for name in sorted(diverged):
+            family[name] = _toml_table(diverged[name])
+        document[table] = family
 
 
 def _registry_value(global_rows: dict[str, ConfigValue], key: str) -> dict[str, Any]:
@@ -311,6 +349,17 @@ def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]
     return candidates
 
 
+def _seed_candidates(doc: dict[str, Any]) -> list[tuple[str, str, str, ConfigValue]]:
+    """Flatten the seed tables into ``(table, entry name, field, value)`` candidate rows."""
+    return [
+        (table, name, field, value)
+        for table in SEED_TABLES
+        for name, entry in doc.get(table, {}).items()
+        if isinstance(entry, dict)
+        for field, value in entry.items()
+    ]
+
+
 def _unstorable_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:
     """Why this row has no home in the store at all, else None.
 
@@ -375,6 +424,12 @@ def import_toml_to_db(
     zero rows. ``dry_run`` classifies without writing. Raises ``tomllib.TOMLDecodeError`` on
     malformed input.
 
+    The seed tables follow the same contract onto their own rows: each entry is classified
+    against what ``defaults.toml`` ships, so an entry equal to the seed writes nothing while
+    an unknown entry, an unknown field or a wrong-typed value refuses the whole import. The
+    zero-write property therefore holds because every seed entry is UNDERSTOOD, not because
+    the tables are ignored.
+
     ``allow_safety_posture`` declares that the operator authorized the safety-posture keys in
     *text* — the dashboard passes it only when the typed confirm phrase is present, the CLI
     passes it because a directly-typed ``config_setting import`` IS that authorization. It
@@ -399,9 +454,60 @@ def import_toml_to_db(
             skipped.append(ImportedRow(scope, key, payload, is_safety_posture=safety))
         else:
             to_write.append(ImportedRow(scope, key, payload, is_safety_posture=safety))
+
+    seed_writes = _classify_seed_rows(doc, skipped=skipped, rejected=rejected)
     if rejected:
         return ConfigImport((), tuple(skipped), tuple(folded), tuple(rejected), dry_run)
     if not dry_run:
         for row in to_write:
             ConfigSetting.objects.set_value(row.key, row.value, scope=row.scope)
-    return ConfigImport(tuple(to_write), tuple(skipped), tuple(folded), (), dry_run)
+        for table, name, row in seed_writes:
+            _write_seed_field(table, name, row.key, row.value)
+    written = (*to_write, *(row for _table, _name, row in seed_writes))
+    return ConfigImport(written, tuple(skipped), tuple(folded), (), dry_run)
+
+
+def _classify_seed_rows(
+    doc: dict[str, Any],
+    *,
+    skipped: list[ImportedRow],
+    rejected: list[RejectedRow],
+) -> list[tuple[str, str, ImportedRow]]:
+    """File each seed field into *skipped* / *rejected*; return the ``(table, name, row)`` writes.
+
+    An entry the shipped file carries can still have no DB row on a box that never ran the
+    install seed, so a write onto a missing row is rejected rather than left to raise
+    mid-import — the whole import is refused and the operator is told to seed first.
+    """
+    writes: list[tuple[str, str, ImportedRow]] = []
+    for table, name, field, value in _seed_candidates(doc):
+        row = ImportedRow(f"{table}.{name}", field, value)
+        kind, reason = classify_seed_field(table, name, field, value)
+        if kind == "reject":
+            rejected.append(RejectedRow(row.scope, field, reason))
+        elif kind == "skip":
+            skipped.append(row)
+        else:
+            writes.append((table, name, row))
+    unseeded = {(t, n) for t, n, _row in writes if not _SEED_MODELS[t].objects.filter(name=n).exists()}
+    if not unseeded:
+        return writes
+    rejected.extend(
+        RejectedRow(row.scope, row.key, f"no {table} row yet — run `t3 setup` to seed it")
+        for table, name, row in writes
+        if (table, name) in unseeded
+    )
+    return []
+
+
+def _write_seed_field(table: str, name: str, field: str, value: ConfigValue) -> None:
+    """Set one seed field onto the row it names — never creating one.
+
+    An import RESTORES an operator's tuning onto objects the install seed already made; it
+    never conjures a loop teatree does not ship (the classifier refuses an entry the file
+    does not carry, and the caller refuses one whose row is not seeded yet).
+    """
+    attr, _type = SEED_ROW_FIELDS[table][field]
+    row = _SEED_MODELS[table].objects.get(name=name)
+    setattr(row, attr, value)
+    row.save(update_fields=[attr, "updated_at"])

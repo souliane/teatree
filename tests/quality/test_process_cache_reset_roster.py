@@ -25,6 +25,8 @@ are out of this gate's structural derivation.
 import ast
 from pathlib import Path
 
+from teatree.config.seed_defaults import _cache as _seed_defaults_cache
+from teatree.config.seed_defaults import reset_seed_defaults_cache
 from teatree.core.backend_factory import _code_host_cache, _messaging_cache, reset_backend_caches
 from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
 from teatree.utils.throttled_log import _last_warned, reset_throttle
@@ -139,6 +141,11 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
     "teatree.hooks.quote_scanner:_BLOCKLIST_CACHE": "reset_blocklist_cache",
+    # The shipped seed tables are read by the `config_setting import` classifier, and tests
+    # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
+    # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
+    # below because nothing but the resolver reads that one.
+    "teatree.config.seed_defaults:_cache": "reset_seed_defaults_cache",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.
@@ -250,6 +257,7 @@ class TestProcessCacheResetRoster:
             (_last_warned, "sentinel-key", reset_throttle),
             (_code_host_cache, "sentinel-overlay", reset_backend_caches),
             (_messaging_cache, "sentinel-overlay", reset_backend_caches),
+            (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
         ]
         for container, key, reset_fn in cases:
             container[key] = object()  # type: ignore[index]

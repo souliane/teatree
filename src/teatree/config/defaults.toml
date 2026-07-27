@@ -1,24 +1,41 @@
-# teatree shipped config defaults — the DEFAULT-category keys at their ship values.
+# teatree shipped defaults — every value a fresh install starts from.
 #
-# HAND-EDITABLE. Edit a value here and the resolver serves it: this file is the last
-# tier of every resolution chain (env -> DB(overlay) -> DB(global) -> overlay code
-# default -> THIS FILE). A value that diverges from its in-code dataclass default needs
-# a matching entry in `defaults_approvals.toml` — that entry is the reviewed decision,
-# and CI refuses an unrecorded divergence.
+# HAND-EDITABLE. Edit a value here and the box serves it. `[teatree]` is the last tier of
+# every settings resolution chain (env -> DB(overlay) -> DB(global) -> overlay code
+# default -> THIS FILE); the seed tables below are what `t3 setup` creates the loop, mode
+# and schedule rows from. A `[teatree]` value that diverges from its in-code dataclass
+# default needs a matching entry in `defaults_approvals.toml` — that entry is the reviewed
+# decision, and CI refuses an unrecorded divergence.
 #
 # `manage.py snapshot_settings_defaults` proposes a snapshot of the live box's global
-# settings onto this file; it renders the diff, asks the owner through the deferred-
-# question queue, and writes only once that question is answered `approve`.
+# settings onto the `[teatree]` table; it renders the diff, asks the owner through the
+# deferred-question queue, and writes only once that question is answered `approve`. It
+# rewrites `[teatree]` alone — every seed table below is hand-maintained.
 #
-# Shape: the `config_setting export`/`import` schema — a `[teatree]` table with
-# `speak`/`mr_reminder` as sub-tables. EXACTLY the Category.DEFAULT keys of
+# `[teatree]` — the `config_setting export`/`import` schema, with `speak`/`mr_reminder` as
+# sub-tables. EXACTLY the Category.DEFAULT keys of
 # `teatree.config.schema.TeatreeSettingsSchema` appear here; PERSONAL/SECRET keys
 # (operator identifiers, machine paths, model-routing tables, customer/brand terms,
 # credential coordinates) are ABSENT by construction and resolve from their empty
-# code defaults.
+# code defaults. Safety-posture keys and dark feature-flags are pinned to their
+# fail-closed/off value and can never move through the snapshot path, approval or not.
 #
-# Safety-posture keys and dark feature-flags are pinned to their fail-closed/off value
-# and can never move through the snapshot path, approval or not.
+# `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
+# optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
+# it), `default_enabled` (only the local/read-only operational core ships ON),
+# `description`, and `prompt_body` for the one prompt-backed loop (every other loop runs
+# its own `src/teatree/loops/<name>/loop.py`). Table ORDER is the seed order, pinned
+# against the frozen `0001_initial` copy.
+#
+# `[modes.<name>]` — a curated mode: its availability posture plus an `entries` table
+# masking each loop on/off. A loop ABSENT from `entries` INHERITS its own enabled flag,
+# which is how a destructive-capable loop is never silently re-enabled by a mode switch.
+#
+# `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
+# the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
+#
+# The seed is `get_or_create` by name: editing a seed table changes what a FRESH install
+# gets and never overwrites a row an operator already edited on a live box.
 
 [teatree]
 active_loop_schedule = ""
@@ -229,3 +246,397 @@ default_channel = ""
 [teatree.speak]
 local = "off"
 slack = false
+
+[loops.inbox]
+delay_seconds = 60
+colleague_facing = false
+default_enabled = true
+description = "Drains inbound Slack mentions, DMs, review-intent and RED-CARD reactions (plus the Notion view) into the DB every 1m and routes them."
+
+[loops.idle_stack_reaper]
+delay_seconds = 60
+colleague_facing = false
+default_enabled = true
+description = "Stops local dev stacks left idle past their threshold to free a concurrency slot; checks every 1m."
+
+[loops.local_stack_queue]
+delay_seconds = 60
+colleague_facing = false
+default_enabled = true
+description = "Drains the local-stack acquisition queue, starting the next queued worktree stack whose backoff retry is due; checks every 1m."
+
+[loops.resource_pressure]
+delay_seconds = 60
+colleague_facing = false
+default_enabled = true
+description = "Auto-frees host disk and RAM when they cross the pressure threshold; checks every 1m on its own ~5m internal cadence."
+
+[loops.snapshot_warmer]
+delay_seconds = 86400
+colleague_facing = false
+default_enabled = false
+description = "Refreshes each overlay-declared reference DB's DSLR snapshot out-of-band once a day so a ticket-critical-path provision never pays the slow restore+migrate path."
+
+[loops.dispatch]
+delay_seconds = 300
+colleague_facing = false
+default_enabled = true
+description = "Runs the always-on global scanners every 5m: dispatches pending headless Tasks to phase sub-agents, ingests incoming events, redelivers undelivered notifies, and posts deferred questions."
+
+[loops.tickets]
+delay_seconds = 300
+colleague_facing = false
+default_enabled = true
+description = "Scans the local Ticket DB and each code host every 5m — surfacing active and stale tickets, dispositioning issues, and marking completed ones."
+
+[loops.review]
+delay_seconds = 300
+colleague_facing = false
+default_enabled = false
+description = "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Always runs (not colleague-facing); self-review keeps going unattended."
+
+[loops.ship]
+delay_seconds = 300
+colleague_facing = false
+default_enabled = false
+description = "Sweeps your own-authored + same-repo open PRs every 5m: folds in approvals/CI, arms the cold review, and executes the keystone merge (consumes the orchestrator's MergeClear). Runs under autonomous_away so the merge path never starves."
+
+[loops.issue_disposition]
+delay_seconds = 300
+colleague_facing = false
+default_enabled = false
+description = "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m; default-off behind auto_disposition_enabled, bounded per tick."
+
+[loops.audit]
+delay_seconds = 1800
+colleague_facing = false
+default_enabled = false
+description = "Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m."
+
+[loops.followup]
+delay_seconds = 1800
+colleague_facing = true
+default_enabled = false
+description = "Intakes newly-assigned issues (auto-starting ready ones) and fires the review-request nag every 30m."
+
+[loops.issue_implementer]
+delay_seconds = 1800
+colleague_facing = false
+default_enabled = false
+description = "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; every 30m, default-off behind a triple gate."
+
+[loops.triage_assessor]
+delay_seconds = 3600
+colleague_facing = false
+default_enabled = false
+description = "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval."
+
+[loops.dm_sweep]
+delay_seconds = 3600
+colleague_facing = false
+default_enabled = false
+description = "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (owner already replied, subject merged/closed, duplicate of an open thread); leaves anything older than a day for the resurfacing side, and says nothing when it resolved nothing."
+
+[loops.housekeeping]
+delay_seconds = 3600
+colleague_facing = false
+default_enabled = true
+description = "Fast-forwards the editable teatree and overlay installs (self-update) and pulls each overlay's main clone hourly."
+
+[loops.arch_review]
+delay_seconds = 10800
+colleague_facing = false
+default_enabled = false
+description = "Dispatches a sub-agent every 3h to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill."
+prompt_body = "Run an architectural review of the codebase using the ac-reviewing-codebase skill. Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, codebase-wide architectural review, surfacing findings as the skill prescribes."
+
+[loops.dogfood]
+delay_seconds = 86400
+colleague_facing = false
+default_enabled = false
+description = "Runs the overlay provisioning smoke test once a day to catch broken worktree setup."
+
+[loops.eval_local]
+delay_seconds = 86400
+colleague_facing = false
+default_enabled = false
+description = "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily)."
+
+[loops.db_backup]
+delay_seconds = 86400
+colleague_facing = false
+default_enabled = true
+description = "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention (directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled."
+
+[loops.backlog_sweep]
+delay_seconds = 86400
+colleague_facing = false
+default_enabled = false
+description = "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes."
+
+[loops.news]
+delay_seconds = 86400
+daily_at = 08:00:00
+colleague_facing = false
+default_enabled = false
+description = "Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas."
+
+[loops.dream]
+delay_seconds = 86400
+daily_at = 03:00:00
+colleague_facing = false
+default_enabled = false
+description = "Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, reindex MEMORY.md, decay — off the live tick."
+
+[loops.outer_loop]
+delay_seconds = 86400
+colleague_facing = false
+default_enabled = false
+description = "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; ships disabled behind the outer_loop_enabled flag and the critic-live guard."
+
+[loops.directive_loop]
+delay_seconds = 3600
+colleague_facing = false
+default_enabled = false
+description = "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); ships disabled behind the directive_loop_enabled flag, and the execution arc additionally needs the critic-live guard."
+
+[loops.ci_eval_heal]
+delay_seconds = 300
+colleague_facing = false
+default_enabled = false
+description = "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row."
+
+[modes.engaged]
+availability_mode = ""
+defers_questions = false
+pauses_self_pump = false
+presence_sensitive = true
+description = "Full working-hours mode: deliver, interact, keep improvement loops warm."
+
+[modes.engaged.entries]
+inbox = true
+dispatch = true
+tickets = true
+ship = true
+review = true
+followup = true
+audit = true
+news = true
+arch_review = true
+dream = true
+eval_local = true
+dogfood = true
+snapshot_warmer = true
+housekeeping = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+
+[modes.heads-down]
+availability_mode = ""
+defers_questions = false
+pauses_self_pump = false
+presence_sensitive = true
+description = "Deep work: deliver without touching colleagues (review/followup off)."
+
+[modes.heads-down.entries]
+inbox = true
+dispatch = true
+tickets = true
+ship = true
+dream = true
+snapshot_warmer = true
+housekeeping = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+review = false
+followup = false
+audit = false
+news = false
+arch_review = false
+eval_local = false
+dogfood = false
+
+[modes.unattended]
+availability_mode = "autonomous_away"
+defers_questions = true
+pauses_self_pump = false
+presence_sensitive = true
+description = "The factory keeps producing while the human is unreachable; colleague-facing loops off."
+
+[modes.unattended.entries]
+inbox = true
+dispatch = true
+tickets = true
+ship = true
+review = true
+audit = true
+news = true
+arch_review = true
+dream = true
+snapshot_warmer = true
+housekeeping = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+followup = false
+
+[modes.maintenance]
+availability_mode = ""
+defers_questions = true
+pauses_self_pump = false
+presence_sensitive = true
+description = "Nights: self-maintenance + self-improvement only, no ticket/colleague/delivery work."
+
+[modes.maintenance.entries]
+inbox = true
+dispatch = true
+dream = true
+eval_local = true
+dogfood = true
+arch_review = true
+news = true
+snapshot_warmer = true
+housekeeping = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+tickets = false
+ship = false
+review = false
+followup = false
+audit = false
+
+[modes.low-power]
+availability_mode = ""
+defers_questions = true
+pauses_self_pump = false
+presence_sensitive = true
+description = "Token-budget guard: only deterministic model-free local loops stay up."
+
+[modes.low-power.entries]
+inbox = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+snapshot_warmer = false
+dispatch = false
+tickets = false
+review = false
+ship = false
+issue_disposition = false
+audit = false
+followup = false
+issue_implementer = false
+triage_assessor = false
+dm_sweep = false
+housekeeping = true
+arch_review = false
+dogfood = false
+eval_local = false
+db_backup = false
+backlog_sweep = false
+news = false
+dream = false
+outer_loop = false
+directive_loop = false
+ci_eval_heal = false
+
+[modes.off]
+availability_mode = ""
+defers_questions = false
+pauses_self_pump = false
+presence_sensitive = true
+description = "Every Loop-table loop off (the reversible 'calendar says nothing runs' mode)."
+
+[modes.off.entries]
+inbox = false
+idle_stack_reaper = false
+local_stack_queue = false
+resource_pressure = false
+snapshot_warmer = false
+dispatch = false
+tickets = false
+review = false
+ship = false
+issue_disposition = false
+audit = false
+followup = false
+issue_implementer = false
+triage_assessor = false
+dm_sweep = false
+housekeeping = false
+arch_review = false
+dogfood = false
+eval_local = false
+db_backup = false
+backlog_sweep = false
+news = false
+dream = false
+outer_loop = false
+directive_loop = false
+ci_eval_heal = false
+
+[modes.offline]
+availability_mode = "away"
+defers_questions = true
+pauses_self_pump = true
+presence_sensitive = false
+description = "Holiday: every loop off, questions defer AND the self-pump pauses (was 'off' preset + 'away')."
+
+[modes.offline.entries]
+inbox = false
+idle_stack_reaper = false
+local_stack_queue = false
+resource_pressure = false
+snapshot_warmer = false
+dispatch = false
+tickets = false
+review = false
+ship = false
+issue_disposition = false
+audit = false
+followup = false
+issue_implementer = false
+triage_assessor = false
+dm_sweep = false
+housekeeping = false
+arch_review = false
+dogfood = false
+eval_local = false
+db_backup = false
+backlog_sweep = false
+news = false
+dream = false
+outer_loop = false
+directive_loop = false
+ci_eval_heal = false
+
+[schedules.standard]
+timezone = "Europe/Vienna"
+description = "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → engaged (attended); all other times (weekday evenings/nights + weekends) → unattended (autonomous-away)."
+
+[[schedules.standard.slots]]
+days = [0, 1, 2, 3, 4]
+start_time = 09:00:00
+preset_name = "engaged"
+
+[[schedules.standard.slots]]
+days = [0, 1, 2, 3, 4]
+start_time = 16:00:00
+preset_name = "unattended"
+
+[[schedules.standard.slots]]
+days = [5, 6]
+start_time = 00:00:00
+preset_name = "unattended"
+
+[schedules.always-unattended]
+timezone = ""
+description = "The holiday calendar: unattended all week."
+
+[[schedules.always-unattended.slots]]
+days = [0, 1, 2, 3, 4, 5, 6]
+start_time = 00:00:00
+preset_name = "unattended"

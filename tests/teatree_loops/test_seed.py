@@ -6,14 +6,23 @@ present. The seed is idempotent: re-running it creates nothing new and never
 clobbers an operator-edited row. Integration-first against the real DB.
 """
 
+import datetime as dt
 import io
+from pathlib import Path
 
 import django.test
 from django.core.management import call_command
 
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.models import Loop, Prompt
 from teatree.loops.registry import iter_loops
-from teatree.loops.seed import DEFAULT_LOOPS, seed_default_loops_and_prompts
+from teatree.loops.seed import (
+    ARCH_REVIEW_PROMPT_BODY,
+    DEFAULT_LOOPS,
+    LoopSeedSpec,
+    load_loop_specs,
+    seed_default_loops_and_prompts,
+)
 
 
 def _run() -> str:
@@ -245,3 +254,66 @@ class TestSeedDefaultLoops(django.test.TestCase):
         _run()
         assert Loop.objects.count() == count
         assert Prompt.objects.count() == prompts
+
+
+class TestSpecsAreShippedDataNotCode:
+    """``DEFAULT_LOOPS`` is built from the ``[loops]`` table of the shipped ``defaults.toml``.
+
+    The loop set is a shipped default an operator tunes, so it lives in the same packaged
+    file as every other shipped default. These pin the derivation itself; the byte-identity
+    of the derived set is pinned against the frozen ``0001_initial`` copy in
+    ``tests/teatree_core/test_initial_migration_seed.py``.
+    """
+
+    def test_specs_are_loaded_from_the_file_they_are_pointed_at(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "defaults.toml"
+        fixture.write_text(
+            "[loops.sentinel]\n"
+            "delay_seconds = 42\n"
+            "colleague_facing = true\n"
+            "default_enabled = true\n"
+            'description = "a synthetic loop"\n'
+            "daily_at = 04:30:00\n",
+            encoding="utf-8",
+        )
+        (spec,) = load_loop_specs(fixture)
+        assert spec == LoopSeedSpec(
+            name="sentinel",
+            delay_seconds=42,
+            description="a synthetic loop",
+            daily_at=dt.time(4, 30),
+            colleague_facing=True,
+            default_enabled=True,
+        )
+
+    def test_an_omitted_optional_field_falls_back_to_the_dataclass_default(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "defaults.toml"
+        fixture.write_text('[loops.sentinel]\ndelay_seconds = 1\ndescription = "x"\n', encoding="utf-8")
+        (spec,) = load_loop_specs(fixture)
+        assert (spec.daily_at, spec.prompt_body, spec.colleague_facing, spec.default_enabled) == (
+            None,
+            None,
+            False,
+            False,
+        )
+
+    def test_default_loops_is_the_shipped_table_in_file_order(self) -> None:
+        shipped = shipped_seed_table("loops")
+        assert [spec.name for spec in DEFAULT_LOOPS] == list(shipped)
+        for spec in DEFAULT_LOOPS:
+            entry = shipped[spec.name]
+            assert spec.delay_seconds == entry["delay_seconds"]
+            assert spec.description == entry["description"]
+            assert spec.daily_at == entry.get("daily_at")
+            assert spec.prompt_body == entry.get("prompt_body")
+            assert spec.colleague_facing is entry["colleague_facing"]
+            assert spec.default_enabled is entry["default_enabled"]
+
+    def test_the_arch_review_prompt_body_comes_from_the_shipped_table(self) -> None:
+        assert shipped_seed_table("loops")["arch_review"]["prompt_body"] == ARCH_REVIEW_PROMPT_BODY
+        assert "ac-reviewing-codebase" in ARCH_REVIEW_PROMPT_BODY
+
+    def test_exactly_one_shipped_loop_is_prompt_backed(self) -> None:
+        # The loop XOR: a prompt-backed loop has no script, every other loop runs its own
+        # module. A second prompt_body in the file would silently orphan that loop's module.
+        assert [spec.name for spec in DEFAULT_LOOPS if spec.is_prompt_backed] == ["arch_review"]

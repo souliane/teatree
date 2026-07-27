@@ -22,6 +22,7 @@ override of one is reported and never written — approval or not.
 """
 
 import json
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -38,6 +39,7 @@ from teatree.config.defaults_approvals import (
     shipped_divergences,
 )
 from teatree.config.defaults_snapshot import (
+    ShippedFile,
     SnapshotPlan,
     change_table,
     pinned_fail_closed_keys,
@@ -80,8 +82,7 @@ class Command(TyperCommand):
         shipped = cold_defaults.shipped_defaults_table(cold_defaults.DEFAULTS_TOML)
         scan_terms = export_scan_terms()
         return plan_snapshot(
-            shipped=shipped,
-            code_defaults=shipped,
+            shipped=ShippedFile(table=shipped, text=_current_text(cold_defaults.DEFAULTS_TOML)),
             live_global=ConfigSetting.objects.overrides_for_scope(_GLOBAL_SCOPE),
             overlay_scope_rows=list(ConfigSetting.objects.exclude(scope=_GLOBAL_SCOPE).values_list("scope", "key")),
             banned_scan=lambda text: matched_term(text, scan_terms),
@@ -169,6 +170,14 @@ class Command(TyperCommand):
         write(f"overlay-scope rows reported ({len(plan.overlay_scope_rows)}):")
         for scope, key in plan.overlay_scope_rows:
             write(f"  [{scope}] {key}")
+
+
+def _current_text(target: Path) -> str:
+    """The shipped file as it stands — the base the re-rendered ``[teatree]`` slots back into."""
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _approver_of(question: DeferredQuestion) -> str:

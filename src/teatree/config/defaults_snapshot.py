@@ -61,33 +61,70 @@ _SUBTABLE_KEYS: tuple[str, ...] = ("mr_reminder", "speak")
 _ABSENT = "(absent)"
 
 _HEADER = """\
-# teatree shipped config defaults — the DEFAULT-category keys at their ship values.
+# teatree shipped defaults — every value a fresh install starts from.
 #
-# HAND-EDITABLE. Edit a value here and the resolver serves it: this file is the last
-# tier of every resolution chain (env -> DB(overlay) -> DB(global) -> overlay code
-# default -> THIS FILE). A value that diverges from its in-code dataclass default needs
-# a matching entry in `defaults_approvals.toml` — that entry is the reviewed decision,
-# and CI refuses an unrecorded divergence.
+# HAND-EDITABLE. Edit a value here and the box serves it. `[teatree]` is the last tier of
+# every settings resolution chain (env -> DB(overlay) -> DB(global) -> overlay code
+# default -> THIS FILE); the seed tables below are what `t3 setup` creates the loop, mode
+# and schedule rows from. A `[teatree]` value that diverges from its in-code dataclass
+# default needs a matching entry in `defaults_approvals.toml` — that entry is the reviewed
+# decision, and CI refuses an unrecorded divergence.
 #
 # `manage.py snapshot_settings_defaults` proposes a snapshot of the live box's global
-# settings onto this file; it renders the diff, asks the owner through the deferred-
-# question queue, and writes only once that question is answered `approve`.
+# settings onto the `[teatree]` table; it renders the diff, asks the owner through the
+# deferred-question queue, and writes only once that question is answered `approve`. It
+# rewrites `[teatree]` alone — every seed table below is hand-maintained.
 #
-# Shape: the `config_setting export`/`import` schema — a `[teatree]` table with
-# `speak`/`mr_reminder` as sub-tables. EXACTLY the Category.DEFAULT keys of
+# `[teatree]` — the `config_setting export`/`import` schema, with `speak`/`mr_reminder` as
+# sub-tables. EXACTLY the Category.DEFAULT keys of
 # `teatree.config.schema.TeatreeSettingsSchema` appear here; PERSONAL/SECRET keys
 # (operator identifiers, machine paths, model-routing tables, customer/brand terms,
 # credential coordinates) are ABSENT by construction and resolve from their empty
-# code defaults.
+# code defaults. Safety-posture keys and dark feature-flags are pinned to their
+# fail-closed/off value and can never move through the snapshot path, approval or not.
 #
-# Safety-posture keys and dark feature-flags are pinned to their fail-closed/off value
-# and can never move through the snapshot path, approval or not.
+# `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
+# optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
+# it), `default_enabled` (only the local/read-only operational core ships ON),
+# `description`, and `prompt_body` for the one prompt-backed loop (every other loop runs
+# its own `src/teatree/loops/<name>/loop.py`). Table ORDER is the seed order, pinned
+# against the frozen `0001_initial` copy.
+#
+# `[modes.<name>]` — a curated mode: its availability posture plus an `entries` table
+# masking each loop on/off. A loop ABSENT from `entries` INHERITS its own enabled flag,
+# which is how a destructive-capable loop is never silently re-enabled by a mode switch.
+#
+# `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
+# the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
+#
+# The seed is `get_or_create` by name: editing a seed table changes what a FRESH install
+# gets and never overwrites a row an operator already edited on a live box.
 """
 
 # The scan takes the `"<key> <json-value>"` text and returns the first matched
 # banned term (or None). Injected so `config` never imports `hooks` (the layer
 # above it); the command binds it to `hooks.term_match.matched_term`.
 BannedScan = Callable[[str], str | None]
+
+
+@dataclass(frozen=True, slots=True)
+class ShippedFile:
+    """The shipped file as the planner sees it — the base a snapshot edits.
+
+    *table* is the ``[teatree]`` table as it stands; *text* is the whole file, so the
+    sibling seed tables and the hand-written comments survive the re-rendered ``[teatree]``
+    (empty text builds the document from scratch, header included). *code_defaults*
+    supplies a value for any DEFAULT key the file does not carry yet, so the emitted file
+    stays exhaustive — it defaults to *table*, which is what a complete file already holds.
+    """
+
+    table: dict[str, SettingValue]
+    text: str = ""
+    _code_defaults: dict[str, SettingValue] | None = None
+
+    @property
+    def code_defaults(self) -> dict[str, SettingValue]:
+        return self.table if self._code_defaults is None else self._code_defaults
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,33 +227,31 @@ def _decide(
 
 def plan_snapshot(
     *,
-    shipped: dict[str, SettingValue],
-    code_defaults: dict[str, SettingValue],
+    shipped: "ShippedFile",
     live_global: dict[str, SettingValue],
     overlay_scope_rows: list[tuple[str, str]],
     banned_scan: BannedScan,
 ) -> SnapshotPlan:
     """Propose the live box's global settings onto the CURRENT shipped file.
 
-    *shipped* is the file's ``[teatree]`` table as it stands (the base). *code_defaults*
-    supplies a value for any DEFAULT key the file does not carry yet, so the emitted file
-    stays exhaustive. *live_global* is every GLOBAL-scope ``ConfigSetting`` row (any
-    category); *overlay_scope_rows* is ``(scope, key)`` for every non-global row (reported,
-    never emitted). *banned_scan* returns the first banned term hit in a ``"<key> <value>"``
-    text.
+    *shipped* is the file as it stands — the base this plan edits. *live_global* is every
+    GLOBAL-scope ``ConfigSetting`` row (any category); *overlay_scope_rows* is
+    ``(scope, key)`` for every non-global row (reported, never emitted). *banned_scan*
+    returns the first banned term hit in a ``"<key> <value>"`` text.
     """
     reported = _Reported()
     _classify_non_default(live_global, reported)
 
-    emitted = {key: shipped.get(key, code_defaults[key]) for key in default_category_keys()}
+    table, code_defaults = shipped.table, shipped.code_defaults
+    emitted = {key: table.get(key, code_defaults[key]) for key in default_category_keys()}
     changes: list[SnapshotChange] = []
     declined: list[DeclinedChange] = []
     for key in sorted(emitted):
-        if key not in shipped:
+        if key not in table:
             changes.append(SnapshotChange(key=key, shipped=None, proposed=emitted[key], scope="code-default"))
         if key not in live_global:
             continue
-        decision = _decide(key, shipped.get(key), live_global[key], banned_scan)
+        decision = _decide(key, table.get(key), live_global[key], banned_scan)
         if isinstance(decision, DeclinedChange):
             declined.append(decision)
         elif isinstance(decision, SnapshotChange):
@@ -224,14 +259,14 @@ def plan_snapshot(
             emitted[key] = decision.proposed
 
     return SnapshotPlan(
-        toml=render_toml(emitted),
+        toml=render_toml(emitted, base_text=shipped.text),
         changes=tuple(changes),
         declined=tuple(declined),
         skipped_secret=tuple(reported.skipped_secret),
         skipped_personal=tuple(reported.skipped_personal),
         stale_keys=tuple(reported.stale_keys),
         overlay_scope_rows=tuple(sorted(overlay_scope_rows)),
-        dropped_keys=tuple(sorted(set(shipped) - set(emitted))),
+        dropped_keys=tuple(sorted(set(table) - set(emitted))),
     )
 
 
@@ -259,16 +294,26 @@ def change_table(changes: tuple[SnapshotChange, ...]) -> tuple[list[str], list[l
     return ["setting", "shipped now", "proposed", "scope"], rows
 
 
-def render_toml(emitted: dict[str, SettingValue]) -> str:
-    """Render *emitted* into the canonical ``[teatree]`` + sub-table TOML text."""
-    document = tomlkit.document()
+def render_toml(emitted: dict[str, SettingValue], *, base_text: str = "") -> str:
+    """Render *emitted* into the canonical ``[teatree]`` + sub-table TOML text.
+
+    With *base_text* the CURRENT file is parsed and only its ``[teatree]`` table is
+    replaced, so every sibling table (the ``[loops]`` / ``[modes]`` / ``[schedules]`` seed
+    defaults) and every hand-written comment survives a snapshot run byte-for-byte. Only
+    when the file is absent is the whole document — header included — built from scratch.
+    """
     teatree = tomlkit.table()
     for key in sorted(k for k in emitted if k not in _SUBTABLE_KEYS):
         teatree[key] = emitted[key]
     for name in _SUBTABLE_KEYS:
         teatree[name] = _nested_table(cast("dict[str, SettingValue]", emitted[name]))
+    if not base_text:
+        document = tomlkit.document()
+        document["teatree"] = teatree
+        return _HEADER + "\n" + tomlkit.dumps(document)
+    document = tomlkit.parse(base_text)
     document["teatree"] = teatree
-    return _HEADER + "\n" + tomlkit.dumps(document)
+    return tomlkit.dumps(document)
 
 
 def _nested_table(value: dict[str, SettingValue]) -> tomlkit_items.Table:

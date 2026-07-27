@@ -202,6 +202,24 @@ def _reset_quote_blocklist_cache() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_seed_defaults_cache() -> Iterator[None]:
+    """Reset the shipped seed-table parse memo around every test (TSH-2/TSH-7).
+
+    ``seed_defaults._cache`` memoises the parsed ``defaults.toml`` for the loop / mode /
+    schedule seeds, and both the seed loaders and the ``config_setting import`` classifier
+    read it. Tests re-point ``DEFAULTS_TOML`` at a fixture, so a parse that outlived its
+    test would classify a later import against the wrong shipped table.
+    """
+    from teatree.config.seed_defaults import (  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+        reset_seed_defaults_cache,
+    )
+
+    reset_seed_defaults_cache()
+    yield
+    reset_seed_defaults_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scope_cache() -> Iterator[None]:
     """Reset the process-singleton token-scope cache with a no-op banner sink (PR-19).
 
