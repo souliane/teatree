@@ -270,9 +270,14 @@ jobs:
           command: uv sync
       # Install the Claude CLI the metered api backend shells out to, then ASSERT
       # it — a missing binary must FAIL the job, not skip every scenario green.
+      # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
+      # runner actually execs (`_find_cli` returns the bundle first; this global install
+      # is only the presence-gate). Matching it stops the two CLIs in one image from
+      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
+      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.169
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input

@@ -4,13 +4,15 @@ Each metered leg costs ~2% of the subscription's weekly usage window (and real
 per-token billing on the benchmark's api-key lane), so a leg that fails while
 emitting only the retry action's ``Child_process exited with error code 1`` makes
 every diagnostic re-run pure waste. These tests pin the observability contract in
-BOTH metered workflows — ``.github/workflows/eval.yml`` (the weekly cron) and
-``.github/workflows/eval-weekly-reusable.yml`` (the manual benchmark): the run's
+all three metered workflows — ``.github/workflows/eval.yml`` (the weekly cron),
+``.github/workflows/eval-weekly-reusable.yml`` (the manual benchmark) and
+``.github/workflows/eval-pr-reusable.yml`` (the per-PR selective lane): the run's
 output is captured to a durable file, every diagnostic artifact uploads
-unconditionally under a per-leg-unique name, and a failing leg re-prints its tail
-into the job log while still propagating the real exit code.
+unconditionally under a name the run actually writes, and a failing leg re-prints
+its tail into the job log while still propagating the real exit code.
 """
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,13 +22,29 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
 _GH_BENCHMARK = _REPO_ROOT / ".github" / "workflows" / "eval-weekly-reusable.yml"
+_GH_PR = _REPO_ROOT / ".github" / "workflows" / "eval-pr-reusable.yml"
 
-# Both spend real credit per leg, so both owe the same post-mortem.
-_METERED_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK)
+# All three spend real credit per run, so all three owe the same post-mortem.
+_METERED_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK, _GH_PR)
+
+# Only the fan-out lanes can collide on an artifact name; the PR lane's eval job is
+# a single job with no matrix, so a per-leg suffix would be noise there.
+_MATRIX_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK)
 
 _SUFFIX_EXPR = "steps.artifact.outputs.suffix"
 _UPLOAD_ACTION = "actions/upload-artifact"
 _RETRY_ACTION = "nick-fields/retry"
+_LOG_ASSIGNMENT = re.compile(r'LOG="\$RUNNER_TEMP/eval-run-[^"]*\.log"')
+_RUNNER_TEMP_REF = re.compile(r"\$RUNNER_TEMP/(?P<name>[A-Za-z0-9_.$-]+)")
+#: A shell variable, a GitHub expression and a glob are all "the varying part" here;
+#: collapsing them to one placeholder compares the SHAPE of the two filenames without
+#: needing to know each variable's runtime value.
+_VARYING_PART = re.compile(r"\$\{\{[^}]*\}\}|\$[A-Za-z_][A-Za-z0-9_]*|\*")
+
+
+def _artifact_shape(path: str) -> str:
+    bare = path.replace("${{ runner.temp }}/", "").replace("$RUNNER_TEMP/", "")
+    return _VARYING_PART.sub("<var>", bare)
 
 
 def _eval_steps(workflow: Path) -> list[dict[str, Any]]:
@@ -67,13 +85,17 @@ class TestDiagnosticArtifactsSurviveAFailingLeg:
                 f"leg still publishes its diagnostics; got {step.get('if')!r}."
             )
 
-    def test_artifact_names_are_unique_per_matrix_leg(self, workflow: Path) -> None:
-        # The fan-out runs many legs in parallel; a shared artifact name collides and
-        # silently keeps only one leg's diagnostics.
+    def test_every_upload_publishes_a_path_the_run_actually_writes(self, workflow: Path) -> None:
+        # An `if: always()` upload of a filename nothing writes is worse than no upload:
+        # `if-no-files-found: warn` makes it fail silently, so the artifact list reads as
+        # complete while the report that would explain the failure was never published.
+        command = _eval_command(workflow)
+        written = {_artifact_shape(match.group("name")) for match in _RUNNER_TEMP_REF.finditer(command)}
         for step in _upload_steps(workflow):
-            assert _SUFFIX_EXPR in step["with"]["name"], (
-                f"{workflow.name}: artifact name {step['with']['name']!r} must carry the per-leg "
-                f"lane/shard/effort suffix so parallel legs cannot collide."
+            published = _artifact_shape(step["with"]["path"])
+            assert published in written, (
+                f"{workflow.name}: upload step {step.get('name')!r} publishes {published!r}, which the eval "
+                f"command never writes (it renders {sorted(written)})."
             )
 
     def test_raw_run_log_is_uploaded(self, workflow: Path) -> None:
@@ -97,9 +119,8 @@ class TestFailureOutputReachesTheJobLog:
         assert "2>&1" in command, (
             f"{workflow.name}: stderr must be merged into the captured stream (tracebacks land on stderr)."
         )
-        assert 'LOG="$RUNNER_TEMP/eval-run-$EVAL_SUFFIX.log"' in command, (
-            f"{workflow.name}: the captured log must live in $RUNNER_TEMP under the per-leg suffix "
-            f"so it can be uploaded."
+        assert _LOG_ASSIGNMENT.search(command), (
+            f"{workflow.name}: the captured log must live at $RUNNER_TEMP/eval-run-*.log so it can be uploaded."
         )
 
     def test_failure_prints_the_captured_tail(self, workflow: Path) -> None:
@@ -126,6 +147,18 @@ class TestFailureOutputReachesTheJobLog:
             f"{workflow.name}: the tail print must follow the eval invocation inside the retried "
             f"command, so every attempt surfaces its own failure output."
         )
+
+
+@pytest.mark.parametrize("workflow", _MATRIX_WORKFLOWS, ids=lambda path: path.name)
+class TestParallelLegsCannotCollideOnAnArtifactName:
+    def test_artifact_names_are_unique_per_matrix_leg(self, workflow: Path) -> None:
+        # The fan-out runs many legs in parallel; a shared artifact name collides and
+        # silently keeps only one leg's diagnostics.
+        for step in _upload_steps(workflow):
+            assert _SUFFIX_EXPR in step["with"]["name"], (
+                f"{workflow.name}: artifact name {step['with']['name']!r} must carry the per-leg "
+                f"lane/shard/effort suffix so parallel legs cannot collide."
+            )
 
 
 class TestTheEndOfRunArtifactIsAccountedForOnFailure:
