@@ -7,11 +7,11 @@ It sits UNDER every override, so per key the chain is
     env -> DB(overlay) -> DB(global) -> overlay code default -> TOML default.
 
 The tier is observable only against a shipped file whose value diverges from the
-dataclass default, and the committed file deliberately carries no such divergence
-(wiring the tier in is behaviour-neutral by construction). These tests therefore point
-the tier at a real fixture ``defaults.toml`` — real stdlib parse, real registry
-coercion, real ``ConfigSetting`` rows — and pin both that the TOML value wins over the
-dataclass default AND that every override tier still beats it.
+dataclass default. These tests therefore point the tier at a real fixture
+``defaults.toml`` — real stdlib parse, real registry coercion, real ``ConfigSetting``
+rows — and pin both that the TOML value wins over the dataclass default AND that every
+override tier still beats it. Whether the COMMITTED file may diverge is a different
+question, owned by the approval gate in ``test_defaults_approvals.py``.
 """
 
 import dataclasses
@@ -29,11 +29,10 @@ from teatree.config import (
     cold_defaults,
     effective_default,
     get_effective_settings,
-    mr_reminder_from_table,
-    speak_from_subtable,
 )
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
+from teatree.config.defaults_approvals import read_approvals
 from teatree.config.overlay_code_defaults import PROMOTED_OVERLAY_CODE_DEFAULT_KEYS
 from teatree.config.registries import COLD_SETTINGS
 from teatree.config.resolution import _BESPOKE_STRUCTURED_FIELDS as _STRUCTURED_KEYS
@@ -169,65 +168,14 @@ def tmp_defaults_file(case: TestCase, text: str) -> Path:
     return toml
 
 
-def _shipped_effective(key: str, code: UserSettings) -> object:
-    """The value the resolver derives for *key* from the committed file alone.
-
-    The two structured fields arrive as sub-tables, so they resolve through the same
-    parsers the resolver rebuilds them with rather than through ``effective_default``
-    (which reports them in stored dict form on purpose).
-    """
-    table = shipped_defaults_table()[key]
-    if key == "mr_reminder":
-        return mr_reminder_from_table(table)
-    if key == "speak":
-        return speak_from_subtable(table, base=code.speak)
-    return effective_default(key)
-
-
-class TestResolvedNeutrality(TestCase):
-    """The FULLY-RESOLVED settings object is field-for-field identical, in VALUE and TYPE.
-
-    The narrower value-equality guard below compares the shipped table's parsed value
-    against the dataclass default. That is necessary but NOT sufficient: an assembled
-    value can compare equal while its TYPE differs (``{}`` vs ``()``, ``[]`` vs ``()``,
-    ``str`` vs ``StrEnum``), and downstream code that iterates, branches on emptiness, or
-    does an identity/type-sensitive comparison then behaves differently on an ``==`` that
-    passed. So this guard walks EVERY field of the object the real resolver returns.
-
-    The promoted overlay-code-default keys are excluded: a DIFFERENT, pre-existing tier
-    (#36) legitimately moves those, and this PR does not touch it.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _no_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env_var in ENV_SETTING_OVERRIDES:
-            monkeypatch.delenv(env_var, raising=False)
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-
-    def test_every_resolved_field_matches_the_dataclass_default_in_value_and_type(self) -> None:
-        assert ConfigSetting.objects.count() == 0
-        code = UserSettings()
-        resolved = get_effective_settings()
-        drift = {
-            field.name: (getattr(resolved, field.name), getattr(code, field.name))
-            for field in dataclasses.fields(UserSettings)
-            if field.name not in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS
-            and (
-                getattr(resolved, field.name) != getattr(code, field.name)
-                or type(getattr(resolved, field.name)) is not type(getattr(code, field.name))
-            )
-        }
-        assert not drift, f"the resolver moves a field's value or TYPE off its dataclass default: {drift}"
-
-
 class TestEveryShippedKeyIsPinned:
     """The whole shipped key set is covered — no key sits in an unguarded gap.
 
-    The value-neutrality guard below only reaches keys that are ``UserSettings`` fields,
+    The resolved-field guard below only reaches keys that are ``UserSettings`` fields,
     which is 173 of the 200 the file carries. The other 27 are read by a different tier,
     so a wrong value there is invisible to that guard. These tests make the partition
     TOTAL: every shipped key must land in exactly one pinned bucket, so a key added to
-    the file in a future generator run cannot land in a gap.
+    the file by a hand edit or a snapshot run cannot land in a gap.
     """
 
     def test_every_shipped_key_lands_in_exactly_one_pinned_bucket(self) -> None:
@@ -264,17 +212,52 @@ class TestEveryShippedKeyIsPinned:
         )
 
 
-def test_committed_defaults_toml_moves_no_effective_default() -> None:
-    """Every shipped value equals its in-code default, so reading the file changes nothing.
+class TestResolvedFieldsMoveOnlyWhereApproved(TestCase):
+    """The FULLY-RESOLVED settings object may move a VALUE only where the ledger approves it.
 
-    Wiring the tier in must not silently move an effective default. A future generator
-    run that adopts a live box value turns this red — the divergence then has to be a
-    reviewed decision rather than a side effect of regenerating the file.
+    ``defaults.toml`` is hand-editable, so a shipped value is ALLOWED to move an effective
+    default — that is the point. What must never happen is an UNRECORDED move, which is
+    what ``defaults_approvals.toml`` and its gate
+    (``tests/config/test_defaults_approvals.py``) enforce key by key. This guard is the
+    resolved-object half of that contract: it walks EVERY field of the object the real
+    resolver returns and allows a value difference only for an approved key.
+
+    The TYPE half admits no exception. An assembled value can compare equal while its type
+    differs (``{}`` vs ``()``, ``[]`` vs ``()``, ``str`` vs ``StrEnum``), and downstream
+    code that iterates, branches on emptiness, or does an identity/type-sensitive
+    comparison then behaves differently on an ``==`` that passed. An approved divergence is
+    coerced through the key's own registry parser, so it never changes a field's type.
+
+    The promoted overlay-code-default keys are excluded: a DIFFERENT, pre-existing tier
+    (#36) legitimately moves those, and this PR does not touch it.
     """
-    code = UserSettings()
-    diverged = {
-        key: (_shipped_effective(key, code), getattr(code, key))
-        for key in cold_defaults.shipped_defaults_table()
-        if hasattr(code, key) and _shipped_effective(key, code) != getattr(code, key)
-    }
-    assert not diverged, f"defaults.toml moves an effective default: {diverged}"
+
+    @pytest.fixture(autouse=True)
+    def _no_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env_var in ENV_SETTING_OVERRIDES:
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def _guarded_fields(self) -> list[str]:
+        return [f.name for f in dataclasses.fields(UserSettings) if f.name not in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS]
+
+    def test_every_resolved_field_keeps_its_dataclass_type(self) -> None:
+        assert ConfigSetting.objects.count() == 0
+        code, resolved = UserSettings(), get_effective_settings()
+        drift = {
+            name: (type(getattr(resolved, name)), type(getattr(code, name)))
+            for name in self._guarded_fields()
+            if type(getattr(resolved, name)) is not type(getattr(code, name))
+        }
+        assert not drift, f"the resolver moves a field's TYPE off its dataclass default: {drift}"
+
+    def test_a_resolved_field_moves_off_its_dataclass_value_only_where_approved(self) -> None:
+        assert ConfigSetting.objects.count() == 0
+        code, resolved = UserSettings(), get_effective_settings()
+        moved = {
+            name: (getattr(resolved, name), getattr(code, name))
+            for name in self._guarded_fields()
+            if getattr(resolved, name) != getattr(code, name)
+        }
+        unrecorded = {name: pair for name, pair in moved.items() if name not in read_approvals()}
+        assert not unrecorded, f"the resolver moves a field off its dataclass default unapproved: {unrecorded}"

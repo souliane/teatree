@@ -147,10 +147,6 @@ Generate the management-commands reference doc from the live command tree.
 
 Generate deterministic overlay extension-point documentation.
 
-## `generate_settings_defaults`
-
-Regenerate config/defaults.toml from in-code defaults + safe live-adopted tunables.
-
 ## `generate_skill_catalogue`
 
 Generate the skills catalogue from skills/*/SKILL.md frontmatter.
@@ -504,6 +500,10 @@ Session-lifecycle operations.
 ## `signals`
 
 Print the five factory signals over the trailing window vs its baseline.
+
+## `snapshot_settings_defaults`
+
+Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).
 
 ## `speak`
 

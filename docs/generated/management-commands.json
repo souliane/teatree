@@ -309,11 +309,6 @@
       "subcommands": []
     },
     {
-      "help": "Regenerate config/defaults.toml from in-code defaults + safe live-adopted tunables.",
-      "name": "generate_settings_defaults",
-      "subcommands": []
-    },
-    {
       "help": "Generate the skills catalogue from skills/*/SKILL.md frontmatter.",
       "name": "generate_skill_catalogue",
       "subcommands": []
@@ -980,6 +975,11 @@
     {
       "help": "Print the five factory signals over the trailing window vs its baseline.",
       "name": "signals",
+      "subcommands": []
+    },
+    {
+      "help": "Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).",
+      "name": "snapshot_settings_defaults",
       "subcommands": []
     },
     {
