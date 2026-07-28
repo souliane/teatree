@@ -82,7 +82,7 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # resolver (resolve_active_mode + the set/clear override chokepoint). A genuine new
 # core concern that MUST live at the core root: its domain-layer consumers speak.py and
 # stop_snapshot.py cannot import the orchestration layer, so the resolver cannot live in
-# teatree.loop; and it composes teatree.core.models + teatree.core.availability (the
+# teatree.loop; and it composes teatree.core.models + teatree.live_presence (the
 # presence heartbeat) + teatree.loop.preset_resolution, fitting no existing subpackage.
 # 80: +git_merge_driver.py (#3582) — the per-clone `merge.generated.driver` registration
 # seam, the exact sibling of the flat git-hooks install helper prek_hook.py (both are
@@ -128,7 +128,13 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # layer, which may not import the interface-layer dash. It must also stay OUT of
 # core/models/ (which may not import teatree.config, and this reads the settings schema),
 # so no existing subpackage owns it.
-PINNED_FLAT_CORE_MODULES = 103
+# 102: -availability.py (#3826) — the legacy availability layer is retired. Its fast-hook
+# posture mirror is deleted (the hooks cold-read the control DB instead), and the two
+# things that survived it were never mode concepts: the keyboard heartbeat moved DOWN to
+# the foundation leaf teatree.live_presence (so the Django resolver, the cold resolver and
+# the bare UserPromptSubmit hook share ONE implementation), and the two DeferredQuestion
+# helpers collapsed onto DeferredQuestion.pending, which already was their whole body.
+PINNED_FLAT_CORE_MODULES = 102
 
 
 def _flat_core_modules() -> list[str]:

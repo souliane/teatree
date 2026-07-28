@@ -75,19 +75,23 @@ _QUERY_ERROR: object = object()
 _RETRY_QUIESCENT_WAL: object = object()
 
 
-def _read_once(db: Path, uri_parameters: str, query: str, parameters_bindings: tuple[object, ...]) -> object:
+def _read_once(
+    db: Path, uri_parameters: str, query: str, parameters_bindings: tuple[object, ...], *, many: bool
+) -> object:
     """One read-only attempt through the `uri_parameters` open mode.
 
-    Returns the fetched row (a tuple), `None` on a clean no-match, the
-    `_QUERY_ERROR` sentinel on any sqlite error, or `_RETRY_QUIESCENT_WAL` when a
-    read hit the quiescent-WAL `SQLITE_CANTOPEN` (the caller retries `immutable=1`).
+    Returns the fetched row (a tuple; a list of tuples when `many`), `None` on a
+    clean no-match, the `_QUERY_ERROR` sentinel on any sqlite error, or
+    `_RETRY_QUIESCENT_WAL` when a read hit the quiescent-WAL `SQLITE_CANTOPEN`
+    (the caller retries `immutable=1`).
     """
     try:
         conn = _open_readonly(db, uri_parameters)
     except sqlite3.Error:
         return _QUERY_ERROR
     try:
-        return conn.execute(query, parameters_bindings).fetchone()
+        cursor = conn.execute(query, parameters_bindings)
+        return cursor.fetchall() if many else cursor.fetchone()
     except sqlite3.OperationalError as exc:
         if exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
             return _RETRY_QUIESCENT_WAL
@@ -98,7 +102,7 @@ def _read_once(db: Path, uri_parameters: str, query: str, parameters_bindings: t
         conn.close()
 
 
-def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> object:
+def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, ...], *, many: bool = False) -> object:
     """Run a read-only single-row `query` with the quiescent-WAL fallback.
 
     Returns the fetched row (a tuple), `None` when the query ran cleanly but
@@ -122,9 +126,9 @@ def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, .
     lock bypass. Shared by `fetch_one`, `loop_status`, and `row_exists` so every
     cold read runs through one WAL-aware sqlite path.
     """
-    result = _read_once(db, "mode=ro", query, parameters_bindings)
+    result = _read_once(db, "mode=ro", query, parameters_bindings, many=many)
     if result is _RETRY_QUIESCENT_WAL:
-        result = _read_once(db, "immutable=1", query, parameters_bindings)
+        result = _read_once(db, "immutable=1", query, parameters_bindings, many=many)
     return _QUERY_ERROR if result is _RETRY_QUIESCENT_WAL else result
 
 
@@ -136,6 +140,17 @@ def fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> 
     """
     row = _execute_readonly(db, query, parameters_bindings)
     return None if row is _QUERY_ERROR else cast("tuple[object, ...] | None", row)
+
+
+def fetch_all(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> list[tuple[object, ...]]:
+    """Read-only multi-row `query`; fails open to `[]` on any error.
+
+    The multi-row sibling of `fetch_one`, riding the same WAL-aware path. The cold
+    posture resolver needs it for the active schedule's slots — the one place a cold
+    read is a set rather than a scalar.
+    """
+    rows = _execute_readonly(db, query, parameters_bindings, many=True)
+    return [] if rows is _QUERY_ERROR or rows is None else cast("list[tuple[object, ...]]", rows)
 
 
 def loop_status(

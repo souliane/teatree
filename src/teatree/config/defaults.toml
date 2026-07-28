@@ -19,6 +19,11 @@
 # credential coordinates) are ABSENT by construction and resolve from their empty
 # code defaults. Safety-posture keys and dark feature-flags are pinned to their
 # fail-closed/off value and can never move through the snapshot path, approval or not.
+# The keys stay FLAT — that namespace is the persisted contract every reader, env override
+# and cold sqlite3 read depends on — but they are ORDERED by the declaration hierarchy,
+# each level announced once by an indented `#` banner. That is the same tree the dashboard
+# renders and the export dump emits. Put a new key under its group's banner; CI refuses one
+# sitting outside its group and names where it belongs.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
@@ -38,206 +43,234 @@
 # gets and never overwrites a row an operator already edited on a live box.
 
 [teatree]
-active_loop_schedule = ""
-admin_autologin_enabled = true
-admission_governor_enabled = true
-admit_colleague_prs_to_board = true
+# Workspace
+#   Engagement & identity
+autoload = false
+check_updates = true
+contribute = false
+excluded_skills = []
+privacy = ""
+timezone = ""
+# Agents
+#   Mode & harness
 agent_harness = "claude_sdk"
 agent_runtime = "interactive"
-agent_signature = false
-allow_destructive_disk = false
-allow_destructive_ram = false
-approved_recipe_sha = ""
-architectural_review_after_merge_count = 25
-architectural_review_cadence_hours = 168
-architectural_review_disabled = false
-architectural_review_retry_backoff_hours = 12
-architectural_review_skill = "ac-reviewing-codebase"
+autonomy = "babysit"
+enforce_regulated_path = false
+mode = "interactive"
+openai_compatible_lane = "factory"
+pydantic_ai_max_tokens = 16384
+pydantic_ai_request_limit = 40
+regulated_path_model_allowlist = []
+subagent_spawn_ceiling = 20
+ticket_budget_max_cost_usd = 0.0
+watchdog_max_cost_usd = 0.0
+watchdog_max_runtime_seconds = 10800
+watchdog_max_turns = 0
+# Loops
+#   Cadence & throughput
+loop_cadence_seconds = 720
+loop_runner_enabled = true
+merge_wip = 1
+wip = "medium"
+worker_quiescing = false
+write_wip = 3
+#   Scanners
 ask_before_backlog_sweep_closes = true
 ask_before_creating_news_tickets = true
-attachment_gate_enabled = true
-auto_disposition_enabled = false
-auto_disposition_max_closes_per_tick = 5
 auto_update_reinstall = false
 auto_update_require_green_main = true
-autoload = false
-autonomy = "babysit"
 backlog_sweep_cadence_hours = 168
 backlog_sweep_disabled = true
 backlog_sweep_skill = "sweeping-tickets"
-ban_close_trailers_on_namespaces = []
-banned_terms_gate_enabled = true
-billing_cycle_anchor_day = 0
-boost_concurrency = 0
-bulk_close_threshold = 5
-check_updates = true
-chrome_devtools_headless = true
-chrome_devtools_mcp_enabled = true
-ci_eval_heal_autofix_enabled = false
-claude_chrome = false
-clean_ignore = []
-colleague_repo_url_pattern = ""
-completion_claim_gate_enabled = true
-config_overwrite_gate_enabled = true
-contribute = false
-contribute_plugin_dir = false
-critic_gate_mode = "off"
-danger_gate_fail_open = false
-dashboard_instance_label = ""
-db_backup_cadence_hours = 24
-db_backup_disabled = false
-db_backup_retention_days = 7
-deny_circuit_breaker_enabled = true
-deny_circuit_breaker_threshold = 3
-directive_intake_per_tick = 25
-directive_loop_enabled = false
-directive_verify_days = 7
-disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
-disk_crit_free_gb = 10.0
-disk_warn_free_gb = 25.0
-dispatch_quote_gate_on_task_create_enabled = false
 dogfood_smoke_cadence_hours = 24
 dogfood_smoke_disabled = false
 dogfood_smoke_overlay = ""
 dogfood_smoke_skill = "dogfood-smoke"
-dream_propose_evals = false
-e2e_confidence_threshold = 90
-e2e_mandatory_gate_enabled = true
-enforce_regulated_path = false
 eval_local_cadence_hours = 168
 eval_local_disabled = false
 eval_local_skill = "eval"
-excluded_skills = []
-expected_required_contexts = []
+scanning_news_cadence_hours = 24
+scanning_news_disabled = false
+scanning_news_skill = "scanning-news"
+self_update_cadence_hours = 1
+self_update_disabled = false
+#   Kill switches & credentials
+approved_recipe_sha = ""
+auto_disposition_enabled = false
+auto_disposition_max_closes_per_tick = 5
+billing_cycle_anchor_day = 0
+boost_concurrency = 0
+ci_eval_heal_autofix_enabled = false
+contribute_plugin_dir = false
+db_backup_cadence_hours = 24
+db_backup_disabled = false
+db_backup_retention_days = 7
+directive_intake_per_tick = 25
+directive_loop_enabled = false
+directive_verify_days = 7
+dream_propose_evals = false
 factory_score_enabled = false
 fleet_claim_enabled = false
-gate_relaxation_gate_enabled = true
 gitlab_approval_scanner_enabled = false
 hook_fetch_titles = true
-hook_validator_timeout_seconds = 60
-idle_stack_e2e_recent_minutes = 60
-idle_stack_idle_minutes = 30
-idle_stack_reaper_cadence_minutes = 5
-idle_stack_reaper_disabled = false
-incoming_event_retention_days = 30
-incremental_push_gate = true
 issue_implementer_cadence_hours = 1
 issue_implementer_enabled = false
 issue_implementer_label = ""
 issue_implementer_max_concurrent = 3
 limit_autorecovery_enabled = true
-local_stack_queue_disabled = false
-local_stack_queue_max_attempts = 13
-loop_cadence_seconds = 720
-loop_runner_enabled = true
-low_power_auto_engage = false
-low_power_preset_name = ""
-main_clone_guard_gate_enabled = true
-max_concurrent_local_stacks = 1
+orchestrate_claim_enabled = false
+outer_loop_enabled = false
+outer_loop_max_per_week = 1
+outer_loop_measure_days = 7
+outer_loop_stop_after_consecutive_failures = 3
+sdk_monthly_credit_usd = 200.0
+triage_assessor_cadence_hours = 24
+triage_assessor_enabled = false
+triage_assessor_max_issues_per_tick = 10
+trusted_issue_authors = []
+# Communication
+#   Posting on your behalf
+admin_autologin_enabled = true
+agent_signature = false
+claude_chrome = false
 max_open_prs_per_repo_per_ticket = 1
-max_worktree_gc_per_tick = 3
-mcp_privacy_gate_enabled = true
-mcp_slack_write_gate_enabled = true
-memory_recall_enabled = true
-merge_wip = 1
-missing_issue_ref_policy = "find_existing_then_ask"
-mode = "interactive"
-mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\\(.+\\))?!?: .+"
-no_self_reviewer_assign_gate_enabled = true
 notify_on_post_on_behalf = true
 notify_user_via_bot = true
 on_behalf_auto_actions = ["post_e2e_evidence"]
 on_behalf_post_mode = "draft_or_ask"
-openai_compatible_lane = "factory"
-orchestrate_claim_enabled = false
+require_human_approval_to_answer = true
+require_human_approval_to_merge = true
+review_request_post_disabled = false
+substrate_auto_merge_authorized_by = ""
+substrate_self_signoff = false
+#   Identity & routing
+missing_issue_ref_policy = "find_existing_then_ask"
+repo_mode = ""
+statusline_chain = []
+statusline_engaged_render = false
+# Gates
+#   Quality
+#     Architectural review
+architectural_review_after_merge_count = 25
+architectural_review_cadence_hours = 168
+architectural_review_disabled = false
+architectural_review_retry_backoff_hours = 12
+architectural_review_skill = "ac-reviewing-codebase"
+#     Review
+admit_colleague_prs_to_board = true
+require_anti_vacuity_attestation = false
+require_integration_review = false
+require_review_context = false
+require_reviewed_state_for_review_request = false
+review_skill = ""
+#     Merge & done
+expected_required_contexts = []
+require_debt_delta = false
+require_executed_repro = false
+require_merge_evidence = false
+require_merge_quality_verdict = false
+require_plan_adequacy = false
+#     Critic & send proxy
+bulk_close_threshold = 5
+critic_gate_mode = "off"
+send_proxy_allowlist = []
+send_proxy_mode = "warn"
+#     Definition of done
+e2e_confidence_threshold = 90
+require_rubric_verification = false
+require_spec_coverage = false
+#   Pre-publish
+attachment_gate_enabled = true
+ban_close_trailers_on_namespaces = []
+chrome_devtools_headless = true
+chrome_devtools_mcp_enabled = true
+colleague_repo_url_pattern = ""
+dashboard_instance_label = ""
+e2e_mandatory_gate_enabled = true
+gate_relaxation_gate_enabled = true
+incremental_push_gate = true
+mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\\(.+\\))?!?: .+"
 orchestrator_bash_gate_enabled = true
+pull_main_clone_cadence_hours = 1
+pull_main_clone_disabled = false
+review_nag_enabled = false
+review_request_dedup_max_pages = 5
+review_request_dedup_window_days = 30
+slack_voice_classifier_mode = "warn"
+snapshot_baseline_gate_enabled = true
+solo_repo_url_pattern = ""
+#   Pre-Django hooks
+banned_terms_gate_enabled = true
+completion_claim_gate_enabled = true
+config_overwrite_gate_enabled = true
+deny_circuit_breaker_enabled = true
+deny_circuit_breaker_threshold = 3
+dispatch_quote_gate_on_task_create_enabled = false
+hook_validator_timeout_seconds = 60
+main_clone_guard_gate_enabled = true
+mcp_privacy_gate_enabled = true
+mcp_slack_write_gate_enabled = true
+memory_recall_enabled = true
+no_self_reviewer_assign_gate_enabled = true
 orchestrator_boundary_agent_gate_enabled = true
 orchestrator_investigation_gate_enabled = true
 orchestrator_turn_budget = 25
 orchestrator_turn_wall_clock_seconds = 180
 out_of_band_merge_gate_enabled = true
-outer_loop_enabled = false
-outer_loop_max_per_week = 1
-outer_loop_measure_days = 7
-outer_loop_stop_after_consecutive_failures = 3
 plan_edit_gate_enabled = true
-privacy = ""
+self_dm_gate_enabled = true
+skill_loading_gate_enabled = true
+standing_goal_stop_gate_enabled = true
+stop_snapshotter_enabled = true
+unknown_repo_push_gate_enabled = true
+# Infrastructure
+#   Resource pressure
+#     Thresholds & cadence
+disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
+disk_crit_free_gb = 10.0
+disk_warn_free_gb = 25.0
+ram_crit_avail_gb = 1.5
+ram_warn_avail_gb = 3.0
+resource_pressure_cadence_minutes = 5
+resource_pressure_disabled = false
+resource_pressure_min_free_interval_minutes = 30
+#     Destructive levers
+allow_destructive_disk = false
+allow_destructive_ram = false
+max_worktree_gc_per_tick = 3
+ram_kill_allowlist = []
+worktree_stale_days = 30
+#   Retention & sweeps
+incoming_event_retention_days = 30
+max_concurrent_local_stacks = 1
+session_stale_after_hours = 12
+task_attempt_retention_days = 30
+task_sweep_disabled = false
+task_sweep_recheck_interval_hours = 1
+#   Provisioning
+admission_governor_enabled = true
+clean_ignore = []
+idle_stack_e2e_recent_minutes = 60
+idle_stack_idle_minutes = 30
+idle_stack_reaper_cadence_minutes = 5
+idle_stack_reaper_disabled = false
+local_stack_queue_disabled = false
+local_stack_queue_max_attempts = 13
 provision_fast_step_timeout_seconds = 120
 provision_max_concurrency = 0
 provision_ram_ceiling_percent = 85
 provision_slow_threshold_seconds = 600
 provision_step_timeout_seconds = 1800
-pull_main_clone_cadence_hours = 1
-pull_main_clone_disabled = false
-pydantic_ai_max_tokens = 16384
-pydantic_ai_request_limit = 40
-ram_crit_avail_gb = 1.5
-ram_kill_allowlist = []
-ram_warn_avail_gb = 3.0
-regulated_path_model_allowlist = []
-repo_mode = ""
-require_anti_vacuity_attestation = false
-require_debt_delta = false
-require_executed_repro = false
-require_human_approval_to_answer = true
-require_human_approval_to_merge = true
-require_integration_review = false
-require_merge_evidence = false
-require_merge_quality_verdict = false
-require_plan_adequacy = false
-require_review_context = false
-require_reviewed_state_for_review_request = false
-require_rubric_verification = false
-require_spec_coverage = false
-resource_pressure_cadence_minutes = 5
-resource_pressure_disabled = false
-resource_pressure_min_free_interval_minutes = 30
-review_nag_enabled = false
-review_request_dedup_max_pages = 5
-review_request_dedup_window_days = 30
-review_request_post_disabled = false
-review_skill = ""
-scanning_news_cadence_hours = 24
-scanning_news_disabled = false
-scanning_news_skill = "scanning-news"
-sdk_monthly_credit_usd = 200.0
-self_dm_gate_enabled = true
-self_update_cadence_hours = 1
-self_update_disabled = false
-send_proxy_allowlist = []
-send_proxy_mode = "warn"
-session_stale_after_hours = 12
-skill_loading_gate_enabled = true
-slack_voice_classifier_mode = "warn"
-snapshot_baseline_gate_enabled = true
 snapshot_warmer_disabled = false
 snapshot_warmer_max_age_days = 1
-solo_repo_url_pattern = ""
 stale_stack_min_age_minutes = 0
-standing_goal_stop_gate_enabled = true
-statusline_chain = []
-statusline_engaged_render = false
-stop_snapshotter_enabled = true
-subagent_spawn_ceiling = 20
-substrate_auto_merge_authorized_by = ""
-substrate_self_signoff = false
-task_attempt_retention_days = 30
-task_sweep_disabled = false
-task_sweep_recheck_interval_hours = 1
-ticket_budget_max_cost_usd = 0.0
-timezone = ""
-triage_assessor_cadence_hours = 24
-triage_assessor_enabled = false
-triage_assessor_max_issues_per_tick = 10
-trusted_issue_authors = []
-unknown_repo_push_gate_enabled = true
-watchdog_max_cost_usd = 0.0
-watchdog_max_runtime_seconds = 10800
-watchdog_max_turns = 0
-wip = "medium"
-worker_quiescing = false
-worktree_stale_days = 30
-write_wip = 3
+# Registries
+#   Term scanning, agent tables & cold reads
+active_loop_schedule = ""
+danger_gate_fail_open = false
+low_power_auto_engage = false
+low_power_preset_name = ""
 
 [teatree.mr_reminder]
 default_channel = ""
@@ -342,7 +375,7 @@ description = "Sweeps the owner's DM threads hourly and resolves the ones that n
 delay_seconds = 3600
 colleague_facing = false
 default_enabled = true
-description = "Fast-forwards the editable teatree and overlay installs (self-update) and pulls each overlay's main clone hourly."
+description = "Fast-forwards the editable teatree and overlay installs (self-update), pulls each overlay's main clone, and reconciles the ticket board against forge truth, hourly."
 
 [loops.arch_review]
 delay_seconds = 10800

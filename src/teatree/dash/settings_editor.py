@@ -18,10 +18,11 @@ Every row also carries the shipped default `config/defaults.toml` ships for that
 whether the effective value still matches it. A Secret/Personal key is absent from that
 file by construction, so it has no default to compare against and offers no verdict.
 
-Rows are rendered in :func:`~teatree.config.setting_groups.setting_group` groups, and the
-grouping is TOTAL: :func:`group_rows` partitions the flat row set, so a key whose group is
-unknown lands in the leftovers bucket rather than being dropped — the defect the retired
-band classifier shipped, where 130 of 184 keys classified to ``""`` and were skipped.
+Rows are rendered in the NESTED :func:`~teatree.config.setting_groups.group_tree`
+hierarchy, and the grouping is TOTAL: :func:`group_rows` partitions the flat row set over
+the tree's leaves, so a key whose group is unknown lands in the leftovers bucket rather
+than being dropped — the defect the retired band classifier shipped, where 130 of 184
+keys classified to ``""`` and were skipped.
 """
 
 import logging
@@ -29,7 +30,7 @@ from dataclasses import dataclass
 
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema, setting_meta, shipped_defaults
-from teatree.config.setting_groups import UNGROUPED_LABEL, group_labels, setting_group
+from teatree.config.setting_groups import SettingGroupNode, group_tree
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, is_secret, render_value
 from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
@@ -59,21 +60,17 @@ class EditableSetting:
     default_comparison: str  # the words the colour accompanies; "" when there is no default
 
 
-@dataclass(frozen=True, slots=True)
-class SettingGroupView:
-    """One rendered group — its label and the rows that declared themselves into it."""
-
-    label: str
-    settings: tuple[EditableSetting, ...]
-    is_ungrouped: bool
+#: One rendered node of the settings hierarchy — a named level holding either nested
+#: subsections or the rows that declared themselves into it.
+type SettingGroupView = SettingGroupNode[EditableSetting]
 
 
 @dataclass(frozen=True, slots=True)
 class SettingsEditorView:
     """The whole editor page — every setting, or a visible error (never a 500).
 
-    ``settings`` is the flat authoritative row set; ``groups`` is a partition of it, so
-    the two can never disagree about which keys the page carries.
+    ``settings`` is the flat authoritative row set; ``groups`` is the nested partition of
+    it, so the two can never disagree about which keys the page carries.
     """
 
     settings: tuple[EditableSetting, ...] = ()
@@ -129,20 +126,13 @@ def _row(key: str, overrides: dict[str, ConfigValue], shipped_keys: frozenset[st
 
 
 def group_rows(rows: tuple[EditableSetting, ...]) -> tuple[SettingGroupView, ...]:
-    """Partition *rows* into rendered groups — total by construction, so no row is dropped.
+    """Partition *rows* into the nested group tree — total, so no row is ever dropped.
 
-    A row whose group is unknown collects in :data:`UNGROUPED_LABEL`, which renders only
+    A row whose group is unknown collects in the leftovers bucket, which renders only
     when it has members. An empty declared group is omitted; the leftovers bucket is not,
     because its whole job is to be seen.
     """
-    buckets: dict[str, list[EditableSetting]] = {label: [] for label in group_labels()}
-    for row in rows:
-        buckets.setdefault(setting_group(row.name) or UNGROUPED_LABEL, []).append(row)
-    return tuple(
-        SettingGroupView(label=label, settings=tuple(members), is_ungrouped=label == UNGROUPED_LABEL)
-        for label, members in buckets.items()
-        if members
-    )
+    return group_tree(rows, key_of=lambda row: row.name)
 
 
 def build_settings_editor(scope: str = "") -> SettingsEditorView:

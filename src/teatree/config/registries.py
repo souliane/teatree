@@ -39,6 +39,10 @@ def _parse_registry_dict(raw: object) -> dict[str, Any]:
     return cast("dict[str, Any]", raw)
 
 
+#: Where these keys render in the settings hierarchy — declared HERE, beside the keys
+#: they group, so adding one below needs no edit in ``setting_groups``.
+REGISTRY_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Definitions")
+
 REGISTRY_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "overlays": _parse_registry_dict,
     "e2e_repos": _parse_registry_dict,
@@ -50,6 +54,8 @@ REGISTRY_KEYS: tuple[str, ...] = tuple(REGISTRY_SETTINGS)
 # The cold-read DB keys: read straight from the canonical config DB by the hook /
 # CLI layer via ``cold_reader.read_setting`` (Django-free), so they are set with
 # ``config_setting set`` (validated through the parser here) and never touch a file.
+COLD_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Term scanning, agent tables & cold reads")
+
 COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # Customer / brand / partner codename lists (stored as JSON arrays). The DB is
     # personal, so these are safe here; ``SECRET_SETTINGS`` keeps them out of a

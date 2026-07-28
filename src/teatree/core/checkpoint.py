@@ -17,7 +17,7 @@ the overlay-scoped report, so checking one overlay never advances another's
 marker. An empty overlay falls back to a single global file.
 
 The marker is written via ``tmp.replace`` (atomic), mirroring
-:mod:`teatree.core.availability`, so a torn write never leaves a half-encoded
+:mod:`teatree.live_presence`, so a torn write never leaves a half-encoded
 JSON document; a reader tolerating a read race re-resolves cleanly to ``None``
 and the window falls back to the default lookback.
 """

@@ -200,14 +200,23 @@ class Command(TyperCommand):
             return TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
         return TickRequest(backends=_focus_scoped_backends())
 
-    def _emit_report(self, report: "TickReport", *, json_output: bool) -> None:
-        human = "\n".join(f"WARN  {name}: {message}" for name, message in report.errors.items()) or None
+    def _emit_report(self, report: "TickReport", loop: str, *, json_output: bool) -> None:
+        """Emit the tick report, always leading with a one-line ``ran`` verdict (#3810).
+
+        A tick used to print NOTHING on the success path (``human`` was ``None``
+        whenever ``errors`` was empty), so a loop that ran and found no work was
+        byte-for-byte indistinguishable from one that never ran at all. Every
+        tick now states its outcome, which is what made the SKIP starvation
+        invisible for hours.
+        """
+        verdict = f"ran   loop {loop!r} — {report.signal_count} signal(s), {report.action_count} action(s)"
+        warnings = [f"WARN  {name}: {message}" for name, message in report.errors.items()]
         emit(
             _report_to_dict(report),
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=human,
+            human="\n".join([verdict, *warnings]),
         )
 
     def handle(
@@ -268,22 +277,27 @@ class Command(TyperCommand):
         run_loop_connector_preflight(loop)
 
         from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
-        from teatree.loop.session_identity import (  # noqa: PLC0415 — deferred: keeps command import light
-            current_session_id,
-            current_session_pid,
-        )
+        from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
         owner_slot = per_loop_owner_slot(loop)
         tick_mutex = f"{PER_LOOP_TICK_MUTEX_PREFIX}{loop}"
 
-        session_id = current_session_id()
-        # The lease ``owner_pid`` MUST be the durable session process, not
+        # ONE identity seam for every loop-ownership call site (#3810), so a
+        # claim and the release that follows it can never resolve to two
+        # different principals. The loop runner declares its own durable
+        # principal, so its next tick re-claims the lease its previous tick took
+        # instead of meeting it as a stranger; a Claude self-pump still resolves
+        # its own session exactly as before.
+        #
+        # The lease ``owner_pid`` MUST be the durable owning process, not
         # ``os.getppid()`` of this tick subprocess (the self-pump runs it inside a
         # Bash-tool shell the harness tears down seconds later — anchoring on it
-        # collapses the pid-liveness protection back to TTL-only, #1706). The
-        # durable session pid comes from the loop registry; ``os.getppid()`` is the
-        # fallback only for a direct in-session invocation with no registry record.
-        owner_pid = current_session_pid() or os.getppid()
+        # collapses the pid-liveness protection back to TTL-only, #1706). It is
+        # the runner's own pid for a runner tick and the loop registry's durable
+        # session pid for a self-pump; ``os.getppid()`` is the fallback only for a
+        # direct in-session invocation with no registry record.
+        session_id, principal_pid = loop_principal()
+        owner_pid = principal_pid or os.getppid()
         # The per-tick re-claim IS the heartbeat, so it self-heals the driver: a
         # tick that detects a live driver registers/updates it, while a tick whose
         # detection momentarily returns blank PRESERVES the stored value
@@ -341,7 +355,7 @@ class Command(TyperCommand):
             set_overridden_loops_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
 
-        self._emit_report(report, json_output=json_output)
+        self._emit_report(report, loop, json_output=json_output)
         self._hard_exit_if_subprocess()
 
     @staticmethod

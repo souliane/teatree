@@ -7,7 +7,11 @@ reason — a governor that denies silently recreates the class of bug that hid a
 merge loop for weeks.
 """
 
+import datetime as dt
+
 import pytest
+from django.test import TestCase
+from django.utils import timezone
 
 from teatree.agents import _headless_env
 from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
@@ -21,6 +25,7 @@ from teatree.core.admission_governor import (
     read_machine_signal,
     weekly_pace,
 )
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 
 _WEEK = 7 * 24 * 3600
 
@@ -236,3 +241,133 @@ class TestReadMachineSignal:
         signal = read_machine_signal()
         assert signal.load1 == pytest.approx(0.0)
         assert signal.cores >= 1
+
+
+def _usage_row(path: str, *, utilization_7d: float, status_7d: str, valid_for: dt.timedelta) -> None:
+    now = timezone.now()
+    AnthropicTokenUsage.objects.create(
+        pass_path=path,
+        utilization_5h=0.1,
+        utilization_7d=utilization_7d,
+        status_5h="allowed",
+        status_7d=status_7d,
+        reset_7d=now + dt.timedelta(days=3),
+        checked_at=now,
+        valid_until=now + valid_for,
+    )
+
+
+def _healthy_row(path: str = "healthy", *, valid_for: dt.timedelta = dt.timedelta(minutes=5)) -> None:
+    _usage_row(path, utilization_7d=0.39, status_7d="allowed", valid_for=valid_for)
+
+
+def _exhausted_row(path: str = "exhausted", *, valid_for: dt.timedelta = dt.timedelta(days=2)) -> None:
+    _usage_row(path, utilization_7d=1.0, status_7d="rejected", valid_for=valid_for)
+
+
+class TestReadQuotaSignalFreshnessBias(TestCase):
+    """The fleet aggregate must not be computed over a sample biased by exhaustion.
+
+    ``AnthropicTokenUsage.valid_until`` is the ROUTING cache's "may I skip a
+    re-probe?" rule, and it is deliberately asymmetric: a healthy verdict lapses
+    after ``HEALTH_TTL`` (5 minutes) while an exhausted one is trusted until its
+    blocking window resets (days). Filtering the fleet aggregate through that same
+    rule is survivorship bias — outside the minutes right after a healthy probe the
+    ONLY surviving rows are the exhausted ones, so ``all_accounts_exhausted`` reads
+    True and the governor brakes the whole headless lane while a healthy account
+    sits at 39% weekly. The aggregate must claim knowledge only when it knows every
+    account; a partial sample is ``fresh=False``, which the decision fails OPEN on.
+    """
+
+    def test_a_lapsed_healthy_row_does_not_read_as_every_account_exhausted(self) -> None:
+        _healthy_row(valid_for=dt.timedelta(minutes=-1))
+        _exhausted_row()
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.all_accounts_exhausted is False
+
+    def test_a_lapsed_healthy_row_does_not_brake_the_headless_lane(self) -> None:
+        _healthy_row(valid_for=dt.timedelta(minutes=-1))
+        _exhausted_row()
+
+        decision = decide_admission(
+            quota=admission_governor.read_quota_signal(), machine=_machine(), static_ceiling=None
+        )
+
+        assert decision.admit is True
+
+    def test_a_partial_sample_claims_no_knowledge(self) -> None:
+        _healthy_row(valid_for=dt.timedelta(minutes=-1))
+        _exhausted_row()
+
+        assert admission_governor.read_quota_signal().fresh is False
+
+    def test_every_account_fresh_and_exhausted_still_brakes(self) -> None:
+        _exhausted_row("a")
+        _exhausted_row("b")
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.fresh is True
+        assert signal.all_accounts_exhausted is True
+        assert decide_admission(quota=signal, machine=_machine(), static_ceiling=None).admit is False
+
+    def test_a_fully_fresh_mixed_fleet_reports_the_healthy_account(self) -> None:
+        _healthy_row()
+        _exhausted_row()
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.fresh is True
+        assert signal.all_accounts_exhausted is False
+        assert signal.weekly_utilization == pytest.approx(0.39)
+
+    def test_no_rows_at_all_still_reads_unknown(self) -> None:
+        assert admission_governor.read_quota_signal().fresh is False
+
+
+class TestReadQuotaSignalUsesTheFreshSubset(TestCase):
+    """A usable account's own numbers must survive a lapsed PEER row.
+
+    Whole-fleet freshness is the right bar for ``all_accounts_exhausted`` — that
+    claim is about every account, so an unknown row defeats it. It is the wrong
+    bar for the utilization the pace brake and the adaptive ceiling read: an
+    exhausted row is fresh BY CONSTRUCTION (``valid_until`` is its blocking-window
+    reset, days out) while a healthy one lapses in minutes, so on a small fleet
+    whole-fleet freshness is a coincidence and both mechanisms sit dark, silently
+    falling back to the static ceiling. A fresh, non-exhausted account knows its
+    own headroom regardless of what a lapsed peer is doing.
+    """
+
+    def test_a_fresh_healthy_account_reports_its_own_headroom(self) -> None:
+        _healthy_row()
+        _exhausted_row("lapsed", valid_for=dt.timedelta(minutes=-1))
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.fresh is True
+        assert signal.all_accounts_exhausted is False
+        assert signal.weekly_utilization == pytest.approx(0.39)
+
+    def test_the_adaptive_ceiling_survives_a_lapsed_peer(self) -> None:
+        _healthy_row()
+        _exhausted_row("lapsed", valid_for=dt.timedelta(minutes=-1))
+
+        decision = decide_admission(
+            quota=admission_governor.read_quota_signal(), machine=_machine(cores=8), static_ceiling=8
+        )
+
+        assert decision.admit is True
+        assert decision.ceiling == 2
+
+    def test_the_pacing_brake_survives_a_lapsed_peer(self) -> None:
+        _usage_row("paced", utilization_7d=0.97, status_7d="allowed", valid_for=dt.timedelta(minutes=5))
+        _exhausted_row("lapsed", valid_for=dt.timedelta(minutes=-1))
+
+        decision = decide_admission(
+            quota=admission_governor.read_quota_signal(), machine=_machine(), static_ceiling=None
+        )
+
+        assert decision.admit is False
+        assert "pace" in decision.reason

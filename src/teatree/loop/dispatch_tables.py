@@ -69,6 +69,10 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # #3634: an admitted issue is in-flight maker work the user should see
     # surfaced while the orchestrator picks it up.
     "issue_intake.admitted": "action_needed",
+    # #3841 board janitor. Emitted ONLY per APPLIED transition (a run that changed
+    # nothing is silent), so it is the record of cards teatree moved on its own — a
+    # completed action, not a request, hence in_flight rather than action_needed.
+    "board.reconciled": "in_flight",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
     "ticket.stale": "action_needed",

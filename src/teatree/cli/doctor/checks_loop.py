@@ -34,10 +34,11 @@ def _check_marker_jam() -> bool:
     """Warn when orphaned issue-markers strand the intake budget (#3275).
 
     The jam signature: non-terminal ``ImplementedIssueMarker`` rows whose ticket
-    is already terminal/gone — they never left ``dispatched`` (release-on-
-    completion only fires on the live transition), so they permanently consume
-    the ``issue_implementer_max_concurrent`` budget and no new issue is ever
-    claimed. Reads the non-mutating :meth:`find_stale` preview across every
+    is already terminal, gone, or stalled — they never left ``dispatched`` /
+    ``ticket_created`` (release-on-completion only fires on the live transition),
+    so they permanently consume the ``issue_implementer_max_concurrent`` budget
+    and no new issue is ever claimed. Reads the non-mutating :meth:`find_stale`
+    preview across every
     overlay. A WARN (never a hard FAIL): the loop self-heals each tick, and the
     operator can force it now with ``t3 loop reclaim-markers``. Crash-proof: any
     error degrades to OK so a doctor run never aborts on this check.
@@ -53,7 +54,7 @@ def _check_marker_jam() -> bool:
         return True
     typer.echo(
         f"WARN  {stale.released} orphaned issue-marker(s) hold intake budget but their tickets are "
-        f"terminal/gone ({len(stale.completed)} completed, {len(stale.abandoned)} abandoned) — "
+        f"terminal, gone, or stalled ({len(stale.completed)} completed, {len(stale.abandoned)} abandoned) — "
         "run `t3 loop reclaim-markers` to free the issue_implementer budget (#3275)."
     )
     return False

@@ -1,6 +1,6 @@
 """The force-keep layer over the tach pytest plugin (#3672).
 
-The layer re-adds our escalations (floor dirs, doc-readers, mirrors, changed tests) over
+The layer re-adds our escalations (floor dirs, reference-readers, mirrors, changed tests) over
 the plugin's deselection, in the SAME session. Three surfaces are pinned: the item
 partition (which collected items are protected), the ``force_keep_for`` chain over real
 git under ``tmp_path`` (with its fail-safe), and the collection hook wrapper itself —

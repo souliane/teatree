@@ -21,6 +21,7 @@ from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
 from teatree.config.fleet_policy import OWNER_INTAKE_LOOPS
+from tests._loop_principal_env import pinned_loop_principal
 
 runner = CliRunner()
 
@@ -346,7 +347,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+            pinned_loop_principal("sess-cli"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--json"])
 
@@ -357,7 +358,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+            pinned_loop_principal("sess-cli"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by", "worker-7"])
 
@@ -374,7 +375,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-auto"),
+            pinned_loop_principal("sess-auto"),
         ):
             result = runner.invoke(loop_app, ["claim-next"])
 
@@ -386,7 +387,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="should-not-be-used"),
+            pinned_loop_principal("should-not-be-used"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by-session", "sess-explicit"])
 
@@ -398,7 +399,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value=""),
+            pinned_loop_principal(),
         ):
             result = runner.invoke(loop_app, ["claim-next"])
 
@@ -708,7 +709,15 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release", "--json"])
 
         assert result.exit_code == 0
-        assert json.loads(result.stdout) == {"ok": True, "slot": "t3-master"}
+        # `owner_session`/`you`/`forced` are load-bearing (#3810): a NOOP release must
+        # name the holder and the caller, so an operator can see WHY it was a NOOP.
+        assert json.loads(result.stdout) == {
+            "ok": True,
+            "slot": "t3-master",
+            "owner_session": "rel-sess",
+            "you": "rel-sess",
+            "forced": False,
+        }
 
 
 class TestIntakeLoopsCommand:

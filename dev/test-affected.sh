@@ -6,15 +6,24 @@
 # `t3 tool affected-tests` decides FULL-vs-scoped from the ESCALATION policy and emits
 # the pytest invocation: a scoped run activates the plugin AND loads our force-keep
 # layer (`-p teatree.quality.force_keep_plugin`), which keeps the floor dirs, the
-# doc-reader tests, the mirror paths, and the changed test files over the plugin's
+# reference-reader tests, the mirror paths, and the changed test files over the plugin's
 # deselection — in ONE session, so zero test runs twice.
 #
 # ANY unclassifiable EXECUTABLE change (conftest/settings/migrations/data files/
 # deletions/files outside the modelled roots) degrades to the WHOLE suite with the
 # plugin OFF. Under-run is a false green, so the escalation stays. Over-run is not free
 # either (#3645): a measured escalation ran 30182 tests in 59m32s for a one-module fix.
-# Docs (markdown / the docs tree / mkdocs config) are therefore classified as having no
-# executable semantics and force-keep only the tests that READ them, rather than the tree.
+# Paths NOTHING imports — docs (markdown / the docs tree / mkdocs config) and the `dev/`
+# lane runners (#3817) — are therefore classified as having no executable semantics and
+# force-keep only the tests whose source NAMES them, rather than the whole tree.
+#
+# This file is one of `SELECTION_DEFINING_PATHS`: editing it (or the quality modules the
+# selector is built from) forces FULL, because a selection cannot validate a change to
+# the code that computes it. A whole-suite run is ~34k tests; on a memory-tight host
+# bound the parallelism rather than abandoning the run — pytest-xdist resolves `-n auto`
+# through PYTEST_XDIST_AUTO_NUM_WORKERS, so `PYTEST_XDIST_AUTO_NUM_WORKERS=2 bash
+# dev/test-affected.sh` trades wall-clock for a run that finishes instead of being OOM-
+# killed. CI's sharded `test (3.13)` lane remains the authority either way.
 #
 # NOT a gate. The 12-shard CI run + 93% combined-coverage floor stays the merge gate,
 # and pre-push is untouched (`tests/test_no_full_suite_on_pre_push.py`). Use this while
@@ -25,6 +34,7 @@
 #   bash dev/test-affected.sh --base <ref>    # select against a different merge-base
 #   bash dev/test-affected.sh --full          # skip selection, run the whole suite
 #   bash dev/test-affected.sh -- <pytest arg> # forward extra args to pytest
+#   PYTEST_XDIST_AUTO_NUM_WORKERS=2 bash dev/test-affected.sh   # bound a FULL run's RAM
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

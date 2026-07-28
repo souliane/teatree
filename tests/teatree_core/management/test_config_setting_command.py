@@ -6,6 +6,7 @@ against the real DB; the value is parsed as JSON so a bool kill-switch, a
 string, an int, or a list all round-trip into the override store.
 """
 
+import re
 import tomllib
 from io import StringIO
 from pathlib import Path
@@ -16,6 +17,7 @@ from django.test import TestCase
 
 from teatree.config import get_effective_settings
 from teatree.config.enums import Mode
+from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.core.models import ConfigSetting
 
 
@@ -175,6 +177,31 @@ class TestConfigSettingList(TestCase):
         out = StringIO()
         call_command("config_setting", "list", stdout=out)
         assert "no" in out.getvalue().lower()
+
+    def test_list_groups_rows_under_the_same_nested_hierarchy(self) -> None:
+        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+        ConfigSetting.objects.set_value("autoload", value=True)
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        rendered = out.getvalue()
+        assert "Gates" in rendered
+        assert "Quality" in rendered
+        assert "Merge & done" in rendered
+        assert rendered.index("Merge & done") < rendered.index("require_merge_evidence")
+        # The level's indent is what makes the hierarchy readable in a flat terminal.
+        assert re.search(r"^\s+Gates$", rendered, re.MULTILINE)
+        assert re.search(r"^(\s+)Quality$", rendered, re.MULTILINE)
+        gates_indent = re.search(r"^(\s+)Gates$", rendered, re.MULTILINE).group(1)
+        quality_indent = re.search(r"^(\s+)Quality$", rendered, re.MULTILINE).group(1)
+        assert len(quality_indent) > len(gates_indent), "a child level is not indented under its parent"
+
+    def test_list_shows_a_row_no_declaration_owns_rather_than_hiding_it(self) -> None:
+        ConfigSetting.objects.create(key="a_key_no_declaration_base_carries", value=True, scope="")
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        rendered = out.getvalue()
+        assert "a_key_no_declaration_base_carries" in rendered
+        assert UNGROUPED_PATH[0] in rendered
 
 
 class TestConfigSettingGet(TestCase):

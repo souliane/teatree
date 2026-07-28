@@ -193,7 +193,7 @@ _DEFAULT_LOOPS = (
         3600,
         None,
         None,
-        "Fast-forwards the editable teatree and overlay installs (self-update) and pulls each overlay's main clone hourly.",
+        "Fast-forwards the editable teatree and overlay installs (self-update), pulls each overlay's main clone, and reconciles the ticket board against forge truth, hourly.",
         False,
         True,
     ),

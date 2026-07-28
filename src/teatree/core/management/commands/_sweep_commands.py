@@ -1,36 +1,30 @@
 """The ticket reconciliation sweeps, factored out of ``ticket.py``.
 
-``sync_completions`` (advance post-ship tickets whose upstream issue is done)
-and ``reconcile_overlay`` (backfill ``overlay`` where attribution disagrees with
+``sync_completions`` (the operator-facing surface of the board reconcile) and
+``reconcile_overlay`` (backfill ``overlay`` where attribution disagrees with
 inference) — the two whole-table sweeps that reconcile ticket rows against an
 external truth — live here as a :class:`SweepCommands` mixin the ``ticket``
 :class:`~django_typer.management.TyperCommand` inherits from, so ``t3 <overlay>
 ticket sync-completions`` / ``reconcile-overlay`` mount unchanged while their LOC
 stays out of the (cap-bound) ``ticket.py`` god-module. django-typer collects
 ``@command`` methods from every ``TyperCommand`` base in the MRO.
+
+``sync_completions`` delegates to
+:func:`teatree.loop.scanners.board_reconcile.reconcile_board`
+rather than carrying its own walk, so the command a human types and the cadenced
+scanner that runs unattended are literally the same reconciliation path (#3841).
 """
 
-import contextlib
 import logging
 from typing import Annotated, TypedDict
 
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.backends.loader import issue_is_done
 from teatree.core.models import Ticket
-from teatree.core.overlay_loader import get_all_overlays
+from teatree.loop.scanners.board_reconcile import DEFAULT_PROBE_BUDGET, BoardTransition, reconcile_board
 
 logger = logging.getLogger(__name__)
-
-
-class CompletionResult(TypedDict, total=False):
-    ticket_id: int
-    issue_url: str
-    from_state: str
-    to_state: str
-    action: str
-    error: str
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -47,31 +41,23 @@ class SweepCommands(TyperCommand):
         self,
         *,
         dry_run: Annotated[bool, typer.Option(help="Show what would transition without acting.")] = False,
-    ) -> list[CompletionResult]:
-        """Check post-ship tickets against upstream issues and advance completed ones.
+        probe_budget: Annotated[int, typer.Option(help="Maximum forge reads this run may issue.")] = (
+            DEFAULT_PROBE_BUDGET
+        ),
+    ) -> list[BoardTransition]:
+        """Reconcile the ticket board against forge truth and advance what has landed.
 
-        Walks tickets in shipped/in_review/merged states, calls the overlay's
-        ``is_issue_done()`` for each, and transitions completed tickets toward
-        delivered. Use ``--dry-run`` to preview without touching state.
+        Advances a ticket whose PR merged (a linked ``PullRequest`` row, or the
+        ticket's own ``issue_url`` the forge reports merged), resolves one whose PR
+        closed unmerged, and walks a post-ship ticket whose upstream issue is done
+        toward delivered. The same path the cadenced ``board_reconcile`` scanner
+        runs, so the manual command and the loop can never disagree. Use
+        ``--dry-run`` to preview the proposed transitions without touching state.
         """
-        results: list[CompletionResult] = []
-
-        for overlay_name, overlay in get_all_overlays().items():
-            tickets = Ticket.objects.filter(
-                state__in=Ticket.completable_states(),
-                overlay=overlay_name,
-            ).exclude(issue_url="")
-
-            for ticket in tickets:
-                if not issue_is_done(overlay, ticket.issue_url):
-                    continue
-                result = _complete_one_ticket(ticket, dry_run=dry_run)
-                results.append(result)
-                self.stdout.write(_completion_line(result))
-
-        for line in _completion_summary_lines(results, dry_run=dry_run):
+        report = reconcile_board(dry_run=dry_run, probe_budget=probe_budget)
+        for line in report.lines():
             self.stdout.write(line)
-        return results
+        return list(report.transitions)
 
     @command()
     def reconcile_overlay(
@@ -126,73 +112,3 @@ class SweepCommands(TyperCommand):
             verb = "would be" if dry_run else "were"
             self.stdout.write(f"\n{len(results)} ticket(s) {verb} re-attributed.")
         return results
-
-
-def _complete_one_ticket(ticket: Ticket, *, dry_run: bool) -> CompletionResult:
-    """Advance one done ticket toward delivered, returning the recorded outcome.
-
-    Delegates the atomic-per-step FSM walk to ``Ticket.advance_to_delivered`` and
-    maps its structured result onto a ``CompletionResult``. A gate-refused advance
-    is reported as ``refused`` (with the persisted partial-progress landing state)
-    rather than aborting; an unexpected non-refusal error is likewise caught so the
-    whole-table sweep never dies on one bad row (CFG-2). ``--dry-run`` records the intent.
-    """
-    from_state = ticket.state
-    if dry_run:
-        return CompletionResult(
-            ticket_id=int(ticket.pk), issue_url=ticket.issue_url, from_state=from_state, action="would_complete"
-        )
-    try:
-        outcome = ticket.advance_to_delivered()
-    except Exception as exc:  # noqa: BLE001 — an unexpected per-ticket error must never abort the whole-table sweep (CFG-2)
-        logger.warning("Failed to advance ticket %s (%s): %s", ticket.pk, ticket.issue_url, exc)
-        # A vanished row must not abort the sweep either — keep the in-memory state.
-        with contextlib.suppress(Exception):
-            ticket.refresh_from_db()
-        return CompletionResult(
-            ticket_id=int(ticket.pk),
-            issue_url=ticket.issue_url,
-            from_state=from_state,
-            to_state=ticket.state,
-            action="refused",
-            error=str(exc),
-        )
-    result = CompletionResult(
-        ticket_id=int(ticket.pk),
-        issue_url=ticket.issue_url,
-        from_state=outcome.from_state,
-        to_state=outcome.to_state,
-        action="refused" if outcome.refused else "completed",
-    )
-    if outcome.error is not None:
-        logger.warning("Failed to advance ticket %s (%s): %s", ticket.pk, ticket.issue_url, outcome.error)
-        result["error"] = outcome.error
-    return result
-
-
-def _completion_line(result: CompletionResult) -> str:
-    """The per-ticket stdout line for one completion outcome."""
-    pk, from_state = result["ticket_id"], result["from_state"]
-    if result["action"] == "would_complete":
-        return f"  [dry-run] #{pk} ({from_state}) → completed: {result['issue_url']}"
-    if result["action"] == "refused":
-        to_state = result.get("to_state")
-        if to_state and to_state != from_state:
-            return f"  #{pk} {from_state} → {to_state} refused: {result['error']}"
-        return f"  #{pk} {from_state} → refused: {result['error']}"
-    return f"  #{pk} {from_state} → {result['to_state']}: {result['issue_url']}"
-
-
-def _completion_summary_lines(results: list[CompletionResult], *, dry_run: bool) -> list[str]:
-    """The trailing summary — advanced count plus an explicit report of any refusals."""
-    refused = [r for r in results if r.get("action") == "refused"]
-    advanced = [r for r in results if r.get("action") != "refused"]
-    lines: list[str] = []
-    if not advanced:
-        lines.append("No tickets to advance.")
-    else:
-        lines.append(f"\n{len(advanced)} ticket(s) {'would be' if dry_run else ''} advanced.")
-    if refused:
-        lines.append(f"{len(refused)} ticket(s) skipped (gate-refused or errored):")
-        lines.extend(f"  #{r['ticket_id']} ({r['from_state']}): {r['error']}" for r in refused)
-    return lines

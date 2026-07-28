@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.quality.doc_impact import disk_doc_reader_lookup, is_doc_path, reference_tokens
+from teatree.quality.doc_impact import disk_reference_reader_lookup, is_doc_path, reference_tokens
 
 
 class TestIsDocPath:
@@ -61,7 +61,7 @@ class TestReferenceTokens:
         assert {"BLUEPRINT.md", "SKILL.md", "skills/", "skills/rules/"} <= tokens
 
 
-class TestDiskDocReaderLookup:
+class TestDiskReferenceReaderLookup:
     def _tree(self, root: Path) -> None:
         (root / "tests" / "teatree_quality").mkdir(parents=True)
         (root / "tests" / "teatree_quality" / "test_blueprint_sync.py").write_text(
@@ -71,36 +71,42 @@ class TestDiskDocReaderLookup:
 
     def test_selects_the_test_that_names_the_changed_doc(self, tmp_path: Path) -> None:
         self._tree(tmp_path)
-        lookup = disk_doc_reader_lookup(tmp_path)
+        lookup = disk_reference_reader_lookup(tmp_path)
         assert lookup(reference_tokens(["BLUEPRINT.md"])) == ("tests/teatree_quality/test_blueprint_sync.py",)
 
     def test_leaves_out_a_test_that_never_names_the_doc(self, tmp_path: Path) -> None:
         self._tree(tmp_path)
-        lookup = disk_doc_reader_lookup(tmp_path)
+        lookup = disk_reference_reader_lookup(tmp_path)
         assert "tests/teatree_quality/test_unrelated.py" not in lookup(reference_tokens(["BLUEPRINT.md"]))
 
     def test_no_changed_doc_selects_nothing(self, tmp_path: Path) -> None:
         self._tree(tmp_path)
-        assert disk_doc_reader_lookup(tmp_path)(frozenset()) == ()
+        assert disk_reference_reader_lookup(tmp_path)(frozenset()) == ()
 
     def test_an_unreadable_candidate_is_skipped_not_crashed(self, tmp_path: Path) -> None:
         # A path whose name matches the *.py glob but cannot be read (here: it is a
         # directory) must be swallowed so the scan still selects the genuine reader.
         self._tree(tmp_path)
         (tmp_path / "tests" / "teatree_quality" / "bogus.py").mkdir()
-        lookup = disk_doc_reader_lookup(tmp_path)
+        lookup = disk_reference_reader_lookup(tmp_path)
         assert lookup(reference_tokens(["BLUEPRINT.md"])) == ("tests/teatree_quality/test_blueprint_sync.py",)
 
 
-class TestRealRepoDocConsistencyTestsAreMapped:
-    """The mapping is not vacuous.
+class TestRealRepoReadersAreMapped:
+    """The mapping is not vacuous, on the real tree, for both classes it serves.
 
-    This repo HAS doc-consistency tests, and a ``BLUEPRINT.md`` edit must still
-    select them.
+    This repo HAS doc-consistency tests, and it HAS tests that assert on the ``dev/``
+    lane runners (#3817) — an edit to either must still select them.
     """
 
+    _ROOT = Path(__file__).resolve().parents[2]
+
     def test_blueprint_edit_selects_the_real_blueprint_tests(self) -> None:
-        root = Path(__file__).resolve().parents[2]
-        selected = disk_doc_reader_lookup(root)(reference_tokens(["BLUEPRINT.md"]))
+        selected = disk_reference_reader_lookup(self._ROOT)(reference_tokens(["BLUEPRINT.md"]))
         assert "tests/test_blueprint_readme_pr_sync.py" in selected
         assert "tests/test_check_blueprint_sync_hook.py" in selected
+
+    def test_lane_runner_edit_selects_the_real_tests_that_assert_on_it(self) -> None:
+        selected = disk_reference_reader_lookup(self._ROOT)(reference_tokens(["dev/push-gate.sh"]))
+        assert "tests/test_no_full_suite_on_pre_push.py" in selected
+        assert "tests/test_ci_gates_fail_loud.py" in selected

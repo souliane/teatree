@@ -4,8 +4,9 @@ The tach plugin (``--tach --tach-base <base>``) deselects, in
 ``pytest_collection_modifyitems``, every test its reverse-import graph walk cannot
 reach from the diff. That graph walk is authoritative — but it cannot know the
 escalation contract in :mod:`teatree.quality.affected_tests`: the floor dirs, the
-doc-reader mapping, the test-path-mirror rule, and the changed test files themselves
-must run regardless of what the graph says.
+reference-reader mapping (the tests that NAME a changed doc or ``dev/`` lane runner),
+the test-path-mirror rule, and the changed test files themselves must run regardless of
+what the graph says.
 
 This plugin applies that contract as a FORCE-KEEP layer, in the SAME session (no second
 pytest run, so zero test runs twice). It is a hook WRAPPER around

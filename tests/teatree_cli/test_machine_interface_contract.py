@@ -114,15 +114,10 @@ class TestTasksJson(TestCase):
 class TestStringReturnJson(TestCase):
     """String-return commands emit JSON on stdout under --json.
 
-    availability show / questions list return a ``json.dumps`` string, preserving
+    questions list returns a ``json.dumps`` string, preserving
     human-on-stdout otherwise — the checking.py precedent, distinct from the
     emit-seam stderr split.
     """
-
-    def test_availability_show_json_is_parseable(self) -> None:
-        out, _err, _rv = _run("availability", "show", "--json")
-        parsed = json.loads(out)
-        assert set(parsed) == {"mode", "source"}
 
     def test_questions_list_json_is_parseable_array(self) -> None:
         out, _err, _rv = _run("questions", "list", "--json")

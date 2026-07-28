@@ -41,12 +41,12 @@ def _switch_handler_params() -> dict[str, set[str]]:
     from teatree.cli.config import show as cli_config_show  # noqa: PLC0415
     from teatree.cli.doctor import app as cli_doctor_app  # noqa: PLC0415 — lazy: no Django bootstrap at module import
     from teatree.core.management.commands import (  # noqa: PLC0415
-        availability,
         checking,
         do,
         e2e,
         env,
         followup,
+        loop_preset,
         questions,
         queue,
         retention,
@@ -62,7 +62,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree followup sync": followup.Command.sync,
         "teatree worktree status": worktree.Command.status,
         "teatree worktree diagnose": worktree.Command.diagnose,
-        "teatree availability show": availability.Command.show,
+        "loop preset show": loop_preset.Command.show,
         "teatree questions list": questions.Command.list_pending,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like
         # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,

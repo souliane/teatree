@@ -128,7 +128,8 @@ class BuildLoopControlTestCase(TestCase):
         _make_loop()
         view = loop_control.build_loop_control()
         assert any(r.name == "dashloop" for r in view.loops)
-        assert view.availability_mode
+        assert view.mode_name
+        assert view.mode_posture
         assert view.gate_fail_open is False
 
     def test_view_survives_broken_gate_read(self) -> None:

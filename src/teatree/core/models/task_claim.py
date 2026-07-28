@@ -11,7 +11,7 @@ class through the instance, so this module needs no runtime import of ``Task`` a
 stays cycle-free (task.py imports it at module level).
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from django.db.models import Q
@@ -21,6 +21,17 @@ from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+
+
+def window_parked(task: "Task", now: datetime | None = None) -> bool:
+    """Whether *task* sits behind an unelapsed usage-window park gate (Directive #3).
+
+    The single-row twin of :func:`~teatree.core.managers_task_claim._claimable_now_q`, for
+    the seams that hold ONE instance rather than a queryset (the ``post_save`` headless
+    auto-enqueue, the lost-claim diagnosis below). Kept as one expression both spellings
+    share so "is there work" and "may this be re-dispatched" can never disagree.
+    """
+    return task.not_before is not None and task.not_before > (now or timezone.now())
 
 
 def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
@@ -88,7 +99,7 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
         if task.status in status.terminal():
             msg = "Task already finished"
             raise InvalidTransitionError(msg)
-        if task.status == status.PENDING and task.not_before is not None and task.not_before > now:
+        if task.status == status.PENDING and window_parked(task, now):
             msg = f"Task parked until {task.not_before.isoformat()}"
             raise InvalidTransitionError(msg)
         msg = "Task already claimed"

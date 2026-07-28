@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.project --> teatree.paths
+    teatree.live_presence --> teatree.paths
     teatree.llm --> teatree.utils
     teatree.credential_config --> teatree.config
     teatree.credential_config --> teatree.core.models
@@ -268,6 +269,7 @@ graph TD
     teatree.loop.scanners --> teatree.core
     teatree.loop.scanners --> teatree.core.modelkit
     teatree.loop.scanners --> teatree.core.models
+    teatree.loop.scanners --> teatree.core.models.errors
     teatree.loop.scanners --> teatree.backends
     teatree.loop.scanners --> teatree.backends.errors
     teatree.loop.scanners --> teatree.backends.github

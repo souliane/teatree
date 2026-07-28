@@ -249,7 +249,7 @@ class TestLoopHealth(_LoopTableCase):
         assert health.frozen_fleet
         assert "ticking NOTHING" in rendered
         assert "'offline'" in rendered
-        assert "availability auto" in rendered
+        assert "loop preset auto" in rendered
 
     def test_one_deliberately_suppressed_loop_does_not_fail(self) -> None:
         # The trust test: an operator who turned `review` off for the week must not be

@@ -1,0 +1,26 @@
+{% comment %}
+One node of the nested settings hierarchy, rendered recursively: a top-level group is a
+band, a nested one an indented subsection whose heading level follows its depth. A node
+holds either rows or subsections, never both, so a row always sits under the innermost
+heading above it.
+{% endcomment %}
+<section class="{% if group.depth == 1 %}band{% else %}settings-subgroup{% endif %}"
+  data-group-path="{{ group.path|join:" / " }}" data-group-depth="{{ group.depth }}">
+  <h{{ group.depth|add:1 }}>{{ group.label }}</h{{ group.depth|add:1 }}>
+  {% if group.is_ungrouped %}
+    <p class="banner-red">{{ group.rows|length }} key(s) belong to no declared group. They are listed here rather than hidden — give each one a declaration group.</p>
+  {% endif %}
+  {% if group.rows %}
+    <table class="dash">
+      <thead><tr><th>setting</th><th>category</th><th>value</th><th>shipped default</th><th>edit</th></tr></thead>
+      <tbody>
+        {% for s in group.rows %}
+          {% include "dash/partials/_settings_row.html" with s=s scope=scope %}
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+  {% for child in group.children %}
+    {% include "dash/partials/_settings_group.html" with group=child scope=scope %}
+  {% endfor %}
+</section>

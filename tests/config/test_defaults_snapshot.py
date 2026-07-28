@@ -25,6 +25,7 @@ from teatree.config.defaults_snapshot import (
 )
 from teatree.config.feature_flags import dark_flags
 from teatree.config.schema import _DEFAULTS_TOML, Category, setting_meta
+from teatree.config.setting_groups import grouped_key_order
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 
 
@@ -209,6 +210,39 @@ class TestSerialisedShape:
         header = _plan({}).toml.split("\n\n")[0].lower()
         assert "hand-editable" in header
         assert "do not hand-edit" not in header
+
+
+class TestTheRenderedBlockIsGrouped:
+    """The writer emits the grouped shape, so an approved snapshot never re-flattens the file."""
+
+    def _block(self, text: str) -> str:
+        section = text[text.index("\n[teatree]\n") :]
+        return section[: section.index("\n[teatree.")]
+
+    def _key_order(self, text: str) -> tuple[str, ...]:
+        return tuple(line.split(" =")[0] for line in self._block(text).splitlines() if " = " in line)
+
+    def test_the_rendered_keys_follow_the_group_walk_not_the_alphabet(self) -> None:
+        order = self._key_order(render_toml(_shipped()))
+        assert order == grouped_key_order(order)
+        assert order != tuple(sorted(order)), "the renderer emitted one flat alphabetical wall"
+
+    def test_the_rendered_block_carries_an_indented_banner_per_level(self) -> None:
+        banners = [line for line in self._block(render_toml(_shipped())).splitlines() if line.startswith("#")]
+        assert banners[:2] == ["# Workspace", "#   Engagement & identity"]
+        assert len({len(line) - len(line.lstrip("# ")) for line in banners}) >= 3
+
+    def test_a_key_the_file_is_missing_is_restored_under_its_own_banner(self) -> None:
+        # The one path that INSERTS a key: a DEFAULT key absent from the file falls back to
+        # its code default, and must land in its group rather than appended at the bottom.
+        without = {key: value for key, value in _shipped().items() if key != "merge_wip"}
+        plan = _plan({}, shipped=without)
+
+        block = self._block(plan.toml)
+        assert block.index("#   Cadence & throughput") < block.index("\nmerge_wip = ") < block.index("#   Scanners")
+
+    def test_grouping_the_block_moved_no_value(self) -> None:
+        assert tomllib.loads(render_toml(_shipped()))["teatree"] == _shipped()
 
 
 class TestFingerprintBindsAnApprovalToOneDiff:
