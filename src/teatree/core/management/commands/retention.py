@@ -9,6 +9,13 @@ ever candidates — a live or in-flight row is never pruned.
 The retention windows are the DB-home ``task_attempt_retention_days`` /
 ``incoming_event_retention_days`` settings (default 30, per-overlay overridable,
 ``0`` disables that table). Set them with ``t3 <overlay> config_setting set``.
+
+``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.core.db_vacuum`). Deleting
+rows on SQLite reclaims no disk on its own — the pages move to the free list and
+the file keeps its size — and the control DB is the seed every auto-isolated
+worktree env dir is copied from, so its size is paid once per live checkout. A
+dry run never vacuums: the rebuild rewrites the whole file, which is not
+something a preview may do (#3852).
 """
 
 import logging
@@ -17,11 +24,14 @@ from typing import IO, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.db_vacuum import VacuumOutcome, vacuum_control_db
 from teatree.core.machine_output import emit
 from teatree.core.retention import apply_retention, plan_retention
 from teatree.core.table_output import print_table
 
 logger = logging.getLogger(__name__)
+
+_NOT_ATTEMPTED = VacuumOutcome(ran=False, reason="dry run — VACUUM rewrites the file, so it is never previewed")
 
 
 class _TableRow(TypedDict):
@@ -32,10 +42,17 @@ class _TableRow(TypedDict):
     disabled: bool
 
 
+class _VacuumRow(TypedDict):
+    ran: bool
+    reason: str
+    bytes_reclaimed: int
+
+
 class RetentionReport(TypedDict):
     applied: bool
     total_rows: int
     tables: list[_TableRow]
+    vacuum: _VacuumRow
 
 
 class Command(TyperCommand):
@@ -56,12 +73,17 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the retention report as JSON on stdout instead of the human view."),
         ] = False,
     ) -> None:
-        """Prune old rows from the high-churn tables (dry-run unless --apply).
+        """Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply).
 
         Conservative: only rows past the retention window whose owning task AND
         ticket are terminal are ever deleted. A live/in-flight row is never touched.
+
+        On ``--apply`` the deleted pages are handed back to the filesystem with a
+        ``VACUUM``, which runs after the prune's transaction has committed because
+        it rebuilds the file and so cannot run inside one.
         """
         plan = apply_retention() if apply else plan_retention()
+        vacuum = vacuum_control_db() if apply else _NOT_ATTEMPTED
         payload: RetentionReport = {
             "applied": plan.applied,
             "total_rows": plan.total_rows,
@@ -75,6 +97,7 @@ class Command(TyperCommand):
                 }
                 for table in plan.tables
             ],
+            "vacuum": {"ran": vacuum.ran, "reason": vacuum.reason, "bytes_reclaimed": vacuum.bytes_reclaimed},
         }
         verb = "Pruned" if apply else "Would prune"
         logger.info("retention: %s %d row(s) across %d table(s)", verb.lower(), plan.total_rows, len(plan.tables))
@@ -100,6 +123,9 @@ def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None
         else:
             detail = f"{table['rows']}, >{table['retention_days']}d, terminal-owned"
         rows.append([table["table"], detail])
+    vacuum = payload["vacuum"]
+    reclaimed = f"{vacuum['bytes_reclaimed'] / 1024**2:.1f} MiB reclaimed" if vacuum["ran"] else vacuum["reason"]
+    rows.append(["VACUUM", reclaimed])
     title = f"Retention — {verb.lower()} {payload['total_rows']} row(s)"
     if not applied:
         title += " (dry run — pass --apply to delete)"

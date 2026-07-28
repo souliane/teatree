@@ -804,7 +804,18 @@ class _ScannerSettings:
 # The regenerable cache dirs auto-purged at CRITICAL disk pressure (the
 # ``disk_cache_allowlist`` default). A module constant so the field default stays a
 # single line; ``.copy`` gives each settings instance its own list.
-_DEFAULT_DISK_CACHE_ALLOWLIST = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
+#
+# ``~/.cache/prek`` and ``~/.cache/uv`` are deliberately NOT here: prek's per-hook
+# environments have unknown rebuild cost (opt in explicitly), and uv's cache is
+# already pruned safely by the freeing ladder's own ``uv cache prune`` step. An
+# entry that names nothing on this host is reported ABSENT in the plan rather
+# than counted as a 0.00 GB purge (#3852).
+_DEFAULT_DISK_CACHE_ALLOWLIST = [
+    "~/.cache/pre-commit",
+    "~/.cache/puppeteer",
+    "~/.cache/codex-runtimes",
+    "~/.cache/go-build",
+]
 
 
 @dataclass

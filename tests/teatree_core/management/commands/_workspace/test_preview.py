@@ -10,7 +10,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.core.management.commands._workspace.cleanup import WorktreeReaper
-from teatree.core.management.commands._workspace.isolated_roots import reap_orphan_isolated_worktree_roots
+from teatree.core.management.commands._workspace.isolated_roots import (
+    LiveCheckoutSlugs,
+    reap_orphan_isolated_worktree_roots,
+)
 from teatree.core.management.commands._workspace.preview import preview_line
 
 
@@ -57,11 +60,12 @@ class TestIsolatedRootPreview:
     def test_names_the_env_dir_and_leaves_it_on_disk(self, tmp_path: Path) -> None:
         root = self._root(tmp_path)
         module = "teatree.core.management.commands._workspace.isolated_roots"
+        live = LiveCheckoutSlugs(frozenset(), ())
         with (
             patch(f"{module}.paths.auto_isolated_worktrees_dir", return_value=root),
-            patch(f"{module}._referenced_isolated_slugs", return_value=set()),
+            patch(f"{module}._live_checkout_slugs", return_value=live),
             patch(f"{module}._has_unmappable_live_worktree", return_value=False),
         ):
-            outcomes = reap_orphan_isolated_worktree_roots(dry_run=True)
+            outcomes = reap_orphan_isolated_worktree_roots(tmp_path, dry_run=True)
         assert outcomes == ["WOULD Remove orphan isolated env dir: orphan-slug"]
         assert (root / "orphan-slug").is_dir()

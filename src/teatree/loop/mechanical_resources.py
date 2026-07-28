@@ -119,8 +119,16 @@ def _persist_plan(marker: object, plan: FreePlan) -> None:
 
 def _plan_disk(payload: ActionPayload) -> FreePlan:
     plan = FreePlan(resource="disk")
-    allowlist = _resolve_disk_allowlist(payload)
-    for path in allowlist:
+    for path in _resolve_disk_allowlist(payload):
+        # An entry that names nothing is reported as ABSENT rather than as a
+        # 0.00 GB purge: the two read identically in the plan, so a stale
+        # allow-list (every shipped default was absent on the host that produced
+        # #3852) looked exactly like a cache that was already clean, and the
+        # CRITICAL alarm re-fired every tick with no way to see why it reclaimed
+        # nothing.
+        if not Path(path).expanduser().is_dir():
+            plan.steps.append(f"SKIP cache {path} (absent — nothing here to reclaim; is this entry stale?)")
+            continue
         size_gb = _dir_size_gb(path)
         plan.steps.append(f"PURGE cache {path} (~{size_gb:.2f} GB)")
         plan.estimated_reclaim_gb += size_gb

@@ -138,6 +138,59 @@ def auto_isolated_worktrees_dir() -> Path:
     return _worktree_isolation_root(Path.home())
 
 
+#: Written inside each auto-isolated env dir, naming the checkout that owns it.
+#: :func:`isolated_slug` is a one-way hash, so the resolver's checkout -> dir
+#: mapping cannot be walked backwards: a reaper holding only the dir can at best
+#: INFER which checkouts are still alive and hope its inference covers the same
+#: population the resolver mints for. The stamp closes that by recording the
+#: owner on the way in, so liveness becomes a fact the dir carries (#3852).
+OWNER_STAMP_NAME = "owner-checkout.path"
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedEnvDir:
+    """One auto-isolated per-worktree env dir, and the owner stamp naming its checkout.
+
+    The stamp is what makes the slug mapping invertible. Without it a reaper can
+    only ask "is this slug in the set of checkouts I know about?" — an answer that
+    is wrong whenever its population is narrower than the resolver's, which is the
+    defect #3852 fixes. With it the dir answers "this exact checkout owns me", and
+    liveness is a one-line existence check needing no population agreement at all.
+    """
+
+    path: Path
+
+    @property
+    def owner(self) -> Path | None:
+        """The checkout stamped into this dir, or ``None`` when unstamped/unreadable.
+
+        ``None`` is "predates the stamp or could not be read", never "no owner" — a
+        caller must fall back to its other evidence rather than read the absence as
+        proof the dir is dead.
+        """
+        try:
+            raw = (self.path / OWNER_STAMP_NAME).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return Path(raw) if raw else None
+
+    def stamp_owner(self, repo_root: Path) -> None:
+        """Record *repo_root* as this dir's owning checkout.
+
+        Idempotent and crash-proof: an unchanged stamp is left alone, and any write
+        error is swallowed — this runs at settings import, where a read-only or full
+        filesystem must never turn a diagnostic aid into a failure to start.
+        """
+        stamp = self.path / OWNER_STAMP_NAME
+        try:
+            if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == str(repo_root):
+                return
+            self.path.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(f"{repo_root}\n", encoding="utf-8")
+        except OSError:
+            return
+
+
 def isolated_slug(repo_root: Path) -> str:
     """The deterministic child-dir name an auto-isolated worktree env gets.
 
@@ -335,7 +388,11 @@ def seed_isolated_db(data_dir: Path) -> None:
     )
 
 
-_RESOLVED = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=_code_repo_root())
+#: The repo root the running teatree code lives in — the checkout that owns its
+#: env dir, and so the value stamped into it.
+CODE_REPO_ROOT = _code_repo_root()
+
+_RESOLVED = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=CODE_REPO_ROOT)
 DATA_DIR = _RESOLVED.path
 DATA_DIR_AUTO_ISOLATED = _RESOLVED.auto_isolated
 CANONICAL_DB = DATA_DIR / "db.sqlite3"

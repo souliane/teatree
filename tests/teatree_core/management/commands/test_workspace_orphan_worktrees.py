@@ -17,11 +17,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace.orphan_worktrees import (
-    _db_tracked_paths,
-    _raw_worktree_paths,
-    reap_orphan_raw_worktrees,
-)
+from teatree.core.management.commands._workspace.checkout_registry import raw_worktree_paths
+from teatree.core.management.commands._workspace.orphan_worktrees import _db_tracked_paths, reap_orphan_raw_worktrees
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
@@ -87,14 +84,14 @@ class _OrphanWorktreeFixture(TestCase):
 class TestRawWorktreeDiscovery(_OrphanWorktreeFixture):
     def test_lists_linked_worktrees_excluding_the_main_checkout(self) -> None:
         wt_path = self._add_orphan("feat-a")
-        worktrees = _raw_worktree_paths(str(self.repo_main))
+        worktrees = raw_worktree_paths(str(self.repo_main))
         assert str(self.repo_main) not in {str(Path(p)) for p in worktrees}
         assert str(wt_path) in worktrees
         assert worktrees[str(wt_path)] == "feat-a"
 
     def test_detached_worktree_records_head(self) -> None:
         wt_path = self._add_orphan("detached-x", detach=True)
-        worktrees = _raw_worktree_paths(str(self.repo_main))
+        worktrees = raw_worktree_paths(str(self.repo_main))
         assert worktrees[str(wt_path)] == "HEAD"
 
     def test_db_tracked_paths_are_absolute(self) -> None:

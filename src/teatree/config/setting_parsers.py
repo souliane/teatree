@@ -32,7 +32,12 @@ def _parse_str_list(raw: object) -> list[str]:
     return value_coercion.strict_str_list(raw)
 
 
-_DEFAULT_DISK_CACHE_ALLOWLIST = ("~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes")
+_DEFAULT_DISK_CACHE_ALLOWLIST = (
+    "~/.cache/pre-commit",
+    "~/.cache/puppeteer",
+    "~/.cache/codex-runtimes",
+    "~/.cache/go-build",
+)
 
 
 def _parse_disk_cache_allowlist(raw: object) -> list[str]:

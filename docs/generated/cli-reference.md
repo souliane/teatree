@@ -8827,10 +8827,15 @@ Usage: t3 teatree retention [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree retention prune [OPTIONS]
 
- Prune old rows from the high-churn tables (dry-run unless --apply).
+ Prune old rows from the high-churn tables, then reclaim the disk (dry-run
+ unless --apply).
 
  Conservative: only rows past the retention window whose owning task AND
  ticket are terminal are ever deleted. A live/in-flight row is never touched.
+
+ On ``--apply`` the deleted pages are handed back to the filesystem with a
+ ``VACUUM``, which runs after the prune's transaction has committed because
+ it rebuilds the file and so cannot run inside one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply          Actually delete the prunable rows. Without it, this is a    │
