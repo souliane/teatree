@@ -13,8 +13,9 @@ re-exports (#3810). A re-export binds the core function OBJECT at import time,
 so a module first imported while a test patches
 ``teatree.core.session_identity.current_session_id`` captures that mock
 **permanently**: ``mock.patch`` restores only the attribute it replaced, never
-the copies other modules already took. That is precisely how ``t3 handover
-whoami`` began reporting a foreign session id for the rest of the process —
+the copies other modules already took. That is precisely how ``t3 teatree
+handover whoami`` began reporting a foreign session id for the rest of the
+process —
 ``loop_owner`` pulls ``loop_principal`` through this module inside such a patch,
 which made this module the first importer, and ``handover`` then inherited the
 dead mock through its own import of the poisoned name. Resolving the attribute
