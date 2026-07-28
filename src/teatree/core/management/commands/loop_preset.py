@@ -49,8 +49,8 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
 def _resolved_line() -> str:
     """The resolved mode, the layer that decided it, and its DERIVED posture label.
 
-    The one-line answer the retired ``t3 teatree availability show`` used to print,
-    now rendered from the resolver's booleans rather than a persisted token (#3826).
+    The one-line answer the retired availability group used to print, now rendered
+    from the resolver's booleans rather than a persisted token (#3826).
     """
     resolved = resolve_active_mode()
     posture = posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump)

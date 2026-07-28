@@ -116,7 +116,7 @@ class TestGateIsAntiVacuousAgainstThePreFixDocs:
         "t3 <overlay> outer status|propose|history|tick",
         "t3 workspace doctor",
         "t3 workspace clean-all",
-        "t3 loop preset use <mode> [--until ISO8601]",
+        "t3 availability away|autonomous-away|present|auto [--until ISO8601]",
         "t3 questions answer <id> <text>",
         "t3 pr create",
         "t3 ticket clear/merge",
