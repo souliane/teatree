@@ -203,8 +203,13 @@ assert_gh_token_permissions() {
         exit 1
     fi
 
-    # RECOMMENDED (WARN-tier) probes — never exit 1. workflows:write is never actively probed (see above).
-    warn_missing=("workflows: write")
+    # RECOMMENDED (WARN-tier) probes — never exit 1. workflows:write is never actively
+    # probed for a fine-grained token (see above), so it is NOT seeded here: "no
+    # reliable probe exists" is not evidence the permission is absent. Seeding it made
+    # every deploy tell the operator to recreate a token that may already carry it,
+    # with no action able to clear the warning. It rides along on the recreate line
+    # only when a REAL gap already means a recreate.
+    warn_missing=()
     _gh_probe_denied --method POST "repos/$slug/actions/workflows/0/dispatches" -f ref=teatree-preflight-nonexistent &&
         warn_missing+=("actions: write")
     _gh_probe_denied "repos/$slug/actions/artifacts?per_page=1" && warn_missing+=("actions: read")
@@ -221,7 +226,7 @@ assert_gh_token_permissions() {
     # projects: read needs an overlay's configured Projects-v2 board, which this
     # bash preflight cannot see — `t3 doctor check` probes it when configured.
     if [ ${#warn_missing[@]} -gt 0 ]; then
-        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, workflow-file pushes, the CI OAuth-account switch) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL" >&2
+        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, the CI OAuth-account switch) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL. While recreating, also include 'workflows: write': it cannot be probed on a fine-grained token, so its presence is unknown here - a push touching .github/workflows/* is what proves it either way." >&2
     fi
     echo "teatree-init: GitHub token permissions verified (required issues/pull_requests/contents write present on $slug)"
 }

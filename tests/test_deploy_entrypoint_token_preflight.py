@@ -183,13 +183,26 @@ class TestRecommendedPermissionsWarnOnly:
         for label in ("actions: write", "actions: read", "checks: read", "statuses: read"):
             assert label in out.stderr
 
-    def test_workflows_write_always_warned_unprobed_for_fine_grained(self, tmp_path: Path) -> None:
-        # Never actively probed (ambiguous 403-vs-404 ordering) — always listed
-        # so the operator verifies it manually, even when every OTHER probe passes.
+    def test_a_clean_fine_grained_token_warns_about_nothing(self, tmp_path: Path) -> None:
+        """An UNPROBEABLE permission is not evidence of a missing one.
+
+        ``workflows: write`` is never actively probed for a fine-grained token
+        (ambiguous 403-vs-404 ordering), so listing it as a gap asserted something
+        nobody measured — and drove a "recreate your token" line on every single
+        deploy that no action could ever clear. A token that already carries the
+        permission was told to recreate itself, forever.
+        """
         out = _run(tmp_path, GH_DENY="")
         assert out.returncode == 0, out.stderr
+        assert out.stderr == "", "a clean token has nothing to act on, so nothing is printed"
+
+    def test_the_unprobed_note_rides_along_on_a_real_gap(self, tmp_path: Path) -> None:
+        # A recreate is already happening, so naming it there IS actionable.
+        out = _run(tmp_path, GH_DENY="dispatches")
+        assert out.returncode == 0, out.stderr
+        assert "actions: write" in out.stderr
         assert "workflows: write" in out.stderr
-        assert "verify" in out.stderr.lower() or "manually" in out.stderr.lower() or "recreate" in out.stderr.lower()
+        assert "cannot be probed" in out.stderr
 
     def test_required_missing_still_fails_even_with_recommended_gaps(self, tmp_path: Path) -> None:
         out = _run(tmp_path, GH_DENY="issues/0 dispatches")

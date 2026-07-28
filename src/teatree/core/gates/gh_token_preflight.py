@@ -26,8 +26,12 @@ token) rather than passing preflight then failing mid-run.
 
 ``workflows: write`` is never actively probed on a fine-grained token — the
 #3477 spike could only confirm the permitted (404) path, not whether a denied
-token 403s route-level first, so probing risks a false "missing". Always
-reported as an unprobed WARN gap instead.
+token 403s route-level first, so probing risks a false "missing". It is reported
+in :attr:`GhTokenProbe.unprobed`, NOT in ``missing_recommended``: "no reliable
+probe exists" is not evidence the permission is absent. Folding it into the gap
+list asserted a gap nobody measured, so a token that already HAD the permission
+was told to recreate itself on every deploy and every doctor run, forever, with
+no action able to clear the warning.
 
 ``projects: read`` is probed only when ``github_owner`` + ``github_project_number``
 are supplied (an unconfigured board is never assessed).
@@ -63,6 +67,13 @@ RECOMMENDED_PERMISSION_LABELS: tuple[str, ...] = (
     "secrets: write",
     "variables: write",
 )
+
+#: Permissions a FINE-GRAINED token admits no reliable probe for. The #3477 spike
+#: could confirm only the permitted (404) path for ``workflows: write``, not whether
+#: a denied token 403s route-level first, so probing risks a false "missing". A
+#: classic token IS judged on it (``X-OAuth-Scopes`` is real evidence), so this is
+#: fine-grained-only.
+UNPROBEABLE_FINE_GRAINED_LABELS: tuple[str, ...] = ("workflows: write",)
 
 # One-line "what breaks without this" per permission, both tiers.
 FEATURE_BY_PERMISSION: dict[str, str] = {
@@ -216,17 +227,28 @@ class GhTokenProbe:
 
     ``missing`` is the denied REQUIRED permission labels (empty == the token has
     every required permission); ``missing_recommended`` is the WARN-tier gaps and
-    never affects ``ok``. ``indeterminate_reason`` is set only when the probe
-    could not run to a verdict (``gh`` absent, the metadata read unreachable, or a
-    required write probe that reached no 403/404) — the caller then skips rather
-    than failing on a network fault. A genuine denial always takes precedence over
-    an indeterminate write probe, so a real permission gap is never masked.
+    never affects ``ok``. Both are EVIDENCED — a probe reached a verdict.
+
+    ``unprobed`` is the separate, weaker fact "this token kind admits no reliable
+    probe for X" — never a claim that X is absent. Keeping it out of
+    ``missing_recommended`` is the point: an unprobed permission folded into the
+    gap list asserts a gap nobody measured, so remediation tells the operator to
+    recreate a token that may already carry it, and no action they take can clear
+    the warning. It is unfalsifiable by construction, which is exactly what a
+    permanent, un-actionable WARN is made of.
+
+    ``indeterminate_reason`` is set only when the probe could not run to a verdict
+    (``gh`` absent, the metadata read unreachable, or a required write probe that
+    reached no 403/404) — the caller then skips rather than failing on a network
+    fault. A genuine denial always takes precedence over an indeterminate write
+    probe, so a real permission gap is never masked.
     """
 
     missing: tuple[str, ...]
     missing_recommended: tuple[str, ...] = ()
     token_kind: TokenKind = "unknown"  # noqa: S105 — a classification label, not a credential
     indeterminate_reason: str | None = None
+    unprobed: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -380,9 +402,6 @@ def _probe_fine_grained(
             token_kind="fine_grained",  # noqa: S106 — a classification label, not a credential
         )
 
-    # Never actively probed (see module docstring) — always surfaced so remediation names it.
-    recommended_missing.add("workflows: write")
-
     if github_owner and github_project_number and _projects_read_denied(run, github_owner, github_project_number):
         recommended_missing.add("projects: read")
 
@@ -392,11 +411,22 @@ def _probe_fine_grained(
         missing=missing,
         missing_recommended=missing_recommended,
         token_kind="fine_grained",  # noqa: S106 — a classification label, not a credential
+        # Never actively probed (see module docstring). Reported as UNPROBED, not as
+        # a gap: it is not evidence the permission is absent, and a token that has it
+        # would otherwise be told to recreate itself on every doctor run forever.
+        unprobed=UNPROBEABLE_FINE_GRAINED_LABELS,
     )
 
 
 def format_remediation(probe: GhTokenProbe, slug: str) -> list[str]:
-    """Remediation lines for every gap ``probe`` reports — always a recreate, never an auto-add. Pure/print-free."""
+    """Remediation lines for every EVIDENCED gap — always a recreate, never an auto-add. Pure/print-free.
+
+    Silent when nothing was measured as missing, even if ``unprobed`` is non-empty:
+    an unprobeable permission is not a gap, and a recreate proposed on the strength
+    of one is advice the operator cannot act on or ever satisfy. The unprobed set
+    rides along only when a real gap already means a recreate — there, naming it is
+    genuinely useful ("while you are recreating it anyway, include this too").
+    """
     missing_all = [*probe.missing, *probe.missing_recommended]
     if not missing_all:
         return []
@@ -415,6 +445,12 @@ def format_remediation(probe: GhTokenProbe, slug: str) -> list[str]:
         "Fine-grained tokens cannot be widened via the API either — recreate it with these "
         f"permissions added: {FINE_GRAINED_TOKENS_URL}"
     )
+    if probe.unprobed:
+        lines.append(
+            f"While recreating, also include {', '.join(probe.unprobed)}: it cannot be probed on a "
+            "fine-grained token, so its presence is unknown here — a push touching .github/workflows/* "
+            "is what proves it either way."
+        )
     return lines
 
 
@@ -424,6 +460,7 @@ __all__ = [
     "FINE_GRAINED_TOKENS_URL",
     "RECOMMENDED_PERMISSION_LABELS",
     "REQUIRED_PERMISSION_LABELS",
+    "UNPROBEABLE_FINE_GRAINED_LABELS",
     "GhRunner",
     "GhTokenProbe",
     "Probe",
