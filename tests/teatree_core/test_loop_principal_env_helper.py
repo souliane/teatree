@@ -4,7 +4,7 @@
 reddened CI shards 2 and 3 — a module that binds an identity resolver by value
 being imported for the FIRST time while a test pins the principal. Under a
 ``mock.patch`` pin that import stamps the ``MagicMock`` into the importer
-permanently, so every later ``t3 handover whoami`` in the same worker reports
+permanently, so every later ``t3 <overlay> handover whoami`` in the same worker reports
 the pinning test's session id. Under the env pin nothing is replaced, so the
 importer is clean the moment the block exits.
 """
