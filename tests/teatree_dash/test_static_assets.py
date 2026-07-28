@@ -26,6 +26,10 @@ _VENDORED_JS = (
 )
 # The vendored IBM Plex latin subsets (@font-face src in tokens.css). Same tracked +
 # served contract as the JS: a fresh checkout must ship them or every glyph 404s.
+#: The ONE brand mark. Both the site-root ``/favicon.ico`` route and the dash base
+#: template's ``<link rel="icon">`` load this file, so the mark has a single home
+#: rather than a copy inlined as a data URI in the template.
+_FAVICON = "src/teatree/dash/static/dash/favicon.svg"
 _VENDORED_FONTS = (
     "src/teatree/dash/static/dash/fonts/ibm-plex-sans-400.woff2",
     "src/teatree/dash/static/dash/fonts/ibm-plex-sans-500.woff2",
@@ -48,7 +52,12 @@ _SERVE_UNDER_DEBUG_OFF = textwrap.dedent(
     assert settings.MIDDLEWARE[1] == "whitenoise.middleware.WhiteNoiseMiddleware", settings.MIDDLEWARE
     from django.core.management import call_command
     from django.test import Client, override_settings
-    with tempfile.TemporaryDirectory() as static_root, override_settings(STATIC_ROOT=static_root):
+    # ALLOWED_HOSTS matters here and nowhere above: WhiteNoise short-circuits a
+    # /static/ path before CommonMiddleware ever calls get_host(), while the
+    # site-root /favicon.ico route goes through the full middleware stack.
+    with tempfile.TemporaryDirectory() as static_root, override_settings(
+        STATIC_ROOT=static_root, ALLOWED_HOSTS=["testserver"]
+    ):
         call_command("collectstatic", interactive=False, verbosity=0)
         client = Client()
         for path in (
@@ -60,9 +69,15 @@ _SERVE_UNDER_DEBUG_OFF = textwrap.dedent(
             "/static/dash/css/admin-theme.css",
             "/static/dash/fonts/ibm-plex-sans-400.woff2",
             "/static/dash/fonts/ibm-plex-mono-400.woff2",
+            "/static/dash/favicon.svg",
         ):
             status = client.get(path).status_code
             assert status == 200, f"{path} -> {status} under DEBUG off"
+        # A browser asks for /favicon.ico unprompted on any page that declares no
+        # icon link — Django's admin declares none, so this 404'd and the console
+        # guard's response listener recorded it as an error.
+        status = client.get("/favicon.ico", follow=True).status_code
+        assert status == 200, f"/favicon.ico -> {status} under DEBUG off"
     print("SERVED_OK")
     """
 )
@@ -110,6 +125,30 @@ def test_vendored_fonts_tracked_and_not_gitignored() -> None:
     ).stdout.split()
     for rel in _VENDORED_FONTS:
         assert rel in tracked, f"{rel} is not tracked — a missing glyph file 404s in a fresh checkout"
+
+
+def test_favicon_has_exactly_one_source() -> None:
+    """The dash template loads the same file the ``/favicon.ico`` route serves.
+
+    The mark used to be inlined as a data URI in ``base.html`` while the site root
+    served nothing, so the dash pages were clean and every other page (the admin
+    index) 404'd. One tracked file, two consumers, no second copy to drift.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", _FAVICON],  # noqa: S607 — git on PATH, repo convention
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert _FAVICON in tracked, f"{_FAVICON} is not tracked — /favicon.ico 404s in a fresh checkout"
+
+    base_template = (_REPO_ROOT / "src/teatree/dash/templates/dash/base.html").read_text(encoding="utf-8")
+    assert "{% static 'dash/favicon.svg' %}" in base_template
+    assert "data:image/svg+xml" not in base_template, "the inlined copy is the drift this replaces"
+
+    urlconf = (_REPO_ROOT / "src/teatree/urls.py").read_text(encoding="utf-8")
+    assert "dash/favicon.svg" in urlconf, "the site-root route must serve the same mark"
 
 
 @pytest.mark.integration

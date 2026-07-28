@@ -1,8 +1,21 @@
 from django.contrib import admin
+from django.contrib.staticfiles.storage import staticfiles_storage
 from django.contrib.staticfiles.views import serve as serve_static
 from django.urls import include, path, re_path
+from django.views.generic.base import RedirectView
 
 urlpatterns = [
+    # Browsers request /favicon.ico unprompted on any page that declares no icon
+    # link. The dash templates declare one; Django's admin does not, so the admin
+    # index 404'd on every real-browser load (the console guard's response listener
+    # records that as an error). Serving it at the site root covers every page,
+    # declared link or not, and shares the ONE brand mark the dash base template
+    # loads.
+    path(
+        "favicon.ico",
+        RedirectView.as_view(url=staticfiles_storage.url("dash/favicon.svg"), permanent=True),
+        name="favicon",
+    ),
     path("", include("teatree.core.urls", namespace="teatree")),
     # The first-party admin dashboard (#3162) — ticket-FSM kanban, health, and
     # loop control. Rides this same gunicorn process on the same loopback port,
