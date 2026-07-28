@@ -10,7 +10,6 @@ from django.urls import path
 from django.views.generic.base import RedirectView
 
 from teatree.dash.views import (
-    availability,
     board,
     board_columns_partial,
     command_run,
@@ -22,6 +21,7 @@ from teatree.dash.views import (
     loop_cadence,
     loops,
     loops_table_partial,
+    posture,
     preset_create,
     preset_delete,
     preset_entry,
@@ -58,7 +58,7 @@ urlpatterns = [
     path("loops/", loops, name="loops"),
     path("loops/table/", loops_table_partial, name="loops_table"),
     path("loops/action/", loop_action, name="loop_action"),
-    path("loops/availability/", availability, name="availability"),
+    path("loops/posture/", posture, name="posture"),
     path("loops/gate/", gate_toggle, name="gate_toggle"),
     path("loops/runner/", runner_toggle, name="runner_toggle"),
     path("loops/cadence/", loop_cadence, name="loop_cadence"),

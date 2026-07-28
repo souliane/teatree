@@ -52,8 +52,6 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
-from hooks.scripts.availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
-from hooks.scripts.availability_away_probe import resolved_defers_questions as _resolved_defers_questions
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
@@ -130,6 +128,8 @@ from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_pa
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
 from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
+from hooks.scripts.mode_posture_probe import resolved_defers_questions as _resolved_defers_questions
+from hooks.scripts.mode_posture_probe import resolved_pauses_self_pump as _resolved_pauses_self_pump_stdlib
 from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
     extract_cli_mr_fields,
@@ -708,13 +708,12 @@ def _is_bare_loop_prompt(prompt: str) -> bool:
 def handle_record_presence(data: dict) -> None:
     """Stamp a live-presence heartbeat — a prompt proves the user is here.
 
-    ``availability.resolve_mode`` reads this stamp to upgrade a
-    schedule-derived ``away`` to ``present``: a user actively submitting
-    prompts is demonstrably reachable, so their ``AskUserQuestion`` calls
-    must not be deferred just because the clock is outside their configured
-    work hours. Fail-open and silent on the happy path — a heartbeat that
-    cannot be written never blocks the prompt (the schedule then decides
-    as before).
+    Both mode readers — ``core.mode_resolution`` and the Django-free
+    ``config.cold_mode`` — read this stamp to upgrade a schedule-derived
+    deferring mode to a reachable one: a user actively submitting prompts is
+    demonstrably reachable, so their ``AskUserQuestion`` calls must not be
+    deferred just because the clock is outside their configured work hours.
+    Fail-open and silent — an unwritable heartbeat never blocks the prompt.
     """
     prompt = data.get("prompt")
     if not prompt:
@@ -4754,19 +4753,18 @@ def _resolve_loop_env(name: str) -> str:
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
-    The self-pump is teatree's own re-firing Stop directive (#2247/#2250). Only
-    holiday-``away`` pauses it — ``_resolved_away_mode`` is ``away``-only, so
-    ``autonomous_away`` (#2544, defers questions but keeps the factory running)
-    is correctly NOT a pause here.
+    The self-pump is teatree's own re-firing Stop directive (#2247/#2250). Only the
+    holiday posture (``pauses_self_pump``) parks it — an unattended mode defers
+    questions but keeps the factory running (#2544), so it is correctly NOT a pause
+    here.
 
-    FAIL SAFE — suppress on indeterminate: ``_resolved_away_mode`` collapses a
-    missing/unimportable ``teatree`` or a read error to ``False`` ("not away"),
-    which here would mean "keep pumping" — the UNSAFE direction for a Stop hook.
-    So an away mode AND any resolution error both suppress; it pumps ONLY when
-    availability resolves cleanly to a non-pausing mode.
+    FAIL SAFE — suppress on a raising probe: the stdlib probe already collapses an
+    unreadable posture to "does not pause" (it fails toward asking, #3826), which
+    here would mean "keep pumping"; this arm additionally suppresses if the call
+    itself raises, so the pump runs ONLY when the posture resolved cleanly.
     """
     try:
-        return _resolved_away_mode()
+        return _resolved_pauses_self_pump()
     except Exception:  # noqa: BLE001 — indeterminate ⇒ suppress (allow stop, never nag through a pause)
         return True
 
@@ -5483,18 +5481,16 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
     return int(row.pk)
 
 
-def _resolved_away_mode() -> bool:
-    """Resolve the effective availability mode; True when ``away`` (#2559).
+def _resolved_pauses_self_pump() -> bool:
+    """True when the active mode parks the Stop self-pump (#3826, #2559).
 
-    Delegates to the stdlib sibling :func:`availability_away_probe.resolved_away_mode`,
-    which reads the resolved mode by subprocessing ``t3 <overlay> availability
-    show`` instead of an in-process ``django.setup()`` — the bare-``python3``
-    hook has no ``uv`` env, so the old bootstrap returned ``False`` (never away)
-    and silently neutered ``t3 <overlay> availability away`` as a suppressor. The
-    thin wrapper stays here as the single patchable seam every caller and test
-    already targets.
+    Delegates to the stdlib sibling
+    :func:`mode_posture_probe.resolved_pauses_self_pump`, which cold-reads the mode
+    posture off the control DB — the bare-``python3`` hook has no ``uv`` env, so an
+    in-process ``django.setup()`` cannot be relied on. The thin wrapper stays here as
+    the single patchable seam every caller and test already targets.
     """
-    return resolved_away_mode_stdlib()
+    return _resolved_pauses_self_pump_stdlib()
 
 
 def _is_live_user_turn(data: dict) -> bool:
@@ -5511,9 +5507,9 @@ def _is_live_user_turn(data: dict) -> bool:
     if not bootstrap_teatree_django():
         return False
     try:
-        from teatree.core import availability  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+        from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
-        return availability.PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
+        return PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
@@ -5531,9 +5527,9 @@ def _refresh_live_turn(data: dict) -> None:
     if not bootstrap_teatree_django():
         return
     try:
-        from teatree.core import availability  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+        from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
-        availability.PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
+        PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
 
@@ -5619,7 +5615,6 @@ def handle_inject_pending_questions(data: dict) -> None:
     if not (has_pending_question_work() and bootstrap_teatree_django()):
         return
     try:
-        from teatree.core.availability import pending_questions_count  # noqa: PLC0415 — deferred: cold-hook import
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
@@ -5636,7 +5631,7 @@ def handle_inject_pending_questions(data: dict) -> None:
                     f'"{row.answer_text}". Apply it now.'
                 )
     try:
-        count = pending_questions_count()
+        count = DeferredQuestion.pending().count()
         if count == 0:
             return
         rows = list(DeferredQuestion.pending()[:5])

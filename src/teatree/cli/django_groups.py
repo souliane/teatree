@@ -378,19 +378,6 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
-    "availability": DjangoGroup(
-        "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
-        [
-            ("away", "Set manual away-mode override (questions queue as DeferredQuestion rows)."),
-            (
-                "autonomous-away",
-                "Set manual autonomous-away override (questions queue; the self-pump keeps running, #2544).",
-            ),
-            ("present", "Set manual present-mode override (questions ask interactively)."),
-            ("auto", "Clear manual override and fall back to schedule/default."),
-            ("show", "Print the currently resolved mode and source (override/schedule/default)."),
-        ],
-    ),
     "config_setting": DjangoGroup(
         "DB-home settings store — the sole tier for a DB-home setting below env (#1775).",
         [

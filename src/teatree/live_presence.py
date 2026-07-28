@@ -1,53 +1,33 @@
-"""Live-presence heartbeat + the fast-hook availability-mirror primitives (#58, #61).
+"""The live-presence heartbeat — a ``UserPromptSubmit`` proves the user is at the keyboard.
 
-Post-merge the operating mode is resolved by
-:func:`teatree.core.mode_resolution.resolve_active_mode` over the unified
-:class:`~teatree.core.models.Mode` — the old standalone availability resolver
-(``resolve_mode`` + the cron ``Schedule`` / on-disk ``Override`` substrate) is gone.
-What survives here are the two primitives the merge still needs:
+An INPUT to mode resolution, never a mode. The resolver reads
+:meth:`PresenceHeartbeat.last_seen` for its presence-sensitivity upgrade (a fresh
+keystroke within :data:`PRESENCE_FRESHNESS` beats a scheduled away-class mode) and the
+#189 per-turn escape reads :meth:`is_live_user_turn` (within the shorter
+:data:`LIVE_TURN_FRESHNESS`).
 
-*   **The live-presence heartbeat** (:class:`PresenceHeartbeat` / :data:`PRESENCE`)
-    — a ``UserPromptSubmit`` proves the user is at the keyboard now. The resolver
-    reads :meth:`PresenceHeartbeat.last_seen` for its presence-sensitivity upgrade
-    (a fresh keystroke within :data:`PRESENCE_FRESHNESS` beats a scheduled away
-    mode), and the #189 per-turn escape reads :meth:`is_live_user_turn` (within the
-    shorter :data:`LIVE_TURN_FRESHNESS`). This is an INPUT to mode resolution, not a
-    mode.
-*   **The fast-hook override mirror** (:func:`override_path` / :func:`clear_override`
-    + the legacy ``MODE_*`` string tokens) — the stdlib away-probe
-    (``hooks/scripts/availability_away_probe.py``) gates AskUserQuestion deferral /
-    the self-pump pause WITHOUT a Django boot, so it reads a mirrored
-    ``availability_override.json``. The merged-mode override chokepoint
-    (:func:`teatree.core.mode_resolution.set_mode_override`) write-throughs the
-    resolved posture there; the DB ``ModeOverride`` row stays authoritative for every
-    Django consumer.
+A FOUNDATION leaf so the three readers share ONE implementation instead of each
+re-deriving the file format: the Django resolver
+(:mod:`teatree.core.mode_resolution`), the Django-free cold posture resolver
+(:mod:`teatree.config.cold_mode`) and the bare ``UserPromptSubmit`` hook
+(``hooks/scripts/ups_fastpath``). It imports only the standard library plus
+:mod:`teatree.paths`, so a bare system interpreter with no Django can use it.
 
-The presence + mirror files are written via ``tmp.replace`` (atomic) so a torn
-write never leaves a half-encoded document; readers tolerating a read race
-re-resolve cleanly.
+The heartbeat is an install-wide fact about the human, so it lives beside the
+control DB in the PRIMARY data dir — never the per-worktree isolated one, which
+would give one keyboard two heartbeats. The file is written via ``tmp.replace``
+(atomic) so a torn write never leaves a half-encoded document.
 """
 
 import json
-import logging
 import os
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.paths import DATA_DIR
-
-logger = logging.getLogger(__name__)
-
-# The legacy availability-mode string tokens the fast-hook away-probe still reads
-# from the mirrored ``availability_override.json`` (#61). Post-merge these are only
-# the tokens :func:`teatree.core.mode_resolution._legacy_token` maps a resolved
-# mode's booleans to when write-through-mirroring the posture for the bare hooks.
-MODE_PRESENT = "present"
-MODE_AWAY = "away"
-MODE_AUTONOMOUS_AWAY = "autonomous_away"
+from teatree.paths import ControlDb
 
 # How recently a ``UserPromptSubmit`` must have landed for the user to count
 # as demonstrably present. A live prompt within this window upgrades a
@@ -64,24 +44,12 @@ PRESENCE_FRESHNESS = timedelta(minutes=15)
 # autonomous turn could be mistaken for a fresh keystroke.
 LIVE_TURN_FRESHNESS = timedelta(seconds=90)
 
-
-def override_path() -> Path:
-    """Location of the fast-hook availability-override mirror JSON file."""
-    return DATA_DIR / "availability_override.json"
+PRESENCE_FILENAME = "presence_heartbeat"
 
 
 def presence_path() -> Path:
-    """Location of the durable live-presence heartbeat file."""
-    return DATA_DIR / "availability_presence"
-
-
-def clear_override(path: Path | None = None) -> bool:
-    """Delete the override file. Returns True if a file was removed."""
-    target = path or override_path()
-    if not target.exists():
-        return False
-    target.unlink()
-    return True
+    """Location of the durable live-presence heartbeat file (PRIMARY data dir)."""
+    return ControlDb(os.environ).primary_data_dir() / PRESENCE_FILENAME
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +73,7 @@ class PresenceHeartbeat:
     ``UserPromptSubmit`` hook share one cohesive seam. The file location is
     injected as :attr:`locate` (the module singleton :data:`PRESENCE`
     resolves it lazily through :func:`presence_path`, so a test repointing
-    ``availability.presence_path`` is honoured); a test may also construct a
+    ``live_presence.presence_path`` is honoured); a test may also construct a
     heartbeat with an explicit locator.
 
     The on-disk format is a small JSON document (``{"at": ..., "session":
@@ -122,7 +90,7 @@ class PresenceHeartbeat:
 
         Called from the ``UserPromptSubmit`` hook on every genuine user
         prompt. :meth:`last_seen` reads the timestamp (the resolver uses it
-        to upgrade a schedule-derived ``away`` to ``present``);
+        to upgrade a schedule-derived away-class mode to a present-class one);
         :meth:`last_user_turn` reads the timestamp plus the session id (the
         #189 live-turn predicate uses both).
         """
@@ -171,36 +139,18 @@ class PresenceHeartbeat:
             return None
         if not raw:
             return None
-        at, session_id = self._parse(raw)
+        at, session_id = parse_heartbeat(raw)
         if at is None:
             return None
         if at.tzinfo is None:
             at = at.replace(tzinfo=UTC)
         return UserTurn(at=at, session_id=session_id)
 
-    @staticmethod
-    def _parse(raw: str) -> tuple[datetime | None, str]:
-        try:
-            doc = json.loads(raw)
-        except ValueError:
-            doc = None
-        if isinstance(doc, dict):
-            stamp = str(doc.get("at", "")).strip()
-            session_id = str(doc.get("session", "")).strip()
-            try:
-                return datetime.fromisoformat(stamp), session_id
-            except ValueError:
-                return None, ""
-        try:
-            return datetime.fromisoformat(raw), ""
-        except ValueError:
-            return None, ""
-
     def is_live_user_turn(self, *, session_id: str, now: datetime | None = None) -> bool:
         """True when the user typed a prompt in *session_id* within the live window.
 
         The #189 user-driven escape: an ``AskUserQuestion`` raised on such a
-        turn may render in-client even under away-mode, because the user is
+        turn may render in-client even under an away-class mode, because the user is
         demonstrably right here, right now. Requires a non-empty *session_id*
         matching the recorded turn's session and a recorded prompt no older
         than :data:`LIVE_TURN_FRESHNESS`. Any missing / foreign-session /
@@ -241,31 +191,40 @@ class PresenceHeartbeat:
         return True
 
 
+def parse_heartbeat(raw: str) -> tuple[datetime | None, str]:
+    """Parse the on-disk heartbeat text into ``(timestamp, session_id)``.
+
+    Shared with the Django-free cold posture resolver so the two readers can never
+    disagree about what the file says. Tolerates the JSON document and a legacy
+    plain-ISO file (empty session id); anything unparsable yields ``(None, "")``.
+    """
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = None
+    if isinstance(doc, dict):
+        stamp = str(doc.get("at", "")).strip()
+        session_id = str(doc.get("session", "")).strip()
+        try:
+            return datetime.fromisoformat(stamp), session_id
+        except ValueError:
+            return None, ""
+    try:
+        return datetime.fromisoformat(raw), ""
+    except ValueError:
+        return None, ""
+
+
 PRESENCE = PresenceHeartbeat()
-
-
-def pending_questions_count(*, using: str | None = None) -> int:
-    """Number of unresolved :class:`DeferredQuestion` rows (for statusline)."""
-    return DeferredQuestion.pending(using=using).count()
-
-
-def iter_pending_questions(*, using: str | None = None) -> Iterable[DeferredQuestion]:
-    """Yield the unresolved :class:`DeferredQuestion` queue, oldest first."""
-    return DeferredQuestion.pending(using=using)
 
 
 __all__ = [
     "LIVE_TURN_FRESHNESS",
-    "MODE_AUTONOMOUS_AWAY",
-    "MODE_AWAY",
-    "MODE_PRESENT",
     "PRESENCE",
+    "PRESENCE_FILENAME",
     "PRESENCE_FRESHNESS",
     "PresenceHeartbeat",
     "UserTurn",
-    "clear_override",
-    "iter_pending_questions",
-    "override_path",
-    "pending_questions_count",
+    "parse_heartbeat",
     "presence_path",
 ]

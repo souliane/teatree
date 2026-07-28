@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
-from teatree.core.mode_resolution import AVAILABILITY_POSTURES, resolve_active_mode
+from teatree.core.mode_resolution import POSTURE_TOKENS, posture_label, resolve_active_mode
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 LOOP_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "disable", "enable"})
 
 
-# Availability modes the header switch offers. Each is resolved to the merged Mode
+# Posture switches the header offers. Each is resolved to the merged Mode
 # carrying that intrinsic posture BY ROW (#3559) — never by a hard-coded mode name,
 # so an operator renaming a seeded mode cannot break the switch. ``auto`` clears the
 # override so the schedule / default decides again.
-AVAILABILITY_ACTIONS: frozenset[str] = frozenset({*AVAILABILITY_POSTURES, "auto"})
+POSTURE_ACTIONS: frozenset[str] = frozenset({*POSTURE_TOKENS, "auto"})
 
 # The exact phrase the operator must type to flip the master fail-open switch —
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
@@ -76,8 +76,9 @@ class LoopRow:
 class LoopControlView:
     loops: tuple["LoopRow", ...]
     infra_slots: tuple[LoopStatusEntry, ...]
-    availability_mode: str
-    availability_source: str
+    mode_name: str
+    mode_source: str
+    mode_posture: str
     gate_fail_open: bool
     runner_enabled: bool
 
@@ -88,8 +89,9 @@ def build_loop_control() -> LoopControlView:
     return LoopControlView(
         loops=build_loop_rows(),
         infra_slots=_infra_slots(),
-        availability_mode=resolved.name,
-        availability_source=resolved.source,
+        mode_name=resolved.name,
+        mode_source=resolved.source,
+        mode_posture=posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump),
         gate_fail_open=dash_gate_fail_open(),
         runner_enabled=_runner_enabled(),
     )

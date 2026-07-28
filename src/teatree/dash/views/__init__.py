@@ -2,12 +2,12 @@ from teatree.dash.views.board import board, board_columns_partial
 from teatree.dash.views.debug import command_run, debug_session
 from teatree.dash.views.health import health, health_bands_partial
 from teatree.dash.views.loops import (
-    availability,
     gate_toggle,
     loop_action,
     loop_cadence,
     loops,
     loops_table_partial,
+    posture,
     runner_toggle,
 )
 from teatree.dash.views.presets import (
@@ -34,7 +34,6 @@ from teatree.dash.views.tickets import ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
 __all__ = [
-    "availability",
     "board",
     "board_columns_partial",
     "command_run",
@@ -46,6 +45,7 @@ __all__ = [
     "loop_cadence",
     "loops",
     "loops_table_partial",
+    "posture",
     "preset_create",
     "preset_delete",
     "preset_entry",

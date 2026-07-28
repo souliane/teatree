@@ -6,11 +6,15 @@ that table is unreachable via the overlay CLI even though the core
 ``ticket`` management command defines it — exactly the regression this guards.
 """
 
+import typer
+
+from teatree.cli.loop.preset import register as register_preset
 from teatree.cli.overlay import DJANGO_GROUPS
 from teatree.core.management.commands.e2e import Command as E2eCommand
 from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.learnings import Command as LearningsCommand
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
+from teatree.core.management.commands.loop_preset import Command as LoopPresetCommand
 
 
 def _ticket_subcommands() -> set[str]:
@@ -31,10 +35,6 @@ def _e2e_subcommands() -> set[str]:
 
 def _pr_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["pr"].subcommands}
-
-
-def _availability_subcommands() -> set[str]:
-    return {name for name, _desc in DJANGO_GROUPS["availability"].subcommands}
 
 
 def _learnings_subcommands() -> set[str]:
@@ -114,12 +114,20 @@ def test_honesty_subcommands_map_to_real_command_methods() -> None:
         assert hasattr(HonestyCommand, name.replace("-", "_")), name
 
 
-def test_availability_group_exposes_autonomous_away() -> None:
-    # #2544: the management command grew an `autonomous-away` subcommand, but
-    # without a DJANGO_GROUPS bridge entry `t3 <overlay> availability
-    # autonomous-away` returned "No such command" even though the feature
-    # (and its docs) shipped — exactly the class of regression this guards.
-    assert "autonomous-away" in _availability_subcommands()
+def test_loop_preset_group_exposes_every_management_subcommand() -> None:
+    # #2544 caught a management subcommand that shipped with no CLI bridge entry, so
+    # `t3 <overlay> availability autonomous-away` answered "No such command" while the
+    # feature and its docs said otherwise. #3826 retired that group and folded the mode
+    # surface into `t3 loop preset`, so the same guard now watches the bridge that
+    # replaced it: every verb the management command defines must be reachable.
+    preset_app = typer.Typer()
+    register_preset(preset_app)
+    bridged = {
+        command.name for group in preset_app.registered_groups for command in group.typer_instance.registered_commands
+    }
+    defined = {command.name for command in LoopPresetCommand.typer_app.registered_commands}
+    assert {"use", "auto", "show"} <= defined, f"the mode verbs vanished from the command: {sorted(defined)}"
+    assert defined <= bridged, f"unbridged loop_preset subcommand(s): {sorted(defined - bridged)}"
 
 
 def test_learnings_group_exposes_show_add_edit() -> None:

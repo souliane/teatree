@@ -230,6 +230,16 @@ class ControlDb:
         """
         return self.for_repo(_PRIMARY_CLONE_SENTINEL).path
 
+    def primary_data_dir(self) -> Path:
+        """The dir the PRIMARY control DB lives in — home to every INSTALL-WIDE artifact.
+
+        Deliberately NOT the auto-isolated per-worktree :data:`DATA_DIR`: an artifact
+        describing the *operator* rather than a checkout (the live-presence heartbeat)
+        has exactly one instance, and giving one keyboard two heartbeats is how a fast
+        path and a Django path come to disagree about the same fact.
+        """
+        return self.primary().parent
+
     def divergence_message(self, repo_root: Path) -> str | None:
         """The message naming both DBs when *repo_root*'s answer is not the primary.
 

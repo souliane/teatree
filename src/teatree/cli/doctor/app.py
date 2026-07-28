@@ -12,7 +12,6 @@ from importlib.metadata import PackageNotFoundError
 
 import typer
 
-from teatree.cli.doctor.checks_availability import _check_availability_override_staleness
 from teatree.cli.doctor.checks_bootstrap import (
     _check_claude_settings_drift,
     _check_gh_token_permissions,
@@ -48,6 +47,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_mcp_connectivity,
     _check_teatree_mcp_registration,
 )
+from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
@@ -105,7 +105,6 @@ __all__ = (
     "PackageNotFoundError",
     "_check_account_switch",
     "_check_agent_session_pins",
-    "_check_availability_override_staleness",
     "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
     "_check_cold_hook_settings_readable",
@@ -127,6 +126,7 @@ __all__ = (
     "_check_loop_presets",
     "_check_marker_jam",
     "_check_mcp_connectivity",
+    "_check_mode_override_staleness",
     "_check_provision_concurrency_from_host",
     "_check_pyright_lsp_plugin",
     "_check_recommended_skills",
@@ -445,7 +445,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # colleague-facing loops (and pauses the self-pump under holiday-away) the
     # whole time. Surfacing-only (never gates the exit code); reads the Loop table
     # for the deferred loop names, so it runs post-ensure_django.
-    _check_availability_override_staleness()
+    _check_mode_override_staleness()
 
     # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
     # auto-management to the app-level (xapp-) token + socket-mode manifest: it

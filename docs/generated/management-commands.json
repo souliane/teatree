@@ -19,32 +19,6 @@
       ]
     },
     {
-      "help": "``t3 teatree availability`` group root.",
-      "name": "availability",
-      "subcommands": [
-        {
-          "help": "Alias: set the holiday ``offline`` mode (defer + pause) until *until* \u2014 or forever",
-          "name": "away"
-        },
-        {
-          "help": "Alias: set the ``engaged`` present-class mode until *until* \u2014 or forever",
-          "name": "present"
-        },
-        {
-          "help": "Clear the manual mode override; the schedule / default mode decides again",
-          "name": "auto"
-        },
-        {
-          "help": "Print the current resolved mode and which layer decided it",
-          "name": "show"
-        },
-        {
-          "help": "Force autonomous-away \u2014 defer questions but KEEP self-pumping (#2544)",
-          "name": "autonomous-away"
-        }
-      ]
-    },
-    {
       "help": "``t3 <overlay> checking`` group root.",
       "name": "checking",
       "subcommands": [
@@ -507,7 +481,7 @@
           "name": "use"
         },
         {
-          "help": "Clear the manual override so the active schedule decides again",
+          "help": "Clear the manual override so the active schedule / default mode decides again",
           "name": "auto"
         },
         {

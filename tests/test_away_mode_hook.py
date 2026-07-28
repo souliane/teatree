@@ -19,9 +19,9 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, handle_enforce_structured_question, handle_route_away_mode_question
-from teatree.core import availability
-from teatree.core.availability import LIVE_TURN_FRESHNESS, PresenceHeartbeat
+from teatree import live_presence
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.live_presence import LIVE_TURN_FRESHNESS, PresenceHeartbeat
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -121,7 +121,7 @@ class TestUserDrivenTurnRendersLiveEvenWhenAway:
     The whole point of ``/checking`` (and "shoot me questions from here"):
     when the user is the one driving THIS turn — a fresh live prompt this
     turn, in this session — their ``AskUserQuestion`` must render in-client
-    even under a manual-away override, with NO availability flip. The
+    even under a manual away-class override, with NO mode flip. The
     handler must NOT defer and must NOT create a ``DeferredQuestion`` row.
     """
 
@@ -174,8 +174,8 @@ class TestLoopTurnDefersThroughRealPredicateInvariant9:
         # canonical_config_db().parent — pin it at tmp_path so that write and the
         # PRESENCE read below coincide (as they do in production).
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-        target = tmp_path / "availability_presence"
-        monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
+        target = tmp_path / "presence_heartbeat"
+        monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
     def test_loop_turn_with_no_heartbeat_defers(self, capsys: pytest.CaptureFixture[str]) -> None:
         result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id="s-loop"))
@@ -208,8 +208,8 @@ class TestSelfPumpTurnWithFreshUserPromptRendersLive:
         # canonical_config_db().parent — pin it at tmp_path so that write and the
         # PRESENCE read below coincide (as they do in production).
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-        target = tmp_path / "availability_presence"
-        monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
+        target = tmp_path / "presence_heartbeat"
+        monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
     def test_fresh_user_prompt_prefixed_by_loop_text_renders_live(self, capsys: pytest.CaptureFixture[str]) -> None:
         session_id = "owner"
@@ -258,8 +258,8 @@ class TestWalkThroughSecondQuestionStaysLive:
         # canonical_config_db().parent — pin it at tmp_path so that write and the
         # PRESENCE read below coincide (as they do in production).
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
-        target = tmp_path / "availability_presence"
-        monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
+        target = tmp_path / "presence_heartbeat"
+        monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
     def test_second_question_after_notification_turn_still_renders_live(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -267,13 +267,13 @@ class TestWalkThroughSecondQuestionStaysLive:
         session_id = "s-checking"
         # 1. User prompt lands (UserPromptSubmit heartbeat) — the user drives.
         t_prompt = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
-        availability.PRESENCE.record(session_id=session_id, now=t_prompt)
+        live_presence.PRESENCE.record(session_id=session_id, now=t_prompt)
 
         # Drive time through the real predicate by patching the clock the hook
         # reads, so this exercises the production path end to end. The hook calls
         # the methods on the PRESENCE singleton, so patch the instance methods.
         clock = {"now": t_prompt + timedelta(seconds=20)}
-        heartbeat = availability.PRESENCE
+        heartbeat = live_presence.PRESENCE
         real_is_live = heartbeat.is_live_user_turn
         real_refresh = heartbeat.refresh_live_turn
         monkeypatch.setattr(

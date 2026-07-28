@@ -4,7 +4,7 @@ The ``doctor`` Typer group + the ``check`` orchestrator live in
 :mod:`teatree.cli.doctor.app`; the :class:`DoctorService` / :class:`IntrospectionHelpers`
 services live in :mod:`teatree.cli.doctor.service`; the ``_check_*`` probes live in the
 ``checks_environment`` / ``checks_runtime`` / ``checks_mcp`` / ``checks_session`` /
-``checks_loop`` / ``checks_availability`` modules; plugin-registration repair lives in
+``checks_loop`` / ``checks_mode_override`` modules; plugin-registration repair lives in
 ``plugin_repair``. This ``__init__`` only re-exports the public surface so
 ``from teatree.cli.doctor import DoctorService`` (and siblings) is unchanged.
 """

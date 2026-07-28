@@ -19,7 +19,7 @@ the daily follow-up routine over tickets and PRs.
 
 ## Catch-up — "what did I miss?"
 
-A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (READ-ONLY — never starts work, never transitions a ticket, never posts), then advances per-overlay markers. After the report, it walks the user through the pending **deferred questions** one at a time — the user can answer them from right here, without flipping availability.
+A SHORT catch-up for when the user checks in while away during an autonomous loop. `/t3:checking` first prints a terse, grouped, clickable report of important changes since the user's last check (READ-ONLY — never starts work, never transitions a ticket, never posts), then advances per-overlay markers. After the report, it walks the user through the pending **deferred questions** one at a time — the user can answer them from right here, without flipping the mode.
 
 The user does NOT want a long report. Answer first; one idea per line.
 
@@ -29,7 +29,7 @@ Load `/t3:checking` when the user wants a quick "what happened while I was away?
 
 The catch-up report stays read-only. The ONLY write `/checking` performs is recording the user's own answers to deferred questions via `t3 teatree questions answer`.
 
-## Answering the deferred questions (no availability flip)
+## Answering the deferred questions (no mode flip)
 
 After the report, if there are pending deferred questions, walk the user through them one at a time:
 
@@ -39,7 +39,7 @@ After the report, if there are pending deferred questions, walk the user through
 4. Record each answer immediately: `t3 teatree questions answer <id> "<the user's answer text>"`. If the user wants to skip one, `t3 teatree questions dismiss <id> --reason "<why>"`.
 5. After the last one, confirm in one line how many were answered/dismissed.
 
-**Why this renders live even when availability is `away`:** running `/checking` is a user-driven turn — the user just typed a prompt this session. The away-mode `AskUserQuestion` PreToolUse hook detects that fresh same-session prompt (`availability.PRESENCE.is_live_user_turn`, a short this-turn window) and lets the question render in-client instead of converting it to a new `DeferredQuestion`. Each in-client render slides that window forward (`availability.PRESENCE.refresh_live_turn`), so a multi-question walk-through keeps EVERY question live even across an intervening background task-notification turn (#2058). So the user answers the backlog in place, the persistent availability override is left UNCHANGED, and the loop's own autonomous questions keep deferring as before (BLUEPRINT §17.1 invariant 9). There is NO `t3 teatree availability present` flip — that is the whole point.
+**Why this renders live even when the mode defers questions:** running `/checking` is a user-driven turn — the user just typed a prompt this session. The PreToolUse hook detects that fresh same-session prompt (`live_presence.PRESENCE.is_live_user_turn`, a short this-turn window) and lets the question render in-client instead of converting it to a new `DeferredQuestion`. Each in-client render slides that window forward (`live_presence.PRESENCE.refresh_live_turn`), so a multi-question walk-through keeps EVERY question live even across an intervening background task-notification turn (#2058). So the user answers the backlog in place, the persistent mode override is left UNCHANGED, and the loop's own autonomous questions keep deferring as before (BLUEPRINT §17.1 invariant 9). There is NO `t3 loop preset use engaged` flip — that is the whole point.
 
 Do NOT use `/checking` to start work, advance a ticket, or post anything. The catch-up is a read-only glance; the only writes are the user's own deferred-question answers.
 

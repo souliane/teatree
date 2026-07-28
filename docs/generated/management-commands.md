@@ -11,18 +11,6 @@ Edit the source command, not this file.
 | `clear` | Remove *action_class* from *overlay*'s dial table (it falls back to ASK) |
 | `show` | Render every class's configured trust, never-fades floor, breach, and verdict |
 
-## `availability`
-
-``t3 teatree availability`` group root.
-
-| Subcommand | Description |
-| --- | --- |
-| `away` | Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or forever |
-| `present` | Alias: set the ``engaged`` present-class mode until *until* — or forever |
-| `auto` | Clear the manual mode override; the schedule / default mode decides again |
-| `show` | Print the current resolved mode and which layer decided it |
-| `autonomous-away` | Force autonomous-away — defer questions but KEEP self-pumping (#2544) |
-
 ## `checking`
 
 ``t3 <overlay> checking`` group root.
@@ -258,7 +246,7 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | --- | --- |
 | `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
 | `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
-| `auto` | Clear the manual override so the active schedule decides again |
+| `auto` | Clear the manual override so the active schedule / default mode decides again |
 | `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
 | `edit` | Edit a preset's entries / description / pin / scope in place |
 | `delete` | Delete a preset (a slot/override still pointing at it fails open to base config) |

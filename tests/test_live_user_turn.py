@@ -1,6 +1,6 @@
 """Tests for the live-user-turn predicate — the #189 user-driven escape.
 
-``availability.is_live_user_turn`` answers a narrow question: did the user
+``PresenceHeartbeat.is_live_user_turn`` answers a narrow question: did the user
 type a prompt in THIS session within the last few seconds (this turn)?
 A user-driven turn lets the away-mode ``AskUserQuestion`` hook render the
 question LIVE even under a manual-away override, while a loop-driven /
@@ -17,15 +17,15 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core import availability
-from teatree.core.availability import LIVE_TURN_FRESHNESS, PRESENCE_FRESHNESS, PresenceHeartbeat
+from teatree import live_presence
+from teatree.live_presence import LIVE_TURN_FRESHNESS, PRESENCE_FRESHNESS, PresenceHeartbeat
 
 
 @pytest.fixture
 def presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PresenceHeartbeat:
-    target = tmp_path / "availability_presence"
+    target = tmp_path / "presence_heartbeat"
     heartbeat = PresenceHeartbeat(locate=lambda: target)
-    monkeypatch.setattr(availability, "PRESENCE", heartbeat)
+    monkeypatch.setattr(live_presence, "PRESENCE", heartbeat)
     return heartbeat
 
 

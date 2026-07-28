@@ -115,10 +115,10 @@ agent harnesses assume a TTY: when the agent has a question, the run blocks
 until someone is in front of a terminal to answer. That makes long autonomous
 sessions impossible — every clarifying question becomes a hard stop.
 
-Teatree resolves an availability mode (`present` / `away` / `auto`). In `away`
-mode, structured questions become durable `DeferredQuestion` rows instead of
-blocking; the user answers them later from Slack, via `t3 teatree questions
-answer`. The agent keeps working on whatever it can in the meantime. Replies
+Teatree resolves one operating mode whose posture says whether the user is
+reachable. Under a deferring posture, structured questions become durable
+`DeferredQuestion` rows instead of blocking; the user answers them later from
+Slack, via `t3 teatree questions answer`. The agent keeps working on whatever it can in the meantime. Replies
 and prompts the user receives all happen in Slack DMs; no shared dashboard,
 no shared SaaS, no DevOps onboarding.
 
@@ -612,7 +612,6 @@ graph LR
 | `ac-reviewing-codebase` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
 | `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written. |
-| `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |
 | `checking` | The check-in surface — a SHORT "what did I miss" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders) |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
@@ -624,6 +623,7 @@ graph LR
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |
+| `mode` | The operating mode — one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms. |
 | `prompts` | Trigger and manage reusable prompts — list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history |
