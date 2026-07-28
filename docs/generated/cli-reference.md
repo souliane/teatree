@@ -10774,15 +10774,32 @@ Usage: t3 teatree config_setting export [OPTIONS]
  stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
  backup.
 
+ Two INDEPENDENT filters widen the dump, both off by default.
+ ``--default-keys-only``
+ restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
+ ``--include-defaults`` also emits the eligible keys that have no DB row, at
+ their
+ resolved effective value. Passing BOTH produces the defaults shape — a
+ complete,
+ drop-in replacement for ``config/defaults.toml``, header and seed tables
+ included.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay                TEXT  Overlay name to scope the row to; omit for    │
-│                                the global scope (every overlay).             │
-│ --output                 TEXT  Write the TOML to this path instead of        │
-│                                stdout.                                       │
-│ --include-private              Also export private/secret rows               │
-│                                (terms/brands, token refs) — PERSONAL backup  │
-│                                only, never share.                            │
-│ --help                         Show this message and exit.                   │
+│ --overlay                  TEXT  Overlay name to scope the row to; omit for  │
+│                                  the global scope (every overlay).           │
+│ --output                   TEXT  Write the TOML to this path instead of      │
+│                                  stdout.                                     │
+│ --include-private                Also export private/secret rows             │
+│                                  (terms/brands, token refs) — PERSONAL       │
+│                                  backup only, never share.                   │
+│ --default-keys-only              Restrict the dump to the Category.DEFAULT   │
+│                                  keys defaults.toml ships (drops registries, │
+│                                  secrets, identifiers and overlay scopes).   │
+│ --include-defaults               Also emit keys with no DB row, at their     │
+│                                  resolved effective value. With              │
+│                                  --default-keys-only this is the             │
+│                                  defaults.toml shape.                        │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

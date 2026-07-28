@@ -24,15 +24,25 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config import effective_default
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table, shipped_defaults_table
+from teatree.config.defaults_snapshot import default_category_keys
+from teatree.config.defaults_snapshot import render_toml as render_shipped_file
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.provenance import PERSISTED_SOURCES, resolve_settings
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
-from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_seed_field, seed_divergences
 from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
+from teatree.core.config_seed_tables import (
+    SeedFieldDisposition,
+    classify_seed_rows,
+    emit_seed_tables,
+    unseeded_entries,
+    write_seed_field,
+)
+from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
 from teatree.hooks.term_match import matched_term
 
@@ -40,9 +50,6 @@ GLOBAL_SCOPE = ""
 _TEATREE_TABLE = "teatree"
 _OVERLAYS_TABLE = "overlays"
 _E2E_REPOS_TABLE = "e2e_repos"
-
-#: The model each seed table's rows live in — the DB half of ``SEED_ROW_FIELDS``.
-_SEED_MODELS = {"loops": Loop, "modes": Mode, "schedules": ModeSchedule}
 
 
 @dataclass(frozen=True)
@@ -135,6 +142,8 @@ def export_db_to_toml(
     *,
     include_private: bool = False,
     scan_terms: tuple[str, ...] | None = None,
+    default_keys_only: bool = False,
+    include_defaults: bool = False,
 ) -> ConfigExport:
     """Serialise the ``ConfigSetting`` store to TOML — a personal, re-importable backup.
 
@@ -145,6 +154,24 @@ def export_db_to_toml(
     fields). With *overlay* the dump is scoped to that one overlay's ``[overlays.<name>]``
     table; omitted, it dumps the global scope plus every overlay scope plus the e2e-repos
     registry.
+
+    Two INDEPENDENT filters widen the dump, both off by default so an unfiltered call
+    emits exactly the rows it always has (the nesting below re-shapes how they RENDER,
+    on every surface, but adds and drops nothing):
+
+    *   *default_keys_only* restricts what is ELIGIBLE to the ``Category.DEFAULT`` key set
+        the shipped file carries — dropping registries, secrets, personal identifiers and
+        every ``[overlays.<name>]`` scope;
+    *   *include_defaults* widens WHICH of the eligible keys are emitted from
+        divergent-only (a DB row exists) to all of them, filling a key with no row from
+        :func:`~teatree.config.provenance.resolve_settings`.
+
+    Ticking BOTH is the defaults shape: the emitted key set is exactly the
+    ``Category.DEFAULT`` set, which is what makes ``export(import(defaults.toml))``
+    reproduce ``defaults.toml`` byte for byte. That combination renders through
+    :func:`~teatree.config.defaults_snapshot.render_toml`, the same emitter the
+    owner-approved ``snapshot_settings_defaults`` writes with, so the shipped file and the
+    exported file can never come from two writers.
 
     By DEFAULT the secret guard withholds any row that is a known-private key
     (``SECRET_SETTINGS``) OR whose key/value contains a banned customer/brand term
@@ -169,42 +196,82 @@ def export_db_to_toml(
     # ``[teatree]`` (they are NOT ``UserSettings`` fields) — exclude them from the
     # global settings table so the dump re-imports cleanly.
     settings_global = {key: value for key, value in all_global.items() if key not in REGISTRY_KEYS}
+    if default_keys_only:
+        settings_global = {key: value for key, value in settings_global.items() if key in default_category_keys()}
     global_rows = _exportable_rows(settings_global, GLOBAL_SCOPE, guard=guard)
+    if include_defaults:
+        global_rows = _filled_with_defaults(global_rows, default_keys_only=default_keys_only, guard=guard)
+    if default_keys_only and include_defaults:
+        return ConfigExport(render_shipped_file(global_rows, base_text=_shipped_file_text()), tuple(guard.redacted))
     if global_rows:
         document["teatree"] = grouped_settings_table(global_rows)
-    scopes = list(
-        ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).order_by("scope").values_list("scope", flat=True).distinct()
-    )
-    _emit_overlay_tables(document, scopes, overlays_registry, guard=guard)
-    _emit_e2e_repos_tables(document, e2e_repos_registry, guard=guard)
-    _emit_seed_tables(document)
+    if not default_keys_only:
+        scopes = list(
+            ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE)
+            .order_by("scope")
+            .values_list("scope", flat=True)
+            .distinct()
+        )
+        _emit_overlay_tables(document, scopes, overlays_registry, guard=guard)
+        _emit_e2e_repos_tables(document, e2e_repos_registry, guard=guard)
+    emit_seed_tables(document, _toml_table)
     return ConfigExport(tomlkit.dumps(document), tuple(guard.redacted))
 
 
-def _live_seed_rows(table: str) -> dict[str, dict[str, ConfigValue]]:
-    """Every row of *table*'s model as ``{name: {seed field: value}}``."""
-    fields = SEED_ROW_FIELDS[table]
-    return {
-        row.name: {seed_field: getattr(row, attr) for seed_field, (attr, _type) in fields.items()}
-        for row in _SEED_MODELS[table].objects.all()
-    }
+def _shipped_file_text() -> str:
+    """The committed ``defaults.toml`` as the base a defaults-shape export rewrites.
 
-
-def _emit_seed_tables(document: tomlkit.TOMLDocument) -> None:
-    """Attach a ``[<family>.<name>]`` sub-table per seed row that diverges from its default.
-
-    The seed rows carry no operator secrets (names, cadences and descriptions teatree
-    itself ships), so they take the same path in a shared and a private export — unlike a
-    ``ConfigSetting`` row, which the secret guard may withhold.
+    Every hand-written comment and every seed table rides through untouched, so the dump
+    is a drop-in replacement for the file rather than a fragment of one. A missing file
+    (never true in a checkout) leaves the emitter to build the document header included.
     """
-    for table in SEED_TABLES:
-        diverged = seed_divergences(table, _live_seed_rows(table))
-        if not diverged:
+    try:
+        return DEFAULTS_TOML.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _filled_with_defaults(
+    rows: dict[str, ConfigValue], *, default_keys_only: bool, guard: _ExportGuard
+) -> dict[str, ConfigValue]:
+    """Add every eligible key that has no DB row, at its resolved effective value.
+
+    Eligibility is filter 1's question, answered before this one: the ``Category.DEFAULT``
+    set, or every ``[teatree]``-emittable key. Resolution is
+    :func:`~teatree.config.provenance.resolve_settings` restricted to the persisted tiers —
+    ``env`` and the active overlay's code defaults are this machine's state, not the file's.
+
+    A key no persisted tier reaches is left out: its only value is an in-code dataclass
+    default, which is not in stored form (a ``Path``, an enum) and has never been part of
+    the ``[teatree]`` table. Every ``Category.DEFAULT`` key IS in the shipped file, so the
+    defaults shape stays exhaustive.
+
+    A filled key the secret guard would withhold falls back to the value the shipped file
+    already ships in public, rather than leaving a hole: the defaults shape is only
+    meaningful when it is COMPLETE, and the shipped value is public by construction. A key
+    the guard ALREADY withheld on the way in is filled the same way but not reported twice.
+    """
+    eligible = default_category_keys() if default_keys_only else _teatree_table_keys()
+    shipped = shipped_defaults_table()
+    withheld = {row.key for row in guard.redacted if row.scope == GLOBAL_SCOPE}
+    filled = dict(rows)
+    for key, entry in resolve_settings(sorted(eligible - set(rows)), persisted_only=True).items():
+        if entry.source not in PERSISTED_SOURCES:
             continue
-        family = tomlkit.table(is_super_table=True)
-        for name in sorted(diverged):
-            family[name] = _toml_table(diverged[name])
-        document[table] = family
+        reason = None if guard.include_private else _redaction_reason(key, entry.value, guard.terms)
+        if reason is None:
+            filled[key] = entry.value
+            continue
+        if key not in withheld:
+            guard.redacted.append(RedactedRow(GLOBAL_SCOPE, key, reason))
+        if key in shipped:
+            filled[key] = shipped[key]
+    return filled
+
+
+def _teatree_table_keys() -> frozenset[str]:
+    """Every known setting the ``[teatree]`` table may carry — the registries excepted."""
+    return frozenset(ALL_KNOWN_CONFIG_SETTINGS) - frozenset(REGISTRY_KEYS)
 
 
 def _registry_value(global_rows: dict[str, ConfigValue], key: str) -> dict[str, Any]:
@@ -329,9 +396,13 @@ def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]
     ``OVERLAY_OVERRIDABLE_SETTINGS``) and overlay-DEFINITION keys (``path`` / ``class`` /
     …, folded back into the ``overlays`` registry row); each ``[e2e_repos.<name>]`` table
     rebuilds the ``e2e_repos`` registry row.
+
+    The ``[teatree]`` table goes through the SAME flattener the cold reader applies, so a
+    nested file and a flat one import to the same rows and the group wrappers never reach
+    the store as keys.
     """
     candidates: list[tuple[str, str, ConfigValue]] = []
-    for key, value in doc.get(_TEATREE_TABLE, {}).items():
+    for key, value in flatten_settings_table(doc.get(_TEATREE_TABLE, {})).items():
         candidates.append((GLOBAL_SCOPE, key, value))
     overlays_registry: dict[str, Any] = {}
     for name, table in doc.get(_OVERLAYS_TABLE, {}).items():
@@ -348,17 +419,6 @@ def _import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]
     if e2e_registry:
         candidates.append((GLOBAL_SCOPE, _E2E_REPOS_TABLE, e2e_registry))
     return candidates
-
-
-def _seed_candidates(doc: dict[str, Any]) -> list[tuple[str, str, str, ConfigValue]]:
-    """Flatten the seed tables into ``(table, entry name, field, value)`` candidate rows."""
-    return [
-        (table, name, field, value)
-        for table in SEED_TABLES
-        for name, entry in doc.get(table, {}).items()
-        if isinstance(entry, dict)
-        for field, value in entry.items()
-    ]
 
 
 def _unstorable_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:
@@ -456,59 +516,44 @@ def import_toml_to_db(
         else:
             to_write.append(ImportedRow(scope, key, payload, is_safety_posture=safety))
 
-    seed_writes = _classify_seed_rows(doc, skipped=skipped, rejected=rejected)
+    seed_writes = _file_seed_dispositions(doc, skipped=skipped, rejected=rejected)
     if rejected:
         return ConfigImport((), tuple(skipped), tuple(folded), tuple(rejected), dry_run)
     if not dry_run:
         for row in to_write:
             ConfigSetting.objects.set_value(row.key, row.value, scope=row.scope)
-        for table, name, row in seed_writes:
-            _write_seed_field(table, name, row.key, row.value)
-    written = (*to_write, *(row for _table, _name, row in seed_writes))
+        for entry in seed_writes:
+            write_seed_field(entry.table, entry.name, entry.field, entry.value)
+    written = (*to_write, *(ImportedRow(e.scope, e.field, e.value) for e in seed_writes))
     return ConfigImport(written, tuple(skipped), tuple(folded), (), dry_run)
 
 
-def _classify_seed_rows(
+def _file_seed_dispositions(
     doc: dict[str, Any],
     *,
     skipped: list[ImportedRow],
     rejected: list[RejectedRow],
-) -> list[tuple[str, str, ImportedRow]]:
-    """File each seed field into *skipped* / *rejected*; return the ``(table, name, row)`` writes.
+) -> list[SeedFieldDisposition]:
+    """File each seed field into *skipped* / *rejected*; return the ones that would be written.
 
     An entry the shipped file carries can still have no DB row on a box that never ran the
     install seed, so a write onto a missing row is rejected rather than left to raise
     mid-import — the whole import is refused and the operator is told to seed first.
     """
-    writes: list[tuple[str, str, ImportedRow]] = []
-    for table, name, field, value in _seed_candidates(doc):
-        row = ImportedRow(f"{table}.{name}", field, value)
-        kind, reason = classify_seed_field(table, name, field, value)
-        if kind == "reject":
-            rejected.append(RejectedRow(row.scope, field, reason))
-        elif kind == "skip":
-            skipped.append(row)
+    writes: list[SeedFieldDisposition] = []
+    for entry in classify_seed_rows(doc):
+        if entry.kind == "reject":
+            rejected.append(RejectedRow(entry.scope, entry.field, entry.reason))
+        elif entry.kind == "skip":
+            skipped.append(ImportedRow(entry.scope, entry.field, entry.value))
         else:
-            writes.append((table, name, row))
-    unseeded = {(t, n) for t, n, _row in writes if not _SEED_MODELS[t].objects.filter(name=n).exists()}
+            writes.append(entry)
+    unseeded = unseeded_entries(writes)
     if not unseeded:
         return writes
     rejected.extend(
-        RejectedRow(row.scope, row.key, f"no {table} row yet — run `t3 setup` to seed it")
-        for table, name, row in writes
-        if (table, name) in unseeded
+        RejectedRow(entry.scope, entry.field, f"no {entry.table} row yet — run `t3 setup` to seed it")
+        for entry in writes
+        if (entry.table, entry.name) in unseeded
     )
     return []
-
-
-def _write_seed_field(table: str, name: str, field: str, value: ConfigValue) -> None:
-    """Set one seed field onto the row it names — never creating one.
-
-    An import RESTORES an operator's tuning onto objects the install seed already made; it
-    never conjures a loop teatree does not ship (the classifier refuses an entry the file
-    does not carry, and the caller refuses one whose row is not seeded yet).
-    """
-    attr, _type = SEED_ROW_FIELDS[table][field]
-    row = _SEED_MODELS[table].objects.get(name=name)
-    setattr(row, attr, value)
-    row.save(update_fields=[attr, "updated_at"])

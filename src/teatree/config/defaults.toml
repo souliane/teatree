@@ -19,11 +19,12 @@
 # credential coordinates) are ABSENT by construction and resolve from their empty
 # code defaults. Safety-posture keys and dark feature-flags are pinned to their
 # fail-closed/off value and can never move through the snapshot path, approval or not.
-# The keys stay FLAT — that namespace is the persisted contract every reader, env override
-# and cold sqlite3 read depends on — but they are ORDERED by the declaration hierarchy,
-# each level announced once by an indented `#` banner. That is the same tree the dashboard
-# renders and the export dump emits. Put a new key under its group's banner; CI refuses one
-# sitting outside its group and names where it belongs.
+# The declaration hierarchy renders as real NESTED sub-tables — the same tree the dashboard
+# renders and the export dump emits. The KEY NAMESPACE stays flat: that namespace is the
+# persisted contract every reader, env override and cold sqlite3 read depends on, and
+# `config/cold_defaults.py` flattens the group wrappers back on read. A sub-table named
+# after a declared setting (`speak`, `mr_reminder`) is a setting; any other is a group.
+# Put a new key under its group's table; CI refuses one sitting outside its group.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
@@ -42,17 +43,15 @@
 # The seed is `get_or_create` by name: editing a seed table changes what a FRESH install
 # gets and never overwrites a row an operator already edited on a live box.
 
-[teatree]
-# Workspace
-#   Engagement & identity
+[teatree.Workspace."Engagement & identity"]
 autoload = false
 check_updates = true
 contribute = false
 excluded_skills = []
 privacy = ""
 timezone = ""
-# Agents
-#   Mode & harness
+
+[teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk"
 agent_runtime = "interactive"
 autonomy = "babysit"
@@ -67,15 +66,16 @@ ticket_budget_max_cost_usd = 0.0
 watchdog_max_cost_usd = 0.0
 watchdog_max_runtime_seconds = 10800
 watchdog_max_turns = 0
-# Loops
-#   Cadence & throughput
+
+[teatree.Loops."Cadence & throughput"]
 loop_cadence_seconds = 720
 loop_runner_enabled = true
 merge_wip = 1
 wip = "medium"
 worker_quiescing = false
 write_wip = 3
-#   Scanners
+
+[teatree.Loops.Scanners]
 ask_before_backlog_sweep_closes = true
 ask_before_creating_news_tickets = true
 auto_update_reinstall = false
@@ -95,7 +95,8 @@ scanning_news_disabled = false
 scanning_news_skill = "scanning-news"
 self_update_cadence_hours = 1
 self_update_disabled = false
-#   Kill switches & credentials
+
+[teatree.Loops."Kill switches & credentials"]
 approved_recipe_sha = ""
 auto_disposition_enabled = false
 auto_disposition_max_closes_per_tick = 5
@@ -129,8 +130,8 @@ triage_assessor_cadence_hours = 24
 triage_assessor_enabled = false
 triage_assessor_max_issues_per_tick = 10
 trusted_issue_authors = []
-# Communication
-#   Posting on your behalf
+
+[teatree.Communication."Posting on your behalf"]
 admin_autologin_enabled = true
 agent_signature = false
 claude_chrome = false
@@ -144,43 +145,48 @@ require_human_approval_to_merge = true
 review_request_post_disabled = false
 substrate_auto_merge_authorized_by = ""
 substrate_self_signoff = false
-#   Identity & routing
+
+[teatree.Communication."Identity & routing"]
 missing_issue_ref_policy = "find_existing_then_ask"
 repo_mode = ""
 statusline_chain = []
 statusline_engaged_render = false
-# Gates
-#   Quality
-#     Architectural review
+
+[teatree.Gates.Quality."Architectural review"]
 architectural_review_after_merge_count = 25
 architectural_review_cadence_hours = 168
 architectural_review_disabled = false
 architectural_review_retry_backoff_hours = 12
 architectural_review_skill = "ac-reviewing-codebase"
-#     Review
+
+[teatree.Gates.Quality.Review]
 admit_colleague_prs_to_board = true
 require_anti_vacuity_attestation = false
 require_integration_review = false
 require_review_context = false
 require_reviewed_state_for_review_request = false
 review_skill = ""
-#     Merge & done
+
+[teatree.Gates.Quality."Merge & done"]
 expected_required_contexts = []
 require_debt_delta = false
 require_executed_repro = false
 require_merge_evidence = false
 require_merge_quality_verdict = false
 require_plan_adequacy = false
-#     Critic & send proxy
+
+[teatree.Gates.Quality."Critic & send proxy"]
 bulk_close_threshold = 5
 critic_gate_mode = "off"
 send_proxy_allowlist = []
 send_proxy_mode = "warn"
-#     Definition of done
+
+[teatree.Gates.Quality."Definition of done"]
 e2e_confidence_threshold = 90
 require_rubric_verification = false
 require_spec_coverage = false
-#   Pre-publish
+
+[teatree.Gates.Pre-publish]
 attachment_gate_enabled = true
 ban_close_trailers_on_namespaces = []
 chrome_devtools_headless = true
@@ -200,7 +206,8 @@ review_request_dedup_window_days = 30
 slack_voice_classifier_mode = "warn"
 snapshot_baseline_gate_enabled = true
 solo_repo_url_pattern = ""
-#   Pre-Django hooks
+
+[teatree.Gates."Pre-Django hooks"]
 banned_terms_gate_enabled = true
 completion_claim_gate_enabled = true
 config_overwrite_gate_enabled = true
@@ -224,9 +231,8 @@ skill_loading_gate_enabled = true
 standing_goal_stop_gate_enabled = true
 stop_snapshotter_enabled = true
 unknown_repo_push_gate_enabled = true
-# Infrastructure
-#   Resource pressure
-#     Thresholds & cadence
+
+[teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
 disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes", "~/.cache/go-build"]
 disk_crit_free_gb = 10.0
 disk_warn_free_gb = 25.0
@@ -235,20 +241,23 @@ ram_warn_avail_gb = 3.0
 resource_pressure_cadence_minutes = 5
 resource_pressure_disabled = false
 resource_pressure_min_free_interval_minutes = 30
-#     Destructive levers
+
+[teatree.Infrastructure."Resource pressure"."Destructive levers"]
 allow_destructive_disk = false
 allow_destructive_ram = false
 max_worktree_gc_per_tick = 3
 ram_kill_allowlist = []
 worktree_stale_days = 30
-#   Retention & sweeps
+
+[teatree.Infrastructure."Retention & sweeps"]
 incoming_event_retention_days = 30
 max_concurrent_local_stacks = 1
 session_stale_after_hours = 12
 task_attempt_retention_days = 30
 task_sweep_disabled = false
 task_sweep_recheck_interval_hours = 1
-#   Provisioning
+
+[teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true
 clean_ignore = []
 idle_stack_e2e_recent_minutes = 60
@@ -265,8 +274,8 @@ provision_step_timeout_seconds = 1800
 snapshot_warmer_disabled = false
 snapshot_warmer_max_age_days = 1
 stale_stack_min_age_minutes = 0
-# Registries
-#   Term scanning, agent tables & cold reads
+
+[teatree.Registries."Term scanning, agent tables & cold reads"]
 active_loop_schedule = ""
 danger_gate_fail_open = false
 low_power_auto_engage = false

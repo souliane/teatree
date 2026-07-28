@@ -134,7 +134,13 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # the foundation leaf teatree.live_presence (so the Django resolver, the cold resolver and
 # the bare UserPromptSubmit hook share ONE implementation), and the two DeferredQuestion
 # helpers collapsed onto DeferredQuestion.pending, which already was their whole body.
-PINNED_FLAT_CORE_MODULES = 102
+# 103: +config_seed_tables.py (#3825) — the seed half of the TOML interchange (the
+# [loops]/[modes]/[schedules] classify + emit + write) carved out of config_migration.py
+# to hold that hub's growth once the two export filters and the defaults-shape emitter
+# landed. A leaf helper of the flat root config_migration.py hub and consumed by it
+# alone; owned by no existing subpackage, mirroring speak_cleaning.py beside speak.py
+# and managers_overlay.py beside managers.py.
+PINNED_FLAT_CORE_MODULES = 103
 
 
 def _flat_core_modules() -> list[str]:

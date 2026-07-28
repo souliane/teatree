@@ -81,7 +81,7 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     with (
         patch("teatree.config.resolution._load_global_rows", return_value={}),
         patch("teatree.config.resolution._load_overlay_rows", side_effect=_staged_overlay_rows),
-        patch("teatree.config.resolution._env_setting_overrides", return_value={}),
+        patch("teatree.config.resolution.env_setting_overrides", return_value={}),
     ):
         yield
 

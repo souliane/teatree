@@ -35,6 +35,7 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 
 from teatree.config.agent_enums import AgentHarnessProvider, AgentRuntime, parse_harness_name
 from teatree.config.cold_defaults import DEFAULTS_TOML as _DEFAULTS_TOML
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.cold_hook_settings import ColdHookSetting
 from teatree.config.enums import (
     Autonomy,
@@ -118,20 +119,22 @@ def _provider_or_none(value: str | None) -> AgentHarnessProvider | None:
 
 
 class _TeatreeTableTomlSource(TomlConfigSettingsSource):
-    """Feed the model the ``[teatree]`` table of ``defaults.toml`` only.
+    """Feed the model the ``[teatree]`` table of ``defaults.toml``, flattened to field names.
 
-    The file is in ``config_setting export``/``import`` shape, so the ``[teatree]``
-    sub-dict already carries the ``speak`` / ``mr_reminder`` sub-tables as nested
-    dicts on their own fields — selecting that table is the whole adaptation (no env
-    source: ``T3_*`` env handling stays in ``resolution.py``).
+    The file renders the declaration hierarchy as nested group tables, so the table is
+    flattened through the one Django-free reader
+    (:func:`~teatree.config.cold_defaults.flatten_settings_table`) before it reaches the
+    model — the model's fields are the flat namespace, and a group wrapper is not a field.
+    The ``speak`` / ``mr_reminder`` sub-tables ARE fields, so the flattener leaves them
+    whole and they arrive as the nested dicts those fields expect. No env source here:
+    ``T3_*`` env handling stays in ``resolution.py``.
     """
 
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
         super().__init__(settings_cls, toml_file=_DEFAULTS_TOML)
 
     def __call__(self) -> dict[str, Any]:
-        table = super().__call__().get("teatree", {})
-        return dict(table)
+        return flatten_settings_table(super().__call__().get("teatree", {}))
 
 
 class TeatreeSettingsSchema(BaseSettings):
