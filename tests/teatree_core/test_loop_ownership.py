@@ -670,7 +670,7 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
 
         slot = per_loop_owner_slot("dispatch")
         with (
-            mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"),
+            mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-dispatch"),
             mock.patch("teatree.loop.driver_detection.detect_driver", return_value=""),
         ):
             out = io.StringIO()
@@ -696,8 +696,8 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
 
         slot = per_loop_owner_slot("dispatch")
         with (
-            mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"),
-            mock.patch("teatree.loop.session_identity.current_session_pid", return_value=os.getpid()),
+            mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-dispatch"),
+            mock.patch("teatree.core.session_identity.current_session_pid", return_value=os.getpid()),
         ):
             call_command("loop_owner", "claim", slot=slot, stdout=io.StringIO())
         assert LoopLease.objects.get(name=slot).owner_pid == os.getpid()
