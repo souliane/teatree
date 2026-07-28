@@ -38,7 +38,11 @@ _DRAINED=false
 _SWAP_DONE=false
 _clear_quiescing_if_stranded() {
     if [ "$_DRAINED" = true ] && [ "$_SWAP_DONE" = false ]; then
-        echo "deploy: exiting after a drain but before the swap — clearing worker_quiescing so admission resumes." >&2
+        # Say "cleanup", loudly. This runs LAST, so it is the final line in the
+        # Action log and reads as the cause to anyone triaging the failure — it is
+        # not; the real error is further up. One triage of this run was nearly
+        # anchored on this very line.
+        echo "deploy: [cleanup, NOT the failure cause — see the error above] exiting after a drain but before the swap; clearing worker_quiescing so admission resumes." >&2
         docker compose -f "$COMPOSE_FILE" exec -T teatree-worker \
             t3 teatree config_setting set worker_quiescing false >/dev/null 2>&1 || true
     fi
@@ -81,8 +85,13 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # Bring the build context current (fast-forward only — never clobber local work).
-git -C "$REPO_ROOT" fetch --prune origin
-git -C "$REPO_ROOT" pull --ff-only
+# The helper runs `fetch --prune origin` then `pull --ff-only`, and between them
+# reconciles the one class of local dirt a fast-forward provably cannot lose: a
+# path whose working-tree bytes already equal the target's. Everything else is
+# retained and, if it blocks the merge, named in a fatal diagnostic. See its
+# header for the wedge this closes — a `uv.lock` silently re-locked by `uv run`
+# aborted every deploy and left the box 42 commits behind, unreported, for days.
+bash "$SCRIPT_DIR/fast-forward-checkout.sh" "$REPO_ROOT"
 echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 
 # EVERY host bind-mount SOURCE dir (compose x-teatree-common `volumes:`) must
@@ -154,8 +163,12 @@ if worker_running; then
 fi
 
 # Surface the WHY on a build/up failure — `set -e` would otherwise exit before
-# the Action log sees anything but "exited (1)".
+# the Action log sees anything but "exited (1)". The banner is load-bearing: the
+# 200 stale container lines below push the real buildkit error hundreds of lines
+# up the Action log, where it reads as unrelated noise. Name the failing step at
+# the top of the dump so triage starts in the right place.
 docker compose -f "$COMPOSE_FILE" up -d --build || {
+    echo "deploy: FATAL — 'docker compose up -d --build' failed. The cause is the buildkit/compose error ABOVE this line; what follows is stack state for context, not the failure."
     docker compose -f "$COMPOSE_FILE" ps
     docker compose -f "$COMPOSE_FILE" logs --tail 200 teatree-init teatree-worker teatree-admin
     exit 1
