@@ -84,3 +84,39 @@ class TestReclaimMarkersCommand(TestCase):
         assert result.exit_code == 0, result.stdout
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+
+class TestNegativeGraceIsRejected(TestCase):
+    """A negative grace inverts the cutoff, so this command would abandon LIVE claims.
+
+    Freeing the double-dispatch guard is this command's entire job, so a cutoff
+    pushed into the FUTURE releases a claim that is still in flight — and the
+    issue is then dispatched a second time, which is exactly what the marker
+    exists to prevent. Both graces are bounded at zero so the mistake is a usage
+    error, not a silent ``Reclaimed 1``.
+    """
+
+    def setUp(self) -> None:
+        patcher = patch("teatree.cli.loop.reclaim_markers.ensure_django")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_negative_stall_grace_is_refused(self) -> None:
+        url = "https://github.com/o/r/issues/6"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--stall-grace-hours", "-48"])
+
+        assert result.exit_code != 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+
+    def test_a_negative_orphan_grace_is_refused(self) -> None:
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url="https://github.com/o/r/issues/7")
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--orphan-grace-hours", "-48"])
+
+        assert result.exit_code != 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED

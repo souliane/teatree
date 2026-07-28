@@ -10,7 +10,9 @@ Both graces the manager takes are exposed as options. Without them the command
 could only ever reproduce the tick's own verdict, so an operator staring at a
 claim stranded minutes ago had to wait out the six-hour grace with no way to say
 "I can see it is dead, release it now" — leaving raw SQL as the only lever, which
-is exactly what this command exists to replace.
+is exactly what this command exists to replace. Zero is their floor: a negative
+grace moves the cutoff into the FUTURE, so it releases claims that are still in
+flight and re-dispatches the very issues this ledger exists to guard.
 
 Split out of ``teatree.cli.loop.app`` (module-health cap, same rationale as the
 sibling ``claim_next`` / ``slack_answer`` splits) and registered flat on
@@ -34,12 +36,14 @@ def reclaim_markers_command(
     orphan_grace_hours: float | None = typer.Option(
         None,
         "--orphan-grace-hours",
+        min=0,
         help="How long a ticket-less claim may linger before it is abandoned (default: 6). "
         "Pass 0 to free a claim stranded moments ago rather than waiting out the grace.",
     ),
     stall_grace_hours: float | None = typer.Option(
         None,
         "--stall-grace-hours",
+        min=0,
         help="How long a claim whose ticket stopped moving may hold its slot (default: 24).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the reconcile result as JSON."),

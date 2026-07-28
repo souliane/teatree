@@ -281,7 +281,8 @@ class TestReconcileStalledTicket(TestCase):
     def test_keeps_a_ticket_with_an_active_task(self) -> None:
         url = "https://github.com/o/r/issues/203"
         marker = self._stalled(url)
-        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+        pending = TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+        Task.objects.filter(pk=pending.pk).update(created_at=timezone.now() - timedelta(hours=72))
 
         result = ImplementedIssueMarker.objects.reconcile_stale("acme")
 
