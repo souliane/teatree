@@ -4053,8 +4053,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  last fire, and next tick.                                   │
 │ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
 │                  one per line, sorted.                                       │
-│ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
-│                  terminal/gone, freeing intake budget.                       │
+│ reclaim-markers  Release non-terminal markers whose ticket is terminal,      │
+│                  gone, or stalled, freeing intake budget.                    │
 │ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
 │                  presets/schedules or `loop override`.                       │
 │ resume           Resume a paused OR disabled mini-loop — EMERGENCY-only;     │
@@ -4350,14 +4350,20 @@ Usage: t3 loop intake-loops [OPTIONS]
 ```
 Usage: t3 loop reclaim-markers [OPTIONS]
 
- Release orphaned non-terminal markers whose ticket is terminal/gone, freeing
- intake budget.
+ Release non-terminal markers whose ticket is terminal, gone, or stalled,
+ freeing intake budget.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Restrict to one overlay (default: reconcile every     │
-│                        overlay's markers).                                   │
-│ --json                 Emit the reconcile result as JSON.                    │
-│ --help                 Show this message and exit.                           │
+│ --overlay                   TEXT   Restrict to one overlay (default:         │
+│                                    reconcile every overlay's markers).       │
+│ --orphan-grace-hours        FLOAT  How long a ticket-less claim may linger   │
+│                                    before it is abandoned (default: 6). Pass │
+│                                    0 to free a claim stranded moments ago    │
+│                                    rather than waiting out the grace.        │
+│ --stall-grace-hours         FLOAT  How long a claim whose ticket stopped     │
+│                                    moving may hold its slot (default: 24).   │
+│ --json                             Emit the reconcile result as JSON.        │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
