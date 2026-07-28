@@ -15,6 +15,7 @@ from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import renew_lease as _renew_task_lease
+from teatree.core.models.task_claim import window_parked as _window_parked
 from teatree.core.models.task_phase_disposition import (
     dispose_unshippable_review,
     escalate_unmatched_phase_transition,
@@ -195,6 +196,9 @@ class Task(models.Model):
 
     def renew_lease(self, *, lease_seconds: int = 300) -> None:
         _renew_task_lease(self, lease_seconds=lease_seconds)
+
+    def is_window_parked(self, now: datetime | None = None) -> bool:
+        return _window_parked(self, now)
 
     def route_to_headless(self, *, reason: str = "") -> None:
         self._route(self.ExecutionTarget.HEADLESS, reason)
