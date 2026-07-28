@@ -908,6 +908,18 @@ class _RetentionSettings:
     # ``0`` disables that table's pruning entirely. Per-overlay overridable.
     task_attempt_retention_days: int = 30
     incoming_event_retention_days: int = 30
+    # The PARK lane's own window — separate from the terminal-owned rule above, and
+    # deliberately shorter. A limit-park is a scheduling event on a task the park
+    # itself RETURNS to the queue PENDING, so a park row's owning task is by
+    # construction NON-terminal and the terminal-owned double guard can never see
+    # one: the very rows that grew this table to ~340k are the rows the sanctioned
+    # prune structurally cannot reach. This lane keys on the canonical
+    # ``limit_parked:`` marker instead, and never touches a row carrying billed
+    # telemetry. 7 days because a park's diagnostic value is "is the fleet parked
+    # NOW", which the 24h park-spin detector and ``park_repeats`` already answer;
+    # a week is generous for after-the-fact forensics. ``0`` disables the lane.
+    # Per-overlay overridable.
+    park_attempt_retention_days: int = 7
     # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
     # consults (``Ticket.has_active_work``). An agent that crashed without closing
     # its Session would otherwise pin its ticket — and so its worktree, its

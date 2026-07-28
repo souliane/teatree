@@ -25,6 +25,7 @@ import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 import teatree.core.management.commands._workspace.cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace.docker as ws_docker_mod
 import teatree.core.management.commands._workspace.salvage as ws_salvage_mod
+import teatree.core.management.commands._workspace.stamp_identity as ws_stamp_identity_mod
 import teatree.core.management.commands._workspace.stash as ws_stash_mod
 import teatree.core.management.commands._workspace.ticket_intake as workspace_intake_mod
 import teatree.core.management.commands.workspace as workspace_mod
@@ -117,10 +118,10 @@ class TestStampIdentity(TestCase):
     def _stamp(self, url: str, slug: str) -> tuple[object, list[str]]:
         set_calls: list[str] = []
         with (
-            patch.object(workspace_mod.git, "remote_url", return_value=url),
-            patch.object(workspace_mod.git, "remote_slug", return_value=slug),
+            patch.object(ws_stamp_identity_mod.git, "remote_url", return_value=url),
+            patch.object(ws_stamp_identity_mod.git, "remote_slug", return_value=slug),
             patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh_public),
-            patch.object(workspace_mod, "set_local_noreply_identity", side_effect=set_calls.append),
+            patch.object(ws_stamp_identity_mod, "set_local_noreply_identity", side_effect=set_calls.append),
         ):
             result = workspace_mod.Command().stamp_identity(repo=".")
         return result, set_calls

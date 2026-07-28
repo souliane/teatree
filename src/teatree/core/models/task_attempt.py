@@ -67,6 +67,47 @@ class TaskAttemptQuerySet(models.QuerySet):
             task__ticket__state__in=finished,
         )
 
+    def prunable_parks(self, cutoff: datetime) -> "TaskAttemptQuerySet":
+        """Park-audit rows safe to delete — the lane :meth:`prunable` structurally cannot reach.
+
+        :meth:`prunable`'s terminal-owned double guard is the right protection for a
+        REAL attempt and the wrong question for a park: ``usage_window._record_park``
+        returns the task to the queue PENDING, so a park row's owning task is by
+        construction NON-terminal and no park row is ever a candidate there. That is
+        why a park-bloated table reports "would prune 0" — the sanctioned remedy is a
+        guaranteed no-op on exactly the rows that bloated it.
+
+        This lane asks the park's own three questions instead.
+
+        **Is it a park?** ``error`` carries :data:`LIMIT_PARKED_PREFIX` — the ONE
+        canonical marker, written by the single ``_record_park`` chokepoint and
+        already the definition the coalescer, the iteration stamp and the park-spin
+        detector share. An exact prefix, not a shape heuristic: a ``stuck_loop:``
+        lease-loss breach is a genuine watchdog failure record, and is deliberately
+        NOT swept in with it.
+
+        **Does it carry billed telemetry?** Never delete a row holding a token or
+        cost figure. A park records none by construction, so this can only fire on a
+        future writer or a marker collision — which is the point: the priced rows are
+        the entire cost ledger, and no marker-string change may put them in reach.
+
+        **Is it stale?** Measured on ``ended_at``, the LAST time the park was
+        observed — not ``started_at``. A repeated park folds into ONE row whose
+        ``started_at`` stays ancient while ``ended_at`` refreshes each poll, so a
+        ``started_at`` window would delete exactly the live "still parked, N polls
+        later" row. ``started_at`` is the fallback when ``ended_at`` was never set.
+        """
+        return self.filter(
+            error__startswith=LIMIT_PARKED_PREFIX,
+            input_tokens__isnull=True,
+            output_tokens__isnull=True,
+            cache_read_tokens__isnull=True,
+            cache_write_tokens__isnull=True,
+            cost_usd__isnull=True,
+        ).filter(
+            models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
+        )
+
     def headless(self) -> "TaskAttemptQuerySet":
         """Only the attempts that ran a billed detached headless-SDK run.
 

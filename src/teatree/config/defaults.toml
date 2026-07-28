@@ -252,6 +252,7 @@ worktree_stale_days = 30
 [teatree.Infrastructure."Retention & sweeps"]
 incoming_event_retention_days = 30
 max_concurrent_local_stacks = 1
+park_attempt_retention_days = 7
 session_stale_after_hours = 12
 task_attempt_retention_days = 30
 task_sweep_disabled = false

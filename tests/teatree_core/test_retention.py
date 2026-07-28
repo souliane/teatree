@@ -19,6 +19,9 @@ from teatree.core.retention import apply_retention, plan_retention
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _RECENT = timezone.now() - dt.timedelta(days=2)
+#: Older than the 7-day park window, newer than the 30-day terminal-owned one — the
+#: age band that separates the two lanes in a test.
+_PARK_AGE = timezone.now() - dt.timedelta(days=10)
 
 
 def _attempt(
@@ -34,6 +37,35 @@ def _attempt(
     attempt = TaskAttempt.objects.create(task=task, error=error)
     # started_at is auto_now_add — age it with a direct UPDATE.
     TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=started_at)
+    return TaskAttempt.objects.get(pk=attempt.pk)
+
+
+def _park(
+    *,
+    ended_at: dt.datetime = _PARK_AGE,
+    started_at: dt.datetime | None = None,
+    reason: str = "admission: all_accounts_exhausted window on lane 'subscription' active",
+    task_status: str = Task.Status.PENDING,
+    ticket_state: str = Ticket.State.STARTED,
+    **telemetry: object,
+) -> TaskAttempt:
+    """A park-audit row in the shape ``usage_window._record_park`` writes.
+
+    Defaults mirror the production shape the prune must reach: the owning task is
+    back PENDING (a park RETURNS the task to the queue) on a live ticket, which is
+    exactly why the terminal-owned lane can never see it.
+    """
+    ticket = Ticket.objects.create(overlay="acme", state=ticket_state)
+    session = Session.objects.create(ticket=ticket)
+    task = Task.objects.create(ticket=ticket, session=session, status=task_status)
+    attempt = TaskAttempt.objects.create(
+        task=task,
+        exit_code=1,
+        error=f"{LIMIT_PARKED_PREFIX}{reason}",
+        ended_at=ended_at,
+        **telemetry,
+    )
+    TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=started_at or ended_at)
     return TaskAttempt.objects.get(pk=attempt.pk)
 
 
@@ -151,8 +183,123 @@ class ApplyRetentionTestCase(TestCase):
     def test_apply_with_zero_window_deletes_nothing(self) -> None:
         _attempt()
         _event(idempotency_key="k1")
-        settings = UserSettings(task_attempt_retention_days=0, incoming_event_retention_days=0)
+        settings = UserSettings(
+            task_attempt_retention_days=0, incoming_event_retention_days=0, park_attempt_retention_days=0
+        )
         plan = apply_retention(settings=settings)
         assert plan.total_rows == 0
         assert TaskAttempt.objects.count() == 1
         assert IncomingEvent.objects.count() == 1
+
+
+class ParkLaneReachesWhatTerminalOwnedCannotTestCase(TestCase):
+    """The defect the park lane exists to close (#3693 follow-up).
+
+    A park RETURNS its task to the queue PENDING on a live ticket, so
+    ``prunable``'s terminal-owned double guard structurally excludes every park
+    row: the sanctioned remedy the doctor prescribes for a park-bloated table is
+    a guaranteed no-op on exactly the rows that bloated it. These tests pin both
+    halves — the terminal-owned lane still cannot see a park, and the park lane can.
+    """
+
+    def test_terminal_owned_lane_cannot_reach_a_live_task_park_row(self) -> None:
+        _park()
+        assert TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
+
+    def test_park_lane_reaches_the_live_task_park_row(self) -> None:
+        park = _park()
+        prunable = TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7))
+        assert list(prunable.values_list("pk", flat=True)) == [park.pk]
+
+
+class ParkPrunableGuardTestCase(TestCase):
+    """Each guard goes RED if dropped — the prunable set would then hold the protected row."""
+
+    def test_never_prunes_a_row_without_the_park_marker(self) -> None:
+        # The identity key is the ONE canonical marker `usage_window._record_park`
+        # writes. A genuine crash of the same age is diagnostic signal, not junk —
+        # `stuck_loop:` (the lease-loss breach) is precisely such a row.
+        _attempt(error="stuck_loop: lease lost for task 375: re-claimed by another worker", started_at=_PARK_AGE)
+        assert TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7)).count() == 0
+
+    def test_never_prunes_a_park_carrying_cost(self) -> None:
+        # The 1,203 telemetry-carrying rows ARE the entire cost ledger. Belt-and-braces:
+        # the marker alone already implies no telemetry, but a future writer (or a
+        # marker-string collision) must not be able to destroy the only cost history.
+        _park(cost_usd=1.23)
+        assert TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7)).count() == 0
+
+    def test_never_prunes_a_park_carrying_output_tokens(self) -> None:
+        _park(output_tokens=4096)
+        assert TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7)).count() == 0
+
+    def test_never_prunes_a_park_carrying_cache_tokens(self) -> None:
+        _park(cache_read_tokens=128)
+        assert TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7)).count() == 0
+
+    def test_never_prunes_a_park_within_the_window(self) -> None:
+        _park(ended_at=timezone.now() - dt.timedelta(days=1))
+        assert TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7)).count() == 0
+
+    def test_window_is_measured_on_the_last_observation_not_the_first(self) -> None:
+        # #3680 folds a repeated park into ONE row whose `started_at` stays ancient
+        # while `ended_at` refreshes each poll. Windowing on `started_at` would delete
+        # exactly the row that says "still parked, N polls later" — the live signal
+        # `_check_park_spin` and the coalescer both read.
+        _park(started_at=timezone.now() - dt.timedelta(days=60), ended_at=timezone.now() - dt.timedelta(hours=1))
+        assert TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7)).count() == 0
+
+    def test_falls_back_to_started_at_when_never_ended(self) -> None:
+        park = _park()
+        TaskAttempt.objects.filter(pk=park.pk).update(ended_at=None)
+        prunable = TaskAttempt.objects.prunable_parks(timezone.now() - dt.timedelta(days=7))
+        assert list(prunable.values_list("pk", flat=True)) == [park.pk]
+
+
+class ParkRetentionPlanTestCase(TestCase):
+    def test_plan_reports_the_park_lane_separately_from_the_terminal_owned_lane(self) -> None:
+        _park()
+        _attempt()
+        plan = plan_retention()
+        (parks,) = (t for t in plan.tables if t.table == "TaskAttempt (park)")
+        (attempts,) = (t for t in plan.tables if t.table == "TaskAttempt")
+        assert parks.rows == 1
+        assert attempts.rows == 1
+        assert plan.total_rows == 2
+        assert TaskAttempt.objects.count() == 2  # a plan deletes nothing
+
+    def test_zero_park_window_disables_the_park_lane(self) -> None:
+        _park()
+        plan = plan_retention(settings=UserSettings(park_attempt_retention_days=0))
+        (parks,) = (t for t in plan.tables if t.table == "TaskAttempt (park)")
+        assert parks.disabled is True
+        assert parks.rows == 0
+
+
+class ParkRetentionApplyTestCase(TestCase):
+    def test_apply_deletes_the_park_and_keeps_every_protected_row(self) -> None:
+        park = _park()
+        recent_park = _park(ended_at=timezone.now() - dt.timedelta(days=1))
+        priced_park = _park(cost_usd=0.42)
+        crash = _attempt(error="stuck_loop: lease lost for task 375", started_at=_PARK_AGE)
+
+        plan = apply_retention()
+
+        (parks,) = (t for t in plan.tables if t.table == "TaskAttempt (park)")
+        assert parks.rows == 1
+        assert not TaskAttempt.objects.filter(pk=park.pk).exists()
+        assert TaskAttempt.objects.filter(pk=recent_park.pk).exists()
+        assert TaskAttempt.objects.filter(pk=priced_park.pk).exists()
+        assert TaskAttempt.objects.filter(pk=crash.pk).exists()
+
+    def test_apply_batches_the_delete_so_no_single_statement_spans_the_whole_set(self) -> None:
+        # A 330k-row single-statement DELETE holds the SQLite write lock for its whole
+        # duration and can collide with a converging deploy. Batching is a correctness
+        # requirement of the operational context, so it is pinned, not incidental.
+        for _ in range(5):
+            _park()
+        plan = apply_retention(settings=UserSettings(park_attempt_retention_days=7), batch_size=2)
+        (parks,) = (t for t in plan.tables if t.table == "TaskAttempt (park)")
+        assert parks.rows == 5
+        assert parks.batches == 3
+        assert TaskAttempt.objects.count() == 0

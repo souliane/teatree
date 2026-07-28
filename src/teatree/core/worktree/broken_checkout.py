@@ -14,9 +14,18 @@ recoverable git work actually lives: the checkout's admin entry is gone, but
 both halves — the dir is provably not a repo (:data:`CheckoutState.NOT_A_CHECKOUT`,
 never a probe that merely errored) AND the branch carries nothing that exists on no
 remote. Anything short of that keeps the row and names why.
+
+The push-state half is only as fresh as the clone's ``refs/remotes/*``, which go
+STALE the moment a branch is deleted upstream by anything other than this clone (a
+forge auto-delete-on-merge, a sibling clone). Against a stale ref the #706 guard
+answers "pushed" for a commit that is on NO remote — the misread that authorises
+reaping the last copy of unmerged work. So :class:`RemoteRefresh` refreshes the
+clone before any push state is read, and a FAILED refresh keeps the row: unknown
+remote state must never authorise a release. It is memoised per clone, so a sweep
+over many rows of one clone fetches once.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -48,12 +57,35 @@ class BrokenCheckoutVerdict:
     reason: str = ""
 
 
-def classify_broken_checkout(worktree: Worktree, *, workspace: Path) -> BrokenCheckoutVerdict:
+@dataclass(slots=True)
+class RemoteRefresh:
+    """Memoised ``fetch --all --prune`` per clone — the freshness precondition on #706.
+
+    One instance per sweep: :meth:`succeeded` fetches a given clone at most once and
+    replays the verdict for every later row of the same clone, so a ten-row release
+    costs one network round trip instead of ten. A ``False`` verdict is likewise
+    remembered, so an offline host is not re-probed per row.
+    """
+
+    _verdicts: dict[Path, bool] = field(default_factory=dict)
+
+    def succeeded(self, repo_main: Path) -> bool:
+        if repo_main not in self._verdicts:
+            self._verdicts[repo_main] = git.fetch_all_prune(str(repo_main))
+        return self._verdicts[repo_main]
+
+
+def classify_broken_checkout(
+    worktree: Worktree, *, workspace: Path, refresh: RemoteRefresh | None = None
+) -> BrokenCheckoutVerdict:
     """Decide whether *worktree*'s row may be released because its checkout is dead.
 
     ``LIVE_CHECKOUT`` means this pass has no business here — the dir is a working
     checkout, or it is absent entirely (an ordinary reaped worktree the done pass
     owns). The other three states all describe a dir that EXISTS but is not a repo.
+
+    Pass a shared *refresh* when classifying several rows so their common clones are
+    fetched once; the default is a private one-shot cache.
     """
     wt_path = Path(_resolve_worktree_path(workspace, worktree))
     if not wt_path.is_dir():
@@ -66,16 +98,23 @@ def classify_broken_checkout(worktree: Worktree, *, workspace: Path) -> BrokenCh
             BrokenCheckout.UNVERIFIABLE,
             f"git could not say whether {wt_path} is a checkout — keeping until it can",
         )
-    return _branch_verdict(worktree, workspace=workspace, wt_path=wt_path)
+    return _branch_verdict(worktree, workspace=workspace, wt_path=wt_path, refresh=refresh or RemoteRefresh())
 
 
-def _branch_verdict(worktree: Worktree, *, workspace: Path, wt_path: Path) -> BrokenCheckoutVerdict:
+def _branch_verdict(
+    worktree: Worktree, *, workspace: Path, wt_path: Path, refresh: RemoteRefresh
+) -> BrokenCheckoutVerdict:
     """Judge the dead checkout by its branch in the source clone.
 
     The checkout is proven dead at this point, so the only work that can still be
     recovered is what the clone holds. A clone that cannot be resolved leaves that
     unanswerable, which is a KEEP — the same fail-closed posture the #706 guard
     takes on an inconclusive probe.
+
+    Order is load-bearing: a branch whose REF IS GONE has no commits to lose, so it
+    is decided before the refresh and stays releasable on an offline host. Only the
+    push-state question below actually depends on fresh tracking refs, and it fails
+    closed without them.
     """
     repo_main = resolve_clone_path(workspace, worktree)
     if repo_main is None or not repo_main.is_dir():
@@ -86,6 +125,12 @@ def _branch_verdict(worktree: Worktree, *, workspace: Path, wt_path: Path) -> Br
     branch = worktree.branch
     if not branch or not _branch_ref_exists(repo_main, branch):
         return BrokenCheckoutVerdict(BrokenCheckout.RELEASABLE, _releasable_reason(wt_path, "its branch ref is gone"))
+    if not refresh.succeeded(repo_main):
+        return BrokenCheckoutVerdict(
+            BrokenCheckout.UNVERIFIABLE,
+            f"could not refresh {repo_main}'s remote refs, so '{branch}' would be judged on stale "
+            "tracking refs (which read unpushed work as shipped) — keeping",
+        )
     blockers = _unrecoverable_work(repo_main, branch)
     if blockers:
         return BrokenCheckoutVerdict(
@@ -126,4 +171,4 @@ def _unrecoverable_work(repo_main: Path, branch: str) -> str:
     return f"{len(unpushed)} commit(s) on NO remote, content not upstream: {preview}"
 
 
-__all__ = ["BrokenCheckout", "BrokenCheckoutVerdict", "classify_broken_checkout"]
+__all__ = ["BrokenCheckout", "BrokenCheckoutVerdict", "RemoteRefresh", "classify_broken_checkout"]
