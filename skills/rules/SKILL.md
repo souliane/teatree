@@ -471,6 +471,17 @@ The gate is **satisfiable, not pure suppression**. The teatree code paths consul
 - **Relationship to the notify-_after_ rule:** this is the _pre_-gate; the post-on-behalf notification is the _after_ receipt, now a real default-ON DB-home `UserSettings` field `notify_on_post_on_behalf` (default `true`, per-overlay overridable, **no env var**) — set with `t3 <overlay> config_setting set notify_on_post_on_behalf <true|false>` (`--overlay <name>` for the per-overlay scope). After every colleague-visible on-behalf publish, `teatree.core.on_behalf_post_receipt.notify_user_on_behalf_post` DMs the user the destination, a clickable artifact link, and a one-line summary (recorded in the `BotPing` ledger; record-and-proceed — it never blocks or rolls back the post). This durable enforcement **retires** the per-session memory `notify-user-on-every-post-on-behalf` (souliane/teatree#949). Both ship on. The user widens `on_behalf_post_mode` per-overlay (`"draft_or_ask"` → `"immediate"`) once confident the system posts well via `config_setting set on_behalf_post_mode immediate --overlay <name>`; set `notify_on_post_on_behalf` to `false` per-overlay independently — the notify stays on longer.
 - **Backward compatibility:** the legacy `ask_before_post_on_behalf` boolean is retired — under the #1775 partition its old `[teatree]` TOML key is ignored on read. Use `on_behalf_post_mode` (DB-home): `t3 <overlay> config_setting set on_behalf_post_mode <value>`.
 
+**Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete.
+
+```bash
+# colleague channel (or a colleague's DM) — gated, then routed to the user's own identity:
+t3 <overlay> notify post --channel <channel> --text '<message>'
+# the user's OWN DM (bot→user self-DM) — exempt from the gate, never on-behalf:
+t3 <overlay> notify send '<body>' --idempotency-key <key>
+```
+
+Never hand-roll the colleague egress: a raw Slack Web API call carrying your own credential, or any post/react outside that class, fails an import-guard test in the build.
+
 **Failure mode this prevents:** the agent posts a poorly-worded reply or an approval the user did not intend under the user's name to a colleague, and the user only learns of it after the fact (or via the notify receipt). The pre-gate keeps the user in control of their own voice until they choose to delegate it.
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
