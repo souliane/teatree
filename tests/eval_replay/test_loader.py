@@ -294,6 +294,37 @@ class TestLoadEvalYaml:
         with pytest.raises(EvalSpecError, match="lane"):
             load_eval_yaml(_write(tmp_path, body))
 
+    def test_defaults_surface_to_headless(self, tmp_path: Path) -> None:
+        # Absent means BLOCKING, so no scenario can become advisory by omission.
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.surface == "headless"
+
+    def test_parses_the_interactive_surface(self, tmp_path: Path) -> None:
+        body = (
+            "- name: chip\n"
+            "  scenario: grades the interactive tool call\n"
+            "  surface: interactive\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: AskUserQuestion\n"
+            '      args.questions: contains "?"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.surface == "interactive"
+
+    def test_rejects_unknown_surface(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  surface: slack\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="surface"):
+            load_eval_yaml(_write(tmp_path, body))
+
     def test_default_agent_path_overrides_global_default_when_omitted(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL), default_agent_path="skills/ship/SKILL.md")[0]
         assert spec.agent_path == "skills/ship/SKILL.md"

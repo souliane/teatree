@@ -81,8 +81,11 @@ Beyond Anthropic's `prompt` / `expected_output` / `files`, teatree's `EvalSpec`
 adds: `agent_path` (which skill to load + coverage attribution), `expect`
 matchers (machine-checkable, not only a prose rubric), an optional `judge:`
 block, `model` / `max_turns` / `tools` (run controls), `agent_sections` (send
-only some `##` sections of the SKILL.md to cut token cost), and `lane`
-(`clean_room` default, or `under_load` to reproduce real-session context drift).
+only some `##` sections of the SKILL.md to cut token cost), `lane`
+(`clean_room` default, or `under_load` to reproduce real-session context drift),
+and `surface` (`headless` default and BLOCKING, or `interactive` for a scenario
+grading the Claude-interactive `AskUserQuestion` tool call — still run and still
+reported, but advisory, so a bundled-CLI rendering change cannot red a gating lane).
 The cost-bounds, pass@k trials, and ratchets live alongside in `evals/`.
 
 ## Make an eval that can fail (anti-vacuous)

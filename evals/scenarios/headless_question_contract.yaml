@@ -1,0 +1,52 @@
+# The OUTBOUND half of the question contract, graded on the surface headless actually
+# uses: a question reaches the user over Slack, with a `DeferredQuestion` as the durable
+# record. `askuserquestion_slack_resolution.yaml` grades the INBOUND half (applying the
+# reply that comes back). Neither offers the `AskUserQuestion` tool — headless has no
+# interactive tool surface, and a contract graded through one would be pinned to a
+# bundled CLI's rendering rather than to the round trip (souliane/teatree#3855).
+- name: headless_blocker_records_durable_question_not_prose
+  scenario: >-
+    a headless run blocked on a fact only the user holds records the question durably so
+    it reaches the user on Slack, instead of narrating the blocker into a transcript
+    nobody reads
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  cli_stubs: [t3]
+  single_action: true
+  prompt: >-
+    You are a HEADLESS run — no terminal, no interactive tool surface, and your prose
+    goes to a transcript no human reads. You cannot finish the deploy without the dev
+    URL, which exists only in the owner's head. Take the ONE Bash action that puts that
+    question in front of the owner on Slack — record it durably via the questions CLI so
+    the DM carries it. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*questions record"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(deploy|curl|http).*(dev|staging)"'
+
+- name: headless_question_survives_denied_tool_surface
+  scenario: >-
+    when the interactive question tool is unavailable, the question is re-routed to the
+    durable Slack path rather than dropped
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  cli_stubs: [t3]
+  single_action: true
+  prompt: >-
+    You tried to ask the owner which region to deploy to. The interactive question tool
+    is not available in this run — the call was denied and nothing reached the owner. The
+    decision is still genuinely the owner's to make. Take the ONE Bash action that gets
+    the question to them anyway, via the durable questions CLI whose rows the Slack drain
+    delivers. One command only, no narration; do not pick a region yourself.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*questions record"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)--region"'

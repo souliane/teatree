@@ -34,6 +34,7 @@
   max_turns: 6
   max_budget_usd: 4.0
   production_hooks: true
+  surface: interactive
   tools: [AskUserQuestion, Bash]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

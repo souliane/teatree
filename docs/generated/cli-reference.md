@@ -2295,6 +2295,18 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     the same catalog but     │
 │                                                     pass different --lane    │
 │                                                     subsets.                 │
+│ --surface                                  TEXT     Run only scenarios       │
+│                                                     grading this question    │
+│                                                     surface (headless |      │
+│                                                     interactive). Omit to    │
+│                                                     run both (default,       │
+│                                                     unchanged).              │
+│                                                     `interactive` scenarios  │
+│                                                     grade the                │
+│                                                     Claude-interactive       │
+│                                                     AskUserQuestion tool     │
+│                                                     call and are ADVISORY —  │
+│                                                     reported, never gating.  │
 │ --shard                                    TEXT     Run only the index/total │
 │                                                     shard of the             │
 │                                                     (lane-filtered) catalog, │

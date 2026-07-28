@@ -16,6 +16,8 @@ import dataclasses
 import json
 
 from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
+from teatree.eval.surface import INTERACTIVE_QUESTION_TOOL
 
 POSITIVE = "positive"
 NEGATIVE = "negative"
@@ -139,6 +141,18 @@ class Scenario:
     single_action: bool = False
 
     @property
+    def surface(self) -> str:
+        """DERIVED, never declared: a required ``AskUserQuestion`` matcher is interactive-only.
+
+        Emitting the label from the matcher shape rather than a hand-set field means a
+        generated scenario can never drift out of sync with the guard that enforces it
+        (``teatree.eval.surface.mislabelled_interactive_specs``).
+        """
+        required = (e for e in self.expects if e.kind == POSITIVE)
+        interactive = any(e.tool.casefold() == INTERACTIVE_QUESTION_TOOL.casefold() for e in required)
+        return INTERACTIVE_SURFACE if interactive else HEADLESS_SURFACE
+
+    @property
     def has_negative(self) -> bool:
         return any(e.kind == NEGATIVE for e in self.expects)
 
@@ -245,6 +259,8 @@ def scenario_yaml(scenario: Scenario) -> str:
         lines.append("  production_hooks: true")
     if scenario.single_action:
         lines.append("  single_action: true")
+    if scenario.surface != HEADLESS_SURFACE:
+        lines.append(f"  surface: {scenario.surface}")
     lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",

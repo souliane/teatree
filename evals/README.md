@@ -1356,6 +1356,23 @@ Fields:
   canary (a prose-only decision that can pass ONLY via the #807 bounce). See
   `teatree.eval.api_runner` (`_t3_plugin`, `hooked_env`, the fail-loud) and
   `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
+- `surface` — optional `headless` (default) or `interactive`. The question/answer
+  surface the scenario grades, an axis ORTHOGONAL to `lane` (which selects the
+  harness mode). `headless` BLOCKS: it grades the contract teatree owns — a question
+  reaches the user over Slack, with a `DeferredQuestion` as the durable record, and
+  the answer comes back. `interactive` is ADVISORY: the scenario grades the
+  Claude-interactive `AskUserQuestion` TOOL-CALL rendering, whose wire shape belongs
+  to a bundled `claude` CLI generation (one at/after 2.1.204 emits a markdown chip no
+  `tool_call` matcher can see). Advisory scenarios are still run and still reported —
+  the lane detail carries an `N advisory failed` count — but their failure never flips
+  a verdict, so Claude Code interactive stays graded without gating headless.
+  `t3 eval run --surface <headless|interactive>` (`cli/eval/surface_filter.py`) slices
+  the catalog outright. Absent means `headless`, so advisory status is always an
+  explicit opt-in. A scenario that cannot pass without an `AskUserQuestion` tool call
+  MUST carry the label — `tests/eval_replay/test_question_surface.py` reds otherwise,
+  and that gate is what replaced the `claude-agent-sdk` Dependabot quarantine
+  (souliane/teatree#3855). Generated scenarios DERIVE it from their matcher shape
+  (`scripts/eval/corpus_gen/model.py::Scenario.surface`) rather than declaring it.
 - `expect` — list of matchers (see below); required unless a `judge` block is
   present (a judge-only scenario may omit it).
 - `judge` — optional LLM-judge block (`rubric`, optional `model`); see

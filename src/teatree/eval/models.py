@@ -63,6 +63,17 @@ CLEAN_ROOM_LANE = "clean_room"
 UNDER_LOAD_LANE = "under_load"
 PERMITTED_LANES: frozenset[str] = frozenset({CLEAN_ROOM_LANE, UNDER_LOAD_LANE})
 
+#: The question/answer SURFACE a scenario grades — an axis orthogonal to ``lane``
+#: (which selects the harness mode). ``headless`` is the default and the BLOCKING
+#: surface: the contract teatree must guarantee is that a question REACHES the user
+#: and an answer comes back, over Slack with a ``DeferredQuestion`` as the durable
+#: record. ``interactive`` marks a scenario that grades the Claude-interactive
+#: ``AskUserQuestion`` TOOL-CALL rendering — still run and still reported, but
+#: ADVISORY, so a bundled-CLI rendering change reds nothing that gates.
+HEADLESS_SURFACE = "headless"
+INTERACTIVE_SURFACE = "interactive"
+PERMITTED_SURFACES: frozenset[str] = frozenset({HEADLESS_SURFACE, INTERACTIVE_SURFACE})
+
 
 @dataclasses.dataclass(frozen=True)
 class Matcher:
@@ -328,6 +339,13 @@ class EvalSpec:
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
     lane: str = CLEAN_ROOM_LANE
+    #: Which question/answer surface the scenario grades. ``headless`` (the default,
+    #: every surface-agnostic spec) BLOCKS. ``interactive`` is the opt-in advisory
+    #: label for a scenario that hard-requires the Claude-interactive
+    #: ``AskUserQuestion`` tool-call rendering: it is still run and still reported,
+    #: but its failure never flips a lane verdict, so the headless question contract
+    #: is the one whose failure gates. See :mod:`teatree.eval.surface`.
+    surface: str = HEADLESS_SURFACE
     context_preamble: str = ""
     #: Per-scenario USD budget ceiling, overriding the run-level
     #: ``max_budget_usd``. ``None`` defers to the run default. A delegation scenario

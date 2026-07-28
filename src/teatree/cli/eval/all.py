@@ -43,6 +43,7 @@ from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.skip_guard import UnmeteredApiRunError, assert_api_run_was_metered
+from teatree.eval.surface import is_advisory
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.llm.anthropic_limits import CreditExhaustedError
 from teatree.utils.django_bootstrap import ensure_django
@@ -211,9 +212,14 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
             setup_hint=AI_LANE_SETUP_HINT,
         )
     executed = [r for r in results if not r.skipped]
-    failed = sum(1 for r in executed if not r.passed)
+    # An interactive-surface scenario is graded and REPORTED but never gates: its verdict
+    # rides a bundled claude CLI's AskUserQuestion rendering, not the question contract
+    # teatree owns. Splitting the counts here is what lets the SDK float again (#3855).
+    advisory_failed = sum(1 for r in executed if not r.passed and is_advisory(r.spec))
+    failed = sum(1 for r in executed if not r.passed and not is_advisory(r.spec))
     n_skipped = len(results) - len(executed)
     cost = "api (fresh run)" if backend != TRANSCRIPT_BACKEND else "transcript ($0)"
+    advisory_detail = f", {advisory_failed} advisory failed" if advisory_failed else ""
     # ANY skipped scenario means the lane did not grade the whole suite — a
     # partial pass on arbitrarily stale coverage ("1 graded, 0 failed, 165
     # skipped") must NOT read a clean green. The setup hint fires on any skip>0,
@@ -224,7 +230,7 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
         cost=cost,
         passed=failed == 0,
         skipped=not executed,
-        detail=f"{len(executed)} graded, {failed} failed, {n_skipped} skipped",
+        detail=f"{len(executed)} graded, {failed} failed, {n_skipped} skipped{advisory_detail}",
         setup_hint=AI_LANE_SETUP_HINT if n_skipped > 0 else None,
     )
 
