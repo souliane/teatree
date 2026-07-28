@@ -1,29 +1,29 @@
-"""Tests for :mod:`teatree.core.availability` — the surviving presence + mirror primitives (#58, #61).
+"""Tests for :mod:`teatree.live_presence` — the keyboard heartbeat (#58, #61, #3826).
 
-Post-merge the standalone availability resolver is gone (the mode is resolved by
-:mod:`teatree.core.mode_resolution`). What remains here is the live-presence
-heartbeat (:class:`PresenceHeartbeat`, the resolver's presence-sensitivity input +
-the #189 per-turn escape), the durable file paths, and the pending-question queue.
+The mode is resolved by :mod:`teatree.core.mode_resolution` (Django) and
+:mod:`teatree.config.cold_mode` (cold hooks); #3826 deleted the mirror file that used
+to sit between them. What lives here is the heartbeat those resolvers read as an
+INPUT: the presence-sensitivity upgrade and the #189 per-turn escape.
 """
 
 import json
-import sqlite3
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from teatree.core import availability
-from teatree.core.availability import LIVE_TURN_FRESHNESS, PresenceHeartbeat
-from teatree.paths import DATA_DIR
+from teatree import live_presence
+from teatree.live_presence import LIVE_TURN_FRESHNESS, PRESENCE_FILENAME, PresenceHeartbeat
+from teatree.paths import ControlDb
 
 
 @pytest.fixture
 def presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PresenceHeartbeat:
-    target = tmp_path / "availability_presence"
+    target = tmp_path / PRESENCE_FILENAME
     heartbeat = PresenceHeartbeat(locate=lambda: target)
-    monkeypatch.setattr(availability, "PRESENCE", heartbeat)
+    monkeypatch.setattr(live_presence, "PRESENCE", heartbeat)
     return heartbeat
 
 
@@ -69,7 +69,7 @@ class TestPresenceHeartbeat:
 class TestIsLiveUserTurnKillProof:
     """Mutation kill-proof for ``PresenceHeartbeat.is_live_user_turn`` (#2058).
 
-    ``availability.py`` is a high-value mutation module whose diff-scoped
+    ``live_presence.py`` is a high-value mutation module whose diff-scoped
     mutmut run executes ONLY this file. Each assertion pins one mutable point
     so a mutant (guard-negation flip, comparison-operator swap, return-value
     flip, ``or``→``and``) is caught here rather than surviving.
@@ -177,32 +177,13 @@ class TestRefreshLiveTurnKillProof:
 
 
 class TestDurableFilePaths:
-    """``override_path`` / ``presence_path`` resolve to their exact DATA_DIR files."""
+    """``presence_path`` resolves under the PRIMARY data dir, never a per-worktree copy."""
 
-    def test_override_path_is_data_dir_json(self) -> None:
-        # Kills the ``/`` -> ``*`` operator swap (raises TypeError when called)
-        # and the filename XX-wrap / upper-case mutations.
-        assert availability.override_path() == DATA_DIR / "availability_override.json"
-
-    def test_presence_path_is_data_dir_presence(self) -> None:
-        assert availability.presence_path() == DATA_DIR / "availability_presence"
-
-
-def _seed_schedule(db: Path, value: object) -> None:
-    """Seed the DB-home ``availability_schedule`` setting the cold reader resolves."""
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
-            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
-            ("", "availability_schedule", json.dumps(value)),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    def test_presence_path_is_primary_data_dir_heartbeat(self) -> None:
+        # Kills the ``/`` -> ``*`` operator swap (raises TypeError when called) and
+        # the filename XX-wrap / upper-case mutations. PRIMARY, not DATA_DIR: the
+        # heartbeat describes the operator, so a worktree must not get its own.
+        assert live_presence.presence_path() == ControlDb(os.environ).primary_data_dir() / PRESENCE_FILENAME
 
 
 class TestPresenceRecordDurability:
@@ -235,12 +216,12 @@ class TestPresenceRecordDurability:
     ) -> None:
         # Kills the record mkstemp prefix/suffix/dir, fdopen encoding, and
         # json.dump sort_keys mutants.
-        mkstemp = mock.MagicMock(wraps=availability.tempfile.mkstemp)
-        fdopen = mock.MagicMock(wraps=availability.os.fdopen)
-        dump = mock.MagicMock(wraps=availability.json.dump)
-        monkeypatch.setattr(availability.tempfile, "mkstemp", mkstemp)
-        monkeypatch.setattr(availability.os, "fdopen", fdopen)
-        monkeypatch.setattr(availability.json, "dump", dump)
+        mkstemp = mock.MagicMock(wraps=live_presence.tempfile.mkstemp)
+        fdopen = mock.MagicMock(wraps=live_presence.os.fdopen)
+        dump = mock.MagicMock(wraps=live_presence.json.dump)
+        monkeypatch.setattr(live_presence.tempfile, "mkstemp", mkstemp)
+        monkeypatch.setattr(live_presence.os, "fdopen", fdopen)
+        monkeypatch.setattr(live_presence.json, "dump", dump)
         target = presence.record(now=self.AT)
         mkstemp.assert_called_once_with(prefix=".presence-", suffix=".tmp", dir=str(target.parent))
         assert fdopen.call_args.kwargs.get("encoding") == "utf-8"
@@ -250,7 +231,7 @@ class TestPresenceRecordDurability:
         self, presence: PresenceHeartbeat, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Kills the record cleanup-path ``unlink(missing_ok=True)`` mutants.
-        monkeypatch.setattr(availability.json, "dump", mock.MagicMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr(live_presence.json, "dump", mock.MagicMock(side_effect=RuntimeError("boom")))
         real_unlink = Path.unlink
         seen: list[dict[str, object]] = []
 
@@ -308,47 +289,3 @@ class TestLiveTurnWallClockDefault:
     def test_refresh_live_turn_defaults_now_to_utc(self, presence: PresenceHeartbeat) -> None:
         presence.record(session_id="s-a", now=datetime.now(tz=UTC))
         assert presence.refresh_live_turn(session_id="s-a") is True
-
-
-class TestPendingQuestions:
-    """``pending_questions_count`` / ``iter_pending_questions`` honour ``using``."""
-
-    # ast-grep-ignore: ac-django-no-pytest-django-db
-    @pytest.mark.django_db
-    def test_count_reflects_pending_rows(self) -> None:
-        assert availability.pending_questions_count() == 0
-        availability.DeferredQuestion.record("q1")
-        availability.DeferredQuestion.record("q2")
-        assert availability.pending_questions_count() == 2
-
-    # ast-grep-ignore: ac-django-no-pytest-django-db
-    @pytest.mark.django_db
-    def test_count_forwards_using(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Kills ``pending(using=using)`` -> ``using=None``: the caller's DB alias
-        # must be forwarded, not silently replaced.
-        seen: list[str | None] = []
-        real_pending = availability.DeferredQuestion.pending.__func__
-
-        def spy(cls: type, *, using: str | None = None) -> object:
-            seen.append(using)
-            return real_pending(cls, using=using)
-
-        monkeypatch.setattr(availability.DeferredQuestion, "pending", classmethod(spy))
-        availability.DeferredQuestion.record("q1")
-        assert availability.pending_questions_count(using="default") == 1
-        assert seen == ["default"]
-
-    # ast-grep-ignore: ac-django-no-pytest-django-db
-    @pytest.mark.django_db
-    def test_iter_forwards_using(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        seen: list[str | None] = []
-        real_pending = availability.DeferredQuestion.pending.__func__
-
-        def spy(cls: type, *, using: str | None = None) -> object:
-            seen.append(using)
-            return real_pending(cls, using=using)
-
-        monkeypatch.setattr(availability.DeferredQuestion, "pending", classmethod(spy))
-        availability.DeferredQuestion.record("q1")
-        assert len(list(availability.iter_pending_questions(using="default"))) == 1
-        assert seen == ["default"]

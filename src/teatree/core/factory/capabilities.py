@@ -65,7 +65,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0", "1"),
         note="exit code IS the contract: 0 iff every readiness probe passes",
     ),
-    Capability("teatree availability show", json_output=True, exit_codes=("0",)),
+    Capability("loop preset show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(

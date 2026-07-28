@@ -16,7 +16,8 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
-from teatree.core.models import PIN_MODES, Loop, Mode, ModeOverride
+from teatree.core.mode_resolution import clear_mode_override, posture_label, resolve_active_mode, set_mode_override
+from teatree.core.models import PIN_MODES, Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.preset_editing import apply_entry_edits
 from teatree.loops.preset_status import active_summary, effective_verdicts
@@ -43,6 +44,17 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
         return timezone.now() + _parse_duration(raw)
     except ValueError:
         return _parse_iso(raw)
+
+
+def _resolved_line() -> str:
+    """The resolved mode, the layer that decided it, and its DERIVED posture label.
+
+    The one-line answer the retired ``t3 teatree availability show`` used to print,
+    now rendered from the resolver's booleans rather than a persisted token (#3826).
+    """
+    resolved = resolve_active_mode()
+    posture = posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump)
+    return f"mode={resolved.name} source={resolved.source} posture={posture}"
 
 
 def _unknown_entry_loops(entries: dict[str, bool]) -> list[str]:
@@ -98,26 +110,38 @@ class Command(TyperCommand):
         reason: Annotated[str, typer.Option("--reason", help="Audit note on the active-preset WHY line.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Activate *name* as the L3 manual override (default: until the next scheduled boundary)."""
+        """Activate *name* as the L3 manual override (default: until the next scheduled boundary).
+
+        Routes through :func:`set_mode_override`, the ONE override write chokepoint, so
+        activating a reachable mode drains the deferred-question backlog to the user's
+        Slack DM exactly as the dash switch does. The drain resolves its Slack target
+        from config; ``auto`` takes explicit routing flags for the rare non-default one.
+        """
         if Mode.objects.by_name(name) is None:
             self._refuse(f"no preset named {name!r} — run `t3 loop preset list`", json_output=json_output)
         until_dt = self._resolve_until(expiry=expiry, hold=hold, json_output=json_output)
-        ModeOverride.objects.set_override(name, until=until_dt, reason=reason)
+        set_mode_override(name, until=until_dt, reason=reason)
         window = "held until cleared" if until_dt is None else f"until {until_dt.isoformat()}"
         self._emit(
             {"preset": name, "until": until_dt.isoformat() if until_dt else None, "reason": reason},
-            f"loop preset {name!r} active ({window}).",
+            f"loop preset {name!r} active ({window}). {_resolved_line()}",
             json_output=json_output,
         )
 
     @command(name="auto")
-    def auto(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
-        """Clear the manual override so the active schedule decides again."""
-        cleared = ModeOverride.objects.clear()
+    def auto(
+        self,
+        *,
+        user_id: Annotated[str, typer.Option("--user-id", help="Slack user id for the backlog drain.")] = "",
+        overlay: Annotated[str, typer.Option("--overlay", help="Overlay name for the drain's bot routing.")] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """Clear the manual override so the active schedule / default mode decides again."""
+        cleared = clear_mode_override(user_id=user_id, overlay=overlay)
         message = (
             "cleared the manual override — the schedule decides again." if cleared else "no manual override was set."
         )
-        self._emit({"cleared": cleared}, message, json_output=json_output)
+        self._emit({"cleared": cleared}, f"{message} {_resolved_line()}", json_output=json_output)
 
     @command(name="create")
     def create(
@@ -201,13 +225,19 @@ class Command(TyperCommand):
             pin = f", pins availability {summary.availability_pin}" if summary.availability_pin else ""
             until = "" if summary.until is None else f", until {summary.until.isoformat()}"
             lines = [f"active preset: {summary.name}  (why: {summary.reason}{until}{pin})"]
+        lines.append(_resolved_line())
         lines.append("per-loop effective verdict:")
         for verdict in verdicts:
             state = "run" if verdict.admitted else "masked"
             lines.append(f"  {verdict.name:<22} {state:<7} [{verdict.layer}] {verdict.detail}")
+        resolved = resolve_active_mode(now)
         self._emit(
             {
                 "active": _summary_payload(summary),
+                "mode": resolved.name,
+                "source": resolved.source,
+                "defers_questions": resolved.defers_questions,
+                "pauses_self_pump": resolved.pauses_self_pump,
                 "loops": [
                     {"name": v.name, "admitted": v.admitted, "layer": v.layer, "detail": v.detail} for v in verdicts
                 ],

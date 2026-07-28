@@ -6,7 +6,12 @@ loops (and, for a pump-pausing mode, parks the self-pump) for as long as it sits
 the incident that motivated the finding left one active for ~30h. Post-merge (#61)
 the override is the DB :class:`~teatree.core.models.ModeOverride` row, so the finding
 keys on ``ModeOverride.set_at`` and the resolved mode's intrinsic
-``defers_questions`` / ``pauses_self_pump`` booleans — no availability file mtime.
+``defers_questions`` / ``pauses_self_pump`` booleans.
+
+Since #3826 that row is the ONLY artifact carrying the posture: the mirror file the
+fast hooks used to obey is gone, so this check can no longer be blind to a stale
+posture the hooks act on — the thing it inspects and the thing they read are the same
+row. (It was blind for a week: the table was empty while the mirror said unattended.)
 """
 
 from collections.abc import Iterable
@@ -66,7 +71,7 @@ def stale_override_finding(
     )
 
 
-def _check_availability_override_staleness() -> None:
+def _check_mode_override_staleness() -> None:
     """Warn on a no-expiry deferring mode override active past the threshold (#3274, #61).
 
     A manual away-class mode override with no ``until`` silently suppresses the

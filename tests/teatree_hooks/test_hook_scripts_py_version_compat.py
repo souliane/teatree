@@ -1,9 +1,10 @@
 """Hooks must run under an interpreter new enough for the hook modules.
 
 Regression guard for the bootstrap crash introduced by b7c0d0df89 (#2559/#2571).
-``availability_away_probe.py`` declared ``def _availability_show(...) -> str | None``
-— a PEP-604 union evaluated at *import* time (return annotations evaluate at
-def-time) — and ``hook_router.py`` imports it at module top. The project baseline
+The posture probe (then ``availability_away_probe.py``, now
+``mode_posture_probe.py``) reached a PEP-604 union evaluated at *import* time
+(return annotations evaluate at def-time — today via its ``managed_repo`` import),
+and ``hook_router.py`` imports it at module top. The project baseline
 is Python >= 3.13 and standardizes on native ``X | Y`` unions (ruff bans
 ``from __future__ import annotations`` via TID251), so the union itself is
 correct. The bug was the *interpreter*: ``hooks.json`` invoked the router with a
@@ -25,7 +26,7 @@ These tests pin that fix end to end:
     to ``python3 …`` turns it RED).
 * :class:`TestRunHookSelectsModernPython` — the selector execs a >= 3.11
     interpreter, under which both ``hook_router`` and the reported
-    ``availability_away_probe`` module import cleanly.
+    ``mode_posture_probe`` module import cleanly.
 * :class:`TestInterpreterPinIsLoadBearing` — demonstrates WHY the pin is needed:
     the reported module genuinely fails to import under a < 3.11 interpreter (run
     when one is available; skipped on a 3.13-only CI runner).
@@ -155,7 +156,7 @@ class TestRunHookSelectsModernPython:
 
     def test_router_imports_under_selected_interpreter(self) -> None:
         # End-to-end: the whole router — including the line-49 import of
-        # availability_away_probe (its line-74 native union) AND 3.11+ tomllib —
+        # mode_posture_probe (whose managed_repo import carries native unions) AND 3.11+ tomllib —
         # imports cleanly under the interpreter the selector picks.
         result = subprocess.run(
             [
@@ -177,7 +178,7 @@ class TestRunHookSelectsModernPython:
             [
                 str(_RUN_HOOK),
                 "-c",
-                "import sys; sys.path.insert(0, sys.argv[1]); import availability_away_probe",
+                "import sys; sys.path.insert(0, sys.argv[1]); import mode_posture_probe",
                 str(_SCRIPTS_DIR),
             ],
             capture_output=True,
@@ -187,7 +188,7 @@ class TestRunHookSelectsModernPython:
             check=False,
         )
         assert result.returncode == 0, (
-            f"availability_away_probe failed to import under the selector: {result.stderr.strip()}"
+            f"mode_posture_probe failed to import under the selector: {result.stderr.strip()}"
         )
 
 
@@ -198,18 +199,18 @@ class TestInterpreterPinIsLoadBearing:
         legacy = _legacy_python()
         if legacy is None:
             pytest.skip("no Python 3.9/3.10 interpreter available to demonstrate the crash")
-        result = _import_under(legacy, "availability_away_probe")
+        result = _import_under(legacy, "mode_posture_probe")
         assert result.returncode != 0, (
-            f"expected availability_away_probe to fail importing under {legacy} (PEP-604 union "
+            f"expected mode_posture_probe to fail importing under {legacy} (PEP-604 union "
             f"evaluated at module load on < 3.11); it imported cleanly, so the pin would be vacuous"
         )
 
     def test_reported_module_imports_under_a_modern_interpreter(self) -> None:
         # The contrast to the test above: under this (>= 3.13) interpreter — the
         # kind the selector picks — the same module imports without error.
-        result = _import_under(sys.executable, "availability_away_probe")
+        result = _import_under(sys.executable, "mode_posture_probe")
         assert result.returncode == 0, (
-            f"availability_away_probe should import under {sys.executable}: {result.stderr.strip()}"
+            f"mode_posture_probe should import under {sys.executable}: {result.stderr.strip()}"
         )
 
     def test_subagent_no_commit_sibling_cold_imports(self) -> None:

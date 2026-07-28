@@ -59,7 +59,7 @@ _ALLOWLIST: frozenset[str] = frozenset(
     {
         # Deliberate drift sample in the cli-reference doctest.
         "t3 loop tickk",
-        "t3 availability away|present|auto",
+        "t3 loop preset use|auto",
         "t3 questions list|answer|dismiss",
         # Real commands not surfaced by the in-process introspection used here
         # (DJANGO_GROUPS management subcommands without an overlay proxy leaf, or
