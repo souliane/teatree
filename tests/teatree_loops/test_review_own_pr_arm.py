@@ -13,6 +13,9 @@ the colleague ``ReviewerPrsScanner`` — silently dropping the own-PR arm for th
 whole tick. These tests pin the arm at both ends: the request the command builds,
 and the job set the mini-loop returns from it.
 """
+# test-path: cross-cutting — the contract under test is that the command's request
+# shape and the review mini-loop's job set AGREE, so observing it requires importing
+# both packages; mirroring either one alone would hide the seam the bug lived in.
 
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
