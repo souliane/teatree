@@ -4354,10 +4354,16 @@ Usage: t3 loop reclaim-markers [OPTIONS]
  freeing intake budget.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Restrict to one overlay (default: reconcile every     │
-│                        overlay's markers).                                   │
-│ --json                 Emit the reconcile result as JSON.                    │
-│ --help                 Show this message and exit.                           │
+│ --overlay                   TEXT   Restrict to one overlay (default:         │
+│                                    reconcile every overlay's markers).       │
+│ --orphan-grace-hours        FLOAT  How long a ticket-less claim may linger   │
+│                                    before it is abandoned (default: 6). Pass │
+│                                    0 to free a claim stranded moments ago    │
+│                                    rather than waiting out the grace.        │
+│ --stall-grace-hours         FLOAT  How long a claim whose ticket stopped     │
+│                                    moving may hold its slot (default: 24).   │
+│ --json                             Emit the reconcile result as JSON.        │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

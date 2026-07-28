@@ -55,3 +55,32 @@ class TestReclaimMarkersCommand(TestCase):
 
         assert result.exit_code == 0, result.stdout
         assert "Reclaimed 0 stale issue-marker(s)" in result.stdout
+
+    def test_a_fresh_ticketless_claim_is_held_by_the_default_grace(self) -> None:
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url="https://github.com/o/r/issues/3")
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme"])
+
+        assert result.exit_code == 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+
+    def test_a_zero_orphan_grace_frees_a_claim_stranded_moments_ago(self) -> None:
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url="https://github.com/o/r/issues/4")
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--orphan-grace-hours", "0"])
+
+        assert result.exit_code == 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_an_explicit_stall_grace_frees_a_ticket_that_stopped_moving(self) -> None:
+        url = "https://github.com/o/r/issues/5"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PLANNED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+
+        result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--stall-grace-hours", "0"])
+
+        assert result.exit_code == 0, result.stdout
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
