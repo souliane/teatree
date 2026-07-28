@@ -17,6 +17,7 @@ from teatree.core.factory.operational_health import (
     HealthSignal,
     HealthStatus,
     _failed_task_signals,
+    _fleet_loop_policy_signals,
     _harness_provider_consistency_signals,
     _overlay_health_signals,
     _stale_tick_signals,
@@ -249,3 +250,40 @@ class TestHarnessProviderConsistencyCollector:
         with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
             report = reconcile_health()
         assert report.status is HealthStatus.RED
+
+
+class TestFleetLoopPolicySignals:
+    """An unsatisfiable fleet loop declaration is a durable signal, not deploy stderr.
+
+    ``deploy/entrypoint.sh`` warns and continues (crash-looping init on the config the
+    box already shipped would be worse than the mis-mask), but that warning lives only
+    in the deploy log. The collector re-derives the same verdict from the env compose
+    hands every service, so the chip stays yellow until the repo variable is fixed.
+    """
+
+    def test_contradictory_declaration_yields_one_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
+        monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "inbox,directive_loop")
+        signals = _fleet_loop_policy_signals()
+        assert len(signals) == 1
+        assert signals[0].severity == KnownIssue.Severity.WARNING
+        assert signals[0].fingerprint == "fleet-loop-policy-contradiction"
+        assert "review" in signals[0].summary
+
+    def test_sound_declaration_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_ENABLED_LOOPS", "inbox")
+        monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "review")
+        assert _fleet_loop_policy_signals() == []
+
+    def test_unset_declaration_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
+        monkeypatch.delenv("TEATREE_DISABLED_LOOPS", raising=False)
+        assert _fleet_loop_policy_signals() == []
+
+    def test_contradiction_yellows_the_chip_via_reconcile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
+        monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "inbox,directive_loop")
+        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
+            report = reconcile_health()
+        assert report.status is HealthStatus.YELLOW
+        assert any(issue.fingerprint == "fleet-loop-policy-contradiction" for issue in report.open_issues)

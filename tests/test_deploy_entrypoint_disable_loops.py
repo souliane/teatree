@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.loops.fleet_policy import OWNER_INTAKE_LOOPS
+from teatree.config.fleet_policy import OWNER_INTAKE_LOOPS
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None,
@@ -340,6 +340,43 @@ class TestApplyFleetLoopPolicy:
         assert out.result.returncode == 0, out.result.stderr
         assert out.enabled == ["inbox"]
         assert out.overridden == ["inbox clear", "review off"]
+
+    def test_fully_neutralised_disable_set_reports_the_displaced_default(self, tmp_path: Path) -> None:
+        """Every name unmaskable => NOTHING is forced off, and the default is silently gone.
+
+        The live box config: ``TEATREE_DISABLED_LOOPS=inbox,directive_loop`` with
+        ``TEATREE_ENABLED_LOOPS`` unset. ``inbox`` overlaps the default ENABLED set
+        and ``directive_loop`` is owner-intake, so both are pruned and the effective
+        force-off set is EMPTY. The harm the per-item warnings never state: setting
+        the variable at all DISPLACED the built-in default (``review``, the
+        colleague-facing loop this box must not run), so ``review`` is no longer
+        masked here either. That net effect gets ONE consolidated line.
+        """
+        out = _run(tmp_path, enabled=None, disabled="inbox,directive_loop")
+        assert out.result.returncode == 0, out.result.stderr
+        assert out.enabled == ["inbox"]
+        assert out.overridden == ["inbox clear"], "nothing may be forced off — every name was pruned"
+        assert "every name in TEATREE_DISABLED_LOOPS" in out.result.stderr
+        assert "review" in out.result.stderr, "the displaced default must be named"
+
+    def test_remediation_names_the_repo_variable_not_the_generated_env_file(self, tmp_path: Path) -> None:
+        """Remediation must point at the repo VARIABLE — teatree.env is regenerated from it.
+
+        ``.github/workflows/deploy.yml`` rewrites ``deploy/teatree.env`` from the
+        repository variables on every run, so "edit teatree.env" sends the operator
+        to a file the next deploy overwrites — the warning then recurs forever.
+        """
+        out = _run(tmp_path, enabled=None, disabled="inbox,directive_loop")
+        assert "TEATREE_DISABLED_LOOPS repo variable" in out.result.stderr
+        assert "gh variable set" in out.result.stderr
+        assert "in teatree.env" not in out.result.stderr, "a hand-edit there is reverted by the next deploy"
+
+    def test_partial_prune_does_not_claim_the_set_is_neutralised(self, tmp_path: Path) -> None:
+        """One pruned name alongside a surviving one is NOT the fully-neutralised case."""
+        out = _run(tmp_path, enabled="inbox", disabled="inbox,review")
+        assert out.result.returncode == 0, out.result.stderr
+        assert out.overridden == ["inbox clear", "review off"]
+        assert "every name in TEATREE_DISABLED_LOOPS" not in out.result.stderr
 
     def test_enable_clears_stale_forced_off_override(self, tmp_path: Path) -> None:
         """Enabling a loop clears any override so a stale forced-off can't keep it masked.

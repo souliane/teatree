@@ -20,7 +20,7 @@ from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
 from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
-from teatree.loops.fleet_policy import OWNER_INTAKE_LOOPS
+from teatree.config.fleet_policy import OWNER_INTAKE_LOOPS
 
 runner = CliRunner()
 
