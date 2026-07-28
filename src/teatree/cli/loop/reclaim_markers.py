@@ -25,7 +25,7 @@ def reclaim_markers_command(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the reconcile result as JSON."),
 ) -> None:
-    """Release orphaned non-terminal markers whose ticket is terminal/gone, freeing intake budget."""
+    """Release non-terminal markers whose ticket is terminal, gone, or stalled, freeing intake budget."""
     ensure_django()
 
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
@@ -48,5 +48,6 @@ def reclaim_markers_command(
     scope = f"overlay {overlay!r}" if overlay else "all overlays"
     typer.echo(
         f"Reclaimed {result.released} stale issue-marker(s) for {scope}: "
-        f"{len(result.completed)} completed (terminal ticket), {len(result.abandoned)} abandoned (gone ticket)."
+        f"{len(result.completed)} completed (terminal ticket), "
+        f"{len(result.abandoned)} abandoned (gone or stalled ticket)."
     )

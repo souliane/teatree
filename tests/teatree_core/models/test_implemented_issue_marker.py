@@ -12,9 +12,9 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ImplementedIssueMarker, Ticket
+from teatree.core.models import ImplementedIssueMarker, Task, Ticket
 from teatree.instance_id import instance_id
-from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
+from tests.factories import ImplementedIssueMarkerFactory, TaskFactory, TicketFactory
 
 
 class TestClaim(TestCase):
@@ -228,3 +228,92 @@ class TestReconcileStale(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.DISPATCHED
         assert result.completed == (marker.pk,)
+
+
+class TestReconcileStalledTicket(TestCase):
+    """A marker whose ticket EXISTS but died mid-pipeline must still release.
+
+    The #3275 reconciler covered only the two ends of the range — a ticket that
+    reached a terminal state, and a ticket that never existed. The gap between
+    them is a ticket that WAS created and then stopped: every task FAILED, none
+    pending, the state frozen short of terminal. Such a marker is non-terminal
+    forever, so it holds an in-flight slot for good; enough of them and
+    ``issue_implementer_max_concurrent`` is permanently exhausted and the intake
+    scanner is never even built — the factory reads enabled and implements
+    nothing.
+    """
+
+    def _stalled(self, url: str, *, state: str = Ticket.State.PLANNED, age_hours: int = 72) -> ImplementedIssueMarker:
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=state)
+        task = TaskFactory(ticket=ticket, status=Task.Status.FAILED)
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
+            dispatched_at=timezone.now() - timedelta(hours=age_hours)
+        )
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_abandons_marker_whose_ticket_stalled_past_grace(self) -> None:
+        marker = self._stalled("https://github.com/o/r/issues/200")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.abandoned == (marker.pk,)
+
+    def test_frees_the_in_flight_budget(self) -> None:
+        self._stalled("https://github.com/o/r/issues/201")
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 1
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 0
+
+    def test_released_issue_is_claimable_again(self) -> None:
+        url = "https://github.com/o/r/issues/202"
+        self._stalled(url)
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.claim(url, "acme") is not None
+
+    def test_keeps_a_ticket_with_an_active_task(self) -> None:
+        url = "https://github.com/o/r/issues/203"
+        marker = self._stalled(url)
+        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_keeps_a_ticket_whose_work_is_recent(self) -> None:
+        marker = self._stalled("https://github.com/o/r/issues/204", age_hours=1)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_keeps_a_taskless_ticket_within_the_dispatch_grace(self) -> None:
+        url = "https://github.com/o/r/issues/205"
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
+        assert result.released == 0
+
+    def test_find_stale_previews_the_stall_without_mutating(self) -> None:
+        marker = self._stalled("https://github.com/o/r/issues/206")
+
+        result = ImplementedIssueMarker.objects.find_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.abandoned == (marker.pk,)
