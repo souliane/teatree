@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests._db_template import build_or_reuse_template, restore_from_template
+from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
 # Ensure unit tests use the settings declared in pyproject.toml, not a stale
 # DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
@@ -298,6 +299,17 @@ def _clean_registry() -> Iterator[None]:
     clear()
     yield
     clear()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Arm the worker-thread DB-handle sentinel for the whole suite.
+
+    Always on: a stranded handle reds a random bystander test in a random shard,
+    so the sentinel that names the culprit has to already be running when it
+    happens — an opt-in flag would only ever be switched on after the fact. See
+    ``tests/_thread_db_sentinel.py``.
+    """
+    config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
