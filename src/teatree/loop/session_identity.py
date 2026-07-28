@@ -8,6 +8,6 @@ home. The loop callers (``loops_tick``, ``statusline``, ``tick``) import
 package has a self-describing entry point for its own ownership identity.
 """
 
-from teatree.core.session_identity import current_session_id, current_session_pid
+from teatree.core.session_identity import current_session_id, current_session_pid, loop_principal, runner_identity_env
 
-__all__ = ["current_session_id", "current_session_pid"]
+__all__ = ["current_session_id", "current_session_pid", "loop_principal", "runner_identity_env"]

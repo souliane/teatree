@@ -74,6 +74,31 @@ SESSION_ID_ENV_VARS: tuple[str, ...] = (
     "T3_LOOP_SESSION_ID",
 )
 
+#: The loop runner's own durable principal (#3810). The runner (``t3 worker``)
+#: is a long-lived daemon with NO Claude session, so every resolver above comes
+#: back empty for it and :func:`current_session_id` fell through to the loop
+#: registry — a shared file EVERY ``SessionStart`` hook rewrites. The runner's
+#: identity therefore rotated between its OWN consecutive ticks: tick N claimed
+#: ``loop:<name>`` under registry id A, a foreign session started and the
+#: record became B, and tick N+1 read B, found A's still-live lease and
+#: SKIPped. The loop then ran once per lease TTL instead of once per cadence,
+#: and a ``claim`` could not be matched by the ``release`` seconds later because
+#: the two reads of that shared file disagreed.
+#:
+#: A CONSTANT (not a per-process uuid) is deliberate: there is exactly one loop
+#: runner per teatree deployment, and its restarts must NOT rotate its identity
+#: — a restarted runner claiming under a fresh id would be locked out of its own
+#: leases for a full TTL, which is the very starvation this fixes. Liveness is
+#: carried by :data:`RUNNER_PID_ENV` instead, which is what a pid is for.
+LOOP_RUNNER_SESSION_ID = "loop-runner"
+
+#: Env vars carrying the runner principal into a tick subprocess. They are read
+#: as a PAIR and outrank every session-id source, so a runner launched from
+#: inside a Claude session never inherits that session's identity for work the
+#: runner — not the session — is doing.
+RUNNER_SESSION_ENV = "T3_LOOP_RUNNER_SESSION"
+RUNNER_PID_ENV = "T3_LOOP_RUNNER_PID"
+
 # Deliberately redeclared (not imported) — ``teatree.core`` must not
 # depend on ``teatree.loop``/hooks. Mirrors ``hook_router._OWNER_LOOP``
 # and the literal already accepted in ``loop_slack_answer``. The
@@ -217,10 +242,58 @@ def current_session_id() -> str:
     return session_id_from_env() or _session_id_from_loop_registry() or ""
 
 
+def runner_identity_env(pid: int) -> dict[str, str]:
+    """The env pair a loop-runner-spawned subprocess carries to declare its principal.
+
+    Written by the runner at spawn time (:func:`teatree.loops.deadlined_tick.
+    tick_subprocess_env`) and read back by :func:`runner_principal` in the child.
+    """
+    return {RUNNER_SESSION_ENV: LOOP_RUNNER_SESSION_ID, RUNNER_PID_ENV: str(pid)}
+
+
+def runner_principal() -> tuple[str, int] | None:
+    """``(session_id, owner_pid)`` when this process runs as the loop runner, else ``None``.
+
+    Both env vars must be present and the pid well-formed: a half-set pair is
+    treated as absent so a partially-inherited environment can never produce a
+    principal with no checkable process behind it.
+    """
+    session_id = (os.environ.get(RUNNER_SESSION_ENV) or "").strip()
+    pid = _coerce_pid(os.environ.get(RUNNER_PID_ENV))
+    if not session_id or pid is None:
+        return None
+    return session_id, pid
+
+
+def loop_principal() -> tuple[str, int | None]:
+    """``(session_id, owner_pid)`` for whoever is claiming a loop lease right now (#3810).
+
+    The ONE identity seam every loop-ownership call site shares — the per-loop
+    tick, ``t3 loop claim`` and ``t3 loop release`` — so a claim and the release
+    that follows it can never resolve to two different principals. The loop
+    runner's explicit principal wins; otherwise this is a Claude session and the
+    session resolvers answer exactly as before.
+
+    Returns ``("", None)`` when nothing resolves. Callers decide what an
+    anonymous principal means for them: the tick treats it as the #1107
+    pure-cron case, ``t3 loop claim`` refuses outright.
+    """
+    runner = runner_principal()
+    if runner is not None:
+        return runner
+    return current_session_id(), current_session_pid()
+
+
 __all__ = [
+    "LOOP_RUNNER_SESSION_ID",
+    "RUNNER_PID_ENV",
+    "RUNNER_SESSION_ENV",
     "SESSION_ID_ENV_VARS",
     "current_session_id",
     "current_session_pid",
+    "loop_principal",
     "owner_record",
+    "runner_identity_env",
+    "runner_principal",
     "session_id_from_env",
 ]

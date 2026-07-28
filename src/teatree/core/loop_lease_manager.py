@@ -492,23 +492,26 @@ class LoopLeaseQuerySet(models.QuerySet):
             driver=row["driver"] or "",
         )
 
-    def release_ownership(self, name: str, *, session_id: str) -> bool:
+    def release_ownership(self, name: str, *, session_id: str, force: bool = False) -> bool:
         """Release the t3-master claim iff held by ``session_id`` (CAS).
 
         A non-owner release is a no-op (0 rows) so it can never evict a
         live owner — the chat-only user's ``t3 loop release`` only ever
         clears its *own* session's claim.
+
+        ``force`` (#3810) drops the owner predicate: the operator's explicit
+        recovery path for a lease claimed under an identity that can no longer
+        be presented. It is opt-in at the CLI (``--force``), never the default,
+        so an ordinary release stays the safe owner-matched CAS.
         """
-        released = (
-            self.filter(name=name, session_id=session_id)
-            .exclude(session_id="")
-            .update(
-                session_id="",
-                acquired_at=None,
-                lease_expires_at=None,
-                # Release = no owner = no driver, by definition.
-                driver="",
-            )
+        held = self.filter(name=name) if force else self.filter(name=name, session_id=session_id)
+        released = held.exclude(session_id="").update(
+            session_id="",
+            owner_pid=None,
+            acquired_at=None,
+            lease_expires_at=None,
+            # Release = no owner = no driver, by definition.
+            driver="",
         )
         return released == 1
 
