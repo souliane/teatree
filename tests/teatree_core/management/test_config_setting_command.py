@@ -204,6 +204,50 @@ class TestConfigSettingList(TestCase):
         assert UNGROUPED_PATH[0] in rendered
 
 
+class TestConfigSettingListMarksDeadRows(TestCase):
+    """A stored row no live declaration owns says so (souliane/teatree#3862).
+
+    The Ungrouped banner reads as "uncategorised setting", not "dead key", so a row
+    the resolver silently drops rendered here as a live control — a stored
+    ``issue_implementer_require_label = True`` was read as a live intake gate while
+    ``decide_intake`` admits a trusted author with no label at all.
+    """
+
+    def _rendered(self) -> str:
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        return out.getvalue()
+
+    def _row_line(self, key: str) -> str:
+        return next(line for line in self._rendered().splitlines() if line.strip().startswith(f"{key} ="))
+
+    def test_a_retired_row_is_marked_dead_with_its_remedy(self) -> None:
+        ConfigSetting.objects.create(key="issue_implementer_require_label", value=True, scope="")
+        line = self._row_line("issue_implementer_require_label")
+        assert "retired" in line
+        assert "config_setting clear" in line
+
+    def test_an_unrecorded_stale_row_is_marked_too(self) -> None:
+        ConfigSetting.objects.create(key="a_key_no_declaration_base_carries", value=True, scope="")
+        assert "no live consumer" in self._row_line("a_key_no_declaration_base_carries")
+
+    def test_an_internal_state_row_is_named_state_not_offered_the_clear_remedy(self) -> None:
+        # The stamp row is live state the transition chain rewrites every pass; telling
+        # the operator to clear it would make the next pass read a switch that never
+        # happened. Not-a-known-key is not the same question as not-in-use.
+        ConfigSetting.objects.create(key="loop_preset_transition_stamp", value="maintenance", scope="")
+        line = self._row_line("loop_preset_transition_stamp")
+        assert "internal state" in line
+        assert "config_setting clear" not in line
+
+    def test_a_live_row_carries_no_marker(self) -> None:
+        # Positive control: the marker must distinguish, not decorate every row.
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        line = self._row_line("issue_implementer_enabled")
+        assert "retired" not in line
+        assert "no live consumer" not in line
+
+
 class TestConfigSettingGet(TestCase):
     def test_get_reports_stored_db_value(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 7)

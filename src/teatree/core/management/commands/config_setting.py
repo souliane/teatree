@@ -42,6 +42,7 @@ from teatree.config import (
 )
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
 from teatree.config.setting_groups import group_outline
+from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
@@ -68,6 +69,16 @@ def _flag_suffix(key: str) -> str:
     """
     trailer = flag_trailer(key)
     return f"  {trailer}" if trailer else ""
+
+
+def _stored_row_suffix(key: str) -> str:
+    """A leading-space ``[retired …]`` / ``[internal state …]`` trailer, or ``""``.
+
+    So a stored row no live setting declaration owns can never be read as a live
+    control — the harm in souliane/teatree#3862.
+    """
+    note = stored_row_note(key)
+    return f"  {note}" if note else ""
 
 
 class Command(TyperCommand):
@@ -199,7 +210,9 @@ class Command(TyperCommand):
 
         Rows are grouped by the SAME nested hierarchy the dashboard and the TOML export
         render, indented one level per depth, so the three surfaces read alike. A row no
-        declaration owns still prints, under the leftovers heading.
+        declaration owns still prints, under the leftovers heading — carrying a trailer
+        naming it retired, internal state, or unknown, so it cannot be mistaken for a
+        live control.
         """
         rows = list(ConfigSetting.objects.all())
         if not rows:
@@ -210,7 +223,9 @@ class Command(TyperCommand):
                 self.stdout.write(f"{'  ' * heading.depth}{heading.label}")
             for row in section.rows:
                 indent = "  " * (section.depth + 1)
-                self.stdout.write(f"{indent}{row.key} = {row.value!r}  [{scope_label(row.scope)}]")
+                self.stdout.write(
+                    f"{indent}{row.key} = {row.value!r}  [{scope_label(row.scope)}]{_stored_row_suffix(row.key)}"
+                )
 
     @command()
     def flags(self) -> None:
