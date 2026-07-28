@@ -88,6 +88,19 @@ Degrades to a whole-tree FULL run with the plugin OFF (deterministically — ove
 
 **Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, the coverage gate is still `bash dev/ci-parity.sh` and CI's sharded `test (3.13)` lane.
 
+**A hand-picked directory list is not a substitute.** `pytest tests/teatree_core tests/teatree_loop …` skips the always-run floor above, so a `tests/conformance` break — a new `ScanSignal` kind with no dispatch/statusline route — survives it. That reached CI twice ([#3787](https://github.com/souliane/teatree/pull/3787), [#3788](https://github.com/souliane/teatree/pull/3788)). Use `bash dev/test-affected.sh`, which force-keeps the floor; `tests/conformance` also runs unconditionally in `dev/push-gate.sh`, so it cannot be pushed red either way.
+
+### Order-Dependence (Shuffle) Lane
+
+```bash
+bash dev/test-shuffle.sh              # seed 7 — the recorded #2359 Class B reproducer
+bash dev/test-shuffle.sh 7 1 13 100   # CI's full matrix, serially
+```
+
+The local twin of CI's `test-shuffle` job: the curated order-safe directory set run serially (`-n0`) under shuffled collection, so a test that leaks process-global state and the victim it breaks land in a failing relative order.
+
+**Never hand-roll it.** `pytest-randomly` is deliberately out of the default `dev` group, so `uv run pytest -p randomly … | tail -5` on a plain env raises `ImportError: Error importing plugin "randomly"` **and still exits 0** — a shell pipeline reports its LAST stage's status, so a lane that collected nothing reads green to anything gating on the exit code. The runner installs `--group shuffle`, preflights `import pytest_randomly` and fails loud, passes `-o required_plugins=pytest-randomly`, and never pipes pytest. `tests/test_ci_shuffle_lane_scope.py` pins each of those guards plus directory parity with the CI job.
+
 ### Frontend Lint
 
 - Run the project's frontend lint command (extension point: `wt_lint_frontend`).

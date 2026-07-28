@@ -329,6 +329,26 @@ class TestCiCriticalParityHook:
         for token in ("tests/test_gate_never_lockout_contract.py", "t3 tool push-gate"):
             assert token in body, f"dev/push-gate.sh dropped `{token}` -- it must not narrow its coverage."
 
+    def test_script_runs_the_conformance_lane(self) -> None:
+        # A conformance test's INPUT is the whole tree, so no diff-scoped selector can
+        # decide it is unaffected: a new `ScanSignal` kind with no dispatch/statusline
+        # route breaks tests/conformance/test_signal_route_totality.py whichever module
+        # the diff names. That class reached CI twice (#3787, #3788) with a green local
+        # run, because the hand-picked dir lists agents use exclude the dir and the one
+        # lane that force-keeps it (dev/test-affected.sh FLOOR_DIRS) is opt-in. Pin it
+        # on the UNCONDITIONAL push path. Measured 34s at `-n auto` -- a tenth of the
+        # `tests/quality` dir the test below keeps OFF the push path, and bounded (it
+        # does not grow with the diff). Executable lines only, so a comment naming the
+        # dir cannot satisfy the assertion.
+        run_lines = [
+            line for line in self._script_body().splitlines() if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert any("tests/conformance" in line for line in run_lines), (
+            "dev/push-gate.sh must run the `tests/conformance` directory -- its assertions read the "
+            "WHOLE tree, so a diff-scoped lane can never prove them unaffected. Dropping it lets a "
+            "new unrouted signal kind reach CI on a green local push (#3787/#3788)."
+        )
+
     def test_script_does_not_run_the_heavy_quality_dir(self) -> None:
         # #122: the broad `tests/quality` dir is CI-only (its ~666 subprocess tests
         # ran ~420s locally even with `push_heavy` deselected, hitting the push-hook
