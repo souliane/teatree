@@ -13,6 +13,7 @@ from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
+from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
@@ -55,6 +56,29 @@ def _worktree_root() -> Path:
     # ticket worktrees land — NOT the CLONE root (``config.clone_root()``,
     # ``~/workspace``) where source clones are discovered.
     return _config_worktree_root()
+
+
+def _resolve_workspace_ticket(path: str) -> Ticket:
+    """Resolve the ticket for a workspace-scoped command.
+
+    Workspace commands (provision/start/ready/teardown) act on *every*
+    worktree in a ticket, so they should be runnable both from inside a
+    worktree subdir and from the ticket workspace root that holds those
+    subdirs. First try the normal worktree resolution; if that fails
+    because we're at the workspace root, attribute the workspace dir to its
+    owning ticket through the single fail-loud resolver
+    (:func:`workspace_owner_ticket`) — the same symlink-tolerant, multi-owner
+    policy the auto-register chain uses, never a second hand-rolled check.
+    """
+    try:
+        anchor = resolve_worktree(path)
+        return Ticket.objects.get(pk=anchor.ticket.pk)
+    except WorktreeNotFoundError:
+        base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
+        owner = workspace_owner_ticket(base)
+        if owner is None:
+            raise
+        return Ticket.objects.get(pk=owner.pk)
 
 
 def _branch_prefix() -> str:
@@ -186,7 +210,7 @@ class Command(TyperCommand):
         """
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
-            ticket = _wh.resolve_workspace_ticket(path)
+            ticket = _resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` so multi-overlay
         # installs don't die on ambiguous ``get_overlay()`` when
         # ``T3_OVERLAY_NAME`` env var is missing (a real path when a
@@ -230,7 +254,7 @@ class Command(TyperCommand):
         After every worktree starts, runs each overlay's readiness probes —
         exits 1 if any probe fails.
         """
-        ticket = _wh.resolve_workspace_ticket(path)
+        ticket = _resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
@@ -291,7 +315,7 @@ class Command(TyperCommand):
         apply to a variant, the overlay's ``runtime.readiness_probes`` returns
         an empty list (or omits that probe) for that worktree.
         """
-        ticket = _wh.resolve_workspace_ticket(path)
+        ticket = _resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
@@ -330,7 +354,7 @@ class Command(TyperCommand):
         still-open MR is never reclaimed as collateral. ``--allow-open-prs`` is
         the explicit override, deliberately separate from ``--force``.
         """
-        ticket = _wh.resolve_workspace_ticket(path)
+        ticket = _resolve_workspace_ticket(path)
 
         worktrees = list(Worktree.objects.for_ticket(ticket))
         check_no_open_prs(ticket, worktrees, read_pr_state=read_live_pr_state, allow_open_prs=allow_open_prs)
@@ -495,21 +519,14 @@ class Command(TyperCommand):
         self,
         *,
         apply: bool = typer.Option(default=False, help="Actually release the rows. Without it, this is a dry run."),
-        json_output: Annotated[
-            bool,
-            typer.Option("--json", help="Emit the per-row dispositions as JSON on stdout instead of the human view."),
-        ] = False,
+        json_output: Annotated[bool, typer.Option("--json", help="Per-row dispositions as JSON.")] = False,
     ) -> None:
         """Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply).
 
-        The narrow alternative to ``clean-all`` for the single finding ``t3 doctor
-        check`` reports as "registered worktree ... is not a git checkout". It
-        applies the SAME #706 data-loss standard the sweep does (identical
-        classifier, identical remote-freshness precondition), then deletes the
-        ``Worktree`` row alone: no directory removed, no branch deleted, no
-        container, image, database or stash touched. A row the classifier cannot
-        positively clear is KEPT with its reason printed — recover those with
-        ``t3 <overlay> workspace salvage``.
+        The narrow alternative to ``clean-all`` for the doctor's "registered
+        worktree ... is not a git checkout" finding: the SAME #706 classifier and
+        freshness precondition, deleting the ``Worktree`` row and nothing else.
+        Which rows are KEPT, and why, is :mod:`teatree.core.worktree.dead_row_release`.
         """
         outcome = release_dead_rows(_worktree_root(), dry_run=not apply)
         self.print_result = False

@@ -10,11 +10,9 @@ interrupted-provision DB heal used by ``start`` (#1038).
 
 import os
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
-from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
@@ -188,26 +186,3 @@ def heal_db_or_record_failure(
         failures.append(wt.repo_path)
         return True
     return False
-
-
-def resolve_workspace_ticket(path: str) -> Ticket:
-    """Resolve the ticket for a workspace-scoped command.
-
-    Workspace commands (provision/start/ready/teardown) act on *every*
-    worktree in a ticket, so they should be runnable both from inside a
-    worktree subdir and from the ticket workspace root that holds those
-    subdirs. First try the normal worktree resolution; if that fails
-    because we're at the workspace root, attribute the workspace dir to its
-    owning ticket through the single fail-loud resolver
-    (:func:`workspace_owner_ticket`) — the same symlink-tolerant, multi-owner
-    policy the auto-register chain uses, never a second hand-rolled check.
-    """
-    try:
-        anchor = resolve_worktree(path)
-        return Ticket.objects.get(pk=anchor.ticket.pk)
-    except WorktreeNotFoundError:
-        base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
-        owner = workspace_owner_ticket(base)
-        if owner is None:
-            raise
-        return Ticket.objects.get(pk=owner.pk)
