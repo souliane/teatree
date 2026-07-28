@@ -19,6 +19,9 @@ Three assertions, each of which would have gone RED on the pre-#3826 tree:
     design failed closed to the most restrictive posture, which is what muted the owner.
 """
 
+# test-path: cross-cutting — spans the cold reader, the Django resolver and the shared
+# live-presence leaf; no single mirror dir owns all three.
+
 import datetime as dt
 import sqlite3
 import tempfile

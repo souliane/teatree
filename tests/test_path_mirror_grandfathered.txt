@@ -147,7 +147,6 @@ tests/teatree_loops/test_backward_compat_shims.py
 tests/teatree_loops/test_mini_loop_jobs.py
 tests/teatree_loops/test_run_tick_shim.py
 tests/teatree_skill_support/test_teatree_skill_cli_reference.py
-tests/test_away_mode_hook.py
 tests/test_banned_terms_tree_scan.py
 tests/test_claude_handover.py
 tests/test_cli_assess.py

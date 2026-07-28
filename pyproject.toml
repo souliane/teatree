@@ -552,7 +552,7 @@ high_value_modules = [
 # ratchet is designed for. Tighten with `t3 mutation run --all --update-baseline`
 # as the suite kills more of them.
 #
-# #44 paid the module 124 -> 8: tests/teatree_core/test_live_presence.py gained
+# #44 paid the module 124 -> 8: tests/test_live_presence.py gained
 # mutation kill-proofs pinning every behavioural point (heartbeat parsing,
 # naive-datetime normalisation, the atomic-write utf-8/sorted/same-dir contract, the
 # live-turn wall-clock default and window boundary, the same-session guard). #3826
@@ -610,7 +610,7 @@ default = [ "tests/" ]
 "src/teatree/core/merge/authorization.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/merge/execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
-"src/teatree/live_presence.py" = [ "tests/teatree_core/test_live_presence.py" ]
+"src/teatree/live_presence.py" = [ "tests/test_live_presence.py" ]
 "src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]
 "src/teatree/loop/review_claim.py" = [ "tests/teatree_loop/test_review_claim_discipline.py" ]
 

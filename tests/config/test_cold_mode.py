@@ -9,6 +9,9 @@ The module this replaces read a JSON mirror file instead of the DB, which is how
 week-old `autonomous_away` outlived the override row it mirrored and muted the owner.
 """
 
+# test-path: cross-cutting — spans the cold reader, the Django resolver and the shared
+# live-presence leaf; no single mirror dir owns all three.
+
 import datetime as dt
 import json
 import sqlite3
