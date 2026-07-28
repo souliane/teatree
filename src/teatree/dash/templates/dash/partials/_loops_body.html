@@ -2,8 +2,8 @@
   <section class="band">
     <h2>Availability</h2>
     <p>Current — <strong>{{ control.availability_mode }}</strong> (decided by {{ control.availability_source }})</p>
-    {# One form per mode: the vendored htmx drops the clicked submitter, so the value
-    rides in a hidden input rather than on the button. #}
+    {% comment %} One form per mode: the vendored htmx drops the clicked submitter, so the
+    value rides in a hidden input rather than on the button. {% endcomment %}
     <div class="toolbar">
       <form method="post" action="{% url 'dash:availability' %}" hx-post="{% url 'dash:availability' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
         {% csrf_token %}

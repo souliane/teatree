@@ -42,9 +42,7 @@
 
     </nav>
     <div class="dash-actions">
-      {# Always-visible loopback terminal: POSTs to the same debug_session endpoint
-      the drawer uses (a fresh generic session, no ticket id); body hx-headers
-      carries the CSRF token. #}
+
       <button type="button" class="dash-btn" data-terminal
         hx-post="/dash/debug/session/" hx-target="#terminal-result" hx-swap="innerHTML"
         hx-confirm="Start a loopback debug session?"
