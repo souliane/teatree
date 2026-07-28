@@ -25,9 +25,19 @@ Always on, because the failure it catches lands on a random test in a random
 shard: a sentinel that has to be switched on can only ever be switched on after
 the fact. It costs one ``threading.current_thread()`` comparison per connection
 open; the stack capture only runs for the rare non-main-thread open.
+
+The module also holds the guard for the OTHER half of this failure class, which
+produced the strands actually observed in CI: Django decorates
+``BaseDatabaseWrapper.connect`` with ``@async_unsafe``, so a thread that has a
+running event loop is REFUSED a connection with ``SynchronousOnlyOperation``.
+``DJANGO_ALLOW_ASYNC_UNSAFE`` disables that refusal process-wide, and the connect
+then silently succeeds against a fresh EMPTY ``:memory:`` database — the exact
+"no such table" + stranded-handle pair. See
+:func:`assert_async_unsafe_guard_intact`.
 """
 
 import dataclasses
+import os
 import threading
 import traceback
 from typing import TYPE_CHECKING, Any
@@ -36,6 +46,10 @@ import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+#: Django's escape hatch for its own async-unsafe guard. The unit lane must never
+#: run with it set — see :func:`assert_async_unsafe_guard_intact`.
+ASYNC_UNSAFE_ENV = "DJANGO_ALLOW_ASYNC_UNSAFE"
 
 #: Frames of pytest/threading/sentinel plumbing that carry no information about
 #: the site that opened the connection.
@@ -53,6 +67,50 @@ _STACK_FRAMES_SHOWN = 6
 
 class StrandedDbHandleError(AssertionError):
     """A worker thread died holding an open raw DB handle."""
+
+
+class AsyncUnsafeGuardDisabledError(RuntimeError):
+    """The unit lane is running with Django's async-unsafe guard switched off."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"{ASYNC_UNSAFE_ENV} is set for the unit test suite. Django's async-unsafe guard "
+            "on BaseDatabaseWrapper.connect is what refuses a connection to a thread that owns "
+            "a running event loop; with it off, that connect silently opens a fresh EMPTY "
+            ":memory: database, every config read logs `no such table`, and the handle is "
+            "stranded for a later GC to red an unrelated test.\n\n"
+            "It is almost always set by a collection-time import side effect — a module under "
+            "tests/ importing the e2e lane's conftest, whose body sets it. Import the helper "
+            "from a plain module instead of the conftest, and leave the variable to the e2e lane."
+        )
+
+
+def assert_async_unsafe_guard_intact(environ: "dict[str, str] | None" = None) -> None:
+    """Refuse to run the unit suite with ``DJANGO_ALLOW_ASYNC_UNSAFE`` set.
+
+    Django's ``@async_unsafe`` decorator on ``BaseDatabaseWrapper.connect`` is what
+    stops a thread that owns a running event loop from opening its own connection.
+    With the guard off, that connect succeeds instead of raising — and under the
+    ``:memory:`` test database it lands on a brand-new EMPTY database, so every
+    config/ORM read logs ``no such table`` and the handle is stranded for a later
+    GC to finalize as ``ResourceWarning: unclosed database``.
+
+    The guard is disabled process-wide by a single ``os.environ`` write, and the
+    write that actually happened was a COLLECTION-TIME side effect: a module under
+    ``tests/`` imported the e2e lane's ``conftest``, whose module body sets the
+    variable. Collection imports every test module in every shard, so one stray
+    import poisons all twelve — even the eleven that then deselect the importing
+    file. That is invisible to the per-test env diff in
+    ``scripts/ci/leak_sentinel_plugin.py`` (the mutation predates every test's
+    baseline), and equally invisible to a session-START check (it predates the
+    import), so this is asserted when collection FINISHES.
+
+    The e2e lane legitimately sets it and does not load ``tests/conftest.py``, so
+    this is scoped to the unit lane only.
+    """
+    env = os.environ if environ is None else environ
+    if env.get(ASYNC_UNSAFE_ENV):
+        raise AsyncUnsafeGuardDisabledError
 
 
 def handle_is_open(raw: Any) -> bool:
@@ -157,6 +215,25 @@ class ThreadDbHandleSentinel:
         """Install the wrapper once Django is configured (after pytest-django's setup)."""
         del session  # hookspec signature; the sentinel is session-independent
         self.install()
+
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
+        """Refuse the run when collection left the async-unsafe guard disabled.
+
+        Asserted HERE, not at session start: the write that disables it is a
+        module-body side effect of importing a test module, so it only exists once
+        every test module has been imported. Failing loud on the cause beats
+        reporting the cascade of stranded handles it produces.
+
+        Re-raised as a :class:`pytest.UsageError` (which is ``@final``, so it
+        cannot simply be the exception's base class) so the session aborts with a
+        plain readable message rather than an INTERNALERROR traceback — the reader
+        needs the cause and the fix, not this hook's own stack.
+        """
+        del session  # hookspec signature; the check is process-global
+        try:
+            assert_async_unsafe_guard_intact()
+        except AsyncUnsafeGuardDisabledError as exc:
+            raise pytest.UsageError(str(exc)) from exc
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> "Generator[None, object]":

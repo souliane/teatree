@@ -10,16 +10,21 @@ Django connection — so the guard cannot silently become vacuous:
 
 * a thread that does NOT close its handle is detected;
 * the same thread WITH ``close_thread_db_connections`` is not;
-* neutering that helper at a real production call site (``teatree.loop.phases.scan``) goes red.
+* neutering that helper at a real production call site (``teatree.loop.phases.scan``) goes red;
+* Django's async-unsafe guard is what refuses an event-loop thread a connection, and
+``DJANGO_ALLOW_ASYNC_UNSAFE`` turns that refusal into a stranded handle.
 """
 
+import asyncio
 import dataclasses
+import os
 import sqlite3
 import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from django.core.exceptions import SynchronousOnlyOperation
 from django.db import connection
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.test import TestCase
@@ -27,9 +32,12 @@ from django.test import TestCase
 from teatree.loop.phases import scan
 from teatree.utils.thread_db import close_thread_db_connections
 from tests._thread_db_sentinel import (
+    ASYNC_UNSAFE_ENV,
+    AsyncUnsafeGuardDisabledError,
     OpenedConnection,
     StrandedDbHandleError,
     ThreadDbHandleSentinel,
+    assert_async_unsafe_guard_intact,
     describe,
     handle_is_open,
 )
@@ -210,6 +218,88 @@ class TestNeuteringTheHelperGoesRed(TestCase):
         self.monkeypatch.setattr(scan, "close_thread_db_connections", lambda: None)
 
         assert _run_scan_job_on_a_worker(sentinel, self.monkeypatch) == ["sentinel-subject"]
+
+
+def _open_a_connection_inside_an_event_loop() -> None:
+    """Open this thread's connection from inside a running event loop."""
+
+    async def _open() -> None:
+        await asyncio.sleep(0)  # the loop must be running when connect() checks
+        connection.ensure_connection()
+
+    asyncio.run(_open())
+
+
+def _run_on_worker_capturing(target: "Callable[[], object]") -> BaseException | None:
+    """Run *target* on a worker thread; return the exception it raised, if any."""
+    raised: list[BaseException] = []
+
+    def _wrapped() -> None:
+        try:
+            target()
+        except BaseException as exc:  # noqa: BLE001 — the exception IS the assertion subject
+            raised.append(exc)
+
+    thread = threading.Thread(target=_wrapped, name="sentinel-subject")
+    thread.start()
+    thread.join()
+    return raised[0] if raised else None
+
+
+class TestAsyncUnsafeGuardAssertion:
+    """The unit lane refuses to run with Django's async-unsafe guard switched off."""
+
+    def test_silent_when_the_variable_is_absent(self) -> None:
+        assert assert_async_unsafe_guard_intact({}) is None
+
+    def test_silent_when_the_variable_is_empty(self) -> None:
+        assert assert_async_unsafe_guard_intact({ASYNC_UNSAFE_ENV: ""}) is None
+
+    def test_raises_and_explains_the_consequence_when_set(self) -> None:
+        with pytest.raises(AsyncUnsafeGuardDisabledError) as excinfo:
+            assert_async_unsafe_guard_intact({ASYNC_UNSAFE_ENV: "1"})
+
+        message = str(excinfo.value)
+        assert "no such table" in message
+        assert "conftest" in message, "the message must name the collection-time import that sets it"
+
+    def test_the_live_environment_is_clean(self) -> None:
+        """This suite is itself the subject: a stray import would set it for everyone."""
+        assert not os.environ.get(ASYNC_UNSAFE_ENV)
+
+
+class TestAsyncUnsafeGuardIsWhatStopsTheStrand(TestCase):
+    """Anti-vacuity for the guard: flipping the variable produces the real leak.
+
+    Django decorates ``BaseDatabaseWrapper.connect`` with ``@async_unsafe``, so a
+    thread that owns a running event loop is refused a connection. That refusal —
+    not any ``finally`` — is what keeps such a thread from stranding a handle.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Grouped into a TestCase per souliane/teatree#98; monkeypatch injected."""
+        self.monkeypatch = monkeypatch
+
+    def test_an_event_loop_thread_is_refused_a_connection(self) -> None:
+        monkeypatch = self.monkeypatch
+        sentinel = _recording_sentinel(monkeypatch)
+        monkeypatch.delenv(ASYNC_UNSAFE_ENV, raising=False)
+
+        raised = _run_on_worker_capturing(_open_a_connection_inside_an_event_loop)
+
+        assert isinstance(raised, SynchronousOnlyOperation)
+        assert sentinel.sweep() == [], "a refused connect strands nothing"
+
+    def test_disabling_the_guard_strands_the_handle(self) -> None:
+        monkeypatch = self.monkeypatch
+        sentinel = _recording_sentinel(monkeypatch)
+        monkeypatch.setenv(ASYNC_UNSAFE_ENV, "1")
+
+        raised = _run_on_worker_capturing(_open_a_connection_inside_an_event_loop)
+
+        assert raised is None, "with the guard off the connect succeeds instead of raising"
+        assert [record.thread.name for record in sentinel.sweep()] == ["sentinel-subject"]
 
 
 class TestHandleIsOpen:
