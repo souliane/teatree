@@ -269,6 +269,31 @@ Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step ex
 
 **BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it. To enumerate the open MRs you are scanning and move to the next unclaimed candidate, list them with `glab mr list` (GitLab) / `gh pr list` (GitHub), then skip past any that already carry a colleague's :eyes: — there is no `t3` command for advancing to the next MR, so do not invent one.
 
+#### The review-DONE Slack signal is `t3 slack react`, with three positional arguments
+
+A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. There is
+exactly one command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
+no `t3 review react` subcommand (that does not exist; do not invent it), and the emoji name carries **no
+colons**:
+
+```bash
+t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark
+```
+
+The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
+posts, so a hand-issued reaction matches what the loop would have emitted:
+
+| verdict | emoji argument |
+| --- | --- |
+| clean — no blocking findings | `white_check_mark` |
+| has blocking comments | `question` |
+
+The command is idempotent: an emoji already on the message (whether teatree placed it or a colleague did)
+is skipped and still exits `0`. So when a colleague's `:white_check_mark:` is already there and your own
+verdict differs, react with **your** verdict only — one command, the emoji that is actually yours. Never
+re-issue the reaction that is already present, and never substitute a DM to the author for the reaction;
+the substance of a review is its inline MR comments, and the reaction is the only Slack signal it emits.
+
 #### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
 
 What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch (`src/teatree/config/settings.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). Read the resolved tier with `t3 <overlay> autonomy show` and set it with `t3 <overlay> autonomy set <level>` (`--global` for the workspace default) — never hand-edit config. It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
