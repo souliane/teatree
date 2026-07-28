@@ -14,12 +14,14 @@ Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar, TypedDict, Unpack
+from typing import TYPE_CHECKING, ClassVar, TypedDict, Unpack, cast
 
+from django.apps import apps
 from django.db import models
 from django.utils import timezone
 
 if TYPE_CHECKING:
+    from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
 #: A maintainer applies this label to withhold an issue from the autonomous
@@ -198,10 +200,10 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         queued task holds the slot no matter how old the claim is, and a recent
         task holds it no matter how the last one ended.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415 — peer model, deferred to avoid load-time cycle
-
-        tasks = Task.objects.filter(ticket=ticket)
-        if tasks.filter(status__in=Task.Status.active()).exists():
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        tasks = task_model.objects.filter(ticket=ticket)
+        if tasks.filter(status__in=task_model.Status.active()).exists():
             return False
         last_task_at = tasks.order_by("-created_at").values_list("created_at", flat=True).first()
         return max(marker.dispatched_at, last_task_at or marker.dispatched_at) <= cutoff
