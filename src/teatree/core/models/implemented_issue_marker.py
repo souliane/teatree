@@ -199,13 +199,19 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         *cutoff*. Requiring both is what keeps a long-running attempt safe: a
         queued task holds the slot no matter how old the claim is, and a recent
         task holds it no matter how the last one ended.
+
+        The newest task is read with ``Max``, not ``order_by("-created_at")``:
+        ``Task.created_at`` is nullable, and DESC ordering puts NULLs FIRST on
+        PostgreSQL (last on SQLite), so a single null-stamped row would make the
+        ordering read back ``None`` and drop the recency half entirely. ``Max``
+        ignores NULLs on every backend.
         """
         # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
         tasks = task_model.objects.filter(ticket=ticket)
         if tasks.filter(status__in=task_model.Status.active()).exists():
             return False
-        last_task_at = tasks.order_by("-created_at").values_list("created_at", flat=True).first()
+        last_task_at = tasks.aggregate(latest=models.Max("created_at"))["latest"]
         return max(marker.dispatched_at, last_task_at or marker.dispatched_at) <= cutoff
 
     def reconcile_stale(
