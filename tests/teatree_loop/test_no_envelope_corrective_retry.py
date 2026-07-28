@@ -62,11 +62,12 @@ class TestNoEnvelopeCorrectiveRetry(TestCase):
 
     def test_no_envelope_refusal_is_corrective_on_any_phase(self) -> None:
         # The refusal is a pure OUTPUT-FORMAT failure with a phase-independent
-        # correction, and it can only ever fire on a phase OUTSIDE the coding/
-        # debugging pair (every other phase either requires evidence or is
-        # prose-exempt). Gating it on that pair would leave the whole reachable
-        # set — architectural_review, bughunt, e2e, the codex_* variants — paging
-        # a human on the very first prose-only run.
+        # correction. Its reachable set is every phase that neither requires
+        # evidence nor is prose-exempt: `debugging` (covered by the sibling test
+        # above, and already inside _CORRECTIVE_PHASES) AND the phases outside
+        # that pair — architectural_review, bughunt, e2e, the codex_* variants.
+        # Gating it on the pair left this second group paging a human on the
+        # very first prose-only run; `architectural_review` stands for it here.
         task = _failed_task(phase="architectural_review")
         _add_failed_attempt(task, error=NO_ENVELOPE_ERROR)
 

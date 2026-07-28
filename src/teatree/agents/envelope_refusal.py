@@ -1,7 +1,7 @@
 """The refusal half of the result-envelope contract — one vocabulary, one owner.
 
 :mod:`teatree.agents.envelope_contract` states what every headless brief TEACHES;
-this module states what the pipeline REFUSES when the brief was not honoured, and
+this module states what the pipeline REFUSES when an agent ignores that brief, and
 how that refusal is corrected. Both halves of one contract, so a new refusal can
 never be added on the producing side without the consuming side learning it.
 
@@ -52,8 +52,8 @@ _RECORDER_REFUSAL_MARKERS = (
 def is_no_envelope_refusal(error: str) -> bool:
     """Whether *error* is the RUNNER's "no JSON object at all" refusal.
 
-    Keyed on :data:`NO_ENVELOPE_PREFIX` rather than the whole reason so the
-    classification survives a future change to the human-readable tail.
+    Keyed on :data:`NO_ENVELOPE_PREFIX` rather than the whole reason, so rewording
+    the human-readable tail cannot silently drop the classification.
     """
     return NO_ENVELOPE_PREFIX.strip().casefold() in error.casefold()
 

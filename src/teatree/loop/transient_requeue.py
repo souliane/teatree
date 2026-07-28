@@ -274,12 +274,14 @@ def _self_repair_reopen(task: Task) -> int | None:
 def _corrective_note(task: Task) -> str | None:
     """The emit-the-envelope instruction *task* earns, or ``None`` if it must escalate.
 
-    The RUNNER-side ``no_result_envelope`` refusal is a pure output-FORMAT failure
-    whose correction is phase-independent, so it is corrective on ANY phase — gating
-    it on :data:`_CORRECTIVE_PHASES` left its whole reachable set paging a human on
-    the very first prose-only run. A RECORDER-side refusal stays gated on that set:
-    on ``reviewing`` a withheld verdict is a judgement to surface, not a format slip.
-    ``None`` for a genuine defect, and for a task whose one retry is already spent.
+    The RUNNER-side ``no_result_envelope`` refusal is a pure output-FORMAT failure, so
+    it is corrective on ANY phase where ``ProseSummaryPolicy.allowed`` is False:
+    ``debugging`` (already in :data:`_CORRECTIVE_PHASES`) plus every no-evidence,
+    non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
+    ``codex_*``) — which the old gate left paging a human on the first prose-only run.
+    A RECORDER-side refusal stays gated on the set: a withheld ``reviewing`` verdict is
+    a judgement to surface, not a format slip. ``None`` for a genuine defect, and for a
+    task whose one corrective retry is already spent.
     """
     if _CORRECTIVE_MARKER in task.execution_reason:
         return None
