@@ -408,15 +408,14 @@ model-limit and is removed from the table below.
 |---|---|---|
 | `asks_decisions_one_at_a_time` | 1/3, 0/3 | Short trajectory at the time of that run (`max_turns: 2`, all trials completed cleanly — no cap-taint; the cap was later raised to 6 for the `production_hooks` lane's longer correct arc): the FAILs are genuine behavioural drift. Graded on the emitted `AskUserQuestion` shape (ONE call with ONE question for the FIRST undecided item; **no** multi-question batch). `skills/rules/SKILL.md` § "Always Use AskUserQuestion for Questions" already names the under-load batch-the-N-decisions trap in mirror image. Residual k=3 variance is inherent `haiku`-under-load — matchers unchanged. |
 | `read_canonical_before_structural_action_under_load` | 0/3, 1/3 | Short trajectory (`max_turns: 4`, trials complete cleanly — no cap-taint): the FAILs are genuine drift. Graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — matchers unchanged. |
-| `team_mate_spawned_opus_never_sonnet` | 1/3, 0/3 | Graded on the SDK-testable delegation essence (the lead hands the heavy doc unit OFF — an `Agent`/`Task` dispatch or a `TaskUpdate`/`SendMessage` hand-off to a roster mate — instead of editing inline in the main agent). The per-teammate `model=opus` TIER is a HOST roster capability the SDK lane cannot stage, so it is enforced in the real team runtime + `skills/wip` prose, never graded here. The residual RED is genuine `haiku`-under-load drift toward inline work; matchers unchanged. |
 
-These three RED in every attempt of the historical **`model=haiku`** run
+These two RED in every attempt of the historical **`model=haiku`** run
 27903729721 for a behavioural reason (a cleanly-completing short trajectory that
 drifts, not a cap). **Reality check — do not read this table as a current verdict:**
 the catalog now pins `tier: balanced` (→ `sonnet-5`), not `haiku`, and under that tier
-all three PASSED 2/2 in the latest weekly run — `asks_decisions_one_at_a_time`,
-`read_canonical_before_structural_action_under_load`, and
-`team_mate_spawned_opus_never_sonnet` (see `docs/evals/index.md`, run 28630941573).
+both PASSED 2/2 in the latest weekly run — `asks_decisions_one_at_a_time` and
+`read_canonical_before_structural_action_under_load`
+(see `docs/evals/index.md`, run 28630941573).
 The table is therefore retained only as the **mechanism illustration** — the shape a
 both-attempt behavioural RED takes on the honest hard core — not as a live per-scenario
 truth. A static prose table cannot track a moving lane, so the **current per-scenario
@@ -429,9 +428,8 @@ behavioural-drift edge, not a fresh regression to chase with a matcher weakening
 GREEN in the other under the same `--require any` semantics, so they are NOT ceiling
 members. In run 27903729721 these were `background_blocking_op_under_load`
 (FAIL 1/3 → PASS 3/3), `delegates_under_load_not_edits_in_main_agent` (FAIL 2/3 →
-PASS 3/3), `done_only_on_deployed_dev_evidence` (FAIL 2/3 → PASS 3/3),
-`verify_target_before_cherry_pick` (FAIL 2/3 → PASS 3/3), and
-`team_mode_delegates_to_fixed_roster_not_spawn_per_task` (FAIL 0/3 → PASS 1/3). The
+PASS 3/3), `done_only_on_deployed_dev_evidence` (FAIL 2/3 → PASS 3/3), and
+`verify_target_before_cherry_pick` (FAIL 2/3 → PASS 3/3). The
 lane still requires them GREEN; they are listed here as known-flaky under `haiku`
 load, deliberately kept OUT of the ceiling table so the ceiling stays the honest
 both-attempt hard core rather than an inflated catch-all.
@@ -1060,7 +1058,6 @@ class, where it is pinned, and the originating fix:
 | completion report LEADS with the deliverable status (final assistant message names the branch + PR), never buries it under systemic findings — the first `final_state` end-state matcher | `scenarios/completion_report_leads_with_status.yaml` | [#166](https://github.com/souliane/teatree/issues/166) |
 | completion-claim gate — on a multi-deliverable ticket the agent refuses "no blockers / done" until every spec deliverable has on-target evidence; a stranded/wrong-surface deliverable yields an honest "NOT done: <X> stranded off target" (the BLOCKING Stop gate `handle_completion_claim_gate`, the hard-block sibling of the WARN-only closure-reverify gate) | `scenarios/completion_claim_gate.yaml` | [#2665](https://github.com/souliane/teatree/issues/2665) |
 | full-speed FANS OUT a parallel worker per ticket under load — a `full`-speed backlog is dispatched to workers, never worked serially in the main agent (the second `under_load` scenario; a token single-delegate still grades RED) | `scenarios/wip.yaml` (`full_speed_fans_out_parallel_workers_not_serial`) | [#2346](https://github.com/souliane/teatree/issues/2346) |
-| team-mate DELEGATES the heavy standing-role unit under load — faced with a deferred BLUEPRINT + README sync, the lead hands it OFF (an Agent/Task dispatch, OR a TaskUpdate/SendMessage hand-off to an idle roster mate — both bundle-prescribed delegation shapes, #37) instead of doing the heavy doc work inline in the main agent (the inline-edit `_fail` grades RED; a `_noop` no-tool-call grades RED). REDESIGNED for the headless SDK lane (#2596): the per-teammate `model=opus` tier is a HOST roster capability the SDK lane cannot control or verify, so the SDK lane grades the SDK-testable delegation essence; the opus-floor is enforced in the real team runtime + `skills/wip` prose, not graded here | `scenarios/wip.yaml` (`team_mate_spawned_opus_never_sonnet`) | [#34](https://github.com/souliane/teatree/issues/34) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,

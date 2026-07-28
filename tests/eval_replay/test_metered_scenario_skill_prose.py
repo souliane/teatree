@@ -128,20 +128,6 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "an empty post-dispatch turn is the correct shape",
         ),
     ),
-    # team_mate REDESIGNED for the headless SDK lane (#2596): the per-teammate model
-    # tier is a HOST capability the SDK lane cannot control/verify, so the SDK lane
-    # now grades the DELEGATION essence — dispatch the heavy standing-role unit to a
-    # sub-agent, never do the heavy doc work inline in the main agent. The prose must
-    # name that delegate-don't-do-it-inline rule (the opus-floor stays as host-runtime
-    # prose, not the SDK-lane gate).
-    (
-        "team_mate_spawned_opus_never_sonnet",
-        "skills/wip/SKILL.md",
-        (
-            "Delegate the heavy standing-role unit to a sub-agent",
-            "never do the heavy work inline in the main agent",
-        ),
-    ),
     # read-canonical drifted by reading the canonical file FIRST (correct) then path-
     # hunting with find/grep/git-rev-parse/echo. The prose must name the one-Read-
     # then-stop rule AND that the STOP is symmetric (no path-hunting AFTER the read),

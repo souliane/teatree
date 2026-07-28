@@ -37,11 +37,23 @@ class RetiredSetting:
     ``None`` when the setting was removed outright. *reason* is rendered into the
     loud removal warning, so it is written for the operator reading it — what the
     setting used to do and what now does that job.
+
+    *subsystem* names the whole subsystem the retirement took with it, as the
+    word it is called by in scenario names (``"team"`` for the agent-teams pane
+    layer). It is ``None`` — the common case — when only the setting went and the
+    thing it configured is still live: ``branch_prefix`` retired the setting,
+    but branch prefixes still resolve, so branch-prefix behaviour is still
+    gradeable. A non-``None`` subsystem is a claim that the behaviour no longer
+    exists, and ``tests/conformance/test_retired_subsystem_evals.py`` holds the
+    eval catalog to it: souliane/teatree#3839 spent the full ``max_budget_usd``
+    cap grading a subsystem retired in souliane/teatree#3734, because nothing
+    tied the two ledgers together.
     """
 
     key: str
     replacement: str | None
     reason: str
+    subsystem: str | None
 
 
 RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
@@ -49,71 +61,85 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         key="todo_sweep_disabled",
         replacement="task_sweep_disabled",
         reason="the loop unit reconciles teatree Task rows, not the harness TODO list (#129)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="todo_sweep_recheck_interval_hours",
         replacement="task_sweep_recheck_interval_hours",
         reason="the loop unit reconciles teatree Task rows, not the harness TODO list (#129)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="speed",
         replacement="wip",
         reason="the throughput dial is the bounded-WIP setting; the value set is identical (#2951)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="orca_router_pass_path",
         replacement="openai_compatible_credential_entry",
         reason="the provider-specific backend collapsed into the generic OpenAI-compatible one (#3666)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="orca_router_name",
         replacement="openai_compatible_model",
         reason="the provider-specific backend collapsed into the generic OpenAI-compatible one (#3666)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="orca_router_lane",
         replacement="openai_compatible_lane",
         reason="the provider-specific backend collapsed into the generic OpenAI-compatible one (#3666)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="branch_prefix",
         replacement=None,
         reason="branch prefixes resolve from T3_BRANCH_PREFIX / git config user.name, never a setting (#2731)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="ask_before_post_on_behalf",
         replacement=None,
         reason="on-behalf gating resolves through on_behalf_post_mode (#2731)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="worktrees_dir",
         replacement=None,
         reason="the worktree root resolves through workspace_dir (#2731)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="eval_credential",
         replacement=None,
         reason="the eval lane's credential follows agent_harness_provider (#3527)",
+        subsystem=None,
     ),
     RetiredSetting(
         key="teams_enabled",
         replacement=None,
         reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+        subsystem="team",
     ),
     RetiredSetting(
         key="teams_max_panes",
         replacement=None,
         reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+        subsystem="team",
     ),
     RetiredSetting(
         key="teams_idle_minutes",
         replacement=None,
         reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+        subsystem="team",
     ),
     RetiredSetting(
         key="teams_display",
         replacement=None,
         reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
+        subsystem="team",
     ),
 )
 
@@ -124,6 +150,11 @@ RENAMED_SETTING_KEYS: dict[str, str] = {
 
 #: Retired keys with no replacement — a stored row is reported loudly.
 REMOVED_SETTING_KEYS: frozenset[str] = frozenset(entry.key for entry in RETIRED_SETTINGS if entry.replacement is None)
+
+#: Subsystems a retirement removed outright — no eval scenario may still grade one.
+RETIRED_SUBSYSTEMS: frozenset[str] = frozenset(
+    entry.subsystem for entry in RETIRED_SETTINGS if entry.subsystem is not None
+)
 
 _BY_KEY: dict[str, RetiredSetting] = {entry.key: entry for entry in RETIRED_SETTINGS}
 
