@@ -23,6 +23,7 @@ import sys
 import threading
 from typing import TypedDict
 
+from teatree.core.session_identity import runner_identity_env
 from teatree.utils.run import Popen, TimeoutExpired, spawn_session_leader
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,22 @@ class TickOutcome(TypedDict):
 def _tick_argv(name: str) -> list[str]:
     """The subprocess argv for one per-loop tick — ``python -m teatree loops_tick --loop <name>``."""
     return [sys.executable, "-m", "teatree", "loops_tick", "--loop", name]
+
+
+def tick_subprocess_env() -> dict[str, str]:
+    """The environment every worker-spawned tick subprocess runs under.
+
+    One seam so the runner's identity and the hard-exit marker are decided in a
+    single place rather than inline at the spawn. The identity is the crux: the
+    loop runner is a long-lived daemon with NO Claude session, so without an
+    explicit principal ``current_session_id()`` fell through to the loop
+    registry's ``t3-loop-tick-owner`` record — a shared file every SessionStart
+    rewrites — and the runner's identity silently rotated between its own ticks.
+    Each rotation made the next tick a non-owner of the lease its own previous
+    tick had just taken, so the loop SKIPped until the lease TTL lapsed and ran
+    once per TTL instead of once per cadence.
+    """
+    return {**os.environ, TICK_SUBPROCESS_ENV_MARKER: "1", **runner_identity_env(os.getpid())}
 
 
 #: The process-group ids of every tick subprocess currently in flight, so the
@@ -116,7 +133,7 @@ def run_deadlined_tick(name: str, *, deadline: float) -> TickOutcome:
         _tick_argv(name),
         label=f"loop_timer {name!r} tick",
         deadline=deadline,
-        env={**os.environ, TICK_SUBPROCESS_ENV_MARKER: "1"},
+        env=tick_subprocess_env(),
     )
 
 

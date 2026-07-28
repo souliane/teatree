@@ -166,6 +166,7 @@ from hooks.scripts.raw_review_post_guard import (
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
+from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
 from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
@@ -4246,78 +4247,6 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
         return
 
 
-def _claim_session_handover(session_id: str) -> str | None:
-    """Claim an unclaimed session hand-off for *session_id*, or ``None``.
-
-    The zero-copy-paste takeover: a fresh / non-owner session picks up a
-    hand-off targeted AT it or parked for "next session" from the
-    ``SessionHandover`` DB table (the source of truth), marks it claimed so
-    it injects exactly once, and returns its payload to merge into the
-    SessionStart ``additionalContext``. Falls back to the XDG file mirror
-    when the DB is unreachable (a brand-new session whose process predates
-    a readable DB). Best-effort: any Django/DB error fails open to the file
-    fallback, then to ``None`` — a hand-off pickup must never block the
-    SessionStart directive.
-    """
-    payload = ""
-    from_session = ""
-    if bootstrap_teatree_django():
-        try:
-            from teatree.core.handover import claim_handovers  # noqa: PLC0415 — deferred: ORM/app-registry
-
-            payload, from_session = claim_handovers(session_id)
-        except Exception:  # noqa: BLE001 — never block SessionStart on a DB hiccup
-            payload = ""
-
-    if not payload:
-        payload, from_session = _claim_session_handover_from_file()
-    if not payload:
-        return None
-    origin = f" from session `{from_session}`" if from_session else ""
-    return (
-        f"SESSION HAND-OFF RECEIVED{origin} — another session handed its full "
-        "in-flight work to you. Read the durable-state snapshot below, then "
-        "resume that work (re-derive identity, worktrees, open PRs, and the "
-        "next action):\n\n" + payload
-    )
-
-
-def _claim_session_handover_from_file() -> tuple[str, str]:
-    """Read the XDG mirror as a one-shot hand-off fallback, renaming it on claim.
-
-    Returns ``(payload, from_session)`` or ``("", "")``. The mirror is the
-    bootstrap path for a brand-new session that cannot reach the DB. To keep
-    the file single-use (mirroring the DB ``claimed_at`` once-only contract)
-    the claimed file is renamed to ``latest.claimed.md`` so a re-fired
-    SessionStart does not re-inject it.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        # ``handover_mirror_path`` is DB-home. Read it Django-free via ``cold_reader``
-        # (the canonical sqlite); an absent row / unreachable DB fails open through
-        # the parser to the default bootstrap path.
-        from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701 — cold-hook import
-
-        path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path", default=""))
-        text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-        if not text:
-            return "", ""
-        with contextlib.suppress(OSError):
-            path.replace(path.with_name("latest.claimed.md"))
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return "", ""
-    else:
-        return text, ""
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
 def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
@@ -4500,6 +4429,13 @@ def handle_session_start_bootstrap(data: dict) -> None:
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
+        # The loop gate decides whether this session ARMS the loop machinery. It
+        # must not also decide whether a parked hand-off is delivered (#3810):
+        # the two are unrelated, and stapling the drain to the loop gate meant
+        # any session that did not arm loops silently stranded the whole queue.
+        # Every SessionStart path now merges, so exactly one thing gates the
+        # drain — a session starting.
+        _emit_session_start_context(_merge_session_start_context("", session_id, source))
         return
     agent_id = data.get("agent_id", "")
 

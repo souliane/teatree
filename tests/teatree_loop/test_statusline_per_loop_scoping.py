@@ -29,6 +29,7 @@ from teatree.loop.loop_scoping import (
 )
 from teatree.loop.statusline import live_loops_anchor
 from teatree.loop.statusline_loops import _live_lease_chunks
+from tests._loop_principal_env import pinned_loop_principal
 
 _OWNED_SLOTS_TARGET = "teatree.loop.loop_scoping.owned_per_loop_slots"
 
@@ -142,12 +143,12 @@ class TestOwnedPerLoopSlotsQuery:
     def test_current_session_entry_point_resolves_the_active_session(self) -> None:
         """The renderer seam resolves ``current_session_id()`` and scopes to it."""
         self._seed()
-        with patch("teatree.loop.session_identity.current_session_id", return_value="sess-A"):
+        with pinned_loop_principal("sess-A"):
             assert current_session_owned_per_loop_slots() == {"loop:dispatch"}
 
     def test_current_session_entry_point_fails_open_when_anonymous(self) -> None:
         self._seed()
-        with patch("teatree.loop.session_identity.current_session_id", return_value=""):
+        with pinned_loop_principal():
             assert current_session_owned_per_loop_slots() is None
 
 

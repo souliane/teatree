@@ -69,10 +69,7 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
     )
     from teatree.core.models import LoopDriver, LoopLease  # noqa: PLC0415 — deferred
     from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
-    from teatree.loop.session_identity import (  # noqa: PLC0415 — deferred: keeps command import light
-        current_session_id,
-        current_session_pid,
-    )
+    from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
     out = cast("IO[str]", command.stdout)
     err = cast("IO[str]", command.stderr)
@@ -81,7 +78,9 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
         msg = f"invalid --driver {driver!r} — must be one of: {', '.join(LoopDriver.values)}"
         emit({"ok": False, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
         raise SystemExit(2)
-    session_id = current_session_id()
+    # The SAME seam ``_release`` and the per-loop tick resolve through (#3810) —
+    # what a claim binds is exactly what the next release matches.
+    session_id, principal_pid = loop_principal()
     if not session_id:
         msg = "refusing to claim loop ownership without a Claude session id — run inside a Claude Code session"
         emit({"ok": False, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
@@ -91,17 +90,17 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
     # session-scoped owner of the same kind — so ``evict_stale_owner`` / the
     # pid-anchored liveness check can tell a post-compaction same-process
     # self-reclaim from a genuinely foreign live lease, and a busy owner past
-    # its TTL is never hijacked. It MUST be the long-lived session process,
+    # its TTL is never hijacked. It MUST be the long-lived owning process,
     # not ``os.getppid()``: ``t3 loop claim`` runs in a Bash-tool shell torn
     # down seconds later, so anchoring on its pid stored a dead pid — the
     # take-over then "only held until the next fresh session" (the new
-    # session saw a dead pid + lapsed TTL and stole the loop). The durable
-    # pid comes from the loop-registry record the SessionStart hook wrote;
-    # ``os.getppid()`` is the fallback only for a direct in-session call.
-    # Other infra slots (e.g. ``loop-slack-answer-owner``) are per-tick
-    # ephemeral and don't need it.
+    # session saw a dead pid + lapsed TTL and stole the loop). It comes from
+    # the runner's own principal, else the loop-registry record the
+    # SessionStart hook wrote; ``os.getppid()`` is the fallback only for a
+    # direct in-session call. Other infra slots (e.g.
+    # ``loop-slack-answer-owner``) are per-tick ephemeral and don't need it.
     pid_anchored = slot == T3_MASTER_SLOT or is_per_loop_owner_slot(slot)
-    owner_pid = (current_session_pid() or os.getppid()) if pid_anchored else None
+    owner_pid = (principal_pid or os.getppid()) if pid_anchored else None
     # Only the pid-anchored ownership layer (t3-master + loop:<name>) carries a
     # driver; an explicit ``--driver`` overrides detection (the only path to
     # ``external``, since a foreign scheduler is invisible to teatree).
@@ -135,11 +134,14 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
 
 def _owner(command: TyperCommand, slot: str, *, json_output: bool) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
-    # Surface THIS session's own id alongside the owner, so a session
-    # always knows whether IT is the owner — not just who the owner is.
-    you = current_session_id()
+    # Surface THIS caller's own principal alongside the owner, so it always
+    # knows whether IT is the owner — not just who the owner is. Resolved
+    # through the SAME seam the claim binds (#3810): a diagnostic that reports a
+    # different identity than the one the tick claims under is what made this
+    # class of bug so hard to see.
+    you, _ = loop_principal()
     status = LoopLease.objects.ownership_status(slot)
     driverless = status.is_live and not status.driver
     human_lines = [f"you are: {you or '(no session id)'}"]
@@ -172,16 +174,21 @@ def _owner(command: TyperCommand, slot: str, *, json_output: bool) -> None:
 
 
 def _whoami(command: TyperCommand, *, json_output: bool) -> None:
-    """Print this Claude session's own id — the hand-off ``--to`` target."""
-    from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
+    """Print this caller's own loop principal — the hand-off ``--to`` target.
 
-    session_id = current_session_id()
+    The same seam the claim binds (#3810), so ``whoami`` inside the loop runner
+    reports the runner's principal rather than whichever Claude session the loop
+    registry happens to name.
+    """
+    from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
+    from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
+
+    session_id, _ = loop_principal()
     driver = detect_driver(session_id)
     if session_id:
         human = f"{session_id}\ndriver: {driver or 'DRIVERLESS'}"
     else:
-        human = "(no Claude session id — not running inside a Claude Code session)"
+        human = "(no loop principal — not a loop runner, and not inside a Claude Code session)"
     emit(
         {"session_id": session_id, "driver": driver, "driverless": not driver},
         json_output=json_output,
@@ -191,19 +198,30 @@ def _whoami(command: TyperCommand, *, json_output: bool) -> None:
     )
 
 
-def _release(command: TyperCommand, slot: str, *, json_output: bool) -> None:
+def _release(command: TyperCommand, slot: str, *, force: bool, json_output: bool) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
-    session_id = current_session_id()
-    released = LoopLease.objects.release_ownership(slot, session_id=session_id)
-    human = (
-        f"OK    released loop slot {slot!r} (was held by this session)."
-        if released
-        else f"NOOP  this session does not hold loop slot {slot!r} — nothing released."
-    )
+    # The SAME seam ``_claim`` binds through (#3810), so a claim and the release
+    # that follows it in the same process always agree on who "this" is.
+    session_id, _ = loop_principal()
+    status = LoopLease.objects.ownership_status(slot)
+    released = LoopLease.objects.release_ownership(slot, session_id=session_id, force=force)
+    if released:
+        held_by = "any holder" if force and session_id != status.owner_session else "this session"
+        human = f"OK    released loop slot {slot!r} (was held by {held_by})."
+    else:
+        # A NOOP must name WHO holds the slot and how to get it back. The silent
+        # "nothing released" left an operator with a claimed-but-unreleasable
+        # lease and no recovery path at all (#3810).
+        holder = status.owner_session or "(nobody)"
+        you = session_id or "(no resolvable identity)"
+        human = (
+            f"NOOP  loop slot {slot!r} is held by {holder}, not by you ({you}) — nothing released.\n"
+            f"      Run `t3 loop release --slot {slot} --force` to release it regardless of holder."
+        )
     emit(
-        {"ok": released, "slot": slot},
+        {"ok": released, "slot": slot, "owner_session": status.owner_session, "you": session_id, "forced": force},
         json_output=json_output,
         out=cast("IO[str]", command.stdout),
         err=cast("IO[str]", command.stderr),
@@ -263,7 +281,11 @@ class Command(TyperCommand):
         self,
         *,
         slot: Annotated[str, typer.Option("--slot", help="t3-master slot name (default: t3-master).")] = "t3-master",
+        force: Annotated[
+            bool,
+            typer.Option("--force", help="Release regardless of holder — the operator's recovery path."),
+        ] = False,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Release this session's t3-master claim (CAS — non-owner is a no-op)."""
-        _release(self, slot, json_output=json_output)
+        """Release this session's t3-master claim (CAS — non-owner is a no-op unless --force)."""
+        _release(self, slot, force=force, json_output=json_output)

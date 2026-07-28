@@ -21,6 +21,7 @@ from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
+from tests._loop_principal_env import pinned_loop_principal
 
 
 def _seed_cold_config(db: Path, key: str, value: object) -> None:
@@ -310,7 +311,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         """#1917: an unset ``--claimed-by-session`` resolves to the active session id."""
         task = self._reviewer_task()
         stdout = StringIO()
-        with patch("teatree.core.session_identity.current_session_id", return_value="sess-default"):
+        with pinned_loop_principal("sess-default"):
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
@@ -322,7 +323,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         """#1917: an explicit ``--claimed-by-session`` is threaded through and surfaced."""
         task = self._reviewer_task()
         stdout = StringIO()
-        with patch("teatree.core.session_identity.current_session_id", return_value="should-not-be-used"):
+        with pinned_loop_principal("should-not-be-used"):
             call_command("loop_dispatch", "claim-next", "--json", claimed_by_session="sess-explicit", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
@@ -334,7 +335,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         """#1917 inert: when no session resolves, the claim carries an empty session."""
         task = self._reviewer_task()
         stdout = StringIO()
-        with patch("teatree.core.session_identity.current_session_id", return_value=""):
+        with pinned_loop_principal():
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())

@@ -11,8 +11,11 @@ file's owner record. These tests pin the precedence and the fail-open
 branches.
 """
 
+import importlib
 import io
 import json
+import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +31,7 @@ from teatree.core.session_identity import (
     current_session_pid,
     session_id_from_env,
 )
+from teatree.loop.session_identity import current_session_id as loop_entry_point
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -348,3 +352,53 @@ class TestEnvInvisibleRegistryAnchorsDurablePid:
         won, owner = LoopLease.objects.claim_ownership("t3-master", session_id="fresh-session")
         assert won is False, "an alive owner past its TTL must NOT be stealable by a fresh session"
         assert owner == "owner-sess"
+
+
+class TestLoopEntryPointCannotBePoisonedByAnImportUnderPatch:
+    """A first import under an active core patch must not capture the mock (#3810).
+
+    The CI red this pins: ``loop_owner`` pulls ``loop_principal`` through
+    ``teatree.loop.session_identity`` *inside*
+    ``mock.patch("teatree.core.session_identity.current_session_id")``, so that
+    patch was live at the moment the loop module was first imported. While the
+    loop module re-exported with ``from ... import``, it bound the mock OBJECT;
+    ``mock.patch`` restored only the core attribute on exit, leaving the loop
+    name pointing at a dead mock for the rest of the process. ``handover``
+    imports that name at module level, so ``t3 handover whoami`` reported the
+    mock's session id ever after — and ``handover create`` then found no
+    PreCompact snapshot for that foreign id and exited 1.
+    """
+
+    @staticmethod
+    def _import_under_core_patch() -> object:
+        sys.modules.pop("teatree.loop.session_identity", None)
+        with patch("teatree.core.session_identity.current_session_id", return_value="mock-sess"):
+            module = importlib.import_module("teatree.loop.session_identity")
+            assert module.current_session_id() == "mock-sess"
+        return module
+
+    def test_import_under_patch_leaves_no_stale_binding(self) -> None:
+        with patch.dict(sys.modules):
+            loop_identity = self._import_under_core_patch()
+            # The patch has lifted: the entry point must resolve the real
+            # precedence again, not the mock it was imported alongside.
+            with patch.dict(os.environ, {"T3_LOOP_SESSION_ID": "real-sess"}, clear=True):
+                assert loop_identity.current_session_id() == "real-sess"
+
+    def test_claude_code_session_id_survives_an_import_under_patch(self) -> None:
+        # The #3554 guarantee specifically: a live Claude Code session exports
+        # only CLAUDE_CODE_SESSION_ID, and a poisoned entry point silently
+        # answered with the stale mock instead of it.
+        with patch.dict(sys.modules):
+            loop_identity = self._import_under_core_patch()
+            with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "cc-session"}, clear=True):
+                assert loop_identity.current_session_id() == "cc-session"
+
+    def test_patching_core_steers_the_entry_point_only_while_it_is_live(self) -> None:
+        # Delegation, not object identity: the previously-pinned
+        # ``loop_reexport is core_impl`` mandated the very binding that made the
+        # poisoning possible. This is the invariant that replaces it.
+        with patch("teatree.core.session_identity.current_session_id", return_value="patched-sess"):
+            assert loop_entry_point() == "patched-sess"
+        with patch.dict(os.environ, {"T3_LOOP_SESSION_ID": "env-sess"}, clear=True):
+            assert loop_entry_point() == "env-sess"
