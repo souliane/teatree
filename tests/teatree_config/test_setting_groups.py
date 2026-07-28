@@ -15,7 +15,15 @@ import dataclasses
 import pytest
 
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.config.setting_groups import UNGROUPED_PATH, SettingGroupNode, group_paths, group_tree, setting_group_path
+from teatree.config.setting_groups import (
+    UNGROUPED_PATH,
+    SettingGroupNode,
+    group_leaves,
+    group_outline,
+    group_paths,
+    group_tree,
+    setting_group_path,
+)
 from teatree.config.settings import UserSettings
 
 
@@ -132,3 +140,45 @@ class TestTheTreeIsATotalPartition:
             node.label for node in _walk(group_tree(("a_key_no_declaration_base_carries",), key_of=lambda key: key))
         }
         assert labels == {UNGROUPED_PATH[0]}
+
+
+class TestTheOutlineTheTextSurfacesRender:
+    """``group_outline`` is the ONE walk the TOML export and the CLI listing share."""
+
+    def _sections(self, keys: tuple[str, ...]) -> list:
+        return list(group_outline(keys, key_of=lambda key: key))
+
+    def test_a_level_is_announced_once_however_many_leaves_share_it(self) -> None:
+        sections = self._sections(("require_merge_evidence", "architectural_review_disabled", "critic_gate_mode"))
+        announced = [(heading.depth, heading.label) for section in sections for heading in section.headings]
+        assert announced.count((1, "Gates")) == 1, "a shared parent level is re-announced per child"
+        assert announced.count((2, "Quality")) == 1
+        assert [label for depth, label in announced if depth == 3] == [
+            "Architectural review",
+            "Merge & done",
+            "Critic & send proxy",
+        ]
+
+    def test_each_sections_rows_follow_the_headings_that_introduce_them(self) -> None:
+        sections = self._sections(("autoload", "require_merge_evidence"))
+        assert [section.headings[-1].label for section in sections] == ["Engagement & identity", "Merge & done"]
+        assert [section.rows for section in sections] == [("autoload",), ("require_merge_evidence",)]
+
+    def test_a_sections_depth_is_its_leafs_so_a_text_surface_indents_without_relookup(self) -> None:
+        sections = self._sections(("autoload", "require_merge_evidence"))
+        assert [section.depth for section in sections] == [2, 3]
+        assert all(section.depth == len(setting_group_path(row)) for section in sections for row in section.rows)
+
+    def test_the_outline_places_every_row_exactly_once(self) -> None:
+        keys = tuple(TeatreeSettingsSchema.model_fields)
+        placed = [row for section in self._sections(keys) for row in section.rows]
+        assert sorted(placed) == sorted(keys)
+
+    def test_group_leaves_flattens_to_the_row_carrying_nodes_in_render_order(self) -> None:
+        tree = group_tree(("autoload", "require_merge_evidence"), key_of=lambda key: key)
+        leaves = group_leaves(tree)
+        assert [leaf.path for leaf in leaves] == [
+            ("Workspace", "Engagement & identity"),
+            ("Gates", "Quality", "Merge & done"),
+        ]
+        assert all(not leaf.children for leaf in leaves), "group_leaves returned a node with children"
