@@ -134,11 +134,14 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
 
 def _owner(command: TyperCommand, slot: str, *, json_output: bool) -> None:
     from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
-    # Surface THIS session's own id alongside the owner, so a session
-    # always knows whether IT is the owner — not just who the owner is.
-    you = current_session_id()
+    # Surface THIS caller's own principal alongside the owner, so it always
+    # knows whether IT is the owner — not just who the owner is. Resolved
+    # through the SAME seam the claim binds (#3810): a diagnostic that reports a
+    # different identity than the one the tick claims under is what made this
+    # class of bug so hard to see.
+    you, _ = loop_principal()
     status = LoopLease.objects.ownership_status(slot)
     driverless = status.is_live and not status.driver
     human_lines = [f"you are: {you or '(no session id)'}"]
@@ -171,16 +174,21 @@ def _owner(command: TyperCommand, slot: str, *, json_output: bool) -> None:
 
 
 def _whoami(command: TyperCommand, *, json_output: bool) -> None:
-    """Print this Claude session's own id — the hand-off ``--to`` target."""
-    from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415 — deferred: keeps command import light
+    """Print this caller's own loop principal — the hand-off ``--to`` target.
 
-    session_id = current_session_id()
+    The same seam the claim binds (#3810), so ``whoami`` inside the loop runner
+    reports the runner's principal rather than whichever Claude session the loop
+    registry happens to name.
+    """
+    from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
+    from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
+
+    session_id, _ = loop_principal()
     driver = detect_driver(session_id)
     if session_id:
         human = f"{session_id}\ndriver: {driver or 'DRIVERLESS'}"
     else:
-        human = "(no Claude session id — not running inside a Claude Code session)"
+        human = "(no loop principal — not a loop runner, and not inside a Claude Code session)"
     emit(
         {"session_id": session_id, "driver": driver, "driverless": not driver},
         json_output=json_output,
