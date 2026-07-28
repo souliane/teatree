@@ -252,16 +252,27 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     """The cached per-account rate-limit health, folded into one signal.
 
     Reads the ``AnthropicTokenUsage`` cache the routing selector already maintains — no
-    network probe, no model. Only FRESH rows count: a stale cache yields
-    ``fresh=False``, which the decision treats as a fail-safe, not as headroom.
+    network probe, no model. The aggregate claims knowledge only when EVERY known
+    account's verdict is fresh; a partial sample yields ``fresh=False``, which the
+    decision treats as a fail-safe, not as headroom.
+
+    Requiring the WHOLE fleet rather than filtering to the fresh rows is what keeps the
+    aggregate unbiased. ``valid_until`` is the routing cache's "may I skip a re-probe?"
+    rule and is deliberately asymmetric by exhaustion — a healthy verdict lapses after
+    ``HEALTH_TTL`` (minutes), an exhausted one is trusted until its blocking window
+    resets (days). Filtering through it is survivorship bias: outside the minutes right
+    after a healthy probe the only surviving rows are the exhausted ones, so
+    ``all_accounts_exhausted`` reads True and the governor brakes the whole headless
+    lane while a healthy account still has most of its week. A lapsed verdict is
+    UNKNOWN, and no claim about "every account" survives an unknown.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django app-registry read at call time
 
     from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: same
 
     moment = now or timezone.now()
-    rows = [row for row in AnthropicTokenUsage.objects.all() if row.is_fresh(moment)]
-    if not rows:
+    rows = list(AnthropicTokenUsage.objects.all())
+    if not rows or not all(row.is_fresh(moment) for row in rows):
         return QuotaSignal(
             fresh=False,
             all_accounts_exhausted=False,

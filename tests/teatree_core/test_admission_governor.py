@@ -7,7 +7,11 @@ reason — a governor that denies silently recreates the class of bug that hid a
 merge loop for weeks.
 """
 
+import datetime as dt
+
 import pytest
+from django.test import TestCase
+from django.utils import timezone
 
 from teatree.agents import _headless_env
 from teatree.agents._headless_env import XDIST_WORKERS_VAR, with_test_worker_cap
@@ -21,6 +25,7 @@ from teatree.core.admission_governor import (
     read_machine_signal,
     weekly_pace,
 )
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 
 _WEEK = 7 * 24 * 3600
 
@@ -236,3 +241,84 @@ class TestReadMachineSignal:
         signal = read_machine_signal()
         assert signal.load1 == pytest.approx(0.0)
         assert signal.cores >= 1
+
+
+class TestReadQuotaSignalFreshnessBias(TestCase):
+    """The fleet aggregate must not be computed over a sample biased by exhaustion.
+
+    ``AnthropicTokenUsage.valid_until`` is the ROUTING cache's "may I skip a
+    re-probe?" rule, and it is deliberately asymmetric: a healthy verdict lapses
+    after ``HEALTH_TTL`` (5 minutes) while an exhausted one is trusted until its
+    blocking window resets (days). Filtering the fleet aggregate through that same
+    rule is survivorship bias — outside the minutes right after a healthy probe the
+    ONLY surviving rows are the exhausted ones, so ``all_accounts_exhausted`` reads
+    True and the governor brakes the whole headless lane while a healthy account
+    sits at 39% weekly. The aggregate must claim knowledge only when it knows every
+    account; a partial sample is ``fresh=False``, which the decision fails OPEN on.
+    """
+
+    def _row(self, path: str, *, utilization_7d: float, status_7d: str, valid_for: dt.timedelta) -> None:
+        now = timezone.now()
+        AnthropicTokenUsage.objects.create(
+            pass_path=path,
+            utilization_5h=0.1,
+            utilization_7d=utilization_7d,
+            status_5h="allowed",
+            status_7d=status_7d,
+            reset_7d=now + dt.timedelta(days=3),
+            checked_at=now,
+            valid_until=now + valid_for,
+        )
+
+    def _healthy(self, path: str = "healthy", *, valid_for: dt.timedelta = dt.timedelta(minutes=5)) -> None:
+        self._row(path, utilization_7d=0.39, status_7d="allowed", valid_for=valid_for)
+
+    def _exhausted(self, path: str = "exhausted") -> None:
+        self._row(path, utilization_7d=1.0, status_7d="rejected", valid_for=dt.timedelta(days=2))
+
+    def test_a_lapsed_healthy_row_does_not_read_as_every_account_exhausted(self) -> None:
+        self._healthy(valid_for=dt.timedelta(minutes=-1))
+        self._exhausted()
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.all_accounts_exhausted is False
+
+    def test_a_lapsed_healthy_row_does_not_brake_the_headless_lane(self) -> None:
+        self._healthy(valid_for=dt.timedelta(minutes=-1))
+        self._exhausted()
+
+        decision = decide_admission(
+            quota=admission_governor.read_quota_signal(), machine=_machine(), static_ceiling=None
+        )
+
+        assert decision.admit is True
+
+    def test_a_partial_sample_claims_no_knowledge(self) -> None:
+        self._healthy(valid_for=dt.timedelta(minutes=-1))
+        self._exhausted()
+
+        assert admission_governor.read_quota_signal().fresh is False
+
+    def test_every_account_fresh_and_exhausted_still_brakes(self) -> None:
+        self._exhausted("a")
+        self._exhausted("b")
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.fresh is True
+        assert signal.all_accounts_exhausted is True
+        assert decide_admission(quota=signal, machine=_machine(), static_ceiling=None).admit is False
+
+    def test_a_fully_fresh_mixed_fleet_reports_the_healthy_account(self) -> None:
+        self._healthy()
+        self._exhausted()
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.fresh is True
+        assert signal.all_accounts_exhausted is False
+        assert signal.weekly_utilization == pytest.approx(0.39)
+
+    def test_no_rows_at_all_still_reads_unknown(self) -> None:
+        assert admission_governor.read_quota_signal().fresh is False
