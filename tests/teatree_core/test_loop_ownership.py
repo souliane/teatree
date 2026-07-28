@@ -268,12 +268,10 @@ class TestSessionIdentity(TestCase):
 
     def test_outbound_claim_reexport_is_the_same_callable(self) -> None:
         from teatree.core.session_identity import current_session_id as core_impl  # noqa: PLC0415
-        from teatree.loop.session_identity import current_session_id as loop_reexport  # noqa: PLC0415
         from teatree.outbound_claim import _resolve_agent_session_id  # noqa: PLC0415
 
-        # core is the canonical home; both the loop re-export and the
-        # outbound_claim backward-compat alias resolve to the same object.
-        assert loop_reexport is core_impl
+        # core is the canonical home; the outbound_claim backward-compat alias
+        # resolves to the same object.
         assert _resolve_agent_session_id is core_impl
 
 
