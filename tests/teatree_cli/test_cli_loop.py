@@ -708,7 +708,15 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release", "--json"])
 
         assert result.exit_code == 0
-        assert json.loads(result.stdout) == {"ok": True, "slot": "t3-master"}
+        # `owner_session`/`you`/`forced` are load-bearing (#3810): a NOOP release must
+        # name the holder and the caller, so an operator can see WHY it was a NOOP.
+        assert json.loads(result.stdout) == {
+            "ok": True,
+            "slot": "t3-master",
+            "owner_session": "rel-sess",
+            "you": "rel-sess",
+            "forced": False,
+        }
 
 
 class TestIntakeLoopsCommand:

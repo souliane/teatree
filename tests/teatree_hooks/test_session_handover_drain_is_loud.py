@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/session_handover_pickup.py + hook_router.py; no src/teatree/ mirror.
 """A parked hand-off is drained by a starting session, and a failed drain LOGS (#3810).
 
 Six hand-offs sat unclaimed for a week on a live box. Two defects kept them
