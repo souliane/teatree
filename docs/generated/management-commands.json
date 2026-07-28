@@ -83,7 +83,7 @@
           "name": "export"
         },
         {
-          "help": "List every DB config override row, naming each row's scope (read-only)",
+          "help": "List every DB config override row under its group, naming each row's scope",
           "name": "list"
         },
         {

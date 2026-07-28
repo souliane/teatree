@@ -29,6 +29,7 @@ from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
 from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_seed_field, seed_divergences
+from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
@@ -170,7 +171,7 @@ def export_db_to_toml(
     settings_global = {key: value for key, value in all_global.items() if key not in REGISTRY_KEYS}
     global_rows = _exportable_rows(settings_global, GLOBAL_SCOPE, guard=guard)
     if global_rows:
-        document["teatree"] = _toml_table(global_rows)
+        document["teatree"] = grouped_settings_table(global_rows)
     scopes = list(
         ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).order_by("scope").values_list("scope", flat=True).distinct()
     )

@@ -8,7 +8,7 @@ valid.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
 from teatree.config.enums import (
@@ -54,7 +54,14 @@ class _WorkspaceCoreSettings:
 
     A private in-file group base (see :class:`UserSettings`). Pure data-declaration —
     no behaviour — so the flat persisted schema is preserved by inheritance.
+
+    ``GROUP_PATH`` is where this base's fields render in the settings hierarchy —
+    a ``ClassVar``, so it is declaration metadata and never a persisted field. It is
+    the ONLY place this group is named: ``teatree.config.setting_groups`` reads it off
+    the MRO, so a field added below is placed by it with nothing else to edit.
     """
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Workspace", "Engagement & identity")
 
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
     privacy: str = ""
@@ -90,6 +97,8 @@ PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 16384
 @dataclass
 class _ModeHarnessSettings:
     """Mode / autonomy + the two-layer agent-harness (runtime / transport / provider) selectors."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Agents", "Mode & harness")
 
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
@@ -235,6 +244,8 @@ class _ModeHarnessSettings:
 class _LoopSettings:
     """WIP dial + loop cadence/runner + the worker admission gate."""
 
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Cadence & throughput")
+
     # How much new work a loop tick admits at once — the bounded-WIP dial. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
@@ -287,6 +298,8 @@ class _LoopSettings:
 @dataclass
 class _OnBehalfSettings:
     """Human-approval training wheels + the on-behalf post gate + bot→user notify flags."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Communication", "Posting on your behalf")
 
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
@@ -443,6 +456,8 @@ class _OnBehalfSettings:
 class _IdentityRoutingSettings:
     """Statusline chain, operator identity aliases, repo mode, and the missing-issue policy."""
 
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Communication", "Identity & routing")
+
     statusline_chain: list[str] = field(default_factory=list)
     # Opt-in (#3502): render the loop statusline in a session the owner explicitly
     # engaged by hand (an engage marker present) even with autoload off. Read DB-only
@@ -484,8 +499,10 @@ class _IdentityRoutingSettings:
 
 
 @dataclass
-class _QualityGateSettings:
-    """The architectural-review cadence + the opt-in DoD / merge / critic / send-proxy quality gates."""
+class _ArchitecturalReviewSettings:
+    """The periodic architectural-review cadence + its post-failure backoff."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Architectural review")
 
     # #1136 / #1152 Periodic architectural-review scanner — CORE
     # always-on (not per-overlay opt-in). The cadence applies uniformly
@@ -501,6 +518,14 @@ class _QualityGateSettings:
     # than storming the expensive review hourly.
     architectural_review_retry_backoff_hours: int = 12
     architectural_review_after_merge_count: int = 25
+
+
+@dataclass
+class _ReviewGateSettings:
+    """Review-phase evidence gates + review-board admission + the E2E confidence bar."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Review")
+
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
     # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is
     # a NO-OP, so projects that do not configure a review skill keep
@@ -538,6 +563,14 @@ class _QualityGateSettings:
     # combined changeset. A single-repo ticket never trips it. Default false =
     # NO-OP. Per-overlay overridable.
     require_integration_review: bool = False
+
+
+@dataclass
+class _MergeGateSettings:
+    """The opt-in gates a ticket must clear to reach MERGED — evidence, plan, repro, debt."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Merge & done")
+
     # #4a Opt-in merge-evidence FSM gate on ``mark_merged`` / ``reconcile_merged``
     # (``merge_evidence_gate``): the terminal MERGED state is unreachable without
     # real merged-SHA evidence — a keystone ``MergeAudit`` row OR the forge itself
@@ -614,6 +647,14 @@ class _QualityGateSettings:
     # NO-OP (a genuinely gate-less repo still merges); the operator opts in per
     # overlay once their repos carry required checks. Per-overlay overridable.
     expected_required_contexts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _CriticGateSettings:
+    """The user-proxy critic's posture, the send-proxy destination guard, the bulk-close cap."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Critic & send proxy")
+
     # SELFCATCH-5 / #104 The autonomous user-proxy critic's ENFORCEMENT posture on
     # ``mark_delivered`` (``critic_gate``), re-typed from the former boolean
     # enforcement flag. The critic ALWAYS records the cheap deterministic
@@ -649,6 +690,14 @@ class _QualityGateSettings:
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is
     # always allowed. Per-overlay overridable.
     bulk_close_threshold: int = 5
+
+
+@dataclass
+class _DoneCriteriaSettings:
+    """The acceptance-criteria done-gates — rubric verification, spec coverage, E2E confidence."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Definition of done")
+
     # #2241 Opt-in rubric->verifier done-gate on the keystone merge precondition
     # (``rubric_gate``): the ticket's rubric of acceptance criteria must be fully
     # PASS by an independent verifier (grader != maker) at the merge-time head
@@ -675,6 +724,8 @@ class _QualityGateSettings:
 @dataclass
 class _ScannerSettings:
     """The periodic loop scanners — news, local-eval, backlog-sweep, dogfood-smoke, self-update cadences."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Scanners")
 
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
@@ -758,7 +809,9 @@ _DEFAULT_DISK_CACHE_ALLOWLIST = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~
 
 @dataclass
 class _ResourcePressureSettings:
-    """Resource-pressure auto-free thresholds (disk / RAM) + the destructive-lever opt-ins + task-sweep."""
+    """The resource-pressure scanner cadence and its disk / RAM warn + critical thresholds."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Thresholds & cadence")
 
     # #128 Resource-pressure scanner — teatree-controlled auto-free before
     # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
@@ -781,6 +834,14 @@ class _ResourcePressureSettings:
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
     disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
+
+
+@dataclass
+class _DestructiveLeverSettings:
+    """The irreversible auto-free levers — worktree GC and process SIGTERM — each opt-in OFF."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Destructive levers")
+
     # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
     # ``worktree_stale_days``) at CRITICAL, capped at
     # ``max_worktree_gc_per_tick`` per pass and never the active session's
@@ -794,6 +855,14 @@ class _ResourcePressureSettings:
     # process is ever killed even when ``allow_destructive_ram = true``.
     allow_destructive_ram: bool = False
     ram_kill_allowlist: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _RetentionSettings:
+    """Task-sweep, stack concurrency, control-DB retention windows, and session staleness."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Retention & sweeps")
+
     # #129 task-sweep scanner — per-overlay; verifies open teatree Task rows
     # against their artifact's terminal state (issue closed / PR merged) and
     # completes only on durable proof, never in bulk and never on a stale read.
@@ -845,6 +914,8 @@ class _ResourcePressureSettings:
 @dataclass
 class _ProvisioningSettings:
     """Provisioning timeouts / concurrency + the idle-stack, stale-stack, and queue reaper knobs."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Provisioning")
 
     # #2220 Hard ceiling (seconds) for one long-blocking provisioning subprocess
     # — a DSLR snapshot restore, ``migrate``, or a ``--create-db`` test-DB
@@ -939,6 +1010,8 @@ class _ProvisioningSettings:
 @dataclass
 class _PrePublishGateSettings:
     """Slack voice + speak/mr-reminder + the pre-publish / commit-time gate kill-switches and repo patterns."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Pre-publish")
 
     # #1395 Slack voice/token mismatch classifier. The pre-publish gate
     # between ``chat.postMessage`` and the Slack API refuses (or warns)
@@ -1087,19 +1160,29 @@ class UserSettings(
     _LoopSettings,
     _OnBehalfSettings,
     _IdentityRoutingSettings,
-    _QualityGateSettings,
+    _ArchitecturalReviewSettings,
+    _ReviewGateSettings,
+    _MergeGateSettings,
+    _CriticGateSettings,
+    _DoneCriteriaSettings,
     _ScannerSettings,
     _ResourcePressureSettings,
+    _DestructiveLeverSettings,
+    _RetentionSettings,
     _ProvisioningSettings,
     _PrePublishGateSettings,
     _LoopFlagAndCredentialSettings,
 ):
     """The ``[teatree]`` settings — the FLAT, 160-field persisted contract.
 
-    The fields are declared across ~11 private in-file group bases above purely for
+    The fields are declared across the private in-file group bases above purely for
     readability; ``UserSettings`` is the sole public API and ``dataclasses.fields()``
     stays inheritance-transparent, so the flat field namespace (DB ``ConfigSetting.key``,
     env overrides, cold sqlite3 readers, the rename-guard and golden pin) is unchanged.
+
+    Each base's ``GROUP_PATH`` is where its fields render in the settings hierarchy, and
+    this bases tuple is the hierarchy's ORDER — ``teatree.config.setting_groups`` reads
+    both off the MRO, so adding a base here is all it takes to add a group.
 
     CLAUDE.md's "composition over mixins" targets behaviour-carrying classes; these bases
     are pure data-declaration with no behaviour, and the flat schema IS the persisted

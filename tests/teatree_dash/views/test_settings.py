@@ -6,10 +6,11 @@ from unittest.mock import patch
 
 from django.test import TestCase
 from django.urls import resolve, reverse
+from django.utils.html import escape
 
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema, shipped_defaults
-from teatree.config.setting_groups import group_labels
+from teatree.config.setting_groups import UNGROUPED_PATH, group_paths, setting_group_path
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import SettingsEditorView, build_settings_editor
 from teatree.dash.settings_readouts import ReadoutsView
@@ -26,6 +27,22 @@ from teatree.dash.views.settings import (
 
 _ROW_ID = re.compile(r'id="setting-([a-z0-9_]+)"')
 _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
+_GROUP_DEPTH = re.compile(r'data-group-depth="(\d+)"')
+
+
+def _group_section(body: str, path: tuple[str, ...]) -> str | None:
+    """The markup of the section rendering *path*, from its open tag to its close."""
+    opening = f'data-group-path="{escape(" / ".join(path))}"'
+    if opening not in body:
+        return None
+    start = body.rindex("<section", 0, body.index(opening))
+    depth = 0
+    for match in re.finditer(r"<section|</section>", body[start:]):
+        depth += 1 if match.group() == "<section" else -1
+        if depth == 0:
+            return body[start : start + match.end()]
+    return None
+
 
 #: The live-readout panels the retired config page contributed, by heading.
 _READOUT_HEADINGS = ("Model &amp; reasoning effort", "Credentials", "Self-repairs")
@@ -97,12 +114,29 @@ class TestTheOneSettingsPage(TestCase):
 
     def test_every_key_sits_under_a_named_group_heading(self) -> None:
         body = self._body()
-        headings = [label for label in group_labels() if f"<h2>{label}</h2>" in body]
-        assert headings, "the page renders no group heading at all"
-        # Each rendered row belongs to the group section that precedes it.
-        for label in headings:
-            section = body[body.index(f"<h2>{label}</h2>") :]
-            assert _ROW_ID.search(section), f"group {label!r} renders a heading but no row"
+        rendered = [path for path in group_paths() if _group_section(body, path) is not None]
+        assert rendered, "the page renders no group section at all"
+        for path in rendered:
+            section = _group_section(body, path)
+            assert section is not None
+            assert _ROW_ID.search(section), f"group {path!r} renders a heading but no row"
+            assert f"<h{len(path) + 1}>{escape(path[-1])}</h{len(path) + 1}>" in section, (
+                f"group {path!r} renders no heading at its own depth"
+            )
+
+    def test_the_hierarchy_is_rendered_several_levels_deep(self) -> None:
+        depths = {int(depth) for depth in _GROUP_DEPTH.findall(self._body())}
+        assert max(depths) >= 3, f"the page renders a flat grouping: depths={sorted(depths)}"
+
+    def test_a_deep_group_renders_inside_its_parent_section(self) -> None:
+        # Nesting must be VISIBLE structure, not a flattened list of dotted labels: the
+        # child's markup has to sit within the parent's section, under a deeper heading.
+        body = self._body()
+        parent = _group_section(body, ("Gates", "Quality"))
+        assert parent is not None, "the parent group is missing from the page"
+        assert 'data-group-path="Gates / Quality / Merge &amp; done"' in parent
+        assert "<h3>Quality</h3>" in parent
+        assert "<h4>Merge &amp; done</h4>" in parent
 
     def test_the_page_absorbs_the_config_pages_live_readouts(self) -> None:
         body = self._body()
@@ -145,11 +179,28 @@ class TestTheOneSettingsPage(TestCase):
 
     def test_a_key_no_group_declares_renders_under_a_visible_leftovers_banner(self) -> None:
         # The never-vanish guarantee, exercised: force a key out of every declared group.
-        with patch("teatree.dash.settings_editor.setting_group", side_effect=lambda key: "" if key == "mode" else "x"):
+        declared = setting_group_path
+        with patch(
+            "teatree.config.setting_groups.setting_group_path",
+            side_effect=lambda key: UNGROUPED_PATH if key == "mode" else declared(key),
+        ):
             body = self._body()
         assert 'id="setting-mode"' in body
-        assert "Ungrouped" in body
+        assert f"<h2>{UNGROUPED_PATH[0]}</h2>" in body
         assert "no declared group" in body
+
+    def test_a_key_whose_parent_level_is_unknown_still_renders(self) -> None:
+        # A path naming a level no other group declares must still render, at its own
+        # depth, rather than being dropped for having no parent to hang from.
+        declared = setting_group_path
+        orphan = ("A level nothing else declares", "Its only child")
+        with patch(
+            "teatree.config.setting_groups.setting_group_path",
+            side_effect=lambda key: orphan if key == "mode" else declared(key),
+        ):
+            body = self._body()
+        assert 'id="setting-mode"' in body
+        assert f'data-group-path="{escape(" / ".join(orphan))}"' in body
 
 
 class TestConfigPageIsRetired(TestCase):

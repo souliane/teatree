@@ -475,6 +475,21 @@ a.chip:hover {
   margin: var(--sp-3) 0 var(--sp-2);
 }
 
+/* Nested settings groups — the rule marks where a subsection starts, the indent how deep. */
+.settings-subgroup {
+  border-left: 2px solid var(--line);
+  padding-left: var(--sp-3);
+  margin: var(--sp-3) 0 var(--sp-3) var(--sp-2);
+}
+.settings-subgroup h3,
+.settings-subgroup h4,
+.settings-subgroup h5 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--ink-muted);
+  margin: 0 0 var(--sp-2);
+}
+
 /* Health verdict as the page lead. */
 .verdict-lead {
   display: flex;

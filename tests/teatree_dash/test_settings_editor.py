@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.schema import TeatreeSettingsSchema
-from teatree.config.setting_groups import UNGROUPED_LABEL, group_labels
+from teatree.config.setting_groups import UNGROUPED_PATH, group_paths
 from teatree.core.config_display import MASKED, render_value
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
@@ -17,6 +17,14 @@ from teatree.dash.settings_editor import (
     group_rows,
     import_preview,
 )
+
+
+def _walk(nodes) -> list:
+    return [n for node in nodes for n in (node, *_walk(node.children))]
+
+
+def _leaves(nodes) -> list:
+    return [leaf for node in nodes for leaf in ([node] if not node.children else _leaves(node.children))]
 
 
 class TestBuildSettingsEditor(TestCase):
@@ -98,35 +106,40 @@ class TestGroupingDropsNothing:
             _stub_row("overlays"),
             _stub_row("a_key_no_declaration_base_carries"),
         )
-        grouped = [s.name for group in group_rows(rows) for s in group.settings]
+        grouped = [s.name for leaf in _leaves(group_rows(rows)) for s in leaf.rows]
         assert sorted(grouped) == sorted(r.name for r in rows)
         assert len(grouped) == len(set(grouped)), "a row landed in two groups"
 
     def test_a_row_no_group_declares_lands_in_the_leftovers_bucket_not_nowhere(self) -> None:
         groups = group_rows((_stub_row("mode"), _stub_row("a_key_no_declaration_base_carries")))
-        leftovers = next(g for g in groups if g.is_ungrouped)
-        assert leftovers.label == UNGROUPED_LABEL
-        assert [s.name for s in leftovers.settings] == ["a_key_no_declaration_base_carries"]
+        leftovers = next(leaf for leaf in _leaves(groups) if leaf.is_ungrouped)
+        assert leftovers.path == UNGROUPED_PATH
+        assert [s.name for s in leftovers.rows] == ["a_key_no_declaration_base_carries"]
 
     def test_an_empty_group_is_omitted_so_the_page_has_no_hollow_sections(self) -> None:
         groups = group_rows((_stub_row("mode"),))
-        assert [g.label for g in groups] == ["Mode, harness & agent runtime"]
+        assert [leaf.path for leaf in _leaves(groups)] == [("Agents", "Mode & harness")]
 
     def test_groups_render_in_the_declared_order(self) -> None:
         rows = (_stub_row("overlays"), _stub_row("mode"), _stub_row("autoload"))
-        rendered = [g.label for g in group_rows(rows)]
-        assert rendered == [label for label in group_labels() if label in rendered]
+        rendered = [leaf.path for leaf in _leaves(group_rows(rows))]
+        assert rendered == [path for path in group_paths() if path in rendered]
+
+    def test_a_row_hangs_off_a_leaf_never_off_a_parent_that_has_subsections(self) -> None:
+        rows = (_stub_row("require_merge_evidence"), _stub_row("architectural_review_disabled"))
+        for node in _walk(group_rows(rows)):
+            assert not (node.children and node.rows), f"{node.path} carries both children and rows"
 
 
 class TestBuildSettingsEditorGroups(TestCase):
     def test_the_page_groups_carry_every_schema_key(self) -> None:
         view = build_settings_editor()
-        grouped = {s.name for group in view.groups for s in group.settings}
+        grouped = {s.name for leaf in _leaves(view.groups) for s in leaf.rows}
         assert grouped == set(TeatreeSettingsSchema.model_fields)
         assert grouped == {s.name for s in view.settings}
 
     def test_no_group_is_empty(self) -> None:
-        assert all(group.settings for group in build_settings_editor().groups)
+        assert all(node.rows or node.children for node in _walk(build_settings_editor().groups))
 
     def test_a_read_failure_leaves_no_groups_to_render(self) -> None:
         with patch(

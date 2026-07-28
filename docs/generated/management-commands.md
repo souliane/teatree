@@ -41,7 +41,7 @@ Edit the source command, not this file.
 | `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
 | `get` | Print the resolved value for *key* and name its source (DB vs env/default) |
 | `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
-| `list` | List every DB config override row, naming each row's scope (read-only) |
+| `list` | List every DB config override row under its group, naming each row's scope |
 | `import` | Load a ``config_setting export`` TOML dump into the store — the inverse of ``export`` |
 
 ## `cost`

@@ -1,82 +1,256 @@
-"""Which declaration group each config key belongs to — the settings page's grouping.
+"""Where each config key sits in the NESTED declaration hierarchy — the grouping tree.
 
-Membership is DERIVED, never re-listed: a key's group is the ``UserSettings`` declaration
-base that declares it (``tests/config/test_settings_group_partition.py`` pins those bases
-pairwise-disjoint and exhaustive) or, for a key no base declares, the registry that
-registers it. This module carries only each group's operator-facing label and its order —
-so a newly-added key is grouped by the declaration it already has, with nothing to forget.
+Membership AND hierarchy are DERIVED, never re-listed here:
 
-:data:`UNGROUPED_LABEL` is the never-vanish guarantee, not a resting place: a key no
-declaration owns still gets a bucket and renders under a visible banner, rather than
-being dropped from the page the way the retired band classifier dropped 130 of 184.
+*   a key's group is the ``UserSettings`` declaration base that declares it, and that
+    base's own ``GROUP_PATH`` class var is the nested path it renders under;
+*   the set of bases and their ORDER come off ``UserSettings.__mro__`` — the bases tuple
+    IS the render order, so adding a base adds a group with nothing to register;
+*   a key no base declares is grouped by the registry that registers it, each registry
+    declaring its own path beside its keys (``COLD_SETTINGS_GROUP_PATH`` and friends).
+
+So this module names no category and lists no key: adding a setting to an existing
+declaration places it in the right nested group with zero edits anywhere.
+``tests/config/test_settings_group_partition.py`` pins the declaration bases pairwise-
+disjoint and exhaustive, over the tree as well as the flat field set.
+
+:data:`UNGROUPED_PATH` is the never-vanish guarantee, not a resting place: a key no
+declaration owns — and a base that declares no path at all — still gets a bucket and
+renders under a visible banner, rather than being dropped from the page the way the
+retired band classifier dropped 130 of 184.
+
+:func:`group_tree` is the single nesting mechanism the dashboard, the TOML export and
+the ``config_setting`` CLI all render from, so the three surfaces cannot disagree about
+the hierarchy.
 
 Deliberately pydantic-free — it composes the same cold-safe registries
 ``teatree.config``'s package init already loads, so importing it costs no schema import.
 """
 
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
-from teatree.config.settings import (
-    _IdentityRoutingSettings,
-    _LoopFlagAndCredentialSettings,
-    _LoopSettings,
-    _ModeHarnessSettings,
-    _OnBehalfSettings,
-    _PrePublishGateSettings,
-    _ProvisioningSettings,
-    _QualityGateSettings,
-    _ResourcePressureSettings,
-    _ScannerSettings,
-    _WorkspaceCoreSettings,
+import tomlkit
+from tomlkit import items as tomlkit_items
+
+from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, COLD_HOOK_SETTINGS_GROUP_PATH
+from teatree.config.registries import (
+    COLD_SETTINGS,
+    COLD_SETTINGS_GROUP_PATH,
+    REGISTRY_SETTINGS,
+    REGISTRY_SETTINGS_GROUP_PATH,
 )
+from teatree.config.settings import UserSettings
 
 #: The bucket a key no declaration owns lands in — rendered last, under a visible banner.
-UNGROUPED_LABEL = "Ungrouped"
+UNGROUPED_PATH: tuple[str, ...] = ("Ungrouped",)
 
-#: A group's membership source: a declaration base (its dataclass fields) or a registry
-#: (its keys). Either way the source owns the key list — this module never re-lists one.
-type _GroupSource = type | Mapping[str, object]
-
-#: Label + membership source, in render order. The source supplies the keys; nothing here
-#: names one. A declaration base wins over a registry when both would claim a key.
-_GROUP_SOURCES: tuple[tuple[str, _GroupSource], ...] = (
-    ("Workspace & engagement", _WorkspaceCoreSettings),
-    ("Mode, harness & agent runtime", _ModeHarnessSettings),
-    ("Loop cadence & throughput", _LoopSettings),
-    ("Posting on your behalf", _OnBehalfSettings),
-    ("Identity & routing", _IdentityRoutingSettings),
-    ("Quality gates", _QualityGateSettings),
-    ("Scanners", _ScannerSettings),
-    ("Resource pressure", _ResourcePressureSettings),
-    ("Provisioning", _ProvisioningSettings),
-    ("Pre-publish gates", _PrePublishGateSettings),
-    ("Loop kill switches & credentials", _LoopFlagAndCredentialSettings),
-    ("Term scanning, agent tables & cold reads", COLD_SETTINGS),
-    ("Pre-Django hook gates", COLD_HOOK_SETTINGS),
-    ("Definition registries", REGISTRY_SETTINGS),
+#: The registry-owned keys, each paired with the path its own module declares. A
+#: declaration base wins over a registry when both would claim a key.
+_REGISTRY_SOURCES: tuple[tuple[tuple[str, ...], Mapping[str, object]], ...] = (
+    (COLD_SETTINGS_GROUP_PATH, COLD_SETTINGS),
+    (COLD_HOOK_SETTINGS_GROUP_PATH, COLD_HOOK_SETTINGS),
+    (REGISTRY_SETTINGS_GROUP_PATH, REGISTRY_SETTINGS),
 )
 
 
-def _keys_of(source: _GroupSource) -> frozenset[str]:
-    if isinstance(source, Mapping):
-        return frozenset(source)
-    return frozenset(field.name for field in dataclasses.fields(source))
+@dataclasses.dataclass(frozen=True, slots=True)
+class SettingGroupNode[RowT]:
+    """One node of the grouping tree — a named level holding either children or rows.
+
+    A node carries rows only when it is a leaf, so a reader never sees a table sitting
+    above that same group's subsections.
+    """
+
+    label: str
+    path: tuple[str, ...]
+    rows: tuple[RowT, ...]
+    children: tuple["SettingGroupNode[RowT]", ...]
+
+    @property
+    def depth(self) -> int:
+        """How many levels down this node sits — 1 for a top-level group."""
+        return len(self.path)
+
+    @property
+    def is_ungrouped(self) -> bool:
+        """Whether this is the leftovers bucket, which renders under a visible banner."""
+        return self.path == UNGROUPED_PATH
 
 
-_LABEL_BY_KEY: dict[str, str] = {key: label for label, source in reversed(_GROUP_SOURCES) for key in _keys_of(source)}
+def _declaration_bases() -> tuple[type, ...]:
+    """Every ``UserSettings`` declaration base, in the order the bases tuple declares."""
+    return tuple(base for base in UserSettings.__mro__ if base not in {UserSettings, object})
 
 
-def setting_group(key: str) -> str:
-    """The group label *key* is rendered under — :data:`UNGROUPED_LABEL` when none owns it."""
-    return _LABEL_BY_KEY.get(key, UNGROUPED_LABEL)
+def _declared_path(base: type) -> tuple[str, ...]:
+    """*base*'s declared path — the leftovers bucket when it declares none."""
+    return getattr(base, "GROUP_PATH", None) or UNGROUPED_PATH
 
 
-def group_labels() -> tuple[str, ...]:
-    """Every group label in render order, with the leftovers bucket last."""
-    return (*(label for label, _ in _GROUP_SOURCES), UNGROUPED_LABEL)
+def _path_by_key() -> dict[str, tuple[str, ...]]:
+    paths = {key: path for path, source in _REGISTRY_SOURCES for key in source}
+    for base in _declaration_bases():
+        paths.update(dict.fromkeys((f.name for f in dataclasses.fields(base)), _declared_path(base)))
+    return paths
 
 
-__all__ = ["UNGROUPED_LABEL", "group_labels", "setting_group"]
+_PATH_BY_KEY: dict[str, tuple[str, ...]] = _path_by_key()
+
+
+def setting_group_path(key: str) -> tuple[str, ...]:
+    """The nested path *key* renders under — :data:`UNGROUPED_PATH` when none owns it."""
+    return _PATH_BY_KEY.get(key, UNGROUPED_PATH)
+
+
+def group_paths() -> tuple[tuple[str, ...], ...]:
+    """Every declared leaf path in render order, with the leftovers bucket last.
+
+    Declaration bases come first in MRO order, then the registries; a path is listed
+    once, at its first appearance, so the order is a function of the declarations alone.
+    """
+    declared = [_declared_path(base) for base in _declaration_bases()]
+    declared += [path for path, _ in _REGISTRY_SOURCES]
+    ordered = dict.fromkeys(path for path in declared if path != UNGROUPED_PATH)
+    return (*ordered, UNGROUPED_PATH)
+
+
+def _order_index() -> dict[tuple[str, ...], int]:
+    """Each declared path's render position, and each ANCESTOR's position with it.
+
+    A parent sorts at its first child's position, so a subtree renders contiguously.
+    """
+    positions: dict[tuple[str, ...], int] = {}
+    for index, path in enumerate(group_paths()):
+        for depth in range(1, len(path) + 1):
+            positions.setdefault(path[:depth], index)
+    return positions
+
+
+def _subtree[RowT](
+    prefix: tuple[str, ...],
+    grouped: Mapping[tuple[str, ...], Sequence[RowT]],
+    order: Mapping[tuple[str, ...], int],
+) -> tuple[SettingGroupNode[RowT], ...]:
+    """The children of *prefix*, each a leaf holding rows or a parent holding children."""
+    children: dict[tuple[str, ...], None] = dict.fromkeys(
+        path[: len(prefix) + 1] for path in grouped if len(path) > len(prefix) and path[: len(prefix)] == prefix
+    )
+    nodes = []
+    for child in sorted(children, key=lambda path: (order.get(path, len(order)), path)):
+        rows = tuple(grouped.get(child, ()))
+        nodes.append(
+            SettingGroupNode(
+                label=child[-1],
+                path=child,
+                rows=rows,
+                children=_subtree(child, grouped, order),
+            )
+        )
+    return tuple(nodes)
+
+
+def group_tree[RowT](rows: Sequence[RowT], key_of: Callable[[RowT], str]) -> tuple[SettingGroupNode[RowT], ...]:
+    """Partition *rows* into the nested group tree — total, so no row is ever dropped.
+
+    Every row lands under :func:`setting_group_path` of its key, and that path is never
+    empty, so the leaves partition *rows* exactly. A group no row reaches is omitted; the
+    leftovers bucket is not, because its whole job is to be seen when it has members.
+    """
+    grouped: dict[tuple[str, ...], list[RowT]] = {}
+    for row in rows:
+        grouped.setdefault(setting_group_path(key_of(row)), []).append(row)
+    return _subtree((), grouped, _order_index())
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class GroupHeading:
+    """A level of the hierarchy announced once, above the rows and levels beneath it."""
+
+    depth: int
+    label: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class GroupSection[RowT]:
+    """One leaf's rows, preceded by the levels first announced above them.
+
+    ``depth`` is the leaf's own depth, so a text surface indents its rows one level
+    deeper than the last heading without re-deriving the path.
+    """
+
+    depth: int
+    headings: tuple[GroupHeading, ...]
+    rows: tuple[RowT, ...]
+
+
+def group_leaves[RowT](nodes: tuple[SettingGroupNode[RowT], ...]) -> tuple[SettingGroupNode[RowT], ...]:
+    """*nodes* flattened to the row-carrying leaves, in render order."""
+    return tuple(leaf for node in nodes for leaf in ([node] if not node.children else group_leaves(node.children)))
+
+
+def group_outline[RowT](rows: Sequence[RowT], key_of: Callable[[RowT], str]) -> Iterator[GroupSection[RowT]]:
+    """The tree as a linear stream of sections — each level announced exactly once.
+
+    The shape a text surface needs: the TOML export renders a heading as an indented
+    comment and the ``config_setting`` CLI as an indented line, so both express the same
+    hierarchy from one walk rather than each re-deriving it.
+    """
+    announced: set[tuple[str, ...]] = set()
+    for leaf in group_leaves(group_tree(rows, key_of)):
+        fresh = tuple(leaf.path[:depth] for depth in range(1, len(leaf.path) + 1) if leaf.path[:depth] not in announced)
+        announced.update(fresh)
+        yield GroupSection(
+            depth=len(leaf.path),
+            headings=tuple(GroupHeading(depth=len(level), label=level[-1]) for level in fresh),
+            rows=leaf.rows,
+        )
+
+
+def group_banner(heading: GroupHeading) -> tomlkit_items.Comment:
+    """One level announced as an indented TOML comment — the banner a `.toml` reader sees."""
+    return tomlkit.comment(f"{'  ' * (heading.depth - 1)}{heading.label}")
+
+
+def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
+    """A settings table whose keys stay FLAT but read in the group tree's order, banner-commented.
+
+    The flat key namespace is the persisted contract every reader, env override and cold
+    sqlite3 read depends on, so nesting the groups into sub-tables would rename every
+    stored key. The hierarchy rides as indented comments instead: one banner per level, at
+    its first appearance, above the keys it owns. Comments are inert to the parser, so the
+    grouped table parses identically to an ungrouped one.
+
+    The ONE renderer behind both TOML surfaces — the ``config_setting`` export dump and the
+    shipped ``defaults.toml`` writer — so a snapshot can never flatten what the export
+    groups. Ordering is the tree's, then key-sorted within a leaf: a function of the
+    CONTENT and the declarations, never of insertion order.
+    """
+    table = tomlkit.table()
+    for section in group_outline(sorted(rows), key_of=lambda key: key):
+        for heading in section.headings:
+            table.add(group_banner(heading))
+        for key in section.rows:
+            table[key] = rows[key]
+    return table
+
+
+def grouped_key_order(keys: Sequence[str]) -> tuple[str, ...]:
+    """*keys* in the order :func:`grouped_settings_table` emits them — the conformance oracle."""
+    return tuple(key for section in group_outline(sorted(keys), key_of=lambda key: key) for key in section.rows)
+
+
+__all__ = [
+    "UNGROUPED_PATH",
+    "GroupHeading",
+    "GroupSection",
+    "SettingGroupNode",
+    "group_banner",
+    "group_leaves",
+    "group_outline",
+    "group_paths",
+    "group_tree",
+    "grouped_key_order",
+    "grouped_settings_table",
+    "setting_group_path",
+]

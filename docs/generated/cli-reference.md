@@ -10784,7 +10784,13 @@ Usage: t3 teatree config_setting clear [OPTIONS] KEY
 ```
 Usage: t3 teatree config_setting list [OPTIONS]
 
- List every DB config override row, naming each row's scope (read-only).
+ List every DB config override row under its group, naming each row's scope.
+
+ Rows are grouped by the SAME nested hierarchy the dashboard and the TOML
+ export
+ render, indented one level per depth, so the three surfaces read alike. A row
+ no
+ declaration owns still prints, under the leftovers heading.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

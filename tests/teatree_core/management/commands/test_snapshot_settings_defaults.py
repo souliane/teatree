@@ -22,6 +22,7 @@ from django_typer.management import TyperCommand
 from teatree.config import cold_defaults
 from teatree.config.defaults_approvals import read_approvals
 from teatree.config.defaults_snapshot import ShippedFile, plan_fingerprint, plan_snapshot
+from teatree.config.setting_groups import grouped_key_order
 from teatree.core.management.commands import snapshot_settings_defaults as command_module
 from teatree.core.management.commands.snapshot_settings_defaults import Command
 from teatree.core.models import ConfigSetting
@@ -204,3 +205,63 @@ class TestSiblingSeedTablesSurviveAnApply(SnapshotCommandTestCase):
         assert after["teatree"][_TUNABLE] == 42
         for table in ("loops", "modes", "schedules"):
             assert after[table] == before[table]
+
+
+class TestAnApplyPreservesTheGroupedShape(SnapshotCommandTestCase):
+    """The writer emits the SAME grouped shape it replaced — a snapshot never re-flattens it.
+
+    Without this, the next approved snapshot would rewrite `[teatree]` as one alphabetical
+    wall and undo the grouping the owner hand-edits the shipped file through.
+    """
+
+    def _teatree_block(self) -> str:
+        text = self.defaults.read_text(encoding="utf-8")
+        section = text[text.index("\n[teatree]\n") :]
+        return section[: section.index("\n[teatree.")]
+
+    def _banners(self) -> list[str]:
+        return [line for line in self._teatree_block().splitlines() if line.startswith("#")]
+
+    def _key_order(self) -> tuple[str, ...]:
+        return tuple(line.split(" =")[0] for line in self._teatree_block().splitlines() if " = " in line)
+
+    def _approved_apply(self) -> None:
+        self._run()
+        DeferredQuestion.objects.update(answer_text="approve", answered_at=timezone.now())
+        self._run("--apply")
+
+    def test_the_written_block_keeps_the_banner_comments(self) -> None:
+        before = self._banners()
+        assert before, "precondition: the shipped file already carries group banners"
+        ConfigSetting.objects.set_value(_TUNABLE, 42)
+
+        self._approved_apply()
+
+        assert self._banners() == before
+
+    def test_the_written_block_keeps_the_group_order(self) -> None:
+        ConfigSetting.objects.set_value(_TUNABLE, 42)
+
+        self._approved_apply()
+
+        order = self._key_order()
+        assert order == grouped_key_order(order)
+        assert order != tuple(sorted(order)), "the apply re-flattened the block to alphabetical"
+
+    def test_the_written_block_moves_only_the_approved_value(self) -> None:
+        before = tomllib.loads(self.defaults.read_text(encoding="utf-8"))["teatree"]
+        ConfigSetting.objects.set_value(_TUNABLE, 42)
+
+        self._approved_apply()
+
+        after = tomllib.loads(self.defaults.read_text(encoding="utf-8"))["teatree"]
+        assert after == {**before, _TUNABLE: 42}
+
+    def test_the_sub_tables_stay_below_the_grouped_flat_keys(self) -> None:
+        ConfigSetting.objects.set_value(_TUNABLE, 42)
+
+        self._approved_apply()
+
+        text = self.defaults.read_text(encoding="utf-8")
+        assert text.index("\n[teatree.mr_reminder]") > text.rindex(f"\n{_TUNABLE} = ")
+        assert "mr_reminder" not in self._key_order()
