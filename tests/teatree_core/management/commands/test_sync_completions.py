@@ -10,7 +10,7 @@ catch a per-ticket failure, record it, and CONTINUE — reporting the refusals a
 the end (mirroring ``reconcile_overlay``).
 
 Since #3841 the command is the operator-facing surface of
-:func:`teatree.loop.board_reconcile.reconcile_board`, so these lanes now also pin
+:func:`teatree.loop.scanners.board_reconcile.reconcile_board`, so these lanes now also pin
 that the shared reconciliation path keeps the CFG-2 refusal semantics.
 """
 

@@ -295,7 +295,16 @@ def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTr
 
 
 def _on_close_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
-    """Route a closed-unmerged signal by role: an author ticket is abandoned, a review is moot."""
+    """Route a closed-unmerged signal by role: an author ticket is abandoned, a review is moot.
+
+    A ticket that already reached MERGED is neither — it LANDED, and ``ignore()``
+    accepts MERGED as a source, so without this guard a CLOSED verdict would undo a
+    merge. MERGED stays a candidate here only because rule D still owes it retro.
+    """
+    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+
+    if ticket.state in Ticket.merged_states():
+        return None
     if _is_reviewer(ticket):
         return _close_review(ticket, reason=reason, dry_run=dry_run)
     return _resolve_ignored(ticket, reason=reason, dry_run=dry_run)
@@ -325,13 +334,22 @@ def _close_review(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTrans
 
 
 def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransition]:
-    """Rule D — post-ship tickets whose upstream issue the overlay calls done."""
+    """Rule D — post-ship AUTHOR tickets whose upstream issue the overlay calls done.
+
+    Reviewer tickets are excluded rather than routed to ``_close_review``, because
+    ``advance_to_delivered`` IS the author ladder: its walk transits MERGED, so a
+    reviewer ticket admitted here becomes the same irreversible ghost rules A/B/C
+    guard against. No reviewer terminal is reachable from the completable states
+    either — ``mark_review_no_action`` does not accept SHIPPED/IN_REVIEW/MERGED — so
+    skipping is the whole correct action, not a deferral.
+    """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     candidates = list(
         _scoped(
             Ticket.objects.filter(state__in=Ticket.completable_states())
             .exclude(issue_url="")
+            .exclude(role=Ticket.Role.REVIEWER)
             .filter(remote_missing=False),
             overlay,
         )

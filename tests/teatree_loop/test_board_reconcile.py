@@ -132,6 +132,15 @@ class TestMergedPrRowRule(TestCase):
             Ticket.State.IGNORED,
         }
 
+    def test_is_idempotent(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+        _merged_pr(ticket)
+
+        assert len(reconcile_board(probe_forge=False).applied) == 1
+        assert reconcile_board(probe_forge=False).applied == ()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+
     def test_gate_on_without_evidence_is_a_fail_closed_skip(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED)
         _merged_pr(ticket)
@@ -300,6 +309,20 @@ class TestForgeMergedRule(TestCase):
             assert len(reconcile_board().applied) == 1
             assert reconcile_board().applied == ()
 
+    def test_an_already_merged_ticket_is_never_dragged_to_ignored(self) -> None:
+        """MERGED stays a rule-D candidate, so rule C must not reach it.
+
+        A landed ticket is not abandoned. ``ignore()`` accepts MERGED as a source, so
+        only an explicit guard keeps a CLOSED verdict from undoing a merge.
+        """
+        ticket = self._ticket(state=Ticket.State.MERGED)
+
+        with _forge({self.URL: PrOpenState.CLOSED}):
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+
     def test_dry_run_reports_the_transition_without_writing(self) -> None:
         ticket = self._ticket()
 
@@ -369,6 +392,29 @@ class TestIssueDoneRule(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
+
+    def test_a_reviewer_ticket_is_never_walked_through_merged(self) -> None:
+        """The third path to the ghost: ``advance_to_delivered`` is the AUTHOR ladder.
+
+        Its walk goes ``shipped → in_review → merged → retrospected``, so a reviewer
+        ticket admitted here transits MERGED exactly like rules A/B/C would have —
+        equally irreversible. Reachability is currently zero only because GitHub's
+        issue parser rejects a ``/pull/`` URL, which is a URL-shape coincidence in a
+        GitHub-only install, not a role boundary.
+        """
+        for state in (Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED):
+            reviewer = Ticket.objects.create(
+                overlay="t3-teatree",
+                role=Ticket.Role.REVIEWER,
+                state=state,
+                issue_url=f"https://github.com/souliane/teatree/issues/900{Ticket.State(state).value}",
+            )
+            with patch.object(board_reconcile, "_issue_done_urls", return_value={reviewer.issue_url}):
+                report = reconcile_board()
+
+            reviewer.refresh_from_db()
+            assert reviewer.state == state, f"reviewer ticket moved from {state}"
+            assert report.applied == ()
 
 
 class TestReportIsObservable(TestCase):
