@@ -13,10 +13,17 @@ from pathlib import Path
 from unittest import mock
 
 import django.test
+import pytest
 from django.utils import timezone
 
 from teatree.core import mode_resolution
-from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
+from teatree.core.mode_resolution import (
+    POSTURE_TOKENS,
+    clear_mode_override,
+    posture_label,
+    resolve_active_mode,
+    set_mode_override,
+)
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
 from teatree.live_presence import PresenceHeartbeat
 
@@ -159,3 +166,26 @@ class TestReturnToReachableDrain(_TmpStateMixin):
         with mock.patch(_DRAIN) as drain:
             set_mode_override("offline")
         drain.assert_not_called()
+
+
+class TestPostureLabel:
+    """The display-only label, derived from the booleans rather than stored (#3826)."""
+
+    @pytest.mark.parametrize(
+        ("posture", "expected"),
+        [
+            ((False, False), "reachable"),
+            ((False, True), "reachable"),
+            ((True, False), "unreachable (factory running)"),
+            ((True, True), "unreachable (pump paused)"),
+        ],
+    )
+    def test_each_posture_has_its_own_label(self, posture: tuple[bool, bool], expected: str) -> None:
+        defers, pauses = posture
+        assert posture_label(defers=defers, pauses=pauses) == expected
+
+    def test_every_switch_token_labels_distinctly(self) -> None:
+        # The dash switch offers these three; a label collision would make two
+        # distinct postures indistinguishable in the UI.
+        labels = {token: posture_label(defers=d, pauses=p) for token, (d, p) in POSTURE_TOKENS.items()}
+        assert len(set(labels.values())) == len(POSTURE_TOKENS), labels

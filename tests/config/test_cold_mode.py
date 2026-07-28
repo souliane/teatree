@@ -18,6 +18,7 @@ import sqlite3
 from pathlib import Path
 
 from teatree.config import cold_mode
+from teatree.config.cold_mode import resolve_cold_posture
 from teatree.live_presence import PRESENCE_FILENAME
 
 NOW = dt.datetime(2026, 7, 28, 12, 0, tzinfo=dt.UTC)
@@ -97,7 +98,7 @@ def _posture(source: str, *, defers: bool = False, pauses: bool = False) -> cold
 
 
 def _resolve(tmp_path: Path, db: Path, now: dt.datetime = NOW) -> cold_mode.ColdPosture:
-    return cold_mode.resolve_cold_posture(now, db_path=db, data_dir=tmp_path)
+    return resolve_cold_posture(now, db_path=db, data_dir=tmp_path)
 
 
 class TestPrecedenceChain:

@@ -15,8 +15,10 @@ from unittest import mock
 import pytest
 
 from teatree import live_presence
-from teatree.live_presence import LIVE_TURN_FRESHNESS, PRESENCE_FILENAME, PresenceHeartbeat
+from teatree.live_presence import LIVE_TURN_FRESHNESS, PRESENCE_FILENAME, PresenceHeartbeat, parse_heartbeat
 from teatree.paths import ControlDb
+
+_AT = datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -289,3 +291,21 @@ class TestLiveTurnWallClockDefault:
     def test_refresh_live_turn_defaults_now_to_utc(self, presence: PresenceHeartbeat) -> None:
         presence.record(session_id="s-a", now=datetime.now(tz=UTC))
         assert presence.refresh_live_turn(session_id="s-a") is True
+
+
+class TestParseHeartbeat:
+    """The one parser both resolvers share, so they cannot disagree about the file."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ('{"at": "2026-06-02T22:00:00+00:00", "session": "s-a"}', (_AT, "s-a")),
+            ('{"at": "2026-06-02T22:00:00+00:00"}', (_AT, "")),
+            ("2026-06-02T22:00:00+00:00", (_AT, "")),
+            ('{"at": "not-a-date", "session": "s-a"}', (None, "")),
+            ("gibberish", (None, "")),
+            ("", (None, "")),
+        ],
+    )
+    def test_every_shape_resolves(self, raw: str, expected: tuple[datetime | None, str]) -> None:
+        assert parse_heartbeat(raw) == expected
