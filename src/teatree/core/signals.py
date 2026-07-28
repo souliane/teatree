@@ -252,10 +252,20 @@ def _auto_enqueue_headless_task(
     (souliane/teatree#1959): dispatching it would crash ``execute_headless_task``
     — the drain safety-net fails such rows permanently instead. A blank overlay
     is the ambient single-overlay default and stays dispatchable.
+
+    A usage-window-parked task (PENDING with a future ``not_before``, Directive #3) is
+    never enqueued either. ``Task.park`` leaves the task PENDING, so this receiver fired
+    on the park's own save and re-armed the dispatch the park had just refused — the
+    self-feeding edge behind the measured 47,172 park rows on a single task in eight
+    hours. The drain and the claim CAS honour the same gate; the lane now stays quiesced
+    until ``usage_window_recovery`` releases the task at the window's re-arm instant.
     """
     if instance.execution_target != Task.ExecutionTarget.HEADLESS:
         return
     if instance.status != Task.Status.PENDING:
+        return
+    if instance.is_window_parked():
+        logger.debug("Task %s is window-parked until %s — not re-enqueuing", instance.pk, instance.not_before)
         return
     if _runs_in_session(instance):
         return
