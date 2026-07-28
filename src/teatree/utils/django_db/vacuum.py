@@ -78,16 +78,22 @@ def vacuum_sqlite(path: Path) -> VacuumOutcome:
 def vacuum_control_db(*, using: str = DEFAULT_DB_ALIAS) -> VacuumOutcome:
     """Vacuum the control DB behind the *using* connection.
 
-    Django's connection is closed first so the rebuild cannot contend with an idle
-    one holding the file open; Django reopens lazily on the next query. Only
-    SQLite is rebuilt this way — another vendor reports ``ran=False`` rather than
-    having a SQLite-shaped maintenance step applied to it.
+    Only SQLite is rebuilt this way — another vendor reports ``ran=False`` rather
+    than having a SQLite-shaped maintenance step applied to it.
+
+    The connection is closed ONLY for a real on-disk database, so the rebuild
+    cannot contend with an idle one holding the file open (Django reopens lazily
+    on the next query). Closing unconditionally would destroy an ``:memory:``
+    database, which does not survive its connection and has nothing on disk to
+    reclaim anyway — a maintenance no-op must not delete the data it declined to
+    act on.
     """
     connection = connections[using]
     if connection.vendor != "sqlite":
         return VacuumOutcome(ran=False, reason=f"{connection.vendor} is not SQLite — VACUUM is not applicable")
     path = Path(str(connection.settings_dict["NAME"]))
-    connection.close()
+    if path.is_file():
+        connection.close()
     return vacuum_sqlite(path)
 
 

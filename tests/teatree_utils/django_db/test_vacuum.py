@@ -8,11 +8,15 @@ from the fixture never having been bloated in the first place.
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
-from teatree.utils.django_db.vacuum import vacuum_sqlite
+from django.db import DEFAULT_DB_ALIAS, connections
+
+from teatree.utils.django_db.vacuum import vacuum_control_db, vacuum_sqlite
 
 _ROWS = 4000
 _PAYLOAD = "x" * 512
+_MODULE = "teatree.utils.django_db.vacuum"
 
 
 def _bloated_db(path: Path) -> None:
@@ -90,3 +94,57 @@ class TestVacuumSqlite:
 
         assert not outcome.ran
         assert outcome.bytes_reclaimed == 0
+
+
+class _StubConnection:
+    """A Django connection stand-in — enough surface for the resolver, no real DB.
+
+    The file case must NOT be driven through the suite's own default connection:
+    the vacuum closes it, and an ``:memory:`` database does not survive its
+    connection, so doing so would drop the test database out from under every
+    later test in the worker.
+    """
+
+    def __init__(self, name: Path | str, *, vendor: str = "sqlite") -> None:
+        self.vendor = vendor
+        self.settings_dict = {"NAME": str(name)}
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestVacuumControlDb:
+    """Resolving the control DB behind a Django connection."""
+
+    def test_the_suites_in_memory_connection_is_a_stated_no_op(self) -> None:
+        """Against the REAL default connection — a vacuum must never break a test run."""
+        outcome = vacuum_control_db()
+
+        assert not outcome.ran
+        assert "in-memory" in outcome.reason
+        assert connections[DEFAULT_DB_ALIAS].connection is not None, "the in-memory test DB was closed"
+
+    def test_a_non_sqlite_vendor_is_refused_rather_than_given_a_sqlite_shaped_step(self) -> None:
+        stub = _StubConnection("/anywhere/db.sqlite3", vendor="postgresql")
+
+        with patch(f"{_MODULE}.connections", {DEFAULT_DB_ALIAS: stub}):
+            outcome = vacuum_control_db()
+
+        assert not outcome.ran
+        assert "not SQLite" in outcome.reason
+        assert not stub.closed
+
+    def test_it_closes_the_connection_then_vacuums_the_file_it_names(self, tmp_path: Path) -> None:
+        db = tmp_path / "control.sqlite3"
+        _bloated_db(db)
+        _delete_most_rows(db)
+        before = db.stat().st_size
+        stub = _StubConnection(db)
+
+        with patch(f"{_MODULE}.connections", {DEFAULT_DB_ALIAS: stub}):
+            outcome = vacuum_control_db()
+
+        assert stub.closed, "the rebuild must not contend with a connection holding the file open"
+        assert outcome.ran
+        assert db.stat().st_size < before
