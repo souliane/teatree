@@ -20,6 +20,7 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[1]
 _DEPLOY_YML = _ROOT / ".github" / "workflows" / "deploy.yml"
 _DEPLOY_SH = _ROOT / "deploy" / "deploy.sh"
+_FF_CHECKOUT_SH = _ROOT / "deploy" / "fast-forward-checkout.sh"
 _ENTRYPOINT_SH = _ROOT / "deploy" / "entrypoint.sh"
 _COMPOSE_YML = _ROOT / "deploy" / "docker-compose.yml"
 
@@ -43,9 +44,19 @@ class TestDeployDebounce:
         )
 
     def test_deploy_script_fast_forwards_to_latest_main(self) -> None:
-        body = _DEPLOY_SH.read_text(encoding="utf-8")
-        assert "fetch --prune origin" in body
-        assert "pull --ff-only" in body
+        # The fetch/pull pair now lives in deploy/fast-forward-checkout.sh, which
+        # wraps it in the lossless-dirt reconciliation (a stray `uv.lock` write
+        # aborted the bare `pull --ff-only` on every deploy for 42 commits).
+        # Assert on the helper's CODE, not on prose: matching the strings anywhere
+        # in deploy.sh would now be satisfied by the comment that points here.
+        assert "fast-forward-checkout.sh" in _DEPLOY_SH.read_text(encoding="utf-8")
+        code = "\n".join(
+            line
+            for line in _FF_CHECKOUT_SH.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "fetch --prune origin" in code
+        assert "pull --ff-only" in code
 
     def test_deploy_script_serializes_on_a_host_flock(self) -> None:
         # A remote deploy.sh can outlive its GitHub job, defeating the workflow
