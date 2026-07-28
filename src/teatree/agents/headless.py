@@ -29,6 +29,7 @@ from django.utils import timezone
 
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
 from teatree.agents._headless_options import _build_options
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
@@ -83,18 +84,6 @@ _LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 _RESULT_ERROR_PREFIX = "result_error: "
-_NO_ENVELOPE_PREFIX = "no_result_envelope: "
-
-#: The refusal recorded when an agent finished cleanly but returned no result
-#: envelope on a phase that requires one (see
-#: :meth:`~teatree.agents.result_schema.ProseSummaryPolicy.allowed`). Deliberately a
-#: CONSTANT: ``TaskAttempt.error_fingerprint`` hashes this reason, and the repair
-#: loop escalates on two consecutive identical fingerprints — folding the agent's
-#: (always-different) prose into the reason would make every no-envelope run look
-#: like a fresh failure and defeat the stall check. The prose itself is preserved
-#: on the failed attempt's ``result`` for diagnosis, the same way every other
-#: envelope refusal keeps its offending blob.
-_NO_ENVELOPE_ERROR = f"{_NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
 
 #: Truncation applied to the agent's raw text when it stands in for an envelope.
 _PROSE_SUMMARY_CHARS = 1000
@@ -631,7 +620,7 @@ def _record_success(
         prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
         if not ProseSummaryPolicy.allowed(phase or task.phase):
             logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
-            return _record_failure(task, exit_code=0, error=_NO_ENVELOPE_ERROR, result=prose)
+            return _record_failure(task, exit_code=0, error=NO_ENVELOPE_ERROR, result=prose)
         result = prose
 
     maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
