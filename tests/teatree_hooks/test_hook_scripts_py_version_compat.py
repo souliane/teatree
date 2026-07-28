@@ -29,6 +29,15 @@ These tests pin that fix end to end:
 * :class:`TestInterpreterPinIsLoadBearing` — demonstrates WHY the pin is needed:
     the reported module genuinely fails to import under a < 3.11 interpreter (run
     when one is available; skipped on a 3.13-only CI runner).
+* :class:`TestRunHookPrefersDjangoCapableInterpreter` — the version floor is
+    necessary but NOT sufficient. ``django_bootstrap.bootstrap_teatree_django``
+    needs Django from the *interpreter*, and teatree installs into a uv-tool venv
+    rather than the system python a bare ``python3`` resolves to. When it is
+    missing every DB-backed handler silently no-ops — the SessionStart hand-off
+    drain among them, which is how hand-offs accumulated unclaimed for a week.
+    So the selector prefers an interpreter that can ``import django``, falling
+    back to the version floor alone. Driven with stub interpreters so the
+    selection logic is pinned without depending on what the host has installed.
 """
 
 import json
@@ -44,6 +53,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = _REPO_ROOT / "hooks" / "scripts"
 _HOOKS_JSON = _REPO_ROOT / "hooks" / "hooks.json"
 _RUN_HOOK = _SCRIPTS_DIR / "run-hook.sh"
+_BASH = shutil.which("bash") or "/bin/bash"
 
 
 def _router_commands() -> list[str]:
@@ -221,3 +231,121 @@ class TestInterpreterPinIsLoadBearing:
         assert result.returncode == 0, (
             f"banned_terms.gate should cold-import under {sys.executable}: {result.stderr.strip()}"
         )
+
+
+def _stub_interpreter(path: Path, *, label: str, has_django: bool, clears_floor: bool = True) -> None:
+    """Write a stub interpreter that answers the selector's probes, then names itself.
+
+    The selector probes with ``-c '...version_info...'`` and ``-c 'import django'``
+    before ``exec``-ing the winner with the forwarded arguments. The stub keys off
+    those probe bodies and, for any other ``-c`` payload, prints *label* — so a
+    test reads which interpreter was chosen straight from stdout.
+    """
+    path.write_text(
+        "#!/bin/sh\n"
+        'case "$2" in\n'
+        f"  *version_info*) exit {0 if clears_floor else 1} ;;\n"
+        f'  *"import django"*) exit {0 if has_django else 1} ;;\n'
+        "esac\n"
+        f'printf "%s\\n" "{label}"\n',
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def _run_selector(bin_dir: Path, **extra_env: str) -> subprocess.CompletedProcess[str]:
+    """Run the selector with *bin_dir* as the ENTIRE PATH, asking the winner to identify itself.
+
+    ``bash`` is passed explicitly rather than left to the ``#!/usr/bin/env bash``
+    shebang: PATH is deliberately narrowed to the stub dir so only the stub
+    interpreters are discoverable, which would otherwise leave ``env`` unable to
+    resolve the shell itself.
+    """
+    env = {"PATH": str(bin_dir), "HOME": str(bin_dir.parent)}
+    env.update(extra_env)
+    return subprocess.run(
+        [_BASH, str(_RUN_HOOK), "-c", "identify-me"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+
+
+class TestRunHookPrefersDjangoCapableInterpreter:
+    """The selector prefers an interpreter that can import Django, and degrades safely."""
+
+    def test_prefers_the_teatree_venv_over_a_bare_python3(self, tmp_path: Path) -> None:
+        # The live shape of the bug: a bare `python3` clears the version floor but
+        # has no Django, while the venv teatree is installed into (found beside the
+        # resolved `t3` entry point) has it. Choosing `python3` is what made every
+        # DB-backed handler a silent no-op.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub_interpreter(bin_dir / "python3", label="bare-python3", has_django=False)
+        _stub_interpreter(bin_dir / "python", label="teatree-venv", has_django=True)
+        (bin_dir / "t3").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (bin_dir / "t3").chmod(0o755)
+
+        result = _run_selector(bin_dir)
+
+        assert result.stdout.strip() == "teatree-venv", (
+            f"selector must prefer the Django-capable interpreter; chose {result.stdout.strip()!r}"
+        )
+
+    def test_falls_back_to_the_version_floor_when_nothing_has_django(self, tmp_path: Path) -> None:
+        # Fail open: on a host with no Django-capable interpreter the selector must
+        # behave exactly as it did before — a hook that runs Django-free gates and
+        # the file-mirror hand-off fallback beats a hook that does not run at all.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub_interpreter(bin_dir / "python3", label="bare-python3", has_django=False)
+
+        result = _run_selector(bin_dir)
+
+        assert result.stdout.strip() == "bare-python3", (
+            f"selector must still pick a Django-less interpreter when it is all there is; "
+            f"chose {result.stdout.strip()!r}, stderr={result.stderr!r}"
+        )
+
+    def test_explicit_override_outranks_the_django_preference(self, tmp_path: Path) -> None:
+        # `T3_HOOK_PYTHON` is the operator's escape hatch — including when the
+        # Django-capable pick is itself the thing misbehaving — so it wins on the
+        # version floor alone.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub_interpreter(bin_dir / "python", label="teatree-venv", has_django=True)
+        (bin_dir / "t3").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (bin_dir / "t3").chmod(0o755)
+        override = bin_dir / "chosen-by-operator"
+        _stub_interpreter(override, label="operator-override", has_django=False)
+
+        result = _run_selector(bin_dir, T3_HOOK_PYTHON=str(override))
+
+        assert result.stdout.strip() == "operator-override", (
+            f"T3_HOOK_PYTHON must outrank the search; chose {result.stdout.strip()!r}"
+        )
+
+    def test_unusable_override_falls_through_to_the_search(self, tmp_path: Path) -> None:
+        # A stale override must not wedge every hooked session.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub_interpreter(bin_dir / "python3", label="bare-python3", has_django=True)
+
+        result = _run_selector(bin_dir, T3_HOOK_PYTHON=str(tmp_path / "does-not-exist"))
+
+        assert result.stdout.strip() == "bare-python3", (
+            f"an unusable T3_HOOK_PYTHON must fall through, not wedge; got {result.stdout.strip()!r}"
+        )
+
+    def test_exits_silently_when_no_candidate_clears_the_version_floor(self, tmp_path: Path) -> None:
+        # The crash-proof contract: a no-op hook, never a session-breaking crash.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub_interpreter(bin_dir / "python3", label="too-old", has_django=False, clears_floor=False)
+
+        result = _run_selector(bin_dir)
+
+        assert result.returncode == 0, f"selector must exit 0 when it finds nothing usable, got {result.returncode}"
+        assert not result.stdout.strip(), f"selector must stay silent, printed {result.stdout!r}"
