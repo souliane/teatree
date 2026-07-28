@@ -9589,8 +9589,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                          (BLUEPRINT §17.4).                                  │
 │ list                     List tickets, optionally filtered by state and/or   │
 │                          overlay.                                            │
-│ sync-completions         Check post-ship tickets against upstream issues and │
-│                          advance completed ones.                             │
+│ sync-completions         Reconcile the ticket board against forge truth and  │
+│                          advance what has landed.                            │
 │ comment                  Post a comment to an issue or work item by its URL. │
 │ create-sub               Create a child work item nested under a parent      │
 │                          issue/work item.                                    │
@@ -9940,16 +9940,23 @@ Usage: t3 teatree ticket list [OPTIONS]
 ```
 Usage: t3 teatree ticket sync-completions [OPTIONS]
 
- Check post-ship tickets against upstream issues and advance completed ones.
+ Reconcile the ticket board against forge truth and advance what has landed.
 
- Walks tickets in shipped/in_review/merged states, calls the overlay's
- ``is_issue_done()`` for each, and transitions completed tickets toward
- delivered. Use ``--dry-run`` to preview without touching state.
+ Advances a ticket whose PR merged (a linked ``PullRequest`` row, or the
+ ticket's own ``issue_url`` the forge reports merged), resolves one whose PR
+ closed unmerged, and walks a post-ship ticket whose upstream issue is done
+ toward delivered. The same path the cadenced ``board_reconcile`` scanner
+ runs, so the manual command and the loop can never disagree. Use
+ ``--dry-run`` to preview the proposed transitions without touching state.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --dry-run    --no-dry-run      Show what would transition without acting.    │
-│                                [default: no-dry-run]                         │
-│ --help                         Show this message and exit.                   │
+│ --dry-run         --no-dry-run             Show what would transition        │
+│                                            without acting.                   │
+│                                            [default: no-dry-run]             │
+│ --probe-budget                    INTEGER  Maximum forge reads this run may  │
+│                                            issue.                            │
+│                                            [default: 150]                    │
+│ --help                                     Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

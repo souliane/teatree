@@ -268,6 +268,7 @@ graph TD
     teatree.loop.scanners --> teatree.core
     teatree.loop.scanners --> teatree.core.modelkit
     teatree.loop.scanners --> teatree.core.models
+    teatree.loop.scanners --> teatree.core.models.errors
     teatree.loop.scanners --> teatree.backends
     teatree.loop.scanners --> teatree.backends.errors
     teatree.loop.scanners --> teatree.backends.github

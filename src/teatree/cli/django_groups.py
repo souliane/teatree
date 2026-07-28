@@ -336,7 +336,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
-            ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
+            ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("create-sub", "Create a child work item nested under a parent issue/work item."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),

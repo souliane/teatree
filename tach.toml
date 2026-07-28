@@ -634,6 +634,7 @@ depends_on = [
   "teatree.core",
   "teatree.core.modelkit",
   "teatree.core.models",
+  "teatree.core.models.errors",
   "teatree.backends",
   "teatree.backends.errors",
   "teatree.backends.github",
