@@ -133,7 +133,7 @@ class ReleasesOnlyTheRowTest(_DeadRowCase):
         row = self._register(wt_path, branch="unshipped")
         self._break_checkout(wt_path)
 
-        lines = release_dead_rows(self.workspace, dry_run=False)
+        lines = release_dead_rows(self.workspace, dry_run=False).render()
 
         assert Worktree.objects.filter(pk=row.pk).exists()
         assert any("KEPT" in line and "unshipped" in line for line in lines), lines
@@ -141,7 +141,7 @@ class ReleasesOnlyTheRowTest(_DeadRowCase):
     def test_dry_run_is_the_default_shape_and_removes_nothing(self) -> None:
         row, wt_path = self._dead_row_with_gone_ref()
 
-        lines = release_dead_rows(self.workspace, dry_run=True)
+        lines = release_dead_rows(self.workspace, dry_run=True).render()
 
         assert Worktree.objects.filter(pk=row.pk).exists()
         assert wt_path.is_dir()

@@ -7378,11 +7378,10 @@ Usage: t3 teatree workspace doctor [OPTIONS]
 
  Detect state drift across every store; optionally fix it.
 
- Checks Django ↔ git worktrees, Postgres DBs, docker containers,
- env cache files.  Without ``--fix`` prints drift; with
- ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
- missing env caches, and prunes stale worktree dirs.  Every action
- uses :func:`run_checked` — no silent swallow.
+ Checks Django ↔ git worktrees, Postgres DBs, docker containers, env cache
+ files. Without ``--fix`` prints drift; with ``--fix`` cleans orphan
+ containers, drops orphan DBs, regenerates missing env caches, and prunes
+ stale worktree dirs. Thin wrapper over :func:`run_drift_report`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --ticket                INTEGER  Reconcile just this ticket pk; 0 = all      │
@@ -7558,13 +7557,12 @@ Usage: t3 teatree workspace reclaim-disk [OPTIONS]
 ```
 Usage: t3 teatree workspace stamp-identity [OPTIONS]
 
- Stamp the scoped noreply git identity onto an existing souliane clone (#762).
+ Stamp the scoped noreply git identity onto an existing public GitHub clone
+ (#762).
 
- Fixes public souliane/* clones/worktrees created before the
- provisioner source-fix (new worktrees are stamped at creation).
- Idempotent. Refuses non-github / private remotes so a private
- overlay's (or a GitLab clone's) legitimate real-identity
- attribution is never touched.
+ Fixes public clones/worktrees created before the provisioner source-fix (new
+ worktrees are stamped at creation). Thin wrapper over
+ :func:`run_stamp_identity` — see it for the idempotence and refusal doctrine.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
@@ -8830,8 +8828,10 @@ Usage: t3 teatree retention prune [OPTIONS]
  Prune old rows from the high-churn tables, then reclaim the disk (dry-run
  unless --apply).
 
- Conservative: only rows past the retention window whose owning task AND
- ticket are terminal are ever deleted. A live/in-flight row is never touched.
+ Conservative: the terminal-owned lane deletes only rows past the retention
+ window whose owning task AND ticket are terminal, so a live/in-flight row is
+ never touched; the park lane deletes only aged limit-park audit rows that
+ carry no billed telemetry.
 
  On ``--apply`` the deleted pages are handed back to the filesystem with a
  ``VACUUM``, which runs after the prune's transaction has committed because

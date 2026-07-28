@@ -86,8 +86,38 @@ def plan_dead_row_release(workspace: Path) -> list[DeadRowVerdict]:
     return verdicts
 
 
-def release_dead_rows(workspace: Path, *, dry_run: bool) -> list[str]:
-    """Release the provably-dead rows (or preview them), returning one line each.
+@dataclass(frozen=True, slots=True)
+class DeadRowReleaseOutcome:
+    """What the pass classified and what it actually deleted.
+
+    The engine returns DATA and renders on request, the way ``run_relocate`` does,
+    so the CLI can emit a structured payload on the machine channel and the same
+    verdicts as prose on the human one — one classification, two renderings, which
+    is what stops the two surfaces disagreeing about scope.
+    """
+
+    applied: bool
+    verdicts: tuple[DeadRowVerdict, ...]
+    released_pks: frozenset[int]
+
+    def render(self) -> list[str]:
+        """One operator-readable line per classified row."""
+        lines: list[str] = []
+        for verdict in self.verdicts:
+            if not verdict.releasable:
+                lines.append(f"KEPT '{verdict.branch}' (worktree {verdict.worktree_pk}): {verdict.reason}")
+            elif verdict.worktree_pk in self.released_pks:
+                lines.append(
+                    f"Released row for '{verdict.branch}' (worktree {verdict.worktree_pk}); "
+                    f"directory and branch left untouched at {verdict.path}"
+                )
+            else:
+                lines.append(f"WOULD RELEASE '{verdict.branch}' (worktree {verdict.worktree_pk}): {verdict.reason}")
+        return lines
+
+
+def release_dead_rows(workspace: Path, *, dry_run: bool) -> DeadRowReleaseOutcome:
+    """Release the provably-dead rows, or preview them under *dry_run*.
 
     The delete is a plain row delete — never ``cleanup_worktree``, whose job is to
     tear down the git worktree, the branch, the database and the docker artifacts.
@@ -95,20 +125,20 @@ def release_dead_rows(workspace: Path, *, dry_run: bool) -> list[str]:
     files nothing has proven redundant, so removing it is a separate decision that
     belongs to the operator (or to the broken-DIR pass), not to a row release.
     """
-    lines: list[str] = []
-    for verdict in plan_dead_row_release(workspace):
-        if not verdict.releasable:
-            lines.append(f"KEPT '{verdict.branch}' (worktree {verdict.worktree_pk}): {verdict.reason}")
-            continue
-        if dry_run:
-            lines.append(f"WOULD RELEASE '{verdict.branch}' (worktree {verdict.worktree_pk}): {verdict.reason}")
+    verdicts = tuple(plan_dead_row_release(workspace))
+    released: set[int] = set()
+    for verdict in verdicts:
+        if not verdict.releasable or dry_run:
             continue
         Worktree.objects.filter(pk=verdict.worktree_pk).delete()
-        lines.append(
-            f"Released row for '{verdict.branch}' (worktree {verdict.worktree_pk}); "
-            f"directory and branch left untouched at {verdict.path}"
-        )
-    return lines
+        released.add(verdict.worktree_pk)
+    return DeadRowReleaseOutcome(applied=not dry_run, verdicts=verdicts, released_pks=frozenset(released))
 
 
-__all__ = ["DeadRowDisposition", "DeadRowVerdict", "plan_dead_row_release", "release_dead_rows"]
+__all__ = [
+    "DeadRowDisposition",
+    "DeadRowReleaseOutcome",
+    "DeadRowVerdict",
+    "plan_dead_row_release",
+    "release_dead_rows",
+]
