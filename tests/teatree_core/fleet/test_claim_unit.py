@@ -13,6 +13,7 @@ from django.test import TestCase
 
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
+from teatree.core.fleet.wire import host_from_issue_url
 
 from ._git_origin import init_bare, init_client, init_with_origin
 
@@ -231,6 +232,75 @@ class TestWireResolvers:
     def test_resolve_rejects_a_clone_with_no_origin(self, tmp_path, monkeypatch) -> None:
         clone = tmp_path / "no-origin"
         init_bare(clone)  # a bare repo has no origin remote
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == ""
+
+
+class TestForgeHostIsPartOfTheIdentity:
+    """The slug alone is not the repo — the same ``owner/repo`` exists on many forges.
+
+    The claim ref is a server-side CAS on ONE receive-pack. Two instances pushing
+    ``souliane/teatree`` claims to two different forges each win their own ref, so
+    the mutex silently stops excluding anything and both implement the work item.
+    """
+
+    def test_same_slug_on_a_different_forge_is_rejected(self, tmp_path, monkeypatch) -> None:
+        clone = init_with_origin(tmp_path / "found", "https://gitlab.com/souliane/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == ""
+
+    def test_the_matching_forge_is_still_accepted_over_ssh(self, tmp_path, monkeypatch) -> None:
+        clone = init_with_origin(tmp_path / "found", "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(clone)
+
+    def test_a_port_and_case_difference_is_not_a_different_forge(self, tmp_path, monkeypatch) -> None:
+        clone = init_with_origin(tmp_path / "found", "ssh://git@GitHub.com:22/souliane/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(clone)
+
+    def test_an_ssh_config_alias_resolves_to_its_real_hostname(self, tmp_path, monkeypatch) -> None:
+        # `git@github-work:…` is one Host alias away from github.com. Comparing the
+        # raw token would reject a perfectly valid work-account setup, so the alias
+        # is resolved through the same `ssh -G` the transport itself would use.
+        clone = init_with_origin(tmp_path / "found", "git@github-work:souliane/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        monkeypatch.setattr(fleet_claim_wire, "_ssh_resolved_hostname", lambda host: "github.com")
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(clone)
+
+    def test_an_unresolvable_alias_is_not_treated_as_a_conflict(self, tmp_path, monkeypatch) -> None:
+        # No ssh on PATH, or an alias ssh cannot resolve: the host is UNKNOWN, not
+        # different. Fall back to the slug-only verdict rather than refusing to
+        # claim on a host we simply could not read.
+        clone = init_with_origin(tmp_path / "found", "git@github-work:souliane/teatree.git")
+        monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
+        monkeypatch.setattr(fleet_claim_wire, "_ssh_resolved_hostname", lambda host: "")
+        assert fleet_claim_wire.resolve_claim_repo(_KEY) == str(clone)
+
+    def test_a_local_or_file_origin_is_unknown_not_different(self, tmp_path) -> None:
+        # A clone-of-a-clone (and every local fixture) names no forge. Unknown must
+        # not read as "different", or the host check would newly reject clones the
+        # slug check accepts. Asserted on the predicate: a local origin never even
+        # reaches it in practice, because `remote_slug` yields no owner/repo for one.
+        for url in (f"file://{tmp_path}/souliane/teatree.git", f"{tmp_path}/souliane/teatree.git"):
+            clone = init_with_origin(tmp_path / f"c{abs(hash(url))}", url)
+            assert fleet_claim_wire._forge_host_conflict(str(clone), _KEY) is False, url
+
+    def test_the_issue_url_host_is_read_from_the_url_itself(self) -> None:
+        assert host_from_issue_url(_KEY) == "github.com"
+        assert host_from_issue_url("https://gitlab.example.org/g/s/p/-/issues/7") == "gitlab.example.org"
+        assert host_from_issue_url("") == ""
+
+    def test_an_unparsable_issue_url_is_never_a_conflict(self, tmp_path) -> None:
+        clone = init_with_origin(tmp_path / "found", "https://gitlab.com/souliane/teatree.git")
+        assert fleet_claim_wire._forge_host_conflict(str(clone), "not-a-url") is False
+
+    def test_a_mirror_on_another_host_fails_safe_rather_than_splitting_the_mutex(self, tmp_path, monkeypatch) -> None:
+        # A mirror carries the same content but a DIFFERENT receive-pack, so a claim
+        # pushed there excludes nobody on the forge that owns the issue. Refusing to
+        # claim degrades to local-only behaviour; accepting would manufacture a mutex
+        # that does not exist.
+        clone = init_with_origin(tmp_path / "found", "https://mirror.example.com/souliane/teatree.git")
         monkeypatch.setattr(fleet_claim_wire, "find_clone_path", lambda *_: clone)
         assert fleet_claim_wire.resolve_claim_repo(_KEY) == ""
 
