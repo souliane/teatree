@@ -11,8 +11,11 @@ declares no path at all (whose keys must still surface, not vanish).
 """
 
 import dataclasses
+import tomllib
 
 import pytest
+import tomlkit
+from tomlkit import items as tomlkit_items
 
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import (
@@ -22,6 +25,8 @@ from teatree.config.setting_groups import (
     group_outline,
     group_paths,
     group_tree,
+    grouped_key_order,
+    grouped_settings_table,
     setting_group_path,
 )
 from teatree.config.settings import UserSettings
@@ -182,3 +187,59 @@ class TestTheOutlineTheTextSurfacesRender:
             ("Gates", "Quality", "Merge & done"),
         ]
         assert all(not leaf.children for leaf in leaves), "group_leaves returned a node with children"
+
+
+_SAMPLE: dict[str, object] = {
+    "autoload": False,
+    "mode": "interactive",
+    "require_merge_evidence": True,
+    "architectural_review_cadence_hours": 168,
+    "disk_warn_free_gb": 5,
+}
+
+
+def _dumped(table: tomlkit_items.Table) -> str:
+    document = tomlkit.document()
+    document["teatree"] = table
+    return tomlkit.dumps(document)
+
+
+class TestTheTomlRendererBothSurfacesShare:
+    """``grouped_settings_table`` is the ONE renderer the export dump and the shipped file use."""
+
+    def test_the_keys_stay_flat_rather_than_becoming_sub_tables(self) -> None:
+        parsed = tomllib.loads(_dumped(grouped_settings_table(_SAMPLE)))
+        assert parsed == {"teatree": _SAMPLE}
+        assert all(not isinstance(value, dict) for value in parsed["teatree"].values())
+
+    def test_grouping_changes_no_value_only_the_order_and_the_comments(self) -> None:
+        flat = tomlkit.table()
+        for key in sorted(_SAMPLE):
+            flat[key] = _SAMPLE[key]
+        assert tomllib.loads(_dumped(grouped_settings_table(_SAMPLE))) == tomllib.loads(_dumped(flat))
+
+    def test_every_level_is_announced_once_as_an_indented_comment(self) -> None:
+        comments = [line for line in _dumped(grouped_settings_table(_SAMPLE)).splitlines() if line.startswith("#")]
+        assert comments == [
+            "# Workspace",
+            "#   Engagement & identity",
+            "# Agents",
+            "#   Mode & harness",
+            "# Gates",
+            "#   Quality",
+            "#     Architectural review",
+            "#     Merge & done",
+            "# Infrastructure",
+            "#   Resource pressure",
+            "#     Thresholds & cadence",
+        ]
+
+    def test_the_emitted_order_is_the_group_walk_not_the_alphabet(self) -> None:
+        lines = _dumped(grouped_settings_table(_SAMPLE)).splitlines()
+        emitted = [line.split(" =")[0] for line in lines if " = " in line]
+        assert emitted == list(grouped_key_order(tuple(_SAMPLE)))
+        assert emitted != sorted(_SAMPLE), "the grouped order collapsed back to plain alphabetical"
+
+    def test_grouped_key_order_places_every_key_exactly_once(self) -> None:
+        keys = tuple(TeatreeSettingsSchema.model_fields)
+        assert sorted(grouped_key_order(keys)) == sorted(keys)

@@ -830,15 +830,25 @@ fix for the retired `/dash/config` page, whose name-shaped band classifier retur
 for 130 of 184 `UserSettings` fields and `continue`d each one out of the page — 185 of the
 236 schema keys never rendered there at all.
 
-The same tree drives all three surfaces from ONE mechanism, so they cannot disagree: the
+The same tree drives all four surfaces from ONE mechanism, so they cannot disagree: the
 dashboard renders it as nested sections (`dash/partials/_settings_group.html` recursing,
 heading level following depth), and `setting_groups.group_outline` streams it as
-heading-then-row sections for the two text surfaces — `config_setting export`'s
-`[teatree]` table (indented
+heading-then-row sections for the three text surfaces — `config_setting export`'s
+`[teatree]` table, the shipped `config/defaults.toml`'s `[teatree]` table (both indented
 comment banners) and `config_setting list` (indented headings). The TOML KEYS stay flat:
 the flat key namespace is the persisted contract every reader, env override and cold
 sqlite3 read depends on, so the hierarchy rides as comments rather than sub-tables, and a
 grouped dump re-imports byte-identically to an ungrouped one.
+
+Both TOML surfaces emit through ONE renderer, `setting_groups.grouped_settings_table` —
+the export dump and `defaults_snapshot.render_toml`, which is what
+`snapshot_settings_defaults --apply` rewrites `[teatree]` with once the owner approves a
+snapshot. A flat writer there would have destroyed the shipped file's grouping on the
+next approved run, so the shared renderer is what makes the grouping durable rather than a
+one-off reformat. `tests/config/test_defaults_file_grouping.py` pins the shipped block's
+key ORDER to that walk and names the banner a stray key belongs under, and
+`tests/config/test_defaults_snapshot.py`'s byte-for-byte fixed-point test keeps the
+committed file a fixed point of the renderer.
 
 `/dash/config/` is retired into this page and redirects to it. Its readouts that are NOT
 `ConfigSetting` rows — the resolved model / reasoning-effort pins, the `pass` entry each

@@ -31,6 +31,7 @@ from tomlkit import items as tomlkit_items
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.schema import Category, setting_meta
+from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 
 # A stored config value — the JSON/TOML shapes a ConfigSetting row round-trips.
@@ -82,6 +83,11 @@ _HEADER = """\
 # credential coordinates) are ABSENT by construction and resolve from their empty
 # code defaults. Safety-posture keys and dark feature-flags are pinned to their
 # fail-closed/off value and can never move through the snapshot path, approval or not.
+# The keys stay FLAT — that namespace is the persisted contract every reader, env override
+# and cold sqlite3 read depends on — but they are ORDERED by the declaration hierarchy,
+# each level announced once by an indented `#` banner. That is the same tree the dashboard
+# renders and the export dump emits. Put a new key under its group's banner; CI refuses one
+# sitting outside its group and names where it belongs.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
@@ -301,10 +307,13 @@ def render_toml(emitted: dict[str, SettingValue], *, base_text: str = "") -> str
     replaced, so every sibling table (the ``[loops]`` / ``[modes]`` / ``[schedules]`` seed
     defaults) and every hand-written comment survives a snapshot run byte-for-byte. Only
     when the file is absent is the whole document — header included — built from scratch.
+
+    The flat keys are ordered and banner-commented by :func:`grouped_settings_table`, the
+    same renderer the ``config_setting`` export dump uses. A snapshot the owner approves
+    therefore rewrites ``[teatree]`` into the SAME grouped shape it replaced, rather than
+    flattening the file back into one undifferentiated wall of keys.
     """
-    teatree = tomlkit.table()
-    for key in sorted(k for k in emitted if k not in _SUBTABLE_KEYS):
-        teatree[key] = emitted[key]
+    teatree = grouped_settings_table({key: value for key, value in emitted.items() if key not in _SUBTABLE_KEYS})
     for name in _SUBTABLE_KEYS:
         teatree[name] = _nested_table(cast("dict[str, SettingValue]", emitted[name]))
     if not base_text:

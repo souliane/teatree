@@ -30,6 +30,9 @@ Deliberately pydantic-free — it composes the same cold-safe registries
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping, Sequence
 
+import tomlkit
+from tomlkit import items as tomlkit_items
+
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, COLD_HOOK_SETTINGS_GROUP_PATH
 from teatree.config.registries import (
     COLD_SETTINGS,
@@ -204,14 +207,50 @@ def group_outline[RowT](rows: Sequence[RowT], key_of: Callable[[RowT], str]) -> 
         )
 
 
+def group_banner(heading: GroupHeading) -> tomlkit_items.Comment:
+    """One level announced as an indented TOML comment — the banner a `.toml` reader sees."""
+    return tomlkit.comment(f"{'  ' * (heading.depth - 1)}{heading.label}")
+
+
+def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
+    """A settings table whose keys stay FLAT but read in the group tree's order, banner-commented.
+
+    The flat key namespace is the persisted contract every reader, env override and cold
+    sqlite3 read depends on, so nesting the groups into sub-tables would rename every
+    stored key. The hierarchy rides as indented comments instead: one banner per level, at
+    its first appearance, above the keys it owns. Comments are inert to the parser, so the
+    grouped table parses identically to an ungrouped one.
+
+    The ONE renderer behind both TOML surfaces — the ``config_setting`` export dump and the
+    shipped ``defaults.toml`` writer — so a snapshot can never flatten what the export
+    groups. Ordering is the tree's, then key-sorted within a leaf: a function of the
+    CONTENT and the declarations, never of insertion order.
+    """
+    table = tomlkit.table()
+    for section in group_outline(sorted(rows), key_of=lambda key: key):
+        for heading in section.headings:
+            table.add(group_banner(heading))
+        for key in section.rows:
+            table[key] = rows[key]
+    return table
+
+
+def grouped_key_order(keys: Sequence[str]) -> tuple[str, ...]:
+    """*keys* in the order :func:`grouped_settings_table` emits them — the conformance oracle."""
+    return tuple(key for section in group_outline(sorted(keys), key_of=lambda key: key) for key in section.rows)
+
+
 __all__ = [
     "UNGROUPED_PATH",
     "GroupHeading",
     "GroupSection",
     "SettingGroupNode",
+    "group_banner",
     "group_leaves",
     "group_outline",
     "group_paths",
     "group_tree",
+    "grouped_key_order",
+    "grouped_settings_table",
     "setting_group_path",
 ]
