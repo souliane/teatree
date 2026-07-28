@@ -375,7 +375,7 @@ description = "Sweeps the owner's DM threads hourly and resolves the ones that n
 delay_seconds = 3600
 colleague_facing = false
 default_enabled = true
-description = "Fast-forwards the editable teatree and overlay installs (self-update) and pulls each overlay's main clone hourly."
+description = "Fast-forwards the editable teatree and overlay installs (self-update), pulls each overlay's main clone, and reconciles the ticket board against forge truth, hourly."
 
 [loops.arch_review]
 delay_seconds = 10800

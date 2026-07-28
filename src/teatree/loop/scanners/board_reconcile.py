@@ -88,6 +88,7 @@ class BoardAction(StrEnum):
     ADVANCED_MERGED = "advanced_merged"
     ADVANCED_DELIVERED = "advanced_delivered"
     IGNORED_CLOSED = "ignored_closed"
+    REVIEW_CLOSED = "review_closed"
     REFUSED = "refused"
 
 
@@ -218,7 +219,7 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
         Ticket.objects.filter(pull_requests__state=PullRequest.State.MERGED).exclude(state=Ticket.State.MERGED),
         overlay,
     ).distinct()
-    return _collect(candidates, lambda ticket: _advance_to_merged(ticket, reason="merged PR row", dry_run=dry_run))
+    return _collect(candidates, lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run))
 
 
 def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) -> tuple[list[BoardTransition], int]:
@@ -268,10 +269,59 @@ def _from_pr_state(
     """
     state = states.get(ticket.issue_url, PrOpenState.UNKNOWN)
     if state is PrOpenState.MERGED:
-        return _advance_to_merged(ticket, reason="forge says the PR merged", dry_run=dry_run)
+        return _on_merge_signal(ticket, reason="forge says the PR merged", dry_run=dry_run)
     if state is PrOpenState.CLOSED:
-        return _resolve_ignored(ticket, reason="forge says the PR closed unmerged", dry_run=dry_run)
+        return _on_close_signal(ticket, reason="forge says the PR closed unmerged", dry_run=dry_run)
     return None
+
+
+def _is_reviewer(ticket: "Ticket") -> bool:
+    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+
+    return ticket.role == Ticket.Role.REVIEWER
+
+
+def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
+    """Route a merged-PR signal by ROLE — the author merged it; the reviewer only read it.
+
+    A reviewer ticket tracks teatree's review of SOMEONE ELSE's PR, so landing it on
+    MERGED would claim authorship of work teatree never wrote and would enqueue a
+    spurious worktree teardown. ``REVIEW_POSTED`` is the reviewer terminal (and the
+    board hides it) — the same reason that state is absent from the reconcile sources.
+    """
+    if _is_reviewer(ticket):
+        return _close_review(ticket, reason=reason, dry_run=dry_run)
+    return _advance_to_merged(ticket, reason=reason, dry_run=dry_run)
+
+
+def _on_close_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
+    """Route a closed-unmerged signal by role: an author ticket is abandoned, a review is moot."""
+    if _is_reviewer(ticket):
+        return _close_review(ticket, reason=reason, dry_run=dry_run)
+    return _resolve_ignored(ticket, reason=reason, dry_run=dry_run)
+
+
+def _close_review(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
+    """Land a reviewer ticket on its own terminal — the PR is decided, so no review can post."""
+    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
+
+    if not can_proceed(ticket.mark_review_no_action):
+        return None
+    from_state = ticket.state
+    if dry_run:
+        return _planned(ticket, Ticket.State.REVIEW_POSTED, BoardAction.REVIEW_CLOSED, reason)
+    ticket.mark_review_no_action()
+    ticket.save()
+    logger.info("Board reconcile closed review ticket %s %s → review_posted (%s)", ticket.pk, from_state, reason)
+    return BoardTransition(
+        ticket_id=int(ticket.pk),
+        issue_url=ticket.issue_url,
+        from_state=from_state,
+        to_state=ticket.state,
+        action=BoardAction.REVIEW_CLOSED,
+        reason=reason,
+        applied=True,
+    )
 
 
 def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransition]:

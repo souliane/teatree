@@ -174,6 +174,73 @@ class TestMergedPrRowRule(TestCase):
         assert good.state == Ticket.State.MERGED
 
 
+class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
+    """A reviewer ticket lands REVIEW_POSTED — never MERGED, on any rule.
+
+    ``REVIEW_POSTED`` is excluded from the reconcile sources because driving a
+    reviewer ticket to MERGED claims teatree authored work it only reviewed. That
+    same argument applies to a reviewer ticket sitting in NOT_STARTED, which the
+    state-based exclusion does not reach: measured on the live board, 21 of 32
+    candidate transitions were ``role=reviewer`` — ghosts that would each have
+    enqueued a spurious ``execute_teardown`` and are not undoable through the FSM
+    (``reconcile_merged`` has no inverse).
+    """
+
+    URL = "https://github.com/souliane/teatree/pull/3291"
+
+    def _reviewer(self, state: str = Ticket.State.NOT_STARTED, url: str = URL) -> Ticket:
+        return Ticket.objects.create(overlay="t3-teatree", role=Ticket.Role.REVIEWER, state=state, issue_url=url)
+
+    def test_merged_pr_closes_the_review_instead_of_claiming_a_merge(self) -> None:
+        ticket = self._reviewer()
+
+        with _forge({self.URL: PrOpenState.MERGED}):
+            report = reconcile_board()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert [t.action for t in report.applied] == [BoardAction.REVIEW_CLOSED]
+
+    def test_closed_pr_closes_the_review_instead_of_ignoring(self) -> None:
+        ticket = self._reviewer()
+
+        with _forge({self.URL: PrOpenState.CLOSED}):
+            reconcile_board()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+
+    def test_a_merged_pr_row_also_closes_the_review(self) -> None:
+        """Rule A carries the identical hazard — a reviewer ticket must not reach MERGED."""
+        ticket = self._reviewer(url="")
+        _merged_pr(ticket)
+
+        report = reconcile_board(probe_forge=False)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert [t.action for t in report.applied] == [BoardAction.REVIEW_CLOSED]
+
+    def test_an_author_ticket_still_reaches_merged(self) -> None:
+        """The role branch must not disarm the rule for its real target."""
+        author = Ticket.objects.create(
+            overlay="t3-teatree", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED, issue_url=self.URL
+        )
+
+        with _forge({self.URL: PrOpenState.MERGED}):
+            reconcile_board()
+
+        author.refresh_from_db()
+        assert author.state == Ticket.State.MERGED
+
+    def test_a_second_run_is_a_no_op(self) -> None:
+        self._reviewer()
+
+        with _forge({self.URL: PrOpenState.MERGED}):
+            assert len(reconcile_board().applied) == 1
+            assert reconcile_board().applied == ()
+
+
 class TestForgeMergedRule(TestCase):
     """Rule B — the ticket's OWN ``issue_url`` is a PR the forge says merged.
 
