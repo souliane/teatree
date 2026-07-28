@@ -1,10 +1,9 @@
 """Hooks must run under an interpreter new enough for the hook modules.
 
 Regression guard for the bootstrap crash introduced by b7c0d0df89 (#2559/#2571).
-The posture probe (then ``availability_away_probe.py``, now
-``mode_posture_probe.py``) reached a PEP-604 union evaluated at *import* time
-(return annotations evaluate at def-time — today via its ``managed_repo`` import),
-and ``hook_router.py`` imports it at module top. The project baseline
+The posture probe ``mode_posture_probe.py`` reached a PEP-604 union evaluated at
+*import* time (return annotations evaluate at def-time — today via its
+``managed_repo`` import), and ``hook_router.py`` imports it at module top. The project baseline
 is Python >= 3.13 and standardizes on native ``X | Y`` unions (ruff bans
 ``from __future__ import annotations`` via TID251), so the union itself is
 correct. The bug was the *interpreter*: ``hooks.json`` invoked the router with a

@@ -708,13 +708,12 @@ def _is_bare_loop_prompt(prompt: str) -> bool:
 def handle_record_presence(data: dict) -> None:
     """Stamp a live-presence heartbeat — a prompt proves the user is here.
 
-    ``availability.resolve_mode`` reads this stamp to upgrade a
-    schedule-derived ``away`` to ``present``: a user actively submitting
-    prompts is demonstrably reachable, so their ``AskUserQuestion`` calls
-    must not be deferred just because the clock is outside their configured
-    work hours. Fail-open and silent on the happy path — a heartbeat that
-    cannot be written never blocks the prompt (the schedule then decides
-    as before).
+    Both mode readers — ``core.mode_resolution`` and the Django-free
+    ``config.cold_mode`` — read this stamp to upgrade a schedule-derived
+    deferring mode to a reachable one: a user actively submitting prompts is
+    demonstrably reachable, so their ``AskUserQuestion`` calls must not be
+    deferred just because the clock is outside their configured work hours.
+    Fail-open and silent — an unwritable heartbeat never blocks the prompt.
     """
     prompt = data.get("prompt")
     if not prompt:
