@@ -167,7 +167,7 @@ Agent(name="docs-maker", model="opus", prompt="Do the overdue BLUEPRINT + README
 # Edit(file_path="BLUEPRINT.md", ...)   # banned: the lead dispatches, it does not implement
 ```
 
-The opus-floor (above) is the host-runtime tier rule; this delegate-don't-do-it-inline rule is the SDK-testable essence both the real runtime and the eval lane share. Pinned by `evals/scenarios/wip.yaml` (`team_mate_spawned_opus_never_sonnet` — the SDK lane grades the delegation, the host runtime enforces the opus tier).
+The opus-floor (above) is the host-runtime tier rule; this delegate-don't-do-it-inline rule is the SDK-testable essence both the real runtime and the eval lane share. The general form — dispatch the unit, never do it inline — is pinned by `evals/scenarios/delegates_under_load.yaml` (`delegates_under_load_not_edits_in_main_agent`); the team-mode variant is enforced only in the real Agent-Team runtime, since the agent-teams pane layer is retired from teatree itself ([#3734](https://github.com/souliane/teatree/issues/3734)).
 
 ### Hard rails parallelization must not break
 

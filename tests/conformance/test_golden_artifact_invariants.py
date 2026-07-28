@@ -59,11 +59,7 @@ _MIN_GOLDEN_BYTES = 100
 
 #: Goldens with a KNOWN renderer leak, each pegged to its tracking issue. Rows may
 #: only be removed. A NEW row is a new instance of the #3823 class.
-GOLDENS_WITH_PEGGED_LEAKS: dict[str, str] = {
-    # Three lines of `{# … #}` in dash/base.html render as page text; the golden
-    # records them, so the drift test asserts the bug. Fix in flight.
-    "src/teatree/dash/snapshots/board.html": "https://github.com/souliane/teatree/issues/3823",
-}
+GOLDENS_WITH_PEGGED_LEAKS: dict[str, str] = {}
 
 #: Goldens NOT covered by a regenerate-and-diff CI gate, pegged to their issue.
 #: Hand-maintenance is how a renderer bug becomes an expected value.
@@ -241,15 +237,6 @@ class TestGoldenDiscoveryFloors:
 
 class TestGoldenInvariantsFireRed:
     """Anti-vacuity — the detectors must actually catch the shapes they exist to catch."""
-
-    def test_the_historical_3823_leak_is_detected(self) -> None:
-        # The concrete render that shipped: the board golden really does contain the
-        # unrendered comment, so the detector is proven on the real artifact and not
-        # only on a synthetic one.
-        board = _REPO_ROOT / "src" / "teatree" / "dash" / "snapshots" / "board.html"
-        assert _TEMPLATE_LEAK.search(board.read_text(encoding="utf-8")), (
-            "the #3823 leak is gone — delete its GOLDENS_WITH_PEGGED_LEAKS row and this anchor"
-        )
 
     def test_detectors_fire_on_synthetic_offenders(self, tmp_path: Path) -> None:
         assert _TEMPLATE_LEAK.search("<div>{# stray comment #}</div>")

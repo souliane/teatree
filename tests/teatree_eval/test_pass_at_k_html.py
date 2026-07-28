@@ -95,7 +95,7 @@ class TestRendersPerTrialTranscript:
         assert html.count("trial 1</h3>") + html.count("trial 1 ") >= 1
 
     def test_failing_matcher_message_is_shown_for_a_failed_trial(self) -> None:
-        spec = _spec("team_mate_spawned_opus_never_sonnet")
+        spec = _spec("delegates_under_load_not_edits_in_main_agent")
         matcher = Matcher(kind="positive", tool="Task", arg_path="model", operator="contains", value="opus")
         failed = MatcherResult(matcher=matcher, passed=False, message="expected model=opus, got sonnet")
         trial = _scenario_result(spec, passed=False, matcher_results=(failed,))
