@@ -29,6 +29,7 @@ from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
 from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_seed_field, seed_divergences
+from teatree.config.setting_groups import group_outline
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, SAFETY_POSTURE_KEYS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
@@ -170,7 +171,7 @@ def export_db_to_toml(
     settings_global = {key: value for key, value in all_global.items() if key not in REGISTRY_KEYS}
     global_rows = _exportable_rows(settings_global, GLOBAL_SCOPE, guard=guard)
     if global_rows:
-        document["teatree"] = _toml_table(global_rows)
+        document["teatree"] = _grouped_settings_table(global_rows)
     scopes = list(
         ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).order_by("scope").values_list("scope", flat=True).distinct()
     )
@@ -221,6 +222,27 @@ def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
     table = tomlkit.table()
     for key in sorted(rows):
         table[key] = rows[key]
+    return table
+
+
+def _grouped_settings_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
+    """The ``[teatree]`` table, its keys ordered and banner-commented by the settings tree.
+
+    The KEYS stay flat — the flat namespace is the persisted contract every reader, env
+    override and cold sqlite3 read depends on, so nesting them into sub-tables would be a
+    rename of every stored key. The hierarchy rides as indented comments instead: one
+    banner per level, at its first appearance, above the keys it owns. Comments are inert
+    to the parser, so the dump re-imports byte-identically to an ungrouped one.
+
+    Ordering is the tree's, then key-sorted within a leaf — a function of the store's
+    CONTENT and the declarations, never of DB insertion order, so the dump stays stable.
+    """
+    table = tomlkit.table()
+    for section in group_outline(sorted(rows), key_of=lambda key: key):
+        for heading in section.headings:
+            table.add(tomlkit.comment(f"{'  ' * (heading.depth - 1)}{heading.label}"))
+        for key in section.rows:
+            table[key] = rows[key]
     return table
 
 

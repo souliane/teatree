@@ -8,6 +8,7 @@ rather than composed attributes.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 from teatree.config.setting_parsers import _default_handover_mirror_path
 
@@ -15,6 +16,8 @@ from teatree.config.setting_parsers import _default_handover_mirror_path
 @dataclass
 class _LoopFlagAndCredentialSettings:
     """Loop feature-flags (issue-implementer, fleet/orchestrate, outer/directive), cost + Anthropic pass routing."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Kill switches & credentials")
 
     # #1548 Opt-in, default-OFF gate for the always-on issue-implementer
     # loop. The loop is a hard NO-OP unless ``issue_implementer_enabled``

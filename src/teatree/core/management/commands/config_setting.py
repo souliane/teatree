@@ -41,6 +41,7 @@ from teatree.config import (
     get_effective_settings,
 )
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
+from teatree.config.setting_groups import group_outline
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
@@ -194,13 +195,22 @@ class Command(TyperCommand):
 
     @command(name="list")
     def list_rows(self) -> None:
-        """List every DB config override row, naming each row's scope (read-only)."""
+        """List every DB config override row under its group, naming each row's scope.
+
+        Rows are grouped by the SAME nested hierarchy the dashboard and the TOML export
+        render, indented one level per depth, so the three surfaces read alike. A row no
+        declaration owns still prints, under the leftovers heading.
+        """
         rows = list(ConfigSetting.objects.all())
         if not rows:
             self.stdout.write("  (no DB config overrides)")
             return
-        for row in rows:
-            self.stdout.write(f"  {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
+        for section in group_outline(rows, key_of=lambda row: row.key):
+            for heading in section.headings:
+                self.stdout.write(f"{'  ' * heading.depth}{heading.label}")
+            for row in section.rows:
+                indent = "  " * (section.depth + 1)
+                self.stdout.write(f"{indent}{row.key} = {row.value!r}  [{scope_label(row.scope)}]")
 
     @command()
     def flags(self) -> None:

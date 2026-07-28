@@ -812,15 +812,33 @@ dry-run import preview. A SECRET value AND its shipped default are masked to `**
 the row enters the response context — pinned by a test asserting a configured secret never
 appears in the response bytes.
 
-Rows are grouped by `config.setting_groups.setting_group`, whose membership is DERIVED from
-the `UserSettings` declaration bases (`tests/config/test_settings_group_partition.py` pins
-them pairwise-disjoint and exhaustive) and, for a key no base declares, from the registry
-that registers it — so a newly-added key is grouped by the declaration it already carries.
-The grouping is TOTAL: `settings_editor.group_rows` partitions the flat row set, and a key
-whose group is unknown collects in a visible leftovers section rather than being dropped.
-That is the fix for the retired `/dash/config` page, whose name-shaped band classifier
-returned `""` for 130 of 184 `UserSettings` fields and `continue`d each one out of the page
-— 185 of the 236 schema keys never rendered there at all.
+Rows are grouped by `config.setting_groups.group_tree`, a NESTED hierarchy several levels
+deep (`Gates / Quality / Merge & done`) whose membership AND shape are DERIVED, never
+listed: each `UserSettings` declaration base declares its own `GROUP_PATH` class var, and
+the base set and their render ORDER come off `UserSettings.__mro__`, so the module names no
+category and adding a field to a base places it with zero edits anywhere. A key no base
+declares is grouped by the registry that registers it, each registry declaring its path
+beside its own keys. `tests/config/test_settings_group_partition.py` pins the bases
+pairwise-disjoint and exhaustive over the TREE as well as the flat field set: no two bases
+claim one path, no path is a strict prefix of another, and the leaves partition every field
+exactly once — so a node holds rows or subsections, never both.
+
+The grouping is TOTAL: `settings_editor.group_rows` partitions the flat row set over the
+tree's leaves, and a key whose group is unknown — or whose path names a level nothing else
+declares — collects in a visible leftovers section rather than being dropped. That is the
+fix for the retired `/dash/config` page, whose name-shaped band classifier returned `""`
+for 130 of 184 `UserSettings` fields and `continue`d each one out of the page — 185 of the
+236 schema keys never rendered there at all.
+
+The same tree drives all three surfaces from ONE mechanism, so they cannot disagree: the
+dashboard renders it as nested sections (`dash/partials/_settings_group.html` recursing,
+heading level following depth), and `setting_groups.group_outline` streams it as
+heading-then-row sections for the two text surfaces — `config_setting export`'s
+`[teatree]` table (indented
+comment banners) and `config_setting list` (indented headings). The TOML KEYS stay flat:
+the flat key namespace is the persisted contract every reader, env override and cold
+sqlite3 read depends on, so the hierarchy rides as comments rather than sub-tables, and a
+grouped dump re-imports byte-identically to an ungrouped one.
 
 `/dash/config/` is retired into this page and redirects to it. Its readouts that are NOT
 `ConfigSetting` rows — the resolved model / reasoning-effort pins, the `pass` entry each

@@ -535,3 +535,48 @@ class TestSeedTableRoundTripIsByteStable(_SeedRowsTestCase):
         assert import_toml_to_db(export1, scan_terms=()).rejected == ()
 
         assert export_db_to_toml(scan_terms=()).toml == export1
+
+
+class TestExportCarriesTheSettingsHierarchy(TestCase):
+    """The TOML dump groups ``[teatree]`` by the same tree the dashboard renders.
+
+    TOML keys stay FLAT under ``[teatree]`` — the flat key namespace is the persisted
+    contract every reader, env override and cold sqlite3 read depends on — so the
+    hierarchy rides as ordered, indented comment banners rather than sub-tables.
+    """
+
+    def _dump(self) -> str:
+        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+        ConfigSetting.objects.set_value("architectural_review_cadence_hours", value=99)
+        ConfigSetting.objects.set_value("autoload", value=True)
+        return export_db_to_toml(include_private=True).toml
+
+    def test_each_level_of_the_path_is_banner_commented_above_its_keys(self) -> None:
+        dump = self._dump()
+        assert "\n# Gates\n" in dump
+        assert "\n#   Quality\n" in dump
+        assert "\n#     Merge & done\n" in dump
+        assert dump.index("#     Merge & done") < dump.index("require_merge_evidence")
+
+    def test_a_level_is_announced_once_and_its_children_follow_it(self) -> None:
+        dump = self._dump()
+        assert dump.count("\n#   Quality\n") == 1, "a shared parent level is re-announced per child"
+        quality = dump.index("#   Quality")
+        assert quality < dump.index("#     Architectural review") < dump.index("#     Merge & done")
+
+    def test_keys_are_ordered_by_the_hierarchy_not_alphabetically(self) -> None:
+        dump = self._dump()
+        # ``autoload`` sorts first alphabetically but its group renders before the gates,
+        # so hierarchy order and alphabetical order are distinguishable here.
+        assert dump.index("autoload") < dump.index("architectural_review_cadence_hours")
+
+    def test_the_grouped_dump_still_re_imports_exactly(self) -> None:
+        dump = self._dump()
+        ConfigSetting.objects.all().delete()
+        result = import_toml_to_db(dump, allow_safety_posture=True)
+        assert not result.rejected, result.rejected
+        assert ConfigSetting.objects.get_effective("require_merge_evidence", scope="") is True
+        assert ConfigSetting.objects.get_effective("architectural_review_cadence_hours", scope="") == 99
+
+    def test_the_dump_is_a_deterministic_function_of_the_store(self) -> None:
+        assert self._dump() == export_db_to_toml(include_private=True).toml
