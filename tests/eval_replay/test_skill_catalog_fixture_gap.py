@@ -41,6 +41,13 @@ _EXPECTED_REFERENCED_SKILLS: dict[str, frozenset[str]] = {
     "non_overlay_review_does_not_load_overlay_skill": frozenset({"review"}),
     "overlay_repo_review_loads_overlay_skill_first": frozenset({"t3-widget"}),
     "workflow_spawned_review_loads_overlay_skill_set": frozenset({"t3-widget", "widget-le", "frontend-dev", "review"}),
+    # Same class, surfaced by the first metered run to produce real results
+    # (30329555602). The prompt names the planning skill AND the overlay skill,
+    # but the scenario declared no ``available_skills`` at all — so BOTH names
+    # were absent from the simulated catalog, every ``Skill`` call came back
+    # "Unknown skill", the agent spent the rest of its budget hunting the
+    # filesystem for them, and one of the two trials died on ``max_turns``.
+    "overlay_planning_loads_planning_and_overlay_skill": frozenset({"architecture-design", "t3-widget"}),
 }
 
 
