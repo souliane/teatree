@@ -273,8 +273,8 @@ Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step ex
 
 A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. There is
 exactly one command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
-no `t3 review react` subcommand (that does not exist; do not invent it), and the emoji name carries **no
-colons**:
+and no reaction subcommand under `t3 review` (there is none; do not invent one), and the emoji name
+carries **no colons**:
 
 ```bash
 t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark

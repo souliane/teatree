@@ -462,7 +462,7 @@ the one that keeps getting picked:
    costs a full CI cycle plus a second reviewer pass. The branch is done; leave it alone.
 2. **Filing it as an issue/ticket "for later" is equally wrong** — and it is not the safe middle
    ground it feels like. `t3:rules` § "Do Work Now, Don't Defer to 'Later' Tickets" names exactly this
-   move (`gh issue create` / `glab issue create` for work you are already holding in your hands) as
+   move (opening a `<forge> issue` for work you are already holding in your hands) as
    the failure it forbids, and its rubric's answer for a fix that is genuinely orthogonal to the
    current PR is verbatim: *create a worktree + PR immediately, implement, ship. No new ticket.*
    Choosing an issue because the PR is green protects the PR by abandoning the work.
@@ -480,7 +480,7 @@ gh pr create --base main --head <prefix>/tidy-loader-comment --fill   # once com
 # never Y — a cosmetic commit pushed onto the reviewed, green PR's branch:
 git push origin <green-branch>            # FORBIDDEN — re-runs CI, re-opens the review
 # never Z — a ticket standing in for the two-minute fix you could ship in this turn:
-gh issue create --title "tidy that comment"   # FORBIDDEN — this is the deferral, not the fix
+<forge> issue create --title "tidy that comment"   # FORBIDDEN — this is the deferral, not the fix
 ```
 
 Pinned by `no_cosmetic_repush_to_green_ci_pr` (`evals/scenarios/ship.yaml`).
