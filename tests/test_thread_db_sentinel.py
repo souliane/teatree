@@ -1,3 +1,5 @@
+# test-path: cross-cutting — tests tests/_thread_db_sentinel.py (test infra); the src imports are the
+# anti-vacuity subject, not the unit under test.
 """Tests for ``tests/_thread_db_sentinel.py`` — the stranded-DB-handle sentinel.
 
 The sentinel converts a non-deterministic bystander red (a
