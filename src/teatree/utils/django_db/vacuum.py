@@ -20,6 +20,7 @@ is in flight.
 """
 
 import logging
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,15 @@ from django.db import DEFAULT_DB_ALIAS, connections
 logger = logging.getLogger(__name__)
 
 _IN_MEMORY_NAMES = frozenset({":memory:", ""})
+
+#: VACUUM rebuilds into a full second copy before swapping, so the transient peak
+#: is the database's own size again, plus rollback-journal slack. Measured need on
+#: a 1.2 GB control DB is ~1.2 GB; the 10% margin covers the journal.
+_REBUILD_HEADROOM_FACTOR = 1.1
+
+
+def _required_headroom_bytes(db_size: int) -> int:
+    return int(db_size * _REBUILD_HEADROOM_FACTOR)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +73,24 @@ def vacuum_sqlite(path: Path) -> VacuumOutcome:
     if not path.is_file():
         return VacuumOutcome(ran=False, reason=f"no such file: {path}")
     before = path.stat().st_size
+    # Checked BEFORE opening: a rebuild that runs out of disk part-way through has
+    # already written most of a second copy onto a filesystem that was short to
+    # begin with — on a box already reclaiming space, the worst possible moment to
+    # add a gigabyte. Refusing up front leaves the file untouched.
+    free = shutil.disk_usage(path.parent).free
+    required = _required_headroom_bytes(before)
+    if free < required:
+        return VacuumOutcome(
+            ran=False,
+            reason=(
+                f"insufficient rebuild headroom: VACUUM needs ~{required / 1024**2:.0f} MiB free "
+                f"(a full second copy of the {before / 1024**2:.0f} MiB database) but only "
+                f"{free / 1024**2:.0f} MiB is available on {path.parent} — reclaim space first, "
+                "e.g. `t3 <overlay> workspace reclaim-disk`"
+            ),
+            bytes_before=before,
+            bytes_after=before,
+        )
     try:
         connection = sqlite3.connect(path, isolation_level=None)  # autocommit: VACUUM cannot run in a transaction
         try:

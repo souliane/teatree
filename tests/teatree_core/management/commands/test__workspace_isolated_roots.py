@@ -205,6 +205,24 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         assert orphan.exists(), "DATA LOSS: an explicitly-pinned worktree lost its env dir"
         assert any("KEPT" in line and "live work" in line for line in result)
 
+    def test_a_pinned_live_rows_env_dir_is_kept_even_though_its_checkout_is_gone(self) -> None:
+        """Liveness is asked for a path-carrying row too, not only a pathless one.
+
+        The widened keep-set must not become a shortcut past the operator pin: a
+        row `worktree_protects_against_reap` protects keeps its isolated control
+        DB whether or not any evidence source can still find its checkout on disk.
+        """
+        checkout = Path("/gone/but/pinned")
+        worktree = self._make_worktree(checkout=checkout, branch="pinned-with-path")
+        worktree.extra = {**worktree.extra, "reaper_pinned": True}
+        worktree.save(update_fields=["extra"])
+        env_dir = _make_env_dir(self.root, paths.isolated_slug(checkout))
+
+        result = self._reap()
+
+        assert env_dir.exists(), "DATA LOSS: an operator-pinned worktree lost its isolated control DB"
+        assert any("KEPT" in line and env_dir.name in line for line in result)
+
     def test_missing_root_returns_empty(self) -> None:
         shutil.rmtree(self.root)
         assert self._reap() == []

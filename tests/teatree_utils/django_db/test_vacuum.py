@@ -8,11 +8,12 @@ from the fixture never having been bloated in the first place.
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.db import DEFAULT_DB_ALIAS, connections
+from django.db import DEFAULT_DB_ALIAS
 
-from teatree.utils.django_db.vacuum import vacuum_control_db, vacuum_sqlite
+from teatree.utils.django_db.vacuum import _required_headroom_bytes, vacuum_control_db, vacuum_sqlite
 
 _ROWS = 4000
 _PAYLOAD = "x" * 512
@@ -81,6 +82,34 @@ class TestVacuumSqlite:
         finally:
             con.close()
 
+    def test_it_refuses_before_starting_when_the_disk_lacks_rebuild_headroom(self, tmp_path: Path) -> None:
+        """VACUUM writes a FULL second copy before swapping — starting without room is the danger.
+
+        On the host that produced this ticket the control DB is 1.2 GB against
+        8.6 GB free and falling, so the rebuild's transient copy is a real
+        fraction of the headroom. It must refuse up front and say so, never
+        discover the shortfall part-way through rewriting the file.
+        """
+        db = tmp_path / "control.sqlite3"
+        _bloated_db(db)
+        before = db.stat().st_size
+        cramped = SimpleNamespace(total=0, used=0, free=1024)
+
+        with patch(f"{_MODULE}.shutil.disk_usage", return_value=cramped):
+            outcome = vacuum_sqlite(db)
+
+        assert not outcome.ran
+        assert "headroom" in outcome.reason
+        assert db.stat().st_size == before, "the file must be untouched when the vacuum is refused"
+
+    def test_ample_headroom_does_not_block_the_vacuum(self) -> None:
+        """Anti-vacuous control: the guard must not be a blanket refusal.
+
+        The shrink tests above already run against the real disk, so this pins the
+        boundary itself — headroom exactly at the required multiple still proceeds.
+        """
+        assert _required_headroom_bytes(1_000) == 1_100
+
     def test_an_absent_file_is_reported_not_run_rather_than_raising(self, tmp_path: Path) -> None:
         outcome = vacuum_sqlite(tmp_path / "nope.sqlite3")
 
@@ -123,7 +152,20 @@ class TestVacuumControlDb:
 
         assert not outcome.ran
         assert "in-memory" in outcome.reason
-        assert connections[DEFAULT_DB_ALIAS].connection is not None, "the in-memory test DB was closed"
+
+    def test_an_in_memory_connection_is_never_closed(self) -> None:
+        """An ``:memory:`` database does not survive its connection.
+
+        Closing one to "prepare" a rebuild that then declines to run would destroy
+        the database the maintenance step just decided not to touch.
+        """
+        stub = _StubConnection(":memory:")
+
+        with patch(f"{_MODULE}.connections", {DEFAULT_DB_ALIAS: stub}):
+            outcome = vacuum_control_db()
+
+        assert not stub.closed, "closing an in-memory connection destroys the database"
+        assert not outcome.ran
 
     def test_a_non_sqlite_vendor_is_refused_rather_than_given_a_sqlite_shaped_step(self) -> None:
         stub = _StubConnection("/anywhere/db.sqlite3", vendor="postgresql")
