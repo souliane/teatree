@@ -6,6 +6,7 @@ opens a fresh loopback terminal from every page; the per-ticket drawer button st
 """
 
 import re
+import shutil
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -15,6 +16,24 @@ from e2e.dash.pom import BoardPage
 
 _TERMINAL = "Open a loopback terminal session"
 _LOOPBACK_URL = re.compile(r"^http://127\.0\.0\.1:\d+")
+
+# The click spec drives the REAL launcher, which resolves ``shutil.which("ttyd")``
+# and renders the install hint instead of a launch URL when it is absent. That is a
+# HOST dependency, not a code path worth mocking away — the point of the spec is
+# that the button spawns a real terminal.
+#
+# The dependency is DECLARED where each environment that must run this provisions
+# it: ``.github/workflows/ci.yml`` apt-installs ttyd for the e2e-dash job (so the
+# authoritative lane never skips and the coverage is not quietly dead), and
+# ``deploy/Dockerfile`` installs it into the image the dashboard actually serves
+# from. A developer host with neither gets a VISIBLE skip naming the install
+# command instead of a red that reads like a product bug. Conditional by
+# construction, so it is not the dead coverage ``check_no_silent_skip`` bans.
+requires_ttyd = pytest.mark.skipif(
+    shutil.which("ttyd") is None,
+    reason="ttyd is not on PATH — install it (apt install ttyd / brew install ttyd); "
+    "CI and the deploy image both ship it",
+)
 
 
 @pytest.mark.usefixtures("seeded_board")
@@ -26,6 +45,7 @@ def test_terminal_button_visible_on_board(live_server: LiveServer, page: Page) -
     expect(page.get_by_role("button", name=_TERMINAL)).to_be_visible()
 
 
+@requires_ttyd
 @pytest.mark.usefixtures("seeded_board", "accept_dialogs")
 def test_terminal_button_click_renders_launch_url(live_server: LiveServer, page: Page) -> None:
     board = BoardPage(page, live_server.url)
