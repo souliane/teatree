@@ -9,7 +9,7 @@ from the fixture never having been bloated in the first place.
 import sqlite3
 from pathlib import Path
 
-from teatree.core.db_vacuum import vacuum_sqlite
+from teatree.utils.django_db.vacuum import vacuum_sqlite
 
 _ROWS = 4000
 _PAYLOAD = "x" * 512

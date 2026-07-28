@@ -10,7 +10,7 @@ The retention windows are the DB-home ``task_attempt_retention_days`` /
 ``incoming_event_retention_days`` settings (default 30, per-overlay overridable,
 ``0`` disables that table). Set them with ``t3 <overlay> config_setting set``.
 
-``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.core.db_vacuum`). Deleting
+``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.utils.django_db.vacuum`). Deleting
 rows on SQLite reclaims no disk on its own — the pages move to the free list and
 the file keeps its size — and the control DB is the seed every auto-isolated
 worktree env dir is copied from, so its size is paid once per live checkout. A
@@ -24,10 +24,10 @@ from typing import IO, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.db_vacuum import VacuumOutcome, vacuum_control_db
 from teatree.core.machine_output import emit
 from teatree.core.retention import apply_retention, plan_retention
 from teatree.core.table_output import print_table
+from teatree.utils.django_db.vacuum import VacuumOutcome, vacuum_control_db
 
 logger = logging.getLogger(__name__)
 

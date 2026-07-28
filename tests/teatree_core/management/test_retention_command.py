@@ -6,7 +6,7 @@ terminal-owned rows past the window. ``--json`` round-trips the machine payload.
 
 ``--apply`` also VACUUMs (#3852) — deleting rows on SQLite reclaims no disk on its
 own, so a prune that only drops rows leaves the file exactly as large. The vacuum
-itself is exercised against a real file in ``tests/teatree_core/test_db_vacuum.py``;
+itself is exercised against a real file in ``tests/teatree_utils/django_db/test_vacuum.py``;
 here it is stubbed so the wiring (called on apply, never on a dry run, reported
 either way) is what is under test.
 """
@@ -21,9 +21,9 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.db_vacuum import VacuumOutcome
 from teatree.core.management.commands.retention import Command, RetentionReport
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
+from teatree.utils.django_db.vacuum import VacuumOutcome
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _COMMAND = "teatree.core.management.commands.retention"
