@@ -10,7 +10,7 @@ stay byte-identical to today.
 
 from pathlib import Path
 
-from teatree.eval.discovery import find_spec
+from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
 from teatree.eval.prompt_framing import DELEGATION_FRAMING, SKILL_BUNDLE_FRAMING
 from teatree.eval.toolset import DELEGATION_SUBAGENT_NAME, scenario_exposes_subagent_spawn
@@ -21,6 +21,11 @@ from teatree.eval.under_load import (
     load_budgeted_skill_bundle,
     load_skill_bundle,
 )
+
+#: Anti-vacuity floor for the shipped spawn-capable set (28 at the time of writing).
+#: A discovery regression that returned an empty list would otherwise satisfy the
+#: totality assertion by having nothing to check.
+_SPAWN_CAPABLE_FLOOR = 20
 
 
 def _spec(
@@ -94,9 +99,9 @@ class TestDelegationFraming:
     Measured against the bundled CLI, that bound is reached only when the spawn
     NAMES the stub: omitting ``subagent_type`` runs the unbounded built-in
     ``general-purpose`` agent (10 tool uses, $0.2960 on the probe) while naming
-    ``delegate`` reaches the stub (0 tool uses, $0.0400) — a 7x cost gap that in
-    ``team_mate_spawned_opus_never_sonnet`` (run 30329555602, under_load 4/5) spent
-    the whole ``max_budget_usd: 4.0`` on the delegated unit and red the trial
+    ``delegate`` reaches the stub (0 tool uses, $0.0400) — a 7x cost gap that in run
+    30329555602 (under_load 4/5) spent a delegation scenario's whole
+    ``max_budget_usd: 4.0`` on the delegated unit and red the trial
     ``budget_exceeded`` AFTER the graded dispatch had already been issued.
 
     So the framing must reach every scenario that can spawn, in BOTH lanes, and must
@@ -138,13 +143,22 @@ class TestDelegationFraming:
         assert DELEGATION_SUBAGENT_NAME in DELEGATION_FRAMING
         assert f'subagent_type: "{DELEGATION_SUBAGENT_NAME}"' in DELEGATION_FRAMING
 
-    def test_the_budget_capped_scenario_now_carries_the_framing(self) -> None:
-        # The concrete regression: the shipped scenario whose correct trajectory was
-        # red on `budget_exceeded` must reach the model with the framing attached.
-        spec = find_spec("team_mate_spawned_opus_never_sonnet")
-        assert scenario_exposes_subagent_spawn(spec) is True
-        prompt = build_system_prompt(spec, clean_room_prompt="SINGLE SKILL BODY")
-        assert prompt.endswith(DELEGATION_FRAMING)
+    def test_every_shipped_spawn_capable_scenario_carries_the_framing(self) -> None:
+        # Totality over the live catalog rather than one pinned name: the scenario
+        # that first paid the cost was retired with the layer it graded (#3844), and
+        # a single-name pin would have gone stale with it while the cost mechanism —
+        # an unnamed spawn falling through to the unbounded built-in — stayed live in
+        # every other spawn-capable scenario.
+        spawn_capable = [spec for spec in discover_specs() if scenario_exposes_subagent_spawn(spec)]
+        assert len(spawn_capable) >= _SPAWN_CAPABLE_FLOOR, (
+            "spawn-capable scenario discovery collapsed — the assertion below would pass vacuously"
+        )
+        unframed = sorted(
+            spec.name
+            for spec in spawn_capable
+            if not build_system_prompt(spec, clean_room_prompt="SINGLE SKILL BODY").endswith(DELEGATION_FRAMING)
+        )
+        assert not unframed, f"spawn-capable scenario(s) reaching the model without the framing: {unframed}"
 
 
 class TestLoadBudgetedSkillBundle:
