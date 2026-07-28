@@ -11,8 +11,8 @@
 
   <section class="band">
     <h2>Debug commands</h2>
-    {# One form per command: the vendored htmx drops the clicked submitter, so a shared
-    form posted an empty `command` and every button was refused. #}
+    {% comment %} One form per command: the vendored htmx drops the clicked submitter, so a
+    shared form posted an empty `command` and every button was refused. {% endcomment %}
     <div class="toolbar">
       {% for spec in command_buttons %}
         <form method="post" action="{% url 'dash:command_run' %}" hx-post="{% url 'dash:command_run' %}" hx-target="#command-result" hx-swap="innerHTML">
