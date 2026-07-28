@@ -282,6 +282,44 @@ def _harness_provider_consistency_signals() -> list[HealthSignal]:
     return signals
 
 
+def _fleet_loop_policy_signals() -> list[HealthSignal]:
+    """One WARNING when this box's fleet loop declaration is unsatisfiable.
+
+    ``deploy/entrypoint.sh`` resolves a contradictory ``TEATREE_DISABLED_LOOPS``
+    correctly (it prunes the unmaskable names and continues rather than crash-looping
+    init on the config the box already shipped) and warns on stderr — but that stderr
+    scrolls away with the deploy log, so a declaration that masks NOTHING, and that
+    silently displaced the built-in default, persists unnoticed across every redeploy.
+    Compose passes the env file to every service, so the same declaration the init
+    role read is readable here; this turns the transient warning into a durable
+    :class:`KnownIssue` row that clears on its own once the repo variable is fixed.
+
+    A sound or partially-pruned declaration emits nothing. Fail-open to ``[]``.
+    """
+    import os  # noqa: PLC0415 — deferred: keeps the module cold-import cheap, like the sibling collectors
+
+    from teatree.config.fleet_policy import (  # noqa: PLC0415 — deferred: same cold-import discipline
+        FLEET_DISABLED_VARIABLE,
+        FLEET_ENABLED_VARIABLE,
+        fleet_policy_contradiction,
+    )
+
+    reason = fleet_policy_contradiction(
+        enabled_raw=os.environ.get(FLEET_ENABLED_VARIABLE),
+        disabled_raw=os.environ.get(FLEET_DISABLED_VARIABLE),
+    )
+    if not reason:
+        return []
+    return [
+        HealthSignal(
+            fingerprint="fleet-loop-policy-contradiction",
+            severity=KnownIssue.Severity.WARNING,
+            kind="config_pair_drift",
+            summary=f"fleet loop policy: {reason}",
+        )
+    ]
+
+
 # The deterministic signal collectors, run in order. Each is fail-open on its
 # own so one broken read never suppresses the others; adding a new signal family
 # (default-branch CI, stale 404 refs, …) is one entry here plus its collector.
@@ -290,6 +328,7 @@ _COLLECTORS = (
     _stale_tick_signals,
     _failed_task_signals,
     _harness_provider_consistency_signals,
+    _fleet_loop_policy_signals,
 )
 
 

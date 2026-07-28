@@ -440,7 +440,7 @@ apply_fleet_loop_policy() {
     # failure here would crash-loop init on an already-deployed box that carries
     # the overlap (the very config that shipped), turning a silent mask into an
     # outage. The warning tells the operator to de-dup teatree.env.
-    local pruned_disable=()
+    local pruned_disable=() dropped=()
     for loop in ${disable_loops[@]+"${disable_loops[@]}"}; do
         local overlaps=
         for other in ${enable_loops[@]+"${enable_loops[@]}"}; do
@@ -450,13 +450,31 @@ apply_fleet_loop_policy() {
             fi
         done
         if [ -n "$overlaps" ]; then
-            echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); remove it from TEATREE_DISABLED_LOOPS in teatree.env to silence this warning" >&2
+            dropped+=("$loop")
+            echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         elif grep -qxF "$loop" <<<"$intake"; then
-            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Remove it from TEATREE_DISABLED_LOOPS in teatree.env to silence this warning" >&2
+            dropped+=("$loop")
+            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         else
             pruned_disable+=("$loop")
         fi
     done
+
+    # NET-EFFECT report. The per-name lines above each say "this one name was not
+    # applied"; none of them says what the operator actually needs to know when
+    # EVERY name was pruned: the declaration masks nothing at all, AND declaring it
+    # at all replaced the built-in default (`review`, the colleague-facing loop this
+    # box must not run), so that is no longer forced off either. That silent
+    # displacement is the real harm, and it survives every redeploy unreported.
+    #
+    # Still a warning, not `exit 1`: init crash-looping on the very config the box
+    # already shipped turns a mis-mask into an outage. The durable escalation is the
+    # `fleet_loop_policy_contradiction` health signal (teatree.config.fleet_policy),
+    # which keeps the chip yellow until the repo variable is fixed - stderr here
+    # scrolls away, a KnownIssue row does not.
+    if [ ${#dropped[@]} -gt 0 ] && [ ${#pruned_disable[@]} -eq 0 ]; then
+        echo "entrypoint: CONTRADICTORY FLEET CONFIG - every name in TEATREE_DISABLED_LOOPS ('${disabled_raw}') is unmaskable here, so NO loop is forced off on this box; and setting the variable at all displaced the built-in default ('review'), which is therefore NOT masked either. Fix the SOURCE: the deploy workflow rewrites teatree.env from the repository variables on every run, so a hand-edit on the box is reverted. Run 'gh variable set TEATREE_DISABLED_LOOPS --repo <owner>/<repo> --body review' (or 'gh variable delete TEATREE_DISABLED_LOOPS --repo <owner>/<repo>' to restore the default) and re-run Deploy." >&2
+    fi
     disable_loops=(${pruned_disable[@]+"${pruned_disable[@]}"})
 
     # ENABLE clears any durable hold (only `enable` can) and sets Loop.enabled=True.

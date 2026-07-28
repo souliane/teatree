@@ -263,10 +263,26 @@ authoritative planes:
 `TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` (comma-separated) override the
 defaults; an **empty** value acts on nothing. Every name in both lists is
 validated against the registered mini-loops first, so a typo fails the deploy
-loudly. Set them in the box env file (`teatree.env`) to change the split. Because
-the deploy workflow rewrites `teatree.env` from repository variables on every run,
-a persistent override belongs in that workflow's env-file writer (the
-`TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` lines), not a hand-edit on the box.
+loudly. **The repository variables are the authority** — the deploy workflow
+rewrites `teatree.env` from them on every run, so a hand-edit on the box is
+reverted by the next deploy:
+
+```bash
+gh variable set TEATREE_DISABLED_LOOPS --repo <owner>/<repo> --body review
+gh variable delete TEATREE_DISABLED_LOOPS --repo <owner>/<repo>   # restore the default
+```
+
+**Setting the variable REPLACES the default — it does not extend it.** Declaring
+`TEATREE_DISABLED_LOOPS=inbox,directive_loop` masks neither name (both are
+owner-intake, and `inbox` also sits in the ENABLED set) *and* drops the `review`
+default, so the colleague-facing loop is no longer forced off either. When every
+declared name is pruned that way the entrypoint prints one consolidated net-effect
+line naming the displaced default, and
+`teatree.config.fleet_policy.fleet_policy_contradiction` raises a
+`fleet-loop-policy-contradiction` health WARNING that keeps the chip yellow until
+the variable is fixed — deploy stderr scrolls away, a `KnownIssue` row does not.
+Init still warns rather than exiting: crash-looping on the config the box already
+shipped would turn a mis-mask into an outage.
 
 ## One-time bootstrap (on the box)
 
