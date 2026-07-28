@@ -269,6 +269,22 @@ class Command(TyperCommand):
                 help="Also export private/secret rows (terms/brands, token refs) — PERSONAL backup only, never share.",
             ),
         ] = False,
+        default_keys_only: Annotated[
+            bool,
+            typer.Option(
+                "--default-keys-only",
+                help="Restrict the dump to the Category.DEFAULT keys defaults.toml ships "
+                "(drops registries, secrets, identifiers and overlay scopes).",
+            ),
+        ] = False,
+        include_defaults: Annotated[
+            bool,
+            typer.Option(
+                "--include-defaults",
+                help="Also emit keys with no DB row, at their resolved effective value. "
+                "With --default-keys-only this is the defaults.toml shape.",
+            ),
+        ] = False,
     ) -> None:
         """Dump the ``ConfigSetting`` store to TOML — the inverse of ``import``.
 
@@ -285,8 +301,19 @@ class Command(TyperCommand):
         even though the private DB store keeps it. Each withheld row is named on
         stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
         backup.
+
+        Two INDEPENDENT filters widen the dump, both off by default. ``--default-keys-only``
+        restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
+        ``--include-defaults`` also emits the eligible keys that have no DB row, at their
+        resolved effective value. Passing BOTH produces the defaults shape — a complete,
+        drop-in replacement for ``config/defaults.toml``, header and seed tables included.
         """
-        result = export_db_to_toml(overlay or None, include_private=include_private)
+        result = export_db_to_toml(
+            overlay or None,
+            include_private=include_private,
+            default_keys_only=default_keys_only,
+            include_defaults=include_defaults,
+        )
         for row in result.redacted:
             self.stderr.write(f"  withheld {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.redacted:

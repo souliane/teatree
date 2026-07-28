@@ -25,6 +25,7 @@ from teatree.dash.views.presets import (
 from teatree.dash.views.settings import (
     settings,
     settings_export,
+    settings_group,
     settings_import,
     settings_readouts,
     settings_restore,
@@ -59,6 +60,7 @@ __all__ = [
     "schedule_slot_delete",
     "settings",
     "settings_export",
+    "settings_group",
     "settings_import",
     "settings_readouts",
     "settings_restore",

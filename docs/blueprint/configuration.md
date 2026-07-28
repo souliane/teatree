@@ -77,6 +77,7 @@ t3 <overlay> config_setting set require_human_approval_to_merge false --overlay 
 t3 <overlay> config_setting set on_behalf_post_mode immediate
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
 t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # dump the store to a TOML backup (stdout default)
+t3 <overlay> config_setting export --default-keys-only --include-defaults      # the defaults.toml shape: a drop-in replacement for the shipped file
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
@@ -668,7 +669,9 @@ Every term-scanning gate resolves through one class-tagged source: the DB-home `
 
 The shipped default VALUES live in one hand-editable, committed file —
 `src/teatree/config/defaults.toml`. Its `[teatree]` table is EXACTLY the
-`config_setting export` / `import` shape (with `speak` / `mr_reminder` sub-tables); three
+`config_setting export` / `import` shape — the declaration hierarchy as nested group
+sub-tables, with `speak` / `mr_reminder` as their own settings — and every reader flattens
+it back to the flat key namespace on read; three
 sibling top-level tables — `[loops]`, `[modes]`, `[schedules]` — carry the seed defaults
 for the loop / mode / schedule objects (below). It is NOT a
 per-install config file (there is still nothing to edit per box — operator config lives
@@ -804,13 +807,60 @@ it (typing the command IS the authorization, exactly as `config_setting set` is)
 dashboard passes it only with the typed confirm phrase, and its dry-run preview classifies as
 if authorized so each safety-posture row is listed and flagged before the operator applies.
 
+**The byte-identical `defaults.toml` round trip
+([#3825](https://github.com/souliane/teatree/issues/3825)).** Zero-row normalization is what
+makes the store a DELTA over the shipped floor, and it is also why the two were not inverses:
+importing `defaults.toml` writes no row, and exporting no rows emits no `[teatree]` table, so
+"export, then drop the file over `config/defaults.toml`" would have dropped every key the box
+had not overridden. Two INDEPENDENT filters — CLI flags `--default-keys-only` /
+`--include-defaults`, and the settings page's two checkboxes, both off by default so an
+unfiltered dump emits exactly the rows it always has (the nesting below re-shapes how they
+RENDER, on every surface, but adds and drops nothing) — make the inverse expressible. `default_keys_only` restricts
+what is ELIGIBLE to the `Category.DEFAULT` key set (dropping registries, secrets, personal
+identifiers and every overlay scope); `include_defaults` widens WHICH eligible keys are
+emitted from divergent-only to all of them, filling a key with no DB row from
+`provenance.resolve_settings(..., persisted_only=True)`. Ticking both is the defaults shape,
+whose emitted key set is asserted EQUAL to the `Category.DEFAULT` set — equality, not a
+subset, because a subset check still passes while a key silently vanishes, which is the
+failure mode that makes replacing the shipped file dangerous. It renders through
+`defaults_snapshot.render_toml`, the SAME emitter `snapshot_settings_defaults` writes with
+(one emitter, two callers — pinned by an identity assertion), and reproduces the seed tables
+from `core.config_seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
+therefore byte-for-byte the shipped file, header and seed tables included:
+`tests/teatree_core/test_config_export_filters.py` asserts it against the real committed
+file, with a control proving a single live override moves exactly one line.
+
 **The one settings page** (`/dash/settings/`). Model-driven and EDITABLE: it walks the
 schema so every key is listable with no hand-kept list, writes each edit through
 `ConfigSetting.set_value` (the same validating seam), restores-to-default by DELETING the
 row, gates a safety-posture key behind an extra confirm phrase, and offers export + a
-dry-run import preview. A SECRET value AND its shipped default are masked to `***` before
-the row enters the response context — pinned by a test asserting a configured secret never
-appears in the response bytes.
+dry-run preview of an UPLOADED import file. A SECRET value AND its shipped default are
+masked to `***` before the row enters the response context — pinned by a test asserting a
+configured secret never appears in the response bytes.
+
+**One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
+Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key
+at once produced 272 `<form>`, 1,060 `<input>` (812 hidden), 271 CSRF tokens, 260KB and
+14,212px of page. `settings_editor.build_settings_sections` derives the nav from the group
+tree over the key NAMES alone (so listing it resolves no value) and `build_settings_group`
+resolves ONE section's rows, which the nav `hx-get`s into the detail pane. The per-row
+`hx-target="closest tr"` swap is unchanged — an edit still never re-renders the document —
+while `key`/`scope` moved into the `hx-post` URL instead of hidden fields and the body's
+`hx-headers` carries ONE CSRF token per page. The cost is constant in the row count:
+`tests/teatree_dash/views/test_settings.py` pins the page, the pane fragment and the polled
+readouts with `assertNumQueries`, as an EQUALITY between the smallest and the largest
+section rather than a ceiling a growing schema would hide an N+1 under.
+
+**Value provenance, not the setting's kind.** Each row names the tier of the resolution
+chain that actually supplied its effective value — env / DB overlay scope / DB global scope
+/ overlay code default / shipped file / code default. That replaces a `category` column
+showing the setting's KIND, which read `default` for hundreds of consecutive rows and, next
+to a *shipped default* column, was misread as "this value came from the default" on rows
+saying the value differs from it. `teatree.config.provenance` walks the resolver's OWN layer
+readers (`read_setting_layers` / `env_setting_overrides` / `overlay_code_defaults`) instead
+of folding them, so the value and the tier credited with it cannot disagree; its
+`persisted_only` mode restricts the walk to the tiers a FILE can express, which is what the
+defaults-shape export fills an unset key from.
 
 Rows are grouped by `config.setting_groups.group_tree`, a NESTED hierarchy several levels
 deep (`Gates / Quality / Merge & done`) whose membership AND shape are DERIVED, never
@@ -823,22 +873,29 @@ pairwise-disjoint and exhaustive over the TREE as well as the flat field set: no
 claim one path, no path is a strict prefix of another, and the leaves partition every field
 exactly once — so a node holds rows or subsections, never both.
 
-The grouping is TOTAL: `settings_editor.group_rows` partitions the flat row set over the
-tree's leaves, and a key whose group is unknown — or whose path names a level nothing else
-declares — collects in a visible leftovers section rather than being dropped. That is the
-fix for the retired `/dash/config` page, whose name-shaped band classifier returned `""`
-for 130 of 184 `UserSettings` fields and `continue`d each one out of the page — 185 of the
-236 schema keys never rendered there at all.
+The grouping is TOTAL: the tree's leaves ARE the sections, so `build_settings_sections` and
+`build_settings_group` come off one walk and their union is the whole schema — every key is
+reachable through exactly one section, asserted across the section list rather than within
+one page. A key whose group is unknown — or whose path names a level nothing else declares —
+collects in a visible leftovers section rather than being dropped. That is the fix for the
+retired `/dash/config` page, whose name-shaped band classifier returned `""` for 130 of 184
+`UserSettings` fields and `continue`d each one out of the page — 185 of the 236 schema keys
+never rendered there at all.
 
 The same tree drives all four surfaces from ONE mechanism, so they cannot disagree: the
-dashboard renders it as nested sections (`dash/partials/_settings_group.html` recursing,
-heading level following depth), and `setting_groups.group_outline` streams it as
+dashboard renders one leaf per request (the nav is the tree's leaves, the pane is
+`dash/partials/_settings_group.html`), and `setting_groups.group_outline` streams it as
 heading-then-row sections for the three text surfaces — `config_setting export`'s
-`[teatree]` table, the shipped `config/defaults.toml`'s `[teatree]` table (both indented
-comment banners) and `config_setting list` (indented headings). The TOML KEYS stay flat:
-the flat key namespace is the persisted contract every reader, env override and cold
-sqlite3 read depends on, so the hierarchy rides as comments rather than sub-tables, and a
-grouped dump re-imports byte-identically to an ungrouped one.
+`[teatree]` table, the shipped `config/defaults.toml`'s `[teatree]` table and
+`config_setting list` (indented headings). The two TOML surfaces render the hierarchy as
+real NESTED sub-tables (`[teatree.Gates.Quality."Merge & done"]`); the KEY NAMESPACE stays
+flat, because that namespace is the persisted contract every reader, env override and cold
+sqlite3 read depends on. `cold_defaults.flatten_settings_table` — the single Django-free
+reader of the table — is the one place the two meet, and needs no marker to disambiguate: a
+sub-table named after a DECLARED setting (`speak`, `mr_reminder`) is that setting's value,
+any other is a group wrapper. Import flattens the same way, so a nested file and a flat one
+resolve to the identical mapping and a grouped dump re-imports byte-identically to an
+ungrouped one.
 
 Both TOML surfaces emit through ONE renderer, `setting_groups.grouped_settings_table` —
 the export dump and `defaults_snapshot.render_toml`, which is what

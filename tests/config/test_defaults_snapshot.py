@@ -10,6 +10,7 @@ workflow-engagement keys are declined whatever the live box says.
 import tomllib
 from typing import Any
 
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.defaults_snapshot import (
     _HEADER,
     WORKFLOW_ENGAGEMENT_KEYS,
@@ -30,7 +31,13 @@ from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 
 
 def _shipped() -> dict[str, Any]:
-    return tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"]
+    """The committed ``[teatree]`` table in the FLAT namespace the planner works in."""
+    return flatten_settings_table(tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"])
+
+
+def _emitted(text: str) -> dict[str, Any]:
+    """A rendered document's ``[teatree]`` table, flattened back to the flat namespace."""
+    return flatten_settings_table(tomllib.loads(text)["teatree"])
 
 
 def _never_banned(_text: str) -> str | None:
@@ -63,12 +70,12 @@ class TestDirectionIsDbIntoTheFile:
                 scope="global",
             ),
         )
-        assert tomllib.loads(plan.toml)["teatree"]["provision_ram_ceiling_percent"] == current - 10
+        assert _emitted(plan.toml)["provision_ram_ceiling_percent"] == current - 10
 
     def test_no_live_rows_proposes_nothing_and_reproduces_the_file(self) -> None:
         plan = _plan({})
         assert plan.changes == ()
-        assert tomllib.loads(plan.toml)["teatree"] == _shipped()
+        assert _emitted(plan.toml) == _shipped()
 
     def test_a_hand_edited_value_survives_a_snapshot_run(self) -> None:
         # The file is the BASE, not an output of the in-code defaults: a key the operator
@@ -76,7 +83,7 @@ class TestDirectionIsDbIntoTheFile:
         hand_edited = {**_shipped(), "session_stale_after_hours": 24}
         plan = _plan({}, shipped=hand_edited)
         assert plan.changes == ()
-        assert tomllib.loads(plan.toml)["teatree"]["session_stale_after_hours"] == 24
+        assert _emitted(plan.toml)["session_stale_after_hours"] == 24
 
     def test_a_live_row_equal_to_the_shipped_value_is_not_a_change(self) -> None:
         current = _shipped()["provision_ram_ceiling_percent"]
@@ -95,20 +102,20 @@ class TestNeverMovedThroughThisPath:
     def test_safety_posture_live_override_is_declined(self) -> None:
         plan = _plan({"autonomy": "full"})
         assert plan.changes == ()
-        assert tomllib.loads(plan.toml)["teatree"]["autonomy"] == "babysit"
+        assert _emitted(plan.toml)["autonomy"] == "babysit"
         assert {d.key: d.reason for d in plan.declined}["autonomy"] == "safety-posture"
 
     def test_dark_flag_live_override_is_declined(self) -> None:
         plan = _plan({"directive_loop_enabled": True})
         assert plan.changes == ()
-        assert tomllib.loads(plan.toml)["teatree"]["directive_loop_enabled"] is False
+        assert _emitted(plan.toml)["directive_loop_enabled"] is False
         assert {d.key: d.reason for d in plan.declined}["directive_loop_enabled"] == "dark-flag"
 
     def test_every_safety_and_dark_key_is_declined_even_when_the_live_box_moved_it(self) -> None:
         moved = dict.fromkeys(SAFETY_POSTURE_KEYS | frozenset(dark_flags()), "__moved__")
         plan = _plan(moved)
         assert plan.changes == ()
-        emitted = tomllib.loads(plan.toml)["teatree"]
+        emitted = _emitted(plan.toml)
         shipped = _shipped()
         for key in moved:
             assert emitted[key] == shipped[key]
@@ -147,12 +154,12 @@ class TestNeverMovedThroughThisPath:
 class TestNonDefaultRowsAreReportedNeverEmitted:
     def test_secret_row_is_skipped_and_reported(self) -> None:
         plan = _plan({"banned_terms": ["acme-bank"]})
-        assert "banned_terms" not in tomllib.loads(plan.toml)["teatree"]
+        assert "banned_terms" not in _emitted(plan.toml)
         assert "banned_terms" in plan.skipped_secret
 
     def test_personal_row_is_skipped_and_reported(self) -> None:
         plan = _plan({"slack_user_id": "U123"})
-        assert "slack_user_id" not in tomllib.loads(plan.toml)["teatree"]
+        assert "slack_user_id" not in _emitted(plan.toml)
         assert "slack_user_id" in plan.skipped_personal
 
     def test_stale_unknown_key_is_reported(self) -> None:
@@ -168,7 +175,7 @@ class TestSerialisedShape:
         assert default_category_keys() == frozenset(_shipped())
 
     def test_render_toml_round_trips_a_table_through_the_canonical_shape(self) -> None:
-        assert tomllib.loads(render_toml(_shipped()))["teatree"] == _shipped()
+        assert _emitted(render_toml(_shipped())) == _shipped()
 
     def test_a_sibling_seed_table_survives_a_re_render(self) -> None:
         # The generator used to build a FRESH document holding only `[teatree]`, so the
@@ -177,7 +184,7 @@ class TestSerialisedShape:
         base = '[teatree]\nmode = "interactive"\n\n[loops.inbox]\ndelay_seconds = 60\n'
         rendered = render_toml({**_shipped(), "mode": "auto"}, base_text=base)
         assert tomllib.loads(rendered)["loops"] == {"inbox": {"delay_seconds": 60}}
-        assert tomllib.loads(rendered)["teatree"]["mode"] == "auto"
+        assert _emitted(rendered)["mode"] == "auto"
 
     def test_without_a_base_the_render_carries_only_the_teatree_table(self) -> None:
         # Control for the case above: with no base text there is nothing to preserve, so a
@@ -190,7 +197,7 @@ class TestSerialisedShape:
         assert set(document) == {"teatree", "loops", "modes", "schedules"}
 
     def test_file_carries_exactly_the_default_category_keys(self) -> None:
-        emitted = tomllib.loads(_plan({}).toml)["teatree"]
+        emitted = _emitted(_plan({}).toml)
         assert set(emitted) == set(_shipped())
         for key in emitted:
             assert setting_meta(key).category is Category.DEFAULT
@@ -212,12 +219,14 @@ class TestSerialisedShape:
         assert "do not hand-edit" not in header
 
 
-class TestTheRenderedBlockIsGrouped:
-    """The writer emits the grouped shape, so an approved snapshot never re-flattens the file."""
+class TestTheRenderedBlockIsNested:
+    """The writer emits the nested shape, so an approved snapshot never re-flattens the file."""
 
     def _block(self, text: str) -> str:
-        section = text[text.index("\n[teatree]\n") :]
-        return section[: section.index("\n[teatree.")]
+        """The ``[teatree.*]`` region — from its first group table to the sibling seed tables."""
+        section = text[text.index("\n[teatree.") :]
+        end = section.find("\n[loops.")
+        return section if end < 0 else section[:end]
 
     def _key_order(self, text: str) -> tuple[str, ...]:
         return tuple(line.split(" =")[0] for line in self._block(text).splitlines() if " = " in line)
@@ -227,22 +236,26 @@ class TestTheRenderedBlockIsGrouped:
         assert order == grouped_key_order(order)
         assert order != tuple(sorted(order)), "the renderer emitted one flat alphabetical wall"
 
-    def test_the_rendered_block_carries_an_indented_banner_per_level(self) -> None:
-        banners = [line for line in self._block(render_toml(_shipped())).splitlines() if line.startswith("#")]
-        assert banners[:2] == ["# Workspace", "#   Engagement & identity"]
-        assert len({len(line) - len(line.lstrip("# ")) for line in banners}) >= 3
+    def test_each_level_of_the_hierarchy_is_a_real_table_path(self) -> None:
+        headers = [line for line in self._block(render_toml(_shipped())).splitlines() if line.startswith("[")]
+        assert headers[0] == '[teatree.Workspace."Engagement & identity"]'
+        assert max(header.count(".") for header in headers) >= 3, headers
 
-    def test_a_key_the_file_is_missing_is_restored_under_its_own_banner(self) -> None:
+    def test_a_key_the_file_is_missing_is_restored_under_its_own_group_table(self) -> None:
         # The one path that INSERTS a key: a DEFAULT key absent from the file falls back to
         # its code default, and must land in its group rather than appended at the bottom.
         without = {key: value for key, value in _shipped().items() if key != "merge_wip"}
-        plan = _plan({}, shipped=without)
+        block = self._block(_plan({}, shipped=without).toml)
+        cadence = block.index('[teatree.Loops."Cadence & throughput"]')
+        assert cadence < block.index("\nmerge_wip = ") < block.index("[teatree.Loops.Scanners]")
 
-        block = self._block(plan.toml)
-        assert block.index("#   Cadence & throughput") < block.index("\nmerge_wip = ") < block.index("#   Scanners")
+    def test_a_genuine_sub_table_setting_keeps_its_own_top_level_path(self) -> None:
+        # ``speak`` is a declared setting whose value IS a table, not a group wrapper, so it
+        # must stay reachable at ``[teatree.speak]`` rather than sink into its group.
+        assert "\n[teatree.speak]\n" in render_toml(_shipped())
 
-    def test_grouping_the_block_moved_no_value(self) -> None:
-        assert tomllib.loads(render_toml(_shipped()))["teatree"] == _shipped()
+    def test_nesting_the_block_moved_no_value(self) -> None:
+        assert _emitted(render_toml(_shipped())) == _shipped()
 
 
 class TestFingerprintBindsAnApprovalToOneDiff:

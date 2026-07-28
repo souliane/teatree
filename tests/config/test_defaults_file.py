@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import TypeAdapter
 
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.schema import (
@@ -46,13 +47,22 @@ _SECRET_KEYS = sorted(k for k in _KEYS if setting_meta(k).category is Category.S
 
 
 def _toml_teatree() -> dict[str, Any]:
-    return tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"]
+    """The shipped ``[teatree]`` table in the FLAT key namespace the schema fields use.
+
+    The file nests the keys into group sub-tables; the flat namespace is the contract, so
+    every conformance assertion below is made against the flattened parse.
+    """
+    return flatten_settings_table(tomllib.loads(_DEFAULTS_TOML.read_text())["teatree"])
 
 
 def _settings_table_text() -> str:
-    """The raw text of the ``[teatree]`` section, up to the first sibling top-level table."""
+    """The raw text of the ``[teatree.*]`` sections, up to the first sibling top-level table.
+
+    The block opens at the first group sub-table: the hierarchy is rendered as real nested
+    tables, so ``[teatree]`` itself holds no direct keys and prints no header of its own.
+    """
     raw = _DEFAULTS_TOML.read_text()
-    section = raw[raw.index("\n[teatree]\n") :]
+    section = raw[raw.index("\n[teatree.") :]
     return section[: section.index("\n[loops.")]
 
 

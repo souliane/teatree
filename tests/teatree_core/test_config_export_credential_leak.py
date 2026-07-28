@@ -15,12 +15,23 @@ from typing import TYPE_CHECKING
 
 from django.test import TestCase
 
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.secret_settings import is_credential_reference
 from teatree.core.config_migration import RedactedRow, export_db_to_toml
 from teatree.core.models import ConfigSetting
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+
+def _teatree(toml: str) -> dict[str, object]:
+    """The exported ``[teatree]`` table FLATTENED — the namespace a withhold is judged in.
+
+    The file nests the declaration hierarchy, so a leaked key sits inside a group
+    sub-table: asserting ``key not in doc["teatree"]`` against the nested table would
+    pass while the key is right there one level down.
+    """
+    return flatten_settings_table(tomllib.loads(toml).get("teatree", {}))
 
 
 class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
@@ -37,8 +48,7 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         ConfigSetting.objects.set_value("openai_compatible_credential_entry", "synthetic/oai-entry")
 
         result = self._export()
-        doc = tomllib.loads(result.toml)
-        teatree = doc.get("teatree", {})
+        teatree = _teatree(result.toml)
         for key in ("anthropic_oauth_pass_paths", "anthropic_api_key_pass_paths", "openai_compatible_credential_entry"):
             assert key not in teatree, f"{key} leaked into the shared export"
             assert self._reason_for(result.redacted, key) == "credential-coordinate"
@@ -49,7 +59,7 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         ConfigSetting.objects.set_value("availability_schedule", "mon-fri 09:00-17:00")
 
         result = self._export()
-        teatree = tomllib.loads(result.toml).get("teatree", {})
+        teatree = _teatree(result.toml)
         for key in ("slack_user_id", "slack_user_channel", "availability_schedule"):
             assert key not in teatree, f"{key} leaked into the shared export"
             assert self._reason_for(result.redacted, key) == "personal-identifier"
@@ -59,7 +69,7 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["synthetic/oauth-entry"])
         ConfigSetting.objects.set_value("slack_user_id", "synthetic-user-ref")
         result = export_db_to_toml(include_private=True, scan_terms=())
-        teatree = tomllib.loads(result.toml)["teatree"]
+        teatree = _teatree(result.toml)
         assert teatree["anthropic_oauth_pass_paths"] == ["synthetic/oauth-entry"]
         assert teatree["slack_user_id"] == "synthetic-user-ref"
         assert result.redacted == ()
@@ -77,5 +87,5 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         # Control: a non-credential, non-personal, non-brand setting is NOT withheld.
         ConfigSetting.objects.set_value("mode", "auto")
         result = self._export()
-        assert tomllib.loads(result.toml)["teatree"]["mode"] == "auto"
+        assert _teatree(result.toml)["mode"] == "auto"
         assert self._reason_for(result.redacted, "mode") is None

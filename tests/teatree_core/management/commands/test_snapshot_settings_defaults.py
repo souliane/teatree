@@ -20,6 +20,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand
 
 from teatree.config import cold_defaults
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.defaults_approvals import read_approvals
 from teatree.config.defaults_snapshot import ShippedFile, plan_fingerprint, plan_snapshot
 from teatree.config.setting_groups import grouped_key_order
@@ -43,7 +44,8 @@ class SnapshotCommandTestCase(TestCase):
         monkeypatch.setattr(command_module, "export_scan_terms", list)
 
     def _shipped(self) -> dict[str, object]:
-        return tomllib.loads(self.defaults.read_text(encoding="utf-8"))["teatree"]
+        """The fixture file's ``[teatree]`` table in the FLAT namespace the planner works in."""
+        return flatten_settings_table(tomllib.loads(self.defaults.read_text(encoding="utf-8"))["teatree"])
 
     def _run(self, *args: str) -> str:
         out, err = io.StringIO(), io.StringIO()
@@ -202,25 +204,26 @@ class TestSiblingSeedTablesSurviveAnApply(SnapshotCommandTestCase):
         self._run("--apply")
 
         after = tomllib.loads(self.defaults.read_text(encoding="utf-8"))
-        assert after["teatree"][_TUNABLE] == 42
+        assert flatten_settings_table(after["teatree"])[_TUNABLE] == 42
         for table in ("loops", "modes", "schedules"):
             assert after[table] == before[table]
 
 
-class TestAnApplyPreservesTheGroupedShape(SnapshotCommandTestCase):
-    """The writer emits the SAME grouped shape it replaced — a snapshot never re-flattens it.
+class TestAnApplyPreservesTheNestedShape(SnapshotCommandTestCase):
+    """The writer emits the SAME nested shape it replaced — a snapshot never re-flattens it.
 
     Without this, the next approved snapshot would rewrite `[teatree]` as one alphabetical
     wall and undo the grouping the owner hand-edits the shipped file through.
     """
 
     def _teatree_block(self) -> str:
+        """The GROUP region — the nested wrappers, before the sub-table settings."""
         text = self.defaults.read_text(encoding="utf-8")
-        section = text[text.index("\n[teatree]\n") :]
-        return section[: section.index("\n[teatree.")]
+        section = text[text.index("\n[teatree.") :]
+        return section[: section.index("\n[teatree.mr_reminder]")]
 
-    def _banners(self) -> list[str]:
-        return [line for line in self._teatree_block().splitlines() if line.startswith("#")]
+    def _group_headers(self) -> list[str]:
+        return [line for line in self._teatree_block().splitlines() if line.startswith("[teatree.")]
 
     def _key_order(self) -> tuple[str, ...]:
         return tuple(line.split(" =")[0] for line in self._teatree_block().splitlines() if " = " in line)
@@ -230,14 +233,14 @@ class TestAnApplyPreservesTheGroupedShape(SnapshotCommandTestCase):
         DeferredQuestion.objects.update(answer_text="approve", answered_at=timezone.now())
         self._run("--apply")
 
-    def test_the_written_block_keeps_the_banner_comments(self) -> None:
-        before = self._banners()
-        assert before, "precondition: the shipped file already carries group banners"
+    def test_the_written_block_keeps_the_group_tables(self) -> None:
+        before = self._group_headers()
+        assert before, "precondition: the shipped file already carries nested group tables"
         ConfigSetting.objects.set_value(_TUNABLE, 42)
 
         self._approved_apply()
 
-        assert self._banners() == before
+        assert self._group_headers() == before
 
     def test_the_written_block_keeps_the_group_order(self) -> None:
         ConfigSetting.objects.set_value(_TUNABLE, 42)
@@ -249,15 +252,14 @@ class TestAnApplyPreservesTheGroupedShape(SnapshotCommandTestCase):
         assert order != tuple(sorted(order)), "the apply re-flattened the block to alphabetical"
 
     def test_the_written_block_moves_only_the_approved_value(self) -> None:
-        before = tomllib.loads(self.defaults.read_text(encoding="utf-8"))["teatree"]
+        before = self._shipped()
         ConfigSetting.objects.set_value(_TUNABLE, 42)
 
         self._approved_apply()
 
-        after = tomllib.loads(self.defaults.read_text(encoding="utf-8"))["teatree"]
-        assert after == {**before, _TUNABLE: 42}
+        assert self._shipped() == {**before, _TUNABLE: 42}
 
-    def test_the_sub_tables_stay_below_the_grouped_flat_keys(self) -> None:
+    def test_the_sub_tables_stay_below_the_group_tables(self) -> None:
         ConfigSetting.objects.set_value(_TUNABLE, 42)
 
         self._approved_apply()
