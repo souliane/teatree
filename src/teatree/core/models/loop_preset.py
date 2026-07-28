@@ -59,7 +59,7 @@ class Mode(models.Model):
     """One named operating **mode** (#61 merge).
 
     A tri-state per-loop opinion, an overlay scope, AND the intrinsic availability
-    posture that used to live in the standalone :mod:`teatree.core.availability`
+    posture that used to live in the standalone availability module
     string modes.
 
     The three booleans ARE the availability payload — a mode's reachability is

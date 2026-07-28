@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.mode_resolution import DEFAULT_MODE_SETTING, mode_name_for_availability, resolve_active_mode
+from teatree.core.mode_resolution import DEFAULT_MODE_SETTING, mode_name_for_posture, resolve_active_mode
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_preset import LOW_POWER_PRESET_SETTING
 from teatree.loops.preset_admin import create_preset, delete_preset, preset_referrers, rename_preset, update_preset_meta
@@ -157,7 +157,7 @@ class DeletePresetTestCase(TestCase):
             delete_preset("ghost")
 
 
-class AvailabilityResolvesByRowTestCase(TestCase):
+class PostureResolvesByRowTestCase(TestCase):
     """A mode is selected by its intrinsic posture, so renaming it cannot break behaviour."""
 
     def setUp(self) -> None:
@@ -165,19 +165,19 @@ class AvailabilityResolvesByRowTestCase(TestCase):
         _preset("unattended", defers_questions=True, pauses_self_pump=False)
         _preset("offline", defers_questions=True, pauses_self_pump=True)
 
-    def test_present_resolves_to_the_reachable_mode(self) -> None:
-        assert mode_name_for_availability("present") == "engaged"
+    def test_reachable_resolves_to_the_engaged_mode(self) -> None:
+        assert mode_name_for_posture("reachable") == "engaged"
 
-    def test_autonomous_away_resolves_to_the_defer_but_keep_pumping_mode(self) -> None:
-        assert mode_name_for_availability("autonomous_away") == "unattended"
+    def test_defer_questions_resolves_to_the_keep_pumping_mode(self) -> None:
+        assert mode_name_for_posture("defer-questions") == "unattended"
 
-    def test_away_resolves_to_the_holiday_mode(self) -> None:
-        assert mode_name_for_availability("away") == "offline"
+    def test_pause_everything_resolves_to_the_holiday_mode(self) -> None:
+        assert mode_name_for_posture("pause-everything") == "offline"
 
     def test_a_renamed_mode_still_resolves(self) -> None:
         rename_preset("offline", "holiday")
-        assert mode_name_for_availability("away") == "holiday"
+        assert mode_name_for_posture("pause-everything") == "holiday"
 
     def test_an_unknown_token_is_refused(self) -> None:
         with pytest.raises(LookupError):
-            mode_name_for_availability("vacation")
+            mode_name_for_posture("vacation")

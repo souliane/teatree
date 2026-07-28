@@ -18,7 +18,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.ups_fastpath as ups
-from teatree.core import availability
+from teatree import live_presence
 
 
 def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, questions: bool = True, chat: bool = True) -> Path:
@@ -42,21 +42,21 @@ def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, questions: bo
 
 class TestRecordPresence:
     def test_writes_heartbeat_readable_by_availability(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The write lands at ``canonical_config_db().parent / availability_presence`` and
+        # The write lands at ``canonical_config_db().parent / presence_heartbeat`` and
         # is byte-compatible with ``PresenceHeartbeat.record`` — the availability reader
         # parses it back into a fresh turn carrying the session id.
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
         ups.record_presence("sess-1")
-        target = tmp_path / "availability_presence"
+        target = tmp_path / "presence_heartbeat"
         assert target.is_file()
-        turn = availability.PresenceHeartbeat(locate=lambda: target).last_user_turn()
+        turn = live_presence.PresenceHeartbeat(locate=lambda: target).last_user_turn()
         assert turn is not None
         assert turn.session_id == "sess-1"
 
     def test_on_disk_shape_matches_record(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
         ups.record_presence("s2")
-        raw = (tmp_path / "availability_presence").read_text(encoding="utf-8")
+        raw = (tmp_path / "presence_heartbeat").read_text(encoding="utf-8")
         assert raw.endswith("\n")
         doc = json.loads(raw)
         assert set(doc) == {"at", "session"}
@@ -74,7 +74,7 @@ class TestRecordPresence:
         def _boom(*_a: object, **_k: object) -> tuple[int, str]:
             raise OSError
 
-        monkeypatch.setattr(ups.tempfile, "mkstemp", _boom)
+        monkeypatch.setattr(live_presence.tempfile, "mkstemp", _boom)
         ups.record_presence("s4")  # must not raise
 
 

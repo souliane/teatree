@@ -11,14 +11,14 @@ error class is deterministic rather than OS-dependent.
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
 
 import teatree.paths
 from teatree.config import cold_db
-from teatree.config.cold_db import canonical_config_db, fetch_one, loop_status, row_exists
+from teatree.config.cold_db import canonical_config_db, fetch_all, fetch_one, loop_status, row_exists
 
 _PRAGMA_FAIL = "pragma failed"
 
@@ -92,6 +92,15 @@ def _make_loop_state_db(path: Path, rows: Iterable[tuple[str, str]], *, wal: boo
         conn.commit()
     finally:
         conn.close()
+
+
+def _absent_db(db: Path) -> None:
+    """Leave `db` non-existent — the cold read's missing-store case."""
+
+
+def _db_without_the_queried_table(db: Path) -> None:
+    """A real sqlite file whose schema lacks `teatree_config_setting`."""
+    _make_loop_state_db(db, [])
 
 
 def _remove_wal_sidecars(db: Path) -> None:
@@ -181,6 +190,30 @@ class TestLoopStatus:
         _remove_wal_sidecars(db)
         assert not db.with_name(db.name + "-wal").exists()
         assert loop_status("dispatch", db_path=db) == "paused"
+
+
+class TestFetchAll:
+    """`fetch_all` is the multi-row sibling of `fetch_one` — the cold schedule-slot read."""
+
+    _SLOTS = "SELECT key, value FROM teatree_config_setting WHERE scope=? ORDER BY key"
+
+    def test_returns_every_matching_row_in_query_order(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_config_db(db, [("", "mode", "auto"), ("", "wip", "full"), ("other", "mode", "off")])
+        assert fetch_all(db, self._SLOTS, ("",)) == [("mode", '"auto"'), ("wip", '"full"')]
+
+    def test_empty_result_is_an_empty_list_not_an_error(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_config_db(db, [("", "mode", "auto")])
+        assert fetch_all(db, self._SLOTS, ("absent",)) == []
+
+    @pytest.mark.parametrize("build", [_absent_db, _db_without_the_queried_table])
+    def test_missing_db_or_table_fails_open_to_empty(self, tmp_path: Path, build: Callable[[Path], None]) -> None:
+        # Fail-open to [] is what lets an unreadable store resolve toward ASKING
+        # rather than inheriting a restrictive posture from a half-read schedule.
+        db = tmp_path / "db.sqlite3"
+        build(db)
+        assert fetch_all(db, self._SLOTS, ("",)) == []
 
 
 class TestRowExists:

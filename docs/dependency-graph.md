@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.project --> teatree.paths
+    teatree.live_presence --> teatree.paths
     teatree.llm --> teatree.utils
     teatree.credential_config --> teatree.config
     teatree.credential_config --> teatree.core.models

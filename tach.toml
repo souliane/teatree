@@ -57,6 +57,11 @@ layer = "foundation"
 depends_on = ["teatree.paths"]
 
 [[modules]]
+path = "teatree.live_presence"
+layer = "foundation"
+depends_on = ["teatree.paths"]
+
+[[modules]]
 path = "teatree.types"
 layer = "foundation"
 depends_on = []

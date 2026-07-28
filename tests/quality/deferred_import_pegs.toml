@@ -161,11 +161,13 @@
 "src/teatree/core/speak.py" = 1
 "src/teatree/core/provision/step_runner.py" = 1
 # #61 availability+preset merge: the unified operating-mode resolver defers its
-# intra-core edges — Mode / ModeOverride / ConfigSetting (ORM, app-registry), the
-# availability presence heartbeat + fast-hook mirror, and the deferred-question drain
-# — cycle-safe and app-registry-safe (mode_resolution is imported by early hooks via
-# speak.py before Django apps are ready).
-"src/teatree/core/mode_resolution.py" = 8
+# intra-core edges — Mode / ModeOverride / ConfigSetting (ORM, app-registry) and the
+# deferred-question drain — cycle-safe and app-registry-safe (mode_resolution is
+# imported by early hooks via speak.py before Django apps are ready).
+# 8 -> 5 (#3826): the fast-hook mirror is deleted (three of its deferrals with it) and
+# the presence heartbeat moved to the foundation leaf teatree.live_presence, which
+# needs no deferral at all — it is Django-free.
+"src/teatree/core/mode_resolution.py" = 5
 # #61: stop_snapshot's resume-plan defers `resolve_active_mode` + `ConfigSetting`
 # (ORM/app-registry) to render the mode/schedule lines.
 "src/teatree/core/stop_snapshot.py" = 2

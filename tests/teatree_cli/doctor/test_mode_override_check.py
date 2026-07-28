@@ -1,4 +1,4 @@
-"""``_check_availability_override_staleness`` — the `t3 doctor` stale-mode-override alarm (#3274, #61).
+"""``_check_mode_override_staleness`` — the `t3 doctor` stale-mode-override alarm (#3274, #61).
 
 A no-expiry away-class mode override silently suppresses the colleague-facing loops
 (and parks the self-pump for a pump-pausing mode) for as long as it sits — the
@@ -14,9 +14,9 @@ from datetime import UTC, datetime, timedelta
 
 from django.test import TestCase
 
-from teatree.cli.doctor.checks_availability import (
+from teatree.cli.doctor.checks_mode_override import (
     OverridePosture,
-    _check_availability_override_staleness,
+    _check_mode_override_staleness,
     stale_override_finding,
 )
 from teatree.core.models import Loop, Mode, ModeOverride
@@ -25,7 +25,7 @@ from teatree.core.models import Loop, Mode, ModeOverride
 def _run() -> str:
     buf = io.StringIO()
     with redirect_stdout(buf):
-        _check_availability_override_staleness()
+        _check_mode_override_staleness()
     return buf.getvalue()
 
 

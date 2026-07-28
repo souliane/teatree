@@ -13,9 +13,10 @@ Three shipped instances, all the same shape:
     ``bootstrap_teatree_django()`` returned False and 18 DB-backed call sites
     silently no-opped.
 * **#3826** — ``availability_override.json`` held a week-old ``autonomous_away``
-    while the ``ModeOverride`` table was empty. The hooks obey the FILE; the guard
-    built for exactly this failure (``_check_availability_override_staleness``)
-    reads the TABLE, so it could never observe it.
+    while the ``ModeOverride`` table was empty. The hooks obeyed the FILE; the guard
+    built for exactly this failure (``_check_mode_override_staleness``) reads the
+    TABLE, so it could never observe it. Both mirror and reader are now deleted —
+    the instance is cited for its SHAPE, which this lane exists to catch again.
 
 The repo already invented the countermeasure — ``tests/test_speak_hook_config_parity.py``
 pins the hook-side ``speak`` duplicate against the config-side source of truth,
@@ -33,11 +34,11 @@ that provably exercises BOTH tiers — or as an explicitly-pegged gap carrying i
 tracking issue.
 
 Crucially the coverage criterion is NOT "some test mentions the filename". Every
-one of the six live mirrors has such a test, including ``availability_override.json``,
-whose divergence shipped anyway. Substring presence is the same measurement-by-proxy
-that let "237/237 keys in the DOM" pass while no row was usable. A covering test
-must IMPORT a ``teatree.*`` module and a ``hooks.*``/``scripts.*`` module in the
-same file — it must be able to observe both sides of the seam it claims to pin.
+live mirror has such a test, and #3826's mirror had four of them — it shipped
+divergent anyway. Substring presence is the same measurement-by-proxy that let
+"237/237 keys in the DOM" pass while no row was usable. A covering test must
+IMPORT a ``teatree.*`` module and a ``hooks.*``/``scripts.*`` module in the same
+file — it must be able to observe both sides of the seam it claims to pin.
 
 The peg ledger is a ratchet in both directions: a new unpinned artifact fails
 (:class:`TestCrossTierRosterIsComplete`), and a pegged artifact that has silently
@@ -94,9 +95,6 @@ PARITY_LANE_ROSTER: dict[str, str] = {
 #: real both-tier test and promoting the artifact into PARITY_LANE_ROSTER); a new
 #: row is a new instance of the #3826 class and must be justified in review.
 UNPINNED_CROSS_TIER_MIRRORS: dict[str, str] = {
-    # The #3826 divergence itself: written by mode_resolution, obeyed by the
-    # availability hook probe, and reconciled by nothing.
-    "availability_override.json": "https://github.com/souliane/teatree/issues/3826",
     "consolidation-registry.json": "https://github.com/souliane/teatree/issues/3828",
     "skill-metadata.json": "https://github.com/souliane/teatree/issues/3829",
     "statusline.txt": "https://github.com/souliane/teatree/issues/3830",
@@ -112,7 +110,7 @@ _MIN_CROSS_TIER = 8
 #: scan (dropping ``*.sh``, or dropping ``scripts/lib``) is caught.
 _CROSS_ROOT_ANCHORS: frozenset[str] = frozenset(
     {
-        "availability_override.json",  # hooks/scripts/*.py
+        "consolidation-registry.json",  # hooks/scripts/*.py only
         "statusline.txt",  # hooks/scripts/*.sh only
         "skill-metadata.json",  # scripts/lib/*.py only
     }
@@ -338,31 +336,33 @@ class TestCrossTierFiresRed:
         enrolled = set(PARITY_LANE_ROSTER) | set(UNPINNED_CROSS_TIER_MIRRORS) | set(NOT_A_CROSS_TIER_MIRROR)
         assert synthetic not in enrolled
 
-    def test_the_historical_3826_artifact_is_discovered(self) -> None:
-        # The concrete instance that motivated the lane: the availability mirror IS
-        # discovered as cross-tier by the mechanical walk, so the lane is anchored on
-        # the real failure and not only on a synthetic one. Deliberately asserts
-        # DISCOVERY + enrolment, never "still uncovered" — pinning the gap open would
-        # make the eventual fix red a second, unrelated test.
-        assert "availability_override.json" in cross_tier_artifacts()
-        assert "availability_override.json" in set(PARITY_LANE_ROSTER) | set(UNPINNED_CROSS_TIER_MIRRORS)
+    def test_a_shipped_artifact_is_discovered_and_enrolled(self) -> None:
+        # The composed anchor, on a REAL artifact rather than the synthetic one above:
+        # loop-registry.json is written by src/teatree/core/session_identity.py and read
+        # by hooks/scripts/hook_router.py, so a walk that silently stopped discovering
+        # things loses it and this goes red. The literal is hardcoded, NOT read from a
+        # ledger, so emptying both ledgers cannot make the assertion vacuous.
+        # Deliberately asserts DISCOVERY + enrolment, never "still uncovered" — pinning
+        # a gap open would make its eventual fix red a second, unrelated test.
+        assert "loop-registry.json" in cross_tier_artifacts()
+        assert "loop-registry.json" in set(PARITY_LANE_ROSTER) | set(UNPINNED_CROSS_TIER_MIRRORS)
 
     def test_mentioning_the_filename_is_not_coverage(self, tmp_path: Path) -> None:
         # The measurement-by-proxy guard: a test that names the artifact but imports
-        # one tier must NOT read as covering. Four such files exist for the #3826
-        # mirror, which is exactly why it shipped divergent.
+        # one tier must NOT read as covering. Four such files named the #3826 mirror,
+        # which is exactly why it shipped divergent.
         one_tier = tmp_path / "test_one_tier.py"
         one_tier.write_text(
-            "from teatree.core import availability\n\ndef test_x():\n    assert 'availability_override.json'\n",
+            "from teatree.core import session_identity\n\ndef test_x():\n    assert 'loop-registry.json'\n",
             encoding="utf-8",
         )
         assert not _reaches_both_tiers(one_tier)
 
         two_tier = tmp_path / "test_two_tier.py"
         two_tier.write_text(
-            "from teatree.core import availability\n"
-            "from hooks.scripts import availability_away_probe\n\n"
-            "def test_x():\n    assert availability and availability_away_probe\n",
+            "from teatree.core import session_identity\n"
+            "from hooks.scripts import hook_router\n\n"
+            "def test_x():\n    assert session_identity and hook_router\n",
             encoding="utf-8",
         )
         assert _reaches_both_tiers(two_tier)
@@ -372,5 +372,5 @@ class TestCrossTierFiresRed:
         assert not _ARTIFACT_SHAPE.match("some plain sentence")
         assert not _ARTIFACT_SHAPE.match("teatree.core.models")
         assert not _ARTIFACT_SHAPE.match("/abs/path/to/dir")
-        assert _ARTIFACT_SHAPE.match("availability_override.json")
-        assert _ARTIFACT_SHAPE.match("statusline.txt")
+        assert _ARTIFACT_SHAPE.match("loop-registry.json")
+        assert _ARTIFACT_SHAPE.match("max_migration.txt")

@@ -1,7 +1,7 @@
 """teatree.core.mode_resolution — the unified operating-mode resolver (#61).
 
 Proves the merged ``resolve_active_mode`` satisfies BOTH old surfaces (the
-availability ``.defers_questions`` / ``.pauses_self_pump`` predicates and the
+``.defers_questions`` / ``.pauses_self_pump`` posture predicates and the
 preset ``.state_for`` per-loop opinion), the override→schedule→default
 precedence, the presence-sensitivity upgrade, and the return-to-reachable drain.
 Integration-first against the real DB.
@@ -13,34 +13,37 @@ from pathlib import Path
 from unittest import mock
 
 import django.test
+import pytest
 from django.utils import timezone
 
-from teatree.core import availability
-from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
+from teatree.core import mode_resolution
+from teatree.core.mode_resolution import (
+    POSTURE_TOKENS,
+    clear_mode_override,
+    posture_label,
+    resolve_active_mode,
+    set_mode_override,
+)
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
+from teatree.live_presence import PresenceHeartbeat
 
 _DRAIN = "teatree.core.notify_question_drains.drain_deferred_questions"
 
 
 class _TmpStateMixin(django.test.TestCase):
-    """Repoint the presence heartbeat + availability override file to a per-test tmp dir.
+    """Repoint the presence heartbeat to a per-test tmp dir.
 
-    The resolver reads the live-presence heartbeat and mirrors the resolved posture
-    to the availability override file; both default to the shared ``DATA_DIR``.
-    Redirecting them to a tmp dir keeps a resolver test from polluting the real
-    state files (a fixed-``now`` availability test would otherwise read a stray
-    future-dated keystroke as fresh).
+    The resolver reads the live-presence heartbeat, which defaults to the shared
+    primary data dir. Redirecting it keeps a fixed-``now`` resolver test from reading
+    a stray future-dated keystroke as fresh.
     """
 
     def setUp(self) -> None:
         super().setUp()
         tmp = Path(tempfile.mkdtemp())
-        for patcher in (
-            mock.patch.object(availability, "PRESENCE", availability.PresenceHeartbeat(lambda: tmp / "presence")),
-            mock.patch.object(availability, "override_path", return_value=tmp / "availability_override.json"),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(mode_resolution, "PRESENCE", PresenceHeartbeat(lambda: tmp / "presence"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         Mode.objects.all().delete()
         ModeOverride.objects.all().delete()
 
@@ -75,7 +78,7 @@ class TestResolveActiveMode(_TmpStateMixin):
         resolved = resolve_active_mode()
         assert resolved.source == "override"
         assert resolved.name == "offline"
-        # availability surface
+        # posture surface
         assert resolved.defers_questions is True
         assert resolved.pauses_self_pump is True
         # preset surface
@@ -107,7 +110,7 @@ class TestPresenceUpgrade(_TmpStateMixin):
         ConfigSetting.objects.set_value("default_mode", "unattended")
 
     def _stamp_keystroke(self, *, ago: dt.timedelta) -> None:
-        availability.PRESENCE.record(session_id="s", now=timezone.now() - ago)
+        mode_resolution.PRESENCE.record(session_id="s", now=timezone.now() - ago)
 
     def test_fresh_keystroke_upgrades_a_default_away_mode(self) -> None:
         self._stamp_keystroke(ago=dt.timedelta(minutes=1))
@@ -163,3 +166,26 @@ class TestReturnToReachableDrain(_TmpStateMixin):
         with mock.patch(_DRAIN) as drain:
             set_mode_override("offline")
         drain.assert_not_called()
+
+
+class TestPostureLabel:
+    """The display-only label, derived from the booleans rather than stored (#3826)."""
+
+    @pytest.mark.parametrize(
+        ("posture", "expected"),
+        [
+            ((False, False), "reachable"),
+            ((False, True), "reachable"),
+            ((True, False), "unreachable (factory running)"),
+            ((True, True), "unreachable (pump paused)"),
+        ],
+    )
+    def test_each_posture_has_its_own_label(self, posture: tuple[bool, bool], expected: str) -> None:
+        defers, pauses = posture
+        assert posture_label(defers=defers, pauses=pauses) == expected
+
+    def test_every_switch_token_labels_distinctly(self) -> None:
+        # The dash switch offers these three; a label collision would make two
+        # distinct postures indistinguishable in the UI.
+        labels = {token: posture_label(defers=d, pauses=p) for token, (d, p) in POSTURE_TOKENS.items()}
+        assert len(set(labels.values())) == len(POSTURE_TOKENS), labels

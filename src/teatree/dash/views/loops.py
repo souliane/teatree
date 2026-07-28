@@ -1,4 +1,4 @@
-"""The loop-control surface: per-loop verbs, availability switch, gate toggle (#3162).
+"""The loop-control surface: per-loop verbs, posture switch, gate toggle (#3162).
 
 Every mutation POSTs through here CSRF-protected (Django's ``CsrfViewMiddleware``
 guards these unexempted views), drives the SAME manager/override chokepoints the
@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, TypedDict
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from teatree.core.mode_resolution import clear_mode_override, mode_name_for_availability, set_mode_override
+from teatree.core.mode_resolution import clear_mode_override, mode_name_for_posture, set_mode_override
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.dash import audit
 from teatree.dash.loop_control import (
-    AVAILABILITY_ACTIONS,
     GATE_CONFIRM_PHRASE,
+    POSTURE_ACTIONS,
     RUNNER_CONFIRM_PHRASE,
     LoopActionError,
     LoopControlView,
@@ -44,7 +44,7 @@ def _answer(request: "HttpRequest", *, error: str = "") -> "HttpResponse":
 
     Every mutation here used to end in ``redirect("dash:loops")``, so acting on a loop
     re-rendered the whole document and jumped to scroll 0. The body carries the header
-    bands AND the polled table, because the availability switch and both kill switches
+    bands AND the polled table, because the posture switch and both kill switches
     can change a loop's effective verdict.
     """
     if not is_htmx(request):
@@ -92,26 +92,25 @@ def loop_action(request: "HttpRequest") -> "HttpResponse":
 
 @require_loopback_or_staff
 @require_POST
-def availability(request: "HttpRequest") -> "HttpResponse":
-    """POST an availability switch through the merged mode-override chokepoint (#61).
+def posture(request: "HttpRequest") -> "HttpResponse":
+    """POST a posture switch through the merged mode-override chokepoint (#61, #3826).
 
-    The standalone availability modes are gone: each switch resolves the mode
-    carrying that posture BY ROW and sets (or clears) a ``ModeOverride`` via
-    :func:`teatree.core.mode_resolution.set_mode_override` /
+    Each switch resolves the mode carrying that posture BY ROW and sets (or clears) a
+    ``ModeOverride`` via :func:`teatree.core.mode_resolution.set_mode_override` /
     :func:`clear_mode_override`, keeping the return-to-reachable deferred-question
     drain firing exactly like the ``t3 loop preset`` CLI.
     """
-    mode = request.POST.get("mode", "").strip()
-    if mode not in AVAILABILITY_ACTIONS:
-        return _answer(request, error=f"unknown availability mode {mode!r}")
-    if mode == "auto":
+    switch = request.POST.get("posture", "").strip()
+    if switch not in POSTURE_ACTIONS:
+        return _answer(request, error=f"unknown posture {switch!r}")
+    if switch == "auto":
         clear_mode_override(user_id=actor(request))
     else:
         try:
-            set_mode_override(mode_name_for_availability(mode), user_id=actor(request))
+            set_mode_override(mode_name_for_posture(switch), user_id=actor(request))
         except LookupError as exc:
             return _answer(request, error=str(exc))
-    audit.record(actor=actor(request), action="availability", after=mode)
+    audit.record(actor=actor(request), action="posture", after=switch)
     return _answer(request)
 
 

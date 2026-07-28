@@ -1,10 +1,12 @@
 """The unified operating-mode resolver — one reader for the merged Mode (#61).
 
-Availability (``present`` / ``autonomous_away`` / ``away``) and loop presets
-(#3159) were two parallel override→schedule→default machines over different
-substrate. They are now ONE: a :class:`~teatree.core.models.Mode` (the
-merged *Mode*) carries both the loop mask AND the three intrinsic availability
-booleans, and this module resolves the single active mode every consumer reads.
+Availability and loop presets (#3159) were two parallel override→schedule→default
+machines over different substrate. They are now ONE: a
+:class:`~teatree.core.models.Mode` (the merged *Mode*) carries both the loop mask AND
+the three intrinsic availability booleans, and this module resolves the single active
+mode every Django consumer reads. The bare hooks read the SAME rows Django-free
+through :func:`teatree.config.cold_mode.resolve_cold_posture` (#3826 deleted the
+mirror file that used to stand between them and drift a week out of date).
 
 The precedence chain (design §2.3) reuses the DB override/schedule resolver that
 already backs presets — :func:`teatree.loop.preset_resolution.resolve_active_preset`
@@ -15,7 +17,7 @@ the two pieces availability contributed:
     ``engaged``) when no override / schedule governs, replacing availability's
     ``present``-when-no-windows default.
 *   **presence-sensitivity upgrade** — a fresh keystroke (within
-    :data:`teatree.core.availability.PRESENCE_FRESHNESS`) upgrades an away-class
+    :data:`teatree.live_presence.PRESENCE_FRESHNESS`) upgrades an away-class
     mode reached *by schedule / default* to the ``presence_upgrade_mode`` (default
     ``engaged``). Upgrade-only; never downgrades; never overrides a manual override.
 
@@ -30,16 +32,13 @@ the loop fleet or silently mute the user.
 """
 
 import datetime as dt
-import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.live_presence import PRESENCE, PRESENCE_FRESHNESS
 from teatree.loop.preset_resolution import resolve_active_preset
 
 if TYPE_CHECKING:
@@ -60,14 +59,15 @@ FALLBACK_DEFAULT_MODE = "engaged"
 PRESENCE_UPGRADE_SETTING = "presence_upgrade_mode"
 FALLBACK_UPGRADE_MODE = "engaged"
 
-#: The legacy availability tokens as the intrinsic posture ``(defers_questions,
-#: pauses_self_pump)`` they mean. The mode carrying that posture is looked up BY ROW
-#: (:func:`mode_name_for_availability`), never by a hard-coded mode name — so an
-#: operator renaming ``offline`` to ``holiday`` cannot break the away switch.
-AVAILABILITY_POSTURES: dict[str, tuple[bool, bool]] = {
-    "present": (False, False),
-    "autonomous_away": (True, False),
-    "away": (True, True),
+#: The dash switch's posture vocabulary: a UI action token as the intrinsic posture
+#: ``(defers_questions, pauses_self_pump)`` it means. Each token resolves to the mode
+#: carrying that posture BY ROW (:func:`mode_name_for_posture`), never by a hard-coded
+#: mode name — so an operator renaming ``offline`` cannot break the switch. An INPUT
+#: vocabulary only: nothing here is ever persisted or read back as state.
+POSTURE_TOKENS: dict[str, tuple[bool, bool]] = {
+    "reachable": (False, False),
+    "defer-questions": (True, False),
+    "pause-everything": (True, True),
 }
 
 
@@ -148,10 +148,6 @@ def _apply_presence_upgrade(resolved: ResolvedMode, now: dt.datetime) -> Resolve
 
 def _fresh_keystroke(now: dt.datetime) -> bool:
     """True when a ``UserPromptSubmit`` landed within the presence-freshness window."""
-    # Deferred import keeps this domain module light and avoids an import cycle with
-    # the availability shim (which delegates back into this resolver).
-    from teatree.core.availability import PRESENCE, PRESENCE_FRESHNESS  # noqa: PLC0415 — deferred: cycle-safe
-
     last_seen = PRESENCE.last_seen()
     return last_seen is not None and now - last_seen <= PRESENCE_FRESHNESS
 
@@ -187,16 +183,16 @@ def _mode_by_name(name: str) -> "Mode | None":
     return _mode_model().objects.by_name(name)
 
 
-def mode_name_for_availability(token: str) -> str:
+def mode_name_for_posture(token: str) -> str:
     """The name of the mode row carrying *token*'s posture, resolved by row not by literal.
 
     Raises :class:`LookupError` for an unknown token or when no seeded mode carries
     that posture — refusing to write an override naming a mode that does not exist,
     rather than leaving a dangling name that silently falls open to base config.
     """
-    posture = AVAILABILITY_POSTURES.get(token)
+    posture = POSTURE_TOKENS.get(token)
     if posture is None:
-        msg = f"unknown availability token {token!r}; use {'/'.join(AVAILABILITY_POSTURES)}"
+        msg = f"unknown posture token {token!r}; use {'/'.join(POSTURE_TOKENS)}"
         raise LookupError(msg)
     defers, pauses = posture
     mode = _mode_model().objects.by_posture(defers_questions=defers, pauses_self_pump=pauses)
@@ -216,19 +212,20 @@ def set_mode_override(
 ) -> None:
     """Set the manual mode override to *name*, draining the backlog on a return to reachable.
 
-    The single L3 override write chokepoint the CLI (``t3 loop preset use`` and the
-    deprecated availability aliases) and the dash switch route through — it sets the
-    DB ``ModeOverride`` row (authoritative) and mirrors the posture to the fast-hook
-    file. When the switch makes the resolved mode stop deferring
-    (``defers_questions`` T→F, e.g. ``offline``→``engaged``), the deferred-question
-    backlog auto-drains to the user's Slack DM, exactly as returning to ``present``
-    did. Fail-open: a drain failure never blocks the override write.
+    The single L3 override write chokepoint every surface routes through — the
+    ``t3 loop preset use`` CLI and the dash switch. It sets the DB ``ModeOverride``
+    row, which is the ONE source of truth: the Django consumers resolve it through
+    :func:`resolve_active_mode` and the bare hooks cold-read the same row through
+    :func:`teatree.config.cold_mode.resolve_cold_posture` (#3826 deleted the mirror
+    file that used to sit between them and drift). When the switch makes the resolved
+    mode stop deferring (``defers_questions`` T→F, e.g. ``offline``→``engaged``), the
+    deferred-question backlog auto-drains to the user's Slack DM. Fail-open: a drain
+    failure never blocks the override write.
     """
     from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred: ORM needs the app registry
 
     before = resolve_active_mode().defers_questions
     ModeOverride.objects.set_override(name, until=until, reason=reason)
-    _mirror_posture_to_fast_hook_file(until=until)
     _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
 
 
@@ -238,74 +235,21 @@ def clear_mode_override(*, user_id: str = "", overlay: str = "") -> bool:
 
     before = resolve_active_mode().defers_questions
     cleared = ModeOverride.objects.clear()
-    _mirror_posture_to_fast_hook_file(until=None)
     _drain_if_returned(before_defers=before, user_id=user_id, overlay=overlay)
     return cleared
 
 
-def _mirror_posture_to_fast_hook_file(*, until: dt.datetime | None) -> None:
-    """Mirror the newly-resolved availability posture into the fast-hook probe file.
+def posture_label(*, defers: bool, pauses: bool) -> str:
+    """A human-readable name for the mode's posture — DISPLAY ONLY (#3826).
 
-    The stdlib away-probe (``hooks/scripts/availability_away_probe.py``) that gates
-    AskUserQuestion deferral and the self-pump pause reads the legacy
-    ``availability_override.json`` directly (no Django boot). The DB ``ModeOverride``
-    row stays authoritative for every Django consumer; this write-through keeps the
-    bare hooks in parity with the merged mode. ``drain=False`` — this module owns the
-    single DB-authoritative drain. Fail-open: a file-write failure never blocks the
-    override.
+    Derived from the two booleans on every read; never stored, never an input, never
+    an authority. The three legacy availability tokens it replaces
+    (``present`` / ``autonomous_away`` / ``away``) were persisted and read back, which
+    is how a stale serialization outlived the row it mirrored.
     """
-    from teatree.core import availability  # noqa: PLC0415 — deferred: cycle-safe
-
-    resolved = resolve_active_mode()
-    token = _legacy_token(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump)
-    try:
-        if token == availability.MODE_PRESENT and resolved.source in {"default", "live"}:
-            # No manual/scheduled away posture to mirror — let the probe's own
-            # default/schedule tiers decide, exactly as clearing the file does.
-            availability.clear_override()
-        else:
-            _write_override_json(availability.override_path(), mode=token, until=until)
-    except Exception as exc:  # noqa: BLE001 — fast-hook mirror is best-effort; never block the override
-        logger.warning("fast-hook posture mirror failed: %s", exc)
-
-
-def _write_override_json(target: Path, *, mode: str, until: dt.datetime | None) -> None:
-    """Atomically write the availability override file — NO drain, NO resolve.
-
-    The fast-hook posture mirror's pure writer (kept here, not in
-    ``core.availability``, so that module's grandfathered LOC budget is untouched).
-    The DB ``ModeOverride`` row is authoritative; this file only lets the stdlib
-    away-probe read the resolved posture.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, str] = {"mode": mode}
-    if until is not None:
-        aware = until.replace(tzinfo=dt.UTC) if until.tzinfo is None else until
-        payload["until"] = aware.isoformat()
-    fd, tmp_str = tempfile.mkstemp(prefix=".override-", suffix=".tmp", dir=str(target.parent))
-    tmp_path = Path(tmp_str)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True)
-            handle.write("\n")
-        tmp_path.replace(target)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-
-
-def _legacy_token(*, defers: bool, pauses: bool) -> str:
-    """Map the merged mode's two booleans back to the legacy availability string.
-
-    ``(F,*)`` → ``present`` (reachable), ``(T,F)`` → ``autonomous_away`` (defer but
-    keep pumping), ``(T,T)`` → ``away`` (holiday). The single point the fast-hook
-    file mirror translates the merged posture the stdlib probe understands.
-    """
-    from teatree.core import availability  # noqa: PLC0415 — deferred: cycle-safe
-
     if not defers:
-        return availability.MODE_PRESENT
-    return availability.MODE_AWAY if pauses else availability.MODE_AUTONOMOUS_AWAY
+        return "reachable"
+    return "unreachable (pump paused)" if pauses else "unreachable (factory running)"
 
 
 def _drain_if_returned(*, before_defers: bool, user_id: str, overlay: str) -> None:
@@ -338,14 +282,15 @@ def _synthetic_default_mode() -> "Mode":
 
 
 __all__ = [
-    "AVAILABILITY_POSTURES",
     "DEFAULT_MODE_SETTING",
     "FALLBACK_DEFAULT_MODE",
     "FALLBACK_UPGRADE_MODE",
+    "POSTURE_TOKENS",
     "PRESENCE_UPGRADE_SETTING",
     "ResolvedMode",
     "clear_mode_override",
-    "mode_name_for_availability",
+    "mode_name_for_posture",
+    "posture_label",
     "resolve_active_mode",
     "set_mode_override",
 ]
