@@ -12,6 +12,12 @@ expands to the tests whose source names it (by full path, basename, or any
 containing directory), the textual analogue of the import scan that maps src
 modules to their tests. The module is a pure leaf (stdlib + filesystem only) so
 it stays importable from the dependency-light quality lane.
+
+:func:`is_doc_path` answers the documentation question only. The mapping half —
+:func:`reference_tokens` and :func:`disk_reference_reader_lookup` — is generic over
+ANY path the import graph cannot reach, so a caller that classifies a further such
+class (``teatree.quality.affected_tests`` does this for the ``dev/`` lane runners)
+reuses it rather than re-implementing the textual scan.
 """
 
 from collections.abc import Callable, Iterable
@@ -55,8 +61,13 @@ def reference_tokens(paths: Iterable[str]) -> frozenset[str]:
     return frozenset(tokens)
 
 
-def disk_doc_reader_lookup(root: Path) -> Callable[[frozenset[str]], tuple[str, ...]]:
-    """A resolver: doc reference tokens → the test files whose source names any of them."""
+def disk_reference_reader_lookup(root: Path) -> Callable[[frozenset[str]], tuple[str, ...]]:
+    """A resolver: reference tokens → the test files whose source names any of them.
+
+    Generic over the token source — a changed doc, or any other path nothing imports
+    (the ``dev/`` lane runners). The only way a test can observe such a change is by
+    naming the path, so naming it is the selection criterion.
+    """
 
     def lookup(tokens: frozenset[str]) -> tuple[str, ...]:
         if not tokens:

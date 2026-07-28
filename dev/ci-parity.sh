@@ -4,12 +4,20 @@
 # genuine floor/gate failure is caught locally instead of on the first CI cycle.
 #
 # This is OPT-IN BY WORKFLOW, NEVER a push hook: the 93% whole-tree branch
-# coverage floor (step 4/5) is a whole-tree property that no diff-scoped push
-# subset can prove, and putting the full suite on the push path is exactly the
-# friction tests/test_no_full_suite_on_pre_push.py forbids (#112/#21/#38). The
-# push-stage `ci-critical-parity` hook covers the fast doctest/never-lockout
-# classes at push time; THIS script is the complete predicate for a deliberate
-# pre-push check.
+# coverage floor (the `dev/test-cov.sh` step) is a whole-tree property that no
+# diff-scoped push subset can prove, and putting the full suite on the push path
+# is exactly the friction tests/test_no_full_suite_on_pre_push.py forbids
+# (#112/#21/#38). The push-stage `ci-critical-parity` hook covers the fast
+# doctest/never-lockout classes at push time; THIS script is the complete
+# predicate for a deliberate pre-push check.
+#
+# Step ORDER is cheapest-first so a failure surfaces in seconds instead of after
+# the coverage lane (#3817). The SET of steps and every predicate is unchanged —
+# each step's verdict is independent of the others, so ordering cannot weaken the
+# predicate; only `t3 ci coverage` has a real dependency (it reads the coverage
+# data `dev/test-cov.sh` writes) and it stays last. They are run SEQUENTIALLY on
+# purpose: they share one venv and one test DB, and interleaved output would make
+# a failure unreadable — the win here is failing fast, not overlapping work.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,8 +25,24 @@ cd "$(dirname "$0")/.."
 # else runs exactly as CI's `lint` job does. Override with SKIP=... if needed.
 export SKIP="${SKIP:-uv-audit,cyclonedx-sbom}"
 
+echo "=== [1/6] makemigrations --check --dry-run -- migration-graph linearity ==="
+uv run python manage.py makemigrations --check --dry-run
+
+echo "=== [2/6] test-path-mirror ratchet -- tests mirror src ==="
+uv run t3 tool test-path-mirror --root .
+
+echo "=== [3/6] module-health ratchet vs base -- CI module-health-gate job ==="
+# CI's module-health-gate runs the LOC/OOP/typed-data ratchet in --from-ref diff
+# mode over the PR's base..head range (.github/workflows/ci.yml). The prek
+# `module-health` hook is commit-msg-stage, so the `prek run --all-files` step
+# (default stage only) never fires it — a file crossing the LOC cap read green
+# here until this step was added (souliane/teatree#3506). BASE_REF names the PR
+# base the diff is taken against; default `main` for a local pre-push check.
+git fetch --no-tags origin "${BASE_REF:-main}"
+uv run python scripts/hooks/check_module_health.py --from-ref "origin/${BASE_REF:-main}"
+
 if [ "${LINT_DOCKER:-0}" = "1" ]; then
-  echo "=== [1/6] prek (all hooks, all files) -- CI lint job, IN DOCKER (LINT_DOCKER=1) ==="
+  echo "=== [4/6] prek (all hooks, all files) -- CI lint job, IN DOCKER (LINT_DOCKER=1) ==="
   # Exact CI-lint reproduction: build the same `lint` Dockerfile stage CI's
   # `build-image` job bakes (prek's hook environments pre-installed) and run
   # the identical `prek run --all-files` inside it, bind-mounting the working
@@ -31,27 +55,11 @@ if [ "${LINT_DOCKER:-0}" = "1" ]; then
   docker run --rm -v "$PWD":/app -e SKIP -e T3_BANNED_TERMS -e TEATREE_TERM_REGISTRY teatree-lint-local \
     bash -c "uv run prek run --all-files"
 else
-  echo "=== [1/6] prek (all hooks, all files) -- CI lint job ==="
+  echo "=== [4/6] prek (all hooks, all files) -- CI lint job ==="
   # `uv run` so the prek RUNNER is the lockfile-pinned version (prek==0.4.10), the
   # exact one CI's lint job runs — not whatever standalone prek is on PATH (#3236).
   uv run prek run --all-files
 fi
-
-echo "=== [2/6] makemigrations --check --dry-run -- migration-graph linearity ==="
-uv run python manage.py makemigrations --check --dry-run
-
-echo "=== [3/6] test-path-mirror ratchet -- tests mirror src ==="
-uv run t3 tool test-path-mirror --root .
-
-echo "=== [4/6] module-health ratchet vs base -- CI module-health-gate job ==="
-# CI's module-health-gate runs the LOC/OOP/typed-data ratchet in --from-ref diff
-# mode over the PR's base..head range (.github/workflows/ci.yml). The prek
-# `module-health` hook is commit-msg-stage, so step 1's `prek run --all-files`
-# (default stage only) never fires it — a file crossing the LOC cap read green
-# here until this step was added (souliane/teatree#3506). BASE_REF names the PR
-# base the diff is taken against; default `main` for a local pre-push check.
-git fetch --no-tags origin "${BASE_REF:-main}"
-uv run python scripts/hooks/check_module_health.py --from-ref "origin/${BASE_REF:-main}"
 
 echo "=== [5/6] coverage lane -- full suite, doctests, 93% branch floor ==="
 bash dev/test-cov.sh
