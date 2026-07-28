@@ -3129,9 +3129,12 @@ Usage: t3 tool diff-coverage [OPTIONS]
  Requires every new/changed production symbol to be referenced by a changed
  test — imported directly, or read as ``module.symbol`` through a module the
  test imports and whose path matches the changed file (the test-a-local-copy
- anti-vacuity check; a BARE call to a name the test never imports, and an
- attribute STORE that patches the symbol away, both count as unreferenced).
- Exits non-zero when a new line is uncovered or a symbol is unreferenced.
+ anti-vacuity check). A BARE call to a name the test never imports, an
+ attribute STORE that patches the symbol away, and ANY symbol the test
+ module itself re-defines all count as unreferenced — a test that ships its
+ own copy of a symbol cannot reference its way out, so give the local helper
+ a different name. Exits non-zero when a new line is uncovered or a symbol is
+ unreferenced.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo                 PATH  Repo root (default: cwd)                        │

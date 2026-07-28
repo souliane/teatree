@@ -66,9 +66,15 @@ def diff_coverage(
     Measures coverage on the *branch's* added production lines — the committed
     diff against its merge-base with ``--base`` (default ``origin/main``), NOT the
     clone's working tree, so unrelated uncommitted edits never enter the gate.
-    Requires every new/changed production symbol to be imported by a changed test
-    (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
-    uncovered or a symbol is unreferenced.
+    Requires every new/changed production symbol to be referenced by a changed
+    test — imported directly, or read as ``module.symbol`` through a module the
+    test imports and whose path matches the changed file (the test-a-local-copy
+    anti-vacuity check). A BARE call to a name the test never imports, an
+    attribute STORE that patches the symbol away, and ANY symbol the test
+    module itself re-defines all count as unreferenced — a test that ships its
+    own copy of a symbol cannot reference its way out, so give the local helper
+    a different name. Exits non-zero when a new line is uncovered or a symbol is
+    unreferenced.
     """
     from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.utils.git import branch_diff  # noqa: PLC0415 — deferred: keeps CLI startup light

@@ -271,24 +271,203 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
     return out
 
 
-def _test_imported_and_shadowed(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Return ``(imported_names, locally_defined_names)`` for a test module.
+@dataclass(frozen=True)
+class _QualifiedReference:
+    """One ``module.symbol`` access resolved back to the module it reads through.
 
-    ``imported_names`` is every name a top-level ``import``/``from … import``
-    binds (the alias if present). ``locally_defined_names`` is every name
-    the test module itself ``def``/``class``-defines at any level — a local
-    redefinition that shadows the production symbol.
+    ``module_parts`` is the dotted module path with every alias
+    substituted back to its ``import`` target, so ``import pkg.mod as m``
+    + ``m.symbol`` and ``import pkg.mod`` + ``pkg.mod.symbol`` both
+    resolve to ``("pkg", "mod")``.
+    """
+
+    module_parts: tuple[str, ...]
+    symbol: str
+
+
+@dataclass(frozen=True)
+class _ReferenceScan:
+    """How a changed test module can reach a production symbol.
+
+    ``imported`` is every name an ``import``/``from … import`` binds (the
+    alias if present). ``qualified`` is every ``module.symbol`` access
+    read through a name an ``import`` statement bound to a module.
+    ``shadowed`` is every name the test module itself ``def``/``class``-
+    defines at any level. A local redefinition captures every *bare* call
+    to that name, which makes the module ambiguous about which copy it is
+    asserting on, so a shadowed symbol is refused outright — no import or
+    qualified access cancels it.
+    """
+
+    imported: set[str]
+    qualified: set[_QualifiedReference]
+    shadowed: set[str]
+
+
+def _attribute_chain(node: ast.Attribute) -> tuple[str, ...] | None:
+    """The dotted chain of a ``Name``-rooted attribute access, root first.
+
+    ``pkg.mod.symbol`` nests as ``Attribute(Attribute(Name('pkg')))``, so
+    the chain is unwound to its base to recover the name an ``import``
+    could have bound. A chain rooted in anything else (``self.symbol``,
+    ``get_obj().symbol``, a subscript) has no import provenance and
+    yields ``None``.
+    """
+    parts: list[str] = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return tuple(reversed(parts))
+
+
+def _module_alias_targets(node: ast.Import) -> dict[str, tuple[str, ...]]:
+    """The ``{bound name: dotted module path}`` an ``import`` statement establishes.
+
+    ``import pkg.mod`` binds only ``pkg``, and the access spells the rest
+    out (``pkg.mod.symbol``), so the target is the root alone. ``import
+    pkg.mod as m`` binds ``m`` to the whole path, which the access then
+    omits — substituting the target for the root normalises both spellings
+    to the same module path.
+    """
+    targets: dict[str, tuple[str, ...]] = {}
+    for alias in node.names:
+        root = alias.name.split(".")[0]
+        targets[alias.asname or root] = tuple(alias.name.split(".")) if alias.asname else (root,)
+    return targets
+
+
+def _from_import_alias_targets(node: ast.ImportFrom) -> dict[str, tuple[str, ...]]:
+    """The candidate ``{bound name: dotted module path}`` of a ``from … import``.
+
+    ``from pkg import mod`` + ``mod.symbol()`` is the same qualified shape
+    as ``import pkg.mod``, so the bound name is mapped to ``pkg.mod``.
+    Whether the name is really a module is not knowable from the source,
+    but it does not need to be: the provenance check only credits the
+    access when that path matches the changed production file, which a
+    class or function bound by the same syntax never does. Relative
+    imports carry no resolvable package here and are skipped.
+    """
+    if not node.module or node.level:
+        return {}
+    package = tuple(node.module.split("."))
+    return {alias.asname or alias.name: (*package, alias.name) for alias in node.names}
+
+
+def _rebound_name(node: ast.AST) -> str | None:
+    """The name *node* binds to something other than its import, if any.
+
+    An assignment target, ``for`` target, ``with … as``, walrus, function
+    parameter or ``except … as`` all rebind a bare name; once rebound, the
+    name no longer denotes the module an ``import`` bound it to.
+    """
+    if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+        return node.id
+    if isinstance(node, ast.arg):
+        return node.arg
+    if isinstance(node, ast.ExceptHandler):
+        return node.name
+    return None
+
+
+def _scan_test_references(tree: ast.Module) -> _ReferenceScan:
+    """Collect the import, qualified-access and shadowing names of a test module.
+
+    Attribute accesses are resolved after the walk rather than inside it:
+    an import nested in a function body can appear later in ``ast.walk``
+    order than an attribute access it binds, so the alias map must be
+    complete before any chain root is resolved against it.
+
+    Three narrowing rules keep a qualified access a *production* read:
+
+    - the chain root must resolve to a dotted module path. Both
+    ``import pkg.mod`` and ``from pkg import mod`` are mapped, but the
+    resulting path is only credited when
+    :func:`_reads_production_module` matches it against the changed
+    file, so ``from pathlib import Path`` + ``Path.cwd()`` — a class's
+    namespace, not a module's — never satisfies a production ``cwd``.
+    - only an ``ast.Load`` access reads the module. ``prod.symbol = fake``
+    (``Store``) and ``del prod.symbol`` (``Del``) *replace* production;
+    counting them as references would let the canonical monkeypatch-then-
+    test-the-fake vacuity satisfy the gate.
+    - a root rebound anywhere in the module — by assignment, ``for``
+    target, ``with … as``, walrus, or a test-function parameter (a
+    fixture shadowing the module name) — no longer denotes the imported
+    module, so its accesses are dropped.
     """
     imported: set[str] = set()
-    local: set[str] = set()
+    module_aliases: dict[str, tuple[str, ...]] = {}
+    shadowed: set[str] = set()
+    rebound: set[str] = set()
+    attributes: list[ast.Attribute] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             imported.update(alias.asname or alias.name for alias in node.names)
+            module_aliases.update(_from_import_alias_targets(node))
         elif isinstance(node, ast.Import):
-            imported.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            alias_targets = _module_alias_targets(node)
+            module_aliases.update(alias_targets)
+            imported.update(alias_targets)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            local.add(node.name)
-    return imported, local
+            shadowed.add(node.name)
+        elif isinstance(node, ast.Attribute):
+            attributes.append(node)
+        elif (name := _rebound_name(node)) is not None:
+            rebound.add(name)
+
+    live_aliases = {name: target for name, target in module_aliases.items() if name not in rebound}
+    return _ReferenceScan(
+        imported=imported,
+        qualified={
+            reference
+            for node in attributes
+            if (reference := _resolve_qualified_reference(node, live_aliases)) is not None
+        },
+        shadowed=shadowed,
+    )
+
+
+def _resolve_qualified_reference(
+    node: ast.Attribute,
+    module_aliases: dict[str, tuple[str, ...]],
+) -> _QualifiedReference | None:
+    """Resolve one attribute access to the module and symbol it reads, if any."""
+    chain = _attribute_chain(node)
+    if chain is None or not isinstance(node.ctx, ast.Load):
+        return None
+    alias_target = module_aliases.get(chain[0])
+    if alias_target is None:
+        return None
+    resolved = alias_target + chain[1:]
+    return _QualifiedReference(module_parts=resolved[:-1], symbol=resolved[-1])
+
+
+def _module_parts_of(path: str) -> tuple[str, ...]:
+    """The dotted module path a production file would be imported as.
+
+    A package's ``__init__.py`` is imported as the package itself, so the
+    trailing component is dropped for it.
+    """
+    parts = Path(path).with_suffix("").parts
+    return parts[:-1] if parts and parts[-1] == "__init__" else parts
+
+
+def _reads_production_module(production_path: str, module_parts: tuple[str, ...]) -> bool:
+    """Whether a qualified access's module path denotes *this* production file.
+
+    The access is written relative to whatever is importable at test time
+    (``import classify_day`` for ``timely-log/scripts/classify_day.py``,
+    ``import teatree.utils.diff_coverage`` for ``src/teatree/utils/
+    diff_coverage.py``), so the repo-relative path is matched by suffix
+    rather than resolved against ``sys.path``. That keeps a same-named
+    symbol on an unrelated module — ``subprocess.run`` standing in for a
+    changed production ``run`` — from satisfying the gate.
+    """
+    production_parts = _module_parts_of(production_path)
+    return bool(module_parts) and production_parts[-len(module_parts) :] == module_parts
 
 
 def unreferenced_changed_symbols(diff: str, repo_root: Path, scope: CoverageScope | None = None) -> set[str]:
@@ -296,19 +475,64 @@ def unreferenced_changed_symbols(diff: str, repo_root: Path, scope: CoverageScop
 
     The structural anti-vacuity check. For every symbol whose definition
     is added/changed in this diff, at least one test file *also changed in
-    this diff* must **import** that symbol (so a revert of production turns
-    the test red). A test that instead redefines a local copy of the
-    symbol — the "test-a-local-copy" vacuity mechanism — never imports it;
-    a bare textual call then resolves to the local copy, so it is not a
-    genuine production reference and the symbol stays in the returned
-    (failing) set. A symbol that is both imported and locally shadowed is
-    treated as shadowed (the local def wins at call sites).
+    this diff* must reach that symbol through an import (so a revert of
+    production turns the test red). A test that instead redefines a local
+    copy of the symbol — the "test-a-local-copy" vacuity mechanism — never
+    imports it; a bare textual call then resolves to the local copy, so it
+    is not a genuine production reference and the symbol stays in the
+    returned (failing) set.
 
-    This is deliberately only an *import* check. Catching
-    "imported-but-never-called" is the job of the line-coverage half of
-    the gate (an imported-but-uncalled symbol's body lines stay
+    Two import shapes reach production:
+
+    - ``from prod import symbol`` binds the symbol itself.
+    - ``import prod`` + ``prod.symbol(...)`` reaches the symbol through
+    the module object. Refusing this shape was the gate conflating "bare
+    textual call" (genuinely ambiguous — it resolves to whatever is in
+    scope) with "qualified attribute access on an imported module"
+    (unambiguous — it reads through the module object).
+
+    SHADOWING IS ABSOLUTE, and applies identically to both shapes: if the
+    test module itself ``def``/``class``-defines the symbol's name, the
+    symbol is never credited, however it is also referenced. A qualified
+    reference does NOT cancel it. Letting one cancel the other is what
+    made a single no-op smoke line launder a whole file —
+
+        import prod
+        def symbol(): return 0                        # the local copy
+        def test_exists(): assert prod.symbol is not None
+        def test_behaviour(): assert symbol() == 0    # asserts the COPY
+
+    — because every real assertion binds to the local copy while the
+    smoke line supplied the "reference". A test module that both ships
+    its own copy of a symbol and reaches for production is ambiguous at
+    every bare call site, so it is refused outright; splitting the local
+    helper out under a different name is the fix.
+
+    A qualified access is matched by import PROVENANCE: the accessed
+    module path must be a suffix of the changed production file's path,
+    so ``subprocess.run``, ``Path.cwd`` and ``pytest.raises`` cannot
+    stand in for a changed production ``run``, ``cwd`` or ``raises``.
+    The ``from … import`` shape remains module-BLIND — a same-named
+    import from an unrelated module satisfies it — which is pre-existing
+    behavior, narrowed separately.
+
+    A qualified access need not be a ``Call``. ``prod.Enum.MEMBER`` and
+    ``x: prod.Type`` read through the module object and go red when
+    production is reverted, so they are genuine references; requiring a
+    call would reject them. What stops an unexercised reference from
+    passing the gate is the line-coverage half, not this one — a symbol
+    that is referenced but never run keeps its body lines uncovered.
+
+    Reachability is out of scope for a syntactic check: a qualified
+    access inside ``if False:`` still counts here. That residual is
+    covered on both flanks — shadowing refuses the local-copy case, and
+    the line-coverage half refuses the never-executed case.
+
+    This stays a *reference* check, never an exercise check. Catching
+    "referenced-but-never-called" is the job of the line-coverage half of
+    the gate (a referenced-but-uncalled symbol's body lines stay
     uncovered): the two halves are paired by design, not redundant. The
-    import check defeats the test-a-local-copy vacuity; the
+    reference check defeats the test-a-local-copy vacuity; the
     line-coverage check defeats the import-without-exercise vacuity.
     Neither half alone is sufficient, which is why
     :func:`measure_diff_coverage` always runs both.
@@ -323,6 +547,7 @@ def unreferenced_changed_symbols(diff: str, repo_root: Path, scope: CoverageScop
         return set()
 
     imported_all: set[str] = set()
+    qualified_all: set[_QualifiedReference] = set()
     shadowed_all: set[str] = set()
     for path in added_lines_by_file(diff):
         if not (path.endswith(".py") and _is_test_path(path)):
@@ -334,11 +559,20 @@ def unreferenced_changed_symbols(diff: str, repo_root: Path, scope: CoverageScop
             tree = ast.parse(test_file.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
-        imported, local = _test_imported_and_shadowed(tree)
-        imported_all |= imported
-        shadowed_all |= local
+        references = _scan_test_references(tree)
+        imported_all |= references.imported
+        qualified_all |= references.qualified
+        shadowed_all |= references.shadowed
 
     referenced = {s for s in all_symbols if s in imported_all and s not in shadowed_all}
+    for path, symbols in changed.items():
+        referenced |= {
+            reference.symbol
+            for reference in qualified_all
+            if reference.symbol in symbols
+            and _reads_production_module(path, reference.module_parts)
+            and reference.symbol not in shadowed_all
+        }
     return all_symbols - referenced
 
 

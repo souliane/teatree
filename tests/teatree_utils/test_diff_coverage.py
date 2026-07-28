@@ -400,17 +400,438 @@ class TestSymbolScopeRules:
         # Unparsable source cannot yield symbols — skipped, not crashed.
         assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
 
-    def test_import_alias_counts_as_reference(self, git_repo: Path) -> None:
+    def test_from_import_binding_counts_as_reference(self, git_repo: Path) -> None:
         (git_repo / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
         (git_repo / "tests").mkdir()
-        # `import shipped` (not `from … import`) — the bound name is the
-        # top-level module; the symbol is reached via attribute access.
-        # An explicit `from shipped import widget` is the canonical form.
+        # `from shipped import widget` binds the symbol itself. The
+        # attribute-access form (`import shipped` + `shipped.widget()`) is
+        # covered by TestQualifiedAttributeReferences.
         (git_repo / "tests" / "test_shipped.py").write_text(
             "from shipped import widget\n\n\ndef test_it():\n    assert widget() == 7\n",
             encoding="utf-8",
         )
         diff = _worktree_diff(git_repo)
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+
+class TestQualifiedAttributeReferences:
+    """``import prod`` + ``prod.symbol(...)`` is a genuine production reference.
+
+    The import-only check conflated two shapes. A *bare* ``symbol(...)``
+    call is genuinely ambiguous — it resolves to whatever is in scope, so
+    a local copy satisfies it and the anti-vacuity refusal is right. A
+    *qualified* ``prod.symbol(...)`` call reads through the imported
+    module object, so reverting production does turn it red.
+
+    Accepting the qualified shape is narrow by construction, because each
+    relaxation is a way to fool the gate: the root must resolve to a
+    module path (not a rebound name), the access must be an ``ast.Load``
+    (a ``Store`` replaces production rather than reading it), the module
+    path must match the changed file's by provenance (not merely share a
+    name), and shadowing is ABSOLUTE — a qualified access never cancels a
+    local definition of the same name.
+    """
+
+    @staticmethod
+    def _shipped_with_test(repo: Path, test_source: str) -> str:
+        (repo / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
+        (repo / "tests").mkdir(exist_ok=True)
+        (repo / "tests" / "test_shipped.py").write_text(test_source, encoding="utf-8")
+        return _worktree_diff(repo)
+
+    def test_module_attribute_call_counts_as_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef test_it():\n    assert shipped.widget() == 7\n",
+        )
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_aliased_module_attribute_call_counts_as_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped as sh\n\n\ndef test_it():\n    assert sh.widget() == 7\n",
+        )
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_dotted_module_attribute_call_counts_as_reference(self, git_repo: Path) -> None:
+        (git_repo / "pkg").mkdir()
+        (git_repo / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (git_repo / "pkg" / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        # `import pkg.shipped` binds only the root name `pkg`; the symbol is
+        # reached through the full dotted chain, whose root must still be
+        # resolved back to the import.
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "import pkg.shipped\n\n\ndef test_it():\n    assert pkg.shipped.widget() == 7\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_from_package_import_module_attribute_counts_as_reference(self, git_repo: Path) -> None:
+        (git_repo / "pkg").mkdir()
+        (git_repo / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (git_repo / "pkg" / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "from pkg import shipped\n\n\ndef test_it():\n    assert shipped.widget() == 7\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        # `from pkg import shipped` + `shipped.widget()` is the same
+        # qualified shape as `import pkg.shipped`, just a different import
+        # spelling — a very common one, and it must not be refused.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_from_package_import_module_as_alias_counts_as_reference(self, git_repo: Path) -> None:
+        (git_repo / "pkg").mkdir()
+        (git_repo / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (git_repo / "pkg" / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "from pkg import shipped as s\n\n\ndef test_it():\n    assert s.widget() == 7\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_from_import_of_an_unrelated_module_is_not_a_reference(self, git_repo: Path) -> None:
+        (git_repo / "pkg").mkdir()
+        (git_repo / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (git_repo / "pkg" / "other.py").write_text("def widget():\n    return 0\n", encoding="utf-8")
+        _git(git_repo, "add", "-A")
+        _git(git_repo, "commit", "-qm", "pkg")
+        (git_repo / "pkg" / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "from pkg import other\n\n\ndef test_it():\n    assert other.widget() == 0\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        # Same provenance rule as the `import` spelling: mapping the bound
+        # name to `pkg.other` is only a CANDIDATE module path, and it does
+        # not match the changed `pkg/shipped.py`.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_relative_from_import_does_not_match_a_top_level_package(self, git_repo: Path) -> None:
+        (git_repo / "pkg").mkdir()
+        (git_repo / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (git_repo / "pkg" / "shipped.py").write_text("def widget():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "from .pkg import shipped\n\n\ndef test_it():\n    assert shipped.widget() == 7\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        # The leading dot makes this the TEST package's own `pkg`, not the
+        # top-level `pkg/` that changed. Ignoring the dot would let the
+        # candidate path collide with an unrelated same-named package.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_from_import_still_counts_as_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "from shipped import widget\n\n\ndef test_it():\n    assert widget() == 7\n",
+        )
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_qualified_access_does_not_cancel_a_local_definition(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef widget():\n    return 0\n\n\ndef test_it():\n    assert shipped.widget() == 7\n",
+        )
+        # SHADOWING IS ABSOLUTE. A test module that ships its own `def
+        # widget` AND reaches for production is ambiguous at every bare
+        # call site, so no qualified access — call or load — rescues it.
+        # Letting a qualified reference cancel shadowing is precisely what
+        # let one no-op smoke line launder a whole file; the fix is to give
+        # the local helper a different name, not to relax the rule.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_bare_call_with_local_copy_still_blocked_even_when_module_imported(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef widget():\n    return 0\n\n\ndef test_it():\n    assert widget() == 0\n",
+        )
+        # The vacuity mechanism, with an unused `import shipped` bolted on:
+        # the module is imported but the symbol is only ever called BARE, so
+        # it resolves to the local copy. Reverting production cannot turn
+        # this red — it must stay refused.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_bare_call_without_any_import_still_blocked(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "def test_it():\n    assert widget() == 7\n",
+        )
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_attribute_on_non_module_object_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "class T:\n    def test_it(self):\n        assert self.widget() == 7\n",
+        )
+        # `self.widget` is an attribute of a test-local object, not of an
+        # imported module — it cannot reach production, so it must not
+        # satisfy the gate.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_attribute_on_local_variable_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "def test_it():\n    helper = object()\n    assert helper.widget() == 7\n",
+        )
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_attribute_on_unrelated_imported_module_is_not_a_reference(self, git_repo: Path) -> None:
+        # `other.py` is committed in the base, so it is not itself a
+        # changed production file — only `shipped.widget` is under test.
+        (git_repo / "other.py").write_text("def widget():\n    return 0\n", encoding="utf-8")
+        _git(git_repo, "add", "-A")
+        _git(git_repo, "commit", "-qm", "other")
+        diff = self._shipped_with_test(
+            git_repo,
+            "import other\n\n\ndef test_it():\n    assert other.widget() == 0\n",
+        )
+        # `other.widget` cannot turn red when `shipped.widget` is reverted.
+        # A qualified access is matched by import provenance: the accessed
+        # module path must be a suffix of the changed production file's
+        # path, so a same-named symbol on an unrelated module is refused.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_stdlib_attribute_does_not_satisfy_a_same_named_production_symbol(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text("def run():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir(exist_ok=True)
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "import subprocess\n\n\ndef test_it():\n    subprocess.run(['true'], check=False)\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        # Name collisions with the stdlib are ubiquitous — `subprocess.run`
+        # appears in ordinary test setup and must never stand in for a
+        # changed production `run`.
+        assert "run" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_attribute_on_imported_class_is_not_a_module_reference(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text("def cwd():\n    return 7\n", encoding="utf-8")
+        (git_repo / "tests").mkdir(exist_ok=True)
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "from pathlib import Path\n\n\ndef test_it():\n    assert Path.cwd()\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        # `from pathlib import Path` binds a class, not a module. Reading
+        # that class's namespace has no production provenance, so only
+        # `import`-bound module names may root a qualified reference.
+        assert "cwd" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_attribute_on_a_nested_object_of_the_module_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef test_it():\n    shipped.registry.widget()\n",
+        )
+        # `shipped.registry.widget` reads an attribute of an arbitrary
+        # object held by the module, not the module's own `widget`.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_monkeypatching_the_symbol_away_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef fake_widget():\n    return 0\n\n\n"
+            "def test_it():\n    shipped.widget = fake_widget\n    assert fake_widget() == 0\n",
+        )
+        # A `Store` attribute REPLACES production with the fake and then
+        # asserts on the fake — the canonical vacuity mechanism, not a
+        # reference. The fake is deliberately named differently, so the
+        # shadowing rule cannot fire and the `ast.Load` guard is the only
+        # thing standing between this test and a false pass.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_deleting_the_symbol_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef test_it():\n    del shipped.widget\n    assert not hasattr(shipped, 'widget')\n",
+        )
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_load_only_access_does_not_license_a_local_copy(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef widget():\n    return 0\n\n\n"
+            "def test_smoke():\n    assert shipped.widget is not None\n\n\n"
+            "def test_it():\n    assert widget() == 0\n",
+        )
+        # A lone `assert shipped.widget is not None` smoke line references
+        # production but exercises nothing, while every real assertion hits
+        # the local copy. The local `def widget` shadows the name, and
+        # shadowing is absolute, so the smoke line buys nothing.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_load_only_access_counts_when_nothing_shadows_the_name(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text("class Widget:\n    pass\n", encoding="utf-8")
+        (git_repo / "tests").mkdir(exist_ok=True)
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "import shipped\n\n\ndef test_it():\n    assert isinstance(object(), shipped.Widget) is False\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+        # `isinstance(x, prod.Symbol)` and annotations never call the
+        # symbol but are genuine references — refusing them would recreate
+        # the false positive this whole check exists to remove.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_module_name_rebound_by_assignment_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\nfrom types import SimpleNamespace\n\n"
+            "shipped = SimpleNamespace(widget=lambda: 0)\n\n\n"
+            "def test_it():\n    assert shipped.widget() == 0\n",
+        )
+        # The name no longer denotes the imported module, so the access
+        # reads a fully local fake.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_module_name_shadowed_by_a_fixture_parameter_is_not_a_reference(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef test_it(shipped):\n    assert shipped.widget() == 0\n",
+        )
+        # A parameter named after the module wins inside the test body.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_setting_an_unrelated_attribute_does_not_rebind_the_module(self, git_repo: Path) -> None:
+        diff = self._shipped_with_test(
+            git_repo,
+            "import shipped\n\n\ndef test_it():\n    shipped._cache = {}\n    assert shipped.widget() == 7\n",
+        )
+        # `shipped._cache = {}` stores through the module object; the name
+        # `shipped` itself is still a Load, so the module is not rebound
+        # and the genuine call beside it must still count.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+
+class TestReviewerVacuityProbes:
+    """The six probes two reviewers used to measure the gate's blast radius.
+
+    The first cut of the qualified-attribute relaxation accepted ANY
+    ``ast.Attribute`` rooted at ANY imported name and let that cancel the
+    shadowing rule. Measured baseline-vs-fixed, five of these six leaked
+    where the pre-relaxation gate had blocked all six. Each probe is a
+    complete, runnable vacuous test: it reaches "100% coverage" while
+    reverting production would not turn a single assertion red.
+
+    They are pinned as a set because they fail as a set — every one of
+    them is closed by a different rule, and dropping any single rule
+    reopens exactly one probe.
+    """
+
+    @staticmethod
+    def _probe(repo: Path, production: str, test_source: str) -> str:
+        (repo / "shipped.py").write_text(production, encoding="utf-8")
+        (repo / "tests").mkdir(exist_ok=True)
+        (repo / "tests" / "test_shipped.py").write_text(test_source, encoding="utf-8")
+        return _worktree_diff(repo)
+
+    def test_probe_a_stdlib_name_collision_blocks(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def run(cmd):\n    return cmd\n",
+            "import subprocess\n\n\ndef run(cmd):\n    return cmd\n\n\n"
+            "def test_it():\n    assert subprocess.run(['echo'], check=False) is not None\n",
+        )
+        # Closed by module provenance: `subprocess` is not `shipped`.
+        assert "run" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_probe_b_stub_out_blocks(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def widget():\n    return 0\n",
+            "import shipped\n\n\ndef widget():\n    return 1\n\n\n"
+            "shipped.widget = widget\n\n\ndef test_it():\n    assert widget() == 1\n",
+        )
+        # Closed by the `ast.Load` guard: a `Store` replaces production.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_probe_c_unreachable_qualified_call_blocks(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def widget():\n    return 0\n",
+            "import shipped\n\n\ndef widget():\n    return 1\n\n\n"
+            "def test_it():\n    if False:\n        shipped.widget()\n    assert widget() == 1\n",
+        )
+        # Closed by absolute shadowing, NOT by reachability analysis — the
+        # check stays syntactic. A dead-branch qualified call with no local
+        # copy is still credited here; the line-coverage half is what
+        # refuses a reference that never executes.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_probe_d_attribute_on_imported_class_blocks(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def cwd():\n    return 0\n",
+            "from pathlib import Path\n\n\ndef cwd():\n    return 1\n\n\n"
+            "def test_it():\n    assert Path.cwd() is not None\n",
+        )
+        # Closed by module provenance: `pathlib.Path` is a class namespace.
+        assert "cwd" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_probe_e_pytest_name_collision_blocks(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def raises(x):\n    return x\n",
+            "import pytest\n\n\ndef raises(x):\n    return x\n\n\n"
+            "def test_it():\n    with pytest.raises(ValueError):\n        raise ValueError\n",
+        )
+        # Closed by module provenance. `pytest.raises` is in essentially
+        # every test file, so a bare-name match here would be catastrophic.
+        assert "raises" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_probe_control_no_import_at_all_blocks(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def widget():\n    return 0\n",
+            "def widget():\n    return 1\n\n\ndef test_it():\n    assert widget() == 1\n",
+        )
+        # The original anti-vacuity property, unchanged: a bare `widget()`
+        # with no import of `widget` resolves to the local copy.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_one_no_op_smoke_line_cannot_launder_a_file(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def widget():\n    return 0\n",
+            "import shipped\n\n\ndef widget():\n    return 0\n\n\n"
+            "def test_symbol_exists():\n    assert shipped.widget is not None\n\n\n"
+            "def test_behaviour():\n    assert widget() == 0\n",
+        )
+        # The exploit the reviewers derived from the root cause: every real
+        # assertion hits the local copy while a single no-op line supplies
+        # the "reference". Absolute shadowing is what kills it.
+        assert "widget" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_legitimate_qualified_call_still_passes(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "def widget():\n    return 7\n",
+            "import shipped\n\n\ndef test_it():\n    assert shipped.widget() == 7\n",
+        )
+        # The false positive the relaxation exists to remove. Tightening
+        # the rule must not take this back down with it.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_legitimate_class_member_read_still_passes(self, git_repo: Path) -> None:
+        diff = self._probe(
+            git_repo,
+            "import enum\n\n\nclass Lookup(enum.Enum):\n    FAILED = 1\n    ABSENT = 2\n",
+            "import shipped\n\n\ndef fake(kind) -> str | shipped.Lookup:\n"
+            "    if kind == 'bad':\n        return shipped.Lookup.FAILED\n    return 'ok'\n\n\n"
+            "def test_it():\n    assert fake('bad') is shipped.Lookup.FAILED\n"
+            "    assert fake('good') == 'ok'\n",
+        )
+        # `prod.Enum.MEMBER` and `x: prod.Type` are never CALLS, but they
+        # read through the module object and go red on revert. Requiring a
+        # call would reject this shape — a real one, and the reason the
+        # call-only narrowing was declined.
         assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
 
 
