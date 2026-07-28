@@ -19,6 +19,7 @@ from teatree.agents.usage_window import maybe_park_for_active_window
 from teatree.core.managers_task_claim import _claimable_now_q
 from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.models.config_setting import ConfigSetting
+from teatree.core.models.task_claim import window_parked
 
 #: A phase with no registered agent, so the headless auto-enqueue seam stays live under the
 #: default interactive runtime (a loop-dispatched phase would short-circuit the signal).
@@ -104,13 +105,18 @@ class TestParkDoesNotReEnqueue(TestCase):
 
 
 class TestWindowParkedPredicateParity(TestCase):
-    """The per-row park predicate and the queryset one answer identically (no drift)."""
+    """All THREE spellings of the park gate answer identically (no drift).
+
+    ``window_parked`` is the shared predicate; ``Task.is_window_parked`` delegates to it and
+    ``_claimable_now_q`` is its queryset form. A row every spelling does not agree on is a
+    seam where "is there work" and "may this be re-dispatched" could diverge.
+    """
 
     def setUp(self) -> None:
         self.ticket = Ticket.objects.create(issue_url="https://example.com/i/2", role=Ticket.Role.AUTHOR)
         self.session = Session.objects.create(ticket=self.ticket)
 
-    def test_instance_predicate_matches_the_claim_filter(self) -> None:
+    def test_every_spelling_of_the_park_gate_agrees(self) -> None:
         now = timezone.now()
         gates = [None, now - dt.timedelta(minutes=1), now + dt.timedelta(minutes=1)]
         tasks = [
@@ -119,4 +125,6 @@ class TestWindowParkedPredicateParity(TestCase):
         ]
         claimable = set(Task.objects.filter(_claimable_now_q(now)).values_list("pk", flat=True))
         for task in tasks:
-            assert task.is_window_parked(now) is (task.pk not in claimable)
+            parked = task.pk not in claimable
+            assert window_parked(task, now) is parked
+            assert task.is_window_parked(now) is parked
