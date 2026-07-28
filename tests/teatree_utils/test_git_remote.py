@@ -1,4 +1,5 @@
 from teatree.utils import git_remote
+from teatree.utils.git_remote import host_from_remote
 
 
 class TestSlugFromRemote:
@@ -46,7 +47,7 @@ class TestHostFromRemote:
     """
 
     def test_ssh_scp_form(self) -> None:
-        assert git_remote.host_from_remote("git@github.com:acme/widgets.git") == "github.com"
+        assert host_from_remote("git@github.com:acme/widgets.git") == "github.com"
 
     def test_ssh_url_form_with_port(self) -> None:
         assert git_remote.host_from_remote("ssh://git@gitlab.com:22/acme/widgets.git") == "gitlab.com"
