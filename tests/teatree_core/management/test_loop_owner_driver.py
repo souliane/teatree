@@ -14,6 +14,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import LoopLease
+from tests._loop_principal_env import pinned_loop_principal
 
 
 def _claim(*args: str, detected: str = "", **kwargs) -> tuple[str, str]:
@@ -24,7 +25,7 @@ def _claim(*args: str, detected: str = "", **kwargs) -> tuple[str, str]:
     """
     out, err = io.StringIO(), io.StringIO()
     with (
-        mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-x"),
+        pinned_loop_principal("sess-x"),
         mock.patch("teatree.loop.driver_detection.detect_driver", return_value=detected),
     ):
         call_command("loop_owner", "claim", *args, stdout=out, stderr=err, **kwargs)
@@ -74,7 +75,7 @@ class TestOwnerSurfacesDriver(TestCase):
     def test_owner_json_carries_the_driver(self) -> None:
         _claim(slot="loop:dispatch", detected="loop_runner")
         out = io.StringIO()
-        with mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-x"):
+        with pinned_loop_principal("sess-x"):
             call_command("loop_owner", "owner", slot="loop:dispatch", json_output=True, stdout=out)
         assert json.loads(out.getvalue())["driver"] == "loop_runner"
 
@@ -82,6 +83,6 @@ class TestOwnerSurfacesDriver(TestCase):
         _claim(slot="loop:dispatch", detected="")
         out = io.StringIO()
         err = io.StringIO()
-        with mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-x"):
+        with pinned_loop_principal("sess-x"):
             call_command("loop_owner", "owner", slot="loop:dispatch", stdout=out, stderr=err)
         assert "driver: DRIVERLESS" in err.getvalue()

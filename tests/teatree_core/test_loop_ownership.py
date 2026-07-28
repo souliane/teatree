@@ -37,6 +37,7 @@ from teatree.core.managers import (
 )
 from teatree.core.models import LoopLease
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests._loop_principal_env import pinned_loop_principal
 
 
 def _seed_dead_pid_lease(slot: str, *, session_id: str, owner_pid: int, ttl_seconds: int) -> None:
@@ -668,7 +669,7 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
 
         slot = per_loop_owner_slot("dispatch")
         with (
-            mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-dispatch"),
+            pinned_loop_principal("sess-dispatch"),
             mock.patch("teatree.loop.driver_detection.detect_driver", return_value=""),
         ):
             out = io.StringIO()
@@ -693,9 +694,6 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
         from django.core.management import call_command  # noqa: PLC0415
 
         slot = per_loop_owner_slot("dispatch")
-        with (
-            mock.patch("teatree.core.session_identity.current_session_id", return_value="sess-dispatch"),
-            mock.patch("teatree.core.session_identity.current_session_pid", return_value=os.getpid()),
-        ):
+        with pinned_loop_principal("sess-dispatch", pid=os.getpid()):
             call_command("loop_owner", "claim", slot=slot, stdout=io.StringIO())
         assert LoopLease.objects.get(name=slot).owner_pid == os.getpid()
