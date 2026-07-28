@@ -11,7 +11,7 @@ enum, so a future ``Ticket.State`` value cannot silently drop off the board.
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.db.models import Max
 from django.utils import timezone
@@ -40,6 +40,12 @@ COLUMN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # Terminal, non-actionable states hidden by default behind the board's toggle:
 # IGNORED (abandoned) and REVIEW_POSTED (reviewer finished cold-reviewing a PR).
 HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_POSTED)
+
+# How long a task failure stays CURRENT STATE for card-rendering purposes (#3841).
+# Cards were rendering tracebacks whose file paths no longer exist on this box —
+# a failure from a prior deployment presented as if it were live. The attempt row
+# itself is never touched (it is audit); only the board stops showing it.
+STALE_ERROR_AFTER = timedelta(days=2)
 
 # Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
@@ -249,7 +255,10 @@ def _last_error_by_ticket(ticket_ids: list[int]) -> dict[int, str]:
         .annotate(latest_pk=Max("pk"))
         .values_list("latest_pk", flat=True)
     )
-    attempts = TaskAttempt.objects.filter(pk__in=list(latest_pks)).select_related("task")
+    attempts = TaskAttempt.objects.filter(
+        pk__in=list(latest_pks),
+        started_at__gte=timezone.now() - STALE_ERROR_AFTER,
+    ).select_related("task")
     return {attempt.task.ticket_id: attempt.error for attempt in attempts if attempt.error}
 
 

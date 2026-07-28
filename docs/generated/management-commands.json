@@ -1111,7 +1111,7 @@
           "name": "record-spec-coverage"
         },
         {
-          "help": "Check post-ship tickets against upstream issues and advance completed ones",
+          "help": "Reconcile the ticket board against forge truth and advance what has landed",
           "name": "sync-completions"
         },
         {

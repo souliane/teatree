@@ -16,7 +16,7 @@ from teatree.loop.scanner_factories import (
     _pull_main_clone_scanner_for,
     _triage_assessor_scanner_for,
 )
-from teatree.loop.scanners import Scanner
+from teatree.loop.scanners import BoardReconcileScanner, Scanner
 
 
 def _arch_review_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
@@ -43,11 +43,18 @@ def _audit_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
 
 
 def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay pull-main-clone scanner (workspace-repo fast-forward)."""
+    """Per-overlay pull-main-clone scanner + the board reconcile (#3841).
+
+    The board janitor is hosted here rather than on ``followup`` because
+    ``followup`` is ``colleague_facing`` and is therefore skipped under an
+    away-class mode — the very situation in which merged tickets pile up
+    unreconciled. ``housekeeping`` is enabled, non-colleague-facing, and hourly.
+    """
+    jobs = [_ScannerJob(scanner=BoardReconcileScanner(overlay_name=backend.name), overlay=backend.name)]
     scanner = _pull_main_clone_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+    if scanner is not None:
+        jobs.append(_ScannerJob(scanner=scanner, overlay=backend.name))
+    return jobs
 
 
 def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
