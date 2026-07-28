@@ -18,11 +18,21 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS, effective_default, get_effective_settings
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.schema import _DEFAULTS_TOML, shipped_defaults
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.config_migration import _resolve_export_scan_terms, export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+
+
+def _teatree(document: dict[str, object]) -> dict[str, object]:
+    """A dump's ``[teatree]`` table, flattened back to the flat key namespace.
+
+    The dump nests the declaration hierarchy as sub-tables; the persisted contract is the
+    flat namespace, so every assertion about WHICH keys the dump carries is made there.
+    """
+    return flatten_settings_table(document.get("teatree", {}))
 
 
 class TestExportDbToToml(TestCase):
@@ -37,8 +47,8 @@ class TestExportDbToToml(TestCase):
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
         doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
-        assert doc["teatree"]["mode"] == "auto"
-        assert doc["teatree"]["issue_implementer_max_concurrent"] == 3
+        assert _teatree(doc)["mode"] == "auto"
+        assert _teatree(doc)["issue_implementer_max_concurrent"] == 3
 
     def test_overlay_rows_render_under_overlays_name_table(self) -> None:
         ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
@@ -53,7 +63,7 @@ class TestExportDbToToml(TestCase):
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 5)
         ConfigSetting.objects.set_value("issue_implementer_label", "ready")
         ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
-        teatree = tomllib.loads(export_db_to_toml(scan_terms=()).toml)["teatree"]
+        teatree = _teatree(tomllib.loads(export_db_to_toml(scan_terms=()).toml))
         assert teatree["issue_implementer_enabled"] is True
         assert teatree["issue_implementer_max_concurrent"] == 5
         assert isinstance(teatree["issue_implementer_max_concurrent"], int)
@@ -96,7 +106,7 @@ class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):
         assert "acmebrand" not in dump
         assert "banned_terms" not in dump
         # The legitimate operational key still exports.
-        assert tomllib.loads(dump)["teatree"]["mode"] == "auto"
+        assert _teatree(tomllib.loads(dump))["mode"] == "auto"
 
 
 class TestExportSecretGuard(TestCase):
@@ -114,8 +124,8 @@ class TestExportSecretGuard(TestCase):
         ConfigSetting.objects.set_value("mode", "auto")
         result = export_db_to_toml(scan_terms=())
         doc = tomllib.loads(result.toml)
-        assert doc["teatree"]["mode"] == "auto"
-        assert "banned_brands" not in doc["teatree"]
+        assert _teatree(doc)["mode"] == "auto"
+        assert "banned_brands" not in _teatree(doc)
         assert [(r.key, r.reason) for r in result.redacted] == [("banned_brands", "private-key")]
 
     def test_value_carrying_a_banned_term_is_withheld_by_content_scan(self) -> None:
@@ -131,7 +141,7 @@ class TestExportSecretGuard(TestCase):
         ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
         ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"])
         result = export_db_to_toml(include_private=True, scan_terms=("acmecorp", "acmebrand"))
-        teatree = tomllib.loads(result.toml)["teatree"]
+        teatree = _teatree(tomllib.loads(result.toml))
         assert teatree["banned_brands"] == ["acmebrand"]
         assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
         assert result.redacted == ()
@@ -140,7 +150,7 @@ class TestExportSecretGuard(TestCase):
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("excluded_skills", ["foo"])
         result = export_db_to_toml(scan_terms=("acmecorp",))
-        teatree = tomllib.loads(result.toml)["teatree"]
+        teatree = _teatree(tomllib.loads(result.toml))
         assert teatree["mode"] == "auto"
         assert teatree["excluded_skills"] == ["foo"]
         assert result.redacted == ()
@@ -166,7 +176,7 @@ class TestExportScanTermsResolveFailsSafe(TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             export = export_db_to_toml()  # scan_terms=None -> live resolve
         doc = tomllib.loads(export.toml)
-        assert doc["teatree"]["mode"] == "auto"
+        assert _teatree(doc)["mode"] == "auto"
         # No terms resolved => nothing to redact; the export is valid and complete.
         assert export.redacted == ()
 
@@ -538,11 +548,11 @@ class TestSeedTableRoundTripIsByteStable(_SeedRowsTestCase):
 
 
 class TestExportCarriesTheSettingsHierarchy(TestCase):
-    """The TOML dump groups ``[teatree]`` by the same tree the dashboard renders.
+    """The TOML dump nests ``[teatree]`` by the same tree the dashboard renders.
 
-    TOML keys stay FLAT under ``[teatree]`` — the flat key namespace is the persisted
-    contract every reader, env override and cold sqlite3 read depends on — so the
-    hierarchy rides as ordered, indented comment banners rather than sub-tables.
+    The hierarchy is real sub-tables; the KEY NAMESPACE stays flat, because that namespace
+    is the persisted contract every reader, env override and cold sqlite3 read depends on.
+    ``flatten_settings_table`` is what closes the two, on every read and on import.
     """
 
     def _dump(self) -> str:
@@ -551,18 +561,17 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
         ConfigSetting.objects.set_value("autoload", value=True)
         return export_db_to_toml(include_private=True).toml
 
-    def test_each_level_of_the_path_is_banner_commented_above_its_keys(self) -> None:
+    def test_each_level_of_the_path_is_a_real_table_above_its_keys(self) -> None:
         dump = self._dump()
-        assert "\n# Gates\n" in dump
-        assert "\n#   Quality\n" in dump
-        assert "\n#     Merge & done\n" in dump
-        assert dump.index("#     Merge & done") < dump.index("require_merge_evidence")
+        assert '[teatree.Gates.Quality."Merge & done"]' in dump
+        assert '[teatree.Gates.Quality."Architectural review"]' in dump
+        assert dump.index('[teatree.Gates.Quality."Merge & done"]') < dump.index("require_merge_evidence")
 
-    def test_a_level_is_announced_once_and_its_children_follow_it(self) -> None:
+    def test_a_shared_parent_level_is_a_path_prefix_not_a_repeated_section(self) -> None:
         dump = self._dump()
-        assert dump.count("\n#   Quality\n") == 1, "a shared parent level is re-announced per child"
-        quality = dump.index("#   Quality")
-        assert quality < dump.index("#     Architectural review") < dump.index("#     Merge & done")
+        assert "\n[teatree.Gates]\n" not in dump, "an intermediate level printed a header of its own"
+        quality = [line for line in dump.splitlines() if line.startswith("[teatree.Gates.Quality")]
+        assert quality == ['[teatree.Gates.Quality."Architectural review"]', '[teatree.Gates.Quality."Merge & done"]']
 
     def test_keys_are_ordered_by_the_hierarchy_not_alphabetically(self) -> None:
         dump = self._dump()

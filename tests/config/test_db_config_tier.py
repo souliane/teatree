@@ -14,6 +14,7 @@ Integration-first: real ``ConfigSetting`` rows against the real DB, the active
 overlay set via ``T3_OVERLAY_NAME``.
 """
 
+import os
 from unittest import mock
 
 import pytest
@@ -22,7 +23,7 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.resolution import _load_global_rows, _load_overlay_rows
+from teatree.config.resolution import _load_global_rows, _load_overlay_rows, env_setting_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
 
 
@@ -261,3 +262,42 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
         ):
             assert _load_overlay_rows("my-overlay") == {}
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+
+class TestTheTierSeamsAreTheOneReader(TestCase):
+    """``read_setting_layers`` / ``env_setting_overrides`` are public for ONE reason.
+
+    ``get_effective_settings`` FOLDS the tiers into a ``UserSettings``; ``config.provenance``
+    WALKS the same two seams to say which tier supplied a value. A second reader on either
+    side would be a second resolution path, and the value shown and the tier credited for it
+    could then disagree — so each seam's own answer is pinned here, together with the fold
+    agreeing with it.
+    """
+
+    def test_the_two_db_scopes_come_back_separately(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="demo")
+        global_rows, overlay_rows = read_setting_layers("demo").db_rows
+        assert (global_rows["merge_wip"], overlay_rows["merge_wip"]) == (4, 7)
+
+    def test_an_unnamed_overlay_sees_no_overlay_rows(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="demo")
+        _global_rows, overlay_rows = read_setting_layers("").db_rows
+        assert "merge_wip" not in overlay_rows
+
+    def test_the_shipped_file_tier_is_carried_beside_the_db_scopes(self) -> None:
+        assert "merge_wip" in read_setting_layers("").toml_rows
+
+    def test_the_fold_serves_what_the_layers_say_wins(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        global_rows, _overlay_rows = read_setting_layers("").db_rows
+        assert get_effective_settings().merge_wip == global_rows["merge_wip"]
+
+    def test_an_unset_env_contributes_nothing(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert "merge_wip" not in env_setting_overrides()
+
+    def test_a_t3_variable_is_read_under_its_flat_key_and_beats_a_stored_row(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        with mock.patch.dict(os.environ, {"T3_MERGE_WIP": "9"}):
+            assert env_setting_overrides()["merge_wip"] == get_effective_settings().merge_wip == 9

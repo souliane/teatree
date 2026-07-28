@@ -5,6 +5,14 @@ and editable with NO hand-kept list — a newly-added setting appears here for f
 edit path writes through ``ConfigSetting.set_value`` (the same seam ``config_setting set``
 uses), so the #258 strict coercion and the #3688 cross-key checks fire identically.
 
+**One section at a time.** The page is a left nav of sections and a right pane holding the
+selected section's rows, so a request renders ~10-25 rows rather than every key at once.
+:func:`build_settings_sections` is the nav (derived from the group tree over the key names,
+so it costs no row building) and :func:`build_settings_group` is the pane. The two come off
+the SAME tree, so a section the nav offers always has a pane, and the union of the panes is
+the whole schema — the never-drop guarantee the retired band classifier failed, now held
+across sections instead of within one page.
+
 **A secret value never reaches the response.** :func:`~teatree.core.config_display.is_secret`
 (the shared value-masking taxonomy — ``Category.SECRET`` / ``SECRET_SETTINGS`` / credential
 coordinate / personal identifier) drives masking here AND on the read-only config surface,
@@ -14,23 +22,21 @@ into a rendered string. Restore-to-default deletes the DB row (the Phase-4 zero-
 ``restore = delete row`` semantics). Export withholds secrets and keeps personal; import
 previews via ``import_toml_to_db(dry_run=True)``.
 
-Every row also carries the shipped default `config/defaults.toml` ships for that key and
-whether the effective value still matches it. A Secret/Personal key is absent from that
-file by construction, so it has no default to compare against and offers no verdict.
-
-Rows are rendered in the NESTED :func:`~teatree.config.setting_groups.group_tree`
-hierarchy, and the grouping is TOTAL: :func:`group_rows` partitions the flat row set over
-the tree's leaves, so a key whose group is unknown lands in the leftovers bucket rather
-than being dropped — the defect the retired band classifier shipped, where 130 of 184
-keys classified to ``""`` and were skipped.
+Every row carries WHERE its effective value came from (``teatree.config.provenance``) beside
+the shipped default the file carries and whether the two still agree. That replaces the old
+``category`` column, which showed the setting's KIND — ``default`` for hundreds of rows
+running, read as "this value came from the default" while the column beside it said the
+value differs from that default.
 """
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from teatree.config.cold_defaults import shipped_defaults_table
-from teatree.config.schema import TeatreeSettingsSchema, setting_meta, shipped_defaults
-from teatree.config.setting_groups import SettingGroupNode, group_tree
+from teatree.config.provenance import ResolvedSetting, ValueSource, resolve_settings
+from teatree.config.schema import TeatreeSettingsSchema
+from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_slug, group_tree
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.core.config_display import MASKED, is_secret, render_value
 from teatree.core.config_migration import ConfigImport, export_db_to_toml, import_toml_to_db
@@ -49,75 +55,87 @@ class EditableSetting:
     """One row of the editor — its value and its shipped default already masked when secret."""
 
     name: str
-    category: str  # "default" / "personal" / "secret"
     value: str  # ``***`` for a secret, else the effective value as display text
+    source: str  # which tier supplied the value — env / DB scope / code default / shipped file
     is_secret: bool
     is_safety_posture: bool
-    is_overridden: bool  # a DB row exists in this scope → restore-to-default is available
+    is_overridden: bool  # an operator tier supplied the value → restore-to-default applies
     shipped_default: str  # ``***`` for a secret, "" when the shipped file carries none
     has_shipped_default: bool
     matches_shipped_default: bool
     default_comparison: str  # the words the colour accompanies; "" when there is no default
 
 
-#: One rendered node of the settings hierarchy — a named level holding either nested
-#: subsections or the rows that declared themselves into it.
-type SettingGroupView = SettingGroupNode[EditableSetting]
+@dataclass(frozen=True, slots=True)
+class SettingsSection:
+    """One entry of the left nav — a leaf group, addressable on its own."""
+
+    label: str
+    path: tuple[str, ...]
+    slug: str
+    key_count: int
+
+    @property
+    def parent_label(self) -> str:
+        """The levels above this leaf, for a nav that shows where a section sits."""
+        return " / ".join(self.path[:-1])
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsGroupView:
+    """The right pane — one section's rows, or a visible error (never a 500)."""
+
+    section: SettingsSection | None = None
+    settings: tuple[EditableSetting, ...] = ()
+    scope: str = ""
+    error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class SettingsEditorView:
-    """The whole editor page — every setting, or a visible error (never a 500).
+    """The page frame — the nav, the selected section's pane, and the scope picker."""
 
-    ``settings`` is the flat authoritative row set; ``groups`` is the nested partition of
-    it, so the two can never disagree about which keys the page carries.
-    """
-
-    settings: tuple[EditableSetting, ...] = ()
-    groups: tuple[SettingGroupView, ...] = ()
+    sections: tuple[SettingsSection, ...] = ()
+    group: SettingsGroupView = SettingsGroupView()
     scope: str = ""
     available_scopes: tuple[str, ...] = ("",)
     error: str = ""
 
 
-def _display_value(key: str, *, overridden: bool, db_value: ConfigValue | None) -> str:
-    """The row's shown value — ``***`` for a secret (its default too), else DB-or-default.
+def _display_value(key: str, resolved: ResolvedSetting) -> str:
+    """The row's shown value — ``***`` for a secret, else the resolved value as text.
 
-    A secret returns ``MASKED`` WITHOUT reading the stored value or the shipped default, so
-    neither can ever be serialised into the page.
+    A secret returns ``MASKED`` WITHOUT reading the resolved value, so a stored secret can
+    never be serialised into the page.
     """
-    if is_secret(key):
-        return MASKED
-    value = db_value if overridden else getattr(shipped_defaults(), key)
-    return render_value(value)
+    return MASKED if is_secret(key) else render_value(resolved.value)
 
 
-def _display_default(key: str, *, has_default: bool) -> str:
+def _display_default(key: str, shipped: Mapping[str, ConfigValue]) -> str:
     """The shipped default as display text — ``***`` for a secret, "" when there is none.
 
-    A secret is masked BEFORE the value is read, exactly as :func:`_display_value` does, so
-    neither the stored value nor the shipped default can be serialised into the page.
+    Read from the shipped TABLE, in the same stored form the value column renders, so
+    "same as default" is a comparison of like with like rather than of a stored scalar
+    against a coerced dataclass value.
     """
     if is_secret(key):
         return MASKED
-    return render_value(getattr(shipped_defaults(), key)) if has_default else ""
+    return render_value(shipped[key]) if key in shipped else ""
 
 
-def _row(key: str, overrides: dict[str, ConfigValue], shipped_keys: frozenset[str]) -> EditableSetting:
-    overridden = key in overrides
-    has_default = key in shipped_keys
-    value = _display_value(key, overridden=overridden, db_value=overrides.get(key))
-    default = _display_default(key, has_default=has_default)
+def _row(key: str, resolved: ResolvedSetting, shipped: Mapping[str, ConfigValue]) -> EditableSetting:
+    has_default = key in shipped
+    value = _display_value(key, resolved)
+    default = _display_default(key, shipped)
     # Compared as the operator SEES them: identical text on the row means identical value.
-    # An unset key resolves FROM the default, so it matches by construction.
-    matches = not overridden or value == default
+    matches = not resolved.is_overridden or value == default
     return EditableSetting(
         name=key,
-        category=setting_meta(key).category.value,
         value=value,
+        source=resolved.source.value,
         is_secret=is_secret(key),
         is_safety_posture=key in SAFETY_POSTURE_KEYS,
-        is_overridden=overridden,
+        is_overridden=resolved.is_overridden,
         shipped_default=default,
         has_shipped_default=has_default,
         matches_shipped_default=matches,
@@ -125,27 +143,54 @@ def _row(key: str, overrides: dict[str, ConfigValue], shipped_keys: frozenset[st
     )
 
 
-def group_rows(rows: tuple[EditableSetting, ...]) -> tuple[SettingGroupView, ...]:
-    """Partition *rows* into the nested group tree — total, so no row is ever dropped.
+def _leaves() -> tuple[SettingGroupNode[str], ...]:
+    """The schema's key names partitioned into the group tree's leaves, in render order."""
+    return group_leaves(group_tree(sorted(TeatreeSettingsSchema.model_fields), key_of=lambda key: key))
 
-    A row whose group is unknown collects in the leftovers bucket, which renders only
-    when it has members. An empty declared group is omitted; the leftovers bucket is not,
-    because its whole job is to be seen.
+
+def build_settings_sections() -> tuple[SettingsSection, ...]:
+    """The left nav — every leaf group of the hierarchy, in the tree's own order.
+
+    Built from the key NAMES alone, so listing the nav costs no value resolution. The
+    partition is total, so every schema key is reachable through exactly one entry.
     """
-    return group_tree(rows, key_of=lambda row: row.name)
+    return tuple(
+        SettingsSection(label=leaf.label, path=leaf.path, slug=group_slug(leaf.path), key_count=len(leaf.rows))
+        for leaf in _leaves()
+    )
 
 
-def build_settings_editor(scope: str = "") -> SettingsEditorView:
-    """Compose the editable row for every schema key in *scope*; degrade to a visible error."""
+def build_settings_group(slug: str = "", scope: str = "") -> SettingsGroupView:
+    """One section's editable rows; the first section when *slug* names none.
+
+    Only this section's keys are resolved, which is what keeps the page one section wide
+    rather than the whole schema deep.
+    """
+    leaves = {group_slug(leaf.path): leaf for leaf in _leaves()}
+    leaf = leaves.get(slug) or next(iter(leaves.values()), None)
+    if leaf is None:
+        return SettingsGroupView(scope=scope, error="settings unavailable — the schema declares no groups")
+    section = SettingsSection(label=leaf.label, path=leaf.path, slug=group_slug(leaf.path), key_count=len(leaf.rows))
     try:
-        overrides = ConfigSetting.objects.overrides_for_scope(scope)
-        shipped_keys = frozenset(shipped_defaults_table())
-        rows = tuple(_row(key, overrides, shipped_keys) for key in sorted(TeatreeSettingsSchema.model_fields))
+        shipped = shipped_defaults_table()
+        resolved = resolve_settings(leaf.rows, scope=scope)
+    except Exception:
+        logger.warning("dash settings group read failed — degrading to an error pane", exc_info=True)
+        return SettingsGroupView(section=section, scope=scope, error="settings unavailable — read failed")
+    rows = tuple(_row(key, resolved[key], shipped) for key in leaf.rows)
+    return SettingsGroupView(section=section, settings=rows, scope=scope)
+
+
+def build_settings_editor(slug: str = "", scope: str = "") -> SettingsEditorView:
+    """Compose the whole page — the nav, the selected pane, the scope picker."""
+    try:
+        sections = build_settings_sections()
         scopes = available_scopes()
     except Exception:
         logger.warning("dash settings editor read failed — degrading to an error page", exc_info=True)
         return SettingsEditorView(scope=scope, error="settings unavailable — read failed")
-    return SettingsEditorView(settings=rows, groups=group_rows(rows), scope=scope, available_scopes=scopes)
+    group = build_settings_group(slug, scope)
+    return SettingsEditorView(sections=sections, group=group, scope=scope, available_scopes=scopes)
 
 
 def available_scopes() -> tuple[str, ...]:
@@ -166,12 +211,21 @@ def available_scopes() -> tuple[str, ...]:
 
 def build_setting_row(key: str, scope: str = "") -> EditableSetting:
     """One row, re-read after a write — the htmx swap unit, masked by the same policy."""
-    return _row(key, ConfigSetting.objects.overrides_for_scope(scope), frozenset(shipped_defaults_table()))
+    return _row(key, resolve_settings([key], scope=scope)[key], shipped_defaults_table())
 
 
-def export_text() -> str:
-    """The shareable export dump — secrets withheld, personal kept (Phase-4 semantics)."""
-    return export_db_to_toml(include_private=False).toml
+def export_text(*, default_keys_only: bool = False, include_defaults: bool = False) -> str:
+    """The shareable export dump — secrets withheld, personal kept (Phase-4 semantics).
+
+    The two filters are the page's two checkboxes, both unticked by default so the plain
+    download is the delta dump it has always been. Ticking both yields the ``defaults.toml``
+    shape: a complete, drop-in replacement for the shipped file.
+    """
+    return export_db_to_toml(
+        include_private=False,
+        default_keys_only=default_keys_only,
+        include_defaults=include_defaults,
+    ).toml
 
 
 def import_preview(text: str) -> ConfigImport:
@@ -187,12 +241,15 @@ def import_preview(text: str) -> ConfigImport:
 __all__ = [
     "MASKED",
     "EditableSetting",
-    "SettingGroupView",
     "SettingsEditorView",
+    "SettingsGroupView",
+    "SettingsSection",
+    "ValueSource",
     "available_scopes",
     "build_setting_row",
     "build_settings_editor",
+    "build_settings_group",
+    "build_settings_sections",
     "export_text",
-    "group_rows",
     "import_preview",
 ]

@@ -29,6 +29,7 @@ Deliberately pydantic-free — it composes the same cold-safe registries
 
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import cast
 
 import tomlkit
 from tomlkit import items as tomlkit_items
@@ -101,6 +102,17 @@ _PATH_BY_KEY: dict[str, tuple[str, ...]] = _path_by_key()
 def setting_group_path(key: str) -> tuple[str, ...]:
     """The nested path *key* renders under — :data:`UNGROUPED_PATH` when none owns it."""
     return _PATH_BY_KEY.get(key, UNGROUPED_PATH)
+
+
+def group_slug(path: Sequence[str]) -> str:
+    """A URL-safe id for a group path, derived from the labels themselves.
+
+    The dashboard addresses one group per request, so the path has to survive a URL. It is
+    derived rather than declared: a renamed group changes its own id and nothing else has
+    to be kept in step. Callers resolve a slug back by matching it against the live leaf
+    paths, so an unknown one is a miss rather than a wrong group.
+    """
+    return "/".join("-".join("".join(c if c.isalnum() else " " for c in level).split()).lower() for level in path)
 
 
 def group_paths() -> tuple[tuple[str, ...], ...]:
@@ -207,31 +219,53 @@ def group_outline[RowT](rows: Sequence[RowT], key_of: Callable[[RowT], str]) -> 
         )
 
 
-def group_banner(heading: GroupHeading) -> tomlkit_items.Comment:
-    """One level announced as an indented TOML comment — the banner a `.toml` reader sees."""
-    return tomlkit.comment(f"{'  ' * (heading.depth - 1)}{heading.label}")
+def nested_value_table[ValueT](value: Mapping[str, ValueT]) -> tomlkit_items.Table:
+    """A ``dict``-valued setting rendered as its own TOML table, recursively, key-sorted."""
+    table = tomlkit.table()
+    for key in sorted(value):
+        inner = value[key]
+        table[key] = nested_value_table(inner) if isinstance(inner, Mapping) else inner
+    return table
+
+
+def _group_subtable[ValueT](node: SettingGroupNode[str], rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
+    """One group level as a TOML table — its own keys, then its subsections.
+
+    A level that holds only subsections is a super-table, so it prints no header of its
+    own and its children read as one dotted path rather than a bare empty section.
+    """
+    table = tomlkit.table(is_super_table=not node.rows)
+    for key in node.rows:
+        table[key] = rows[key]
+    for child in node.children:
+        table[child.label] = _group_subtable(child, rows)
+    return table
 
 
 def grouped_settings_table[ValueT](rows: Mapping[str, ValueT]) -> tomlkit_items.Table:
-    """A settings table whose keys stay FLAT but read in the group tree's order, banner-commented.
+    """A settings table whose keys read as the group tree's real NESTED sub-tables.
 
-    The flat key namespace is the persisted contract every reader, env override and cold
-    sqlite3 read depends on, so nesting the groups into sub-tables would rename every
-    stored key. The hierarchy rides as indented comments instead: one banner per level, at
-    its first appearance, above the keys it owns. Comments are inert to the parser, so the
-    grouped table parses identically to an ungrouped one.
+    The nesting is a FILE shape only: the flat key namespace stays the persisted contract
+    every reader, env override, ``ConfigSetting`` row and cold sqlite3 read depends on, and
+    :func:`~teatree.config.cold_defaults.flatten_settings_table` collapses the wrappers back
+    on read. A group wrapper is decidable without a marker — it is a table whose name is not
+    a declared setting.
+
+    A ``dict``-valued SETTING (``speak`` / ``mr_reminder``) is a genuine nested setting, not
+    a group, so it renders at the table's top level after the group wrappers rather than
+    inside one. That keeps ``[teatree.speak]`` reachable at the path it has always had.
 
     The ONE renderer behind both TOML surfaces — the ``config_setting`` export dump and the
     shipped ``defaults.toml`` writer — so a snapshot can never flatten what the export
     groups. Ordering is the tree's, then key-sorted within a leaf: a function of the
     CONTENT and the declarations, never of insertion order.
     """
+    scalars = {key: value for key, value in rows.items() if not isinstance(value, Mapping)}
     table = tomlkit.table()
-    for section in group_outline(sorted(rows), key_of=lambda key: key):
-        for heading in section.headings:
-            table.add(group_banner(heading))
-        for key in section.rows:
-            table[key] = rows[key]
+    for node in group_tree(sorted(scalars), key_of=lambda key: key):
+        table[node.label] = _group_subtable(node, scalars)
+    for key in sorted(set(rows) - set(scalars)):
+        table[key] = nested_value_table(cast("Mapping[str, ValueT]", rows[key]))
     return table
 
 
@@ -245,12 +279,13 @@ __all__ = [
     "GroupHeading",
     "GroupSection",
     "SettingGroupNode",
-    "group_banner",
     "group_leaves",
     "group_outline",
     "group_paths",
+    "group_slug",
     "group_tree",
     "grouped_key_order",
     "grouped_settings_table",
+    "nested_value_table",
     "setting_group_path",
 ]

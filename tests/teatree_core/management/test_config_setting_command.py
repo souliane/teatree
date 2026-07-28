@@ -16,9 +16,15 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.enums import Mode
 from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.core.models import ConfigSetting
+
+
+def _teatree(document: dict[str, object]) -> dict[str, object]:
+    """A dump's ``[teatree]`` table, flattened back to the flat key namespace."""
+    return flatten_settings_table(document.get("teatree", {}))
 
 
 class TestConfigSettingSet(TestCase):
@@ -377,9 +383,9 @@ class TestConfigSettingExport(TestCase):
         out = StringIO()
         call_command("config_setting", "export", stdout=out)
         doc = tomllib.loads(out.getvalue())
-        assert doc["teatree"]["mode"] == "auto"
-        assert doc["teatree"]["issue_implementer_max_concurrent"] == 3
-        assert isinstance(doc["teatree"]["issue_implementer_max_concurrent"], int)
+        assert _teatree(doc)["mode"] == "auto"
+        assert _teatree(doc)["issue_implementer_max_concurrent"] == 3
+        assert isinstance(_teatree(doc)["issue_implementer_max_concurrent"], int)
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
 
     def test_export_output_writes_a_file(self) -> None:
@@ -387,7 +393,7 @@ class TestConfigSettingExport(TestCase):
         target = self.tmp_path / "dump.toml"
         call_command("config_setting", "export", "--output", str(target))
         doc = tomllib.loads(target.read_text(encoding="utf-8"))
-        assert doc["teatree"]["issue_implementer_enabled"] is True
+        assert _teatree(doc)["issue_implementer_enabled"] is True
 
     def test_export_overlay_scopes_the_dump(self) -> None:
         call_command("config_setting", "set", "mode", '"auto"')  # global
@@ -398,6 +404,37 @@ class TestConfigSettingExport(TestCase):
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
         # The global scope is excluded when a single overlay is requested.
         assert "teatree" not in doc
+
+
+class TestConfigSettingExportFilters(TestCase):
+    """The two export filters over the CLI — both off by default, both together = the file shape."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def _export(self, *flags: str) -> str:
+        out = StringIO()
+        call_command("config_setting", "export", *flags, stdout=out)
+        return out.getvalue()
+
+    def test_no_flag_dumps_only_the_overridden_rows(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')
+        assert set(_teatree(tomllib.loads(self._export()))) == {"mode"}
+
+    def test_default_keys_only_drops_the_overlay_scopes(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')
+        call_command("config_setting", "set", "mode", '"interactive"', "--overlay", "myproj")
+        assert "overlays" not in tomllib.loads(self._export("--default-keys-only"))
+
+    def test_include_defaults_emits_the_unoverridden_keys_too(self) -> None:
+        emitted = _teatree(tomllib.loads(self._export("--include-defaults")))
+        assert "merge_wip" in emitted
+
+    def test_both_flags_produce_the_shipped_file_shape(self) -> None:
+        dump = self._export("--default-keys-only", "--include-defaults")
+        assert dump.startswith("# teatree shipped defaults")
+        assert set(tomllib.loads(dump)) == {"teatree", "loops", "modes", "schedules"}
 
 
 class TestConfigSettingImport(TestCase):

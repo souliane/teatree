@@ -1,8 +1,13 @@
-{# method/action keeps the row usable with JavaScript off; hx-post upgrades it to a row swap. #}
+{% comment %}
+One editable setting. The key and the scope ride in the hx-post URL, so the row carries no
+hidden inputs and no CSRF token of its own — the body's hx-headers in base.html supplies
+one token for the whole page. hx-target="closest tr" keeps an edit a single-row swap: the
+document is never re-rendered and the scroll position never moves.
+{% endcomment %}
 <tr class="{% if s.is_safety_posture %}stalled{% endif %}" id="setting-{{ s.name }}">
   <td class="mono">{{ s.name }}{% if s.is_safety_posture %} <span class="muted">(safety-posture)</span>{% endif %}</td>
-  <td>{{ s.category }}</td>
   <td class="mono">{{ s.value }}</td>
+  <td><span class="setting-source" title="which tier of the resolution chain supplied this value">{{ s.source }}</span></td>
   <td>
     {% if s.has_shipped_default %}
       <span class="mono">{{ s.shipped_default }}</span>
@@ -17,11 +22,9 @@
   </td>
   <td>
     {% if row_error %}<p class="banner-red">{{ row_error }}</p>{% endif %}
-    <form class="row-actions" method="post" action="{% url 'dash:settings_set' %}"
-      hx-post="{% url 'dash:settings_set' %}" hx-target="closest tr" hx-swap="outerHTML">
-      {% csrf_token %}
-      <input type="hidden" name="key" value="{{ s.name }}">
-      <input type="hidden" name="scope" value="{{ scope }}">
+    <form class="row-actions"
+      hx-post="{% url 'dash:settings_set' s.name %}{% if scope %}?scope={{ scope|urlencode }}{% endif %}"
+      hx-target="closest tr" hx-swap="outerHTML">
       {% if s.is_secret %}
         <input type="password" name="value" placeholder="new JSON value (write-only)" autocomplete="off">
       {% else %}
@@ -33,13 +36,9 @@
       <button type="submit">Save</button>
     </form>
     {% if s.is_overridden %}
-      <form class="row-actions" method="post" action="{% url 'dash:settings_restore' %}"
-        hx-post="{% url 'dash:settings_restore' %}" hx-target="closest tr" hx-swap="outerHTML">
-        {% csrf_token %}
-        <input type="hidden" name="key" value="{{ s.name }}">
-        <input type="hidden" name="scope" value="{{ scope }}">
-        <button type="submit">Restore default</button>
-      </form>
+      <button type="button" class="dash-btn"
+        hx-post="{% url 'dash:settings_restore' s.name %}{% if scope %}?scope={{ scope|urlencode }}{% endif %}"
+        hx-target="closest tr" hx-swap="outerHTML">Restore default</button>
     {% endif %}
   </td>
 </tr>

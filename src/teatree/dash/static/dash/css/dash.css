@@ -475,19 +475,59 @@ a.chip:hover {
   margin: var(--sp-3) 0 var(--sp-2);
 }
 
-/* Nested settings groups — the rule marks where a subsection starts, the indent how deep. */
-.settings-subgroup {
-  border-left: 2px solid var(--line);
-  padding-left: var(--sp-3);
-  margin: var(--sp-3) 0 var(--sp-3) var(--sp-2);
+/* Settings: sections on the LEFT, the selected section's rows on the RIGHT. The nav
+ * column is fixed so the detail pane owns the remaining width and the table never
+ * forces the page wider than the viewport. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 16rem) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
 }
-.settings-subgroup h3,
-.settings-subgroup h4,
-.settings-subgroup h5 {
-  font-size: var(--text-sm);
-  font-weight: 600;
+@media (max-width: 60rem) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.settings-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.settings-nav-item:hover { background: var(--surface-alt, rgba(127, 127, 127, 0.12)); }
+.settings-nav-item.active { background: var(--surface-alt, rgba(127, 127, 127, 0.18)); font-weight: 600; }
+.settings-nav-parent {
+  grid-column: 1;
+  font-size: var(--text-xs);
   color: var(--ink-muted);
-  margin: 0 0 var(--sp-2);
+}
+.settings-nav-count {
+  grid-row: 1;
+  grid-column: 2;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.settings-detail { min-width: 0; }
+.settings-detail table { width: 100%; }
+.settings-pane { overflow-x: auto; }
+.setting-source {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  white-space: nowrap;
 }
 
 /* Health verdict as the page lead. */
