@@ -205,18 +205,24 @@ def _scoped(queryset: "QuerySet[Ticket]", overlay: str) -> "QuerySet[Ticket]":
 
 
 def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransition]:
-    """Rule A — every ticket with a MERGED ``PullRequest`` row that is not yet MERGED.
+    """Rule A — every ticket with a MERGED ``PullRequest`` row not yet at its own terminal.
 
-    ``MERGED`` is excluded to skip the keystone-idempotent self-transition; the rest
-    of ``reconcile_merged``'s source membership — which pointedly refuses the
-    post-merged / abandoned states so the FSM is never dragged backward — is enforced
-    per row by :func:`_advance_to_merged`'s ``can_proceed`` guard, keeping the FSM the
-    single source of truth rather than a copy that could drift.
+    Both target states are excluded, one per role branch: ``MERGED`` for the author
+    branch and ``REVIEW_POSTED`` for the reviewer branch. Excluding only the former
+    left the reviewer lane non-idempotent — ``mark_review_no_action`` accepts
+    ``REVIEW_POSTED`` as a source (the #1431 self-transition), so a reviewer ticket
+    this rule had already correctly closed stayed a candidate forever, re-emitting an
+    applied transition with ``from_state == to_state`` on every tick. The rest of each
+    transition's source membership — which pointedly refuses the post-merged /
+    abandoned states so the FSM is never dragged backward — stays enforced per row by
+    the ``can_proceed`` guards, keeping the FSM the single source of truth.
     """
     from teatree.core.models import PullRequest, Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     candidates = _scoped(
-        Ticket.objects.filter(pull_requests__state=PullRequest.State.MERGED).exclude(state=Ticket.State.MERGED),
+        Ticket.objects.filter(pull_requests__state=PullRequest.State.MERGED).exclude(
+            state__in=(Ticket.State.MERGED, Ticket.State.REVIEW_POSTED)
+        ),
         overlay,
     ).distinct()
     return _collect(candidates, lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run))
@@ -243,16 +249,17 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
     return transitions, len(states)
 
 
-def _settled_states() -> set[str]:
-    """States no forge probe can usefully move: MERGED-or-past, plus the abandoned/reviewer terminals.
+def _settled_states() -> frozenset[str]:
+    """States no forge probe can usefully move — the candidate filter for rules B/C only.
 
-    ``MERGED`` itself stays a candidate for rule D (a merged ticket still owes
-    retro/delivery), so it is deliberately absent — rule B's ``can_proceed`` guard
-    plus the equal-state check keep it from self-transitioning.
+    MERGED-or-past plus the abandoned and reviewer terminals. Rule D does NOT read this
+    set (it builds its own candidates from ``completable_states()``), so keeping MERGED
+    out of it bought nothing and cost one forge probe per merged ticket per run: rule B
+    cannot advance a MERGED ticket and rule C must not drag one to IGNORED.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    return {Ticket.State.RETROSPECTED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
+    return Ticket.merged_states() | {Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
 
 
 def _from_pr_state(
@@ -297,14 +304,11 @@ def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTr
 def _on_close_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTransition | None:
     """Route a closed-unmerged signal by role: an author ticket is abandoned, a review is moot.
 
-    A ticket that already reached MERGED is neither — it LANDED, and ``ignore()``
-    accepts MERGED as a source, so without this guard a CLOSED verdict would undo a
-    merge. MERGED stays a candidate here only because rule D still owes it retro.
+    A MERGED ticket is neither — it LANDED, and ``ignore()`` accepts MERGED as a source,
+    so a CLOSED verdict could undo a merge. That is excluded at the candidate queryset
+    (:func:`_settled_states`) rather than guarded here, so there is one mechanism and no
+    unreachable branch.
     """
-    from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
-
-    if ticket.state in Ticket.merged_states():
-        return None
     if _is_reviewer(ticket):
         return _close_review(ticket, reason=reason, dry_run=dry_run)
     return _resolve_ignored(ticket, reason=reason, dry_run=dry_run)

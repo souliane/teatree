@@ -230,6 +230,24 @@ class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
         assert ticket.state == Ticket.State.REVIEW_POSTED
         assert [t.action for t in report.applied] == [BoardAction.REVIEW_CLOSED]
 
+    def test_the_merged_pr_row_lane_is_idempotent(self) -> None:
+        """The first CORRECT application is what creates the loop, so run 2 is the test.
+
+        Rule A excludes MERGED from its candidates but not REVIEW_POSTED — the state its
+        own reviewer branch targets — and ``mark_review_no_action`` accepts REVIEW_POSTED
+        as a source (the #1431 self-transition). Every later pass would re-emit an
+        `applied` transition with `from_state == to_state`, claiming a change that did
+        not happen, and re-run the transition body's pending-reviewing-task consumption.
+        On the render path this runs every tick.
+        """
+        ticket = self._reviewer(url="")
+        _merged_pr(ticket)
+
+        assert len(reconcile_board(probe_forge=False).applied) == 1
+        assert reconcile_board(probe_forge=False).applied == ()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+
     def test_an_author_ticket_still_reaches_merged(self) -> None:
         """The role branch must not disarm the rule for its real target."""
         author = Ticket.objects.create(
@@ -308,6 +326,16 @@ class TestForgeMergedRule(TestCase):
         with _forge({self.URL: PrOpenState.MERGED}):
             assert len(reconcile_board().applied) == 1
             assert reconcile_board().applied == ()
+
+    def test_the_closed_pr_lane_is_idempotent(self) -> None:
+        ticket = self._ticket()
+
+        with _forge({self.URL: PrOpenState.CLOSED}):
+            assert len(reconcile_board().applied) == 1
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
 
     def test_an_already_merged_ticket_is_never_dragged_to_ignored(self) -> None:
         """MERGED stays a rule-D candidate, so rule C must not reach it.
@@ -392,6 +420,16 @@ class TestIssueDoneRule(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
+
+    def test_the_issue_done_lane_is_idempotent(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SHIPPED, issue_url=self.URL)
+
+        with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}):
+            assert len(reconcile_board().applied) == 1
+            assert reconcile_board().applied == ()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETROSPECTED
 
     def test_a_reviewer_ticket_is_never_walked_through_merged(self) -> None:
         """The third path to the ghost: ``advance_to_delivered`` is the AUTHOR ladder.
