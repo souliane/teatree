@@ -32,7 +32,7 @@ def _selection_as_dict(selection: Selection) -> dict[str, Any]:
         "doctest_targets": list(selection.doctest_targets),
         "changed_src": list(selection.changed_src),
         "changed_tests": list(selection.changed_tests),
-        "changed_docs": list(selection.changed_docs),
+        "changed_reference_mapped": list(selection.changed_reference_mapped),
         "warnings": list(selection.warnings),
         "reasons": [{"test": r.test, "kind": r.kind, "chain": list(r.chain)} for r in selection.reasons],
     }

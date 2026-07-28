@@ -10,13 +10,14 @@ graph-adjacency parsing it used to maintain are gone (#3672).
 
 What survives is the ESCALATION policy, a safety contract the plugin cannot infer:
 
-- ``classify_selection`` — force-FULL on conftest / factories / test settings /
-migrations / any unclassifiable executable change, and ``--create-db`` on a migration.
-A FULL verdict runs the whole suite with the plugin OFF, so nothing is deselected.
-- ``build_force_keep`` — on a SCOPED verdict, the floor dirs, the doc-reader mapping,
-the test-path-mirror rule, and the changed test files themselves become a FORCE-KEEP
-layer applied over the plugin's deselection by ``teatree.quality.force_keep_plugin``,
-in the SAME pytest session. Zero test runs twice.
+- ``classify_selection`` — force-FULL on this lane's OWN selection machinery / conftest /
+factories / test settings / migrations / any unclassifiable executable change, and
+``--create-db`` on a migration. A FULL verdict runs the whole suite with the plugin OFF,
+so nothing is deselected.
+- ``build_force_keep`` — on a SCOPED verdict, the floor dirs, the reference-reader
+mapping, the test-path-mirror rule, and the changed test files themselves become a
+FORCE-KEEP layer applied over the plugin's deselection by
+``teatree.quality.force_keep_plugin``, in the SAME pytest session. Zero test runs twice.
 
 Under-run is a false green — the same doctrine as :mod:`teatree.quality.changed_set`,
 the shared changed-set + FULL-trigger normalizer this builds on. Over-run is not free
@@ -25,6 +26,18 @@ carried the ``BLUEPRINT.md`` edit the blueprint-sync gate compels. Docs are ther
 classified rather than blanket-escalated (:mod:`teatree.quality.doc_impact`) and mapped
 to the tests that READ them; the escalation stays exactly as conservative for anything
 executable.
+
+The ``dev/`` lane runners are the same shape as docs and are classified the same way
+(#3817). The shared classifier calls the whole ``dev/`` tree un-modellable toolchain —
+right for CI-lane routing and the push gate, which own whole-tree backstops of their
+own — but a shell / compose / Dockerfile asset under ``dev/`` is never imported and
+never executed by the local suite, so the only test that can observe an edit to it is
+one whose source NAMES it. Blanket-escalating them made a one-line edit to a lane
+runner select the whole tree, i.e. the change that most needs a local run was the one
+change that could not get one. The fail-safe that escalation provided by accident is
+now explicit and strictly stronger: :data:`SELECTION_DEFINING_PATHS` forces FULL for
+every file that decides WHICH tests run — including the ``src/teatree/quality`` modules
+this lane is built from, which the shared classifier scoped like any other src module.
 """
 
 from collections.abc import Callable
@@ -32,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, FullTrigger, changed_paths, classify, is_migration
-from teatree.quality.doc_impact import disk_doc_reader_lookup, is_doc_path, reference_tokens
+from teatree.quality.doc_impact import disk_reference_reader_lookup, is_doc_path, reference_tokens
 from teatree.quality.test_path_mirror import expected_test_dir
 
 #: The tach pytest plugin's default base — our escalation diff pins the same ref, so the
@@ -45,6 +58,32 @@ FORCE_KEEP_PLUGIN = "teatree.quality.force_keep_plugin"
 #: Cross-cutting, subprocess-heavy suites an import graph cannot fully model — force-keep
 #: them on EVERY scoped selection so their blind spot is a constant cost, not a skip.
 FLOOR_DIRS: tuple[str, ...] = ("tests/quality", "tests/integration", "tests/conformance")
+
+#: The lane's own selection machinery. A diff that edits any of these changes WHICH tests
+#: this lane picks, so the lane cannot be trusted to validate its own change: the verdict
+#: is FULL before any other classification runs. Membership is by exact path — the test
+#: ``test_every_pinned_path_exists_on_disk`` fails on a stale entry, so a rename cannot
+#: silently drop a file out of the fail-safe. Everything reachable only THROUGH these (the tach
+#: plugin, ``pyproject.toml``'s pytest config, ``conftest.py``) already forces FULL by its
+#: own trigger, and CI's whole-tree sharded lane is the backstop for all of it.
+SELECTION_DEFINING_PATHS: frozenset[str] = frozenset(
+    {
+        "src/teatree/quality/affected_tests.py",  # this module: the escalation policy
+        "src/teatree/quality/changed_set.py",  # the shared changed-set + FULL-trigger classifier
+        "src/teatree/quality/doc_impact.py",  # the non-imported-path partition + reference map
+        "src/teatree/quality/force_keep_plugin.py",  # applies force-keep over tach's deselection
+        "src/teatree/quality/test_path_mirror.py",  # the mirror + test-file resolvers both consume
+        "src/teatree/cli/affected_tests_tools.py",  # emits the pytest invocation
+        "dev/test-affected.sh",  # the runner that consumes it
+    }
+)
+
+#: ``dev/`` holds lane runners — shell / compose / Dockerfile assets nothing imports and
+#: the local suite never executes. Their impact is mapped by reference (like docs), not
+#: escalated. A ``.py`` under ``dev/`` is excluded: python IS importable, so it falls
+#: through to the shared classifier's out-of-root FULL.
+_LANE_RUNNER_PREFIX = "dev/"
+_PYTHON_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
 
 _SRC_MODULE_PREFIX = "src/teatree/"
 _SRC_PREFIX = "src/"
@@ -59,13 +98,15 @@ class SelectionVerdict:
     create_db: bool
     scoped_src: tuple[Path, ...] = ()
     scoped_tests: tuple[Path, ...] = ()
-    scoped_docs: tuple[str, ...] = ()
+    #: Changed paths nothing imports (docs + ``dev/`` lane runners) — mapped to the tests
+    #: whose source NAMES them rather than escalated to the whole tree.
+    scoped_reference_mapped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SelectionReason:
     test: str
-    kind: str  # floor | doc-read | mirror | self-changed
+    kind: str  # floor | reference-read | mirror | self-changed
     chain: tuple[str, ...]
 
 
@@ -93,7 +134,7 @@ class Selection:
     reasons: tuple[SelectionReason, ...] = ()
     changed_src: tuple[str, ...] = ()
     changed_tests: tuple[str, ...] = ()
-    changed_docs: tuple[str, ...] = ()
+    changed_reference_mapped: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def pytest_args(self, *, test_db_cloned: bool = False) -> list[str]:
@@ -123,7 +164,8 @@ class Selection:
             return f"affected-tests: FULL — {self.reason}"
         return (
             f"affected-tests: SCOPED (tach plugin + force-keep) — {len(self.force_keep)} force-kept path(s), "
-            f"{len(self.doctest_targets)} changed src module(s), {len(self.changed_docs)} changed doc(s)"
+            f"{len(self.doctest_targets)} changed src module(s), "
+            f"{len(self.changed_reference_mapped)} changed non-imported path(s)"
         )
 
     def explain(self, test: str | None = None) -> list[str]:
@@ -139,6 +181,28 @@ def module_of(path: str) -> str | None:
         return None
     dotted = path[len(_SRC_PREFIX) : -len(".py")].replace("/", ".")
     return dotted.removesuffix(".__init__")
+
+
+def is_lane_runner(path: str) -> bool:
+    """True when *path* is a ``dev/`` lane runner — nothing imports it, no test executes it.
+
+    Excludes python (importable ⇒ the shared classifier's out-of-root FULL owns it) and
+    the selection-defining ``dev/test-affected.sh``, which forces FULL before any
+    reference mapping is reached.
+    """
+    if path in SELECTION_DEFINING_PATHS or path.endswith(_PYTHON_SUFFIXES):
+        return False
+    return path.startswith(_LANE_RUNNER_PREFIX)
+
+
+def is_reference_mapped(path: str) -> bool:
+    """True when *path* has no import-graph edges, so its impact is mapped textually.
+
+    Docs (#3645) and ``dev/`` lane runners (#3817): the only test that can observe a
+    change to one is a test whose source NAMES it, so ``build_force_keep`` maps it to
+    those readers instead of escalating the whole tree.
+    """
+    return is_doc_path(path) or is_lane_runner(path)
 
 
 def _extra_full_trigger(path: str) -> str | None:
@@ -159,22 +223,37 @@ def _extra_full_trigger(path: str) -> str | None:
 
 
 def classify_selection(changed: ChangedSet) -> SelectionVerdict:
-    """Route a diff to FULL or the scoped src+test+doc lists, reusing the shared classifier.
+    """Route a diff to FULL or the scoped src+test+reference lists, reusing the shared classifier.
 
-    Docs are partitioned out FIRST (#3645) so a markdown/docs-tree/mkdocs path never
-    reaches the shared classifier's out-of-root escalation — its impact is mapped to
-    the tests that read it instead. Everything else keeps the #113 escalations on top
-    of :func:`teatree.quality.changed_set.classify`: factories/settings force FULL, a
-    migration additionally requires ``--create-db``, and any remaining path the shared
-    classifier merely IGNORED still becomes FULL.
+    The lane's own selection machinery is checked FIRST: a diff touching
+    :data:`SELECTION_DEFINING_PATHS` is FULL unconditionally, because a selection cannot
+    validate a change to the code that computes it.
+
+    Non-imported paths — docs (#3645) and ``dev/`` lane runners (#3817) — are partitioned
+    out next so they never reach the shared classifier's out-of-root escalation; their
+    impact is mapped to the tests that NAME them instead. Everything else keeps the #113
+    escalations on top of :func:`teatree.quality.changed_set.classify`: factories/settings
+    force FULL, a migration additionally requires ``--create-db``, and any remaining path
+    the shared classifier merely IGNORED still becomes FULL.
     """
-    docs = tuple(sorted({entry.path for entry in changed.entries if is_doc_path(entry.path)}))
+    create_db = any(is_migration(path) for path in changed.paths)
+    selection_defining = sorted(path for path in changed.paths if path in SELECTION_DEFINING_PATHS)
+    if selection_defining:
+        return SelectionVerdict(
+            full=True,
+            reason=(
+                f"the lane's own test-selection machinery changed ({selection_defining[0]}) — "
+                "a selection cannot validate its own change"
+            ),
+            create_db=create_db,
+        )
+
+    reference_mapped = tuple(sorted({entry.path for entry in changed.entries if is_reference_mapped(entry.path)}))
     executable = ChangedSet(
-        entries=tuple(entry for entry in changed.entries if not is_doc_path(entry.path)),
+        entries=tuple(entry for entry in changed.entries if not is_reference_mapped(entry.path)),
         base_ref=changed.base_ref,
     )
     base: FullTrigger = classify(executable)
-    create_db = any(is_migration(path) for path in executable.paths)
     if base.full:
         return SelectionVerdict(full=True, reason=base.reason, create_db=create_db)
 
@@ -197,7 +276,7 @@ def classify_selection(changed: ChangedSet) -> SelectionVerdict:
         create_db=create_db,
         scoped_src=base.scoped_src,
         scoped_tests=base.scoped_tests,
-        scoped_docs=docs,
+        scoped_reference_mapped=reference_mapped,
     )
 
 
@@ -238,21 +317,24 @@ def build_force_keep(
     verdict: SelectionVerdict,
     *,
     floor_dirs: tuple[str, ...] = FLOOR_DIRS,
-    doc_reader_lookup: Callable[[frozenset[str]], tuple[str, ...]] | None = None,
+    reference_reader_lookup: Callable[[frozenset[str]], tuple[str, ...]] | None = None,
     mirror_lookup: Callable[[str], str | None] | None = None,
 ) -> ForceKeep:
     """The escalation set force-kept over the tach plugin, computed from *verdict*.
 
     A FULL verdict never runs the plugin, so its force-keep is irrelevant → empty. A
-    SCOPED verdict force-keeps the floor dirs (always), the changed test files, the
-    doc-reader tests for any changed doc, and the mirror test of each changed src module
-    (belt-and-braces: the plugin's import walk should already reach it). The disk
-    resolvers are injected so the pure assembly is testable without disk.
+    SCOPED verdict force-keeps the floor dirs (always), the changed test files, the tests
+    that NAME any changed non-imported path (a doc or a ``dev/`` lane runner), and the
+    mirror test of each changed src module (belt-and-braces: the plugin's import walk
+    should already reach it). The disk resolvers are injected so the pure assembly is
+    testable without disk.
     """
     if verdict.full:
         return ForceKeep()
 
-    reader_lookup = doc_reader_lookup if doc_reader_lookup is not None else disk_doc_reader_lookup(root)
+    reader_lookup = (
+        reference_reader_lookup if reference_reader_lookup is not None else disk_reference_reader_lookup(root)
+    )
     mirror = mirror_lookup if mirror_lookup is not None else disk_mirror_lookup(root)
 
     kept = _ForceKept(floor_dirs)
@@ -264,8 +346,8 @@ def build_force_keep(
     for changed_test in (str(p) for p in verdict.scoped_tests):
         kept.add(changed_test, "self-changed", (f"{changed_test} (changed test)",))
 
-    for reader in reader_lookup(reference_tokens(verdict.scoped_docs)):
-        kept.add(reader, "doc-read", (f"{reader} reads a changed doc",))
+    for reader in reader_lookup(reference_tokens(verdict.scoped_reference_mapped)):
+        kept.add(reader, "reference-read", (f"{reader} names a changed non-imported path",))
 
     for module in (module_of(str(p)) for p in verdict.scoped_src):
         if module is None:
@@ -311,6 +393,6 @@ def build_selection(root: Path, base_ref: str = DEFAULT_BASE) -> Selection:
         reasons=force_keep.reasons,
         changed_src=changed_src,
         changed_tests=tuple(str(p) for p in verdict.scoped_tests),
-        changed_docs=verdict.scoped_docs,
+        changed_reference_mapped=verdict.scoped_reference_mapped,
         warnings=force_keep.warnings,
     )
