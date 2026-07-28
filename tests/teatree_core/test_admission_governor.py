@@ -243,6 +243,28 @@ class TestReadMachineSignal:
         assert signal.cores >= 1
 
 
+def _usage_row(path: str, *, utilization_7d: float, status_7d: str, valid_for: dt.timedelta) -> None:
+    now = timezone.now()
+    AnthropicTokenUsage.objects.create(
+        pass_path=path,
+        utilization_5h=0.1,
+        utilization_7d=utilization_7d,
+        status_5h="allowed",
+        status_7d=status_7d,
+        reset_7d=now + dt.timedelta(days=3),
+        checked_at=now,
+        valid_until=now + valid_for,
+    )
+
+
+def _healthy_row(path: str = "healthy", *, valid_for: dt.timedelta = dt.timedelta(minutes=5)) -> None:
+    _usage_row(path, utilization_7d=0.39, status_7d="allowed", valid_for=valid_for)
+
+
+def _exhausted_row(path: str = "exhausted", *, valid_for: dt.timedelta = dt.timedelta(days=2)) -> None:
+    _usage_row(path, utilization_7d=1.0, status_7d="rejected", valid_for=valid_for)
+
+
 class TestReadQuotaSignalFreshnessBias(TestCase):
     """The fleet aggregate must not be computed over a sample biased by exhaustion.
 
@@ -257,36 +279,17 @@ class TestReadQuotaSignalFreshnessBias(TestCase):
     account; a partial sample is ``fresh=False``, which the decision fails OPEN on.
     """
 
-    def _row(self, path: str, *, utilization_7d: float, status_7d: str, valid_for: dt.timedelta) -> None:
-        now = timezone.now()
-        AnthropicTokenUsage.objects.create(
-            pass_path=path,
-            utilization_5h=0.1,
-            utilization_7d=utilization_7d,
-            status_5h="allowed",
-            status_7d=status_7d,
-            reset_7d=now + dt.timedelta(days=3),
-            checked_at=now,
-            valid_until=now + valid_for,
-        )
-
-    def _healthy(self, path: str = "healthy", *, valid_for: dt.timedelta = dt.timedelta(minutes=5)) -> None:
-        self._row(path, utilization_7d=0.39, status_7d="allowed", valid_for=valid_for)
-
-    def _exhausted(self, path: str = "exhausted") -> None:
-        self._row(path, utilization_7d=1.0, status_7d="rejected", valid_for=dt.timedelta(days=2))
-
     def test_a_lapsed_healthy_row_does_not_read_as_every_account_exhausted(self) -> None:
-        self._healthy(valid_for=dt.timedelta(minutes=-1))
-        self._exhausted()
+        _healthy_row(valid_for=dt.timedelta(minutes=-1))
+        _exhausted_row()
 
         signal = admission_governor.read_quota_signal()
 
         assert signal.all_accounts_exhausted is False
 
     def test_a_lapsed_healthy_row_does_not_brake_the_headless_lane(self) -> None:
-        self._healthy(valid_for=dt.timedelta(minutes=-1))
-        self._exhausted()
+        _healthy_row(valid_for=dt.timedelta(minutes=-1))
+        _exhausted_row()
 
         decision = decide_admission(
             quota=admission_governor.read_quota_signal(), machine=_machine(), static_ceiling=None
@@ -295,14 +298,14 @@ class TestReadQuotaSignalFreshnessBias(TestCase):
         assert decision.admit is True
 
     def test_a_partial_sample_claims_no_knowledge(self) -> None:
-        self._healthy(valid_for=dt.timedelta(minutes=-1))
-        self._exhausted()
+        _healthy_row(valid_for=dt.timedelta(minutes=-1))
+        _exhausted_row()
 
         assert admission_governor.read_quota_signal().fresh is False
 
     def test_every_account_fresh_and_exhausted_still_brakes(self) -> None:
-        self._exhausted("a")
-        self._exhausted("b")
+        _exhausted_row("a")
+        _exhausted_row("b")
 
         signal = admission_governor.read_quota_signal()
 
@@ -311,8 +314,8 @@ class TestReadQuotaSignalFreshnessBias(TestCase):
         assert decide_admission(quota=signal, machine=_machine(), static_ceiling=None).admit is False
 
     def test_a_fully_fresh_mixed_fleet_reports_the_healthy_account(self) -> None:
-        self._healthy()
-        self._exhausted()
+        _healthy_row()
+        _exhausted_row()
 
         signal = admission_governor.read_quota_signal()
 
@@ -322,3 +325,49 @@ class TestReadQuotaSignalFreshnessBias(TestCase):
 
     def test_no_rows_at_all_still_reads_unknown(self) -> None:
         assert admission_governor.read_quota_signal().fresh is False
+
+
+class TestReadQuotaSignalUsesTheFreshSubset(TestCase):
+    """A usable account's own numbers must survive a lapsed PEER row.
+
+    Whole-fleet freshness is the right bar for ``all_accounts_exhausted`` — that
+    claim is about every account, so an unknown row defeats it. It is the wrong
+    bar for the utilization the pace brake and the adaptive ceiling read: an
+    exhausted row is fresh BY CONSTRUCTION (``valid_until`` is its blocking-window
+    reset, days out) while a healthy one lapses in minutes, so on a small fleet
+    whole-fleet freshness is a coincidence and both mechanisms sit dark, silently
+    falling back to the static ceiling. A fresh, non-exhausted account knows its
+    own headroom regardless of what a lapsed peer is doing.
+    """
+
+    def test_a_fresh_healthy_account_reports_its_own_headroom(self) -> None:
+        _healthy_row()
+        _exhausted_row("lapsed", valid_for=dt.timedelta(minutes=-1))
+
+        signal = admission_governor.read_quota_signal()
+
+        assert signal.fresh is True
+        assert signal.all_accounts_exhausted is False
+        assert signal.weekly_utilization == pytest.approx(0.39)
+
+    def test_the_adaptive_ceiling_survives_a_lapsed_peer(self) -> None:
+        _healthy_row()
+        _exhausted_row("lapsed", valid_for=dt.timedelta(minutes=-1))
+
+        decision = decide_admission(
+            quota=admission_governor.read_quota_signal(), machine=_machine(cores=8), static_ceiling=8
+        )
+
+        assert decision.admit is True
+        assert decision.ceiling == 2
+
+    def test_the_pacing_brake_survives_a_lapsed_peer(self) -> None:
+        _usage_row("paced", utilization_7d=0.97, status_7d="allowed", valid_for=dt.timedelta(minutes=5))
+        _exhausted_row("lapsed", valid_for=dt.timedelta(minutes=-1))
+
+        decision = decide_admission(
+            quota=admission_governor.read_quota_signal(), machine=_machine(), static_ceiling=None
+        )
+
+        assert decision.admit is False
+        assert "pace" in decision.reason
