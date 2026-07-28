@@ -14,10 +14,15 @@ Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import ClassVar, TypedDict, Unpack
+from typing import TYPE_CHECKING, ClassVar, TypedDict, Unpack, cast
 
+from django.apps import apps
 from django.db import models
 from django.utils import timezone
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
+    from teatree.core.models.ticket import Ticket
 
 #: A maintainer applies this label to withhold an issue from the autonomous
 #: factory until they have reviewed it. The issue-implementer claim path
@@ -32,6 +37,16 @@ NEEDS_TRIAGE_LABEL = "needs-triage"
 #: legitimately in-flight one. Terminal-ticket markers are released regardless
 #: of age — this grace guards only the ticket-gone branch.
 _DEFAULT_ORPHAN_GRACE = timedelta(hours=6)
+
+#: How long a non-terminal marker whose ticket EXISTS but has stopped moving may
+#: hold its in-flight slot. The ticket-gone grace above cannot see this class:
+#: the ticket was created, then every task failed and none was re-queued, so the
+#: state freezes short of terminal and the marker is non-terminal forever. Enough
+#: of those and ``issue_implementer_max_concurrent`` is permanently exhausted, the
+#: intake scanner is never built, and the factory reads enabled while implementing
+#: nothing. A live ticket queues or claims a task far more often than daily, so a
+#: whole day of no task activity AND no active task is a dead attempt, not a slow one.
+_DEFAULT_STALL_GRACE = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,22 +145,31 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         overlay: str = "",
         *,
         orphan_grace: timedelta | None = None,
+        stall_grace: timedelta | None = None,
     ) -> MarkerReconcileResult:
         """Classify — WITHOUT mutating — which non-terminal markers are reconcilable (#3275).
 
-        A marker is stale when its linked ticket (matched by ``issue_url``, the
-        canonical unique key the release signal also keys on) has reached a
-        terminal state (``Ticket.marker_release_states()`` → COMPLETED), or when
-        no ticket exists for its issue at all and it has outlived
-        ``orphan_grace`` (a stranded claim → ABANDONED). ``overlay=""`` spans
-        every overlay. The doctor jam-signature check reads this preview; the
-        loop and CLI mutate via :meth:`reconcile_stale`.
+        Three ways a marker stops being legitimately in flight, and each frees its
+        budget slot:
+
+        TERMINAL — its ticket reached a ``Ticket.marker_release_states()`` state → COMPLETED.
+        GONE — no ticket exists for its issue and it outlived ``orphan_grace`` → ABANDONED.
+        STALLED — its ticket exists but died past ``stall_grace`` (:meth:`_ticket_stalled`) → ABANDONED.
+
+        The third is the gap between the first two: a dispatch that got as far as
+        creating a ticket and then died leaves a non-terminal ticket forever, so
+        neither of the original branches can ever fire and the slot is held for
+        good. Tickets are matched by ``issue_url``, the canonical unique key the
+        release signal also keys on. ``overlay=""`` spans every overlay. The doctor
+        jam-signature check reads this preview; the loop and CLI mutate via
+        :meth:`reconcile_stale`.
         """
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — peer model, deferred to avoid load-time cycle
 
-        grace = _DEFAULT_ORPHAN_GRACE if orphan_grace is None else orphan_grace
         terminal_states = Ticket.marker_release_states()
-        cutoff = timezone.now() - grace
+        now = timezone.now()
+        orphan_cutoff = now - (_DEFAULT_ORPHAN_GRACE if orphan_grace is None else orphan_grace)
+        stall_cutoff = now - (_DEFAULT_STALL_GRACE if stall_grace is None else stall_grace)
         non_terminal = self.exclude(state__in=ImplementedIssueMarker.State.terminal())
         if overlay:
             non_terminal = non_terminal.filter(overlay=overlay)
@@ -155,29 +179,58 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         for marker in non_terminal.iterator():
             if not marker.issue_url:
                 continue
-            ticket_state = Ticket.objects.filter(issue_url=marker.issue_url).values_list("state", flat=True).first()
-            if ticket_state is not None:
-                if ticket_state in terminal_states:
-                    completed.append(marker.pk)
-            elif marker.dispatched_at <= cutoff:
+            ticket = Ticket.objects.filter(issue_url=marker.issue_url).only("pk", "state").first()
+            if ticket is None:
+                if marker.dispatched_at <= orphan_cutoff:
+                    abandoned.append(marker.pk)
+            elif ticket.state in terminal_states:
+                completed.append(marker.pk)
+            elif self._ticket_stalled(ticket, marker, cutoff=stall_cutoff):
                 abandoned.append(marker.pk)
         return MarkerReconcileResult(completed=tuple(completed), abandoned=tuple(abandoned))
+
+    @staticmethod
+    def _ticket_stalled(ticket: "Ticket", marker: "ImplementedIssueMarker", *, cutoff: datetime) -> bool:
+        """True when *ticket*'s attempt is DEAD rather than merely slow.
+
+        Dead means both halves: no task is still being worked (nothing PENDING or
+        CLAIMED will ever move it again), and the newest thing that happened to it
+        — its last task, or the claim itself when it never got one — predates
+        *cutoff*. Requiring both is what keeps a long-running attempt safe: a
+        queued task holds the slot no matter how old the claim is, and a recent
+        task holds it no matter how the last one ended.
+
+        The newest task is read with ``Max``, not ``order_by("-created_at")``:
+        ``Task.created_at`` is nullable, and DESC ordering puts NULLs FIRST on
+        PostgreSQL (last on SQLite), so a single null-stamped row would make the
+        ordering read back ``None`` and drop the recency half entirely. ``Max``
+        ignores NULLs on every backend.
+        """
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        tasks = task_model.objects.filter(ticket=ticket)
+        if tasks.filter(status__in=task_model.Status.active()).exists():
+            return False
+        last_task_at = tasks.aggregate(latest=models.Max("created_at"))["latest"]
+        return max(marker.dispatched_at, last_task_at or marker.dispatched_at) <= cutoff
 
     def reconcile_stale(
         self,
         overlay: str = "",
         *,
         orphan_grace: timedelta | None = None,
+        stall_grace: timedelta | None = None,
     ) -> MarkerReconcileResult:
         """Release stale markers so the in-flight budget self-heals (#3275).
 
-        Terminal-ticket markers → COMPLETED, gone-ticket orphans past the grace
-        → ABANDONED (mirroring the give-up semantics ABANDONED already carries).
-        Idempotent: a second pass finds the just-released rows terminal and is a
-        no-op. Returns the same :class:`MarkerReconcileResult`
-        :meth:`find_stale` computes.
+        Terminal-ticket markers → COMPLETED; gone-ticket orphans past the grace and
+        stalled-ticket attempts past ``stall_grace`` → ABANDONED (mirroring the
+        give-up semantics ABANDONED already carries, so the issue becomes claimable
+        again through :meth:`claim`'s re-claim path). Idempotent: a second pass
+        finds the just-released rows terminal and is a no-op. Returns the same
+        :class:`MarkerReconcileResult` :meth:`find_stale` computes.
         """
-        result = self.find_stale(overlay, orphan_grace=orphan_grace)
+        result = self.find_stale(overlay, orphan_grace=orphan_grace, stall_grace=stall_grace)
         if result.completed:
             self.filter(pk__in=result.completed).update(state=ImplementedIssueMarker.State.COMPLETED)
         if result.abandoned:

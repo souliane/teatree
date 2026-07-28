@@ -21,9 +21,9 @@ from teatree.config import get_effective_settings
 from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
-from teatree.loop.merged_ticket_reconcile import reconcile_merged_tickets
 from teatree.loop.phases.orchestrate import orchestrate_phase
 from teatree.loop.rendering import _populate_dashboard_head, zones_for
+from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.statusline import StatuslineZones, render
 from teatree.loop.tick_freshness import _write_tick_meta
 
@@ -210,11 +210,13 @@ def _reconcile_merged_tickets() -> None:
     Runs after :func:`_reconcile_manual_prs` so a row flipped to MERGED this same
     tick reconciles its ticket immediately. Closes the out-of-keystone-merge wedge
     where an author ticket entered via a non-ladder phase (``debugging``) has no
-    automatic exit from ``NOT_STARTED``. Fails open: any error degrades to a no-op
-    so a bad row can never abort the tick.
+    automatic exit from ``NOT_STARTED``. Only the no-network rule runs here — the
+    live forge probes are the cadenced ``board_reconcile`` scanner's job, so the
+    per-tick render never issues an API call. Fails open: any error degrades to a
+    no-op so a bad row can never abort the tick.
     """
     try:
-        reconcile_merged_tickets()
+        reconcile_board(probe_forge=False)
     except Exception:  # noqa: BLE001 — the merged-ticket reconcile is best-effort; a failure degrades to no-op
         return
 

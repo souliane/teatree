@@ -59,9 +59,14 @@ def register(loop_app: typer.Typer) -> None:
         _delegate(*_use_args(name, expiry=expiry, hold=hold, reason=reason), json_output=json_output)
 
     @preset_app.command("auto")
-    def auto_command(*, json_output: Annotated[bool, typer.Option("--json")] = False) -> None:
-        """Clear the manual override so the active schedule decides again."""
-        _delegate("auto", json_output=json_output)
+    def auto_command(
+        *,
+        user_id: Annotated[str, typer.Option("--user-id", help="Slack user id for the backlog drain.")] = "",
+        overlay: Annotated[str, typer.Option("--overlay", help="Overlay name for the drain's bot routing.")] = "",
+        json_output: Annotated[bool, typer.Option("--json")] = False,
+    ) -> None:
+        """Clear the manual override so the active schedule / default mode decides again."""
+        _delegate("auto", *_drain_args(user_id, overlay), json_output=json_output)
 
     @preset_app.command("create")
     def create_command(
@@ -97,6 +102,16 @@ def register(loop_app: typer.Typer) -> None:
         _delegate("delete", name, json_output=json_output)
 
     loop_app.add_typer(preset_app, name="preset")
+
+
+def _drain_args(user_id: str, overlay: str) -> list[str]:
+    """The optional Slack-drain routing flags, omitted when unset (config decides)."""
+    args: list[str] = []
+    if user_id:
+        args += ["--user-id", user_id]
+    if overlay:
+        args += ["--overlay", overlay]
+    return args
 
 
 def _use_args(name: str, *, expiry: str, hold: bool, reason: str) -> list[str]:

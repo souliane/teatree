@@ -11,18 +11,6 @@ Edit the source command, not this file.
 | `clear` | Remove *action_class* from *overlay*'s dial table (it falls back to ASK) |
 | `show` | Render every class's configured trust, never-fades floor, breach, and verdict |
 
-## `availability`
-
-``t3 teatree availability`` group root.
-
-| Subcommand | Description |
-| --- | --- |
-| `away` | Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or forever |
-| `present` | Alias: set the ``engaged`` present-class mode until *until* — or forever |
-| `auto` | Clear the manual mode override; the schedule / default mode decides again |
-| `show` | Print the current resolved mode and which layer decided it |
-| `autonomous-away` | Force autonomous-away — defer questions but KEEP self-pumping (#2544) |
-
 ## `checking`
 
 ``t3 <overlay> checking`` group root.
@@ -258,7 +246,7 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | --- | --- |
 | `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
 | `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
-| `auto` | Clear the manual override so the active schedule decides again |
+| `auto` | Clear the manual override so the active schedule / default mode decides again |
 | `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
 | `edit` | Edit a preset's entries / description / pin / scope in place |
 | `delete` | Delete a preset (a slot/override still pointing at it fails open to base config) |
@@ -560,7 +548,7 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `record-spec-coverage` | Record the spec-coverage manifest the delivery DoD gate reads (#2232) |
-| `sync-completions` | Check post-ship tickets against upstream issues and advance completed ones |
+| `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |

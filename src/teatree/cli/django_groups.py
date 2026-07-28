@@ -336,7 +336,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
-            ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
+            ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("create-sub", "Create a child work item nested under a parent issue/work item."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
@@ -377,19 +377,6 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("approve", "Pin the committed recipe's sha into approved_recipe_sha."),
         ],
         core_dispatch=True,
-    ),
-    "availability": DjangoGroup(
-        "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
-        [
-            ("away", "Set manual away-mode override (questions queue as DeferredQuestion rows)."),
-            (
-                "autonomous-away",
-                "Set manual autonomous-away override (questions queue; the self-pump keeps running, #2544).",
-            ),
-            ("present", "Set manual present-mode override (questions ask interactively)."),
-            ("auto", "Clear manual override and fall back to schedule/default."),
-            ("show", "Print the currently resolved mode and source (override/schedule/default)."),
-        ],
     ),
     "config_setting": DjangoGroup(
         "DB-home settings store — the sole tier for a DB-home setting below env (#1775).",

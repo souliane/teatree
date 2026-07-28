@@ -4053,8 +4053,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  last fire, and next tick.                                   │
 │ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
 │                  one per line, sorted.                                       │
-│ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
-│                  terminal/gone, freeing intake budget.                       │
+│ reclaim-markers  Release non-terminal markers whose ticket is terminal,      │
+│                  gone, or stalled, freeing intake budget.                    │
 │ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
 │                  presets/schedules or `loop override`.                       │
 │ resume           Resume a paused OR disabled mini-loop — EMERGENCY-only;     │
@@ -4350,14 +4350,25 @@ Usage: t3 loop intake-loops [OPTIONS]
 ```
 Usage: t3 loop reclaim-markers [OPTIONS]
 
- Release orphaned non-terminal markers whose ticket is terminal/gone, freeing
- intake budget.
+ Release non-terminal markers whose ticket is terminal, gone, or stalled,
+ freeing intake budget.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Restrict to one overlay (default: reconcile every     │
-│                        overlay's markers).                                   │
-│ --json                 Emit the reconcile result as JSON.                    │
-│ --help                 Show this message and exit.                           │
+│ --overlay                   TEXT                Restrict to one overlay      │
+│                                                 (default: reconcile every    │
+│                                                 overlay's markers).          │
+│ --orphan-grace-hours        FLOAT RANGE [x>=0]  How long a ticket-less claim │
+│                                                 may linger before it is      │
+│                                                 abandoned (default: 6). Pass │
+│                                                 0 to free a claim stranded   │
+│                                                 moments ago rather than      │
+│                                                 waiting out the grace.       │
+│ --stall-grace-hours         FLOAT RANGE [x>=0]  How long a claim whose       │
+│                                                 ticket stopped moving may    │
+│                                                 hold its slot (default: 24). │
+│ --json                                          Emit the reconcile result as │
+│                                                 JSON.                        │
+│ --help                                          Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4688,7 +4699,8 @@ Usage: t3 loop preset [OPTIONS] COMMAND [ARGS]...
 │         verdict table.                                                       │
 │ use     Activate a preset as the manual override (default: until the next    │
 │         scheduled boundary).                                                 │
-│ auto    Clear the manual override so the active schedule decides again.      │
+│ auto    Clear the manual override so the active schedule / default mode      │
+│         decides again.                                                       │
 │ create  Create a preset from ``--set`` entries, an optional availability pin │
 │         and overlay scope.                                                   │
 │ edit    Edit a preset's entries / description / pin / scope in place.        │
@@ -4751,11 +4763,13 @@ Usage: t3 loop preset use [OPTIONS] NAME
 ```
 Usage: t3 loop preset auto [OPTIONS]
 
- Clear the manual override so the active schedule decides again.
+ Clear the manual override so the active schedule / default mode decides again.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --user-id        TEXT  Slack user id for the backlog drain.                  │
+│ --overlay        TEXT  Overlay name for the drain's bot routing.             │
 │ --json                                                                       │
-│ --help          Show this message and exit.                                  │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6039,7 +6053,6 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ repro           Forced-repro gate: record the RED/GREEN reproduction a fix   │
 │                 must carry.                                                  │
 │ recipe          Read seam over the recipe-weighted factory score.            │
-│ availability    24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).  │
 │ config_setting  DB-home settings store — the sole tier for a DB-home setting │
 │                 below env (#1775).                                           │
 │ approval_dial   Per-action-class approval dial — graduate a class from ask   │
@@ -9589,8 +9602,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                          (BLUEPRINT §17.4).                                  │
 │ list                     List tickets, optionally filtered by state and/or   │
 │                          overlay.                                            │
-│ sync-completions         Check post-ship tickets against upstream issues and │
-│                          advance completed ones.                             │
+│ sync-completions         Reconcile the ticket board against forge truth and  │
+│                          advance what has landed.                            │
 │ comment                  Post a comment to an issue or work item by its URL. │
 │ create-sub               Create a child work item nested under a parent      │
 │                          issue/work item.                                    │
@@ -9940,16 +9953,23 @@ Usage: t3 teatree ticket list [OPTIONS]
 ```
 Usage: t3 teatree ticket sync-completions [OPTIONS]
 
- Check post-ship tickets against upstream issues and advance completed ones.
+ Reconcile the ticket board against forge truth and advance what has landed.
 
- Walks tickets in shipped/in_review/merged states, calls the overlay's
- ``is_issue_done()`` for each, and transitions completed tickets toward
- delivered. Use ``--dry-run`` to preview without touching state.
+ Advances a ticket whose PR merged (a linked ``PullRequest`` row, or the
+ ticket's own ``issue_url`` the forge reports merged), resolves one whose PR
+ closed unmerged, and walks a post-ship ticket whose upstream issue is done
+ toward delivered. The same path the cadenced ``board_reconcile`` scanner
+ runs, so the manual command and the loop can never disagree. Use
+ ``--dry-run`` to preview the proposed transitions without touching state.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --dry-run    --no-dry-run      Show what would transition without acting.    │
-│                                [default: no-dry-run]                         │
-│ --help                         Show this message and exit.                   │
+│ --dry-run         --no-dry-run             Show what would transition        │
+│                                            without acting.                   │
+│                                            [default: no-dry-run]             │
+│ --probe-budget                    INTEGER  Maximum forge reads this run may  │
+│                                            issue.                            │
+│                                            [default: 150]                    │
+│ --help                                     Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10534,110 +10554,6 @@ Usage: t3 teatree recipe approve [OPTIONS]
  scored reads stamp ``recipe_approved=true``. Re-run after any recipe edit.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 teatree availability`
-
-```
-Usage: t3 teatree availability [OPTIONS] COMMAND [ARGS]...
-
- 24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ away             Set manual away-mode override (questions queue as           │
-│                  DeferredQuestion rows).                                     │
-│ autonomous-away  Set manual autonomous-away override (questions queue; the   │
-│                  self-pump keeps running, #2544).                            │
-│ present          Set manual present-mode override (questions ask             │
-│                  interactively).                                             │
-│ auto             Clear manual override and fall back to schedule/default.    │
-│ show             Print the currently resolved mode and source                │
-│                  (override/schedule/default).                                │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree availability away`
-
-```
-Usage: t3 teatree availability away [OPTIONS]
-
- Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or
- forever.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
-│                      2026-05-19T18:00:00+02:00).                             │
-│ --help               Show this message and exit.                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree availability autonomous-away`
-
-```
-Usage: t3 teatree availability autonomous-away [OPTIONS]
-
- Force autonomous-away — defer questions but KEEP self-pumping (#2544).
-
- Unlike ``away`` (which also pauses the factory), autonomous-away is the
- unattended-run state: ``AskUserQuestion`` calls defer to the durable
- backlog while the Stop self-pump keeps driving the loop. Alias for the
- ``unattended`` merged mode.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
-│                      2026-05-19T18:00:00+02:00).                             │
-│ --help               Show this message and exit.                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree availability present`
-
-```
-Usage: t3 teatree availability present [OPTIONS]
-
- Alias: set the ``engaged`` present-class mode until *until* — or forever.
-
- Coming back from an away-class mode auto-drains the deferred-question
- backlog to the user's Slack DM (handled in the mode-override chokepoint),
- so the user is re-asked everything they missed without any manual step.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --until          TEXT  ISO8601 timestamp when the override expires.          │
-│ --user-id        TEXT  Slack user id for the away→present backlog drain      │
-│                        (defaults to config).                                 │
-│ --overlay        TEXT  Set T3_OVERLAY_NAME for the drain (per-overlay bot    │
-│                        routing).                                             │
-│ --help                 Show this message and exit.                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree availability auto`
-
-```
-Usage: t3 teatree availability auto [OPTIONS]
-
- Clear the manual mode override; the schedule / default mode decides again.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree availability show`
-
-```
-Usage: t3 teatree availability show [OPTIONS]
-
- Print the current resolved mode and which layer decided it.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit the resolved mode/source as JSON instead of the human   │
-│                 line.                                                        │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

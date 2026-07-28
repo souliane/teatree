@@ -489,3 +489,38 @@ class TestPrivacyScanDiffAddedLineScoping:
         result = _run(blob)
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "email" in result.stdout
+
+    def test_three_component_version_or_section_is_not_a_private_ip(self) -> None:
+        # A private IP has FOUR octets. The `10` branch of the matcher used to
+        # carry only three, so a doc section reference or a version string of
+        # the same shape was reported as a leaked address — and a real
+        # a real four-octet address matched only its first three octets. This
+        # blocked a real push over an unchanged doc section reference.
+        diff = (
+            "diff --git a/BLUEPRINT.md b/BLUEPRINT.md\n"
+            "--- a/BLUEPRINT.md\n"
+            "+++ b/BLUEPRINT.md\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            "+Config lives in appendix \u00a710.1.1, shipped since version 10.2.3.\n"  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "private_ip" not in result.stdout
+
+    def test_a_real_private_ip_is_still_flagged_whole(self) -> None:
+        # The counterpart to the test above: narrowing the matcher must not
+        # stop it catching an actual address, and it must report all four
+        # octets rather than a truncated prefix.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            '+HOST = "10.1.1.5"\n'  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "private_ip" in result.stdout
+        assert "10.1.1.5" in result.stdout  # privacy-scan:allow self-fixture

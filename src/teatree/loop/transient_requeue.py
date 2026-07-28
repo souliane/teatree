@@ -15,11 +15,11 @@ never forever.
 
 A DETERMINISTIC failure (a test failure, an assertion, a schema/evidence refusal)
 is NOT reopened blindly, but it must never sit silent either. On a non-terminal
-ticket, a coding/debugging failure whose last attempt was an omitted-envelope
-refusal (the coder emitted no trailing ``files_modified`` JSON) gets exactly ONE
-bounded corrective retry — reopened with the emit-the-envelope instruction
-appended to its prompt. Any other deterministic failure, and any envelope refusal
-that already spent its one corrective retry, is escalated via the SAME
+ticket, a failure whose last attempt was an ENVELOPE REFUSAL — classified by the
+shared :mod:`teatree.agents.envelope_refusal` vocabulary, so the producing and
+consuming sides can never drift — gets exactly ONE bounded corrective retry, reopened
+with the phase-accurate emit-the-envelope instruction appended to its prompt. Any
+other deterministic failure, and any refusal that already spent its retry, hits the
 :class:`DeferredQuestion` path. An EMPTY-error FAILED task (no recorded error at
 all — neither transient nor deterministic) would otherwise match no branch and
 freeze silently; it is routed straight to the escalation path. The invariant: a
@@ -91,6 +91,7 @@ from datetime import datetime
 
 from django.utils import timezone
 
+from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
 from teatree.agents.outage_classifier import is_transient_failure
 from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
@@ -132,22 +133,12 @@ _LIVE_SUCCESSOR_STAMP = "[superseded-parked]"
 #: drops out of every active scan instead of re-dispatching indefinitely.
 _DEAD_REVIEW_STAMP = "[dead-review-retired]"
 
-#: Phases whose omitted-envelope refusal earns the one-shot corrective retry.
+#: Phases whose RECORDER-side envelope refusal earns the one-shot corrective retry.
+#: The RUNNER-side ``no_result_envelope`` is NOT gated on it (:func:`_corrective_note`).
 _CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
 #: Idempotency stamp appended to ``execution_reason`` when the corrective retry
 #: fires — its presence means the one retry was already spent (escalate next time).
 _CORRECTIVE_MARKER = "[auto-corrective-retry]"
-_CORRECTIVE_INSTRUCTION = (
-    "your last run omitted the required trailing JSON result envelope with files_modified — emit it."
-)
-#: Error substrings that mark a malformed / missing result envelope (as opposed
-#: to a genuine defect like an assertion or test failure).
-_ENVELOPE_REFUSAL_MARKERS = (
-    "missing required evidence",
-    "unexpected keys",
-    "result is not valid json",
-    "result must be a json object",
-)
 
 
 def requeue_transient_failed() -> int:
@@ -246,8 +237,8 @@ def _handle_deterministic(task: Task) -> int:
     if halt is not None:
         _escalate_once(task, reason=halt)
         return 0
-    if _is_corrective_candidate(task):
-        return _corrective_reopen(task)
+    if (note := _corrective_note(task)) is not None:
+        return _corrective_reopen(task, note)
     _escalate_once(task, reason=_latest_error(task) or "deterministic failure")
     return 0
 
@@ -280,25 +271,36 @@ def _self_repair_reopen(task: Task) -> int | None:
     )
 
 
-def _is_corrective_candidate(task: Task) -> bool:
-    """Whether *task* is an omitted-envelope coding refusal that has not yet been corrective-retried."""
-    if normalize_phase(task.phase) not in _CORRECTIVE_PHASES:
-        return False
+def _corrective_note(task: Task) -> str | None:
+    """The emit-the-envelope instruction *task* earns, or ``None`` if it must escalate.
+
+    The RUNNER-side ``no_result_envelope`` refusal is a pure output-FORMAT failure, so
+    it is corrective on ANY phase where ``ProseSummaryPolicy.allowed`` is False:
+    ``debugging`` (already in :data:`_CORRECTIVE_PHASES`) plus every no-evidence,
+    non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
+    ``codex_*``) — which the old gate left paging a human on the first prose-only run.
+    A RECORDER-side refusal stays gated on the set: a withheld ``reviewing`` verdict is
+    a judgement to surface, not a format slip. ``None`` for a genuine defect, and for a
+    task whose one corrective retry is already spent.
+    """
     if _CORRECTIVE_MARKER in task.execution_reason:
-        return False
-    error = _latest_error(task).casefold()
-    return any(marker in error for marker in _ENVELOPE_REFUSAL_MARKERS)
+        return None
+    error = _latest_error(task)
+    gated = normalize_phase(task.phase) in _CORRECTIVE_PHASES and is_recorder_refusal(error)
+    if is_no_envelope_refusal(error) or gated:
+        return corrective_instruction(task.phase)
+    return None
 
 
-def _corrective_reopen(task: Task) -> int:
+def _corrective_reopen(task: Task, note: str) -> int:
     """CAS FAILED → PENDING appending the emit-the-envelope instruction to the prompt.
 
     Uses the same conditional ``UPDATE ... WHERE status=FAILED`` compare-and-swap
     as :func:`_reopen` so a concurrent tick that already reopened the row updates 0
     rows and does not re-append the note.
     """
-    note = f"{_CORRECTIVE_MARKER} {_CORRECTIVE_INSTRUCTION}"
-    new_reason = f"{task.execution_reason}\n{note}".strip() if task.execution_reason else note
+    stamped = f"{_CORRECTIVE_MARKER} {note}"
+    new_reason = f"{task.execution_reason}\n{stamped}".strip() if task.execution_reason else stamped
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
         claimed_at=None,

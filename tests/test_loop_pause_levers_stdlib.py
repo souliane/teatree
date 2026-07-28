@@ -12,10 +12,10 @@ bootstraps Django). fast-hooks removes even that: the ``t3`` child cold-booted
 Django (~3s), which — twice per Stop — dominated the ~15s Stop hook and blew the
 30s timeout (the recurring TIMEOUT). Both levers now read durable state DIRECTLY
 in stdlib: ``db_loop_state_suppresses_self_pump`` reads the ``teatree_loop_state``
-row via the Django-free ``teatree.config.cold_reader.loop_status``, and
-``_resolved_away_mode`` reads the manual-override JSON file + the no-schedule
-default in pure stdlib (only a configured cron schedule, which needs ``croniter``,
-still delegates to the ``t3`` subprocess).
+row via the Django-free ``teatree.config.cold_reader.loop_status``, and the mode
+posture is cold-read off the same control DB via
+``teatree.config.cold_mode.resolve_cold_posture`` (#3826 replaced the JSON mirror
+file the probe used to obey, which had drifted a week out of date).
 
 These tests reproduce the bare-``python3`` context (the in-process bootstrap is
 forced to fail) and prove a durable pause / away override STILL suppresses the
@@ -24,19 +24,16 @@ structural invariant (no in-process django bootstrap in the levers) is re-pinned
 against the new mechanism.
 """
 
-import json
 import os
 import sqlite3
-import subprocess
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-import hooks.scripts.availability_away_probe as away_probe
 import hooks.scripts.hook_router as router
 import hooks.scripts.loop_state_self_pump_gate as gate
+import hooks.scripts.mode_posture_probe as posture_probe
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_loop_self_pump
 
 
@@ -78,21 +75,31 @@ def _fake_pending(monkeypatch: pytest.MonkeyPatch, entries: list[dict]) -> None:
     monkeypatch.setattr(router, "_consolidated_pending_work", lambda: entries)
 
 
-def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dispatch_status: str | None = None) -> None:
+def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dispatch_status: str | None = None) -> Path:
     """Build the PRIMARY DB (with a ``teatree_loop_state`` table) and point cold_reader at it.
 
     ``T3_CONFIG_DB`` makes ``cold_reader.canonical_config_db`` resolve this DB;
     its PARENT is the PRIMARY data dir the away probe reads
-    ``availability_override.json`` from. *dispatch_status* seeds the ``dispatch``
-    row; ``None`` leaves it absent (the ``enabled`` fall-through).
+    the mode posture from. *dispatch_status* seeds the ``dispatch`` row; ``None``
+    leaves it absent (the ``enabled`` fall-through). The three posture-carrying mode
+    rows are seeded so a test only has to point an override at one.
     """
     db = tmp_path / "db.sqlite3"
     conn = sqlite3.connect(db)
     try:
-        conn.execute(
+        conn.executescript(
             "CREATE TABLE teatree_loop_state ("
             "id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
-            "status TEXT NOT NULL, created_at TEXT, updated_at TEXT)"
+            "status TEXT NOT NULL, created_at TEXT, updated_at TEXT);"
+            "CREATE TABLE teatree_loop_preset (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
+            "defers_questions BOOL NOT NULL, pauses_self_pump BOOL NOT NULL, presence_sensitive BOOL NOT NULL);"
+            "CREATE TABLE teatree_loop_preset_override (id INTEGER PRIMARY KEY, preset_name TEXT NOT NULL, "
+            "until TEXT, set_at TEXT NOT NULL);"
+        )
+        conn.executemany(
+            "INSERT INTO teatree_loop_preset "
+            "(name, defers_questions, pauses_self_pump, presence_sensitive) VALUES (?,?,?,?)",
+            [("engaged", 0, 0, 1), ("unattended", 1, 0, 1), ("offline", 1, 1, 0)],
         )
         if dispatch_status is not None:
             conn.execute("INSERT INTO teatree_loop_state (name, status) VALUES ('dispatch', ?)", (dispatch_status,))
@@ -100,28 +107,18 @@ def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dispatch_stat
     finally:
         conn.close()
     monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
 
 
-def _write_override(tmp_path: Path, mode: str, *, until: str | None = None) -> None:
-    """Write ``availability_override.json`` under the PRIMARY data dir (``tmp_path``)."""
-    doc: dict[str, str] = {"mode": mode}
-    if until is not None:
-        doc["until"] = until
-    (tmp_path / "availability_override.json").write_text(json.dumps(doc), encoding="utf-8")
-
-
-def _seed_availability_schedule(tmp_path: Path, windows: list[str]) -> None:
-    """Seed the DB-home ``availability_schedule`` ConfigSetting row into the primary config DB."""
+def _override(tmp_path: Path, mode_name: str, *, until: str | None = None) -> None:
+    """Point the L3 override row at *mode_name* in the PRIMARY control DB."""
     conn = sqlite3.connect(tmp_path / "db.sqlite3")
     try:
+        conn.execute("DELETE FROM teatree_loop_preset_override")
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
-            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
-            "key TEXT NOT NULL, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'availability_schedule', ?)",
-            (json.dumps({"windows": windows}),),
+            "INSERT INTO teatree_loop_preset_override (preset_name, until, set_at) "
+            "VALUES (?, ?, '2026-01-01 00:00:00')",
+            (mode_name, until),
         )
         conn.commit()
     finally:
@@ -168,123 +165,105 @@ class TestDbPauseLeverReadsViaColdReader:
         assert gate.db_loop_state_suppresses_self_pump() is False
 
 
-class TestAwayLeverReadsOverrideFileStdlib:
-    """``_resolved_away_mode`` reads the manual-override file + no-schedule default in stdlib.
+class TestPauseLeverColdReadsTheControlDb:
+    """``_resolved_pauses_self_pump`` cold-reads the mode posture off the control DB.
 
-    The router's thin ``_resolved_away_mode`` delegates to the stdlib sibling
-    ``availability_away_probe`` (#2559).
+    The router's thin wrapper delegates to the stdlib sibling ``posture_probe``, which
+    resolves the SAME override row the Django resolver reads — no mirror file, no
+    subprocess, no ``django.setup()`` (#2559, #3826).
     """
 
     def test_probe_never_imports_in_process_django_bootstrap(self) -> None:
-        assert not hasattr(away_probe, "bootstrap_teatree_django")
+        assert not hasattr(posture_probe, "bootstrap_teatree_django")
 
-    def test_away_override_resolves_true_under_bare_python3(
+    def test_probe_never_shells_out_to_t3(self) -> None:
+        # The subprocess fallback existed only because the mirror could not evaluate a
+        # schedule. The cold reader evaluates it directly, so the Stop hot path pays no
+        # child process at all.
+        assert not hasattr(posture_probe, "subprocess")
+
+    def test_holiday_override_resolves_true_under_bare_python3(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _config_db(tmp_path, monkeypatch)  # establishes the PRIMARY data dir
-        _write_override(tmp_path, "away")
-        assert router._resolved_away_mode() is True
-
-    def test_present_override_resolves_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _config_db(tmp_path, monkeypatch)
-        _write_override(tmp_path, "present")
-        assert router._resolved_away_mode() is False
+        _override(tmp_path, "offline")
+        assert router._resolved_pauses_self_pump() is True
 
-    def test_no_override_no_windows_resolves_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Default present: no override file, no configured schedule windows.
+    def test_reachable_override_resolves_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _config_db(tmp_path, monkeypatch)
-        assert router._resolved_away_mode() is False
+        _override(tmp_path, "engaged")
+        assert router._resolved_pauses_self_pump() is False
 
-    def test_expired_away_override_falls_through_to_present(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # An expired away override is inactive → falls through to the (windowless)
-        # schedule → default present. Anti-vacuous: an ACTIVE away override at the
-        # same path resolves True (the sibling test above).
+    def test_no_override_no_schedule_resolves_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _config_db(tmp_path, monkeypatch)
-        _write_override(tmp_path, "away", until="2000-01-01T00:00:00Z")
-        assert router._resolved_away_mode() is False
+        assert router._resolved_pauses_self_pump() is False
 
-    def test_configured_schedule_delegates_to_t3_subprocess(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # A configured cron window needs croniter (absent from the bare hook), so
-        # the away probe delegates to the ``t3`` subprocess for an exact read.
-        _config_db(tmp_path, monkeypatch)  # no override → falls to the schedule tier
-        _seed_availability_schedule(tmp_path, ["* 9-16 * * 1-5"])
-        calls: list[list[str]] = []
-
-        def _run(argv: list[str], *_a: object, **_k: object) -> SimpleNamespace:
-            calls.append(list(argv))
-            return SimpleNamespace(returncode=0, stdout="availability: mode=away source=schedule", stderr="")
-
-        monkeypatch.setattr(away_probe, "shutil", SimpleNamespace(which=lambda _n: "/usr/local/bin/t3"))
-        monkeypatch.setattr(
-            away_probe, "subprocess", SimpleNamespace(run=_run, TimeoutExpired=subprocess.TimeoutExpired)
-        )
-
-        assert router._resolved_away_mode() is True
-        assert any("availability" in " ".join(c) for c in calls)  # delegated to t3 for the schedule
+    def test_expired_holiday_override_falls_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An expired override is inactive → falls through to the (absent) schedule →
+        # default. Anti-vacuous: an ACTIVE holiday override on the same row resolves
+        # True (the sibling test above).
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "offline", until="2000-01-01 00:00:00")
+        assert router._resolved_pauses_self_pump() is False
 
 
-class TestAutonomousAwayLeverStdlib:
-    """``autonomous_away`` defers questions but does NOT pause the self-pump (#2544).
+class TestUnattendedPostureLeverStdlib:
+    """The unattended posture defers questions but does NOT pause the self-pump (#2544).
 
-    The stdlib probe splits the single away-only read into
-    ``resolved_defers_questions`` (away + autonomous_away) and
-    ``resolved_pauses_self_pump`` (away only), read here under the same
-    bare-``python3`` reproduction as the away-only lever above.
+    The stdlib probe splits the posture into ``resolved_defers_questions`` and
+    ``resolved_pauses_self_pump``, read here under the same bare-``python3``
+    reproduction as the pump lever above.
     """
 
-    def test_autonomous_away_override_defers_but_does_not_pause(
+    def test_unattended_override_defers_but_does_not_pause(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _config_db(tmp_path, monkeypatch)
-        _write_override(tmp_path, "autonomous_away")
-        assert away_probe.resolved_defers_questions() is True
-        assert away_probe.resolved_pauses_self_pump() is False
+        _override(tmp_path, "unattended")
+        assert posture_probe.resolved_defers_questions() is True
+        assert posture_probe.resolved_pauses_self_pump() is False
 
-    def test_away_override_defers_and_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_holiday_override_defers_and_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _config_db(tmp_path, monkeypatch)
-        _write_override(tmp_path, "away")
-        assert away_probe.resolved_defers_questions() is True
-        assert away_probe.resolved_pauses_self_pump() is True
+        _override(tmp_path, "offline")
+        assert posture_probe.resolved_defers_questions() is True
+        assert posture_probe.resolved_pauses_self_pump() is True
 
-    def test_present_override_neither_defers_nor_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _config_db(tmp_path, monkeypatch)
-        _write_override(tmp_path, "present")
-        assert away_probe.resolved_defers_questions() is False
-        assert away_probe.resolved_pauses_self_pump() is False
-
-    def test_no_override_no_windows_neither_defers_nor_pauses(
+    def test_reachable_override_neither_defers_nor_pauses(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _config_db(tmp_path, monkeypatch)
-        assert away_probe.resolved_defers_questions() is False
-        assert away_probe.resolved_pauses_self_pump() is False
+        _override(tmp_path, "engaged")
+        assert posture_probe.resolved_defers_questions() is False
+        assert posture_probe.resolved_pauses_self_pump() is False
+
+    def test_no_override_neither_defers_nor_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        assert posture_probe.resolved_defers_questions() is False
+        assert posture_probe.resolved_pauses_self_pump() is False
 
     def test_router_question_deferral_reads_the_split_predicate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # handle_route_away_mode_question must defer under autonomous_away too —
-        # it reads _resolved_defers_questions, not the away-only lever.
+        # handle_route_away_mode_question must defer under the unattended posture too
+        # — it reads _resolved_defers_questions, not the pump-pause lever.
         _config_db(tmp_path, monkeypatch)
-        _write_override(tmp_path, "autonomous_away")
+        _override(tmp_path, "unattended")
         assert router._resolved_defers_questions() is True
 
     def test_stop_self_pump_keeps_running_under_autonomous_away(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The whole point of #2544: unlike holiday-away, autonomous-away must NOT
-        # suppress the Stop self-pump.
+        # The whole point of #2544: unlike the holiday posture, an unattended one must
+        # NOT suppress the Stop self-pump.
         _config_db(tmp_path, monkeypatch, dispatch_status="enabled")
-        _write_override(tmp_path, "autonomous_away")
+        _override(tmp_path, "unattended")
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
-        assert result is True  # autonomous-away: the pump keeps firing
+        assert result is True  # unattended: the pump keeps firing
 
 
 class TestStopSelfPumpEndToEndUnderBarePython3:
@@ -301,14 +280,14 @@ class TestStopSelfPumpEndToEndUnderBarePython3:
 
         assert result is not True  # paused: no block, the session may end
 
-    def test_away_override_suppresses_pump_even_with_pending_work(
+    def test_holiday_override_suppresses_pump_even_with_pending_work(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _config_db(tmp_path, monkeypatch, dispatch_status="enabled")  # loop runnable
-        _write_override(tmp_path, "away")  # but the user is away
+        _override(tmp_path, "offline")  # but the user asked for everything to pause
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
-        assert result is not True  # away: the pause wins over the standing directive
+        assert result is not True  # holiday: the pause wins over the standing directive

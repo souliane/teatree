@@ -69,8 +69,8 @@ YIELD_MIN_SAMPLES = 5
 class QuotaSignal:
     """Live model-quota headroom — the PRIMARY admission signal.
 
-    ``fresh`` is False when the cached rate-limit rows are absent or stale; the decision
-    then keeps the operator's static ceiling rather than trusting a guess.
+    ``fresh`` is False when no account's headroom is known; the decision then keeps the
+    operator's static ceiling rather than trusting a guess.
     Utilizations are the BEST (lowest) across usable accounts: the account selector
     already falls through to a non-exhausted account, so the governor asks what the
     healthiest remaining account has left, and ``all_accounts_exhausted`` is the
@@ -252,16 +252,35 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
     """The cached per-account rate-limit health, folded into one signal.
 
     Reads the ``AnthropicTokenUsage`` cache the routing selector already maintains — no
-    network probe, no model. Only FRESH rows count: a stale cache yields
-    ``fresh=False``, which the decision treats as a fail-safe, not as headroom.
+    network probe, no model. Two questions with two different evidence bars:
+
+    HEADROOM (utilization, pace, ceiling) comes from the FRESH, non-exhausted rows. A
+    usable account knows its own week whatever a lapsed peer is doing, so one unknown
+    row must not blank the pace brake and the adaptive ceiling.
+
+    EXHAUSTION (``all_accounts_exhausted``) needs the WHOLE fleet fresh, because it is a
+    claim about EVERY account and no such claim survives an unknown. The asymmetry is
+    forced by ``valid_until``, the routing cache's "may I skip a re-probe?" rule: a
+    healthy verdict lapses after ``HEALTH_TTL`` (minutes), an exhausted one is trusted
+    until its blocking window resets (days). So an exhausted row is fresh by
+    construction, and a STALE row means "not currently known-blocked" — safe to admit
+    against, never evidence that the fallthrough has nowhere left to go.
+
+    When no fresh row is usable and the fleet is not known-exhausted, the healthy
+    accounts' headroom is simply unknown: ``fresh=False``, and the decision keeps the
+    operator's static ceiling. Reporting the surviving exhausted row's 100% instead
+    would brake the lane on a row that proves nothing about the account being used.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django app-registry read at call time
 
     from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: same
 
     moment = now or timezone.now()
-    rows = [row for row in AnthropicTokenUsage.objects.all() if row.is_fresh(moment)]
-    if not rows:
+    rows = list(AnthropicTokenUsage.objects.all())
+    fresh_rows = [row for row in rows if row.is_fresh(moment)]
+    all_exhausted = bool(rows) and len(fresh_rows) == len(rows) and all(row.is_exhausted for row in rows)
+    sample = [row for row in fresh_rows if not row.is_exhausted] or (rows if all_exhausted else [])
+    if not sample:
         return QuotaSignal(
             fresh=False,
             all_accounts_exhausted=False,
@@ -269,14 +288,13 @@ def read_quota_signal(now: dt.datetime | None = None) -> QuotaSignal:
             short_utilization=0.0,
             seconds_to_weekly_reset=None,
         )
-    usable = [row for row in rows if not row.is_exhausted] or rows
-    best = min(usable, key=lambda row: row.utilization_7d)
+    best = min(sample, key=lambda row: row.utilization_7d)
     reset = best.reset_7d
     return QuotaSignal(
         fresh=True,
-        all_accounts_exhausted=all(row.is_exhausted for row in rows),
+        all_accounts_exhausted=all_exhausted,
         weekly_utilization=best.utilization_7d,
-        short_utilization=min(row.utilization_5h for row in usable),
+        short_utilization=min(row.utilization_5h for row in sample),
         seconds_to_weekly_reset=(reset - moment).total_seconds() if reset is not None else None,
     )
 

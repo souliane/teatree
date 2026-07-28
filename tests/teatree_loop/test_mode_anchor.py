@@ -1,12 +1,11 @@
 """The loop line's merged ``mode:`` handle + waiting count (#58, #1678, #3494, #61).
 
-The old separate ``availability: <present|away>`` segment is GONE — availability is
+The old separate ``availability:`` segment is GONE — reachability is
 now intrinsic to the operating mode, so the loop line carries ONE ``mode:`` handle
-(the collapse the owner asked for) and never a redundant ``availability:`` segment.
+(the collapse the owner asked for) and never a redundant second segment.
 """
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -25,13 +24,7 @@ def _reset_reader() -> None:
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestModeHandleRidesLoopLine:
-    """The merged ``mode:`` handle rides the loop line; ``availability:`` is gone."""
-
-    @pytest.fixture
-    def override_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        target = tmp_path / "availability_override.json"
-        monkeypatch.setattr("teatree.core.availability.override_path", lambda: target)
-        return target
+    """The merged ``mode:`` handle rides the loop line; the second segment is gone."""
 
     def _loop_line(self) -> str:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
@@ -47,7 +40,7 @@ class TestModeHandleRidesLoopLine:
         assert len(lines) == 1, lines
         return lines[0]
 
-    def test_manual_override_renders_mode_manual_never_availability(self, override_file: Path) -> None:
+    def test_manual_override_renders_mode_manual_never_a_second_segment(self) -> None:
         Mode.objects.update_or_create(
             name="offline", defaults={"entries": {}, "defers_questions": True, "pauses_self_pump": True}
         )
@@ -57,7 +50,7 @@ class TestModeHandleRidesLoopLine:
         assert "availability:" not in line, line
         assert "preset:" not in line, line
 
-    def test_default_mode_renders_its_name(self, override_file: Path) -> None:
+    def test_default_mode_renders_its_name(self) -> None:
         Mode.objects.update_or_create(name="engaged", defaults={"entries": {}, "defers_questions": False})
         ConfigSetting.objects.set_value("default_mode", "engaged")
         line = self._loop_line()

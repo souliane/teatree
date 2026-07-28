@@ -133,7 +133,7 @@ class TestPresentModeMirrorsButDoesNotDeny(TestCase):
 
     def test_present_mode_posts_and_returns_false(self) -> None:
         with (
-            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_perform_slack_post") as mock_post,
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
         ):
@@ -238,7 +238,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_loop_driven_present_turn_denies_with_row_id(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_perform_slack_post", return_value="1700.0001"),
@@ -259,7 +259,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_live_user_turn_mirrors_without_deny(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=True),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_perform_slack_post", return_value="1700.0002") as mock_post,
@@ -275,7 +275,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_attended_non_owner_turn_mirrors_without_deny(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=False),
             patch.object(router, "_perform_slack_post", return_value="1700.0003") as mock_post,
@@ -291,7 +291,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_supersession_marks_prior_generation_stale(self) -> None:
         self._pin_state_dir()
         with (
-            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_perform_slack_post", side_effect=["1700.0001", "1700.0005"]),
@@ -311,7 +311,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
 
     def test_teatree_unavailable_fails_open_no_deny(self) -> None:
         with (
-            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_resolved_pauses_self_pump", return_value=False),
             patch.object(router, "_is_live_user_turn", return_value=False),
             patch.object(router, "_session_drives_loop", return_value=True),
             patch.object(router, "_capture_and_defer_question", return_value=None),

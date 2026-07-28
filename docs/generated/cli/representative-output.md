@@ -156,8 +156,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  last fire, and next tick.                                   │
 │ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
 │                  one per line, sorted.                                       │
-│ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
-│                  terminal/gone, freeing intake budget.                       │
+│ reclaim-markers  Release non-terminal markers whose ticket is terminal,      │
+│                  gone, or stalled, freeing intake budget.                    │
 │ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
 │                  presets/schedules or `loop override`.                       │
 │ resume           Resume a paused OR disabled mini-loop — EMERGENCY-only;     │
