@@ -579,6 +579,8 @@ On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the
 
 **§11.7 Configuration review cadence.** `CLAUDE.md`, `skills/*/SKILL.md`, and the hook/permission config (`hooks/hooks.json`, plugin `settings.json`) get a deliberate, deletion-first review every 3–6 months — the accumulation of gates, rules, and skill prose is pruned back to what still earns its place, rather than only ever growing. The dreaming pipeline (`/t3:dreaming`, `t3 dream run`) is the executor: its memory-consolidation + core-gap pass is the standing cadence that surfaces stale config and drives each removal to a merged change.
 
+**§11.8 A skill's worked examples resolve against the tree.** An agent skimming a skill cannot tell an illustration from a work item, so an example naming a plausible-but-absent teatree symbol reads as a bug to go fix — and unlike a stale import or a stale patch target, nothing mechanical catches it. `quality/skill_symbol_refs` resolves every teatree-shaped reference in `skills/**/*.md` — a `src/teatree/...` path, a dotted `teatree.<...>` name, a `from teatree.<mod> import …` clause — against the live tree, and `tests/quality/test_skill_symbol_refs.py` turns red on the rest. An illustration that needs a stand-in target uses a namespace the tree has no claim on (`src/acme/...`, `src/<pkg>/...`); a token that is genuinely not an importable name — an entry-point group, a config-section header — carries a `skill-symbol-ref: <reason>` marker, scoped to its own line or to the fenced block it introduces.
+
 ---
 
 ## 12. Testing

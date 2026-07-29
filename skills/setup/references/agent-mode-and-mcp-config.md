@@ -199,7 +199,7 @@ authorizations are absent from the user's resolved `~/.claude/settings.json`
 
 Source of truth: `teatree.cli.recommended_authorizations`
 (`RECOMMENDED_AUTHORIZATIONS`, `find_missing_authorizations`,
-`report_missing_authorizations`), called from `teatree.cli.setup.run`
+`report_missing_authorizations`), called from `teatree.cli.setup.command.run`
 and registered as a `t3 doctor` command in `teatree.cli.doctor`.
 Detection never writes the user's settings file. The full set and the
 rationale are in

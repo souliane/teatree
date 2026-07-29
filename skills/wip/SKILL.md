@@ -91,12 +91,13 @@ Only bucket (a) gets blasted unattended. Tickets in (b) and (c) surface in separ
 **At `full`/`boost` over N autonomous-safe tickets, your single next action is to FAN OUT — one `Task`/`Agent` worker per ticket, in parallel — never to implement a ticket serially in the foreground (do X, never Y).** The cheap path is the trap: "I could just start editing TODO-7 myself and knock the three out one at a time" is exactly the serial-in-main drift this dial bans. The orchestrator **classifies and dispatches; it never implements**. So when the dial is `full` and three bucket-(a) tickets are in front of you, issue the parallel worker dispatches NOW — do **not** `Edit`/`Write` a ticket's `.py`, do **not** run its `pytest` / `ruff` / `git add` / `git commit` in the foreground.
 
 ```python
+# EXAMPLE — `acme` is a stand-in repo, not a teatree module. Nothing here is a work item.
 # Three autonomous-safe tickets at full speed. do X — fan out one parallel worker per ticket (orchestrator never implements):
-Task(description="TODO-7 wire-provision-timeout", prompt="<NEAR-ZERO COMMENTS block> ... fix src/teatree/core/provision.py timeout guard, full delivery cycle, report branch+PR.")
-Task(description="TODO-9 scanner-ordering",       prompt="<NEAR-ZERO COMMENTS block> ... fix src/teatree/loop/scanner.py ordering flake, full delivery cycle, report branch+PR.")
-Task(description="TODO-11 notify-public route",   prompt="<NEAR-ZERO COMMENTS block> ... fix src/teatree/core/notify.py route classifier, full delivery cycle, report branch+PR.")
+Task(description="TODO-7 wire-provision-timeout", prompt="<NEAR-ZERO COMMENTS block> ... fix src/acme/core/provision.py timeout guard, full delivery cycle, report branch+PR.")
+Task(description="TODO-9 scanner-ordering",       prompt="<NEAR-ZERO COMMENTS block> ... fix src/acme/loop/scanner.py ordering flake, full delivery cycle, report branch+PR.")
+Task(description="TODO-11 notify-public route",   prompt="<NEAR-ZERO COMMENTS block> ... fix src/acme/core/notify.py route classifier, full delivery cycle, report branch+PR.")
 # never Y — do NOT pick up TODO-7 and implement it yourself in the foreground, one ticket at a time:
-# Edit(file_path="src/teatree/core/provision.py", ...)   # FORBIDDEN: serial-in-main is the drift the dial bans
+# Edit(file_path="src/acme/core/provision.py", ...)   # FORBIDDEN: serial-in-main is the drift the dial bans
 ```
 
 **The fan-out IS the action — once the N dispatches are issued your turn is DONE; do NOT then implement the tickets yourself in the foreground (do X, never Y).** The worst recurrence under load is not skipping the fan-out — it is firing the N parallel dispatches (so a "did you fan out" check passes) and then, in the SAME turn, **re-doing every ticket by hand**: `find`/`grep` to locate each module, `Edit` its `.py`, `Write` its test, `git checkout -b`, `pytest`, `git commit` — exactly what the workers were dispatched to do. That hybrid (fan-out THEN serial) is strictly worse than pure serial: the workers and the main agent now both implement the same three tickets, the work is duplicated, and the run blows its budget/timeout grinding through all three in the foreground. **A fan-out you immediately undo by hand-doing the tickets is not a fan-out.** So after issuing the parallel dispatches, STOP — the orchestrator does not locate files, edit `.py`, write tests, create branches, or run `pytest`/`git commit` for any dispatched ticket. Its next foreground action is collecting the workers' reported results, never re-implementing their units.
