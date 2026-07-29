@@ -307,7 +307,7 @@ my-overlay/
 Rules:
 
 - `overlay.py` must subclass `OverlayBase`.
-- The overlay must be registered as a `teatree.overlays` entry point in `pyproject.toml`.
+- The overlay must be registered as a `teatree.overlays` entry point in `pyproject.toml`. <!-- skill-symbol-ref: entry-point group name, not an importable module -->
 - The generated overlay package is the place where project-specific customisation lives.
 
 ## Step 6: Verify the Generated Project

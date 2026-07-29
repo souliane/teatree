@@ -35,7 +35,7 @@ Post both together — the `table` block plus the fence as the fallback `text`:
 
 ```python
 from teatree.backends.slack.table_format import render_table_message
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user
 
 message = render_table_message(["Ticket", "State"], rows, title="Open PRs")
 notify_user(message.fence, kind=NotifyKind.INFO, idempotency_key=key, blocks=message.blocks)

@@ -491,10 +491,11 @@ MR/PR comment posting (test plans, evidence, review notes) must be **serialized*
 **Serialized means one poster at a time — it does NOT mean the main agent posts directly (do X, never Y).** "Serialize" governs ordering, not who acts. The main/orchestrating agent is never the poster itself: per § "DISPATCH IMMEDIATELY — the orchestrate-only boundary" below, a colleague-visible publish (`t3 review post-comment`, `post-draft-note`, a test-plan or evidence comment) is dispatched to a single sub-agent, exactly like a code edit — the boundary is about WHO touches a colleague-facing surface, not about the call being short enough to "just do it here." Serialize by dispatching one sub-agent, collecting its result, then dispatching the next — never by having the main agent shortcut the dispatch and run the posting command itself in the foreground.
 
 ```python
+# EXAMPLE — `my-org/my-repo` and `acme` are stand-ins, not a teatree target. Nothing here is a work item.
 # do X — dispatch the single posting action to a sub-agent, then stop:
-Task(description="Post review finding", prompt="Post an inline `t3 review post-comment` on my-org/my-repo!4120, src/teatree/core/sweep.py line 88: <finding text>. Report the comment URL.")
+Task(description="Post review finding", prompt="Post an inline `t3 review post-comment` on my-org/my-repo!4120, src/acme/billing/sweep.py line 88: <finding text>. Report the comment URL.")
 # never Y — the main agent runs the posting command itself because it's short/serialized:
-# Bash(command="t3 review post-comment my-org/my-repo 4120 '<finding>' --file src/teatree/core/sweep.py --line 88")   # FORBIDDEN in the main agent
+# Bash(command="t3 review post-comment my-org/my-repo 4120 '<finding>' --file src/acme/billing/sweep.py --line 88")   # FORBIDDEN in the main agent
 ```
 
 ## Evidence Comes From the Deployed Environment (Non-Negotiable)
@@ -676,7 +677,7 @@ When you add, change, or remove a hook on `OverlayBase` (e.g. `get_required_port
 
 **How to apply:**
 
-1. Enumerate registered overlays on this machine: `uv run python -c "from importlib.metadata import entry_points; [print(ep.value) for ep in entry_points(group='teatree.overlays')]"`. Treat the output as the authoritative list — not memory, not assumptions about which overlays are installed.
+1. Enumerate registered overlays on this machine: `uv run python -c "from importlib.metadata import entry_points; [print(ep.value) for ep in entry_points(group='teatree.overlays')]"`. Treat the output as the authoritative list — not memory, not assumptions about which overlays are installed. <!-- skill-symbol-ref: entry-point group name, not an importable module -->
 2. For each overlay, decide whether the new hook needs an explicit override and, if so, implement it in the same PR (or a paired PR opened in the same session). Do not file a "later" ticket — see § "Do Work Now, Don't Defer to 'Later' Tickets".
 3. Cite the overlay PR(s) in the teatree PR description so reviewers can confirm the chain landed end-to-end.
 
@@ -853,10 +854,11 @@ The main agent's job during a long operation is to stay responsive — collect t
 **Size and urgency are NOT exemptions — a one-line `.py` fix the user wants NOW is still dispatched, never hand-edited (do X, never Y).** The boundary is about WHO touches production code (a worktree sub-agent), not about how big the change is. "It's only one line" and "the user wants it now" are the two rationalizations that produce the drift — both are wrong: the orchestrate-only boundary holds for a one-character edit exactly as it holds for a refactor. So when a reviewer hands you a one-line `src/...py` bug to fix RIGHT NOW, your single next action is the `Task`/`Agent` dispatch below — **never** an `Edit`/`Write` against the `.py` file in the main agent, and never `git commit`/`pytest` on it in the foreground.
 
 ```python
+# EXAMPLE — `acme` is a stand-in repo, not a teatree module. Nothing here is a work item.
 # do X — the one-line fix is dispatched to a worktree sub-agent (the orchestrator never touches the .py):
-Task(description="Fix get_active_session", prompt="In a fresh worktree off origin/main, fix the one-line bug in src/teatree/core/session.py ... commit, report branch+sha.")
+Task(description="Fix get_active_session", prompt="In a fresh worktree off origin/main, fix the one-line bug in src/acme/checkout/session.py ... commit, report branch+sha.")
 # never Y — the orchestrator edits production code itself because the fix is "small" / "urgent":
-# Edit(file_path="src/teatree/core/session.py", ...)   # FORBIDDEN in the main agent — size/urgency is no exemption
+# Edit(file_path="src/acme/checkout/session.py", ...)   # FORBIDDEN in the main agent — size/urgency is no exemption
 ```
 
 **Publishing a colleague-visible artifact is in scope too, regardless of how fast the call itself runs.** Posting an MR/PR/issue comment, a review finding, or evidence is a one-shot CLI call that finishes in under a second — but the boundary is about WHO acts on a colleague-facing surface, not about call duration. Dispatch it the same way as a code edit; see § "Never Post PR Comments from Parallel Agents" above for the worked `t3 review post-comment` example.
@@ -869,6 +871,7 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree off origi
 **Dispatching is the WHOLE action — after the dispatch your turn is DONE; do NOT then "help" by doing the work in the foreground (do X, never Y).** The recurrence under heavy load is subtle and worse than skipping the dispatch: the agent fires the `Task`/`Agent` dispatch (so a positive "did you delegate" check passes) and then, instead of stopping, **keeps going in the same turn and re-implements the very unit it just delegated** — `find`/`grep`/`ls` to locate the file, `Write` the test, `Edit` the `.py`, `git checkout -b`, `pytest`, `git commit`. That is NOT delegation; it is a token delegation wrapped around foreground execution, and it trips every orchestrate-only boundary the dispatch was meant to honour (the sub-agent and the main agent now both edit the same code; the work is duplicated; the budget blows). **A dispatch you immediately undo by hand-doing the work is worse than no dispatch.** So once the dispatch (or the parallel fan-out of N dispatches) is issued, the orchestrator's turn ENDS — it does not locate files, write tests, edit `.py`, create branches, or run `pytest`/`git commit` for that unit afterward. The next foreground action is collecting the sub-agent's reported result, never re-doing its job.
 
 ```text
+# EXAMPLE — `acme` is a stand-in repo, not a teatree module. Nothing here is a work item.
 # do X — dispatch (or fan out N dispatches), then STOP this turn:
 Task(description="Fix get_active_session", prompt="In a fresh worktree … fix the one-line bug … commit, report branch+sha.")
 # … turn ends here. Nothing else. Wait for the sub-agent's result.
@@ -890,10 +893,11 @@ The test: after a dispatch, if your next tool call names or touches the file/mod
 Worked dispatch — a one-line fix a reviewer found, delegated rather than edited in the foreground:
 
 ```text
+# EXAMPLE — `acme` is a stand-in repo, not a teatree module. Nothing here is a work item.
 Task(
   description="Fix get_active_session",
   prompt="In a fresh worktree off origin/main of this repo, fix the one-line bug in "
-         "src/teatree/core/session.py: get_active_session() returns None instead of "
+         "src/acme/checkout/session.py: get_active_session() returns None instead of "
          "raising SessionNotFound when no active session exists. Add a fail-before/"
          "pass-after regression test, run the suite, commit, and report the branch + sha.",
 )

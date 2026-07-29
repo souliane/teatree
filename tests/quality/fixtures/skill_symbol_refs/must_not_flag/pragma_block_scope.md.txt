@@ -1,0 +1,9 @@
+# Pragma, block scope
+
+<!-- skill-symbol-ref: fictional illustration -->
+
+```python
+Task(prompt="fix src/teatree/core/session.py; teatree.core.tasks.claim records it")
+```
+
+The block above is exempt; this line resolves: `src/teatree/quality/catalog.py`.
