@@ -22,6 +22,7 @@ from teatree.dash.views.presets import (
     schedule_slot,
     schedule_slot_delete,
 )
+from teatree.dash.views.sessions import sessions
 from teatree.dash.views.settings import (
     settings,
     settings_export,
@@ -58,6 +59,7 @@ __all__ = [
     "schedule_activate",
     "schedule_slot",
     "schedule_slot_delete",
+    "sessions",
     "settings",
     "settings_export",
     "settings_group",

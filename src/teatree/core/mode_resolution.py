@@ -40,6 +40,7 @@ from django.utils import timezone
 
 from teatree.live_presence import PRESENCE, PRESENCE_FRESHNESS
 from teatree.loop.preset_resolution import resolve_active_preset
+from teatree.request_cache import cached_per_request
 
 if TYPE_CHECKING:
     from teatree.core.models import Mode
@@ -103,6 +104,7 @@ class ResolvedMode:
         return self.mode.state_for(loop_name)
 
 
+@cached_per_request
 def resolve_active_mode(now: dt.datetime | None = None) -> ResolvedMode:
     """The single active operating mode at *now* (design §2.3).
 

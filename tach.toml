@@ -52,6 +52,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.request_cache"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.project"
 layer = "foundation"
 depends_on = ["teatree.paths"]

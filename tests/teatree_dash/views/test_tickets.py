@@ -3,10 +3,12 @@
 from django.test import Client, TestCase
 from django.urls import reverse
 
+from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.dash.ticket_detail import legal_transition_names
-from tests.factories import TicketFactory
+from tests.factories import TaskFactory, TicketFactory
 
 State = Ticket.State
 
@@ -131,3 +133,65 @@ class TicketTransitionSwapTestCase(TestCase):
         body = self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk])).content.decode()
         assert f'hx-post="{reverse("dash:ticket_transition", args=[self.ticket.pk])}"' in body
         assert 'hx-target="#drawer"' in body
+
+
+class DrawerPayloadIsBoundedTestCase(TestCase):
+    """A long-lived ticket's drawer must stay openable (#3873).
+
+    The deployed board's ticket 287 answered 5,005,822 bytes — 8,959 provenance
+    rows — because the drawer read every ``TicketTransition`` and every
+    ``TaskAttempt`` the ticket ever accumulated. Nothing in the drawer code
+    changed; the tables crossed a threshold. The existing drawer specs seed four
+    tiny tickets, which is exactly why they stayed green through it, so this
+    fixture is deliberately large enough to cross the caps.
+    """
+
+    #: Comfortably above what the capped drawer can emit and far below the
+    #: multi-megabyte payload the uncapped one produced.
+    MAX_DRAWER_BYTES = 250_000
+
+    TRANSITIONS = 120
+    TASKS = 40
+    ATTEMPTS_PER_TASK = 25
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = TicketFactory(state=State.STARTED, short_description="long lived ticket")
+        TicketTransition.objects.bulk_create(
+            TicketTransition(
+                ticket=cls.ticket,
+                from_state=State.SCOPED,
+                to_state=State.STARTED,
+                triggered_by="start",
+            )
+            for _ in range(cls.TRANSITIONS)
+        )
+        for _ in range(cls.TASKS):
+            task = TaskFactory(ticket=cls.ticket, phase="coding")
+            TaskAttempt.objects.bulk_create(
+                TaskAttempt(
+                    task=task,
+                    execution_target=Task.ExecutionTarget.HEADLESS,
+                    model="claude-opus-4-8",
+                    error="a recorded failure reason that occupies a realistic amount of the row",
+                )
+                for _ in range(cls.ATTEMPTS_PER_TASK)
+            )
+
+    def _drawer(self) -> str:
+        response = self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk]))
+        assert response.status_code == 200
+        self.body = response.content.decode()
+        return self.body
+
+    def test_the_drawer_still_opens_and_the_payload_stays_bounded(self) -> None:
+        body = self._drawer()
+        assert 'class="drawer"' in body
+        assert "long lived ticket" in body
+        assert len(body.encode()) < self.MAX_DRAWER_BYTES, f"drawer payload {len(body.encode())} bytes"
+
+    def test_the_truncation_is_stated_rather_than_silent(self) -> None:
+        body = self._drawer()
+        assert f"of {self.TRANSITIONS}" in body, "transition history does not state its total"
+        assert f"of {self.TASKS}" in body, "task list does not state its total"
+        assert f"of {self.ATTEMPTS_PER_TASK}" in body, "attempt list does not state its total"

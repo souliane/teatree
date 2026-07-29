@@ -71,6 +71,7 @@
   <div id="loops-table"
     hx-get="{% url 'dash:loops_table' %}"
     hx-trigger="every 5s"
+    hx-sync="this:drop"
     hx-swap="morph:innerHTML">
     {% include "dash/partials/_loops_table.html" %}
   </div>

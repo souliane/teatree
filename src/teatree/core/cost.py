@@ -293,6 +293,67 @@ class AttemptUsage:
         return self.cache_read_tokens + self.cache_write_tokens + self.input_tokens
 
 
+@dataclass(frozen=True, slots=True)
+class UsageGroup:
+    """Token totals for every attempt sharing one costing key.
+
+    The key is everything the breakdown splits on — model, lane, phase, whether
+    the cost is an estimate, and whether the rows carry a reported cost at all.
+    Within one key every accumulator the breakdown computes is linear in the
+    token counts, so summing the tokens first and pricing once yields the same
+    numbers as pricing each attempt and summing after. That is what lets the
+    aggregation run as one ``GROUP BY`` instead of a walk over every row.
+    """
+
+    model: str | None
+    lane: str
+    phase: str
+    estimated: bool
+    #: Summed CLI/SDK-reported cost, or ``None`` when the group's rows reported none.
+    reported_cost_usd: float | None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    attempts: int
+
+    @classmethod
+    def of(cls, usage: AttemptUsage) -> "UsageGroup":
+        """The single-attempt group for *usage* — one row is a group of one."""
+        return cls(
+            model=usage.model,
+            lane=usage.lane,
+            phase=usage.phase,
+            estimated=usage.estimated,
+            reported_cost_usd=usage.reported_cost_usd,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            attempts=1,
+        )
+
+    @property
+    def cacheable_input_tokens(self) -> int:
+        return self.cache_read_tokens + self.cache_write_tokens + self.input_tokens
+
+    @property
+    def effective_tokens(self) -> float:
+        multiplier = ET_MODEL_MULTIPLIER[tier_of_model(self.model)]
+        return multiplier * (1.0 * self.input_tokens + 0.1 * self.cache_read_tokens + 4.0 * self.output_tokens)
+
+    def cost_usd(self, *, overrides: Mapping[str, ModelPrice] | None = None) -> float:
+        """The group's SDK-equivalent dollars — reported when present, price table otherwise."""
+        if self.reported_cost_usd is not None:
+            return self.reported_cost_usd
+        return price_for_model(self.model, overrides=overrides).cost(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+        )
+
+
 def compute_effective_tokens(usage: AttemptUsage) -> float:
     """GitHub's agentic-workflow ET formula: ``m*(1.0*I + 0.1*C + 4.0*O)``.
 
@@ -346,9 +407,9 @@ class _CacheAccumulator:
         self._reads: dict[str, int] = {}
         self._cacheable: dict[str, int] = {}
 
-    def add(self, key: str, usage: "AttemptUsage") -> None:
-        self._reads[key] = self._reads.get(key, 0) + usage.cache_read_tokens
-        self._cacheable[key] = self._cacheable.get(key, 0) + usage.cacheable_input_tokens
+    def add(self, key: str, group: "UsageGroup") -> None:
+        self._reads[key] = self._reads.get(key, 0) + group.cache_read_tokens
+        self._cacheable[key] = self._cacheable.get(key, 0) + group.cacheable_input_tokens
 
     def ratios(self) -> dict[str, float]:
         return {key: self._reads[key] / cacheable for key, cacheable in self._cacheable.items() if cacheable > 0}
@@ -395,8 +456,18 @@ class CostBreakdown:
 
     @classmethod
     def from_usages(cls, usages: Iterable[AttemptUsage]) -> "CostBreakdown":
+        """Total a per-attempt walk — each attempt is a :class:`UsageGroup` of one."""
+        return cls.from_groups(UsageGroup.of(usage) for usage in usages)
+
+    @classmethod
+    def from_groups(cls, groups: Iterable[UsageGroup]) -> "CostBreakdown":
+        """Total pre-summed costing buckets — the shape a SQL ``GROUP BY`` returns.
+
+        The one accumulation path: :meth:`from_usages` funnels through it too, so
+        the aggregate and per-row spellings can never compute different numbers.
+        """
         # Resolve the ``cost_model_prices`` overrides ONCE for the whole
-        # aggregation rather than a cold read per attempt.
+        # aggregation rather than a cold read per group.
         overrides = _cost_price_overrides()
         splits = _DollarSplits()
         per_lane_et: dict[str, float] = {}
@@ -406,20 +477,20 @@ class CostBreakdown:
         estimated = 0.0
         et_total = 0.0
         count = 0
-        for usage in usages:
-            cost = attempt_cost_usd(usage, overrides=overrides)
-            et = usage.effective_tokens
-            tier = tier_of_model(usage.model)
-            lane = usage.lane or UNATTRIBUTED_LANE
-            phase = usage.phase or UNATTRIBUTED_PHASE
+        for group in groups:
+            cost = group.cost_usd(overrides=overrides)
+            et = group.effective_tokens
+            tier = tier_of_model(group.model)
+            lane = group.lane or UNATTRIBUTED_LANE
+            phase = group.phase or UNATTRIBUTED_PHASE
             splits.add(tier=tier, lane=lane, phase=phase, cost=cost)
             per_lane_et[lane] = per_lane_et.get(lane, 0.0) + et
-            lane_cache.add(lane, usage)
-            phase_cache.add(phase, usage)
+            lane_cache.add(lane, group)
+            phase_cache.add(phase, group)
             total += cost
-            estimated += cost if usage.estimated else 0.0
+            estimated += cost if group.estimated else 0.0
             et_total += et
-            count += 1
+            count += group.attempts
         return cls(
             total_usd=total,
             per_tier_usd=splits.per_tier,
@@ -589,3 +660,4 @@ def register_cost_factories() -> None:
 
     register("cost", "AttemptUsage", AttemptUsage)
     register("cost", "CostBreakdown", CostBreakdown)
+    register("cost", "UsageGroup", UsageGroup)

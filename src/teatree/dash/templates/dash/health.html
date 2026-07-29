@@ -5,6 +5,7 @@
   <div id="health-bands"
     hx-get="{% url 'dash:health_bands' %}"
     hx-trigger="every 5s"
+    hx-sync="this:drop"
     hx-swap="morph:innerHTML">
     {% include "dash/partials/_health_bands.html" %}
   </div>

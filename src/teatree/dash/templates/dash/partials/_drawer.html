@@ -42,7 +42,7 @@
   <h3>Lifecycle</h3>
   <div class="mermaid">{{ detail.mermaid }}</div>
 
-  <h3>Transition history</h3>
+  <h3>Transition history <span class="muted small">{% if detail.transitions_total > detail.transitions|length %}last {{ detail.transitions|length }} of {{ detail.transitions_total }}{% else %}{{ detail.transitions_total }}{% endif %}</span></h3>
   <table class="dash">
     <thead><tr><th>when</th><th>from</th><th>to</th><th>by</th><th>session</th></tr></thead>
     <tbody>
@@ -67,7 +67,7 @@
     </div>
   {% endif %}
 
-  <h3>Tasks</h3>
+  <h3>Tasks <span class="muted small">{% if detail.tasks_total > detail.tasks|length %}newest {{ detail.tasks|length }} of {{ detail.tasks_total }}{% else %}{{ detail.tasks_total }}{% endif %}</span></h3>
   {% for task in detail.tasks %}
     <div class="task-block">
       <div class="card-meta">
@@ -76,6 +76,7 @@
         <span class="chip">{{ task.status }}</span>
         <span class="chip" title="execution target — headless vs interactive">{{ task.execution_target }}</span>
         {% if task.claimed_by %}<span class="chip">{{ task.claimed_by }}</span>{% endif %}
+        <span class="muted small">{% if task.attempts_total > task.attempts|length %}attempts: newest {{ task.attempts|length }} of {{ task.attempts_total }}{% else %}attempts: {{ task.attempts_total }}{% endif %}</span>
       </div>
       {% if task.attempts %}
         <table class="dash provenance">

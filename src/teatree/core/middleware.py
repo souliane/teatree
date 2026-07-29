@@ -1,9 +1,12 @@
 """Project middleware for the teatree admin dashboard."""
 
-from typing import TYPE_CHECKING
+from contextlib import AbstractContextManager, ExitStack
+from typing import TYPE_CHECKING, cast
 
 from django.contrib.auth import get_user_model, login
+from django.db import connections
 
+from teatree import request_cache
 from teatree.config import get_effective_settings
 
 if TYPE_CHECKING:
@@ -56,6 +59,52 @@ class LocalAdminAutoLoginMiddleware:
                 superuser.backend = _MODEL_BACKEND
                 login(request, superuser)
         return self.get_response(request)
+
+
+# The statement prefixes that leave the database unchanged. Anything else — an
+# INSERT/UPDATE/DELETE, a raw statement, a DDL — drops the memo, so a dashboard POST
+# that mutates and then re-renders in the same request reads its own writes.
+_READ_ONLY_STATEMENTS = ("SELECT", "PRAGMA", "BEGIN", "SAVEPOINT", "RELEASE", "COMMIT", "ROLLBACK", "EXPLAIN")
+
+
+class RequestScopedReadCacheMiddleware:
+    """Memoize :func:`teatree.request_cache.cached_per_request` reads for one request.
+
+    A dashboard render resolves the effective settings, the active preset and the
+    loop table several times over — reads that cannot change while the response is
+    being built. Scoping the memo to the request keeps every other entry point (the
+    CLI, the loop tick, the test suite) on today's uncached behaviour.
+
+    Correctness comes from the SQL wrapper rather than from listing which views
+    mutate: a bulk ``update()`` fires no model signal, so keying invalidation on
+    the statement itself is what makes read-your-writes hold for every write path.
+    """
+
+    def __init__(self, get_response: "Callable[[HttpRequest], HttpResponse]") -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: "HttpRequest") -> "HttpResponse":
+        with ExitStack() as stack:
+            stack.enter_context(request_cache.request_scope())
+            for alias in connections:
+                # Django's ``execute_wrapper`` is an unannotated ``@contextmanager``, so
+                # its context-manager nature is asserted at this untyped boundary.
+                scope = connections[alias].execute_wrapper(_invalidate_on_write)
+                stack.enter_context(cast("AbstractContextManager[None]", scope))
+            return self.get_response(request)
+
+
+def _invalidate_on_write(
+    execute: "Callable[..., object]",
+    sql: str,
+    params: object,
+    *forwarded: object,
+) -> object:
+    """Django ``execute_wrapper``: run the statement, then drop the memo if it wrote."""
+    result = execute(sql, params, *forwarded)
+    if not sql.lstrip().upper().startswith(_READ_ONLY_STATEMENTS):
+        request_cache.invalidate()
+    return result
 
 
 def request_is_loopback(request: "HttpRequest") -> bool:
