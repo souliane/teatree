@@ -4,13 +4,23 @@ from django.db import models
 from django.utils import timezone
 from django_fsm import FSMField, transition
 
+from teatree.url_classify import repo_and_iid
+
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 
 class PullRequestQuerySet(models.QuerySet):
     def for_pr(self, *, slug: str, pr_id: int) -> "models.QuerySet":
-        return self.filter(repo=slug, iid=str(pr_id))
+        """Every row for *(slug, pr_id)*, matching the slug case-INSENSITIVELY.
+
+        A forge slug is case-insensitive, so a row recorded as ``Owner/Repo``
+        names the very PR an ``owner/repo`` merge just landed. Matching it
+        exactly marks zero rows and resolves no ticket, which is indistinguishable
+        from "this PR has no records" — the same reason the §15 sibling supersede
+        and the merge-quality gate both resolve slugs with ``__iexact``.
+        """
+        return self.filter(repo__iexact=slug, iid=str(pr_id))
 
     def owning_ticket(self, *, slug: str, pr_id: int, pr_url: str = "") -> "Ticket | None":
         """The delivery ticket that owns *(slug, pr_id)*, or ``None``.
@@ -20,16 +30,33 @@ class PullRequestQuerySet(models.QuerySet):
         A ticket whose ``issue_url`` merely equals the PR url is never the owner — that
         shape is the reviewer-role ticket, which carries no delivery lease.
         """
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: sibling model, imported at call time
-
         row = self.for_pr(slug=slug, pr_id=pr_id).select_related("ticket").order_by("-id").first()
         if row is not None:
             return row.ticket
-        if not pr_url:
-            return None
+        return self._ticket_carrying_pr(slug=slug, pr_id=pr_id, pr_url=pr_url)
+
+    @staticmethod
+    def _names_pr(key: str, *, slug: str, pr_id: int, pr_url: str) -> bool:
+        """True iff the ``extra["prs"]`` *key* is this PR.
+
+        Keyed on the PARSED ``(slug, pr_id)`` as well as the literal url, because
+        the callers that most need this arm — the merge keystone and the CLEAR
+        backfill — hold only that pair: a ``MergeClear`` carries no PR url.
+        """
+        if pr_url and key == pr_url:
+            return True
+        ref = repo_and_iid(key)
+        return ref is not None and ref[0].casefold() == slug.casefold() and ref[1] == pr_id
+
+    @classmethod
+    def _ticket_carrying_pr(cls, *, slug: str, pr_id: int, pr_url: str) -> "Ticket | None":
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: sibling model, imported at call time
+
         for ticket in Ticket.objects.exclude(extra={}).only("issue_url", "extra", "id"):
             prs = ticket.extra.get("prs") if isinstance(ticket.extra, dict) else None
-            if isinstance(prs, dict) and pr_url in prs:
+            if not isinstance(prs, dict):
+                continue
+            if any(cls._names_pr(key, slug=slug, pr_id=pr_id, pr_url=pr_url) for key in prs):
                 return ticket
         return None
 
@@ -46,6 +73,9 @@ class PullRequestQuerySet(models.QuerySet):
             row.save(update_fields=["state"])
             merged += 1
         return merged
+
+
+PullRequestManager = models.Manager.from_queryset(PullRequestQuerySet)
 
 
 class PullRequest(models.Model):
@@ -96,7 +126,7 @@ class PullRequest(models.Model):
     )
     create_verified_at = models.DateTimeField(null=True, blank=True)
 
-    objects: ClassVar[PullRequestQuerySet] = PullRequestQuerySet.as_manager()
+    objects = PullRequestManager()
 
     class Meta:
         db_table = "teatree_pull_request"

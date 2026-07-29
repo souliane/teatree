@@ -114,6 +114,35 @@ class TestKeystoneRecordsTheForgeMerge(TestCase):
         pr.refresh_from_db()
         assert pr.state == PullRequest.State.MERGED
 
+    def test_a_differently_cased_clear_slug_still_advances_the_board(self) -> None:
+        """A mis-cased CLEAR must not silently reinstate the starvation it fixes.
+
+        Forge slugs are case-insensitive, so a CLEAR issued as ``acme/Widget``
+        names the same PR as an ``acme/widget`` row. A case-sensitive lookup
+        marks 0 rows and adopts no ticket, so the keystone returns nothing and
+        the real merge moves no card.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        pr = _pull_request(ticket, slug="acme/widget", pr_id=46)
+        clear = MergeClear.objects.create(
+            pr_id=46,
+            slug="Acme/Widget",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
+
+        clear.refresh_from_db()
+        pr.refresh_from_db()
+        ticket.refresh_from_db()
+        assert clear.ticket_id == ticket.pk
+        assert pr.state == PullRequest.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        assert state == Ticket.State.MERGED
+
 
 class TestSiblingSupersedeCaseInsensitive(TestCase):
     def test_differently_cased_sibling_clear_is_superseded(self) -> None:

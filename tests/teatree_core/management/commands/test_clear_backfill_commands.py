@@ -74,6 +74,38 @@ class TestBackfillClears(TestCase):
         assert rows[0].advanced_to == ""
         assert "no merge audit" in rows[0].detail
 
+    def test_a_manually_opened_pr_carried_only_in_ticket_extra_is_linked(self) -> None:
+        """The UNRESOLVED detail claims this check ran — so it has to actually run.
+
+        A CLEAR carries ``(slug, pr_id)`` and no PR url, so handing
+        ``owning_ticket`` no url made the ``extra['prs']`` arm unreachable and
+        reported every FK-less PR as having no ticket carrying it.
+        """
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            extra={"prs": {"https://github.com/acme/widget/pull/42": {}}},
+        )
+        clear = _ticketless_clear()
+
+        rows = _backfill()
+
+        clear.refresh_from_db()
+        assert clear.ticket_id == ticket.pk
+        assert rows[0].outcome is BackfillOutcome.LINKED
+
+    def test_a_differently_cased_clear_slug_resolves_its_pull_request(self) -> None:
+        pr = _merged_pr()
+        clear = _ticketless_clear(slug="Acme/Widget")
+
+        rows = _backfill()
+
+        clear.refresh_from_db()
+        pr.refresh_from_db()
+        assert clear.ticket_id == pr.ticket_id
+        assert pr.state == PullRequest.State.MERGED
+        assert rows[0].outcome is BackfillOutcome.LINKED
+
     def test_unresolvable_clear_is_reported_never_silently_skipped(self) -> None:
         clear = _ticketless_clear(pr_id=99)
 
