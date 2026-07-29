@@ -704,12 +704,12 @@
           "name": "sweep"
         },
         {
-          "help": "Create a PR for an orphan branch (idempotent, no-op when a PR already exists)",
-          "name": "ensure-pr"
-        },
-        {
           "help": "Drop a deferred-PR obligation the drain can never discharge",
           "name": "discharge-pending"
+        },
+        {
+          "help": "Create a PR for an orphan branch (idempotent, no-op when a PR already exists)",
+          "name": "ensure-pr"
         },
         {
           "help": "Check whether session gates allow a phase transition (#1118: cross-session)",

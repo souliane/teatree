@@ -61,6 +61,7 @@ class TestDispatchLoopBuildJobs:
             "pending_tasks",
             "incoming_events",
             "outbound_audit",
+            "pending_pr_drain",
             "undelivered_notify",
             "deferred_question_poster",
             "question_backlog_nag",

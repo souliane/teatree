@@ -359,8 +359,8 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 | `create` | Validate ship gates and trigger the ship transition |
 | `merge` | REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone |
 | `sweep` | List all open PRs/MRs authored by the current user across the forge |
-| `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
 | `discharge-pending` | Drop a deferred-PR obligation the drain can never discharge |
+| `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
 | `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
 | `fetch-issue` | Fetch issue details with embedded image URLs and external links |
 | `detect-tenant` | Detect the current tenant variant from the overlay |

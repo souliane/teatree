@@ -12,8 +12,6 @@ import typer
 
 def check_pending_pull_requests() -> bool:
     """FAIL on every PR obligation still owed after ``MAX_DRAIN_ATTEMPTS`` drains."""
-    from django.db import OperationalError, ProgrammingError  # noqa: PLC0415 — deferred: Django import at call time
-
     from teatree.core.models.pending_pull_request import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
         MAX_DRAIN_ATTEMPTS,
         PendingPullRequest,
@@ -21,8 +19,11 @@ def check_pending_pull_requests() -> bool:
 
     try:
         overdue = list(PendingPullRequest.objects.overdue())
-    except (OperationalError, ProgrammingError) as exc:
-        typer.echo(f"WARN  Pending-PR obligations UNVERIFIED: the obligation ledger could not be read ({exc}).")
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(
+            f"WARN  Pending-PR obligations UNVERIFIED: the obligation ledger could not be read "
+            f"({exc.__class__.__name__}: {exc})."
+        )
         return True
     for row in overdue:
         intended = f" (intended title: {row.intended_title!r})" if row.intended_title else ""

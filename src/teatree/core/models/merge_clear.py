@@ -24,6 +24,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -446,10 +447,6 @@ class MergeClear(models.Model):
         open-PR-only reconciler that used to be ``PullRequest.mark_merged``'s sole
         caller can never observe a PR that merged between two of its ticks.
         """
-        from teatree.core.models.pull_request import (  # noqa: PLC0415 — deferred: sibling model, imported at call time
-            PullRequest,
-        )
-
         PullRequest.objects.record_forge_merge(slug=self.slug, pr_id=self.pr_id)
         return self.adopt_owning_ticket()
 
@@ -464,10 +461,6 @@ class MergeClear(models.Model):
         ``clear.ticket`` (anti-vacuity, rubric) run BEFORE the merge, so adopting
         post-merge can never let something through that would otherwise be held.
         """
-        from teatree.core.models.pull_request import (  # noqa: PLC0415 — deferred: sibling model, imported at call time
-            PullRequest,
-        )
-
         if self.ticket is not None:
             return self.ticket
         ticket = PullRequest.objects.owning_ticket(slug=self.slug, pr_id=self.pr_id)

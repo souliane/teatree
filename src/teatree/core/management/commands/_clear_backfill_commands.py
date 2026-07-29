@@ -6,11 +6,12 @@ to :func:`teatree.core.merge.clear_backfill.backfill_clear_tickets` so the walk 
 in the merge domain and the command stays a surface.
 """
 
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.merge.clear_backfill import ClearBackfillRow, backfill_clear_tickets
 
 
@@ -20,6 +21,7 @@ class ClearBackfillCommands(TyperCommand):
         self,
         *,
         dry_run: Annotated[bool, typer.Option(help="Show what would be linked without persisting.")] = False,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the report rows as JSON.")] = False,
     ) -> list[ClearBackfillRow]:
         """Recover the ticket link on consumed CLEARs issued without ``--ticket-id``.
 
@@ -30,6 +32,13 @@ class ClearBackfillCommands(TyperCommand):
         gates are unchanged — is reported, never silently skipped.
         """
         report = backfill_clear_tickets(dry_run=dry_run)
-        for line in report.lines():
-            self.stdout.write(line)
-        return list(report.rows)
+        rows = list(report.rows)
+        self.print_result = False
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="".join(f"{line}\n" for line in report.lines()),
+        )
+        return rows

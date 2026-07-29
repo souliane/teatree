@@ -103,15 +103,17 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
 
     ``PendingPrDrainScanner`` is the undelivered-notify redelivery shape applied
     to the PR ``ensure-pr`` deferred at push time — git has no client-side
-    post-push hook, so this tick is the only drain that obligation ever gets.
+    post-push hook, so this tick is the only drain that obligation ever gets. It
+    is registered AFTER the head three, whose order is the statusline's FIFO
+    write contract (#1191).
     """
     backend = messaging_from_overlay()
     user_id = resolve_user_id()
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
-        _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
+        _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id), overlay=""),
         _ScannerJob(scanner=QuestionBacklogNagScanner(backend=backend, user_id=user_id), overlay=""),
