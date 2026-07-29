@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django.db import transaction
@@ -14,10 +14,13 @@ from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
 from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
+from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
-from teatree.core.management.commands._workspace.cleanup import _die, _fix_drift
+from teatree.core.management.commands._workspace.cleanup import _die
+from teatree.core.management.commands._workspace.dead_rows import build_dead_row_report, write_dead_row_lines
 from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace.drift_report import run_drift_report
 from teatree.core.management.commands._workspace.finalize import run_finalize
 from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
 from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
@@ -28,6 +31,7 @@ from teatree.core.management.commands._workspace.provision_parallel import (
 )
 from teatree.core.management.commands._workspace.relocate import RelocateIO, active_overlay_name, run_relocate
 from teatree.core.management.commands._workspace.salvage import emit_records_json, run_salvage
+from teatree.core.management.commands._workspace.stamp_identity import StampResult, run_stamp_identity
 from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     InvalidTicketKindError,
@@ -40,9 +44,8 @@ from teatree.core.management.commands._workspace.ticket_intake import (
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
-from teatree.core.worktree.reconcile import reconcile_all, reconcile_ticket
+from teatree.core.worktree.dead_row_release import release_dead_rows
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
@@ -404,55 +407,22 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Detect state drift across every store; optionally fix it.
 
-        Checks Django ↔ git worktrees, Postgres DBs, docker containers,
-        env cache files.  Without ``--fix`` prints drift; with
-        ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
-        missing env caches, and prunes stale worktree dirs.  Every action
-        uses :func:`run_checked` — no silent swallow.
+        Checks Django ↔ git worktrees, Postgres DBs, docker containers, env cache
+        files. Without ``--fix`` prints drift; with ``--fix`` cleans orphan
+        containers, drops orphan DBs, regenerates missing env caches, and prunes
+        stale worktree dirs. Thin wrapper over :func:`run_drift_report`.
         """
-        if ticket:
-            drifts = {ticket: reconcile_ticket(Ticket.objects.get(pk=ticket))}
-            if not drifts[ticket].has_drift:
-                drifts = {}
-        else:
-            drifts = reconcile_all()
-
-        if not drifts:
-            return ["No drift detected."]
-
-        lines: list[str] = []
-        for ticket_pk, drift in sorted(drifts.items()):
-            lines.append(f"Ticket #{ticket_pk}:")
-            lines.extend(f"  {finding}" for finding in drift.format().splitlines())
-            if fix:
-                lines.extend(f"  [fix] {msg}" for msg in _fix_drift(drift))
-        if not fix:
-            lines.extend(("", "Rerun with --fix to apply fixes."))
-        return lines
+        return run_drift_report(ticket_pk=ticket, fix=fix)
 
     @command(name="stamp-identity")
     def stamp_identity(self, repo: str = ".") -> StampResult:
-        """Stamp the scoped noreply git identity onto an existing souliane clone (#762).
+        """Stamp the scoped noreply git identity onto an existing public GitHub clone (#762).
 
-        Fixes public souliane/* clones/worktrees created before the
-        provisioner source-fix (new worktrees are stamped at creation).
-        Idempotent. Refuses non-github / private remotes so a private
-        overlay's (or a GitLab clone's) legitimate real-identity
-        attribution is never touched.
+        Fixes public clones/worktrees created before the provisioner source-fix (new
+        worktrees are stamped at creation). Thin wrapper over
+        :func:`run_stamp_identity` — see it for the idempotence and refusal doctrine.
         """
-        # #2655: the visibility gate must see the FULL remote URL (host
-        # intact) — a host-stripped slug would resolve a GitLab clone's
-        # bare ``owner/repo`` against github.com. ``slug`` is kept only
-        # for the human-readable result.
-        url = git.remote_url(repo)
-        slug = git.remote_slug(repo)
-        if not is_public_github_remote(url):
-            return StampResult(
-                stamped=False,
-                reason=f"not a public GitHub remote (slug={slug!r}) — noreply-identity stamping not required",
-            )
-        set_local_noreply_identity(repo)
-        return StampResult(stamped=True, repo=repo, slug=slug)
+        return run_stamp_identity(repo)
 
     @command(name="list-orphans")
     def list_orphans(self) -> list[_wh.OrphanEntry]:
@@ -542,6 +512,30 @@ class Command(TyperCommand):
             CleanAllIO(write_out=self.stdout.write, write_err=self.stderr.write),
             keep_dslr=keep_dslr,
             dry_run=dry_run,
+        )
+
+    @command(name="release-dead-rows")
+    def release_dead_rows_cmd(
+        self,
+        *,
+        apply: bool = typer.Option(default=False, help="Actually release the rows. Without it, this is a dry run."),
+        json_output: Annotated[bool, typer.Option("--json", help="Per-row dispositions as JSON.")] = False,
+    ) -> None:
+        """Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply).
+
+        The narrow alternative to ``clean-all`` for the doctor's "registered
+        worktree ... is not a git checkout" finding: the SAME #706 classifier and
+        freshness precondition, deleting the ``Worktree`` row and nothing else.
+        Which rows are KEPT, and why, is :mod:`teatree.core.worktree.dead_row_release`.
+        """
+        outcome = release_dead_rows(_worktree_root(), dry_run=not apply)
+        self.print_result = False
+        emit(
+            build_dead_row_report(outcome),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: write_dead_row_lines(outcome, stream),
         )
 
     @command()

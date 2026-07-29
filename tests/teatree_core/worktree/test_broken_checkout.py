@@ -299,3 +299,75 @@ class ReleasableWithoutARemoteCopyTest(_BrokenWorktreeCase):
 
         assert verdict.state is BrokenCheckout.RELEASABLE
         assert "branch ref is gone" in verdict.reason
+
+
+class StaleTrackingRefsCannotAuthoriseAReleaseTest(_BrokenWorktreeCase):
+    """The freshness precondition on the #706 guard, on the row-reaper path.
+
+    ``commits_absent_from_all_remotes`` is a purely local graph query over
+    ``refs/remotes/*``. A tracking ref goes STALE the moment its branch is deleted
+    upstream by anything other than this clone — the ordinary forge
+    auto-delete-on-merge — and against a stale ref the guard answers "pushed" for
+    commits that exist on NO remote. That is the misread that authorises reaping the
+    last copy of unmerged work. The branch-prune and raw-orphan passes already
+    refresh first; this pins the same precondition on the dead-checkout row path,
+    which is the one the doctor's finding routes through.
+    """
+
+    def _pushed_then_deleted_upstream(self, branch: str = "vanished") -> tuple[Worktree, Path]:
+        """A branch pushed, then deleted on the remote WITHOUT pruning locally.
+
+        The delete is applied to the BARE REMOTE directly, never via this clone's own
+        ``push --delete`` — that would prune the tracking ref as a side effect and
+        destroy the very staleness under test. Deleting server-side is also what
+        really happens: the forge's auto-delete-on-merge, or a sibling clone. Leaves
+        ``refs/remotes/origin/<branch>`` present-but-stale, so an unrefreshed probe
+        reads the commit as safely on a remote when it is on none.
+        """
+        wt_path = self._worktree_on(branch, commit="feat: the only copy")
+        _git(wt_path, "push", "-q", "origin", branch)
+        _git(self.workspace / "remote.git", "update-ref", "-d", f"refs/heads/{branch}")
+        assert git.run(repo=str(self.clone), args=["rev-parse", "--verify", "--quiet", f"origin/{branch}"]), (
+            "the test premise is a STALE tracking ref — it must still be present locally"
+        )
+        row = self._register(wt_path, branch=branch)
+        _break_checkout(self.clone, wt_path)
+        return row, wt_path
+
+    def test_control_the_unrefreshed_probe_really_does_misread_the_stale_ref(self) -> None:
+        # The control that makes the next test falsifiable: without a refresh the
+        # #706 primitive reports NOTHING absent from remotes for a commit on no remote.
+        self._pushed_then_deleted_upstream()
+
+        assert git.commits_absent_from_all_remotes(str(self.clone), "vanished") == []
+
+    def test_a_stale_tracking_ref_does_not_authorise_a_release(self) -> None:
+        row, _wt_path = self._pushed_then_deleted_upstream()
+
+        verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.HOLDS_WORK, (
+            "a commit whose only remote copy was deleted upstream must never read as pushed"
+        )
+
+    def test_a_failed_refresh_keeps_the_row_rather_than_judging_on_stale_refs(self) -> None:
+        row, _wt_path = self._merged_broken_worktree()
+
+        with mock.patch.object(git, "fetch_all_prune", return_value=False):
+            verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.UNVERIFIABLE
+        assert "refresh" in verdict.reason
+
+    def test_a_gone_branch_ref_needs_no_network_and_is_still_releasable_offline(self) -> None:
+        # No ref means no commits to lose, so the freshness precondition has nothing
+        # to protect — an offline host must still be able to clear these rows.
+        wt_path = self._worktree_on("deleted-ref", commit="feat: work")
+        row = self._register(wt_path, branch="deleted-ref")
+        _break_checkout(self.clone, wt_path)
+        _git(self.clone, "branch", "-D", "deleted-ref")
+
+        with mock.patch.object(git, "fetch_all_prune", return_value=False):
+            verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.RELEASABLE

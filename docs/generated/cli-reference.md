@@ -7168,33 +7168,36 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ ticket          Create or update a ticket and trigger worktree provisioning. │
-│ provision       Provision every worktree in the current ticket workspace.    │
-│ start           Start docker for every worktree in the current ticket        │
-│                 workspace.                                                   │
-│ ready           Run readiness probes for every worktree in the ticket        │
-│                 workspace.                                                   │
-│ teardown        Tear down every worktree in the current ticket workspace.    │
-│ finalize        Squash worktree commits and rebase on the default branch.    │
-│ doctor          Detect state drift across every store; optionally fix it.    │
-│ clean-merged    Tear down every worktree whose ticket is already MERGED.     │
-│ clean-all       Prune merged worktrees, stale branches, orphaned stashes,    │
-│                 orphan DBs, old DSLR snapshots.                              │
-│ relocate        Move this overlay's existing worktrees under the per-overlay │
-│                 workspace dir (git worktree move).                           │
-│ list-orphans    List orphan branches (commits not on main, no open PR).      │
-│ landscape       Survey in-flight PRs/MRs and local unsynced work before      │
-│                 planning (read-only).                                        │
-│ reap-stale      Tear down ABANDONED docker stacks no live worktree owns      │
-│                 (age-guarded).                                               │
-│ reclaim-disk    Reclaim disk via zero-data-loss docker prunes (builder +     │
-│                 dangling images + unreferenced volumes).                     │
-│ stamp-identity  Stamp the repo's local git identity to the GitHub noreply    │
-│                 form (public-push safety).                                   │
-│ emit            Print the JSON handoff for every NOT-auto-deleted worktree   │
-│                 (the judgment skill's input).                                │
-│ salvage         Capture a branch's unique content to a PR, verify it landed, │
-│                 then delete the branch.                                      │
+│ ticket             Create or update a ticket and trigger worktree            │
+│                    provisioning.                                             │
+│ provision          Provision every worktree in the current ticket workspace. │
+│ start              Start docker for every worktree in the current ticket     │
+│                    workspace.                                                │
+│ ready              Run readiness probes for every worktree in the ticket     │
+│                    workspace.                                                │
+│ teardown           Tear down every worktree in the current ticket workspace. │
+│ finalize           Squash worktree commits and rebase on the default branch. │
+│ doctor             Detect state drift across every store; optionally fix it. │
+│ clean-merged       Tear down every worktree whose ticket is already MERGED.  │
+│ clean-all          Prune merged worktrees, stale branches, orphaned stashes, │
+│                    orphan DBs, old DSLR snapshots.                           │
+│ relocate           Move this overlay's existing worktrees under the          │
+│                    per-overlay workspace dir (git worktree move).            │
+│ list-orphans       List orphan branches (commits not on main, no open PR).   │
+│ landscape          Survey in-flight PRs/MRs and local unsynced work before   │
+│                    planning (read-only).                                     │
+│ reap-stale         Tear down ABANDONED docker stacks no live worktree owns   │
+│                    (age-guarded).                                            │
+│ reclaim-disk       Reclaim disk via zero-data-loss docker prunes (builder +  │
+│                    dangling images + unreferenced volumes).                  │
+│ stamp-identity     Stamp the repo's local git identity to the GitHub noreply │
+│                    form (public-push safety).                                │
+│ release-dead-rows  Delete Worktree rows whose checkout is provably gone —    │
+│                    the row alone, nothing else touched.                      │
+│ emit               Print the JSON handoff for every NOT-auto-deleted         │
+│                    worktree (the judgment skill's input).                    │
+│ salvage            Capture a branch's unique content to a PR, verify it      │
+│                    landed, then delete the branch.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7378,11 +7381,10 @@ Usage: t3 teatree workspace doctor [OPTIONS]
 
  Detect state drift across every store; optionally fix it.
 
- Checks Django ↔ git worktrees, Postgres DBs, docker containers,
- env cache files.  Without ``--fix`` prints drift; with
- ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
- missing env caches, and prunes stale worktree dirs.  Every action
- uses :func:`run_checked` — no silent swallow.
+ Checks Django ↔ git worktrees, Postgres DBs, docker containers, env cache
+ files. Without ``--fix`` prints drift; with ``--fix`` cleans orphan
+ containers, drops orphan DBs, regenerates missing env caches, and prunes
+ stale worktree dirs. Thin wrapper over :func:`run_drift_report`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --ticket                INTEGER  Reconcile just this ticket pk; 0 = all      │
@@ -7558,17 +7560,39 @@ Usage: t3 teatree workspace reclaim-disk [OPTIONS]
 ```
 Usage: t3 teatree workspace stamp-identity [OPTIONS]
 
- Stamp the scoped noreply git identity onto an existing souliane clone (#762).
+ Stamp the scoped noreply git identity onto an existing public GitHub clone
+ (#762).
 
- Fixes public souliane/* clones/worktrees created before the
- provisioner source-fix (new worktrees are stamped at creation).
- Idempotent. Refuses non-github / private remotes so a private
- overlay's (or a GitLab clone's) legitimate real-identity
- attribution is never touched.
+ Fixes public clones/worktrees created before the provisioner source-fix (new
+ worktrees are stamped at creation). Thin wrapper over
+ :func:`run_stamp_identity` — see it for the idempotence and refusal doctrine.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace release-dead-rows`
+
+```
+Usage: t3 teatree workspace release-dead-rows [OPTIONS]
+
+ Release registered rows whose checkout is provably dead — ROWS ONLY (dry run
+ unless --apply).
+
+ The narrow alternative to ``clean-all`` for the doctor's "registered
+ worktree ... is not a git checkout" finding: the SAME #706 classifier and
+ freshness precondition, deleting the ``Worktree`` row and nothing else.
+ Which rows are KEPT, and why, is
+ :mod:`teatree.core.worktree.dead_row_release`.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --apply    --no-apply      Actually release the rows. Without it, this is a  │
+│                            dry run.                                          │
+│                            [default: no-apply]                               │
+│ --json                     Per-row dispositions as JSON.                     │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8830,8 +8854,10 @@ Usage: t3 teatree retention prune [OPTIONS]
  Prune old rows from the high-churn tables, then reclaim the disk (dry-run
  unless --apply).
 
- Conservative: only rows past the retention window whose owning task AND
- ticket are terminal are ever deleted. A live/in-flight row is never touched.
+ Conservative: the terminal-owned lane deletes only rows past the retention
+ window whose owning task AND ticket are terminal, so a live/in-flight row is
+ never touched; the park lane deletes only aged limit-park audit rows that
+ carry no billed telemetry.
 
  On ``--apply`` the deleted pages are handed back to the filesystem with a
  ``VACUUM``, which runs after the prune's transaction has committed because

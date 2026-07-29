@@ -75,6 +75,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="always JSON: the machine-readable clean-all handoff",
     ),
     Capability(
+        "teatree workspace release-dead-rows",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-row disposition for the dead-checkout rows; dry run unless --apply",
+    ),
+    Capability(
         "teatree do",
         json_output=True,
         exit_codes=("0", "1"),

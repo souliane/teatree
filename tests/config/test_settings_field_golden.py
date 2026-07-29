@@ -131,6 +131,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "outer_loop_max_per_week",
         "outer_loop_measure_days",
         "outer_loop_stop_after_consecutive_failures",
+        "park_attempt_retention_days",
         "privacy",
         "provision_fast_step_timeout_seconds",
         "provision_max_concurrency",

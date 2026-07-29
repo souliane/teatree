@@ -267,6 +267,7 @@ class TeatreeSettingsSchema(BaseSettings):
     outer_loop_max_per_week: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_measure_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     outer_loop_stop_after_consecutive_failures: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    park_attempt_retention_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     privacy: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     provision_fast_step_timeout_seconds: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     provision_max_concurrency: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

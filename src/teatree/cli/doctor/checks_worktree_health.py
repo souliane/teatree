@@ -42,7 +42,9 @@ def _check_registered_worktrees_are_checkouts() -> bool:
         typer.echo(
             f"FAIL  Registered worktree {worktree.pk} at {worktree.worktree_path} is not a git checkout "
             "(git rev-parse fails) — every git-driven pass over it silently no-ops. "
-            "Fix: t3 <overlay> workspace clean-all (the row reaper releases the row, then the dir)."
+            "Fix: t3 <overlay> workspace release-dead-rows --apply (releases the ROW only — no dir, "
+            "branch, container or database touched), or t3 <overlay> workspace clean-all to also "
+            "sweep the dir and every other stale artifact."
         )
     for worktree in unverified:
         typer.echo(

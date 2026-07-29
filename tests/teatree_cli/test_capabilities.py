@@ -52,6 +52,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         retention,
         signals,
         tasks,
+        workspace,
         worktree,
     )
 
@@ -62,6 +63,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree followup sync": followup.Command.sync,
         "teatree worktree status": worktree.Command.status,
         "teatree worktree diagnose": worktree.Command.diagnose,
+        "teatree workspace release-dead-rows": workspace.Command.release_dead_rows_cmd,
         "loop preset show": loop_preset.Command.show,
         "teatree questions list": questions.Command.list_pending,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like

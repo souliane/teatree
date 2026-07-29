@@ -1247,7 +1247,7 @@
           "name": "clean-merged"
         },
         {
-          "help": "Stamp the scoped noreply git identity onto an existing souliane clone (#762)",
+          "help": "Stamp the scoped noreply git identity onto an existing public GitHub clone (#762)",
           "name": "stamp-identity"
         },
         {
@@ -1265,6 +1265,10 @@
         {
           "help": "Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR",
           "name": "clean-all"
+        },
+        {
+          "help": "Release registered rows whose checkout is provably dead \u2014 ROWS ONLY (dry run unless --apply)",
+          "name": "release-dead-rows"
         }
       ]
     },
