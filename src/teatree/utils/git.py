@@ -42,7 +42,12 @@ from teatree.utils.git_commit import (
 )
 from teatree.utils.git_remote_ops import config_value, remote_slug, remote_url
 from teatree.utils.git_run import check, git_env_hermetic, git_env_without_overrides, run, run_strict
-from teatree.utils.git_status import full_worktree_diff, status_porcelain, status_porcelain_strict
+from teatree.utils.git_status import (
+    full_worktree_diff,
+    status_porcelain,
+    status_porcelain_strict,
+    status_porcelain_z_strict,
+)
 from teatree.utils.git_sync import fetch, fetch_all_prune, merge_abort, merge_no_edit, pull_ff_only, push, rebase
 from teatree.utils.git_worktree import (
     commits_absent_from_all_remotes,
@@ -106,6 +111,7 @@ __all__ = [
     "soft_reset",
     "status_porcelain",
     "status_porcelain_strict",
+    "status_porcelain_z_strict",
     "unsynced_commits",
     "worktree_add",
     "worktree_add_at_ref",
