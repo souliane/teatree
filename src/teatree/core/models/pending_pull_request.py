@@ -10,11 +10,17 @@ A deferral now owes a row here. :class:`~teatree.loop.scanners.pending_pr.Pendin
 re-runs the idempotent ``ensure-pr`` path once per dispatch tick and discharges
 the row when the PR exists (or the branch turns out to need none); a row that
 survives :data:`MAX_DRAIN_ATTEMPTS` drains is a LOUD ``t3 doctor check`` FAIL,
-never a silent retry. ``spec`` is the ``PullRequestSpec`` the deferring caller
-had already built — the only surviving record of the intended PR once the
-worktree is reaped — and stays empty when the deferral preceded it.
+never a silent retry, and ``t3 <overlay> pr discharge-pending <id>`` is the
+operator's escape hatch when a branch genuinely needs no PR.
+
+``spec`` is the ``PullRequestSpec`` the deferring caller had already built. It is
+DIAGNOSTIC only — the drain re-runs the whole ``ensure-pr`` path, which rebuilds
+the spec from the worktree, so a stored one is never replayed. What it buys is a
+doctor FAIL that names the intended PR (:attr:`PendingPullRequest.intended_title`)
+instead of a bare branch. It stays empty when the deferral preceded the spec.
 """
 
+from pathlib import Path
 from typing import ClassVar, TypedDict
 
 from django.db import models
@@ -43,6 +49,14 @@ class SerializedPrSpec(TypedDict):
     draft: bool
 
 
+class RelativeRepoPathError(ValueError):
+    def __init__(self, repo_path: str) -> None:
+        super().__init__(
+            f"repo_path must be absolute (got {repo_path!r}) — a relative path names "
+            f"a different checkout for every reader of the obligation",
+        )
+
+
 class PendingPullRequestManager(models.Manager["PendingPullRequest"]):
     def owe(
         self,
@@ -54,10 +68,16 @@ class PendingPullRequestManager(models.Manager["PendingPullRequest"]):
     ) -> "PendingPullRequest":
         """Record (or refresh) the PR owed for *branch*, keyed on ``(repo_path, branch)``.
 
+        ``repo_path`` must be ABSOLUTE: the row is written by the pre-push hook in
+        the worktree's cwd and read back by the dispatch loop and the doctor in
+        theirs, so a relative path would name a different checkout on every read.
+
         A re-deferral updates what is owed but never resets ``drain_attempts``:
         the counter is what ages the obligation into a doctor FAIL, so a branch
         that re-defers every tick must not look permanently fresh.
         """
+        if not Path(repo_path).is_absolute():
+            raise RelativeRepoPathError(repo_path)
         row, created = self.get_or_create(
             repo_path=repo_path,
             branch=branch,

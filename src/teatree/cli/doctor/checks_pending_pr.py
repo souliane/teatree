@@ -30,7 +30,8 @@ def check_pending_pull_requests() -> bool:
             f"FAIL  {row.branch} in {row.repo_path} has owed a pull request since {row.deferred_at:%Y-%m-%d %H:%M} "
             f"and {row.drain_attempts} drains could not open it{intended} — last: {row.last_error or row.reason}. "
             f"The branch is shipping with no PR. Fix: t3 <overlay> pr ensure-pr --repo {row.repo_path} "
-            f"--branch {row.branch} (the drain keeps trying; past {MAX_DRAIN_ATTEMPTS} attempts it stops being silent)."
+            f"--branch {row.branch} (the drain keeps trying; past {MAX_DRAIN_ATTEMPTS} attempts it stops being "
+            f"silent). If the branch genuinely needs no PR: t3 <overlay> pr discharge-pending {row.pk}."
         )
     return not overdue
 

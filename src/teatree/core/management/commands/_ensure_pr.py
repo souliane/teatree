@@ -23,6 +23,7 @@ other create failure is a real error and surfaces.
 
 import logging
 from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
@@ -58,6 +59,15 @@ class EnsurePrResult(TypedDict, total=False):
     owed: bool
 
 
+class DischargeResult(TypedDict, total=False):
+    """Outcome of the operator dropping an obligation the drain can never satisfy."""
+
+    discharged: bool
+    branch: str
+    repo_path: str
+    error: str
+
+
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
 
@@ -65,28 +75,45 @@ PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run 
 def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestSpec | None = None) -> EnsurePrResult:
     """Persist the deferred PR as a durable obligation and return the deferral result.
 
-    A missing table (a pre-migration install) degrades to a logged warning rather
-    than an exception: this runs inside the pre-push hook, and refusing the push
-    over an unmigrated control DB would wedge every commit on the machine. The
-    schema guard in ``t3 doctor check`` is what surfaces that state.
-    """
-    from django.db import OperationalError, ProgrammingError  # noqa: PLC0415 — deferred: Django import at call time
+    The path is resolved to an ABSOLUTE one first: the hook defers with the
+    default ``"."`` in the worktree's cwd, and the drain and the doctor read the
+    stored value from the dispatch loop's cwd, where ``"."`` is a different
+    checkout entirely.
 
+    A busy control DB is not a reason to drop the obligation — SQLite reports
+    lock contention as ``OperationalError`` exactly like a missing table, so the
+    write is retried and a lock that never clears SURFACES rather than shipping a
+    branch with no PR and no record of one. Only a pre-migration missing relation
+    degrades to a logged warning: this runs inside the pre-push hook, and
+    refusing the push over an unmigrated control DB would wedge every commit on
+    the machine. The schema guard in ``t3 doctor check`` surfaces that state.
+    """
+    from django.db import DatabaseError  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.modelkit.db_retry import (  # noqa: PLC0415 — deferred: ORM-adjacent import at call time
+        is_missing_table_error,
+        retry_on_locked,
+    )
     from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
 
+    resolved_path = str(Path(repo_path).resolve())
     try:
-        PendingPullRequest.objects.owe(
-            repo_path=repo_path,
-            branch=branch_name,
-            reason=reason,
-            spec=cast("SerializedPrSpec", asdict(spec)) if spec is not None else None,
+        retry_on_locked(
+            lambda: PendingPullRequest.objects.owe(
+                repo_path=resolved_path,
+                branch=branch_name,
+                reason=reason,
+                spec=cast("SerializedPrSpec", asdict(spec)) if spec is not None else None,
+            ),
         )
-    except (OperationalError, ProgrammingError):
+    except DatabaseError as exc:
+        if not is_missing_table_error(exc):
+            raise
         logger.warning("ensure-pr deferred %s but could not record the obligation — run `t3 doctor check`", branch_name)
     return EnsurePrResult(
         skipped=reason,
         branch=branch_name,
-        hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
+        hint=f"t3 <overlay> pr ensure-pr --repo {resolved_path} --branch {branch_name}",
         owed=True,
     )
 

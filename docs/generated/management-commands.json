@@ -708,6 +708,10 @@
           "name": "ensure-pr"
         },
         {
+          "help": "Drop a deferred-PR obligation the drain can never discharge",
+          "name": "discharge-pending"
+        },
+        {
           "help": "Check whether session gates allow a phase transition (#1118: cross-session)",
           "name": "check-gates"
         },
