@@ -1081,6 +1081,10 @@
           "name": "comment"
         },
         {
+          "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",
+          "name": "backfill-clears"
+        },
+        {
           "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",
           "name": "record-spec-coverage"
         },
