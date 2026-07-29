@@ -92,6 +92,18 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0", "1"),
         note="golden-path lifecycle walk: 0 = progress/pending/done, 1 = a gate blocked or ignored",
     ),
+    Capability(
+        "teatree pr discharge-pending",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json reports whether the deferred-PR obligation was found and dropped",
+    ),
+    Capability(
+        "teatree ticket backfill-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-CLEAR recovery rows; dry run unless --no-dry-run",
+    ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),
     Capability(
