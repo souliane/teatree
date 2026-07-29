@@ -22,6 +22,7 @@ import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -147,6 +148,41 @@ def auto_isolated_worktrees_dir() -> Path:
 OWNER_STAMP_NAME = "owner-checkout.path"
 
 
+class OwnerLiveness(Enum):
+    """Whether a stamped owner's absence is THIS venue's to judge (#3872).
+
+    Three-valued for the same reason ``probe_checkout`` is: only an absence the
+    venue can actually observe is proof of death. The isolated-env root is
+    routinely shared into a container while the clones owning those dirs are not,
+    so the blindness runs BOTH ways — each venue keeps what it can see and reaps
+    what it cannot, and neither venue's answer is safe alone.
+    """
+
+    ALIVE = "alive"
+    DEAD = "dead"
+    UNKNOWN = "unknown"
+    UNSTAMPED = "unstamped"
+
+
+def _device_of(path: Path) -> int | None:
+    try:
+        return path.stat().st_dev
+    except OSError:
+        return None
+
+
+def _exists(path: Path) -> bool:
+    # ``Path.exists`` re-raises EACCES rather than answering False.
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _deepest_existing_ancestor(path: Path) -> Path | None:
+    return next((candidate for candidate in (path, *path.parents) if _exists(candidate)), None)
+
+
 @dataclass(frozen=True, slots=True)
 class IsolatedEnvDir:
     """One auto-isolated per-worktree env dir, and the owner stamp naming its checkout.
@@ -173,6 +209,39 @@ class IsolatedEnvDir:
         except OSError:
             return None
         return Path(raw) if raw else None
+
+    def owner_liveness(self) -> OwnerLiveness:
+        """Classify the stamped owner, refusing to call an unseen path dead (#3872).
+
+        A missing owner path is proof of death only when this venue can see the
+        filesystem the owner lived on. Comparing the env dir's device against the
+        device of the owner's deepest surviving ancestor answers exactly that: a
+        match means the two share a filesystem namespace, so the absence was
+        OBSERVED; a mismatch means the owner's tree is simply not mounted here, so
+        the absence was merely UNSEEN. That distinction is venue-independent,
+        which is what a scan result can never be.
+        """
+        owner = self.owner
+        if owner is None:
+            return OwnerLiveness.UNSTAMPED
+        if _exists(owner):
+            return OwnerLiveness.ALIVE
+        ancestor = _deepest_existing_ancestor(owner)
+        env_device = _device_of(self.path)
+        if ancestor is None or env_device is None:
+            return OwnerLiveness.UNKNOWN
+        return OwnerLiveness.DEAD if _device_of(ancestor) == env_device else OwnerLiveness.UNKNOWN
+
+    def prepare_for(self, repo_root: Path) -> None:
+        """Stamp this dir with its owner, THEN seed it (#3872).
+
+        The stamp goes down first so the dir is never observable unstamped:
+        seeding copies a multi-GB DB and can fail on a full disk, and an unstamped
+        dir is one no other venue can ever judge — every venue must then keep it
+        rather than risk reaping a live checkout's control DB.
+        """
+        self.stamp_owner(repo_root)
+        seed_isolated_db(self.path)
 
     def stamp_owner(self, repo_root: Path) -> None:
         """Record *repo_root* as this dir's owning checkout.

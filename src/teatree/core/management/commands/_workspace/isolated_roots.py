@@ -23,6 +23,17 @@ liveness is PROVEN by the named path rather than inferred from a population the
 other sources have to agree on. Each pass stamps what it discovered, so that
 durable mapping grows rather than covering only newly-minted dirs.
 
+**A scan result is venue-dependent; the owner stamp is not (#3872).** The
+isolated-env root is routinely shared into a container while the clones that own
+those dirs are not, so the blindness runs BOTH ways: run in two venues, each
+proposes removing dirs the other keeps as live. Scanning harder cannot fix that —
+a scan cannot see what is not mounted. So a stamped owner that does not exist is
+only DEAD when this venue can see the filesystem it lived on
+(:meth:`teatree.paths.IsolatedEnvDir.owner_liveness`); otherwise it is UNKNOWN,
+which keeps the dir and reports why. An UNSTAMPED dir is still judged on the
+other evidence — refusing those too is only safe once every venue has backfilled,
+so it is a later stage, not this one.
+
 Incomplete evidence fails CLOSED — an unreadable directory, a subtree past the
 walk's depth cap, or an unreadable clone registry hides an unknown number of live
 checkouts, so every otherwise-unreferenced dir is kept and the gap reported. That
@@ -160,9 +171,9 @@ def _owned_by_live_checkout(env_dir: Path, live: LiveCheckoutSlugs) -> str | Non
     """
     if env_dir.name in live.slugs:
         return "a live checkout owns it"
-    owner = paths.IsolatedEnvDir(env_dir).owner
-    if owner is not None and owner.is_dir():
-        return f"its owner stamp names a live checkout ({owner})"
+    env = paths.IsolatedEnvDir(env_dir)
+    if env.owner_liveness() is paths.OwnerLiveness.ALIVE:
+        return f"its owner stamp names a live checkout ({env.owner})"
     return None
 
 
@@ -180,18 +191,36 @@ def _changed_since(env_dir: Path, snapshot_at: float) -> bool:
         return True
 
 
-def _unprovable_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
-    """Why *env_dir*'s death cannot be PROVEN, even though nothing claims to own it.
+def _outside_this_passs_evidence(env_dir: Path, live: LiveCheckoutSlugs) -> str | None:
+    """Why this pass's evidence never covered *env_dir* — an unknown, not a death.
 
-    Each branch is a distinct way the evidence falls short of proof — incomplete
-    evidence, a dir the evidence never covered, an ignore glob, unexpected git
-    work, an unmappable live row. Absence of an owner is not proof of death while
-    any of these holds (the #706 standard).
+    All three are scope failures rather than findings: the walk left gaps, the
+    owner lives on a filesystem this venue cannot reach, or the dir was minted
+    after the keep-set was taken.
     """
     if live.gaps:
         return f"checkout evidence is incomplete ({'; '.join(live.gaps)}) — cannot prove any dir is orphan"
+    env = paths.IsolatedEnvDir(env_dir)
+    if env.owner_liveness() is paths.OwnerLiveness.UNKNOWN:
+        return (
+            f"its owner stamp names a path this venue cannot see ({env.owner}) — missing evidence, not proof of death"
+        )
     if _changed_since(env_dir, live.snapshot_at):
         return "changed after the keep-set was computed — outside this pass's evidence"
+    return None
+
+
+def _unprovable_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
+    """Why *env_dir*'s death cannot be PROVEN, even though nothing claims to own it.
+
+    Each branch is a distinct way the evidence falls short of proof — evidence
+    that never covered this dir, an ignore glob, unexpected git work, an
+    unmappable live row. Absence of an owner is not proof of death while any of
+    these holds (the #706 standard).
+    """
+    uncovered = _outside_this_passs_evidence(env_dir, live)
+    if uncovered is not None:
+        return uncovered
     if is_clean_ignored(env_dir.name):
         return "matches clean_ignore"
     if _holds_git_checkout(env_dir):

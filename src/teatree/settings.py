@@ -10,20 +10,12 @@ from pathlib import Path
 from teatree.config import default_logging
 from teatree.config.db_router import CONFIG_DB_ALIAS, pinned_config_db
 from teatree.config.setting_parsers import _parse_env_bool_default_on
-from teatree.paths import (
-    CANONICAL_DB,
-    CODE_REPO_ROOT,
-    DATA_DIR,
-    DATA_DIR_AUTO_ISOLATED,
-    IsolatedEnvDir,
-    seed_isolated_db,
-)
+from teatree.paths import CANONICAL_DB, CODE_REPO_ROOT, DATA_DIR, DATA_DIR_AUTO_ISOLATED, IsolatedEnvDir
 from teatree.timeouts import CORE_DEFAULTS
 
 _DATA_DIR = DATA_DIR
 if DATA_DIR_AUTO_ISOLATED:
-    seed_isolated_db(_DATA_DIR)
-    IsolatedEnvDir(_DATA_DIR).stamp_owner(CODE_REPO_ROOT)
+    IsolatedEnvDir(_DATA_DIR).prepare_for(CODE_REPO_ROOT)
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # The stale-DB notice is an operational nudge surfaced by ``t3 doctor check``

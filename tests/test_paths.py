@@ -2,6 +2,7 @@
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -150,6 +151,75 @@ class TestIsolatedSlug:
 
     def test_auto_isolated_dir_ends_in_teatree_worktrees(self) -> None:
         assert paths.auto_isolated_worktrees_dir().name == "teatree-worktrees"
+
+
+class TestOwnerLiveness:
+    """Whether a stamped owner's absence is THIS venue's to judge (#3872).
+
+    A scan result is venue-dependent — the isolated-env root is shared into the
+    container while the clones owning those dirs are not, so each venue honestly
+    concludes the other's checkouts are dead. The stamp plus the filesystem the
+    owner's surviving ancestor lives on is venue-independent, which is what makes
+    it evidence rather than an opinion.
+    """
+
+    def _stamped(self, tmp_path: Path, owner: Path) -> paths.IsolatedEnvDir:
+        env_dir = paths.IsolatedEnvDir(tmp_path / "env" / paths.isolated_slug(owner))
+        env_dir.stamp_owner(owner)
+        return env_dir
+
+    def test_an_unstamped_dir_is_unstamped(self, tmp_path: Path) -> None:
+        (tmp_path / "env").mkdir()
+        assert paths.IsolatedEnvDir(tmp_path / "env").owner_liveness() is paths.OwnerLiveness.UNSTAMPED
+
+    def test_a_stamp_naming_an_existing_checkout_is_alive(self, tmp_path: Path) -> None:
+        owner = tmp_path / "live"
+        owner.mkdir()
+
+        assert self._stamped(tmp_path, owner).owner_liveness() is paths.OwnerLiveness.ALIVE
+
+    def test_a_stamp_naming_a_vanished_path_on_this_filesystem_is_dead(self, tmp_path: Path) -> None:
+        """Same filesystem, so the absence is observed rather than merely unseen."""
+        assert self._stamped(tmp_path, tmp_path / "vanished").owner_liveness() is paths.OwnerLiveness.DEAD
+
+    def test_a_stamp_naming_a_path_on_another_filesystem_is_unknown(self, tmp_path: Path) -> None:
+        env_dir = self._stamped(tmp_path, Path("/elsewhere/deploy/worktrees/agent"))
+        env_device = env_dir.path.stat().st_dev
+
+        with patch.object(paths, "_device_of", lambda p: env_device + 1 if p == Path("/") else env_device):
+            assert env_dir.owner_liveness() is paths.OwnerLiveness.UNKNOWN
+
+    def test_an_unreadable_device_is_unknown_never_dead(self, tmp_path: Path) -> None:
+        """Fail closed: a device that cannot be read proves nothing about death."""
+        env_dir = self._stamped(tmp_path, tmp_path / "vanished")
+
+        with patch.object(paths, "_device_of", lambda _: None):
+            assert env_dir.owner_liveness() is paths.OwnerLiveness.UNKNOWN
+
+
+class TestPrepareIsolatedEnvDir:
+    """Every new env dir carries its owner stamp from birth (#3872 stage 1).
+
+    An unstamped dir is one no other venue can ever judge, so the reaper must keep
+    it indefinitely. Seeding copies a multi-GB DB and can fail; the stamp must
+    already be down when it does.
+    """
+
+    def test_the_dir_is_stamped_before_it_is_seeded(self, tmp_path: Path) -> None:
+        env_dir = tmp_path / "env"
+        stamped_when_seeding: list[Path | None] = []
+
+        disk_full = OSError("no space left on device")
+
+        def record_then_fail(data_dir: Path) -> None:
+            stamped_when_seeding.append(paths.IsolatedEnvDir(data_dir).owner)
+            raise disk_full
+
+        with patch.object(paths, "seed_isolated_db", record_then_fail), pytest.raises(OSError, match="no space"):
+            paths.IsolatedEnvDir(env_dir).prepare_for(Path("/live/checkout"))
+
+        assert stamped_when_seeding == [Path("/live/checkout")]
+        assert paths.IsolatedEnvDir(env_dir).owner == Path("/live/checkout")
 
 
 class TestSqliteSnapshot:

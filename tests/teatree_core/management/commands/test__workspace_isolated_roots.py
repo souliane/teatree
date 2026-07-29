@@ -402,12 +402,40 @@ class TestLiveCheckoutEvidence(TestCase):
 
         assert paths.IsolatedEnvDir(env_dir).owner == checkout
 
-    def test_owner_stamp_naming_a_vanished_checkout_does_not_protect(self) -> None:
-        """Anti-vacuous control for the stamp: it proves liveness, it is not a blanket pin."""
-        env_dir = self._make_env_dir(self.root, paths.isolated_slug(Path("/gone/stamped")))
-        paths.IsolatedEnvDir(env_dir).stamp_owner(Path("/gone/stamped"))
+    def test_owner_stamp_naming_a_vanished_checkout_in_a_visible_root_does_not_protect(self) -> None:
+        """Anti-vacuous control for the stamp: it proves liveness, it is not a blanket pin.
+
+        Re-scoped for #3872, not relaxed: the vanished checkout sits inside a root
+        this venue can see, so its absence is this venue's to judge and the dir is
+        still reaped. Only an owner beyond this venue's filesystem becomes unknown.
+        """
+        vanished = self.workspace / "vanished"
+        env_dir = self._make_env_dir(self.root, paths.isolated_slug(vanished))
+        paths.IsolatedEnvDir(env_dir).stamp_owner(vanished)
 
         result = self._reap()
 
         assert not env_dir.exists()
         assert any("Removed orphan isolated worktree root" in line for line in result)
+
+    def test_owner_stamp_naming_a_path_beyond_this_venue_keeps_the_dir(self) -> None:
+        """The #3872 keystone: an owner this venue cannot see is missing evidence.
+
+        The isolated-env root is shared into the container while the clones that
+        own those dirs are not, so each venue reaps exactly what it cannot see.
+        The env dir and the owner's surviving ancestor then sit on different
+        filesystems, which is the venue-independent tell a scan result can never be.
+        """
+        unseen = Path("/elsewhere/teatree-deploy/.claude/worktrees/agent")
+        env_dir = self._make_env_dir(self.root, paths.isolated_slug(unseen))
+        paths.IsolatedEnvDir(env_dir).stamp_owner(unseen)
+        env_device = env_dir.stat().st_dev
+
+        def device_of(path: Path) -> int | None:
+            return env_device + 1 if path == Path("/") else env_device
+
+        with patch.object(paths, "_device_of", device_of):
+            result = self._reap()
+
+        assert env_dir.exists(), "an owner beyond this venue's view is never proof of death"
+        assert any("cannot see" in line and env_dir.name in line for line in result)
