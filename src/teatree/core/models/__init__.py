@@ -120,6 +120,7 @@ from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.session_todo import SessionTodo, SessionTodoManager
 from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
+from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -301,10 +302,13 @@ __all__ = [
     "SessionTodo",
     "SessionTodoManager",
     "Severity",
+    "SkipObservation",
     "SlackSelfAckReaction",
     "StandingGoal",
     "StandingGoalError",
     "StandingGoalManager",
+    "SweepSkipStreak",
+    "SweepSkipStreakManager",
     "Task",
     "TaskAttempt",
     "Ticket",

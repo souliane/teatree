@@ -160,3 +160,57 @@ def _check_compose_output_root_pinned() -> bool:
         "deploy/docker-compose.yml.",
     )
     return False
+
+
+def _check_loop_classification_drift() -> bool:
+    """Warn when a ``Loop`` row's classification disagrees with the shipped table.
+
+    A row is seeded once and never re-read, so a ``colleague_facing`` value that
+    outlived a shipped change keeps winning at read time — and a stale ``True``
+    is skipped by the away-class admission gate, so the loop stops firing while
+    every surface still reports it enabled. The field is admin-editable, so this
+    reports rather than repairs; ``seed_loops --reconcile-classification`` writes
+    the shipped value back. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.seed_drift import classification_drift  # noqa: PLC0415 — deferred: ORM-reading import
+
+    try:
+        findings = classification_drift()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Loop-classification drift check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not findings:
+        return True
+    for finding in findings:
+        typer.echo(f"WARN  Loop classification drift: {finding}")
+    typer.echo(
+        "WARN  Run `python -m teatree seed_loops --reconcile-classification` to write the shipped values back.",
+    )
+    return False
+
+
+def _check_aged_sweep_skips() -> bool:
+    """Warn on each PR the merge sweep has skipped for the same reason N ticks running.
+
+    A sweep skip is log-only, so a PR held by ``ci_red`` / ``no_clear_for_head`` /
+    a fork provenance hold sits indefinitely with nobody told. The DM fires once
+    when the streak ages; this is the standing view — every aged streak, announced
+    or not, with the PR, the reason and how long it has been stuck. Crash-proof:
+    any error degrades to OK.
+    """
+    from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS  # noqa: PLC0415 — deferred: lazy CLI import
+
+    try:
+        aged = list(SweepSkipStreak.objects.aged(threshold=SURFACE_AFTER_TICKS))
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Aged-sweep-skip check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not aged:
+        return True
+    for row in aged:
+        typer.echo(
+            f"WARN  PR {row.ref} skipped by the merge sweep {row.tick_count}x "
+            f"({row.age_label()}) — reason `{row.reason}`. {row.url}",
+        )
+    return False
