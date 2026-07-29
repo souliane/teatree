@@ -20,8 +20,10 @@ from django.test import TestCase
 
 from teatree.core.management.commands._workspace.checkout_registry import (
     candidate_clones,
+    checkout_scan_roots,
     live_checkout_paths,
     raw_worktree_paths,
+    scan_checkout_paths,
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.utils.run import CommandFailedError
@@ -152,6 +154,23 @@ class TestCheckoutRegistry(TestCase):
         assert str(checkout) in registry.paths
         assert registry.complete
 
+    def test_the_scan_finds_a_checkout_nested_inside_another_checkout(self) -> None:
+        """Agent worktrees live INSIDE their own clone, so the walk must not stop at ``.git``."""
+        nested = self.clone / ".claude" / "worktrees" / "agent-1"
+        run_git(self.clone, "worktree", "add", "-q", "-b", "nested", str(nested))
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert str(nested) in found.paths
+        assert str(self.clone) in found.paths
+        assert found.complete
+
+    def test_the_scan_ignores_a_plain_directory(self) -> None:
+        """Anti-vacuous control: it reports checkouts, not every directory it walks."""
+        found = scan_checkout_paths((self.workspace,))
+
+        assert str(self.outside) not in found.paths
+
     def test_an_unreadable_scan_root_becomes_a_gap(self) -> None:
         """A directory the scan cannot read hides an unknown number of checkouts."""
         registry = live_checkout_paths(self.workspace / "does-not-exist")
@@ -162,3 +181,32 @@ class TestCheckoutRegistry(TestCase):
         assert registry is not None
         assert not missing.complete
         assert any("absent" in gap for gap in missing.gaps)
+
+
+class TestCheckoutScanRoots(TestCase):
+    """Which roots the scan covers — the coverage the keep-set's completeness rests on."""
+
+    def test_home_is_always_a_root(self) -> None:
+        """Home is unconditional, whatever the configured roots say.
+
+        Teatree provisions worktrees under home, so a roots list assembled only
+        from configured paths is exactly the partial coverage that let an
+        undiscoverable clone's checkouts read as dead.
+        """
+        roots = checkout_scan_roots(Path.home() / "workspace" / "somewhere")
+
+        assert Path.home() in roots
+
+    def test_a_root_outside_home_is_kept(self) -> None:
+        workspace = Path("/srv/elsewhere/worktrees")
+
+        roots = checkout_scan_roots(workspace)
+
+        assert workspace in roots
+        assert Path.home() in roots
+
+    def test_nested_roots_collapse_into_their_ancestor(self) -> None:
+        """Scanning a root and its own subdirectory would walk the subtree twice."""
+        roots = checkout_scan_roots(Path.home() / "workspace")
+
+        assert roots == (Path.home(),)
