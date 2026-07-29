@@ -49,7 +49,10 @@ class TestAnAbsentOwningCloneProducesNoGap(TestCase):
 
         assert registry.gaps == ()
         assert registry.complete, "an absent clone is not a skip — nothing here can fail closed on it"
-        assert registry.paths == frozenset()
+        # The venue's own tree yielded nothing. Asserting the whole set is empty would
+        # be environment-dependent: `candidate_clones` also offers the cwd, which is a
+        # real clone under CI.
+        assert [p for p in registry.paths if p.startswith(str(self.venue))] == []
 
     def test_the_stamp_is_what_rules_on_that_venues_env_dirs(self) -> None:
         # With no gap and no discovered checkout, the ONLY evidence left about a dir is
