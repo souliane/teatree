@@ -198,7 +198,9 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         from teatree.loop.tick import TickRequest  # noqa: PLC0415
 
         jobs_builder = run_tick.call_args.kwargs["jobs_builder"]
-        with patch("teatree.loops.loop_table.build_loop_table_jobs", return_value=[]) as build:
+        # The builder consumes the REASONED fan-out (#3843) so it can report why a
+        # refused loop produced no jobs; the `only` scoping it pins is unchanged.
+        with patch("teatree.loops.loop_table.dispatch_loop_table", return_value=[]) as build:
             jobs_builder(TickRequest(), dt.datetime.now(dt.UTC))
         assert build.call_args.kwargs["only"] == "inbox"
 
