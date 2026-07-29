@@ -43,8 +43,9 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SAFETY_TOML = '[teatree]\nautonomy = "full"\n'
 
 #: The page's whole DB cost: the readouts' reads plus the scope picker's DISTINCT, and the
-#: ONE settings read every row of the pane is resolved from. Constant in the row count.
-_PAGE_QUERIES = 7
+#: ONE settings read every row of the pane is resolved from. Constant in the row count, and
+#: two lower than before the request-scoped memo collapsed the repeated settings resolution.
+_PAGE_QUERIES = 5
 _PANE_QUERIES = 1
 _READOUTS_QUERIES = 3
 

@@ -31,4 +31,4 @@ def transcript(request: "HttpRequest", session_id: str) -> "HttpResponse":
     context = {"session_id": session_id, "entries": tail_transcript(session_id)}
     if request.headers.get("HX-Request") == "true":
         return render(request, "dash/partials/_transcript.html", context)
-    return render(request, "dash/transcript.html", {**nav_context("dash:board"), **context})
+    return render(request, "dash/transcript.html", {**nav_context("dash:sessions"), **context})

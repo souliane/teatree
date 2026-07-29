@@ -31,6 +31,7 @@ leaf may import it downward.
 import logging
 
 from teatree.loop.preset_resolution import resolve_preset_state
+from teatree.request_cache import cached_per_request
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ def forced_loop_map() -> dict[str, bool]:
         return {}
 
 
+@cached_per_request
 def control_planes_in_db() -> tuple[set[str], dict[str, bool]]:
     """The (held names, live forced map) pair in ONE bulk read — the tick's single control read.
 

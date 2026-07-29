@@ -96,6 +96,10 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Collapse the repeated config / preset / loop reads one dashboard render issues
+    # into one each. Ahead of the auto-login below so that middleware's own settings
+    # read shares the memo with the view's.
+    "teatree.core.middleware.RequestScopedReadCacheMiddleware",
     # Auto-login the single-operator admin as the superuser — gated on the
     # loopback source + the ``admin_autologin_enabled`` setting (never DEBUG),
     # so a non-loopback request is never auto-logged-in.

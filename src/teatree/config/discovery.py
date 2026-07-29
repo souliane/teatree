@@ -13,8 +13,10 @@ from typing import Any
 import teatree.config as _facade
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.config.settings import OverlayEntry
+from teatree.request_cache import cached_per_request
 
 
+@cached_per_request
 def discover_overlays() -> list[OverlayEntry]:
     """Discover overlays from the DB ``overlays`` registry and installed entry points.
 
@@ -94,6 +96,7 @@ def _match_canonical_ep(alias: str, ep_names: "set[str]") -> str | None:
     return None
 
 
+@cached_per_request
 def discover_active_overlay() -> OverlayEntry | None:
     """Find the overlay to use.
 

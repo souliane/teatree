@@ -43,6 +43,7 @@ from teatree.config.setting_layers import (
 )
 from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.config.settings import OverlayEntry, UserSettings
+from teatree.request_cache import cached_per_request
 
 _logger = logging.getLogger("teatree.config")
 
@@ -104,6 +105,7 @@ def effective_default(key: str) -> object:
     return getattr(shipped_defaults(), key, _NO_EFFECTIVE_DEFAULT)
 
 
+@cached_per_request
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     """Return the user settings under the #1775 DB-home partition + env.
 

@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 from django.db import models
+from django.db.models.functions import Coalesce
 
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.task import Task
@@ -10,7 +11,7 @@ from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
-    from teatree.core.cost import AttemptUsage, CostBreakdown
+    from teatree.core.cost import AttemptUsage, CostBreakdown, UsageGroup
 
 
 class TaskAttemptQuerySet(models.QuerySet):
@@ -103,11 +104,55 @@ class TaskAttemptQuerySet(models.QuerySet):
             )
         ]
 
+    def usage_groups(self) -> "list[UsageGroup]":
+        """Token totals per costing key, aggregated by the database.
+
+        One row per distinct ``(model, lane, phase, estimated, reported?)`` — a
+        handful of rows however many attempts the queryset spans. ``reported?``
+        must be part of the key: a group mixing attempts that reported a cost with
+        attempts that did not cannot be priced as one bucket.
+        """
+        UsageGroup = cast("type[UsageGroup]", get("cost", "UsageGroup"))  # noqa: N806 — PascalCase binds a runtime-resolved model class, matching its class name
+
+        rows = (
+            self.annotate(cost_reported=models.Q(cost_usd__isnull=False))
+            .values("model", "lane", "task__phase", "cost_is_estimated", "cost_reported")
+            .annotate(
+                reported_total=models.Sum("cost_usd"),
+                input_total=Coalesce(models.Sum("input_tokens"), 0),
+                output_total=Coalesce(models.Sum("output_tokens"), 0),
+                cache_read_total=Coalesce(models.Sum("cache_read_tokens"), 0),
+                cache_write_total=Coalesce(models.Sum("cache_write_tokens"), 0),
+                attempt_count=models.Count("pk"),
+            )
+            .order_by()
+        )
+        return [
+            UsageGroup(
+                model=row["model"] or None,
+                lane=row["lane"],
+                phase=row["task__phase"],
+                estimated=row["cost_is_estimated"],
+                reported_cost_usd=row["reported_total"] if row["cost_reported"] else None,
+                input_tokens=row["input_total"],
+                output_tokens=row["output_total"],
+                cache_read_tokens=row["cache_read_total"],
+                cache_write_tokens=row["cache_write_total"],
+                attempts=row["attempt_count"],
+            )
+            for row in rows
+        ]
+
     def cost_breakdown(self) -> "CostBreakdown":
-        """SDK-equivalent spend across the attempts in this queryset."""
+        """SDK-equivalent spend across the attempts in this queryset.
+
+        Aggregated by the database (:meth:`usage_groups`), never by instantiating
+        each attempt: the cycle-to-date chip spans the whole table, and walking
+        340k rows through the ORM was the 19s the health page took to render.
+        """
         CostBreakdown = cast("type[CostBreakdown]", get("cost", "CostBreakdown"))  # noqa: N806 — PascalCase binds a runtime-resolved model class, matching its class name
 
-        return CostBreakdown.from_usages(self.usages())
+        return CostBreakdown.from_groups(self.usage_groups())
 
 
 class TaskAttempt(models.Model):
@@ -199,6 +244,29 @@ class TaskAttempt(models.Model):
 
     class Meta:
         db_table = "teatree_taskattempt"
+        indexes = (
+            # Carries every column :meth:`TaskAttemptQuerySet.usage_groups` reads, so the
+            # cycle-to-date spend aggregate is answered from a ~20 MB index instead of
+            # scanning a table whose rows hold the (large) error / result / skills_loaded
+            # payloads — `EXPLAIN QUERY PLAN` reports `SEARCH USING COVERING INDEX`. The
+            # cycle filter leads so the range is the seek; the rest is what makes it cover.
+            models.Index(
+                fields=[
+                    "execution_target",
+                    "started_at",
+                    "model",
+                    "lane",
+                    "cost_is_estimated",
+                    "cost_usd",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
+                    "task",
+                ],
+                name="taskattempt_cost_cover",
+            ),
+        )
 
     def __str__(self) -> str:
         return f"attempt-{self.pk or 'new'!s}"

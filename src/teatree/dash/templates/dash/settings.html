@@ -22,6 +22,7 @@
   <div id="settings-readouts"
     hx-get="{% url 'dash:settings_readouts' %}"
     hx-trigger="every 15s"
+    hx-sync="this:drop"
     hx-swap="morph:innerHTML">
     {% include "dash/partials/_settings_readouts.html" %}
   </div>

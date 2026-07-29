@@ -1,5 +1,5 @@
 {% load dash_format %}
-<article class="card" data-ticket="{{ card.ticket_id }}" tabindex="0"
+<article class="card" id="card-{{ card.ticket_id }}" data-ticket="{{ card.ticket_id }}" tabindex="0"
   hx-get="{% url 'dash:ticket_drawer' card.ticket_id %}"
   hx-target="#drawer" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']">
   <div class="card-top">

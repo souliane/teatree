@@ -367,6 +367,7 @@ graph TD
     teatree.url_classify --> teatree.utils
     teatree.quality --> teatree.utils
     teatree.paths
+    teatree.request_cache
     teatree.types
     teatree.pricing
     teatree.verification

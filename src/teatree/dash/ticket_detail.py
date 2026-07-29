@@ -10,7 +10,8 @@ recorded ``TicketTransition`` rows and ``build_ticket_lifecycle_mermaid``.
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.db.models import Prefetch
+from django.db.models import Count, F, Prefetch, Window
+from django.db.models.functions import RowNumber
 
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task_attempt import TaskAttempt
@@ -20,6 +21,16 @@ from teatree.core.selectors import build_ticket_lifecycle_mermaid
 from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.issue_link import issue_link
 from teatree.dash.selectors import PrChip, group_slug
+
+# How many of each history the drawer renders. A ticket the factory worked for weeks
+# accumulates thousands of transitions and attempts, and rendering all of them
+# produced a multi-megabyte drawer that the operator experienced as a card that does
+# not open. Each panel keeps the MOST RECENT rows — the ones that answer "what is
+# happening now" — and states the total it truncated from, so the cap is visible
+# rather than a silent omission.
+TRANSITION_ROWS = 50
+TASK_ROWS = 20
+ATTEMPT_ROWS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +86,7 @@ class TaskRow:
     claimed_by: str
     execution_target: str
     attempts: tuple[AttemptRow, ...] = ()
+    attempts_total: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,9 +114,11 @@ class TicketDetail:
     expedited: bool
     remote_missing: bool
     transitions: tuple[TransitionRow, ...]
+    transitions_total: int
     mermaid: str
     available_transitions: tuple[str, ...]
     tasks: tuple[TaskRow, ...]
+    tasks_total: int
     sessions: tuple[SessionRow, ...]
     pr_chips: tuple[PrChip, ...]
 
@@ -136,6 +150,8 @@ def legal_transition_names(ticket: Ticket) -> tuple[str, ...]:
 def build_ticket_detail(ticket_id: int) -> TicketDetail:
     ticket = Ticket.objects.get(pk=ticket_id)
     issue_href, issue_ref = issue_link(ticket.issue_url)
+    tasks, tasks_total = _tasks(ticket)
+    transitions, transitions_total = _transitions(ticket_id)
     return TicketDetail(
         ticket_id=ticket.pk,
         number=ticket.ticket_number,
@@ -151,18 +167,22 @@ def build_ticket_detail(ticket_id: int) -> TicketDetail:
         short_description=ticket.short_description,
         expedited=ticket.expedited,
         remote_missing=ticket.remote_missing,
-        transitions=_transitions(ticket_id),
+        transitions=transitions,
+        transitions_total=transitions_total,
         mermaid=build_ticket_lifecycle_mermaid(ticket_id),
         available_transitions=legal_transition_names(ticket),
-        tasks=_tasks(ticket),
+        tasks=tasks,
+        tasks_total=tasks_total,
         sessions=_sessions(ticket),
         pr_chips=_pr_chips(ticket_id),
     )
 
 
-def _transitions(ticket_id: int) -> tuple[TransitionRow, ...]:
-    rows = TicketTransition.objects.filter(ticket_id=ticket_id).select_related("session").order_by("created_at")
-    return tuple(
+def _transitions(ticket_id: int) -> tuple[tuple[TransitionRow, ...], int]:
+    """The most recent :data:`TRANSITION_ROWS` transitions, oldest-first, and the total."""
+    history = TicketTransition.objects.filter(ticket_id=ticket_id)
+    recent = history.select_related("session").order_by("-created_at", "-pk")[:TRANSITION_ROWS]
+    rows = tuple(
         TransitionRow(
             from_state=row.from_state,
             to_state=row.to_state,
@@ -172,17 +192,30 @@ def _transitions(ticket_id: int) -> tuple[TransitionRow, ...]:
             from_group=group_slug(row.from_state),
             to_group=group_slug(row.to_state),
         )
-        for row in rows
+        for row in reversed(recent)
     )
+    return rows, history.count()
 
 
-def _tasks(ticket: Ticket) -> tuple[TaskRow, ...]:
-    # Prefetch every task's attempts in one extra query so the provenance panel
-    # (#3673) stays a fixed two-query plan regardless of task/attempt count (#3674).
-    tasks = ticket.tasks.order_by("-pk").prefetch_related(  # ty: ignore[unresolved-attribute]  # Django reverse FK
-        Prefetch("attempts", queryset=TaskAttempt.objects.order_by("-pk")),
+def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
+    """The most recent :data:`TASK_ROWS` tasks with their newest attempts, and the total.
+
+    The attempt cap is a SQL window rather than a Python slice: a repair loop can
+    leave one task carrying thousands of attempts, and a prefetch that fetches them
+    all to render ten of them is the same unbounded read one level down.
+    """
+    newest_attempts = (
+        TaskAttempt.objects.alias(rank=Window(RowNumber(), partition_by="task_id", order_by=F("pk").desc()))
+        .filter(rank__lte=ATTEMPT_ROWS)
+        .order_by("-pk")
     )
-    return tuple(
+    owned = ticket.tasks  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    tasks = (
+        owned.annotate(attempts_total=Count("attempts"))
+        .order_by("-pk")
+        .prefetch_related(Prefetch("attempts", queryset=newest_attempts))[:TASK_ROWS]
+    )
+    rows = tuple(
         TaskRow(
             task_id=task.pk,
             phase=task.phase,
@@ -190,9 +223,11 @@ def _tasks(ticket: Ticket) -> tuple[TaskRow, ...]:
             claimed_by=task.claimed_by,
             execution_target=task.execution_target,
             attempts=tuple(_attempt_row(attempt) for attempt in task.attempts.all()),
+            attempts_total=task.attempts_total,
         )
         for task in tasks
     )
+    return rows, owned.count()
 
 
 def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
