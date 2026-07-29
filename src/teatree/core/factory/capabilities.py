@@ -75,6 +75,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="always JSON: the machine-readable clean-all handoff",
     ),
     Capability(
+        "teatree workspace stamp-owners",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-venue env-dir stamping report; deletes nothing (#3872)",
+    ),
+    Capability(
         "teatree workspace release-dead-rows",
         json_output=True,
         exit_codes=("0",),

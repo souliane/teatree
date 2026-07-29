@@ -616,6 +616,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
+| `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |
 | `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
 | `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
 

@@ -174,6 +174,19 @@ class IsolatedEnvDir:
             return None
         return Path(raw) if raw else None
 
+    def open_for(self, repo_root: Path) -> None:
+        """Bring this dir into existence owned by *repo_root*, stamped at birth (#3872).
+
+        THE birth seam: an auto-isolated env dir comes into existence here, so the
+        stamp is written BEFORE the dir holds anything else and no code path can mint
+        an unstamped one. Ordering is the whole point — seeding copies a
+        multi-gigabyte control DB, and a startup that died mid-copy left a dir on disk
+        that a reaper could only judge by inference. The dir's owner is not evidence a
+        later pass has to rediscover: it is a fact the dir carries from its first byte.
+        """
+        self.stamp_owner(repo_root)
+        seed_isolated_db(self.path)
+
     def stamp_owner(self, repo_root: Path) -> None:
         """Record *repo_root* as this dir's owning checkout.
 

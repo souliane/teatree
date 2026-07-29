@@ -18,6 +18,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
 from teatree.core.runners import heal_missing_provisioned_db
 from teatree.core.worktree.readiness import run_and_report_probes
+from teatree.utils import git
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -186,3 +187,18 @@ def heal_db_or_record_failure(
         failures.append(wt.repo_path)
         return True
     return False
+
+
+def branch_prefix() -> str:
+    """The initials a new ticket branch is prefixed with, from env or the git identity.
+
+    Beside the other ``workspace ticket`` intake helpers rather than in the CLI module:
+    deriving a name from config is the engine's job, and ``workspace.py`` only passes
+    the result on.
+    """
+    prefix = os.environ.get("T3_BRANCH_PREFIX", "")
+    if not prefix:
+        name = git.run(args=["config", "user.name"])
+        if name:
+            prefix = "".join(word[0].lower() for word in name.split() if word)
+    return prefix or "dev"

@@ -1,6 +1,5 @@
 """Workspace management: create ticket worktrees, finalize, clean stale branches."""
 
-import os
 from pathlib import Path
 from typing import IO, Annotated, cast
 
@@ -13,9 +12,9 @@ from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
-from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace.anchor import resolve_workspace_ticket
 from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
 from teatree.core.management.commands._workspace.cleanup import _die
 from teatree.core.management.commands._workspace.dead_rows import build_dead_row_report, write_dead_row_lines
@@ -24,6 +23,7 @@ from teatree.core.management.commands._workspace.drift_report import run_drift_r
 from teatree.core.management.commands._workspace.finalize import run_finalize
 from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
 from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace.owner_stamps import backfill_owner_stamps
 from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
     render_worktree_report,
@@ -48,7 +48,6 @@ from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
 from teatree.core.worktree.dead_row_release import release_dead_rows
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
-from teatree.utils import git
 
 
 def _worktree_root() -> Path:
@@ -56,38 +55,6 @@ def _worktree_root() -> Path:
     # ticket worktrees land — NOT the CLONE root (``config.clone_root()``,
     # ``~/workspace``) where source clones are discovered.
     return _config_worktree_root()
-
-
-def _resolve_workspace_ticket(path: str) -> Ticket:
-    """Resolve the ticket for a workspace-scoped command.
-
-    Workspace commands (provision/start/ready/teardown) act on *every*
-    worktree in a ticket, so they should be runnable both from inside a
-    worktree subdir and from the ticket workspace root that holds those
-    subdirs. First try the normal worktree resolution; if that fails
-    because we're at the workspace root, attribute the workspace dir to its
-    owning ticket through the single fail-loud resolver
-    (:func:`workspace_owner_ticket`) — the same symlink-tolerant, multi-owner
-    policy the auto-register chain uses, never a second hand-rolled check.
-    """
-    try:
-        anchor = resolve_worktree(path)
-        return Ticket.objects.get(pk=anchor.ticket.pk)
-    except WorktreeNotFoundError:
-        base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
-        owner = workspace_owner_ticket(base)
-        if owner is None:
-            raise
-        return Ticket.objects.get(pk=owner.pk)
-
-
-def _branch_prefix() -> str:
-    prefix = os.environ.get("T3_BRANCH_PREFIX", "")
-    if not prefix:
-        name = git.run(args=["config", "user.name"])
-        if name:
-            prefix = "".join(word[0].lower() for word in name.split() if word)
-    return prefix or "dev"
 
 
 class Command(TyperCommand):
@@ -210,7 +177,7 @@ class Command(TyperCommand):
         """
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
-            ticket = _resolve_workspace_ticket(path)
+            ticket = resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` so multi-overlay
         # installs don't die on ambiguous ``get_overlay()`` when
         # ``T3_OVERLAY_NAME`` env var is missing (a real path when a
@@ -254,7 +221,7 @@ class Command(TyperCommand):
         After every worktree starts, runs each overlay's readiness probes —
         exits 1 if any probe fails.
         """
-        ticket = _resolve_workspace_ticket(path)
+        ticket = resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
@@ -315,7 +282,7 @@ class Command(TyperCommand):
         apply to a variant, the overlay's ``runtime.readiness_probes`` returns
         an empty list (or omits that probe) for that worktree.
         """
-        ticket = _resolve_workspace_ticket(path)
+        ticket = resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
@@ -354,7 +321,7 @@ class Command(TyperCommand):
         still-open MR is never reclaimed as collateral. ``--allow-open-prs`` is
         the explicit override, deliberately separate from ``--force``.
         """
-        ticket = _resolve_workspace_ticket(path)
+        ticket = resolve_workspace_ticket(path)
 
         worktrees = list(Worktree.objects.for_ticket(ticket))
         check_no_open_prs(ticket, worktrees, read_pr_state=read_live_pr_state, allow_open_prs=allow_open_prs)
@@ -477,6 +444,31 @@ class Command(TyperCommand):
     ) -> str:
         """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246)."""
         return reclaim_disk(dry_run=dry_run).render()
+
+    @command(name="stamp-owners")
+    def stamp_owners(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the stamping report as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> None:
+        """Record which checkout owns each auto-isolated env dir THIS venue can see (#3872).
+
+        Deletes nothing. Run it in EVERY venue that sees checkouts — host and container
+        both — because neither sees them all; engine:
+        :func:`~teatree.core.management.commands._workspace.owner_stamps.backfill_owner_stamps`.
+        """
+        report = backfill_owner_stamps(_worktree_root())
+        self.print_result = False
+        emit(
+            report,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(report),
+        )
 
     @command(name="clean-all")
     def clean_all(

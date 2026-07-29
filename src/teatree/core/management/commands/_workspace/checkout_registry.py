@@ -66,6 +66,11 @@ class CheckoutRegistry:
 
     paths: frozenset[str]
     gaps: tuple[str, ...]
+    #: The roots this venue actually walked. A path outside every one of them was
+    #: never looked for here, so its absence from :attr:`paths` says nothing about
+    #: whether it exists — the distinction #3872 turns on (see
+    #: :func:`~teatree.core.management.commands._workspace.owner_stamps.venue_can_observe`).
+    scanned_roots: tuple[Path, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -216,7 +221,7 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
         children, child_gaps = _child_directories(directory)
         gaps.extend(child_gaps)
         stack.extend((child, depth + 1) for child in children)
-    return CheckoutRegistry(frozenset(found), tuple(gaps))
+    return CheckoutRegistry(frozenset(found), tuple(gaps), roots)
 
 
 def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
@@ -238,7 +243,7 @@ def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
             continue
         found.add(repo)
         found.update(worktrees)
-    return CheckoutRegistry(frozenset(found), tuple(gaps))
+    return CheckoutRegistry(frozenset(found), tuple(gaps), scan.scanned_roots)
 
 
 __all__ = [
