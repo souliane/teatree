@@ -35,9 +35,11 @@ from teatree.cli.doctor.checks_environment import (
 )
 from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
+    _check_aged_sweep_skips,
     _check_compose_output_root_pinned,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
+    _check_loop_classification_drift,
     _check_loop_presets,
     _check_marker_jam,
 )
@@ -48,6 +50,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
+from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
@@ -105,6 +108,7 @@ __all__ = (
     "IntrospectionHelpers",
     "PackageNotFoundError",
     "_check_account_switch",
+    "_check_aged_sweep_skips",
     "_check_agent_session_pins",
     "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
@@ -124,6 +128,7 @@ __all__ = (
     "_check_intent_freshness",
     "_check_interactive_permission_mode",
     "_check_legacy_overlay_alias",
+    "_check_loop_classification_drift",
     "_check_loop_presets",
     "_check_marker_jam",
     "_check_mcp_connectivity",
@@ -244,9 +249,10 @@ def _run_worker_gates() -> bool:
 def _run_loop_intent_gates() -> bool:
     """The ORM-reading loop/intent checks, grouped to keep ``run_doctor_checks`` lean.
 
-    ``_check_loop_presets`` (#3159, dangling preset/loop/schedule refs) and
-    ``_check_marker_jam`` (#3275, orphaned issue-markers stranding the intake budget)
-    are surfacing-only WARNs — their return values are deliberately discarded so
+    ``_check_loop_presets`` (#3159, dangling preset/loop/schedule refs),
+    ``_check_loop_classification_drift`` (a ``Loop`` row disagreeing with the shipped
+    ``[loops.<name>]`` table) and ``_check_marker_jam`` (#3275, orphaned issue-markers
+    stranding the intake budget) are surfacing-only WARNs — their return values are deliberately discarded so
     neither can become a gate by accident. ``_check_intent_freshness`` is the "no
     owner-intent silently rots" gate: it HARD-FAILs when a consumable intent queue is
     non-empty while its consumer is not live — masked/disabled/held, or refused by the
@@ -255,6 +261,8 @@ def _run_loop_intent_gates() -> bool:
     the caller's ``ok`` aggregation.
     """
     _check_loop_presets()
+    _check_loop_classification_drift()
+    _check_aged_sweep_skips()
     _check_marker_jam()
     return _check_intent_freshness()
 
@@ -364,7 +372,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
     # ensure_django() above: the review-skill check reads the ConfigSetting store.
     ok = _check_enabled_but_unprovisioned() and ok
-    ok = check_worktree_health() and ok
+    # Two hard FAILs over teatree's own durable rows — a registered worktree that is
+    # no longer a checkout, and a PR owed since a deferral the drain cannot discharge.
+    ok = all((check_worktree_health(), check_pending_pull_requests())) and ok
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok

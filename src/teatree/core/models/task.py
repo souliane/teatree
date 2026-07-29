@@ -323,8 +323,11 @@ class Task(models.Model):
         through code→test→review finds no matching guard and no-ops, so a
         ticket can never reach a state it did not earn. The guards also
         make the call idempotent — once the ticket has advanced, a repeat
-        call (parallel child task, or a replay of an already-applied
-        transition) finds the state mismatch and no-ops.
+        call (a parallel child task) finds the state mismatch and no-ops.
+        ``mark_reviewed_externally`` is the one exception, by design: it
+        accepts its own target so a re-review at a moved head SHA can
+        re-stamp the reviewed-at record, which is why the replay sweep
+        drops terminal tickets rather than leaning on this guard (#3879).
 
         A task held for human input (#927) never fires its transition
         here — the agent said it could not finish this phase, so neither

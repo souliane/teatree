@@ -26,6 +26,24 @@ def status_porcelain_strict(repo: str = ".") -> str:
     return run_strict(repo=repo, args=["status", "--porcelain"])
 
 
+def status_porcelain_z_strict(repo: str = ".") -> str:
+    """``git status --porcelain -z`` verbatim — NUL-terminated fields, never stripped.
+
+    The text form C-quotes any path holding a space or a quote and renders a
+    rename as ``old -> new``, so splitting it yields strings that name no file.
+    ``-z`` emits every path raw in its own NUL-terminated field and keeps a
+    rename's two endpoints as two adjacent fields. Its records are
+    column-fixed (``XY <path>``), which is why — unlike
+    :func:`status_porcelain_strict` — the output must NOT be stripped: a leading
+    strip would eat the staged column of an unstaged-only entry (``" M path"``)
+    and shift every path by one character.
+
+    Fail-closed like :func:`status_porcelain_strict`: a non-zero ``git status``
+    raises rather than reading as a clean tree.
+    """
+    return run_checked(["git", "-C", repo, "status", "--porcelain", "-z"]).stdout
+
+
 def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
     """Return a single patch covering staged, unstaged, AND untracked changes.
 

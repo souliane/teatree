@@ -57,6 +57,10 @@
       "summary": "Read and act on the global operational-health chip \u2014 the green/yellow/red factory-health verdict and its known-issues registry"
     },
     {
+      "name": "interactive",
+      "summary": "The standing rule for an attended session \u2014 no work-bearing state is terminal, and the mechanisms that enforce it"
+    },
+    {
       "name": "mode",
       "summary": "The operating mode \u2014 one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run"
     },

@@ -77,6 +77,7 @@ graph TD
     teatree.core.models --> teatree.core.models.errors
     teatree.core.models --> teatree.core.repair_loop
     teatree.core.models --> teatree.instance_id
+    teatree.core.models --> teatree.url_classify
     teatree.core.models --> teatree.verification
     teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types

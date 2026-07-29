@@ -53,7 +53,10 @@
 "src/teatree/core/management/commands/_attachment_commands.py" = 1
 "src/teatree/core/management/commands/_clear_preflight.py" = 1
 "src/teatree/core/management/commands/_e2e_discovery.py" = 1
-"src/teatree/core/management/commands/_ensure_pr.py" = 2
+# 4: the deferral bookkeeping reads `PendingPullRequest` and the `db_retry` seam, both
+# ORM-adjacent imports that must resolve after the app registry is ready — the module is
+# imported from the pre-push hook, which runs before Django is set up.
+"src/teatree/core/management/commands/_ensure_pr.py" = 4
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
 "src/teatree/core/management/commands/_ship/exec.py" = 1
 "src/teatree/core/management/commands/_ship/gates.py" = 2
@@ -73,6 +76,9 @@
 "src/teatree/core/management/commands/loop_owner.py" = 4
 "src/teatree/core/management/commands/loop_self_improve.py" = 1
 "src/teatree/core/management/commands/loop_slack_answer.py" = 1
+# 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
+# app-registry reason as the rest of this command's ORM reads.
+"src/teatree/core/management/commands/_pending_pr_commands.py" = 1
 "src/teatree/core/management/commands/pr.py" = 1
 "src/teatree/core/management/commands/retro.py" = 1
 "src/teatree/core/management/commands/review.py" = 2
@@ -105,6 +111,9 @@
 "src/teatree/core/model_registries.py" = 5
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/implemented_issue_marker.py" = 1
+# 1: `_ticket_carrying_pr` walks `Ticket` rows, and `Ticket` reaches back into this
+# module's package — a genuine model cycle, so the sibling import stays call-time.
+"src/teatree/core/models/pull_request.py" = 1
 "src/teatree/core/models/review_loop.py" = 3
 "src/teatree/core/models/task.py" = 7
 # FSM disposition helpers (dispose_unshippable_review / escalate_unmatched_phase_

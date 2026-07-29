@@ -103,6 +103,7 @@ class JobsForDomainPartitionTestCase(TestCase):
         names = {job.scanner.name for job in dispatch_jobs}
         assert names == {
             "pending_tasks",
+            "pending_pr_drain",
             "incoming_events",
             "outbound_audit",
             "undelivered_notify",
