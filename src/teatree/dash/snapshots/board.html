@@ -36,6 +36,8 @@
 
         <a href="/dash/loops/" class="">Loops</a>
 
+        <a href="/dash/sessions/" class="">Sessions</a>
+
         <a href="/dash/presets/" class="">Schedule</a>
 
         <a href="/dash/settings/" class="">Settings</a>
@@ -81,6 +83,7 @@
   <div id="board"
     hx-get="/dash/board/columns/?text=&overlay=&role=&kind="
     hx-trigger="every 4s"
+    hx-sync="this:drop"
     hx-swap="morph:innerHTML">
     <div class="fsm-rail" role="presentation">
 
