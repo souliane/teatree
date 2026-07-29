@@ -654,7 +654,7 @@ def handle_user_prompt_submit(data: dict) -> None:
     # teatree/t3: skill loaded) gets NO skill suggestion, NO ``.pending`` write,
     # and NO T3 CLI reminder. ``.pending`` stays empty above, so the PreToolUse
     # skill-loading gate never blocks (never-lockout). The owner opts in via
-    # ``/teatree`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
+    # ``/t3:interactive`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
     if not _teatree_engaged(session_id):
         return
 

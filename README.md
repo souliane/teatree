@@ -548,7 +548,7 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 
 Installing the plugin does **not** force teatree on. By default a fresh Claude
 session does not auto-engage teatree — no skill auto-suggest, no load-block, no
-loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
+loop scheduling — and just shows a one-line how-to. Run `/t3:interactive` (or load any
 `t3:` skill) to engage teatree for that session, or set `autoload` in the teatree
 DB (`t3 <overlay> config_setting set autoload true`; env `T3_AUTOLOAD=1`) to
 auto-engage every session.

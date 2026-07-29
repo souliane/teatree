@@ -28,14 +28,13 @@ The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is
 
 ## Related Skills
 
-Each skill below declares `requires: interactive`, so loading it engages the session too — that is the contract, and `tests/conformance/test_platform_skill_requires_walk.py` keeps this table and those edges in agreement.
+Each skill below declares `requires: interactive`, so loading it engages the session too — that is the contract, and `tests/conformance/test_engagement_skill_requires_walk.py` keeps this table and those edges in agreement.
 
 | Skill | When to load |
 |-------|--------------|
 | `/t3:dogfooding` | Validating a CLI, loop, or statusline change; or self-QA on the loop and statusline — find, file, and fix bugs in one session |
 
-`/t3:wip` is deliberately absent: souliane/teatree#3634 made it cross-cutting, so working a
-backlog does not by itself engage teatree. Its row nevertheless survived that decision here,
-advertising an edge that no longer existed — which is what the conformance walk now prevents.
+`/t3:wip` is deliberately absent: it is cross-cutting, so working a backlog does not by
+itself engage teatree.
 
 `/t3:internals` is NOT in this table on purpose: it loads from the CHECKOUT, not from a mode. Teatree's own architecture and management-command rules are needed on a teatree ticket and irrelevant on a customer ticket, so `SkillLoadingPolicy.detect_internals_skill` keys it on the worktree being a teatree checkout — which reaches a headless worker too, where a mode skill never would.

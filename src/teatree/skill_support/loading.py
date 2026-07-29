@@ -85,9 +85,10 @@ INTERNALS_SKILL_NAME = "internals"
 _INTERNALS_MARKER = Path("src") / "teatree" / "__init__.py"
 
 #: Skills the policy DETECTS rather than reads from the index. Absence from the
-#: index is normal for them (a cold cache, or a skill shipped outside this repo),
-#: so it is not the missing-definition the requires-chain warning looks for.
-_DETECTED_SKILL_NAMES = FRAMEWORK_SKILL_NAMES | {INTERNALS_SKILL_NAME}
+#: index is normal ONLY for these — they ship outside this repo, so a missing
+#: entry is not drift. ``internals`` is deliberately EXCLUDED: it ships a
+#: SKILL.md here, so its absence from the index IS drift and must keep warning.
+_DETECTED_SKILL_NAMES = FRAMEWORK_SKILL_NAMES
 
 
 def _framework_skills_for_content(content: str) -> list[str]:
