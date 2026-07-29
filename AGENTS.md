@@ -13,7 +13,12 @@ These are the owner's standing directives. Where anything else in this repo conf
 5. **The factory requires as little human intervention as possible.** Every question asked of the owner is a cost — remove its cause where you can.
 6. **The factory is RESILIENT: it auto-repairs and auto-improves itself.** A failure that needs a human to notice it is an unfinished failure.
 
-Read 3 and 4 together: reach for a mechanism first, a gate second, an instruction last. Prose that restates what a gate already enforces is duplication — the class this repo keeps paying for.
+Read 3 and 4 together, and mind *who acts*:
+
+- **When the actor is deterministic** (code, CI, a hook), enforce it mechanically. A rule that can be made impossible to break should be impossible to break, and the prose restating it should then be deleted.
+- **When the actor is an AI**, the instruction comes FIRST. A gate does not prevent an agent from doing the wrong thing — it fires after the fact, so every trigger costs a whole repair cycle in tokens and wall-clock. The instruction is what makes the behaviour right on the first attempt; the gate only catches what the instruction failed to convey.
+
+So a gate is never the answer to "how do we make the agent do X". It is the net under X, sized for the times the instruction did not land. Prose that restates what a mechanism already makes impossible is duplication; prose that shapes agent behaviour is the cheapest control there is.
 
 ## Repo Change Safety
 
