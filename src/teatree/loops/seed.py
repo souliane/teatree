@@ -147,6 +147,11 @@ def seed_default_loops_and_prompts() -> SeedResult:
     carries a blank one, so the seed also backfills any blank ``description`` from
     the spec. The backfill filters on ``description=""``, so it is idempotent and
     never clobbers a description an operator rewrote.
+
+    ``colleague_facing`` is admin-editable, so the seed leaves it alone; a row that
+    disagrees with the shipped table is surfaced by
+    :func:`teatree.loops.seed_drift.classification_drift` and reconciled only on the
+    explicit ``seed_loops --reconcile-classification`` run.
     """
     from teatree.core.models import Loop, Prompt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
