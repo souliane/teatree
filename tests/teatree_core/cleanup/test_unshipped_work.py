@@ -8,10 +8,14 @@ work. Every assertion here is driven through the production capture, so a probe
 that regressed to a bare ``git diff`` reports an empty patch and fails.
 """
 
+import itertools
 import subprocess
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.cleanup.unshipped_work import bundle_path, capture_unshipped_work, probe_unshipped_work
@@ -84,6 +88,20 @@ class TestProbeSeesTheIndex(_CheckoutFixture):
         work = probe_unshipped_work(self.checkout)
 
         assert work.dirty_paths == ["scratch.md"]
+
+    def test_a_path_containing_a_space_is_recorded_verbatim(self) -> None:
+        (self.checkout / "notes for later.md").write_text("notes\n", encoding="utf-8")
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert work.dirty_paths == ["notes for later.md"]
+
+    def test_a_rename_records_both_endpoints_not_an_arrow(self) -> None:
+        _run_git("mv", "tracked.py", "renamed.py", cwd=self.checkout)
+
+        work = probe_unshipped_work(self.checkout)
+
+        assert work.dirty_paths == ["renamed.py", "tracked.py"]
 
     def test_unpushed_commits_are_captured_oldest_first(self) -> None:
         self._commit_locally("first")
@@ -187,3 +205,75 @@ class TestCaptureWritesArtifactsAndRow(_CheckoutFixture):
         assert self._capture() is None
         assert not UnshippedWorkRecord.objects.exists()
         assert not self.artifacts.exists()
+
+
+class TestCaptureNeverRaises(_CheckoutFixture):
+    """The capture runs ahead of every teardown guard, so it must degrade, never raise.
+
+    A control DB that is locked, unmigrated, or simply unreachable is a routine
+    state on a box running concurrent agents — and this call sits ahead of the
+    reaping decision, so an exception here wedges the teardown itself.
+    """
+
+    _LOGGER = "teatree.core.cleanup.unshipped_work"
+
+    def _capture(self) -> UnshippedWorkRecord | None:
+        return capture_unshipped_work(self.checkout, branch="feat", overlay="test", artifact_root=self.artifacts)
+
+    def test_a_transient_database_lock_is_retried_and_the_row_still_lands(self) -> None:
+        self._stage_only()
+        real = UnshippedWorkRecord.objects.update_or_create
+        attempts = itertools.count()
+        locked = OperationalError("database is locked")
+
+        def locked_once(**kwargs: Any) -> tuple[UnshippedWorkRecord, bool]:
+            if next(attempts) == 0:
+                raise locked
+            return real(**kwargs)
+
+        with patch.object(UnshippedWorkRecord.objects, "update_or_create", side_effect=locked_once):
+            record = self._capture()
+
+        assert record is not None, "a transient lock must be retried, not dropped"
+        assert record.dirty_paths == ["tracked.py"]
+
+    def test_an_unwritable_control_db_degrades_to_a_logged_none(self) -> None:
+        self._stage_only()
+
+        with (
+            patch.object(
+                UnshippedWorkRecord.objects,
+                "update_or_create",
+                side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+            ),
+            self.assertLogs(self._LOGGER, level="WARNING") as logs,
+        ):
+            assert self._capture() is None
+
+        assert any(str(self.checkout) in line for line in logs.output), logs.output
+
+    def test_an_unreachable_artifact_root_degrades_to_a_logged_none(self) -> None:
+        self._stage_only()
+
+        with (
+            patch(
+                "teatree.core.cleanup.unshipped_work.get_data_dir",
+                side_effect=OSError("read-only file system"),
+            ),
+            self.assertLogs(self._LOGGER, level="WARNING") as logs,
+        ):
+            assert capture_unshipped_work(self.checkout, branch="feat") is None
+
+        assert any(str(self.checkout) in line for line in logs.output), logs.output
+
+    def test_an_unwritable_bundle_still_leaves_the_durable_row(self) -> None:
+        self._stage_only()
+
+        with patch(
+            "teatree.core.cleanup.unshipped_work.Path.write_text",
+            side_effect=OSError("no space left on device"),
+        ):
+            record = self._capture()
+
+        assert record is not None, "the row is the durable half — a failed bundle must not lose it"
+        assert record.dirty_paths == ["tracked.py"]

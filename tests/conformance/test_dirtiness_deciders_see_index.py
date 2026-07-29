@@ -6,6 +6,11 @@ assembled across statements). Each entry below is a production decider whose
 answer gates a keep / reap / clobber, driven against one real staged-only
 checkout — invisible to a bare ``git diff``, and every one of them must still
 report it as holding work.
+
+A forward ratchet, not a repair: every decider listed already sees the index, so
+this pins a property the tree has rather than fixing one it lacked. What it buys
+is that a decider added to the set, or an existing one edited back onto the
+working tree alone, goes red here.
 """
 
 import subprocess

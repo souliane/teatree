@@ -1,16 +1,20 @@
 """No ``git diff`` in ``src/`` may decide anything from the working tree alone.
 
 ``git diff`` with no revision compares the working tree to the INDEX, so a
-checkout whose entire delta is STAGED reports zero bytes. Measured on a live
-host: a scratch checkout holding 79 KB across 21 staged files read as clean.
-Any keep / reap / salvage decision taken on that answer discards real work while
-reporting success.
+checkout whose entire delta is STAGED reports zero bytes. A keep / reap /
+salvage decision taken on that answer would discard real work while reporting
+success.
 
-This is the mechanical half — a NEW invocation with neither a revision nor
-``--cached`` fails the PR that introduces it. Its reach is the argv literals
-passed directly at a call site; an argv assembled across statements is out of an
-AST walk's reach, which is what
-``tests/conformance/test_dirtiness_deciders_see_index.py`` covers behaviourally.
+This is a forward ratchet, not a repair. Every git-diff call site in ``src/``
+already anchors on a revision or ``--cached``; the walk caught no offender when
+it was written, and pins that so a NEW index-blind invocation fails the PR that
+introduces it.
+
+Its reach is the argv elements resolvable at a call site — literals, and the
+module-level string constants a call site names. Out of an AST walk's reach, and
+covered behaviourally by ``tests/conformance/test_dirtiness_deciders_see_index.py``
+instead: an argv assembled across statements, and a revision carried by a
+parameter, an attribute, or an imported name.
 """
 
 import ast
@@ -21,17 +25,38 @@ _SRC = Path(__file__).resolve().parents[2] / "src" / "teatree"
 _MIN_DIFF_CALL_SITES = 5
 
 
-def _string_argv(node: ast.List) -> list[str] | None:
-    """The argv as plain strings, or ``None`` when any element is not a literal string.
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-level ``NAME = "literal"`` bindings, so an argv naming one stays readable.
 
-    A non-literal element (an f-string range, a ref variable) IS the revision this
-    walk looks for, so such an argv is never a candidate.
+    A call site that holds its revision in a module constant (``["diff",
+    _INDEX_AWARE_BASE, ...]``) is precisely the shape this walk must judge;
+    reading the ``Name`` as unresolvable would drop it from the census entirely.
+    """
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)):
+            continue
+        if not isinstance(node.value.value, str):
+            continue
+        constants.update({target.id: node.value.value for target in node.targets if isinstance(target, ast.Name)})
+    return constants
+
+
+def _string_argv(node: ast.List, constants: dict[str, str]) -> list[str] | None:
+    """The argv as plain strings, or ``None`` when an element resolves to no string.
+
+    An element that is neither a literal nor a module constant (an f-string
+    range, a parameter, an attribute) IS the revision this walk looks for, so
+    such an argv is never a candidate.
     """
     tokens: list[str] = []
     for element in node.elts:
-        if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            tokens.append(element.value)
+        elif isinstance(element, ast.Name) and element.id in constants:
+            tokens.append(constants[element.id])
+        else:
             return None
-        tokens.append(element.value)
     return tokens
 
 
@@ -50,15 +75,17 @@ def _is_index_blind(args: list[str]) -> bool:
 
 
 def _call_site_diff_argvs(source: str) -> list[list[str]]:
-    """Every literal git-diff argv passed directly as a call argument in ``source``."""
+    """Every resolvable git-diff argv passed directly as a call argument in ``source``."""
+    tree = ast.parse(source)
+    constants = _module_string_constants(tree)
     argvs: list[list[str]] = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         for candidate in (*node.args, *(keyword.value for keyword in node.keywords)):
             if not isinstance(candidate, ast.List):
                 continue
-            tokens = _string_argv(candidate)
+            tokens = _string_argv(candidate, constants)
             args = _diff_argv(tokens) if tokens is not None else None
             if args is not None:
                 argvs.append(args)
@@ -95,3 +122,16 @@ class TestNoIndexBlindGitDiffInSource:
     def test_a_revision_and_a_pathspec_are_told_apart(self) -> None:
         assert not _is_index_blind(["--quiet", "HEAD", "--", "some/path.py"])
         assert _is_index_blind(["--quiet", "--", "some/path.py"])
+
+    def test_a_revision_held_in_a_module_constant_is_resolved(self) -> None:
+        source = 'BASE = "HEAD"\ngit.run(repo=repo, args=["diff", BASE, "--binary"])\n'
+
+        assert [_is_index_blind(args) for args in _call_site_diff_argvs(source)] == [False]
+
+    def test_a_module_constant_cannot_hide_an_index_blind_diff(self) -> None:
+        source = 'FLAG = "--name-only"\ngit.run(repo=repo, args=["diff", FLAG])\n'
+
+        assert [_is_index_blind(args) for args in _call_site_diff_argvs(source)] == [True]
+
+    def test_an_unresolvable_element_still_reads_as_the_revision(self) -> None:
+        assert _call_site_diff_argvs('git.run(repo=repo, args=["diff", base, "--binary"])') == []

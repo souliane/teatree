@@ -11,15 +11,15 @@ It is purely additive — it reads the checkout and writes elsewhere, so no
 disposition changes and no #706/#835 guard is loosened.
 
 ``git diff`` compares the working tree to the INDEX, so a checkout whose whole
-delta is STAGED reports zero bytes while holding real work (measured: 79 KB
-across 21 files reading as clean). Every probe here is therefore anchored on a
-revision (``git diff HEAD``) or on ``git status --porcelain``.
+delta is STAGED reports zero bytes while holding real work. Every probe here is
+therefore anchored on a revision (``git diff HEAD``) or on ``git status``.
 """
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models import UnshippedWorkRecord
 from teatree.paths import get_data_dir, isolated_slug
 from teatree.utils import git
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 ARTIFACT_NAMESPACE = "unshipped-work"
 _INDEX_AWARE_BASE = "HEAD"
+# A porcelain entry whose status is a rename/copy carries a SECOND path field.
+_RENAME_STATUS = frozenset("RC")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +53,25 @@ class UnshippedWork:
 
 
 def _porcelain_paths(checkout: Path) -> list[str]:
-    """The paths ``git status --porcelain`` lists — staged, modified, and untracked alike."""
-    lines = git.status_porcelain_strict(str(checkout)).splitlines()
-    return sorted({stripped for line in lines if (stripped := line.split(maxsplit=1)[-1].strip())})
+    """The paths ``git status`` reports — staged, modified, renamed, and untracked alike.
+
+    Read from the NUL-terminated form, whose records are ``XY <path>`` with a
+    rename's two endpoints in two adjacent fields — both endpoints are part of
+    the delta, so both are recorded. The text form would C-quote a path holding
+    a space and collapse a rename to ``old -> new``, neither of which names a
+    file on disk.
+    """
+    fields = [f for f in git.status_porcelain_z_strict(str(checkout)).split("\0") if f]
+    paths: list[str] = []
+    expect_rename_source = False
+    for entry in fields:
+        if expect_rename_source:
+            paths.append(entry)
+            expect_rename_source = False
+            continue
+        paths.append(entry[3:])
+        expect_rename_source = not _RENAME_STATUS.isdisjoint(entry[:2])
+    return sorted({path for path in paths if path})
 
 
 def _commits_patch(checkout: Path, commits: list[str]) -> str:
@@ -123,30 +141,9 @@ def _write_bundle(prefix: Path, checkout: Path, branch: str, work: UnshippedWork
         bundle_path(str(prefix), suffix).write_text(content, encoding="utf-8")
 
 
-def capture_unshipped_work(
-    checkout: Path,
-    *,
-    branch: str = "",
-    overlay: str = "",
-    artifact_root: Path | None = None,
-) -> UnshippedWorkRecord | None:
-    """Snapshot ``checkout``'s unshipped work to disk + a durable row; ``None`` when it holds none.
-
-    Best-effort by construction: a bundle that cannot be written still leaves the
-    DB row, and any failure is logged rather than raised, so a capture can never
-    turn a teardown into a crash.
-    """
-    work = probe_unshipped_work(checkout)
-    if not work.exists:
-        return None
-    root = artifact_root if artifact_root is not None else get_data_dir(ARTIFACT_NAMESPACE)
-    # The path slug, not the bare dir name: two tickets' worktrees of one repo
-    # share a leaf name and would otherwise overwrite each other's bundle.
-    prefix = root / f"{checkout.name}-{isolated_slug(checkout)}"
-    try:
-        _write_bundle(prefix, checkout, branch, work)
-    except OSError:
-        logger.exception("unshipped-work: could not write the salvage bundle for %s", checkout)
+def _record_capture(
+    checkout: Path, branch: str, overlay: str, prefix: Path, work: UnshippedWork
+) -> UnshippedWorkRecord:
     record, _ = UnshippedWorkRecord.objects.update_or_create(
         checkout_path=str(checkout),
         defaults={
@@ -159,6 +156,53 @@ def capture_unshipped_work(
         },
     )
     return record
+
+
+def _capture(checkout: Path, branch: str, overlay: str, artifact_root: Path | None) -> UnshippedWorkRecord | None:
+    work = probe_unshipped_work(checkout)
+    if not work.exists:
+        return None
+    root = artifact_root if artifact_root is not None else get_data_dir(ARTIFACT_NAMESPACE)
+    # The path slug, not the bare dir name: two tickets' worktrees of one repo
+    # share a leaf name and would otherwise overwrite each other's bundle.
+    prefix = root / f"{checkout.name}-{isolated_slug(checkout)}"
+    try:
+        _write_bundle(prefix, checkout, branch, work)
+    except OSError:
+        logger.exception("unshipped-work: could not write the salvage bundle for %s", checkout)
+    # The control DB is file-backed SQLite and the factory writes it from many
+    # agents at once, so a momentary lock here is routine, not a failure (#1520).
+    return retry_on_locked(lambda: _record_capture(checkout, branch, overlay, prefix, work))
+
+
+def capture_unshipped_work(
+    checkout: Path,
+    *,
+    branch: str = "",
+    overlay: str = "",
+    artifact_root: Path | None = None,
+) -> UnshippedWorkRecord | None:
+    """Snapshot ``checkout``'s unshipped work to disk + a durable row; ``None`` when nothing was recorded.
+
+    Non-raising by construction, and that is load-bearing rather than tidy: every
+    caller places this AHEAD of its disposition — ahead of the ``force=True``
+    hard delete's guards, and inside a sweep that must classify every remaining
+    checkout — so an exception here would turn an observation into the crash that
+    wedges the teardown. A capture that breaks cleanup is worse than no capture.
+
+    A transient SQLite ``database is locked`` is retried (:func:`retry_on_locked`);
+    every other failure — an unwritable artifact root, an unmigrated or genuinely
+    stuck control DB, an unreadable checkout — is logged with its traceback and
+    degrades to ``None``, so the disposition proceeds uncaptured rather than not
+    at all. A bundle that cannot be written still leaves the durable row.
+    """
+    try:
+        return _capture(checkout, branch, overlay, artifact_root)
+    except Exception:
+        logger.exception(
+            "unshipped-work: could not capture %s — it goes unobserved; the disposition continues", checkout
+        )
+        return None
 
 
 __all__ = ["ARTIFACT_NAMESPACE", "UnshippedWork", "bundle_path", "capture_unshipped_work", "probe_unshipped_work"]

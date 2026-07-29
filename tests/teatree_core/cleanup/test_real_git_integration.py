@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
@@ -210,6 +211,19 @@ class TestCleanupCapturesUnshippedWorkBeforeDestroying(TestCase):
         self._cleanup_forced()
 
         assert not UnshippedWorkRecord.objects.exists()
+
+    def test_teardown_survives_a_control_db_the_capture_cannot_write(self) -> None:
+        (self.wt_path / "tracked.py").write_text("value = 2\n", encoding="utf-8")
+        _run_git("add", "tracked.py", cwd=self.wt_path)
+
+        with patch.object(
+            UnshippedWorkRecord.objects,
+            "update_or_create",
+            side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+        ):
+            self._cleanup_forced()
+
+        assert not self.wt_path.exists(), "a capture that cannot record must never wedge the teardown"
 
 
 _PREK_HOOK = """#!/bin/sh

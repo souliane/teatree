@@ -105,16 +105,17 @@ def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
 def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = False) -> str:
     """Dispose of one orphaned raw worktree under the keep-unproven-work policy.
 
-    The capture runs BEFORE the classification, so it covers every disposition —
-    including the KEPT ones, which is where work accumulated unobserved. It reads
-    the checkout and writes elsewhere, so no verdict below depends on it, and it
-    is skipped under ``dry_run`` to keep a preview free of side effects.
+    The capture runs before the FIRST return, so it covers every disposition —
+    including the KEPT ones (a ``clean_ignore`` match among them), which is where
+    work accumulated unobserved. It reads the checkout and writes elsewhere, and
+    it never raises, so no verdict below depends on it; it is skipped under
+    ``dry_run`` to keep a preview free of side effects.
     """
     label = f"{branch} ({wt_path})"
-    if is_clean_ignored(branch):
-        return f"SKIPPED orphan '{label}': matches clean_ignore — keeping"
     if not dry_run:
         capture_unshipped_work(Path(wt_path), branch=branch)
+    if is_clean_ignored(branch):
+        return f"SKIPPED orphan '{label}': matches clean_ignore — keeping"
     if _is_dirty(wt_path):
         return f"KEPT orphan '{label}': uncommitted changes — never reaped"
     if _branch_has_unique_work(repo, branch, wt_path):

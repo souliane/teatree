@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.cleanup.unshipped_work import bundle_path
@@ -69,13 +70,13 @@ class _OrphanWorktreeFixture(TestCase):
             env=_clean_env(),
         ).stdout
 
-    def _reap(self, *, dry_run: bool = False) -> list[str]:
+    def _reap(self, *, dry_run: bool = False, clean_ignored: bool = False) -> list[str]:
         # Force cwd-based clone discovery onto the tmp main clone, and keep the
         # pre-reap capture's bundles inside tmp_path instead of the real data dir.
         with (
             patch(
                 "teatree.core.management.commands._workspace.orphan_worktrees.is_clean_ignored",
-                return_value=False,
+                return_value=clean_ignored,
             ),
             patch(
                 "teatree.core.management.commands._workspace.orphan_worktrees.Path.cwd",
@@ -312,3 +313,28 @@ class TestCapturesUnshippedWorkBeforeDisposition(_OrphanWorktreeFixture):
 
         assert not wt_path.exists()
         assert self._record(wt_path) is None
+
+    def test_clean_ignored_orphan_is_captured_before_it_is_skipped(self) -> None:
+        wt_path = self._add_orphan("spike-capture", files={"new.txt": "unique work"})
+
+        results = self._reap(clean_ignored=True)
+
+        assert wt_path.exists(), "the disposition is unchanged — a clean_ignore match is still kept"
+        assert any("matches clean_ignore" in line for line in results), results
+        assert self._record(wt_path) is not None, "a KEPT clean-ignored checkout is a disposition too"
+
+    def test_a_control_db_the_capture_cannot_write_does_not_abort_the_sweep(self) -> None:
+        kept = self._add_orphan("unpushed-resilient", files={"new.txt": "unique work"})
+        reapable = self._add_orphan("synced-resilient", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "synced-resilient", cwd=reapable)
+
+        with patch.object(
+            UnshippedWorkRecord.objects,
+            "update_or_create",
+            side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+        ):
+            results = self._reap()
+
+        assert kept.exists(), "the keep disposition must survive an uncapturable checkout"
+        assert not reapable.exists(), "one uncapturable checkout must not abort the rest of the sweep"
+        assert any("KEPT orphan" in line for line in results), results
