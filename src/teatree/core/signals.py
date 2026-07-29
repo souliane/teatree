@@ -332,6 +332,7 @@ def _enqueue_ticket_transition_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
     name: str,
+    source: str,
     target: str,
     **_kwargs: object,
 ) -> None:
@@ -348,6 +349,14 @@ def _enqueue_ticket_transition_task(
     frozen/closed ticket's worktrees are reaped rather than piling up. The reaper's
     own analyze-before-wipe (#706) keeps any unsynced work regardless.
 
+    Teardown is the side effect of ENTERING a terminal state, so a state-preserving
+    transition does not fire it (#3879, the sibling of the audit-row suppression in
+    ``_log_ticket_transition``): the ticket was already terminal and its worktrees
+    were already reaped, so a re-run would mint a duplicate job for work that no
+    longer exists. Re-running teardown for a terminal ticket that still holds
+    worktrees is ``enqueue_teardown_for_terminal_tickets``'s job — an explicit
+    operator drain, not a side effect of an FSM no-op.
+
     The deferred import of the executor is call-time (mirroring
     ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
     still sees its stub. ``transaction.on_commit`` preserves the body's
@@ -361,7 +370,7 @@ def _enqueue_ticket_transition_task(
     if executor_name is not None:
         executor = getattr(tasks_mod, executor_name)
         transaction.on_commit(lambda: executor.enqueue(ticket_pk))
-    if target in _TERMINAL_TARGET_STATES:
+    if target in _TERMINAL_TARGET_STATES and source != target:
         teardown = tasks_mod.execute_teardown
         transaction.on_commit(lambda: teardown.enqueue(ticket_pk))
 

@@ -471,13 +471,24 @@ class TaskQuerySet(models.QuerySet):
         # the first one seen for each ticket. ``distinct("ticket_id")`` is
         # Postgres-only; teatree's production DB is SQLite (the #786 B1
         # backend-agnostic lesson), so this stays a plain ordered scan.
+        #
+        # A terminal ticket is excluded (#3879): no branch of the shared path
+        # advances one, so a crash can have dropped nothing. Every branch guards
+        # on a source that is not its own target EXCEPT ``mark_reviewed_externally``,
+        # which accepts REVIEW_POSTED so a re-review at a moved head SHA can
+        # re-stamp — leaning on the guard therefore re-fired that self-loop for
+        # every closed review on every tick, minting a teardown job each time.
         from django_fsm import TransitionNotAllowed  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+        advanceable = self.filter(status=task_model.Status.COMPLETED).exclude(
+            ticket__state__in=ticket_model.marker_release_states()
+        )
 
         replayed = 0
         seen: set[int] = set()
-        for task in self.filter(status=task_model.Status.COMPLETED).select_related("ticket").order_by("-pk"):
+        for task in advanceable.select_related("ticket").order_by("-pk"):
             if task.ticket_id in seen:
                 continue
             seen.add(task.ticket_id)

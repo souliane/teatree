@@ -631,6 +631,25 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
             ticket.save()
         teardown.enqueue.assert_not_called()
 
+    def test_state_preserving_terminal_transition_does_not_enqueue_teardown(self) -> None:
+        # #3879: teardown is the side effect of a ticket BECOMING terminal. Several
+        # transitions list their own target as a source so a re-run is safe
+        # (``mark_reviewed_externally`` re-stamps a moved head SHA and stays at
+        # REVIEW_POSTED) — idempotent in STATE but not in side effects, so every
+        # re-run minted another teardown job for worktrees the first one already
+        # reaped. Sibling of the audit-row suppression in ``_log_ticket_transition``.
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — deferred: the module object the receiver patches
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_POSTED, role=Ticket.Role.REVIEWER)
+        with (
+            patch.object(tasks_mod, "execute_teardown") as teardown,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            ticket.mark_review_no_action()
+            ticket.save()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        teardown.enqueue.assert_not_called()
+
     def test_teardown_target_states_are_ticket_terminal_minus_shipped(self) -> None:
         # Completeness: the teardown target set is exactly the Ticket terminal
         # states minus SHIPPED, so a future terminal state cannot silently skip

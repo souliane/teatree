@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -1240,6 +1241,72 @@ class TestReplayOrphanedTransitions(TestCase):
         ticket.refresh_from_db()
         assert replayed == 1
         assert ticket.state == Ticket.State.CODED
+
+
+class TestReplayLeavesTerminalTicketsAlone(TestCase):
+    """#3879 — a ticket at its terminal state has no dropped transition to replay.
+
+    ``_apply_phase_transition``'s branches each require a source state that is not
+    the transition's own target, so an applied transition no-ops on replay — except
+    ``mark_reviewed_externally``, which lists ``REVIEW_POSTED`` (its own target) as
+    a source so a re-review at a moved head SHA can re-stamp. The sweep takes each
+    ticket's newest COMPLETED task every tick, so every reviewer ticket ever closed
+    re-fired that self-loop forever: a locked read-modify-write plus a ``save`` plus
+    a ``post_transition`` fan-out per ticket per tick, which minted one
+    ``execute_teardown`` job each time. 747,732 of 747,753 ``DBTaskResult`` rows on
+    the live box were that enqueue, across 203 tickets.
+
+    The sweep exists for a ticket a crash left BEHIND. A terminal ticket is not
+    behind — no branch of the shared path can advance it — so it is not a candidate.
+    """
+
+    @staticmethod
+    def _closed_review() -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.REVIEW_POSTED,
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        return ticket
+
+    def _sweep(self, times: int) -> tuple[int, int]:
+        """``(transitions replayed, teardown jobs enqueued)`` over *times* consecutive sweeps."""
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — module object for the enqueue patch
+
+        replayed = 0
+        with patch.object(tasks_mod, "execute_teardown") as teardown, self.captureOnCommitCallbacks(execute=True):
+            for _ in range(times):
+                replayed += Task.objects.replay_orphaned_transitions()
+        return replayed, teardown.enqueue.call_count
+
+    def test_repeated_sweeps_over_a_closed_review_enqueue_no_teardown(self) -> None:
+        ticket = self._closed_review()
+
+        replayed, enqueued = self._sweep(times=5)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert enqueued == 0, (
+            f"{enqueued} teardown job(s) minted for a ticket that reached its terminal state long ago — "
+            "the enqueue rate must be bounded by real work, not by tick cadence"
+        )
+        assert replayed == 0, f"the sweep re-fired an already-applied transition {replayed} time(s)"
+
+    def test_orphaned_reviewer_ticket_still_advances(self) -> None:
+        # Anti-vacuity: the sweep is not over-blocked. A reviewer ticket a crash
+        # left on a pre-terminal state still gets its dropped transition replayed.
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.NOT_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.REVIEW_POSTED
 
 
 class TestCompleteIsAtomic(TestCase):

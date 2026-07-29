@@ -348,3 +348,40 @@ class TestTransitionSourceStatesDerivation(TestCase):
 
         # teardown is not a Ticket transition; an unknown name yields nothing.
         assert transition_source_states("no_such_transition") == set()
+
+
+class TestTerminalTicketsCannotBeAdvanced(TestCase):
+    """#3879 — no lifecycle phase advances a ticket that already reached a terminal state.
+
+    This is the premise ``replay_orphaned_transitions`` rests on when it drops
+    terminal tickets from its candidate set: if no phase can move one, a crash
+    can have dropped nothing, so skipping them loses no recovery. It is also what
+    ``escalate_unmatched_phase_transition`` already assumes ("a terminal ticket is
+    never a wedge"). A future branch that advanced out of a terminal state would
+    make the sweep's exclusion silently lossy, so the premise is pinned here
+    rather than argued in prose.
+    """
+
+    PHASES = ("scoping", "planning", "coding", "testing", "reviewing", "shipping")
+
+    def test_no_phase_moves_a_terminal_ticket(self) -> None:
+        for state in sorted(Ticket.marker_release_states()):
+            for role in (Ticket.Role.AUTHOR, Ticket.Role.REVIEWER):
+                for phase in self.PHASES:
+                    with self.subTest(state=str(state), role=str(role), phase=phase):
+                        ticket = Ticket.objects.create(overlay="test", role=role, state=state)
+                        session = Session.objects.create(ticket=ticket, agent_id="a")
+                        task = Task.objects.create(
+                            ticket=ticket,
+                            session=session,
+                            phase=phase,
+                            status=Task.Status.COMPLETED,
+                        )
+
+                        task._apply_phase_transition()
+
+                        ticket.refresh_from_db()
+                        assert ticket.state == state, (
+                            f"{phase} advanced a terminal {state} ticket to {ticket.state} — "
+                            "the replay sweep's terminal exclusion would now drop a real recovery"
+                        )
