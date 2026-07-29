@@ -34,7 +34,7 @@ import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.machine_output import emit
-from teatree.core.retention import PARK_TABLE, apply_retention, plan_retention
+from teatree.core.retention.prune import PARK_TABLE, apply_retention, plan_retention
 from teatree.core.table_output import print_table
 from teatree.utils.django_db.vacuum import VacuumOutcome, vacuum_control_db
 

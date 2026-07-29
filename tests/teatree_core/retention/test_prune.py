@@ -17,7 +17,7 @@ from teatree.config.settings import UserSettings
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.retention import apply_retention, plan_retention
+from teatree.core.retention.prune import apply_retention, plan_retention
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _RECENT = timezone.now() - dt.timedelta(days=2)

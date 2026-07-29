@@ -140,7 +140,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # landed. A leaf helper of the flat root config_migration.py hub and consumed by it
 # alone; owned by no existing subpackage, mirroring speak_cleaning.py beside speak.py
 # and managers_overlay.py beside managers.py.
-PINNED_FLAT_CORE_MODULES = 103
+# 102: -retention.py (#3871) — retention became the subpackage core/retention/ once it grew
+# a second module. The #3693 lane orchestrator is now retention/prune.py and the adapter onto
+# django_tasks_db's own shipped prune is retention/task_results.py, kept apart so the
+# orchestrator never imports a third-party table's library directly. Two root leaves collapse
+# to one package entry, mirroring cleanup/ and evidence/.
+PINNED_FLAT_CORE_MODULES = 102
 
 
 def _flat_core_modules() -> list[str]:

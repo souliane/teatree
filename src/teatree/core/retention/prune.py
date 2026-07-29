@@ -22,7 +22,7 @@ than per table: a ``from_state == to_state`` row records no edge, so it is not h
 and a reopened ticket does not need it. Every real state edge survives for as long as
 the ticket does — ~410 rows on the measured box.
 
-``DBTaskResult`` goes through :mod:`teatree.core.retention_task_results`, which delegates
+``DBTaskResult`` goes through :mod:`teatree.core.retention.task_results`, which delegates
 the delete to ``django_tasks_db``'s OWN shipped ``prune_db_task_results`` command rather
 than teatree writing a second prune over a dependency's table.
 
@@ -41,7 +41,7 @@ from teatree.config.settings import UserSettings
 from teatree.core.models import IncomingEvent, TaskAttempt
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.retention_task_results import (
+from teatree.core.retention.task_results import (
     prunable_task_results,
     prune_finished_task_results,
     task_results_are_stored_in_the_db,

@@ -16,7 +16,7 @@ setting instead (:attr:`UserSettings.task_result_retention_days`).
 :func:`prunable_task_results` is the read-only preview. It is expressed through the
 library's OWN :meth:`DBTaskResultQuerySet.finished` manager method rather than a
 hand-written status list, and
-``tests/teatree_core/test_retention_task_results.py::test_deletes_exactly_what_the_dry_run_counted``
+``tests/teatree_core/retention/test_task_results.py::test_deletes_exactly_what_the_dry_run_counted``
 pins the preview to the delete — so a library predicate change surfaces as a red test
 rather than a report that quietly disagrees with what was removed.
 """

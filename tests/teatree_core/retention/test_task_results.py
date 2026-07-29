@@ -14,7 +14,7 @@ from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.retention_task_results import (
+from teatree.core.retention.task_results import (
     prunable_task_results,
     prune_finished_task_results,
     task_results_are_stored_in_the_db,

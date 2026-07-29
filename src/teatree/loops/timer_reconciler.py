@@ -201,7 +201,7 @@ def prune_task_results() -> dict[str, int]:
     """Re-schedule daily, THEN delete finished DBTaskResults older than the retention window.
 
     Caps unbounded growth of the results table the timer chains churn. The delete is
-    :func:`teatree.core.retention_task_results.prune_finished_task_results` — the same
+    :func:`teatree.core.retention.task_results.prune_finished_task_results` — the same
     seam ``t3 <overlay> retention prune`` uses, so the scheduled pass and the operator's
     pass cannot disagree about which rows are disposable, and neither hand-writes a
     prune over ``django_tasks_db``'s table. Only FINISHED (successful/failed) rows past
@@ -212,7 +212,7 @@ def prune_task_results() -> dict[str, int]:
     so a body fault cannot orphan the chain.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: config read at call time
-    from teatree.core.retention_task_results import prune_finished_task_results  # noqa: PLC0415 — deferred: heavy dep
+    from teatree.core.retention.task_results import prune_finished_task_results  # noqa: PLC0415 — deferred: heavy dep
 
     if _pending_for_path(prune_task_results.module_path):
         return {"deduped": 1}
