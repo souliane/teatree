@@ -26,7 +26,9 @@ so the alias is a safety net rather than the mechanism — see
 import sys
 from dataclasses import dataclass
 
-_CLEAR_REMEDY = "t3 <overlay> config_setting clear {key}"
+#: The one remedy sentence a surface offers for a stale row — shared so the loud
+#: resolver warning and the ``config_setting list`` marker never drift apart.
+CLEAR_REMEDY = "t3 <overlay> config_setting clear {key}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,15 @@ RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
         reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
         subsystem="team",
     ),
+    RetiredSetting(
+        key="issue_implementer_require_label",
+        replacement=None,
+        reason=(
+            "admission is decided by the `decide_intake` table, which admits a trusted author "
+            "with no label at all; the untrusted-author case uses `issue_implementer_label` (#3634)"
+        ),
+        subsystem=None,
+    ),
 )
 
 #: Retired key -> the live field its stored value migrates onto.
@@ -175,5 +186,5 @@ def warn_removed_setting(entry: RetiredSetting) -> None:
     sys.stderr.write(
         f"WARNING: the config setting {entry.key!r} was removed — {entry.reason}. "
         f"Its stored value is NOT in effect and this setting has reverted to its default. "
-        f"Clear the stale row with `{_CLEAR_REMEDY.format(key=entry.key)}`.\n"
+        f"Clear the stale row with `{CLEAR_REMEDY.format(key=entry.key)}`.\n"
     )

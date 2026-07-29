@@ -10711,7 +10711,10 @@ Usage: t3 teatree config_setting list [OPTIONS]
  export
  render, indented one level per depth, so the three surfaces read alike. A row
  no
- declaration owns still prints, under the leftovers heading.
+ declaration owns still prints, under the leftovers heading — carrying a
+ trailer
+ naming it retired, internal state, or unknown, so it cannot be mistaken for a
+ live control.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

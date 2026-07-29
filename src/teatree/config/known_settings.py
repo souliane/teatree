@@ -9,6 +9,10 @@ write-time parser. The CLI ``config_setting`` command and the MCP
 the two surfaces can never disagree about which keys exist: a key the CLI can
 ``set`` is a key the MCP read reports ``known``.
 
+Membership here answers "is this key a live SETTING". What a key OUTSIDE the union
+is — retired, internal runtime state, or an orphan — is
+``teatree.config.stored_row_health``, which builds on this dict.
+
 A leaf below the four registry modules (imports them, imported by neither), so
 it closes the union without an import cycle.
 """

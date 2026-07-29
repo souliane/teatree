@@ -123,3 +123,42 @@ class TestRemovedKeyFailsLoud(TestCase):
         assert entry.reason in stderr
         assert "config_setting clear" in stderr
         assert "reverted to its default" in stderr
+
+
+class TestIntakeRequireLabelRetirementIsRecorded(TestCase):
+    """souliane/teatree#3862: the require-label narrowing gate's removal is recorded.
+
+    souliane/teatree#3634 folded the two issue-intake scanners into one and replaced
+    the per-overlay narrowing gate with the ``decide_intake`` admission table — the
+    field and its reader went together, but the RETIREMENT was never recorded. So a
+    stored row stayed invisible to the resolver and rendered on the operator's config
+    surface as a live gate: diagnosing an intake stall, the row read ``True`` and
+    implied a label was required, which the label-independent trusted-author rule
+    makes false.
+    """
+
+    KEY = "issue_implementer_require_label"
+
+    @pytest.fixture(autouse=True)
+    def _no_overlay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    @pytest.fixture(autouse=True)
+    def _capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._captured = capsys
+
+    def test_the_key_is_recorded_as_a_removal_not_a_rename(self) -> None:
+        assert self.KEY in REMOVED_SETTING_KEYS
+        assert self.KEY not in RENAMED_SETTING_KEYS
+
+    def test_the_reason_points_at_the_live_admission_table(self) -> None:
+        entry = removed_setting(self.KEY)
+        assert entry is not None
+        assert "decide_intake" in entry.reason
+
+    def test_a_stored_row_warns_instead_of_vanishing(self) -> None:
+        ConfigSetting.objects.set_value(self.KEY, value=True)
+        get_effective_settings()
+        stderr = self._captured.readouterr().err
+        assert self.KEY in stderr
+        assert "config_setting clear" in stderr
