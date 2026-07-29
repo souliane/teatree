@@ -740,7 +740,7 @@ Decision rubric (apply silently — don't narrate to the user):
 | **Small (≤ ~50 LOC, no architectural decisions)** | Bundle into the current PR. Skip the "Isolate Unrelated Fixes" rule from `t3:ship` — small fixes have lower scope-creep cost than coordination cost. |
 | **Medium (related domain, fits the current ticket's spirit)** | Still bundle if the PR title can fairly cover it (e.g., assorted shipping-flow bug fixes during a CLI refactor). Mention in the PR body so reviewers see it. |
 | **Large (architectural, cross-cutting, or genuinely orthogonal)** | Create a worktree + PR immediately, implement, ship. No new ticket. |
-| **Truly large work that cannot fit a session** | File a ticket and leave it. Last resort. |
+| **Truly large work that cannot fit a session** | Still ship it — split the run, not the work. A ticket is a record of work in flight, never a place to leave work you already understand (`AGENTS.md` First Principles 7 and 9). |
 
 **Only stop and ask when:**
 

@@ -12,6 +12,12 @@ These are the owner's standing directives. Where anything else in this repo conf
 4. **Checks and gates are a safety net** for whatever could not be properly ENFORCED. They catch what the design failed to prevent; they are not the design.
 5. **The factory requires as little human intervention as possible.** Every question asked of the owner is a cost — remove its cause where you can.
 6. **The factory is RESILIENT: it auto-repairs and auto-improves itself.** A failure that needs a human to notice it is an unfinished failure.
+7. **No known gap outlives the PR that revealed it.** A gap an agent becomes aware of that concerns what it is working on is closed in the SAME pull request. No follow-up issue, no "phase 2", no `TODO`, no deferral to the next ticket. Filing a gap you could have fixed is not progress — it is the work, moved.
+8. **One phase, one PR per repository.** A plan has exactly one phase, and implements EVERYTHING in at most one PR per repo it touches. Do not propose staged rollouts, phase 1/2/3 sequencing, or a "foundation now, rest later" shape — if it is in the plan, it ships in that single PR.
+9. **An agent terminates only when its knowledge is fully implemented.** On finishing, everything the agent knows needs doing is done — 100%, by that agent. Nothing understood is handed to somebody else, to a future session, or to the owner. "Out of scope" is not a place to put work you already know how to do.
+10. **The owner's attention is the scarcest resource in the factory.** Assume the owner never reads Claude Code messages, and reads Slack only when forced to. Volume is what makes that true: every extra message lowers the odds the one that matters is read. So raise only what genuinely cannot be decided without a human, and decide and deliver everything else in silence.
+
+Read 7, 8 and 9 together — they are one requirement seen at three moments. 8 is completeness at plan time, 7 at implementation time, 9 at exit. Each exists because the other two are evaded the same way: by naming known work "later". There is no later.
 
 Read 3 and 4 together, and mind *who acts*:
 
