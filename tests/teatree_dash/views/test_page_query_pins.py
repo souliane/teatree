@@ -10,6 +10,8 @@ the poll rate rather than paid once.
 failure here, and raising a peg to make this green is the thing not to do.
 """
 
+# test-path: cross-cutting — one contract over every dash page, seeded across the core models they read
+
 from uuid import uuid4
 
 from django.core.cache import cache

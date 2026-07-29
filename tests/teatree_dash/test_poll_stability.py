@@ -11,6 +11,8 @@ Both halves are markup contracts, so both are asserted here rather than in a bro
 idiomorph morph a card in place instead of replacing the node under the cursor.
 """
 
+# test-path: cross-cutting — scans EVERY dash template for the poll contract, seeding core models
+
 import re
 from pathlib import Path
 
