@@ -60,6 +60,19 @@ def _log_ticket_transition(
 ) -> None:
     from teatree.core.models.transition import TicketTransition  # noqa: PLC0415 — deferred: ORM/app-registry
 
+    if source == target:
+        # A state-preserving transition is not an audit event. Several transitions
+        # list their own target in ``source`` so a re-run is safe (``mark_reviewed_externally``
+        # re-stamps a moved head SHA and stays at REVIEW_POSTED), which makes them
+        # idempotent in STATE but not in side effects — every re-run still fired this
+        # receiver. A caller re-running one per pass therefore wrote one row per ticket
+        # per pass forever: 3,240,987 of 3,241,397 rows on the live box were
+        # ``review_posted → review_posted``, 99.99% of the table, still growing at
+        # ~410/min. What such a re-run actually changed lives in ``extra`` and is
+        # recorded there; the state edge is the only thing this table holds, and it
+        # has none.
+        return
+
     try:
         session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
         TicketTransition.objects.create(

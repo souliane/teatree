@@ -2,6 +2,19 @@
 
 This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 
+## First Principles (Non-Negotiable — outrank BLUEPRINT.md and every section below)
+
+These are the owner's standing directives. Where anything else in this repo conflicts with them, they win.
+
+1. **Zero regression allowed.** A fix without a regression test is not a fix. An AI *behavioural* fix without a regression **eval** is not a fix. Find the right surface to test: prefer **integration** tests over unit tests; reach for **evals** and **E2E** when those are what actually observe the behaviour. A test that passes on the buggy code guards nothing — observe it RED first.
+2. **Code is improved continuously**, not just extended: factorized, clean, maintainable, robust, extensible, bullet-proof — with as **few comments as possible**. Comments as code: express intent in names, types and structure so prose is not needed. Comment only what the code genuinely cannot say (a non-obvious *why*, a measured constant, a deliberate divergence).
+3. **Instructions are a fallback** for whatever cannot be ENFORCED deterministically. If a rule can be made mechanical, make it mechanical and delete the prose.
+4. **Checks and gates are a safety net** for whatever could not be properly ENFORCED. They catch what the design failed to prevent; they are not the design.
+5. **The factory requires as little human intervention as possible.** Every question asked of the owner is a cost — remove its cause where you can.
+6. **The factory is RESILIENT: it auto-repairs and auto-improves itself.** A failure that needs a human to notice it is an unfinished failure.
+
+Read 3 and 4 together: reach for a mechanism first, a gate second, an instruction last. Prose that restates what a gate already enforces is duplication — the class this repo keeps paying for.
+
 ## Repo Change Safety
 
 - Never create a new plan file, memory file, journal file, or repo-instruction file in this repository without the user's explicit approval first.
