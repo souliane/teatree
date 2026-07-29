@@ -328,6 +328,15 @@ addopts = """
 --color=yes --strict-config --strict-markers --reuse-db -n auto
 """
 timeout = 60
+# Keep only a FAILING test's scratch — a passing one's tmp_path is nothing anyone
+# reads. pytest's "all" default retains it (measured: 200 KB and a surviving
+# run-dir for one trivial passing test), and the run-dirs then outlive their
+# retention count because an OOM SIGKILL under `-n auto` skips the atexit lock
+# removal, leaving a `.lock` that `_pytest.pathlib.ensure_deletable` refuses to
+# clear for LOCK_TIMEOUT = 3 days. Under "failed" a passing dir is rmtree'd
+# inline, before a kill can orphan its lock (#3852).
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 3
 DJANGO_SETTINGS_MODULE = "tests.django_settings"
 django_find_project = false
 testpaths = [ "tests" ]

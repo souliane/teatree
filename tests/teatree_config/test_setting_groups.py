@@ -17,6 +17,7 @@ import pytest
 import tomlkit
 from tomlkit import items as tomlkit_items
 
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import (
     UNGROUPED_PATH,
@@ -24,9 +25,11 @@ from teatree.config.setting_groups import (
     group_leaves,
     group_outline,
     group_paths,
+    group_slug,
     group_tree,
     grouped_key_order,
     grouped_settings_table,
+    nested_value_table,
     setting_group_path,
 )
 from teatree.config.settings import UserSettings
@@ -207,32 +210,39 @@ def _dumped(table: tomlkit_items.Table) -> str:
 class TestTheTomlRendererBothSurfacesShare:
     """``grouped_settings_table`` is the ONE renderer the export dump and the shipped file use."""
 
-    def test_the_keys_stay_flat_rather_than_becoming_sub_tables(self) -> None:
-        parsed = tomllib.loads(_dumped(grouped_settings_table(_SAMPLE)))
-        assert parsed == {"teatree": _SAMPLE}
-        assert all(not isinstance(value, dict) for value in parsed["teatree"].values())
+    def test_the_file_nests_while_the_key_namespace_stays_flat(self) -> None:
+        # The two halves of the contract in one assertion pair: the FILE really nests
+        # (a flat renderer fails the first), and the flat namespace every reader,
+        # env override and cold sqlite3 read depends on is recovered exactly (a
+        # renderer that dropped or renamed a key fails the second).
+        parsed = tomllib.loads(_dumped(grouped_settings_table(_SAMPLE)))["teatree"]
+        assert any(isinstance(value, dict) for value in parsed.values())
+        assert flatten_settings_table(parsed) == _SAMPLE
 
-    def test_grouping_changes_no_value_only_the_order_and_the_comments(self) -> None:
+    def test_grouping_changes_no_value_only_the_shape(self) -> None:
         flat = tomlkit.table()
         for key in sorted(_SAMPLE):
             flat[key] = _SAMPLE[key]
-        assert tomllib.loads(_dumped(grouped_settings_table(_SAMPLE))) == tomllib.loads(_dumped(flat))
+        nested = tomllib.loads(_dumped(grouped_settings_table(_SAMPLE)))["teatree"]
+        assert flatten_settings_table(nested) == flatten_settings_table(tomllib.loads(_dumped(flat))["teatree"])
 
-    def test_every_level_is_announced_once_as_an_indented_comment(self) -> None:
-        comments = [line for line in _dumped(grouped_settings_table(_SAMPLE)).splitlines() if line.startswith("#")]
-        assert comments == [
-            "# Workspace",
-            "#   Engagement & identity",
-            "# Agents",
-            "#   Mode & harness",
-            "# Gates",
-            "#   Quality",
-            "#     Architectural review",
-            "#     Merge & done",
-            "# Infrastructure",
-            "#   Resource pressure",
-            "#     Thresholds & cadence",
+    def test_every_level_is_a_real_table_header_at_its_full_path(self) -> None:
+        headers = [line for line in _dumped(grouped_settings_table(_SAMPLE)).splitlines() if line.startswith("[")]
+        assert headers == [
+            '[teatree.Workspace."Engagement & identity"]',
+            '[teatree.Agents."Mode & harness"]',
+            '[teatree.Gates.Quality."Architectural review"]',
+            '[teatree.Gates.Quality."Merge & done"]',
+            '[teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]',
         ]
+
+    def test_a_group_wrapper_is_decidable_without_a_marker(self) -> None:
+        # The flattener's whole disambiguation rule: a sub-table named after a DECLARED
+        # setting is that setting's value, any other is a group. A nested SETTING must
+        # therefore survive the round trip whole rather than being descended into.
+        rows: dict[str, object] = {**_SAMPLE, "speak": {"local": "all"}}
+        parsed = tomllib.loads(_dumped(grouped_settings_table(rows)))["teatree"]
+        assert flatten_settings_table(parsed)["speak"] == {"local": "all"}
 
     def test_the_emitted_order_is_the_group_walk_not_the_alphabet(self) -> None:
         lines = _dumped(grouped_settings_table(_SAMPLE)).splitlines()
@@ -243,3 +253,37 @@ class TestTheTomlRendererBothSurfacesShare:
     def test_grouped_key_order_places_every_key_exactly_once(self) -> None:
         keys = tuple(TeatreeSettingsSchema.model_fields)
         assert sorted(grouped_key_order(keys)) == sorted(keys)
+
+
+class TestGroupSlug:
+    """A URL-safe id for a group path, DERIVED from the labels so a rename keeps in step."""
+
+    def test_a_multi_level_path_becomes_one_slash_joined_slug(self) -> None:
+        assert group_slug(("Gates", "Quality", "Merge & done")) == "gates/quality/merge-done"
+
+    def test_punctuation_and_case_are_normalised_away(self) -> None:
+        assert group_slug(("Resource pressure", "Thresholds & cadence")) == "resource-pressure/thresholds-cadence"
+
+    def test_two_different_paths_never_collide(self) -> None:
+        # Every live leaf, since a collision would silently serve the wrong section.
+        paths = [leaf.path for leaf in group_leaves(group_tree(sorted(_SAMPLE), key_of=lambda key: key))]
+        assert len({group_slug(path) for path in paths}) == len(paths)
+
+    def test_every_live_section_slug_is_unique(self) -> None:
+        leaves = group_leaves(group_tree(sorted(TeatreeSettingsSchema.model_fields), key_of=lambda key: key))
+        slugs = [group_slug(leaf.path) for leaf in leaves]
+        assert len(set(slugs)) == len(slugs)
+
+
+class TestNestedValueTable:
+    """A ``dict``-valued SETTING rendered as its own table — key-sorted, to any depth."""
+
+    def test_a_flat_mapping_renders_key_sorted(self) -> None:
+        table = nested_value_table({"b": 2, "a": 1})
+        assert list(table) == ["a", "b"]
+
+    def test_a_mapping_nests_recursively(self) -> None:
+        document = tomlkit.document()
+        document["speak"] = nested_value_table({"channels": {"b": "y", "a": "x"}, "local": "all"})
+        parsed = tomllib.loads(tomlkit.dumps(document))["speak"]
+        assert parsed == {"channels": {"a": "x", "b": "y"}, "local": "all"}

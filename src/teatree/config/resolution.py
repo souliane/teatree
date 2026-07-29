@@ -183,7 +183,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
     # pin), env beats both.
     resolved_overlay = _resolved_overlay_name(overlay_name)
-    layers = _read_setting_layers(resolved_overlay)
+    layers = read_setting_layers(resolved_overlay)
     # The overlay-code-default tier (#36): promoted constants the active overlay
     # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE the
     # shipped TOML default (with no row the code default wins). Neither default tier is
@@ -193,7 +193,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     overrides.update(layers.global_db)
     overrides.update(layers.overlay_db)
     if overlay_name is None:
-        env_overrides = _env_setting_overrides()
+        env_overrides = env_setting_overrides()
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)
     defaults_base = shipped_defaults_base(base, layers)
@@ -214,8 +214,13 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     )
 
 
-def _read_setting_layers(overlay_name: str) -> SettingLayers:
-    """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once."""
+def read_setting_layers(overlay_name: str) -> SettingLayers:
+    """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once.
+
+    Public because it is the ONE place the persisted tiers are read: the resolver folds
+    them into a ``UserSettings``, and ``config.provenance`` walks the same tiers to say
+    WHICH one supplied a value. A second reader would be a second resolution path.
+    """
     toml_rows = _toml_default_rows()
     db_rows = (_load_global_rows(), _load_overlay_rows(overlay_name))
     global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
@@ -234,12 +239,15 @@ def _active_overlay_overrides() -> dict[str, Any]:
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
     overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
     overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
-    overrides.update(_env_setting_overrides())
+    overrides.update(env_setting_overrides())
     return overrides
 
 
-def _env_setting_overrides() -> dict[str, Any]:
-    """``T3_*`` env overrides, the highest-precedence tier (see ``ENV_SETTING_OVERRIDES``)."""
+def env_setting_overrides() -> dict[str, Any]:
+    """``T3_*`` env overrides, the highest-precedence tier (see ``ENV_SETTING_OVERRIDES``).
+
+    Public for the same reason as :func:`read_setting_layers`: provenance names this tier.
+    """
     overrides: dict[str, Any] = {}
     for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
         raw = os.environ.get(env_var)

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from teatree.config import cold_defaults
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.cold_defaults import flatten_settings_table, shipped_defaults_table
 from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
 
 _FIELDS = TeatreeSettingsSchema.model_fields
@@ -40,6 +40,56 @@ class TestReadsTheShippedTable:
     def test_returned_table_is_a_copy(self) -> None:
         shipped_defaults_table()["agent_harness"] = "__mutated__"
         assert shipped_defaults_table()["agent_harness"] == "claude_sdk"
+
+
+class TestNestedAndFlatReadIdentically:
+    """The file nests the group hierarchy; the KEY NAMESPACE the reader serves stays flat."""
+
+    _NESTED = """\
+[teatree.Workspace."Engagement & identity"]
+autoload = false
+
+[teatree.Agents."Mode & harness"]
+agent_harness = "claude_sdk"
+
+[teatree.speak]
+local = "off"
+slack = false
+"""
+    _FLAT = """\
+[teatree]
+agent_harness = "claude_sdk"
+autoload = false
+
+[teatree.speak]
+local = "off"
+slack = false
+"""
+
+    def _read(self, tmp_path: Path, text: str, stamp: int) -> dict[str, object]:
+        toml = tmp_path / f"defaults-{stamp}.toml"
+        toml.write_text(text, encoding="utf-8")
+        return shipped_defaults_table(toml)
+
+    def test_the_two_shapes_parse_to_one_identical_flat_mapping(self, tmp_path: Path) -> None:
+        nested = self._read(tmp_path, self._NESTED, 1)
+        flat = self._read(tmp_path, self._FLAT, 2)
+        expected = {"agent_harness": "claude_sdk", "autoload": False, "speak": {"local": "off", "slack": False}}
+        assert nested == flat == expected
+
+    def test_a_declared_sub_table_setting_stays_a_value_never_a_group(self) -> None:
+        # The disambiguation, exercised on both sides: ``speak`` is a declared setting, so
+        # its table is its VALUE; ``Workspace`` declares nothing, so it is a wrapper.
+        flattened = flatten_settings_table({"Workspace": {"autoload": True}, "speak": {"local": "all"}})
+        assert flattened == {"autoload": True, "speak": {"local": "all"}}
+
+    def test_an_already_flat_table_is_returned_unchanged(self) -> None:
+        rows = {"autoload": True, "merge_wip": 2}
+        assert flatten_settings_table(rows) == rows
+
+    def test_a_group_wrapper_nests_to_any_depth(self) -> None:
+        deep = {"Infrastructure": {"Resource pressure": {"Thresholds & cadence": {"disk_warn_free_gb": 5}}}}
+        assert flatten_settings_table(deep) == {"disk_warn_free_gb": 5}
 
 
 class TestMtimeKeyedCache:
@@ -75,9 +125,9 @@ def test_the_module_exposes_only_what_the_resolver_consumes() -> None:
     # A reader nothing calls is the inverse-drift class this package now ratchets: the
     # module's public surface is exactly the path constant + the table the DEFAULTS tier
     # (``resolution._toml_default_rows``) and ``schema`` resolve the file through.
-    assert set(cold_defaults.__all__) == {"DEFAULTS_TOML", "shipped_defaults_table"}
+    assert set(cold_defaults.__all__) == {"DEFAULTS_TOML", "flatten_settings_table", "shipped_defaults_table"}
     public = {name for name in vars(cold_defaults) if not name.startswith("_")}
-    assert public - set(cold_defaults.__all__) <= {"Any", "Path", "threading", "tomllib"}
+    assert public - set(cold_defaults.__all__) <= {"Any", "Mapping", "Path", "threading", "tomllib"}
 
 
 def test_import_does_not_load_pydantic_or_django() -> None:

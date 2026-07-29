@@ -23,10 +23,8 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import cast
 
 import tomlkit
-from tomlkit import items as tomlkit_items
 
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
@@ -55,10 +53,6 @@ WORKFLOW_ENGAGEMENT_KEYS: frozenset[str] = frozenset(
     }
 )
 
-#: The two dict-valued DEFAULT keys that render as their own ``[teatree.<name>]``
-#: sub-table rather than an inline value in the ``[teatree]`` table.
-_SUBTABLE_KEYS: tuple[str, ...] = ("mr_reminder", "speak")
-
 _ABSENT = "(absent)"
 
 _HEADER = """\
@@ -83,11 +77,12 @@ _HEADER = """\
 # credential coordinates) are ABSENT by construction and resolve from their empty
 # code defaults. Safety-posture keys and dark feature-flags are pinned to their
 # fail-closed/off value and can never move through the snapshot path, approval or not.
-# The keys stay FLAT — that namespace is the persisted contract every reader, env override
-# and cold sqlite3 read depends on — but they are ORDERED by the declaration hierarchy,
-# each level announced once by an indented `#` banner. That is the same tree the dashboard
-# renders and the export dump emits. Put a new key under its group's banner; CI refuses one
-# sitting outside its group and names where it belongs.
+# The declaration hierarchy renders as real NESTED sub-tables — the same tree the dashboard
+# renders and the export dump emits. The KEY NAMESPACE stays flat: that namespace is the
+# persisted contract every reader, env override and cold sqlite3 read depends on, and
+# `config/cold_defaults.py` flattens the group wrappers back on read. A sub-table named
+# after a declared setting (`speak`, `mr_reminder`) is a setting; any other is a group.
+# Put a new key under its group's table; CI refuses one sitting outside its group.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
@@ -301,34 +296,21 @@ def change_table(changes: tuple[SnapshotChange, ...]) -> tuple[list[str], list[l
 
 
 def render_toml(emitted: dict[str, SettingValue], *, base_text: str = "") -> str:
-    """Render *emitted* into the canonical ``[teatree]`` + sub-table TOML text.
+    """Render *emitted* into the canonical ``[teatree]`` TOML text — the ONE shipped-file emitter.
 
     With *base_text* the CURRENT file is parsed and only its ``[teatree]`` table is
     replaced, so every sibling table (the ``[loops]`` / ``[modes]`` / ``[schedules]`` seed
-    defaults) and every hand-written comment survives a snapshot run byte-for-byte. Only
-    when the file is absent is the whole document — header included — built from scratch.
+    defaults) and every hand-written comment survives a run byte-for-byte. Only when the
+    file is absent is the whole document — header included — built from scratch.
 
-    The flat keys are ordered and banner-commented by :func:`grouped_settings_table`, the
-    same renderer the ``config_setting`` export dump uses. A snapshot the owner approves
-    therefore rewrites ``[teatree]`` into the SAME grouped shape it replaced, rather than
-    flattening the file back into one undifferentiated wall of keys.
+    Both writers of the shipped shape call THIS function: the owner-approved snapshot and
+    the defaults-shape ``config_setting export``. Two emitters would drift, and the
+    byte-identical round trip would only catch the drift after it shipped.
+
+    :func:`grouped_settings_table` nests the keys into the declaration hierarchy as real
+    sub-tables, and reads back flat through
+    :func:`~teatree.config.cold_defaults.flatten_settings_table`.
     """
-    teatree = grouped_settings_table({key: value for key, value in emitted.items() if key not in _SUBTABLE_KEYS})
-    for name in _SUBTABLE_KEYS:
-        teatree[name] = _nested_table(cast("dict[str, SettingValue]", emitted[name]))
-    if not base_text:
-        document = tomlkit.document()
-        document["teatree"] = teatree
-        return _HEADER + "\n" + tomlkit.dumps(document)
-    document = tomlkit.parse(base_text)
-    document["teatree"] = teatree
-    return tomlkit.dumps(document)
-
-
-def _nested_table(value: dict[str, SettingValue]) -> tomlkit_items.Table:
-    """A ``dict``-valued setting rendered as a nested TOML table (channels -> sub-table)."""
-    table = tomlkit.table()
-    for key in sorted(value):
-        inner = value[key]
-        table[key] = _nested_table(cast("dict[str, SettingValue]", inner)) if isinstance(inner, dict) else inner
-    return table
+    document = tomlkit.parse(base_text) if base_text else tomlkit.document()
+    document["teatree"] = grouped_settings_table(emitted)
+    return tomlkit.dumps(document) if base_text else _HEADER + "\n" + tomlkit.dumps(document)

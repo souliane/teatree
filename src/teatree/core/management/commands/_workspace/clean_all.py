@@ -65,6 +65,14 @@ def run_clean_all(
     One pass is preview-blind: :func:`reap_broken_worktree_dirs` takes no
     ``dry_run``, so a dry run reports it as NOT PREVIEWED rather than silently
     omitting it.
+
+    ``workspace`` reaches :func:`reap_orphan_isolated_worktree_roots` because that
+    pass now asks git which checkouts exist, not only the ``Worktree`` table
+    (#3852): the resolver mints an isolated env dir for ANY checkout, so a keep-set
+    built from rows alone spans a narrower population than the dirs it judges and
+    reports live-but-unregistered checkouts' control DBs as orphans. Unreadable git
+    evidence fails CLOSED there, exactly as a failed fetch does in the raw-orphan
+    pass below.
     """
     in_use = _wh.dslr_tenants_in_use()  # before the reaper removes CREATED worktrees (#1306)
     # Sampled before the row reaper: it releases rows, and a released row's root
@@ -77,7 +85,7 @@ def run_clean_all(
     cleaned.extend(reaper.remove_empty_ticket_dirs(dry_run=dry_run))
     cleaned.extend(drop_orphan_databases(dry_run=dry_run))
     cleaned.extend(reap_orphan_worktree_docker(dry_run=dry_run))
-    cleaned.extend(reap_orphan_isolated_worktree_roots(dry_run=dry_run))
+    cleaned.extend(reap_orphan_isolated_worktree_roots(workspace, dry_run=dry_run))
     cleaned.extend(reap_orphan_raw_worktrees(workspace, dry_run=dry_run))
     # Runs AFTER the raw-orphan pass: that one disposes of checkouts git can
     # still resolve, leaving only the dirs git cannot resolve at all (#3583).

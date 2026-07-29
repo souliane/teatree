@@ -35,6 +35,7 @@ from teatree.dash.views import (
     schedule_slot_delete,
     settings,
     settings_export,
+    settings_group,
     settings_import,
     settings_readouts,
     settings_restore,
@@ -74,8 +75,11 @@ urlpatterns = [
     path("presets/schedule/slot/delete/", schedule_slot_delete, name="schedule_slot_delete"),
     path("settings/", settings, name="settings"),
     path("settings/readouts/", settings_readouts, name="settings_readouts"),
-    path("settings/set/", settings_set, name="settings_set"),
-    path("settings/restore/", settings_restore, name="settings_restore"),
+    path("settings/group/<path:slug>/", settings_group, name="settings_group"),
+    # The edited key rides in the PATH so a row carries no hidden inputs; the scope rides
+    # in the query string beside it, since the global scope is the empty string.
+    path("settings/set/<str:key>/", settings_set, name="settings_set"),
+    path("settings/restore/<str:key>/", settings_restore, name="settings_restore"),
     path("settings/export/", settings_export, name="settings_export"),
     path("settings/import/", settings_import, name="settings_import"),
     path("tickets/<int:ticket_id>/", ticket_drawer, name="ticket_drawer"),

@@ -53,6 +53,7 @@ from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
+    _check_root_disk_headroom,
     _check_tmp_tmpfs_headroom,
     _check_worker_memory_cap,
     _check_worker_skills_present,
@@ -131,6 +132,7 @@ __all__ = (
     "_check_pyright_lsp_plugin",
     "_check_recommended_skills",
     "_check_reconciliation_ledger",
+    "_check_root_disk_headroom",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -394,6 +396,11 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # and memory-adequate HARD FAILs (role-aware no-ops off the worker). See
     # :func:`_run_worker_gates` — each is evaluated independently so every finding shows.
     ok = _run_worker_gates() and ok
+
+    # Root-filesystem headroom (#3852): role-independent and percent-shaped, so a
+    # box on a trajectory to full is named long before the absolute-GB scanner
+    # thresholds fire. CRITICAL hard-FAILs — a full disk stops every other subsystem.
+    ok = _check_root_disk_headroom() and ok
 
     # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
     # wiring) — all surfacing-only, never gating the exit code.

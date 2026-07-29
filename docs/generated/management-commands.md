@@ -423,7 +423,7 @@ Group root — forces sub-commands to be addressed by name.
 
 | Subcommand | Description |
 | --- | --- |
-| `prune` | Prune old rows from the high-churn tables (dry-run unless --apply) |
+| `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
 
 ## `retro`
 

@@ -70,6 +70,13 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
         "teatree.cli.doctor.checks_bootstrap._check_git_hooks_installed",
         lambda: True,
     )
+    # The root-filesystem headroom gate (#3852) measures the box's real ``/``: it
+    # WARNs past 85% used and FAILs past 95%, so on a full runner it turns this
+    # aggregation test red for a reason that has nothing to do with the doctor's
+    # dispatch. Its bands are exercised against a stubbed ``statvfs`` in
+    # tests/teatree_cli/doctor/test_root_disk_headroom_check.py; pin it to a pass
+    # here so this smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_root_disk_headroom", lambda: True)
     # The general provisioning gate (#3652) resolves the manifest-declared skills
     # against the runner's real skill-install state, where the external apm skills
     # are absent — the very gap it exists to catch, and a deterministic off-box FAIL
