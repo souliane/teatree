@@ -511,11 +511,11 @@ class Ticket(
         §4): transition bodies stay pure — long I/O is offloaded to an ``@task``
         worker, enqueued after commit so state change and queued work land atomically.
 
-        Source ``[IN_REVIEW, MERGED]`` makes re-firing idempotent: if a previous
-        teardown reported errors, the operator can re-call ``mark_merged()`` to
-        retry. The worker is best-effort and does not advance the FSM, so retries
-        are safe. The ``execute_teardown`` enqueue is the ``post_transition``
-        receiver's job (``teatree.core.signals``), keyed on the transition (#2385).
+        Source ``[IN_REVIEW, MERGED]`` makes a second merge signal a no-op, not a
+        crash. The ``execute_teardown`` enqueue is the ``post_transition``
+        receiver's job (``teatree.core.signals``), keyed on the transition (#2385)
+        and on ENTRY into the terminal state (#3879) — so that no-op mints no
+        duplicate job, and ``enqueue_teardown_for_terminal_tickets`` is the retry.
 
         The ``merge_evidence`` gate (#4a) preflights: MERGED is unreachable without
         a real merged-SHA row, so the ungated ``_advance_ticket`` walk fails loud.
