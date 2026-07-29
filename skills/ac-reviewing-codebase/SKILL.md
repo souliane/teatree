@@ -66,7 +66,7 @@ You do not have unlimited budget to re-read the entire tree every cadence. Scope
 
 ### 4. File findings through the normal pipeline; never fix inline
 
-This review produces tickets, not commits. For each confirmed finding (catalog anti-pattern instance or BLUEPRINT staleness), file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later implementation session does not have to re-derive your reasoning. Do not batch everything into one mega-issue; one finding (or one tightly-related cluster) per ticket, same discipline as `t3:dogfooding-teatree`'s "dedupe aggressively, one root cause per ticket" rule.
+This review produces tickets, not commits. For each confirmed finding (catalog anti-pattern instance or BLUEPRINT staleness), file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later implementation session does not have to re-derive your reasoning. Do not batch everything into one mega-issue; one finding (or one tightly-related cluster) per ticket, same discipline as `t3:dogfooding`'s "dedupe aggressively, one root cause per ticket" rule.
 
 ## What NOT to do
 

@@ -389,11 +389,11 @@ This is the structural-action sibling of § "Read the Canonical Source Before Fi
 Load the overlay playbook skill (`/t3-<overlay>`) for **any** task in an overlay-managed repo — and ONLY for those. A non-overlay task needs no overlay skill.
 
 - **Overlay-repo task** (coding/reviewing in an overlay's product repo): self-load the overlay skill `/t3-<overlay>` alongside the dev + language skills **before** reading a diff or editing source — it carries the repo's run/test/review wiring (see `overlay_work_requires_overlay_skill.yaml`).
-- **Non-overlay task** (a change inside `souliane/teatree` itself, or any standalone repo with no active overlay): load only the skill(s) that actually apply — `ac-django` / `/t3:code` / `/t3:teatree` for a teatree Django change. Do NOT pull in a different project's overlay skill; teatree is its own Django project, not an overlay repo.
+- **Non-overlay task** (a change inside `souliane/teatree` itself, or any standalone repo with no active overlay): load only the skill(s) that actually apply — `ac-django` / `/t3:code` / `/t3:internals` for a teatree Django change. Do NOT pull in a different project's overlay skill; teatree is its own Django project, not an overlay repo.
 
 ```text
 # teatree-only change → load what applies, not an overlay skill:
-Skill(skill="ac-django")   # or t3:code / t3:teatree
+Skill(skill="ac-django")   # or t3:code / t3:internals
 # do NOT: Skill(skill="t3-<overlay>")   ← wrong scope for a non-overlay task
 ```
 

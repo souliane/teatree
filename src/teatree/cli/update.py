@@ -88,7 +88,7 @@ update_app = typer.Typer(
 # ``teatree`` from. These are the *primary* clones — the editable ``t3`` the
 # agent runs — so a non-default-branch / no-upstream checkout is a fail-loud
 # currency hazard there, not a soft overlay skip (#2134).
-_CORE_REPO_NAME = "internals"
+_CORE_REPO_NAME = "teatree"
 _RUNNING_REPO_NAME = "teatree (running)"
 _PRIMARY_REPO_NAMES = frozenset({_CORE_REPO_NAME, _RUNNING_REPO_NAME})
 

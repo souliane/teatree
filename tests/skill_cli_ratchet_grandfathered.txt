@@ -13,7 +13,7 @@ skills/contribute/references/upstream-issue.md::gh auth status
 skills/contribute/references/upstream-issue.md::gh issue create
 skills/contribute/references/upstream-issue.md::gh issue list
 skills/contribute/references/upstream-issue.md::gh repo view
-skills/dogfooding-teatree/SKILL.md::gh issue create
+skills/dogfooding/SKILL.md::gh issue create
 skills/e2e-review/SKILL.md::gh pr approve
 skills/e2e-review/SKILL.md::gh pr review
 skills/e2e-review/SKILL.md::glab mr approve
