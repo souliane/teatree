@@ -1,6 +1,6 @@
 ---
 name: teatree
-description: TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks. Use when working on teatree itself or when understanding how teatree orchestrates agent workflows. Mode-specific skills (dogfooding, batch) are separate — see the "Related skills" section below.
+description: "ENGAGES TEATREE FOR THE SESSION, and carries the platform reference. Loading this skill — or any skill that declares `requires: teatree` — writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged by design. Reference content: architecture, lifecycle phases, CLI reference, key models, overlay API, skill loading, plugin hooks, management-command patterns, and the directive byte-law rule. Load it when working on teatree itself OR building an overlay on it. It holds no dogfooding procedure — that is `/dogfooding-teatree`, which requires this one."
 eval_exempt: architecture/CLI reference for working on teatree itself; behavioural invariants live in the rules skill and the regression corpus, not in this overview
 metadata:
   version: 0.0.1
