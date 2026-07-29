@@ -16,7 +16,7 @@ refused). All other posting stays on the gated ``t3`` / review surfaces.
 from typing import Any
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -25,8 +25,8 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
-_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
+_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 
 INSTRUCTIONS = (
     "- slack_mentions(since): recent @-mentions of the user.\n"
@@ -62,7 +62,7 @@ async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[
     demanding opposite responses, and the silent-empty form reported the first while
     meaning the second. A bot token reads only channels the bot is a MEMBER of, so
     that refusal is the common case, not an edge case — it raises
-    :class:`~teatree.types.ChannelReadRefusedError`, which FastMCP surfaces to the caller.
+    :class:`~teatree.types.ChannelReadRefusedError`, which MCPServer surfaces to the caller.
     """
     return await sync_to_async(
         lambda: _client().fetch_channel_history_or_refuse(channel=channel, limit=limit), thread_sensitive=True
@@ -107,7 +107,7 @@ async def _slack_react(channel: str, ts: str, emoji: str) -> dict[str, Any]:
     return await sync_to_async(_react, thread_sensitive=True)()
 
 
-def register(server: FastMCP) -> None:
+def register(server: MCPServer) -> None:
     server.add_tool(_slack_mentions, name="slack_mentions", annotations=_READ_ONLY)
     server.add_tool(_slack_channel_history, name="slack_channel_history", annotations=_READ_ONLY)
     server.add_tool(_slack_thread_replies, name="slack_thread_replies", annotations=_READ_ONLY)

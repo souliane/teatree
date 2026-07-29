@@ -1,15 +1,13 @@
-"""Tests for the FastMCP server wiring.
+"""Tests for the MCPServer server wiring.
 
 Registration is asserted on the live tool metadata; the call path is exercised
-end to end through ``FastMCP.call_tool`` against the test DB. ``async_to_sync``
+end to end through ``MCPServer.call_tool`` against the test DB. ``async_to_sync``
 drives the async tool so the ``thread_sensitive`` ORM access runs on the test's
 own thread and connection — the factory rows are visible under the normal
 transactional ``django_db`` fixture, no committed-transaction dance needed.
 """
 
 import asyncio
-import json
-from typing import Any
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
@@ -24,6 +22,7 @@ from teatree.mcp import build_server
 from teatree.mcp.search import factory_score
 from teatree.mcp.server import _required_services
 from tests.factories import TaskFactory, TicketFactory
+from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
 _READ_TOOLS = {
     "ticket_search",
@@ -63,17 +62,6 @@ _WRITE_TOOLS = {
 _EXPECTED_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
 
-def _payloads(result: Any) -> list[Any]:
-    """Decode the JSON carried in a call_tool result's content blocks."""
-    blocks = result[0] if isinstance(result, tuple) else result
-    decoded: list[Any] = []
-    for block in blocks:
-        text = getattr(block, "text", None)
-        if text is not None:
-            decoded.append(json.loads(text))
-    return decoded
-
-
 class TestToolRegistration(TestCase):
     def test_registers_the_expected_tool_surface_with_correct_read_write_hints(self) -> None:
         # No service declared ⇒ the base surface is exactly the read + write tools.
@@ -82,13 +70,13 @@ class TestToolRegistration(TestCase):
 
         by_name = {tool.name: tool for tool in tools}
         assert set(by_name) == _EXPECTED_TOOLS
-        assert all(by_name[name].annotations and by_name[name].annotations.readOnlyHint for name in _READ_TOOLS)
-        assert all(not by_name[name].annotations.readOnlyHint for name in _WRITE_TOOLS)
+        assert all(by_name[name].annotations and by_name[name].annotations.read_only_hint for name in _READ_TOOLS)
+        assert all(not by_name[name].annotations.read_only_hint for name in _WRITE_TOOLS)
 
     def test_ticket_search_advertises_its_filter_parameters(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
 
-        properties = set(tools["ticket_search"].inputSchema["properties"])
+        properties = set(tools["ticket_search"].input_schema["properties"])
 
         assert {"overlay", "state", "kind", "role", "text", "in_flight", "limit"} <= properties
 

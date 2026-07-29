@@ -13,7 +13,7 @@ surfaces — the topology is preserved through the seams, not by withholding wri
 - :mod:`teatree.mcp.search` — sync ORM queries reusing the model managers
 - :mod:`teatree.mcp.command_catalogue` — the `command_search` catalogue seam
     (CLI-provided, for discovering which `t3` command to run)
-- :mod:`teatree.mcp.server` — FastMCP wiring (``build_server``)
+- :mod:`teatree.mcp.server` — MCPServer wiring (``build_server``)
 
 ``build_server`` is exported LAZILY (PEP 562 ``__getattr__``): importing the
 ``teatree.mcp`` package — which ``teatree.cli`` does at import time to reach the

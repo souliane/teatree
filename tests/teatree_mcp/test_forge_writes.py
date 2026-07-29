@@ -24,6 +24,7 @@ from django.test import TestCase
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
+from tests.teatree_mcp._call_tool_result import structured as _structured
 
 
 class _ServiceOverlay:
@@ -68,8 +69,7 @@ def _forge_env(fake: _FakeForge, *, service: Service = Service.GITHUB, public: b
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
     result = async_to_sync(build_server().call_tool)(tool, args)
-    structured = result[1] if isinstance(result, tuple) else result
-    return structured["result"] if isinstance(structured, dict) and set(structured) == {"result"} else structured
+    return _structured(result)
 
 
 class TestForgeIssueWriteTools(TestCase):
