@@ -4,11 +4,14 @@ Number derivation, locked ``extra`` RMW, FSM transitions, and the
 shippable-diff gate.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
@@ -116,6 +119,60 @@ class TestTicketMergeExtra(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra == {"visual_qa": {"x": 1}, "prs": {}}
         assert ticket.variant == "v"
+
+
+class TestMergeExtraSkipsTheNoOpWrite(TestCase):
+    """A merge that changes nothing takes no write.
+
+    Re-stamping a value the row already holds is what a replaying caller does:
+    ``mark_reviewed_externally`` accepts its own target so a re-review at a moved
+    head SHA can re-stamp, and the tick sweep re-fires it for every closed reviewer
+    ticket. On the write-serialised production SQLite each of those took the
+    database's single write lock to store the bytes already there.
+    """
+
+    @staticmethod
+    def _updates(fn: Callable[[], None]) -> list[str]:
+        with CaptureQueriesContext(connection) as captured:
+            fn()
+        return [q["sql"] for q in captured.captured_queries if q["sql"].lstrip().upper().startswith("UPDATE")]
+
+    def test_restamping_the_same_extra_issues_no_update(self) -> None:
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc", "last_review_state": "approved"})
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "abc"}))
+
+        assert updates == []
+        ticket.refresh_from_db()
+        assert ticket.extra == {"reviewed_sha": "abc", "last_review_state": "approved"}
+
+    def test_a_real_change_still_writes(self) -> None:
+        # Anti-vacuity: the elide is decided from the locked re-read, never blanket.
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc"})
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "def"}))
+
+        assert len(updates) == 1
+        ticket.refresh_from_db()
+        assert ticket.extra == {"reviewed_sha": "def"}
+
+    def test_an_unchanged_extra_with_a_changed_sibling_field_still_writes(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1}, variant="x")
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"a": 1}, also_set={"variant": "y"}))
+
+        assert len(updates) == 1
+        ticket.refresh_from_db()
+        assert ticket.variant == "y"
+
+    def test_popping_an_absent_key_issues_no_update(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1})
+
+        updates = self._updates(lambda: ticket.merge_extra(pop_keys=["never_set"]))
+
+        assert updates == []
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
 
 
 class TestStampIssueTitle(TestCase):
