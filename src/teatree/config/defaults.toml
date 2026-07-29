@@ -255,8 +255,10 @@ max_concurrent_local_stacks = 1
 park_attempt_retention_days = 7
 session_stale_after_hours = 12
 task_attempt_retention_days = 30
+task_result_retention_days = 1
 task_sweep_disabled = false
 task_sweep_recheck_interval_hours = 1
+ticket_transition_prune_disabled = false
 
 [teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true

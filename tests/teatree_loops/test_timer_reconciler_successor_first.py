@@ -57,16 +57,9 @@ class TestSuccessorScheduledBeforeBody(django.test.TestCase):
         assert _ready_successors(timer_reconciler.run_slack_answer.module_path) == 1
 
     def test_prune_task_results_survives_body_exception_and_keeps_the_chain(self) -> None:
-        real_filter = DBTaskResult.objects.filter
-
-        def _filter(*args: object, **kwargs: object) -> object:
-            # The delete body filters on ``status__in``; ``_pending_for_path`` filters on
-            # ``status=`` — raise only for the body so the pre-body dedup + reschedule run.
-            if "status__in" in kwargs:
-                _boom()
-            return real_filter(*args, **kwargs)
-
-        with patch.object(DBTaskResult.objects, "filter", _filter):
+        # The body delegates the delete to the retention seam, so raising there hits only
+        # the body — the pre-body dedup + reschedule still run.
+        with patch("teatree.core.retention.task_results.prune_finished_task_results", _boom):
             result = timer_reconciler.prune_task_results.func()
         assert result == {"error": 1}
         assert _ready_successors(timer_reconciler.prune_task_results.module_path) == 1

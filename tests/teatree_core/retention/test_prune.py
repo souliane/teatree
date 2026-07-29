@@ -9,19 +9,23 @@ the live row). ``apply_retention`` deletes; ``plan_retention`` reports only.
 
 import datetime as dt
 
-from django.test import TestCase
+from django.db.models import Min
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.config.settings import UserSettings
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
-from teatree.core.retention import apply_retention, plan_retention
+from teatree.core.retention.prune import apply_retention, plan_retention
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _RECENT = timezone.now() - dt.timedelta(days=2)
 #: Older than the 7-day park window, newer than the 30-day terminal-owned one — the
 #: age band that separates the two lanes in a test.
 _PARK_AGE = timezone.now() - dt.timedelta(days=10)
+#: Comfortably older than every window, so age never masks a closure-keyed assertion.
+_ANCIENT = timezone.now() - dt.timedelta(days=120)
 
 
 def _attempt(
@@ -303,3 +307,146 @@ class ParkRetentionApplyTestCase(TestCase):
         assert parks.rows == 5
         assert parks.batches == 3
         assert TaskAttempt.objects.count() == 0
+
+
+_NOOP = (Ticket.State.REVIEW_POSTED, Ticket.State.REVIEW_POSTED, "mark_reviewed_externally")
+
+
+def _ticket_with_transitions(*, state: str, count: int, move: tuple[str, str, str] = _NOOP) -> Ticket:
+    ticket = Ticket.objects.create(overlay="acme", state=state)
+    from_state, to_state, triggered_by = move
+    for n in range(count):
+        row = TicketTransition.objects.create(
+            ticket=ticket,
+            from_state=from_state,
+            to_state=to_state,
+            triggered_by=triggered_by,
+        )
+        TicketTransition.objects.filter(pk=row.pk).update(created_at=_ANCIENT + dt.timedelta(minutes=n))
+    return ticket
+
+
+class TicketTransitionLaneTestCase(TestCase):
+    """The transition lane, as ``plan_retention`` / ``apply_retention`` wire it."""
+
+    def test_plan_reports_the_lane_without_a_window(self) -> None:
+        _ticket_with_transitions(state=Ticket.State.REVIEW_POSTED, count=4)
+        (lane,) = (t for t in plan_retention().tables if t.table == "TicketTransition")
+        assert lane.rows == 2
+        assert lane.aged is False
+
+    def test_apply_keeps_an_open_tickets_trail(self) -> None:
+        live = _ticket_with_transitions(state=Ticket.State.CODED, count=4)
+        closed = _ticket_with_transitions(state=Ticket.State.MERGED, count=4)
+
+        apply_retention()
+
+        assert live.transitions.count() == 4
+        assert closed.transitions.count() == 2
+
+    def test_apply_is_idempotent(self) -> None:
+        _ticket_with_transitions(state=Ticket.State.MERGED, count=5)
+        first = apply_retention()
+        second = apply_retention()
+        assert first.total_rows == 3
+        assert second.total_rows == 0
+
+    def test_the_kill_switch_disables_the_lane(self) -> None:
+        _ticket_with_transitions(state=Ticket.State.MERGED, count=4)
+        plan = plan_retention(settings=UserSettings(ticket_transition_prune_disabled=True))
+        (lane,) = (t for t in plan.tables if t.table == "TicketTransition")
+        assert lane.disabled is True
+        assert lane.reason == "ticket_transition_prune_disabled"
+        assert TicketTransition.objects.count() == 4
+
+    def test_batching_deletes_the_whole_set(self) -> None:
+        _ticket_with_transitions(state=Ticket.State.MERGED, count=8)
+        plan = apply_retention(batch_size=2)
+        (lane,) = (t for t in plan.tables if t.table == "TicketTransition")
+        assert lane.rows == 6
+        assert TicketTransition.objects.count() == 2
+
+
+class ReopenAfterPruneTestCase(TestCase):
+    """The deliverable: a pruned ticket can still be reopened with its history intact.
+
+    Anyone can delete rows. What has to hold is that the prune removed only what a
+    reopened ticket does not need — so this closes a ticket, prunes, reopens it, and
+    asserts every state edge is still there and the FSM still moves.
+    """
+
+    def test_a_reopened_ticket_keeps_every_state_edge(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.MERGED)
+        edges = [
+            TicketTransition.objects.create(ticket=ticket, from_state=src, to_state=dst, triggered_by=name)
+            for src, dst, name in (
+                (Ticket.State.NOT_STARTED, Ticket.State.STARTED, "start"),
+                (Ticket.State.STARTED, Ticket.State.CODED, "code"),
+                (Ticket.State.CODED, Ticket.State.MERGED, "reconcile_merged"),
+            )
+        ]
+        for n in range(6):
+            row = TicketTransition.objects.create(
+                ticket=ticket,
+                from_state=Ticket.State.REVIEW_POSTED,
+                to_state=Ticket.State.REVIEW_POSTED,
+                triggered_by="mark_reviewed_externally",
+            )
+            TicketTransition.objects.filter(pk=row.pk).update(created_at=_ANCIENT + dt.timedelta(minutes=n))
+
+        apply_retention()
+
+        ticket.reopen()
+        ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        surviving_edges = set(ticket.transitions.state_edges().values_list("pk", flat=True))
+        assert {edge.pk for edge in edges} <= surviving_edges
+
+    def test_the_prune_leaves_the_creation_proxy_where_it_was(self) -> None:
+        """``factory_signal_queries`` dates a fix ticket by ``Min(created_at)``."""
+        ticket = _ticket_with_transitions(state=Ticket.State.MERGED, count=5)
+        before = ticket.transitions.aggregate(first=Min("created_at"))["first"]
+
+        apply_retention()
+
+        assert ticket.transitions.aggregate(first=Min("created_at"))["first"] == before
+
+
+#: The library's prune refuses any backend that is not a ``DatabaseBackend``; the
+#: suite's default is a dummy one, so the lane's live path needs the real topology.
+_DATABASE_BACKEND = {
+    "default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]},
+}
+
+
+@override_settings(TASKS=_DATABASE_BACKEND)
+class TaskResultLaneTestCase(TestCase):
+    def test_plan_reports_the_task_result_lane(self) -> None:
+        plan = plan_retention()
+        (lane,) = (t for t in plan.tables if t.table == "DBTaskResult")
+        assert lane.retention_days == 1
+        assert lane.disabled is False
+
+    def test_zero_window_disables_the_task_result_lane(self) -> None:
+        settings = UserSettings(task_result_retention_days=0)
+        plan = plan_retention(settings=settings)
+        (lane,) = (t for t in plan.tables if t.table == "DBTaskResult")
+        assert lane.disabled is True
+        assert lane.reason == ""
+
+
+class TaskResultLaneWithoutADatabaseBackendTestCase(TestCase):
+    """A non-DB task backend must disable this lane, never abort the whole pass."""
+
+    def test_plan_reports_the_lane_inapplicable(self) -> None:
+        (lane,) = (t for t in plan_retention().tables if t.table == "DBTaskResult")
+        assert lane.disabled is True
+        assert "does not store results in the DB" in lane.reason
+
+    def test_the_other_lanes_still_run(self) -> None:
+        _ticket_with_transitions(state=Ticket.State.MERGED, count=4)
+        plan = apply_retention()
+        (lane,) = (t for t in plan.tables if t.table == "TicketTransition")
+        assert lane.rows == 2

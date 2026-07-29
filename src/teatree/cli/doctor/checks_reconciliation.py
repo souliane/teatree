@@ -64,6 +64,12 @@ MAX_OPEN_QUESTION_AGE = dt.timedelta(hours=24)
 #: reached ~340k rows, so this flags growth well before it becomes operational.
 MAX_TASK_ATTEMPT_ROWS = 100_000
 MAX_INCOMING_EVENT_ROWS = 100_000
+#: #3871: the two tables that actually dominate the control DB. The check reported
+#: OK against 3.2M ``TicketTransition`` rows and 625k ``DBTaskResult`` rows because
+#: it only counted the two tables that already had a retention lane — the alarm was
+#: blind to 85% of the live data by construction.
+MAX_TICKET_TRANSITION_ROWS = 100_000
+MAX_TASK_RESULT_ROWS = 100_000
 
 
 class _Level:
@@ -359,29 +365,39 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
     )
 
 
-def _check_high_churn_table_size(now: dt.datetime | None = None) -> ReconciliationFinding:
-    """ALARM when a high-churn table's row count exceeds its ceiling (#3693).
+def _high_churn_counts() -> dict[str, tuple[int, int]]:
+    """``{table: (rows, ceiling)}`` for every table retention has a lane over."""
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    Query: total ``TaskAttempt`` / ``IncomingEvent`` row counts. Thresholds:
-    :data:`MAX_TASK_ATTEMPT_ROWS` / :data:`MAX_INCOMING_EVENT_ROWS`. Advisory —
-    surfaces DB growth and points at ``retention prune`` before it bites.
+    from teatree.core.models import IncomingEvent, TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
+    from teatree.core.models.transition import TicketTransition  # noqa: PLC0415 — ORM import needs the app registry
+
+    return {
+        "TaskAttempt": (TaskAttempt.objects.count(), MAX_TASK_ATTEMPT_ROWS),
+        "IncomingEvent": (IncomingEvent.objects.count(), MAX_INCOMING_EVENT_ROWS),
+        "TicketTransition": (TicketTransition.objects.count(), MAX_TICKET_TRANSITION_ROWS),
+        "DBTaskResult": (DBTaskResult.objects.count(), MAX_TASK_RESULT_ROWS),
+    }
+
+
+def _check_high_churn_table_size(now: dt.datetime | None = None) -> ReconciliationFinding:
+    """ALARM when a high-churn table's row count exceeds its ceiling (#3693, #3871).
+
+    Covers exactly the tables retention has a lane over, so the alarm and the
+    prescribed remedy stay in step: a table the check flags is always one
+    ``retention prune`` can act on. Advisory — surfaces DB growth before it bites.
     """
     del now  # a total row count, no time window
     check_id = "high_churn_table_size"
     try:
-        from teatree.core.models import IncomingEvent, TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
-
-        attempts = TaskAttempt.objects.count()
-        events = IncomingEvent.objects.count()
+        counts = _high_churn_counts()
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
-    over: list[str] = []
-    if attempts > MAX_TASK_ATTEMPT_ROWS:
-        over.append(f"`TaskAttempt` at `{attempts}` (ceiling `{MAX_TASK_ATTEMPT_ROWS}`)")
-    if events > MAX_INCOMING_EVENT_ROWS:
-        over.append(f"`IncomingEvent` at `{events}` (ceiling `{MAX_INCOMING_EVENT_ROWS}`)")
+    over = [
+        f"`{table}` at `{rows}` (ceiling `{ceiling}`)" for table, (rows, ceiling) in counts.items() if rows > ceiling
+    ]
     if not over:
-        return _ok(check_id, f"{attempts} TaskAttempt / {events} IncomingEvent rows")
+        return _ok(check_id, " / ".join(f"{rows} {table}" for table, (rows, _) in counts.items()))
     return _alarm(
         check_id,
         f"High-churn table size alarm: {', '.join(over)}. The control DB is growing unbounded — "
