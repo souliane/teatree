@@ -67,8 +67,9 @@ It provides:
 src/teatree/           Python package (the Django app + CLI)
   cli/                 Typer CLI package — the `t3` entry point
   config.py            settings resolution (DB ConfigSetting store), overlay discovery
-  skill_loading.py     Skill selection policy (phase → skills, companion resolution)
-  skill_deps.py        Transitive dependency and companion resolution
+  skill_support/       Skill selection policy (`loading.py` — phase → skills, cwd detection),
+                       transitive `requires` / soft `companions` resolution (`deps.py`),
+                       and the `agents/*.md` frontmatter reader (`agent_declarations.py`)
   core/                Django app: models, managers, views, selectors, management commands
     models/            Model package — Ticket/Worktree/Task/PullRequest (FSM) + Session, TaskAttempt, TicketTransition, etc.
     selectors/         Selector functions (no domain logic in views)
