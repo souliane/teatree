@@ -3,7 +3,7 @@
 Covers must-fire / must-NOT-fire directions for:
 1. Fresh session (no marker) -- injection points silent, loop-registration exempt.
 2. Marker present -- injection points fire as before.
-3. handle_track_skill_usage sets marker for t3:teatree and for skills that
+3. handle_track_skill_usage sets marker for t3:interactive and for skills that
     require: [teatree] (closure expansion).
 4. Risk-6: mid-session teatree load triggers ownership claim from
     handle_enforce_loop_on_prompt when the loop is not disabled.
@@ -232,7 +232,7 @@ class TestTrackSkillUsageSetsMarker:
             {
                 "session_id": "track-sess",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "t3:teatree"},
+                "tool_input": {"skill": "t3:interactive"},
             }
         )
         assert _is_marked_active("track-sess")
@@ -247,7 +247,7 @@ class TestTrackSkillUsageSetsMarker:
             {
                 "session_id": "track-sess2",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "teatree"},
+                "tool_input": {"skill": "interactive"},
             }
         )
         assert _is_marked_active("track-sess2")
@@ -271,7 +271,7 @@ class TestTrackSkillUsageSetsMarker:
         monkeypatch.setattr(
             router,
             "_resolve_skill_closure",
-            lambda skills: [*list(skills), "t3:teatree"],
+            lambda skills: [*list(skills), "t3:interactive"],
         )
         handle_track_skill_usage(
             {
@@ -293,7 +293,7 @@ class TestTrackSkillUsageSetsMarker:
                 {
                     "session_id": "track-sess5",
                     "tool_name": "Skill",
-                    "tool_input": {"skill": "t3:teatree"},
+                    "tool_input": {"skill": "t3:interactive"},
                 }
             )
         assert _is_marked_active("track-sess5")
@@ -307,7 +307,7 @@ class TestTrackSkillUsageSetsMarker:
         handle_track_skill_usage(
             {
                 "session_id": "track-sess6",
-                "skills": [{"name": "t3:teatree"}],
+                "skills": [{"name": "t3:interactive"}],
             }
         )
         assert _is_marked_active("track-sess6")
@@ -331,7 +331,7 @@ _CROSS_CUTTING_SKILLS = [
     "wip",
 ]
 # Genuinely teatree-specific skills keep the transitive opt-in.
-_TEATREE_SPECIFIC_SKILLS = ["dogfooding-teatree"]
+_TEATREE_SPECIFIC_SKILLS = ["dogfooding"]
 
 
 class TestRealClosureMarkerActivation:
@@ -368,7 +368,7 @@ class TestRealClosureMarkerActivation:
             {
                 "session_id": "tt-direct",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "t3:teatree"},
+                "tool_input": {"skill": "t3:interactive"},
             }
         )
         assert _is_marked_active("tt-direct")
@@ -418,7 +418,7 @@ class TestEngageIsTheSingleSeam:
             {
                 "session_id": "skill-sess",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "t3:teatree"},
+                "tool_input": {"skill": "t3:interactive"},
             }
         )
         assert seen == ["skill-sess"]
@@ -947,7 +947,7 @@ class TestExplicitTeatreeEngages:
     def test_teatree_skill_engages_session(self) -> None:
         assert _teatree_engaged("tt-explicit") is False
         handle_track_skill_usage(
-            {"session_id": "tt-explicit", "tool_name": "Skill", "tool_input": {"skill": "t3:teatree"}}
+            {"session_id": "tt-explicit", "tool_name": "Skill", "tool_input": {"skill": "t3:interactive"}}
         )
         assert _is_marked_active("tt-explicit")
         assert _teatree_engaged("tt-explicit") is True

@@ -1,6 +1,6 @@
 """Anti-drift test for the teatree skill's CLI Reference command list.
 
-``skills/teatree/SKILL.md`` § "CLI Reference" lists the top-level (no-overlay)
+``skills/internals/SKILL.md`` § "CLI Reference" lists the top-level (no-overlay)
 ``t3`` commands. That list drifted: it claimed ~8 of the ~29 registered
 top-level commands and nothing guarded against a claim going stale. This test
 asserts every top-level command the skill claims is actually registered on the
@@ -19,7 +19,7 @@ from pathlib import Path
 from teatree.cli import app
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_TEATREE_SKILL = _REPO_ROOT / "skills" / "teatree" / "SKILL.md"
+_TEATREE_SKILL = _REPO_ROOT / "skills" / "internals" / "SKILL.md"
 
 
 def _registered_top_level_commands() -> set[str]:

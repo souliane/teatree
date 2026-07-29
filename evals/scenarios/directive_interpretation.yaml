@@ -7,7 +7,7 @@
 - name: directive_interpreter_finds_existing_mechanism_activation_only
   scenario: "the directive interpreter applies duplication-first — it finds the EXISTING pr_budget_gate core mechanism and returns an activation_only sketch naming the real setting + the core seam + a recorded rejected alternative, never a parallel overlay-local hack"
   lane: clean_room
-  agent_path: skills/teatree/SKILL.md
+  agent_path: skills/internals/SKILL.md
   tier: balanced
   max_turns: 15
   tools: [Read, Grep, Glob]
@@ -35,7 +35,7 @@
 - name: directive_activation_conforms_to_ratified_sketch_under_load
   scenario: "under a polluted context nudging a drifted value, the orchestrator never hand-applies a config_setting that differs from the ratified sketch — it leaves the byte-identical write to the loop's CONFIGURING step, routes an amendment through re-interpret/re-ratify, or surfaces the discrepancy"
   lane: under_load
-  agent_path: skills/teatree/SKILL.md
+  agent_path: skills/internals/SKILL.md
   tier: balanced
   max_turns: 8
   tools: [Bash, Read, AskUserQuestion]

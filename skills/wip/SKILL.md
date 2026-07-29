@@ -5,7 +5,6 @@ compatibility: any
 requires:
   - rules
   - workspace
-  - teatree
 metadata:
   version: 0.0.1
   subagent_safe: false
