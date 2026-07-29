@@ -14,11 +14,13 @@ from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
+from django_tasks_db.models import DBTaskResult
 
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
 from teatree.core.models import DeferredQuestion, EvalRunRecord, IncomingEvent, Loop, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.eval_run import EvalVerdict
+from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 
 
@@ -420,3 +422,28 @@ class HighChurnTableSizeTestCase(TestCase):
         with patch.object(recon, "MAX_TASK_ATTEMPT_ROWS", 1):
             finding = recon._check_high_churn_table_size()
         assert finding.level == "ok"
+
+    def test_ticket_transition_over_ceiling_alarms(self) -> None:
+        """The 3.2M-row table the check was blind to until it had a lane (#3871)."""
+        ticket = Ticket.objects.create()
+        for _ in range(2):
+            TicketTransition(ticket=ticket, from_state="started", to_state="coded").save()
+        with patch.object(recon, "MAX_TICKET_TRANSITION_ROWS", 1):
+            finding = recon._check_high_churn_table_size()
+        assert finding.is_alarm
+        assert "TicketTransition" in finding.message
+
+    def test_task_result_over_ceiling_alarms(self) -> None:
+        for _ in range(2):
+            DBTaskResult.objects.create(
+                args_kwargs={"args": [], "kwargs": {}},
+                task_path="x.y",
+                backend_name="default",
+                run_after=timezone.now(),
+                exception_class_path="",
+                traceback="",
+            )
+        with patch.object(recon, "MAX_TASK_RESULT_ROWS", 1):
+            finding = recon._check_high_churn_table_size()
+        assert finding.is_alarm
+        assert "DBTaskResult" in finding.message

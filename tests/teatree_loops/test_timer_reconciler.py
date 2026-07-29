@@ -271,6 +271,35 @@ class TestMaintenanceChains(django.test.TestCase):
         assert not DBTaskResult.objects.filter(id=old.id).exists()
         assert DBTaskResult.objects.filter(id=recent.id).exists()
 
+    def test_prune_honours_the_configured_window(self) -> None:
+        from teatree.core.models.config_setting import ConfigSetting  # noqa: PLC0415 — deferred: ORM/app-registry
+
+        ConfigSetting.objects.set_value("task_result_retention_days", 3)
+        row = DBTaskResult.objects.create(
+            task_path="x.old",
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            status=TaskResultStatus.SUCCESSFUL,
+            run_after=get_date_max(),
+            finished_at=timezone.now() - dt.timedelta(days=2),
+        )
+        assert timer_reconciler.prune_task_results.func() == {"pruned": 0}
+        assert DBTaskResult.objects.filter(id=row.id).exists()
+
+    def test_prune_reaches_the_loops_queue(self) -> None:
+        """The chains ride ``loops``; the library's own default would skip that queue."""
+        row = DBTaskResult.objects.create(
+            task_path="x.old",
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            queue_name="loops",
+            status=TaskResultStatus.SUCCESSFUL,
+            run_after=get_date_max(),
+            finished_at=timezone.now() - dt.timedelta(days=2),
+        )
+        assert timer_reconciler.prune_task_results.func() == {"pruned": 1}
+        assert not DBTaskResult.objects.filter(id=row.id).exists()
+
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestReapStuckHeadlessRuns(django.test.TestCase):

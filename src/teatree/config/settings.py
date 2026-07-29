@@ -920,6 +920,21 @@ class _RetentionSettings:
     # a week is generous for after-the-fact forensics. ``0`` disables the lane.
     # Per-overlay overridable.
     park_attempt_retention_days: int = 7
+    # #3871 kill switch for the FSM-audit-trail lane. There is no window: the lane's
+    # trigger is the ticket CLOSING, not a row aging, and what it removes is decided
+    # per row — a ``from_state == to_state`` row records no edge, so it is not history
+    # and a reopened ticket does not need it. Every real state edge is kept for as
+    # long as the ticket exists (~410 rows on the measured box), so no age bound
+    # applies to them. Per-overlay overridable.
+    ticket_transition_prune_disabled: bool = False
+    # #3871 window for ``django_tasks``' own ``DBTaskResult`` table. The delete is
+    # the library's shipped ``prune_db_task_results`` command; this is only how far
+    # back it is told to go. Short because nothing in teatree reads a FINISHED
+    # result row — every consumer filters on READY or RUNNING — so a finished row is
+    # pure post-mortem material, and the table takes ~400k of them a day. 1 day
+    # matches the cadence the maintenance chain already ran at. ``0`` disables the
+    # lane (the library's own floor is 1 day; sub-day retention is not expressible).
+    task_result_retention_days: int = 1
     # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
     # consults (``Ticket.has_active_work``). An agent that crashed without closing
     # its Session would otherwise pin its ticket — and so its worktree, its

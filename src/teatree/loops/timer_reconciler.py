@@ -54,9 +54,9 @@ logger = logging.getLogger(__name__)
 
 #: The reconciler's own cadence — it re-runs every ~5 minutes off its own chain.
 RECONCILE_INTERVAL_SECONDS = 300
-#: The result-prune cadence and how long a finished result is kept before pruning.
+#: The result-prune cadence. How long a finished result is kept is the
+#: ``task_result_retention_days`` setting, not a constant here.
 PRUNE_INTERVAL_SECONDS = 86400
-PRUNE_RETENTION_SECONDS = 86400
 #: The stale-job expiry cadence — hourly, so a long-lived worker keeps the
 #: ``default``-queue backlog swept without depending on the front-end drain loop.
 EXPIRE_INTERVAL_SECONDS = 3600
@@ -200,28 +200,26 @@ def reconcile_timers() -> dict[str, int]:
 def prune_task_results() -> dict[str, int]:
     """Re-schedule daily, THEN delete finished DBTaskResults older than the retention window.
 
-    Caps unbounded growth of the results table the timer chains churn. Only FINISHED
-    (successful/failed) rows past the retention window are removed — a READY or
-    RUNNING row is never touched. Successor-FIRST (F6): the next fire is queued before
-    the delete runs, in a try that records-but-never-propagates, so a body fault cannot
-    orphan the chain.
+    Caps unbounded growth of the results table the timer chains churn. The delete is
+    :func:`teatree.core.retention_task_results.prune_finished_task_results` — the same
+    seam ``t3 <overlay> retention prune`` uses, so the scheduled pass and the operator's
+    pass cannot disagree about which rows are disposable, and neither hand-writes a
+    prune over ``django_tasks_db``'s table. Only FINISHED (successful/failed) rows past
+    the window go; a READY or RUNNING row is never touched. The window is the
+    ``task_result_retention_days`` setting (a ``0`` disables the chain's delete, leaving
+    the reconciler's own surplus/stranded pruning untouched). Successor-FIRST (F6): the
+    next fire is queued before the delete runs, in a try that records-but-never-propagates,
+    so a body fault cannot orphan the chain.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: config read at call time
+    from teatree.core.retention_task_results import prune_finished_task_results  # noqa: PLC0415 — deferred: heavy dep
 
     if _pending_for_path(prune_task_results.module_path):
         return {"deduped": 1}
     prune_task_results.using(run_after=timezone.now() + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
     try:
-        cutoff = timezone.now() - dt.timedelta(seconds=PRUNE_RETENTION_SECONDS)
-        deleted, _ = (
-            DBTaskResult.objects.filter(
-                status__in=[TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED],
-                finished_at__lt=cutoff,
-            )
-            .exclude(finished_at=None)
-            .delete()
-        )
+        days = int(get_effective_settings().task_result_retention_days)
+        deleted = prune_finished_task_results(days=days) if days > 0 else 0
     except Exception:
         logger.exception("prune_task_results body failed; successor already queued, the chain survives")
         return {"error": 1}

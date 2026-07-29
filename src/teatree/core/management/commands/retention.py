@@ -1,19 +1,23 @@
-"""``manage.py retention`` — prune the high-churn control-DB tables (#3693).
+"""``manage.py retention`` — prune the high-churn control-DB tables (#3693, #3871).
 
 ``prune`` is DRY-RUN by default: it reports what retention WOULD delete and
 touches nothing. Deleting requires the explicit ``--apply`` flag. Both the plan
 and the apply share one safety definition per lane (the managers' ``prunable``
-querysets). The terminal-owned lane only ever reaches rows OLDER than a per-table
-window whose owning ticket/task is TERMINAL, so a live or in-flight row is never
-pruned. The park lane (``prunable_parks``) has its own definition — a limit-park
-audit row carrying no billed telemetry, aged on ``ended_at`` — because a park
-RETURNS its task to the queue, which makes the terminal-owned guard structurally
-unable to see one.
+querysets): a row of a LIVE ticket or task is never a candidate. The terminal-owned
+lane reaches only rows OLDER than a per-table window. The park lane
+(``prunable_parks``) has its own definition — a limit-park audit row carrying no
+billed telemetry, aged on ``ended_at`` — because a park RETURNS its task to the
+queue, which makes the terminal-owned guard structurally unable to see one.
 
 The retention windows are the DB-home ``task_attempt_retention_days`` /
-``park_attempt_retention_days`` / ``incoming_event_retention_days`` settings
-(defaults 30 / 7 / 30, per-overlay overridable, ``0`` disables that lane). Set
-them with ``t3 <overlay> config_setting set``.
+``park_attempt_retention_days`` / ``incoming_event_retention_days`` (defaults 30 / 7 /
+30) and ``task_result_retention_days`` (default 1) settings — per-overlay overridable,
+``0`` disables that lane. Set them with ``t3 <overlay> config_setting set``.
+
+The ``TicketTransition`` lane has no window: it fires when the owning ticket CLOSES,
+and it removes only rows that are not state edges (``from_state == to_state``), so a
+reopened ticket keeps its whole history. Its kill switch is
+``ticket_transition_prune_disabled``.
 
 ``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.utils.django_db.vacuum`). Deleting
 rows on SQLite reclaims no disk on its own — the pages move to the free list and
@@ -46,6 +50,8 @@ class _TableRow(TypedDict):
     junk: int
     disabled: bool
     batches: int
+    reason: str
+    aged: bool
 
 
 class _VacuumRow(TypedDict):
@@ -103,6 +109,8 @@ class Command(TyperCommand):
                     "junk": table.junk,
                     "disabled": table.disabled,
                     "batches": table.batches,
+                    "reason": table.reason,
+                    "aged": table.aged,
                 }
                 for table in plan.tables
             ],
@@ -125,13 +133,16 @@ def _detail(table: _TableRow) -> str:
     """The one-line rule that produced this lane's count.
 
     Each lane names its OWN criteria: reporting the park lane as "terminal-owned"
-    would restate the very guard that structurally cannot see a park row.
+    would restate the very guard that structurally cannot see a park row, and the
+    transition lane never measured an age at all.
     """
     if table["disabled"]:
-        return "disabled (retention_days=0)"
+        return f"disabled ({table['reason'] or 'retention_days=0'})"
     if table["table"] == PARK_TABLE:
         batched = f", {table['batches']} batch(es)" if table["batches"] else ""
         return f"{table['rows']}, limit-park marker, no billed telemetry, >{table['retention_days']}d{batched}"
+    if not table["aged"]:
+        return f"{table['rows']}, not a state edge, closed-ticket-owned"
     if table["junk"]:
         return f"{table['rows']} (incl. {table['junk']} park junk), >{table['retention_days']}d, terminal-owned"
     return f"{table['rows']}, >{table['retention_days']}d, terminal-owned"
@@ -139,7 +150,7 @@ def _detail(table: _TableRow) -> str:
 
 def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None:
     verb = "Pruned" if applied else "Would prune"
-    rows = [[table["table"], _detail(table)] for table in payload["tables"]]
+    rows: list[list[str]] = [[table["table"], _detail(table)] for table in payload["tables"]]
     vacuum = payload["vacuum"]
     reclaimed = f"{vacuum['bytes_reclaimed'] / 1024**2:.1f} MiB reclaimed" if vacuum["ran"] else vacuum["reason"]
     rows.append(["VACUUM", reclaimed])
