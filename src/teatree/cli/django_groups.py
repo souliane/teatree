@@ -115,6 +115,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("stamp-identity", "Stamp the repo's local git identity to the GitHub noreply form (public-push safety)."),
             (
+                "stamp-owners",
+                "Record which checkout owns each auto-isolated env dir this venue can see (deletes nothing).",
+            ),
+            (
                 "release-dead-rows",
                 "Delete Worktree rows whose checkout is provably gone — the row alone, nothing else touched.",
             ),

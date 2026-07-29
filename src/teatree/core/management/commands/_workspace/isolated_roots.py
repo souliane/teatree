@@ -31,6 +31,20 @@ left ``complete`` true while the keep-set was short, which is what authorised
 proposing a live checkout's env dir for deletion (#3872). A dir modified at or
 after the keep-set instant is kept for the same reason: the evidence never
 covered it.
+
+**A scan that skipped nothing can still be blind, so its silence is not evidence
+either (#3872).** Making every skip record a gap closes the case where the walk
+declined to look; it cannot close the case where there was nothing there to look
+at. In the container the project mandates ``t3`` runs in, the host's clone is not
+mounted: the walk reads every root that exists, skips nothing, records no gap, and
+reports ``complete`` — while every host-owned env dir reads as an orphan. The
+blindness is bidirectional (the host cannot see the container's own source volume
+either), so no venue's scan result is a sound liveness test on its own. Only the
+stamp is venue-independent, and
+:mod:`~teatree.core.management.commands._workspace.owner_stamps` is where a
+stamped owner's absence is weighed against whether this venue could have observed
+it: a stamp naming an unreachable path, and a dir carrying no stamp at all, are
+both MISSING EVIDENCE — kept with the gap reported, never proof of death.
 """
 
 import shutil
@@ -41,7 +55,7 @@ from pathlib import Path
 from teatree import paths
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
-from teatree.core.management.commands._workspace import checkout_registry
+from teatree.core.management.commands._workspace import checkout_registry, owner_stamps
 from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 
@@ -83,6 +97,9 @@ class LiveCheckoutSlugs:
     #: When the evidence was gathered. A dir modified at or after this instant was
     #: not covered by it, so the snapshot says nothing about whether it is dead.
     snapshot_at: float
+    #: The roots this venue actually walked — what a stamped owner's absence is
+    #: weighed against, so "not found" and "not looked for here" stay distinct.
+    scanned_roots: tuple[Path, ...]
 
 
 def _row_referenced_slugs() -> set[str]:
@@ -104,20 +121,6 @@ def _row_referenced_slugs() -> set[str]:
     return referenced
 
 
-def _stamp_discovered_owners(checkouts: frozenset[str], root: Path) -> None:
-    """Record each discovered checkout as the owner of its env dir.
-
-    Backfill, so the invertible mapping covers what already exists rather than
-    only dirs minted after the stamp shipped — it protected 3 of 185 dirs on the
-    host until this ran. Writing it here also means a dir's ownership survives the
-    checkout later becoming undiscoverable.
-    """
-    for checkout in checkouts:
-        env_dir = root / paths.isolated_slug(Path(checkout))
-        if env_dir.is_dir():
-            paths.IsolatedEnvDir(env_dir).stamp_owner(Path(checkout))
-
-
 def _live_checkout_slugs(workspace: Path, root: Path) -> LiveCheckoutSlugs:
     """Union the registered-row and on-disk-checkout evidence into ONE keep-set.
 
@@ -131,10 +134,10 @@ def _live_checkout_slugs(workspace: Path, root: Path) -> LiveCheckoutSlugs:
     """
     snapshot_at = time.time()
     registry = checkout_registry.live_checkout_paths(workspace)
-    _stamp_discovered_owners(registry.paths, root)
+    owner_stamps.stamp_discovered_owners(registry.paths, root)
     slugs = _row_referenced_slugs()
     slugs.update(paths.isolated_slug(Path(checkout)) for checkout in registry.paths)
-    return LiveCheckoutSlugs(frozenset(slugs), registry.gaps, snapshot_at)
+    return LiveCheckoutSlugs(frozenset(slugs), registry.gaps, snapshot_at, registry.scanned_roots)
 
 
 def _holds_git_checkout(env_dir: Path) -> bool:
@@ -152,20 +155,6 @@ def _holds_git_checkout(env_dir: Path) -> bool:
     return (env_dir / ".git").exists()
 
 
-def _owned_by_live_checkout(env_dir: Path, live: LiveCheckoutSlugs) -> str | None:
-    """The evidence that a live checkout owns *env_dir*, or ``None`` when none does.
-
-    The two positive proofs, strongest reported first: a slug the union keep-set
-    knows, or the dir's own stamp naming a checkout that still exists.
-    """
-    if env_dir.name in live.slugs:
-        return "a live checkout owns it"
-    owner = paths.IsolatedEnvDir(env_dir).owner
-    if owner is not None and owner.is_dir():
-        return f"its owner stamp names a live checkout ({owner})"
-    return None
-
-
 def _changed_since(env_dir: Path, snapshot_at: float) -> bool:
     """Whether *env_dir* was created or written at/after the keep-set was computed.
 
@@ -180,18 +169,8 @@ def _changed_since(env_dir: Path, snapshot_at: float) -> bool:
         return True
 
 
-def _unprovable_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
-    """Why *env_dir*'s death cannot be PROVEN, even though nothing claims to own it.
-
-    Each branch is a distinct way the evidence falls short of proof — incomplete
-    evidence, a dir the evidence never covered, an ignore glob, unexpected git
-    work, an unmappable live row. Absence of an owner is not proof of death while
-    any of these holds (the #706 standard).
-    """
-    if live.gaps:
-        return f"checkout evidence is incomplete ({'; '.join(live.gaps)}) — cannot prove any dir is orphan"
-    if _changed_since(env_dir, live.snapshot_at):
-        return "changed after the keep-set was computed — outside this pass's evidence"
+def _protected_reason(env_dir: Path, *, keep_unmappable_live: bool) -> str | None:
+    """Why *env_dir* is off-limits whatever the evidence says about its owner."""
     if is_clean_ignored(env_dir.name):
         return "matches clean_ignore"
     if _holds_git_checkout(env_dir):
@@ -201,40 +180,61 @@ def _unprovable_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappabl
     return None
 
 
+def _evidence_gap(env_dir: Path, *, stamp: owner_stamps.OwnerStamp, live: LiveCheckoutSlugs) -> str | None:
+    """Why this pass's evidence cannot speak about *env_dir*, or ``None`` when it can.
+
+    Three distinct shortfalls, widest first: a read that failed and hid an unknown
+    number of live checkouts, a dir minted after the evidence was gathered, and the
+    #3872 one — a stamped owner this venue could never have seen, or no stamp at all.
+    Absence of an owner is not proof of death while any of these holds (#706).
+    """
+    if live.gaps:
+        return f"checkout evidence is incomplete ({'; '.join(live.gaps)}) — cannot prove any dir is orphan"
+    if _changed_since(env_dir, live.snapshot_at):
+        return "changed after the keep-set was computed — outside this pass's evidence"
+    return stamp.missing_evidence
+
+
 def _keep_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
     """Why *env_dir* must survive this pass, or ``None`` when it is provably reclaimable.
 
-    Ownership proof first, then the reasons its death cannot be proven. The single
-    ``None`` exit is the only path to a deletion.
+    Ownership proof first, then the pins that hold regardless, then the ways the
+    evidence falls short. The single ``None`` exit is the only path to a deletion.
     """
-    owned = _owned_by_live_checkout(env_dir, live)
-    if owned is not None:
-        return owned
-    return _unprovable_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
+    if env_dir.name in live.slugs:
+        return "a live checkout owns it"
+    stamp = owner_stamps.read_owner_stamp(env_dir, live.scanned_roots)
+    return (
+        stamp.proof_of_life
+        or _protected_reason(env_dir, keep_unmappable_live=keep_unmappable_live)
+        or _evidence_gap(env_dir, stamp=stamp, live=live)
+    )
 
 
 def reap_orphan_isolated_worktree_roots(workspace: Path, *, dry_run: bool = False) -> list[str]:
-    """Remove the auto-isolated worktree env dirs no live checkout owns (#291, #3852).
+    """Remove the auto-isolated worktree env dirs PROVEN dead (#291, #3852, #3872).
 
     Each git worktree gets an auto-isolated env dir under
-    :func:`paths.auto_isolated_worktrees_dir` (``db.sqlite3`` + ``logs/``). When
-    the checkout is gone but its env dir lingers, the dir is an orphan.
-    Ownership is resolved by :func:`_live_checkout_slugs` — registered rows UNION
-    every checkout git reports — plus each dir's own owner stamp, so the reaper
-    and :func:`paths.resolve_data_dir` agree on the population the slug mapping
-    spans. Only immediate child *directories* of the root are considered; loose
-    files (seed locks) are ignored.
+    :func:`paths.auto_isolated_worktrees_dir` (``db.sqlite3`` + ``logs/``). A dir is
+    reclaimable only when its own stamp names a checkout that does not exist AND lies
+    within a root this venue walked — the one shape in which "no owner found" and "no
+    owner exists" are the same answer. Every other verdict keeps it: the union keep-set
+    (registered rows plus every checkout git reports) proving it live, a stamp naming a
+    live checkout, or evidence that falls short of proof. Only immediate child
+    *directories* of the root are considered; loose files (seed locks) are ignored.
 
     Every dir gets a line naming its disposition and reason, in a live run and a
     preview alike, so ``--dry-run`` is a full account of what the live run would
     do rather than a list of its deletions.
 
-    Two fail-closed guards, both #706-shaped. Unreadable git evidence
-    (``live.gaps``) keeps EVERY dir: an unread clone hides an unknown number of
-    live checkouts. And a BUSY worktree row with no recorded checkout path
-    (:func:`_has_unmappable_live_worktree`) cannot be hashed to a slug, so its
-    in-use isolated DB is indistinguishable from an orphan — keep them all rather
-    than reap a live control DB out from under a mid-task agent.
+    Four fail-closed guards, all #706-shaped. Unreadable git evidence (``live.gaps``)
+    keeps EVERY dir: an unread clone hides an unknown number of live checkouts. A BUSY
+    worktree row with no recorded checkout path (:func:`_has_unmappable_live_worktree`)
+    cannot be hashed to a slug, so its in-use isolated DB is indistinguishable from an
+    orphan. And the two #3872 guards: a stamped owner this venue could never have
+    observed, and a dir carrying no stamp at all, are both missing evidence rather than
+    dead — which is why a venue blind to the clones now reclaims nothing instead of
+    everything.
     """
     root = paths.auto_isolated_worktrees_dir()
     if not root.is_dir():

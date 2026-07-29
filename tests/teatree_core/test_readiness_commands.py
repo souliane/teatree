@@ -9,6 +9,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.core.management.commands._workspace.anchor as anchor_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 from teatree.core.models import Ticket, Worktree
@@ -167,7 +168,7 @@ class TestWorkspaceReady(TestCase):
             mock_overlay.runtime.readiness_probes.side_effect = lambda wt: [_passing_probe(f"{wt.repo_path}-up")]
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
             ):
                 result = call_command("workspace", "ready", path=str(wt_a))
@@ -214,7 +215,7 @@ class TestWorkspaceReady(TestCase):
             mock_overlay.runtime.readiness_probes.side_effect = probes_for
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 pytest.raises(SystemExit) as exc,
             ):
@@ -243,7 +244,7 @@ class TestWorkspaceReady(TestCase):
             mock_overlay.runtime.readiness_probes.return_value = []
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
             ):
                 result = call_command("workspace", "ready", path=str(wt_path))

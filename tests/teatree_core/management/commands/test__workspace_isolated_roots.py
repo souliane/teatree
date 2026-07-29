@@ -36,6 +36,18 @@ def _make_env_dir(root: Path, slug: str) -> Path:
     return env_dir
 
 
+def _make_orphan_env_dir(root: Path, owner: Path) -> Path:
+    """A genuine orphan as one looks after #3872: born stamped, its owner since deleted.
+
+    The owner's parent directory exists, so this venue can read the neighbourhood the
+    checkout would live in and find it absent — the observation that turns "I found no
+    owner" into "the owner is gone", and the only form in which a dir is reclaimable.
+    """
+    env_dir = _make_env_dir(root, paths.isolated_slug(owner))
+    paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+    return env_dir
+
+
 class TestReapOrphanIsolatedWorktreeRoots(TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -62,13 +74,52 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
             extra={"worktree_path": str(checkout)},
         )
 
-    def test_orphan_dir_with_no_row_is_removed(self) -> None:
-        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/org/repo")))
+    def test_orphan_dir_whose_stamped_owner_this_venue_can_see_is_removed(self) -> None:
+        """THE must-reap property, re-scoped by #3872 rather than relaxed.
+
+        The guarantee is unchanged — a genuinely dead env dir IS reclaimed — but its
+        subject is now a dir whose stamp names a path that does not exist AND lies
+        within a root this venue can see. "No row references it" was never the same
+        claim: it is satisfied identically by a dir whose owner is dead and by one
+        whose owner is merely on a filesystem this process cannot reach.
+        """
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "vanished-checkout")
 
         result = self._reap()
 
         assert not orphan.exists()
         assert any("Removed orphan isolated worktree root" in line and orphan.name in line for line in result)
+
+    def test_a_stamped_owner_this_venue_cannot_see_is_kept_with_the_gap_reported(self) -> None:
+        """THE keystone: the container geometry, where every step is right and the premise is false.
+
+        RED before #3872: `sha256(<clone>/.claude/worktrees/hook-python-django)[:12]`
+        is `1b2e4f54981d`, exactly the dir the container's dry-run offered to remove —
+        a live, git-registered worktree holding a 1.2 GB control DB. The container has
+        the isolated-env root bind-mounted and the clone that owns those dirs not, so
+        the owner's whole parent chain is absent rather than deleted.
+        """
+        unmounted = self.workspace / "teatree-deploy" / ".claude" / "worktrees" / "hook-python-django"
+        env_dir = _make_orphan_env_dir(self.root, unmounted)
+
+        result = self._reap()
+
+        assert env_dir.exists(), "DATA LOSS: a live checkout's control DB was reaped from a venue that cannot see it"
+        assert any("KEPT" in line and env_dir.name in line and "cannot see" in line for line in result)
+
+    def test_an_unstamped_dir_is_kept_because_nothing_recorded_who_owns_it(self) -> None:
+        """Stage 3: once stamping is universal, an unstamped dir is unknown, never dead.
+
+        A scan result is venue-dependent and a stamp is not, so a dir carrying no stamp
+        leaves the reaper with only the venue-dependent answer — which is exactly the
+        answer that offered to delete a live session's control DB.
+        """
+        env_dir = _make_env_dir(self.root, paths.isolated_slug(self.workspace / "never-stamped"))
+
+        result = self._reap()
+
+        assert env_dir.exists()
+        assert any("KEPT" in line and env_dir.name in line and "unstamped" in line for line in result)
 
     def test_referenced_dir_is_kept(self) -> None:
         checkout = Path("/live/org/repo")
@@ -140,7 +191,7 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         """
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291c")
         Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="idle-no-path", extra={})
-        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "gone-elsewhere")
 
         result = self._reap()
 
@@ -237,8 +288,7 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         self._make_worktree(checkout=checkout)
         kept = paths.isolated_slug(checkout)
         _make_env_dir(self.root, kept)
-        wiped = paths.isolated_slug(Path("/gone/org/repo"))
-        _make_env_dir(self.root, wiped)
+        wiped = _make_orphan_env_dir(self.root, self.workspace / "gone-org-repo").name
 
         result = self._reap(dry_run=True)
 
@@ -323,7 +373,7 @@ class TestLiveCheckoutEvidence(TestCase):
         keystone test above while reclaiming nothing.
         """
         checkout = self._add_checkout("since-removed")
-        env_dir = self._make_env_dir(self.root, paths.isolated_slug(checkout))
+        env_dir = _make_orphan_env_dir(self.root, checkout)  # stamped at birth, as #3872 requires
         run_git(self.clone, "worktree", "remove", "--force", str(checkout))
 
         result = self._reap()
@@ -378,7 +428,7 @@ class TestLiveCheckoutEvidence(TestCase):
 
     def test_a_dir_untouched_since_the_snapshot_is_still_reaped(self) -> None:
         """Anti-vacuous control: the freshness guard must not keep everything."""
-        env_dir = self._make_env_dir(self.root, paths.isolated_slug(Path("/gone/settled")))
+        env_dir = _make_orphan_env_dir(self.root, self.workspace / "gone-settled")
         old = time.time() - 3600
         os.utime(env_dir, (old, old))
 
@@ -404,8 +454,7 @@ class TestLiveCheckoutEvidence(TestCase):
 
     def test_owner_stamp_naming_a_vanished_checkout_does_not_protect(self) -> None:
         """Anti-vacuous control for the stamp: it proves liveness, it is not a blanket pin."""
-        env_dir = self._make_env_dir(self.root, paths.isolated_slug(Path("/gone/stamped")))
-        paths.IsolatedEnvDir(env_dir).stamp_owner(Path("/gone/stamped"))
+        env_dir = _make_orphan_env_dir(self.root, self.workspace / "gone-stamped")
 
         result = self._reap()
 

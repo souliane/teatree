@@ -1263,6 +1263,10 @@
           "name": "reclaim-disk"
         },
         {
+          "help": "Record which checkout owns each auto-isolated env dir THIS venue can see (#3872)",
+          "name": "stamp-owners"
+        },
+        {
           "help": "Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR",
           "name": "clean-all"
         },

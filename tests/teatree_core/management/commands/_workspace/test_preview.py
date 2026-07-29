@@ -16,6 +16,7 @@ from teatree.core.management.commands._workspace.isolated_roots import (
     reap_orphan_isolated_worktree_roots,
 )
 from teatree.core.management.commands._workspace.preview import preview_line
+from teatree.paths import IsolatedEnvDir
 
 
 class TestPreviewLine:
@@ -54,8 +55,10 @@ class TestEmptyTicketDirPreview:
 
 class TestIsolatedRootPreview:
     def _root(self, tmp_path: Path) -> Path:
+        """An env dir a live run WOULD reclaim: stamped, its owner gone from a visible root."""
         root = tmp_path / "teatree-worktrees"
         (root / "orphan-slug").mkdir(parents=True)
+        IsolatedEnvDir(root / "orphan-slug").stamp_owner(tmp_path / "gone-checkout")
         return root
 
     def test_names_the_env_dir_and_leaves_it_on_disk(self, tmp_path: Path) -> None:
@@ -63,7 +66,7 @@ class TestIsolatedRootPreview:
         module = "teatree.core.management.commands._workspace.isolated_roots"
         # A snapshot far in the future so the freshness guard cannot mistake this
         # just-created fixture dir for one minted mid-pass.
-        live = LiveCheckoutSlugs(frozenset(), (), time.time() + 3600)
+        live = LiveCheckoutSlugs(frozenset(), (), time.time() + 3600, (tmp_path,))
         with (
             patch(f"{module}.paths.auto_isolated_worktrees_dir", return_value=root),
             patch(f"{module}._live_checkout_slugs", return_value=live),

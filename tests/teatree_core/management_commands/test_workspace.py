@@ -41,9 +41,10 @@ from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
+from teatree.core.management.commands._workspace.helpers import branch_prefix
 from teatree.core.management.commands._workspace.provision_parallel import WorktreeProvisionResult
 from teatree.core.management.commands._workspace.ticket_intake import build_branch_name
-from teatree.core.management.commands.workspace import _branch_prefix, _worktree_root
+from teatree.core.management.commands.workspace import _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
@@ -81,23 +82,23 @@ def _allow_provision_admission() -> AbstractContextManager[MagicMock]:
 class TestBranchPrefix(TestCase):
     def test_from_env(self) -> None:
         with patch.dict("os.environ", {"T3_BRANCH_PREFIX": "xy"}):
-            assert _branch_prefix() == "xy"
+            assert branch_prefix() == "xy"
 
     def test_from_git_config(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=False),
-            patch.object(workspace_mod.git, "run", return_value="Ada Lovelace"),
+            patch("teatree.core.management.commands._workspace.helpers.git.run", return_value="Ada Lovelace"),
         ):
             os.environ.pop("T3_BRANCH_PREFIX", None)
-            assert _branch_prefix() == "al"
+            assert branch_prefix() == "al"
 
     def test_fallback_to_dev(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=False),
-            patch.object(workspace_mod.git, "run", return_value=""),
+            patch("teatree.core.management.commands._workspace.helpers.git.run", return_value=""),
         ):
             os.environ.pop("T3_BRANCH_PREFIX", None)
-            assert _branch_prefix() == "dev"
+            assert branch_prefix() == "dev"
 
 
 class TestStampIdentity(TestCase):

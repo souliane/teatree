@@ -7192,6 +7192,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                    dangling images + unreferenced volumes).                  │
 │ stamp-identity     Stamp the repo's local git identity to the GitHub noreply │
 │                    form (public-push safety).                                │
+│ stamp-owners       Record which checkout owns each auto-isolated env dir     │
+│                    this venue can see (deletes nothing).                     │
 │ release-dead-rows  Delete Worktree rows whose checkout is provably gone —    │
 │                    the row alone, nothing else touched.                      │
 │ emit               Print the JSON handoff for every NOT-auto-deleted         │
@@ -7570,6 +7572,27 @@ Usage: t3 teatree workspace stamp-identity [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace stamp-owners`
+
+```
+Usage: t3 teatree workspace stamp-owners [OPTIONS]
+
+ Record which checkout owns each auto-isolated env dir THIS venue can see
+ (#3872).
+
+ Deletes nothing. Run it in EVERY venue that sees checkouts — host and
+ container
+ both — because neither sees them all; engine:
+ :func:`~teatree.core.management.commands._workspace.owner_stamps.backfill_owne
+ r_stamps`.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the stamping report as JSON on stdout instead of the    │
+│                 human view.                                                  │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
