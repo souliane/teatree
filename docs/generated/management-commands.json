@@ -825,7 +825,7 @@
       "name": "retention",
       "subcommands": [
         {
-          "help": "Prune old rows from the high-churn tables (dry-run unless --apply)",
+          "help": "Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply)",
           "name": "prune"
         }
       ]

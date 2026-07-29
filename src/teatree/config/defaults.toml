@@ -233,7 +233,7 @@ stop_snapshotter_enabled = true
 unknown_repo_push_gate_enabled = true
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
-disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
+disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes", "~/.cache/go-build"]
 disk_crit_free_gb = 10.0
 disk_warn_free_gb = 25.0
 ram_crit_avail_gb = 1.5

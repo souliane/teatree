@@ -1205,7 +1205,9 @@ _no_orphan_dbs = patch.object(ws_clean_all_mod, "drop_orphan_databases", new=lam
 _no_orphan_docker = patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=lambda **_kw: [])
 
 
-_no_orphan_isolated_roots = patch.object(ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", new=lambda **_kw: [])
+_no_orphan_isolated_roots = patch.object(
+    ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", new=lambda *_a, **_kw: []
+)
 
 
 _no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new=lambda _ws, **_kw: [])
