@@ -24,6 +24,12 @@ unreadable directory or an unreadable clone registry leaves an unknown number of
 live checkouts unaccounted for, and an unaccounted checkout is indistinguishable
 from a dead one — so a caller with a destructive disposition must fail CLOSED on
 a non-empty ``gaps`` rather than delete on partial evidence (the #706 standard).
+
+That only holds while ``complete`` means what it says, so **anything the walk
+does not cover is a gap** (#3872). :data:`_NEVER_A_CHECKOUT` is the one
+exclusion, and it is exempt because those dirs cannot hold a checkout the
+resolver ever mints an env dir for. Everything else is walked, including
+symlinked dirs; the depth cap reports rather than truncates.
 """
 
 from dataclasses import dataclass
@@ -36,10 +42,12 @@ from teatree.core.worktree.worktree_roots import scanned_worktree_roots
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
-#: Deep enough for the nested agent-worktree layout (a clone's own
-#: ``.claude/worktrees/<agent>``) with headroom; the host's checkouts are all
-#: found by depth 6.
-_MAX_SCAN_DEPTH = 10
+#: Runaway protection for the walk, NOT a coverage policy: reaching it records a
+#: gap, so a truncated subtree keeps every env dir rather than quietly shrinking
+#: the keep-set. Set well clear of the deepest real tree measured on the host (15
+#: — an agent worktree nested inside a worktree under the workspace root); at 10
+#: it truncated 208 subtrees, every one of them silently.
+_MAX_SCAN_DEPTH = 24
 
 #: Skipped while scanning. Every entry is a directory that CANNOT be a teatree
 #: checkout — a package/venv/tool cache. Nothing is skipped for being merely
@@ -129,38 +137,81 @@ def checkout_scan_roots(workspace: Path) -> tuple[Path, ...]:
     )
 
 
+def _child_directories(directory: Path) -> tuple[list[Path], list[str]]:
+    """The subdirectories of *directory* to walk, and what could not be read.
+
+    A symlinked entry is an ordinary child here: ``is_dir`` follows it, so a
+    checkout behind a link is walked like any other. Only :data:`_NEVER_A_CHECKOUT`
+    is dropped without a gap.
+    """
+    try:
+        entries = list(directory.iterdir())
+    except OSError as exc:
+        return [], [f"could not scan {directory} for checkouts ({exc})"]
+    children: list[Path] = []
+    gaps: list[str] = []
+    for entry in entries:
+        if entry.name in _NEVER_A_CHECKOUT:
+            continue
+        try:
+            if entry.is_dir():
+                children.append(entry)
+        except OSError as exc:
+            gaps.append(f"could not stat {entry} ({exc})")
+    return children, gaps
+
+
 def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
     """Every directory under *roots* carrying a ``.git`` entry, plus what went unread.
 
     A checkout is any directory with a ``.git`` entry — a dir for a clone, a file
     for a linked worktree. The walk descends INTO checkouts, because teatree's
-    agent worktrees nest inside their own clone (``<clone>/.claude/worktrees/…``).
-    A directory that cannot be listed is recorded as a gap rather than skipped
-    silently: it may hold checkouts, and the caller must treat that as unknown.
+    agent worktrees nest inside their own clone (``<clone>/.claude/worktrees/…``),
+    and THROUGH symlinked directories, because a symlinked dir is an ordinary way
+    to reach a checkout — the host reaches its own teatree clone that way.
+
+    **Every path the walk does not cover is a gap (#3872).** A skip that records
+    nothing is worse than an unreadable one: it drops an unknown number of live
+    checkouts from the keep-set while the answer still reads ``complete``, and
+    that completeness is the whole evidence a deletion rests on. Skipping
+    symlinks and truncating at the depth cap were both silent, so on the host 87
+    symlinked dirs and 208 subtrees went unscanned with ``gaps=()``.
+
+    Recursion is deduplicated on the resolved path, so a symlink loop terminates
+    and a tree reachable by several spellings is walked once. The ``.git`` check
+    runs BEFORE that dedup and before the listing, so a checkout is recorded
+    under every spelling it is reached by, and one whose contents cannot be
+    listed is still recorded rather than lost along with them.
     """
     found: set[str] = set()
     gaps: list[str] = []
+    walked: set[str] = set()
     stack = [(root, 0) for root in roots]
     while stack:
         directory, depth = stack.pop()
-        if depth > _MAX_SCAN_DEPTH:
+        try:
+            real = str(directory.resolve(strict=True))
+        except OSError as exc:
+            gaps.append(f"could not resolve {directory} ({exc})")
             continue
         try:
-            entries = list(directory.iterdir())
+            carries_git = (directory / ".git").exists()
         except OSError as exc:
-            gaps.append(f"could not scan {directory} for checkouts ({exc})")
+            # ``Path.exists`` re-raises EACCES rather than answering False.
+            gaps.append(f"could not probe {directory} for a checkout ({exc})")
             continue
-        if (directory / ".git").exists():
+        if carries_git:
             found.add(str(directory))
-            found.add(str(directory.resolve()))
-        for entry in entries:
-            if entry.name in _NEVER_A_CHECKOUT or entry.is_symlink():
-                continue
-            try:
-                if entry.is_dir():
-                    stack.append((entry, depth + 1))
-            except OSError as exc:
-                gaps.append(f"could not stat {entry} ({exc})")
+            found.add(real)
+        if real in walked:
+            continue
+        walked.add(real)
+        if depth > _MAX_SCAN_DEPTH:
+            gaps.append(f"stopped at depth {_MAX_SCAN_DEPTH} under {directory} — its subtree went unscanned")
+            continue
+        children, child_gaps = _child_directories(directory)
+        gaps.extend(child_gaps)
+        stack.extend((child, depth + 1) for child in children)
     return CheckoutRegistry(frozenset(found), tuple(gaps))
 
 

@@ -171,6 +171,33 @@ class TestCheckoutRegistry(TestCase):
 
         assert str(self.outside) not in found.paths
 
+    def test_a_checkout_reachable_only_through_a_symlinked_directory_is_found(self) -> None:
+        """A symlinked directory is an ordinary way to reach a checkout (#3872).
+
+        The walk skipped every symlinked entry and recorded nothing, so a checkout
+        only reachable that way was absent from the keep-set while the answer still
+        read ``complete`` — indistinguishable from dead, which is exactly the
+        evidence that authorises deleting its env dir. The host reaches its own
+        teatree clone through such a link.
+        """
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        make_git_repo(elsewhere / "mirrored")
+        (self.workspace / "link").symlink_to(elsewhere)
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert str(self.workspace / "link" / "mirrored") in found.paths
+        assert found.complete
+
+    def test_a_symlink_loop_terminates_without_a_gap(self) -> None:
+        """Guards the fix's own failure mode: following links must still terminate."""
+        (self.workspace / "loop").symlink_to(self.workspace)
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert str(self.clone) in found.paths
+        assert found.complete
+
     def test_an_unreadable_scan_root_becomes_a_gap(self) -> None:
         """A directory the scan cannot read hides an unknown number of checkouts."""
         registry = live_checkout_paths(self.workspace / "does-not-exist")
@@ -181,6 +208,72 @@ class TestCheckoutRegistry(TestCase):
         assert registry is not None
         assert not missing.complete
         assert any("absent" in gap for gap in missing.gaps)
+
+    def _locked_dir(self, mode: int) -> Path:
+        locked = self.workspace / "locked"
+        locked.mkdir()
+        locked.chmod(mode)
+        self.addCleanup(locked.chmod, 0o755)
+        return locked
+
+    def test_a_directory_that_cannot_be_probed_becomes_a_gap(self) -> None:
+        """``Path.exists`` re-raises EACCES, so the probe must not take the scan down."""
+        locked = self._locked_dir(0o000)
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert not found.complete
+        assert any(str(locked) in gap for gap in found.gaps)
+        assert str(self.clone) in found.paths, "one unreadable dir must not abort the walk"
+
+    def test_a_directory_that_exists_but_cannot_be_listed_becomes_a_gap(self) -> None:
+        """Traversable but unreadable: the dir is there, its contents are unknown."""
+        locked = self._locked_dir(0o311)
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert not found.complete
+        assert any(str(locked) in gap for gap in found.gaps)
+
+    def test_the_scan_walks_past_a_loose_file_without_a_gap(self) -> None:
+        """Only directories are walked, and a file is not a coverage hole."""
+        (self.workspace / "loose.txt").write_text("", encoding="utf-8")
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert found.complete
+        assert str(self.workspace / "loose.txt") not in found.paths
+
+
+class TestScanDepthBudget(TestCase):
+    """The depth cap is runaway protection, never a silent coverage policy (#3872).
+
+    Truncating a subtree hides an unknown number of checkouts, so it has to reach
+    the caller as a gap. Measured on the host that produced the ticket: the cap of
+    10 truncated 208 subtrees while every one of them read ``complete``.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_a_subtree_beyond_the_depth_cap_records_a_gap(self) -> None:
+        truncated = self.root / "a" / "b" / "c"
+        truncated.mkdir(parents=True)
+
+        with patch(f"{_REGISTRY}._MAX_SCAN_DEPTH", 2):
+            found = scan_checkout_paths((self.root,))
+
+        assert not found.complete
+        assert any(str(truncated) in gap for gap in found.gaps)
+
+    def test_control_a_tree_within_the_depth_cap_records_no_gap(self) -> None:
+        """The control proving the probe above distinguishes truncated from covered."""
+        (self.root / "a" / "b").mkdir(parents=True)
+
+        with patch(f"{_REGISTRY}._MAX_SCAN_DEPTH", 2):
+            found = scan_checkout_paths((self.root,))
+
+        assert found.complete
 
 
 class TestCheckoutScanRoots(TestCase):

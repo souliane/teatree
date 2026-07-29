@@ -23,10 +23,14 @@ liveness is PROVEN by the named path rather than inferred from a population the
 other sources have to agree on. Each pass stamps what it discovered, so that
 durable mapping grows rather than covering only newly-minted dirs.
 
-Incomplete evidence fails CLOSED — an unreadable directory or an unreadable clone
-registry hides an unknown number of live checkouts, so every otherwise-unreferenced
-dir is kept and the gap reported. A dir modified at or after the keep-set instant
-is kept for the same reason: the evidence never covered it.
+Incomplete evidence fails CLOSED — an unreadable directory, a subtree past the
+walk's depth cap, or an unreadable clone registry hides an unknown number of live
+checkouts, so every otherwise-unreferenced dir is kept and the gap reported. That
+rests on the scan reporting everything it did not cover: a skip recording no gap
+left ``complete`` true while the keep-set was short, which is what authorised
+proposing a live checkout's env dir for deletion (#3872). A dir modified at or
+after the keep-set instant is kept for the same reason: the evidence never
+covered it.
 """
 
 import shutil
