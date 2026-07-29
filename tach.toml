@@ -284,6 +284,7 @@ depends_on = [
   "teatree.core.models.errors",
   "teatree.core.repair_loop",
   "teatree.instance_id",
+  "teatree.url_classify",
   "teatree.verification"
 ]
 

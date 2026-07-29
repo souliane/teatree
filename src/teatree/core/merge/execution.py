@@ -503,7 +503,10 @@ def record_merge_and_advance(
                 pr_id=locked.pr_id,
                 consumed_at__isnull=True,
             ).exclude(pk=locked.pk).update(consumed_at=locked.consumed_at)
-            ticket = locked.ticket
+            # The forge merge already landed, so the PR row is MERGED and a ticketless
+            # CLEAR (``--ticket-id`` is optional, and the loop never passed one) can
+            # recover from the PR the FSM it otherwise has nothing to advance.
+            ticket = locked.record_merged_pull_request()
             if ticket is None:
                 return ""
             # Bind the phase attestation to the merged HEAD/workstream it was
