@@ -122,7 +122,20 @@ class TestVacuumSqlite:
         outcome = vacuum_sqlite(Path(":memory:"))
 
         assert not outcome.ran
+        assert "in-memory" in outcome.reason
         assert outcome.bytes_reclaimed == 0
+
+    def test_the_shared_cache_in_memory_uri_is_also_recognised(self) -> None:
+        """Django rewrites an in-memory DB to this form once a TransactionTestCase needs it.
+
+        A name-equality check against ``:memory:`` alone misses it and reports the
+        URI as a missing FILE — so what the vacuum said about the very same
+        database depended on what had run before it (caught by the shuffle lane).
+        """
+        outcome = vacuum_sqlite(Path("file:memorydb_default?mode=memory&cache=shared"))
+
+        assert not outcome.ran
+        assert "in-memory" in outcome.reason
 
 
 class _StubConnection:
@@ -147,11 +160,17 @@ class TestVacuumControlDb:
     """Resolving the control DB behind a Django connection."""
 
     def test_the_suites_in_memory_connection_is_a_stated_no_op(self) -> None:
-        """Against the REAL default connection — a vacuum must never break a test run."""
+        """Against the REAL default connection — a vacuum must never break a test run.
+
+        Deliberately asserts only that nothing ran: which in-memory FORM Django has
+        the connection on (``:memory:`` or the shared-cache URI) depends on whether
+        a ``TransactionTestCase`` ran first, and both forms are pinned directly
+        above. Asserting the wording here is what made this order-dependent.
+        """
         outcome = vacuum_control_db()
 
         assert not outcome.ran
-        assert "in-memory" in outcome.reason
+        assert outcome.bytes_reclaimed == 0
 
     def test_an_in_memory_connection_is_never_closed(self) -> None:
         """An ``:memory:`` database does not survive its connection.

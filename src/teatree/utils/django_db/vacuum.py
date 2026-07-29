@@ -30,6 +30,18 @@ from django.db import DEFAULT_DB_ALIAS, connections
 logger = logging.getLogger(__name__)
 
 _IN_MEMORY_NAMES = frozenset({":memory:", ""})
+#: SQLite's shared-cache in-memory URI form, e.g.
+#: ``file:memorydb_default?mode=memory&cache=shared``. Django switches an
+#: in-memory test database to this once a ``TransactionTestCase`` needs the DB
+#: reachable from more than one connection, so a name-equality check alone sees
+#: it as an ordinary (missing) file — which is why matching only ``:memory:``
+#: read as "no such file" depending on what had run before.
+_IN_MEMORY_URI_MARKER = "mode=memory"
+
+
+def _is_in_memory(name: str) -> bool:
+    return name in _IN_MEMORY_NAMES or _IN_MEMORY_URI_MARKER in name
+
 
 #: VACUUM rebuilds into a full second copy before swapping, so the transient peak
 #: is the database's own size again, plus rollback-journal slack. Measured need on
@@ -68,7 +80,7 @@ def vacuum_sqlite(path: Path) -> VacuumOutcome:
     step that aborts the command it was appended to would be worse than one that
     reclaims nothing.
     """
-    if str(path) in _IN_MEMORY_NAMES:
+    if _is_in_memory(str(path)):
         return VacuumOutcome(ran=False, reason=f"{path} is an in-memory database — nothing on disk to reclaim")
     if not path.is_file():
         return VacuumOutcome(ran=False, reason=f"no such file: {path}")
