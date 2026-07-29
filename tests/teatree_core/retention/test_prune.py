@@ -307,6 +307,8 @@ class ParkRetentionApplyTestCase(TestCase):
         assert parks.rows == 5
         assert parks.batches == 3
         assert TaskAttempt.objects.count() == 0
+
+
 _NOOP = (Ticket.State.REVIEW_POSTED, Ticket.State.REVIEW_POSTED, "mark_reviewed_externally")
 
 
