@@ -48,6 +48,7 @@ from teatree.cli.doctor.checks_mcp import (
     _check_teatree_mcp_registration,
 )
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
+from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
@@ -364,7 +365,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
     # ensure_django() above: the review-skill check reads the ConfigSetting store.
     ok = _check_enabled_but_unprovisioned() and ok
-    ok = check_worktree_health() and ok
+    # Two hard FAILs over teatree's own durable rows — a registered worktree that is
+    # no longer a checkout, and a PR owed since a deferral the drain cannot discharge.
+    ok = all((check_worktree_health(), check_pending_pull_requests())) and ok
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok

@@ -45,6 +45,7 @@ from teatree.loop.scanners import (
     IncomingEventsScanner,
     MyPrsScanner,
     OutboundAuditScanner,
+    PendingPrDrainScanner,
     PendingTasksScanner,
     PrApprovalScanner,
     QuestionBacklogNagScanner,
@@ -99,11 +100,16 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
     can still DELIVER the allowed owner-audience DMs instead of no-opping on an
     unresolved backend (F2). A ``None`` backend (no overlay configured) leaves the
     scanners on ``notify_user``'s own resolution, unchanged.
+
+    ``PendingPrDrainScanner`` is the undelivered-notify redelivery shape applied
+    to the PR ``ensure-pr`` deferred at push time — git has no client-side
+    post-push hook, so this tick is the only drain that obligation ever gets.
     """
     backend = messaging_from_overlay()
     user_id = resolve_user_id()
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
+        _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),

@@ -16,7 +16,12 @@ from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostErro
 from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
-from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
+from teatree.core.management.commands._ensure_pr import (
+    DischargeResult,
+    EnsurePrResult,
+    create_or_defer_pr,
+    defer_unpushed_pr,
+)
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
     ShipDryRun,
@@ -445,13 +450,31 @@ class Command(TyperCommand):
         if report.status is BranchStatus.OPEN_PR:
             return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
         if report.status is BranchStatus.UNPUSHED_ORPHAN:
-            return EnsurePrResult(
-                skipped="branch not on remote yet — re-run after push completes",
-                branch=branch_name,
-                hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
-            )
+            return defer_unpushed_pr(repo_path, branch_name)
 
         return create_or_defer_pr(repo_path, branch_name)
+
+    @command(name="discharge-pending")
+    def discharge_pending(self, obligation_id: int) -> DischargeResult:
+        """Drop a deferred-PR obligation the drain can never discharge.
+
+        The never-lockout escape for ``t3 doctor check``'s pending-PR FAIL: a
+        branch abandoned on purpose, or one whose worktree was reaped, owes a PR
+        no re-run can open, and without this the doctor stays red on a
+        remediation that cannot succeed. Discharging is bookkeeping only — it
+        deletes the obligation, never a branch, a PR, or a ticket.
+        """
+        from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: ORM/app-registry
+
+        row = PendingPullRequest.objects.filter(pk=obligation_id).first()
+        if row is None:
+            return DischargeResult(
+                discharged=False,
+                error=f"no pending pull request obligation with id {obligation_id}",
+            )
+        branch, repo_path = row.branch, row.repo_path
+        row.delete()
+        return DischargeResult(discharged=True, branch=branch, repo_path=repo_path)
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
