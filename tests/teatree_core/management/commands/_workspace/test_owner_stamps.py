@@ -16,6 +16,12 @@ from django.test import TestCase
 
 from teatree import paths
 from teatree.core.management.commands._workspace import checkout_registry, owner_stamps
+from teatree.core.management.commands._workspace.owner_stamps import (
+    backfill_owner_stamps,
+    read_owner_stamp,
+    stamp_discovered_owners,
+    venue_can_observe,
+)
 from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo
 
@@ -51,7 +57,7 @@ class TestAnAbsentOwningCloneProducesNoGap(TestCase):
         absent_owner = self.venue / "teatree-deploy" / ".claude" / "worktrees" / "hook-python-django"
         stamp = owner_stamps.OwnerStamp(
             absent_owner,
-            observable=owner_stamps.venue_can_observe(absent_owner, (self.venue,)),
+            observable=venue_can_observe(absent_owner, (self.venue,)),
         )
 
         assert stamp.proof_of_life is None
@@ -66,20 +72,87 @@ class TestVenueCanObserve(TestCase):
         self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
     def test_a_missing_leaf_in_a_readable_directory_is_observable(self) -> None:
-        assert owner_stamps.venue_can_observe(self.home / "deleted-checkout", (self.home,))
+        assert venue_can_observe(self.home / "deleted-checkout", (self.home,))
 
     def test_a_path_under_an_unmounted_subtree_is_not_observable(self) -> None:
         # The measured #3872 geometry: the env-dir root is mounted, the clone holding
         # the owners is not, so the whole `<clone>/.claude/worktrees` chain is absent.
         unmounted = self.home / "teatree-deploy" / ".claude" / "worktrees" / "hook-python-django"
 
-        assert not owner_stamps.venue_can_observe(unmounted, (self.home,))
+        assert not venue_can_observe(unmounted, (self.home,))
 
     def test_a_path_outside_every_scanned_root_is_not_observable(self) -> None:
         elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory())) / "checkout"
         elsewhere.parent.mkdir(exist_ok=True)
 
-        assert not owner_stamps.venue_can_observe(elsewhere, (self.home,))
+        assert not venue_can_observe(elsewhere, (self.home,))
+
+
+class TestReadOwnerStamp(TestCase):
+    """What a dir's own stamp says, weighed against what this venue could check."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.venue = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.env_dir = self.root / "slug"
+        self.env_dir.mkdir()
+
+    def test_an_unstamped_dir_reports_no_owner_and_missing_evidence(self) -> None:
+        stamp = read_owner_stamp(self.env_dir, (self.venue,))
+
+        assert stamp.owner is None
+        assert stamp.proof_of_life is None
+        assert "unstamped" in str(stamp.missing_evidence)
+
+    def test_a_stamp_naming_a_live_checkout_proves_liveness(self) -> None:
+        owner = self.venue / "live-checkout"
+        owner.mkdir()
+        paths.IsolatedEnvDir(self.env_dir).stamp_owner(owner)
+
+        stamp = read_owner_stamp(self.env_dir, (self.venue,))
+
+        assert stamp.owner == owner
+        assert "live checkout" in str(stamp.proof_of_life)
+        assert stamp.missing_evidence is None
+
+    def test_a_visibly_absent_owner_leaves_no_proof_and_no_gap(self) -> None:
+        # The one shape a deletion may rest on: the venue read the neighbourhood and
+        # the checkout is not in it, so neither branch claims the dir.
+        paths.IsolatedEnvDir(self.env_dir).stamp_owner(self.venue / "vanished")
+
+        stamp = read_owner_stamp(self.env_dir, (self.venue,))
+
+        assert stamp.proof_of_life is None
+        assert stamp.missing_evidence is None
+
+
+class TestStampDiscoveredOwners(TestCase):
+    """Backfill writes the mapping for what was discovered, and only that."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _env_dir(self, checkout: Path) -> Path:
+        env_dir = self.root / paths.isolated_slug(checkout)
+        env_dir.mkdir()
+        return env_dir
+
+    def test_a_discovered_checkout_gets_its_env_dir_stamped_once(self) -> None:
+        checkout = Path("/somewhere/live/repo")
+        env_dir = self._env_dir(checkout)
+
+        first = stamp_discovered_owners(frozenset({str(checkout)}), self.root)
+        second = stamp_discovered_owners(frozenset({str(checkout)}), self.root)
+
+        assert paths.IsolatedEnvDir(env_dir).owner == checkout
+        assert any(env_dir.name in line for line in first)
+        assert second == [], "an already-stamped dir is not reported a second time"
+
+    def test_a_checkout_with_no_env_dir_creates_nothing(self) -> None:
+        # The backfill records ownership of dirs that exist; it never mints one.
+        stamp_discovered_owners(frozenset({"/somewhere/without/an/env/dir"}), self.root)
+
+        assert list(self.root.iterdir()) == []
 
 
 class TestBackfillOwnerStamps(TestCase):
@@ -109,7 +182,7 @@ class TestBackfillOwnerStamps(TestCase):
     def test_a_visible_checkouts_env_dir_gains_its_owner(self) -> None:
         env_dir = self._env_dir(self.clone)
 
-        report = owner_stamps.backfill_owner_stamps(self.workspace)
+        report = backfill_owner_stamps(self.workspace)
 
         assert paths.IsolatedEnvDir(env_dir).owner == self.clone
         assert any("Stamped" in line and env_dir.name in line for line in report)
@@ -119,7 +192,7 @@ class TestBackfillOwnerStamps(TestCase):
         # leaves the rest alone, which is why it has to run in EVERY venue.
         invisible = self._env_dir(Path("/not/mounted/here/checkout"))
 
-        report = owner_stamps.backfill_owner_stamps(self.workspace)
+        report = backfill_owner_stamps(self.workspace)
 
         assert invisible.is_dir()
         assert paths.IsolatedEnvDir(invisible).owner is None
