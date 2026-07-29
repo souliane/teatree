@@ -42,12 +42,14 @@ from teatree.core.worktree.worktree_roots import scanned_worktree_roots
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
-#: Runaway protection for the walk, NOT a coverage policy: reaching it records a
-#: gap, so a truncated subtree keeps every env dir rather than quietly shrinking
-#: the keep-set. Set well clear of the deepest real tree measured on the host (15
-#: — an agent worktree nested inside a worktree under the workspace root); at 10
-#: it truncated 208 subtrees, every one of them silently.
-_MAX_SCAN_DEPTH = 24
+#: A last-resort bound, NOT a coverage policy. Termination is already guaranteed
+#: by the resolved-path dedup below, so this only has to sit clear of any real
+#: tree: reaching it records a gap, and a gap keeps EVERY env dir — so a cap that
+#: bites does not lose data, it silently costs the whole reclaim. Real depth grows
+#: as nested agent worktrees accumulate (measured climbing past 15 within an hour
+#: on the host, and symlink-following inflates it further), which is exactly why
+#: the bound is set far above observed depth rather than tuned close to it.
+_MAX_SCAN_DEPTH = 64
 
 #: Skipped while scanning. Every entry is a directory that CANNOT be a teatree
 #: checkout — a package/venv/tool cache. Nothing is skipped for being merely
@@ -174,8 +176,10 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
     nothing is worse than an unreadable one: it drops an unknown number of live
     checkouts from the keep-set while the answer still reads ``complete``, and
     that completeness is the whole evidence a deletion rests on. Skipping
-    symlinks and truncating at the depth cap were both silent, so on the host 87
-    symlinked dirs and 208 subtrees went unscanned with ``gaps=()``.
+    symlinks and truncating at the depth cap were both silent, and both were
+    live on the host: hundreds of symlinked dirs and subtrees went unscanned
+    with no gap recorded — among them the host's own teatree clone, reachable
+    only through a symlink.
 
     Recursion is deduplicated on the resolved path, so a symlink loop terminates
     and a tree reachable by several spellings is walked once. The ``.git`` check

@@ -235,6 +235,30 @@ class TestCheckoutRegistry(TestCase):
         assert not found.complete
         assert any(str(locked) in gap for gap in found.gaps)
 
+    def test_a_child_whose_type_cannot_be_read_becomes_a_gap(self) -> None:
+        """The listing succeeded but one entry's stat did not — a permission race.
+
+        Reachable only when the tree changes under the walk, so the failure is
+        injected rather than staged. An entry of unknown type may be a directory
+        holding checkouts, and the walk must neither die on it nor drop it
+        silently.
+        """
+        racing = self.workspace / "racing"
+        racing.mkdir()
+        unmocked_is_dir = Path.is_dir
+
+        def is_dir_fails_for_racing(entry: Path) -> bool:
+            if entry == racing:
+                raise PermissionError(13, "Permission denied")
+            return unmocked_is_dir(entry)
+
+        with patch.object(Path, "is_dir", is_dir_fails_for_racing):
+            found = scan_checkout_paths((self.workspace,))
+
+        assert not found.complete
+        assert any(str(racing) in gap for gap in found.gaps)
+        assert str(self.clone) in found.paths, "one unstattable entry must not abort the walk"
+
     def test_the_scan_walks_past_a_loose_file_without_a_gap(self) -> None:
         """Only directories are walked, and a file is not a coverage hole."""
         (self.workspace / "loose.txt").write_text("", encoding="utf-8")
@@ -249,8 +273,8 @@ class TestScanDepthBudget(TestCase):
     """The depth cap is runaway protection, never a silent coverage policy (#3872).
 
     Truncating a subtree hides an unknown number of checkouts, so it has to reach
-    the caller as a gap. Measured on the host that produced the ticket: the cap of
-    10 truncated 208 subtrees while every one of them read ``complete``.
+    the caller as a gap. On the host that produced the ticket the old cap of 10
+    truncated over a thousand subtrees, every one of them reading ``complete``.
     """
 
     def setUp(self) -> None:
