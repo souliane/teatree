@@ -11,12 +11,19 @@ PUSHED_ORPHAN, not UNPUSHED_ORPHAN), ``gh pr create`` fails "No commits
 between main and <branch>" because THIS push has not updated the remote
 yet. Hard-failing there aborts the very push that would make the PR
 creatable — a permanent deadlock. That specific failure is therefore
-deferred (skip, exit 0) exactly like the documented first-push
-UNPUSHED_ORPHAN case; the post-push ``ensure-pr`` opens the PR against the
-now-current ref. Any other create failure is a real error and surfaces.
+deferred exactly like the documented first-push UNPUSHED_ORPHAN case.
+
+Both deferrals are an OBLIGATION, not a skip: git has no client-side
+post-push hook, so a deferral that merely exits 0 is never re-run and the
+branch ships with no PR. Each one owes a
+:class:`~teatree.core.models.pending_pull_request.PendingPullRequest` row
+that the dispatch loop drains and ``t3 doctor check`` ages into a FAIL. Any
+other create failure is a real error and surfaces.
 """
 
-from typing import TYPE_CHECKING, TypedDict
+import logging
+from dataclasses import asdict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
@@ -34,7 +41,10 @@ from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
+    from teatree.core.models.pending_pull_request import SerializedPrSpec
     from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 
 class EnsurePrResult(TypedDict, total=False):
@@ -43,6 +53,47 @@ class EnsurePrResult(TypedDict, total=False):
     url: str
     hint: str
     error: str
+    #: The skip left a PR owed. Read by the drain instead of matching skip prose,
+    #: so a deferral stays distinguishable from the skips that discharge the obligation.
+    owed: bool
+
+
+UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
+PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
+
+
+def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestSpec | None = None) -> EnsurePrResult:
+    """Persist the deferred PR as a durable obligation and return the deferral result.
+
+    A missing table (a pre-migration install) degrades to a logged warning rather
+    than an exception: this runs inside the pre-push hook, and refusing the push
+    over an unmigrated control DB would wedge every commit on the machine. The
+    schema guard in ``t3 doctor check`` is what surfaces that state.
+    """
+    from django.db import OperationalError, ProgrammingError  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
+
+    try:
+        PendingPullRequest.objects.owe(
+            repo_path=repo_path,
+            branch=branch_name,
+            reason=reason,
+            spec=cast("SerializedPrSpec", asdict(spec)) if spec is not None else None,
+        )
+    except (OperationalError, ProgrammingError):
+        logger.warning("ensure-pr deferred %s but could not record the obligation — run `t3 doctor check`", branch_name)
+    return EnsurePrResult(
+        skipped=reason,
+        branch=branch_name,
+        hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
+        owed=True,
+    )
+
+
+def defer_unpushed_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for a branch git has not put on the remote yet (the FIRST push)."""
+    return _owe_pr(repo_path, branch_name, reason=UNPUSHED_DEFERRAL)
 
 
 def _ticket_for_branch(branch_name: str) -> "Ticket | None":
@@ -184,25 +235,20 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     if gate_error is not None:
         return gate_error
 
+    spec = PullRequestSpec(
+        repo=repo_slug,
+        branch=branch_name,
+        title=title,
+        description=description,
+        labels=overlay_pr_labels(),
+        assignee=assignee,
+        draft=False,
+    )
     try:
-        raw = host.create_pr(
-            PullRequestSpec(
-                repo=repo_slug,
-                branch=branch_name,
-                title=title,
-                description=description,
-                labels=overlay_pr_labels(),
-                assignee=assignee,
-                draft=False,
-            ),
-        )
+        raw = host.create_pr(spec)
     except CommandFailedError as exc:
         if "no commits between" in (exc.stderr or str(exc)).lower():
-            return EnsurePrResult(
-                skipped="remote ref not yet current (pre-push race) — re-run after push completes",
-                branch=branch_name,
-                hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
-            )
+            return _owe_pr(repo_path, branch_name, reason=PRE_PUSH_RACE_DEFERRAL, spec=spec)
         raise
     return _verified_pr_result(host, raw, branch_name)
 

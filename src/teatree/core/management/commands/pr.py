@@ -16,7 +16,7 @@ from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostErro
 from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
-from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
+from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, defer_unpushed_pr
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
     ShipDryRun,
@@ -445,11 +445,7 @@ class Command(TyperCommand):
         if report.status is BranchStatus.OPEN_PR:
             return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
         if report.status is BranchStatus.UNPUSHED_ORPHAN:
-            return EnsurePrResult(
-                skipped="branch not on remote yet — re-run after push completes",
-                branch=branch_name,
-                hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
-            )
+            return defer_unpushed_pr(repo_path, branch_name)
 
         return create_or_defer_pr(repo_path, branch_name)
 
