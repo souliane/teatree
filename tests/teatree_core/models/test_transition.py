@@ -15,7 +15,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Ticket
-from teatree.core.models.transition import TicketTransition
+from teatree.core.models.transition import TicketTransition, TicketTransitionQuerySet
 
 _OLD = timezone.now() - dt.timedelta(days=120)
 _RECENT = timezone.now() - dt.timedelta(days=2)
@@ -53,6 +53,9 @@ def _noop(ticket: Ticket, *, created_at: dt.datetime = _OLD) -> TicketTransition
 
 
 class StateEdgesTestCase(TestCase):
+    def test_the_manager_exposes_the_lane_queryset(self) -> None:
+        assert isinstance(TicketTransition.objects.all(), TicketTransitionQuerySet)
+
     def test_a_move_is_an_edge_and_a_self_transition_is_not(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.MERGED)
         edge = _transition(ticket=ticket)

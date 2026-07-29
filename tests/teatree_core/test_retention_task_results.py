@@ -14,7 +14,11 @@ from django.utils import timezone
 from django_tasks.base import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.retention_task_results import prunable_task_results, prune_finished_task_results
+from teatree.core.retention_task_results import (
+    prunable_task_results,
+    prune_finished_task_results,
+    task_results_are_stored_in_the_db,
+)
 
 _OLD = timezone.now() - dt.timedelta(days=30)
 _RECENT = timezone.now() - dt.timedelta(hours=1)
@@ -38,6 +42,15 @@ def _result(
         exception_class_path="",
         traceback="",
     )
+
+
+class TaskResultBackendProbeTestCase(TestCase):
+    def test_a_non_database_backend_is_reported_as_having_no_result_table(self) -> None:
+        assert task_results_are_stored_in_the_db() is False
+
+    @override_settings(TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend"}})
+    def test_the_database_backend_is_reported_as_storing_results(self) -> None:
+        assert task_results_are_stored_in_the_db() is True
 
 
 class PrunableTaskResultsTestCase(TestCase):
