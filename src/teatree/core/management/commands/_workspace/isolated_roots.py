@@ -14,18 +14,23 @@ the #706/#835 data-loss discipline).
 registered or not. The two ends of one deterministic slug mapping thus disagreed
 about the population: on the host that produced this ticket, 13 rows against 169
 dirs, so 79 dirs behind live checkouts were reported as orphans and ``clean-all``
-became a command nobody could safely run. The keep-set now unions the ``Worktree``
-rows (registered checkouts), every checkout git reports across the known clones
-(``checkout_registry.live_checkout_paths``, the same seam the raw-orphan reaper
-asks), and each dir's own owner stamp (:class:`teatree.paths.IsolatedEnvDir`)
-— which inverts the one-way slug hash so liveness is PROVEN by the named path
-rather than inferred from a population two other sources have to agree on.
+became a command nobody could safely run. The keep-set now unions every checkout
+found ON DISK (the primary source), every checkout git reports, and the
+``Worktree`` rows — via ``checkout_registry.live_checkout_paths``, the same seam
+the raw-orphan reaper asks — plus each dir's own owner stamp
+(:class:`teatree.paths.IsolatedEnvDir`), which inverts the one-way slug hash so
+liveness is PROVEN by the named path rather than inferred from a population the
+other sources have to agree on. Each pass stamps what it discovered, so that
+durable mapping grows rather than covering only newly-minted dirs.
 
-Incomplete git evidence fails CLOSED — an unread clone hides an unknown number of
-live checkouts, so every otherwise-unreferenced dir is kept and the gap reported.
+Incomplete evidence fails CLOSED — an unreadable directory or an unreadable clone
+registry hides an unknown number of live checkouts, so every otherwise-unreferenced
+dir is kept and the gap reported. A dir modified at or after the keep-set instant
+is kept for the same reason: the evidence never covered it.
 """
 
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,6 +76,9 @@ class LiveCheckoutSlugs:
 
     slugs: frozenset[str]
     gaps: tuple[str, ...]
+    #: When the evidence was gathered. A dir modified at or after this instant was
+    #: not covered by it, so the snapshot says nothing about whether it is dead.
+    snapshot_at: float
 
 
 def _row_referenced_slugs() -> set[str]:
@@ -92,18 +100,37 @@ def _row_referenced_slugs() -> set[str]:
     return referenced
 
 
-def _live_checkout_slugs(workspace: Path) -> LiveCheckoutSlugs:
-    """Union the registered-row and git-registry evidence into ONE keep-set.
+def _stamp_discovered_owners(checkouts: frozenset[str], root: Path) -> None:
+    """Record each discovered checkout as the owner of its env dir.
+
+    Backfill, so the invertible mapping covers what already exists rather than
+    only dirs minted after the stamp shipped — it protected 3 of 185 dirs on the
+    host until this ran. Writing it here also means a dir's ownership survives the
+    checkout later becoming undiscoverable.
+    """
+    for checkout in checkouts:
+        env_dir = root / paths.isolated_slug(Path(checkout))
+        if env_dir.is_dir():
+            paths.IsolatedEnvDir(env_dir).stamp_owner(Path(checkout))
+
+
+def _live_checkout_slugs(workspace: Path, root: Path) -> LiveCheckoutSlugs:
+    """Union the registered-row and on-disk-checkout evidence into ONE keep-set.
 
     Both sources answer the same question — "does a live checkout own this slug?"
     — so they are unioned rather than consulted in turn: a checkout is live if
     EITHER knows it, and neither is authoritative alone (rows miss the checkouts
-    nobody registered; git misses a clone it cannot reach).
+    nobody registered; the scan misses a checkout outside every scanned root).
+
+    ``snapshot_at`` is taken BEFORE the evidence is gathered, so a dir modified
+    at or after it is provably outside this answer.
     """
+    snapshot_at = time.time()
     registry = checkout_registry.live_checkout_paths(workspace)
+    _stamp_discovered_owners(registry.paths, root)
     slugs = _row_referenced_slugs()
     slugs.update(paths.isolated_slug(Path(checkout)) for checkout in registry.paths)
-    return LiveCheckoutSlugs(frozenset(slugs), registry.gaps)
+    return LiveCheckoutSlugs(frozenset(slugs), registry.gaps, snapshot_at)
 
 
 def _holds_git_checkout(env_dir: Path) -> bool:
@@ -135,18 +162,32 @@ def _owned_by_live_checkout(env_dir: Path, live: LiveCheckoutSlugs) -> str | Non
     return None
 
 
-def _keep_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
-    """Why *env_dir* must survive this pass, or ``None`` when it is provably reclaimable.
+def _changed_since(env_dir: Path, snapshot_at: float) -> bool:
+    """Whether *env_dir* was created or written at/after the keep-set was computed.
 
-    Ownership proof first, then the guards that keep a dir nothing owns: unreadable
-    evidence, an ignore glob, unexpected git work, and an unmappable live row. The
-    single ``None`` exit is the only path to a deletion.
+    The box provisions continuously, so an env dir can be minted between the
+    evidence gathering and this dir's turn in the loop — absent from the keep-set
+    through no fault of its own, and live. An unreadable stat reads as changed:
+    a dir that cannot be examined is never provably dead.
     """
-    owned = _owned_by_live_checkout(env_dir, live)
-    if owned is not None:
-        return owned
+    try:
+        return env_dir.stat().st_mtime >= snapshot_at
+    except OSError:
+        return True
+
+
+def _unprovable_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
+    """Why *env_dir*'s death cannot be PROVEN, even though nothing claims to own it.
+
+    Each branch is a distinct way the evidence falls short of proof — incomplete
+    evidence, a dir the evidence never covered, an ignore glob, unexpected git
+    work, an unmappable live row. Absence of an owner is not proof of death while
+    any of these holds (the #706 standard).
+    """
     if live.gaps:
         return f"checkout evidence is incomplete ({'; '.join(live.gaps)}) — cannot prove any dir is orphan"
+    if _changed_since(env_dir, live.snapshot_at):
+        return "changed after the keep-set was computed — outside this pass's evidence"
     if is_clean_ignored(env_dir.name):
         return "matches clean_ignore"
     if _holds_git_checkout(env_dir):
@@ -154,6 +195,18 @@ def _keep_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live
     if keep_unmappable_live:
         return "a live worktree has no recorded checkout path — cannot prove this env dir is orphan (live work)"
     return None
+
+
+def _keep_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
+    """Why *env_dir* must survive this pass, or ``None`` when it is provably reclaimable.
+
+    Ownership proof first, then the reasons its death cannot be proven. The single
+    ``None`` exit is the only path to a deletion.
+    """
+    owned = _owned_by_live_checkout(env_dir, live)
+    if owned is not None:
+        return owned
+    return _unprovable_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
 
 
 def reap_orphan_isolated_worktree_roots(workspace: Path, *, dry_run: bool = False) -> list[str]:
@@ -182,7 +235,7 @@ def reap_orphan_isolated_worktree_roots(workspace: Path, *, dry_run: bool = Fals
     root = paths.auto_isolated_worktrees_dir()
     if not root.is_dir():
         return []
-    live = _live_checkout_slugs(workspace)
+    live = _live_checkout_slugs(workspace, root)
     keep_unmappable_live = _has_unmappable_live_worktree()
     outcomes: list[str] = []
     for env_dir in sorted(p for p in root.iterdir() if p.is_dir()):

@@ -7,8 +7,10 @@ never one that still holds a git checkout or any uncommitted/unpushed work
 (#291, mirroring the #706/#835 data-loss discipline).
 """
 
+import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,6 +41,9 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.root))
+        # Pin the checkout scan to the tmp workspace: unpinned it walks the real
+        # home directory, which is both slow and host-dependent.
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
 
     def _reap(self, *, dry_run: bool = False) -> list[str]:
         return reaper.reap_orphan_isolated_worktree_roots(self.workspace, dry_run=dry_run)
@@ -267,6 +272,7 @@ class TestLiveCheckoutEvidence(TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.root))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
         self.clone = make_git_repo(self.workspace / "org" / "repo")
         # The row exists so ``candidate_clones`` reaches the clone; it deliberately
         # does NOT reference the checkout under test, which is the unregistered case.
@@ -351,6 +357,50 @@ class TestLiveCheckoutEvidence(TestCase):
 
         assert env_dir.exists()
         assert any("KEPT" in line and "owner stamp" in line for line in result)
+
+    def test_a_dir_touched_after_the_keep_set_snapshot_is_never_reaped(self) -> None:
+        """TOCTOU: the box provisions continuously, so a snapshot goes stale mid-pass.
+
+        The keep-set is computed once and the dirs are then iterated; an env dir
+        minted between the two is absent from that keep-set through no fault of
+        its own, and a snapshot-then-delete loop would reap it WHILE LIVE. Any dir
+        whose mtime is at or after the snapshot instant is outside the evidence
+        and must be kept.
+        """
+        env_dir = self._make_env_dir(self.root, paths.isolated_slug(Path("/gone/racer")))
+        future = time.time() + 3600
+        os.utime(env_dir, (future, future))
+
+        result = self._reap()
+
+        assert env_dir.exists(), "DATA LOSS: an env dir minted after the keep-set snapshot was reaped"
+        assert any("KEPT" in line and "changed after the keep-set" in line for line in result)
+
+    def test_a_dir_untouched_since_the_snapshot_is_still_reaped(self) -> None:
+        """Anti-vacuous control: the freshness guard must not keep everything."""
+        env_dir = self._make_env_dir(self.root, paths.isolated_slug(Path("/gone/settled")))
+        old = time.time() - 3600
+        os.utime(env_dir, (old, old))
+
+        result = self._reap()
+
+        assert not env_dir.exists()
+        assert any("Removed orphan isolated worktree root" in line for line in result)
+
+    def test_a_discovered_live_checkout_gets_its_env_dir_stamped(self) -> None:
+        """The durable evidence must GROW, or the invertible mapping never arrives.
+
+        Only 3 of 185 dirs on the host carried a stamp, so the structural
+        protection covered almost nothing. Every pass now stamps the env dir of
+        each checkout it discovered, making the mapping invertible for everything
+        reachable rather than only for dirs minted after the stamp shipped.
+        """
+        checkout = self._add_checkout("stamp-me")
+        env_dir = self._make_env_dir(self.root, paths.isolated_slug(checkout))
+
+        self._reap()
+
+        assert paths.IsolatedEnvDir(env_dir).owner == checkout
 
     def test_owner_stamp_naming_a_vanished_checkout_does_not_protect(self) -> None:
         """Anti-vacuous control for the stamp: it proves liveness, it is not a blanket pin."""

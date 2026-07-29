@@ -17,6 +17,14 @@ of 169 env dirs.
 a transaction; it must follow the prune's commit rather than join it. It also
 needs transient free space of roughly the database's own size while the rebuild
 is in flight.
+
+**Concurrency is left to SQLite's own exclusive lock — a deliberate choice, not an
+oversight.** A second concurrent vacuum loses the race and surfaces as
+``sqlite3.Error`` → ``ran=False`` with the reason, which is a correct outcome:
+``VACUUM`` publishes the rebuilt database atomically, so a losing run leaves the
+file untouched rather than half-written, and no half-state is reachable. An
+application-level lock would add a failure mode (a stale lock wedging maintenance
+on a full disk) to prevent an outcome that is already safe.
 """
 
 import logging

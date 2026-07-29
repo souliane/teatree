@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.management.commands._workspace.checkout_registry import (
@@ -29,6 +30,17 @@ from tests._git_repo import make_git_repo, run_git
 _REGISTRY = "teatree.core.management.commands._workspace.checkout_registry"
 
 
+def _break_the_repo(clone: Path) -> None:
+    """Corrupt *clone* so ``git worktree list`` really exits non-zero.
+
+    Removing ``HEAD`` leaves ``.git`` a DIRECTORY — so the clone is still a
+    candidate — while every git command against it exits 128 with "not a git
+    repository". A mocked ``CommandFailedError`` cannot stand in for this: the
+    defect was that no exception was ever raised on the real path.
+    """
+    (clone / ".git" / "HEAD").unlink()
+
+
 class TestCheckoutRegistry(TestCase):
     def setUp(self) -> None:
         self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -36,6 +48,7 @@ class TestCheckoutRegistry(TestCase):
         self.outside = self.workspace / "not-a-clone"
         self.outside.mkdir()
         self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=self.outside))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
 
     def _register(self, clone: Path) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{clone.name}")
@@ -89,14 +102,63 @@ class TestCheckoutRegistry(TestCase):
 
         assert str(checkout) not in live_checkout_paths(self.workspace).paths
 
-    def test_an_unreadable_clone_registry_becomes_a_gap_not_a_short_set(self) -> None:
-        """The whole point of ``gaps``: silence here is what authorised a wrong deletion."""
+    def test_a_genuinely_broken_clone_records_a_gap(self) -> None:
+        """THE fail-closed property, driven through a REAL broken repo — no mocked exception.
+
+        ``git.run`` passes ``expected_codes=None``, so it never raises: the
+        ``except CommandFailedError`` guarding this was unreachable in production
+        and a failing registry returned a silently-short list with
+        ``complete=True``. A short keep-set means MORE deletions, so the reaper
+        failed OPEN — the exact opposite of its stated contract.
+        """
         self._register(self.clone)
-        failure = CommandFailedError(["git", "worktree", "list"], 128, "", "fatal: bad object")
+        _break_the_repo(self.clone)
 
-        with patch(f"{_REGISTRY}.raw_worktree_paths", side_effect=failure):
-            registry = live_checkout_paths(self.workspace)
+        registry = live_checkout_paths(self.workspace)
 
-        assert not registry.complete
-        assert registry.paths == frozenset()
-        assert any("could not list worktrees" in gap and str(self.clone) in gap for gap in registry.gaps)
+        assert not registry.complete, "a broken clone registry must record a gap, never read as complete"
+        assert any(str(self.clone) in gap for gap in registry.gaps)
+
+    def test_control_a_healthy_clone_reads_complete(self) -> None:
+        """The control proving the probe above can distinguish broken from healthy."""
+        self._register(self.clone)
+
+        registry = live_checkout_paths(self.workspace)
+
+        assert registry.complete
+        assert registry.gaps == ()
+
+    def test_raw_worktree_paths_raises_on_a_broken_repo(self) -> None:
+        """The primitive itself must raise — the gap recording downstream depends on it."""
+        _break_the_repo(self.clone)
+
+        with pytest.raises(CommandFailedError):
+            raw_worktree_paths(str(self.clone))
+
+    def test_a_checkout_whose_clone_is_undiscoverable_is_still_found(self) -> None:
+        """Clone discovery is not the keep-set's foundation — the filesystem is.
+
+        ``candidate_clones`` finds a clone only via a ``Worktree`` row or the cwd,
+        so on the host it discovered 1 of the clones actually present. A checkout
+        under an undiscoverable clone contributed nothing to the keep-set AND no
+        gap, so its env dir looked dead. The slug is ``sha256(checkout_path)``, so
+        whether that path exists on disk is answerable directly.
+        """
+        checkout = self._add_checkout("orphaned-clone-checkout")
+
+        registry = live_checkout_paths(self.workspace)
+
+        assert candidate_clones(self.workspace) == set(), "no row, not cwd — the clone is undiscoverable"
+        assert str(checkout) in registry.paths
+        assert registry.complete
+
+    def test_an_unreadable_scan_root_becomes_a_gap(self) -> None:
+        """A directory the scan cannot read hides an unknown number of checkouts."""
+        registry = live_checkout_paths(self.workspace / "does-not-exist")
+
+        with patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace / "absent",)):
+            missing = live_checkout_paths(self.workspace)
+
+        assert registry is not None
+        assert not missing.complete
+        assert any("absent" in gap for gap in missing.gaps)

@@ -6,6 +6,7 @@ do is worse than no preview, so each pass is asserted on BOTH halves — it name
 the candidate AND it leaves the thing alone.
 """
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,7 +61,9 @@ class TestIsolatedRootPreview:
     def test_names_the_env_dir_and_leaves_it_on_disk(self, tmp_path: Path) -> None:
         root = self._root(tmp_path)
         module = "teatree.core.management.commands._workspace.isolated_roots"
-        live = LiveCheckoutSlugs(frozenset(), ())
+        # A snapshot far in the future so the freshness guard cannot mistake this
+        # just-created fixture dir for one minted mid-pass.
+        live = LiveCheckoutSlugs(frozenset(), (), time.time() + 3600)
         with (
             patch(f"{module}.paths.auto_isolated_worktrees_dir", return_value=root),
             patch(f"{module}._live_checkout_slugs", return_value=live),

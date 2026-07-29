@@ -1,4 +1,4 @@
-"""Which clones teatree knows, and which checkouts their git registries hold (#3852).
+"""Which checkouts exist, so a reaper can tell a dead env dir from a live one (#3852).
 
 The single answer to "does a live checkout own this path?", shared by the two
 reapers that ask it. Splitting that question in half is what made ``clean-all``
@@ -9,20 +9,45 @@ teatree registered it or not. The two ends of one deterministic slug mapping
 therefore disagreed about the population, and every live-but-unregistered
 checkout's control DB was reported as an orphan.
 
-:class:`CheckoutRegistry` carries the gaps alongside the answer on purpose. A
-clone whose registry could not be read leaves an unknown number of live checkouts
-unaccounted for, and an unaccounted checkout is indistinguishable from a dead
-one — so a caller with a destructive disposition must fail CLOSED on a non-empty
-``gaps`` rather than delete on partial evidence (the #706 standard).
+**The FILESYSTEM is the primary source, not a git registry.** The slug is
+``sha256(checkout_path)``, so the question is literally "does this path exist on
+disk" — and a registry-derived answer can only ever be a proxy for it. Asking
+registries first made coverage depend on which clones happened to be
+discoverable: on the host that produced this ticket, ``candidate_clones`` found
+ONE clone (and only because it was the cwd) while 165 checkouts existed. A clone
+that is never a candidate produces no gap at all, so its checkouts' absence from
+the keep-set was indistinguishable from them being dead. Scanning for checkouts
+directly removes that whole class: absence now means the path is not on disk.
+
+:class:`CheckoutRegistry` carries the gaps alongside the answer on purpose. An
+unreadable directory or an unreadable clone registry leaves an unknown number of
+live checkouts unaccounted for, and an unaccounted checkout is indistinguishable
+from a dead one — so a caller with a destructive disposition must fail CLOSED on
+a non-empty ``gaps`` rather than delete on partial evidence (the #706 standard).
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.config import clone_root
 from teatree.core.models import Worktree
 from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_roots import scanned_worktree_roots
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+#: Deep enough for the nested agent-worktree layout (a clone's own
+#: ``.claude/worktrees/<agent>``) with headroom; the host's checkouts are all
+#: found by depth 6.
+_MAX_SCAN_DEPTH = 10
+
+#: Skipped while scanning. Every entry is a directory that CANNOT be a teatree
+#: checkout — a package/venv/tool cache. Nothing is skipped for being merely
+#: large or unlikely: a skipped directory that did hold a checkout would be a
+#: silent miss with no gap, which is the failure this scan exists to remove.
+_NEVER_A_CHECKOUT = frozenset(
+    {".git", "node_modules", "__pycache__", ".venv", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +69,15 @@ def raw_worktree_paths(repo: str) -> dict[str, str]:
     path is ``repo`` itself) is excluded — only the linked worktrees are
     candidates. A detached worktree carries no ``branch`` line; it is recorded
     with the literal ``HEAD`` (:data:`git.DETACHED_HEAD`).
+
+    Uses ``run_strict`` so a non-zero git exit RAISES. ``git.run`` passes
+    ``expected_codes=None`` and therefore never raises: under it a corrupt clone
+    returned an empty parse, every caller's ``except CommandFailedError`` was
+    unreachable, and a failed registry read was indistinguishable from a clone
+    with no worktrees. For the env-dir reaper that silence removed checkouts from
+    the keep-set, turning a read failure into extra deletions — failing OPEN.
     """
-    raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
+    raw = git.run_strict(repo=repo, args=["worktree", "list", "--porcelain"])
     main = str(Path(repo).resolve())
     result: dict[str, str] = {}
     current_path = ""
@@ -81,17 +113,68 @@ def candidate_clones(workspace: Path) -> set[str]:
     return clones
 
 
-def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
-    """Every checkout path git can still resolve across :func:`candidate_clones`.
+def checkout_scan_roots(workspace: Path) -> tuple[Path, ...]:
+    """The directory roots a checkout could live under, nested roots collapsed.
 
-    Each clone contributes itself plus its linked worktrees. Including the clone
-    is belt-and-braces — a primary clone resolves to the canonical data dir, never
-    an isolated one — but costs nothing and keeps the answer literally "every
-    checkout git reports". A clone whose registry raises is recorded as a gap, not
-    silently dropped: an unread clone is missing evidence, not absent checkouts.
+    The home directory is included unconditionally: teatree provisions worktrees
+    under it, and a root list assembled only from configured paths is exactly the
+    partial coverage that let an undiscoverable clone's checkouts read as dead.
+    The configured roots are unioned on top so an operator who points teatree
+    outside home is still covered.
+    """
+    candidates = {Path.home(), clone_root(), workspace, *scanned_worktree_roots(workspace)}
+    resolved = {path.expanduser() for path in candidates}
+    return tuple(
+        sorted(root for root in resolved if not any(root != other and root.is_relative_to(other) for other in resolved))
+    )
+
+
+def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
+    """Every directory under *roots* carrying a ``.git`` entry, plus what went unread.
+
+    A checkout is any directory with a ``.git`` entry — a dir for a clone, a file
+    for a linked worktree. The walk descends INTO checkouts, because teatree's
+    agent worktrees nest inside their own clone (``<clone>/.claude/worktrees/…``).
+    A directory that cannot be listed is recorded as a gap rather than skipped
+    silently: it may hold checkouts, and the caller must treat that as unknown.
     """
     found: set[str] = set()
     gaps: list[str] = []
+    stack = [(root, 0) for root in roots]
+    while stack:
+        directory, depth = stack.pop()
+        if depth > _MAX_SCAN_DEPTH:
+            continue
+        try:
+            entries = list(directory.iterdir())
+        except OSError as exc:
+            gaps.append(f"could not scan {directory} for checkouts ({exc})")
+            continue
+        if (directory / ".git").exists():
+            found.add(str(directory))
+            found.add(str(directory.resolve()))
+        for entry in entries:
+            if entry.name in _NEVER_A_CHECKOUT or entry.is_symlink():
+                continue
+            try:
+                if entry.is_dir():
+                    stack.append((entry, depth + 1))
+            except OSError as exc:
+                gaps.append(f"could not stat {entry} ({exc})")
+    return CheckoutRegistry(frozenset(found), tuple(gaps))
+
+
+def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
+    """Every checkout path that exists, from the filesystem UNION the git registries.
+
+    The scan is the comprehensive source; the registries are additive, covering a
+    checkout git knows about that sits outside every scanned root. Both contribute
+    gaps, and a gap from either makes the whole answer incomplete — the sources
+    widen coverage, they never vouch for each other.
+    """
+    scan = scan_checkout_paths(checkout_scan_roots(workspace))
+    found = set(scan.paths)
+    gaps = list(scan.gaps)
     for repo in sorted(candidate_clones(workspace)):
         try:
             worktrees = raw_worktree_paths(repo)
@@ -103,4 +186,11 @@ def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
     return CheckoutRegistry(frozenset(found), tuple(gaps))
 
 
-__all__ = ["CheckoutRegistry", "candidate_clones", "live_checkout_paths", "raw_worktree_paths"]
+__all__ = [
+    "CheckoutRegistry",
+    "candidate_clones",
+    "checkout_scan_roots",
+    "live_checkout_paths",
+    "raw_worktree_paths",
+    "scan_checkout_paths",
+]
