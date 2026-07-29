@@ -235,7 +235,7 @@ class TestConfigSettingListMarksDeadRows(TestCase):
 
     def test_an_unrecorded_stale_row_is_marked_too(self) -> None:
         ConfigSetting.objects.create(key="a_key_no_declaration_base_carries", value=True, scope="")
-        assert "no live consumer" in self._row_line("a_key_no_declaration_base_carries")
+        assert "not a declared setting" in self._row_line("a_key_no_declaration_base_carries")
 
     def test_an_internal_state_row_is_named_state_not_offered_the_clear_remedy(self) -> None:
         # The stamp row is live state the transition chain rewrites every pass; telling
@@ -251,7 +251,7 @@ class TestConfigSettingListMarksDeadRows(TestCase):
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
         line = self._row_line("issue_implementer_enabled")
         assert "retired" not in line
-        assert "no live consumer" not in line
+        assert "not a declared setting" not in line
 
 
 class TestConfigSettingGet(TestCase):
