@@ -89,6 +89,8 @@ def _log_ticket_transition(
 def _add_slack_reactions_on_transition(
     instance: Ticket,
     name: str,
+    source: str,
+    target: str,
     **_kwargs: object,
 ) -> None:
     """Post a Slack emoji reaction on the PR review message for this transition.
@@ -99,11 +101,20 @@ def _add_slack_reactions_on_transition(
     to ``(ticket.url, "transition_reaction:<name>")`` → reaction posts;
     gate ON + no approval → skip without posting; gate OFF → post. The
     FSM transition itself is never blocked.
+
+    An emoji announces ENTERING a state, so a state-preserving transition posts
+    nothing: the emoji is already on the message, and re-firing spends the
+    single-use :class:`OnBehalfApproval`, re-DMs the user a receipt, and re-runs
+    the post + verify-by-reread round trip for a reaction that is already there.
+    ``mark_merged``/``retrospect`` re-fire from their own target as the documented
+    operator retry, and an overlay may map a self-looping reviewer transition too.
     """
-    target = f"ticket:{instance.pk}"
+    if source == target:
+        return
+    gate_target = f"ticket:{instance.pk}"
     try:
         reacted = require_on_behalf_approval(
-            target=target,
+            target=gate_target,
             action=f"transition_reaction:{name}",
             publish=lambda: get_reaction_publisher().add_reactions_for_transition(instance, name),
         )
@@ -117,10 +128,10 @@ def _add_slack_reactions_on_transition(
         return
     if reacted:
         notify_user_on_behalf_post(
-            target=target,
+            target=gate_target,
             action=f"transition_reaction:{name}",
             destination=f"ticket:{instance.pk} review message",
-            artifact_url=instance.issue_url or target,
+            artifact_url=instance.issue_url or gate_target,
             summary=f"{name} transition reaction on ticket {instance.pk}",
         )
 
@@ -387,6 +398,10 @@ def _enqueue_worktree_transition_task(
     the row (the recovery pointers the worker reads), so there is no pre-blank
     snapshot to carry — the worker reads the live row.
     """
+    # self-loop-safe: keyed on the transition NAME, not on entering a state, and every
+    # ``Worktree`` self-loop is an operator re-invocation of that exact action — re-provision
+    # a provisioned tree, restart a running one, re-verify a ready one, and the ``*``-sourced
+    # teardown ``clean-all`` fires on a CREATED row. Suppressing it breaks each recovery path.
     executor_name = _WORKTREE_TRANSITION_TASKS.get(name)
     if executor_name is None:
         return
@@ -400,19 +415,27 @@ def _enqueue_worktree_transition_task(
 def _release_issue_markers_on_completion(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
+    source: str,
     target: str,
     **_kwargs: object,
 ) -> None:
     """Free the issue-implementer marker(s) when the ticket completes.
 
-    Keyed on the ticket reaching a terminal-done state (MERGED / DELIVERED /
+    Keyed on the ticket REACHING a terminal-done state (MERGED / DELIVERED /
     REVIEW_POSTED / IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
     whole life, so without this the first claim locked the single-ticket budget
     permanently. ABANDONED (give-up / fleet-claim-steal) is left untouched — it
     is already terminal and carries distinct semantics. Best-effort: the FSM
     transition must never block on the marker update.
+
+    Reaching it is an ENTRY, so a state-preserving transition frees nothing: the
+    markers went COMPLETED on the first entry, and re-firing rewrites that same
+    value under a write lock once per ticket per replay pass. A marker still held
+    against an already-terminal ticket is
+    :meth:`ImplementedIssueMarker.objects.reconcile_stale`'s to release — the
+    retroactive drain, not a side effect of an FSM no-op.
     """
-    if target not in _TERMINAL_TARGET_STATES or not instance.issue_url:
+    if source == target or target not in _TERMINAL_TARGET_STATES or not instance.issue_url:
         return
     try:
         ImplementedIssueMarker.objects.filter(issue_url=instance.issue_url).exclude(
