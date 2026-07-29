@@ -97,7 +97,7 @@ class _ReaperFixture(TestCase):
         # These tests model SETTLED worktrees (cleanup's target), not live ones; the
         # liveness guard has its own dedicated tests, so neutralise it here.
         monkeypatch.setattr(
-            "teatree.core.worktree.worktree_done.worktree_liveness",
+            "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
             lambda *_a, **_k: LivenessVerdict(active=False),
         )
 
@@ -385,7 +385,7 @@ class TestDryRunAndCleanIgnore(_ReaperFixture):
 
     def test_clean_ignored_branch_is_skipped(self) -> None:
         worktree = self._make_worktree(Ticket.State.MERGED)
-        with patch("teatree.core.worktree.worktree_done.is_clean_ignored", return_value=True):
+        with patch("teatree.core.cleanup.reap_pre_gates.is_clean_ignored", return_value=True):
             outcome = self._reap(worktree)
         assert outcome.action == "skipped"
         assert self.wt_path.exists()
@@ -423,7 +423,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
     def test_active_item_is_skipped_and_emitted(self) -> None:
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(
-            "teatree.core.worktree.worktree_done.worktree_liveness",
+            "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
             return_value=LivenessVerdict(active=True, reason="ticket has a live session or active/claimed task"),
         ):
             outcome = self._reap(worktree)
@@ -439,7 +439,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
 
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(
-            "teatree.core.worktree.worktree_done.is_excluded_by_ownership",
+            "teatree.core.cleanup.reap_pre_gates.is_excluded_by_ownership",
             return_value=OwnershipVerdict(excluded=True, reason="colleague-authored (bob) on a product repo"),
         ):
             outcome = self._reap(worktree)
@@ -454,13 +454,13 @@ class TestStaleSessionReachesTheDonePath(_ReaperFixture):
     """End-to-end: an abandoned open Session must stop returning ACTIVE before done-detection.
 
     The consequence chain the session-close defect produced — never-written
-    ``ended_at`` → ``has_active_work`` permanently true → ``_ownership_liveness_skip``
+    ``ended_at`` → ``has_active_work`` permanently true → ``reap_pre_gate``
     returning ACTIVE ahead of done-detection → ``clean-all`` never converging.
     These run the REAL liveness guard (the fixture's stub is restored per test).
     """
 
     def _reap_with_real_liveness(self, worktree: Worktree) -> object:
-        with patch("teatree.core.worktree.worktree_done.worktree_liveness", worktree_liveness):
+        with patch("teatree.core.cleanup.reap_pre_gates.worktree_liveness", worktree_liveness):
             return self._reap(worktree)
 
     def _backdate_head(self) -> None:

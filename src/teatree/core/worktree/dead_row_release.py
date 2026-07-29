@@ -9,12 +9,21 @@ directories. An operator who needs only the rows cleared should not have to auth
 all of that, and on a host running a live stack the wider blast radius is the reason
 they will not run it at all.
 
-This module is the narrow alternative: it reuses the SAME classifier the sweep uses
-(:func:`~teatree.core.worktree.broken_checkout.classify_broken_checkout`, so the #706
-data-loss standard and its freshness precondition are identical), and then deletes
-the DB row alone. It removes no directory, deletes no branch, touches no container,
-image, database or stash. Anything the classifier cannot positively clear is KEPT
-with its reason reported.
+This module is the narrow alternative, and "narrow" describes the blast radius, never
+the safety bar. It reuses BOTH of the sweep's decisions unchanged: the protection
+gates it must clear first (:func:`~teatree.core.cleanup.reap_pre_gates.reap_pre_gate`
+— ``clean_ignore``, ownership, liveness) and then the classifier that judges the dead
+checkout (:func:`~teatree.core.worktree.broken_checkout.classify_broken_checkout`, so
+the #706 data-loss standard and its freshness precondition are identical). Only then
+does it delete the DB row alone: no directory removed, no branch deleted, no
+container, image, database or stash touched. Anything either step cannot positively
+clear is KEPT with its reason reported.
+
+The gates are not made moot by the checkout dying. A ``reaper_pinned`` pin, a
+``clean_ignore`` entry and a busy ticket are all decided off the database or the
+source clone, so a row mid-delivery is exactly as live as it was before its files
+went — and releasing it would drop the operator's protection precisely where the
+sweep honours it.
 
 Dry-run is the caller's explicit choice and the CLI's default; the preview and the
 live run resolve their row set through :func:`plan_dead_row_release`, so they cannot
@@ -26,8 +35,14 @@ from enum import StrEnum
 from pathlib import Path
 
 from teatree.core.cleanup.cleanup import _resolve_worktree_path
+from teatree.core.cleanup.reap_pre_gates import reap_pre_gate
 from teatree.core.models import Worktree
-from teatree.core.worktree.broken_checkout import BrokenCheckout, RemoteRefresh, classify_broken_checkout
+from teatree.core.worktree.broken_checkout import (
+    BrokenCheckout,
+    BrokenCheckoutVerdict,
+    RemoteRefresh,
+    classify_broken_checkout,
+)
 
 
 class DeadRowDisposition(StrEnum):
@@ -36,6 +51,7 @@ class DeadRowDisposition(StrEnum):
     RELEASABLE = "releasable"
     HOLDS_WORK = "holds-work"
     UNVERIFIABLE = "unverifiable"
+    PROTECTED = "protected"
 
 
 _FROM_CHECKOUT_STATE = {
@@ -65,25 +81,35 @@ def plan_dead_row_release(workspace: Path) -> list[DeadRowVerdict]:
 
     A row with a LIVE checkout — or no directory at all — is not this pass's
     business and is omitted entirely rather than reported as a non-candidate: the
-    output is the set of rows the doctor's finding is about.
+    output is the set of rows the doctor's finding is about. The classifier decides
+    that SCOPE question; :func:`_verdict_for` then decides the row's disposition.
     """
     refresh = RemoteRefresh()
     verdicts: list[DeadRowVerdict] = []
     for row in Worktree.objects.select_related("ticket").order_by("pk"):
-        verdict = classify_broken_checkout(row, workspace=workspace, refresh=refresh)
-        disposition = _FROM_CHECKOUT_STATE.get(verdict.state)
-        if disposition is None:
+        checkout = classify_broken_checkout(row, workspace=workspace, refresh=refresh)
+        if checkout.state is BrokenCheckout.LIVE_CHECKOUT:
             continue
-        verdicts.append(
-            DeadRowVerdict(
-                worktree_pk=int(row.pk),
-                branch=row.branch,
-                path=str(_resolve_worktree_path(workspace, row)),
-                disposition=disposition,
-                reason=verdict.reason,
-            )
-        )
+        verdicts.append(_verdict_for(row, workspace=workspace, checkout=checkout))
     return verdicts
+
+
+def _verdict_for(row: Worktree, *, workspace: Path, checkout: BrokenCheckoutVerdict) -> DeadRowVerdict:
+    """One in-scope row's disposition — a protection gate first, else the classifier.
+
+    The gate takes precedence for the same reason ``clean-all`` consults it first:
+    it is why the row is kept, so it is what the operator has to read. Reporting a
+    pinned row as merely "holds work" would name the wrong obstacle, and reporting
+    it as releasable would be the defect this precedence exists to close.
+    """
+    gate = reap_pre_gate(row, workspace=workspace)
+    return DeadRowVerdict(
+        worktree_pk=int(row.pk),
+        branch=row.branch,
+        path=str(_resolve_worktree_path(workspace, row)),
+        disposition=DeadRowDisposition.PROTECTED if gate else _FROM_CHECKOUT_STATE[checkout.state],
+        reason=gate.reason if gate else checkout.reason,
+    )
 
 
 @dataclass(frozen=True, slots=True)

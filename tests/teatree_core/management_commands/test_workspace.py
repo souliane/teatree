@@ -21,6 +21,7 @@ from django.utils.module_loading import import_string
 
 import teatree.core.cleanup.clean_ignore as clean_ignore_mod
 import teatree.core.cleanup.cleanup as cleanup_mod
+import teatree.core.cleanup.reap_pre_gates as reap_pre_gates_mod
 import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 import teatree.core.management.commands._workspace.cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace.docker as ws_docker_mod
@@ -32,7 +33,6 @@ import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
 import teatree.core.worktree.branch_classification as bc_mod
-import teatree.core.worktree.worktree_done as worktree_done_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.git_commit as git_commit_mod
@@ -1220,7 +1220,9 @@ _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambd
 # These integration tests model SETTLED worktrees (cleanup's target). The freshly
 # created fixture worktrees would trip the liveness "recent commit" gate, which is
 # tested directly in test_cleanup_liveness.py — neutralise it here.
-_no_liveness = patch.object(worktree_done_mod, "worktree_liveness", new=lambda *_a, **_k: LivenessVerdict(active=False))
+_no_liveness = patch.object(
+    reap_pre_gates_mod, "worktree_liveness", new=lambda *_a, **_k: LivenessVerdict(active=False)
+)
 
 
 class TestWorkspaceProvisionPositionalId(TestCase):

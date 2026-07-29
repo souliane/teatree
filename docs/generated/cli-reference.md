@@ -7581,21 +7581,17 @@ Usage: t3 teatree workspace release-dead-rows [OPTIONS]
  Release registered rows whose checkout is provably dead — ROWS ONLY (dry run
  unless --apply).
 
- The narrow alternative to ``clean-all`` for the single finding ``t3 doctor
- check`` reports as "registered worktree ... is not a git checkout". It
- applies the SAME #706 data-loss standard the sweep does (identical
- classifier, identical remote-freshness precondition), then deletes the
- ``Worktree`` row alone: no directory removed, no branch deleted, no
- container, image, database or stash touched. A row the classifier cannot
- positively clear is KEPT with its reason printed — recover those with
- ``t3 <overlay> workspace salvage``.
+ The narrow alternative to ``clean-all`` for the doctor's "registered
+ worktree ... is not a git checkout" finding: the SAME #706 classifier and
+ freshness precondition, deleting the ``Worktree`` row and nothing else.
+ Which rows are KEPT, and why, is
+ :mod:`teatree.core.worktree.dead_row_release`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply    --no-apply      Actually release the rows. Without it, this is a  │
 │                            dry run.                                          │
 │                            [default: no-apply]                               │
-│ --json                     Emit the per-row dispositions as JSON on stdout   │
-│                            instead of the human view.                        │
+│ --json                     Per-row dispositions as JSON.                     │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -35,13 +35,11 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.config import clone_root, get_effective_settings
-from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.config import clone_root
 from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
-from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
-from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
+from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
@@ -341,39 +339,26 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     )
 
 
-def _ownership_liveness_skip(worktree: Worktree, *, workspace: Path, fsm_terminal: bool = False) -> ReapOutcome | None:
-    """The OWNERSHIP then LIVENESS pre-gate: a skip :class:`ReapOutcome`, or ``None`` to proceed.
+def _pre_gate_outcome(worktree: Worktree, *, workspace: Path, verdict: ReapPreGateVerdict) -> ReapOutcome:
+    """Render a shared :func:`reap_pre_gate` verdict in this pass's own vocabulary.
 
-    A colleague's work on a product repo is EXCLUDED up front; an actively-worked
-    item is skipped-as-ACTIVE. Both carry a structured emit record so the skill
-    sees them. ``None`` means neither gate fired and the reaper may continue to
-    done-detection. ``fsm_terminal`` is threaded to :func:`worktree_liveness` so
-    the post-merge teardown bypasses the FSM-ceremony false positives (the merge
-    that just landed mints the phase session and the merge commit).
+    A ``clean_ignore`` skip carries no emit record: the operator has already ruled
+    the branch never-reap, so there is nothing for the judgment skill to route. The
+    other two do, so an EXCLUDED or ACTIVE item still reaches the skill.
     """
-    wt_path = _resolve_worktree_path(workspace, worktree)
-    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    settings = get_effective_settings()
-    ownership = is_excluded_by_ownership(
-        str(repo_main),
-        worktree.branch,
-        owner_aliases=settings.user_identity_aliases,
-        colleague_pattern=settings.colleague_repo_url_pattern,
-    )
-    if ownership.excluded:
+    if verdict.gate is ReapPreGate.CLEAN_IGNORE:
+        return ReapOutcome("skipped", f"SKIPPED '{worktree.branch}': {verdict.reason}")
+    if verdict.gate is ReapPreGate.OWNERSHIP:
         return ReapOutcome(
             "excluded",
-            f"EXCLUDED '{worktree.branch}': {ownership.reason}",
+            f"EXCLUDED '{worktree.branch}': {verdict.reason}",
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
-    liveness = worktree_liveness(worktree, wt_path=Path(wt_path), fsm_terminal=fsm_terminal)
-    if liveness.active:
-        return ReapOutcome(
-            "active",
-            f"ACTIVE '{worktree.branch}': {liveness.reason} — skipping (do not wipe a live item)",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness=liveness.reason),
-        )
-    return None
+    return ReapOutcome(
+        "active",
+        f"ACTIVE '{worktree.branch}': {verdict.reason} — skipping (do not wipe a live item)",
+        emit=_build_emit_record(worktree, workspace=workspace, liveness=verdict.reason),
+    )
 
 
 def reap_done_worktree(
@@ -386,13 +371,14 @@ def reap_done_worktree(
     """Wipe one worktree only when owned, not live, done AND every change proven redundant.
 
     The single per-worktree seam both ``clean-all`` and the FSM-automatic
-    teardown funnel through. Order is load-bearing: ``clean_ignore`` skip →
-    OWNERSHIP guard (exclude a colleague's work on a product repo) → LIVENESS guard
-    (skip an actively-worked item) → :func:`worktree_is_done` (necessary) →
-    :func:`analyze_worktree_changes` (sufficient, primary safety) → wipe. Every
-    item NOT auto-deleted carries a structured ``emit`` record for the judgment
-    skill; only a provably-redundant item is wiped (``force=True`` —  the analysis
-    IS the data-loss gate — ``strict_hygiene=False``).
+    teardown funnel through. Order is load-bearing: the shared
+    :func:`~teatree.core.cleanup.reap_pre_gates.reap_pre_gate` protection gates
+    (``clean_ignore`` skip → OWNERSHIP → LIVENESS, the same predicate the narrow
+    ``workspace release-dead-rows`` pass consults) → :func:`worktree_is_done`
+    (necessary) → :func:`analyze_worktree_changes` (sufficient, primary safety) →
+    wipe. Every item NOT auto-deleted carries a structured ``emit`` record for the
+    judgment skill; only a provably-redundant item is wiped (``force=True`` — the
+    analysis IS the data-loss gate — ``strict_hygiene=False``).
 
     ``fsm_terminal`` marks the post-merge FSM-immediate teardown (``WorktreeTeardown``
     on the merge transition): the LIVENESS guard then bypasses the two signals the
@@ -402,12 +388,9 @@ def reap_done_worktree(
     genuinely-ahead worktree is still KEPT on the FSM path. The ad-hoc ``clean-all``
     sweep leaves ``fsm_terminal`` off, preserving the full live-work protection.
     """
-    if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
-        return ReapOutcome("skipped", f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
-
-    pre_gate = _ownership_liveness_skip(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
+    pre_gate = reap_pre_gate(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
     if pre_gate is not None:
-        return pre_gate
+        return _pre_gate_outcome(worktree, workspace=workspace, verdict=pre_gate)
 
     broken = classify_broken_checkout(worktree, workspace=workspace)
     if broken.state is not BrokenCheckout.LIVE_CHECKOUT:

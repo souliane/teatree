@@ -15,9 +15,15 @@ from pathlib import Path
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.dead_row_release import DeadRowDisposition, plan_dead_row_release, release_dead_rows
+from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
+from teatree.core.worktree.dead_row_release import (
+    DeadRowDisposition,
+    DeadRowVerdict,
+    plan_dead_row_release,
+    release_dead_rows,
+)
 from teatree.utils import git
 from teatree.utils.run import run_checked
 
@@ -32,6 +38,8 @@ _GIT_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
 }
+_OWNER = "Owner"
+_COLLEAGUE_REPO_PATTERN = r"remote\.git$"
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -205,3 +213,116 @@ class DispositionReportingTest(_DeadRowCase):
         self._register(wt_path, branch="live")
 
         assert plan_dead_row_release(self.workspace) == []
+
+
+class ProtectionGatesMatchTheSweepTest(_DeadRowCase):
+    """The narrow release must protect exactly what ``clean-all`` protects.
+
+    ``reap_done_worktree`` runs ``clean_ignore``, the ownership exclusion and the
+    liveness guard BEFORE it classifies the checkout, and none of those signals is
+    mooted by the directory dying: ``_db_liveness_reason`` is purely DB-side, and an
+    operator's pin or protect-list entry says nothing about the filesystem. A
+    release that consulted only the classifier would delete rows the sweep keeps —
+    two commands, two standards, the destructive one weaker.
+
+    Each gate is pinned in BOTH directions, so a test cannot pass by the pass
+    keeping everything.
+    """
+
+    def _release(self, row: Worktree) -> bool:
+        release_dead_rows(self.workspace, dry_run=False)
+        return not Worktree.objects.filter(pk=row.pk).exists()
+
+    def _verdict(self, branch: str) -> DeadRowVerdict:
+        return next(v for v in plan_dead_row_release(self.workspace) if v.branch == branch)
+
+    def test_a_row_whose_ticket_is_busy_is_kept(self) -> None:
+        row, _ = self._dead_row_with_gone_ref()
+        Session.objects.create(overlay="", ticket=row.ticket)
+
+        assert not self._release(row)
+
+    def test_a_row_whose_session_has_ended_is_still_released(self) -> None:
+        row, _ = self._dead_row_with_gone_ref()
+        Session.objects.create(overlay="", ticket=row.ticket, ended_at=timezone.now())
+
+        assert self._release(row)
+
+    def test_a_reaper_pinned_row_is_kept(self) -> None:
+        row, _ = self._dead_row_with_gone_ref()
+        row.extra = {**row.extra, "reaper_pinned": True}
+        row.save(update_fields=["extra"])
+
+        assert not self._release(row)
+
+    def test_an_unpinned_row_is_still_released(self) -> None:
+        row, _ = self._dead_row_with_gone_ref()
+        row.extra = {**row.extra, "reaper_pinned": False}
+        row.save(update_fields=["extra"])
+
+        assert self._release(row)
+
+    def test_a_clean_ignore_branch_is_kept(self) -> None:
+        row, _ = self._dead_row_with_gone_ref("spike-forever")
+        ConfigSetting.objects.set_value("clean_ignore", ["spike-*"])
+
+        assert not self._release(row)
+
+    def test_a_branch_no_clean_ignore_glob_matches_is_still_released(self) -> None:
+        row, _ = self._dead_row_with_gone_ref("spike-forever")
+        ConfigSetting.objects.set_value("clean_ignore", ["hold/*"])
+
+        assert self._release(row)
+
+    def test_a_colleague_authored_branch_on_a_product_repo_is_kept(self) -> None:
+        row = self._pushed_dead_row_authored_by("Colleague")
+        ConfigSetting.objects.set_value("colleague_repo_url_pattern", _COLLEAGUE_REPO_PATTERN)
+
+        assert not self._release(row)
+
+    def test_an_owner_authored_branch_on_a_product_repo_is_still_released(self) -> None:
+        row = self._pushed_dead_row_authored_by(_OWNER)
+        ConfigSetting.objects.set_value("colleague_repo_url_pattern", _COLLEAGUE_REPO_PATTERN)
+
+        assert self._release(row)
+
+    def test_a_protected_row_is_reported_with_the_gate_s_own_reason(self) -> None:
+        # The operator has to read WHY it was kept; "holds work" would be a lie here.
+        row, _ = self._dead_row_with_gone_ref("pinned")
+        row.extra = {**row.extra, "reaper_pinned": True}
+        row.save(update_fields=["extra"])
+
+        verdict = self._verdict("pinned")
+
+        assert verdict.disposition is DeadRowDisposition.PROTECTED
+        assert "pinned" in verdict.reason
+
+    def test_a_protected_row_is_never_previewed_as_releasable(self) -> None:
+        row, _ = self._dead_row_with_gone_ref("busy")
+        Session.objects.create(overlay="", ticket=row.ticket)
+
+        lines = release_dead_rows(self.workspace, dry_run=True).render()
+
+        assert not self._verdict("busy").releasable
+        assert any("KEPT" in line and "busy" in line for line in lines), lines
+
+    def _pushed_dead_row_authored_by(self, name: str) -> Worktree:
+        """A dead-checkout row whose branch survives, so its tip author is resolvable.
+
+        The ownership guard reads the tip author of the branch in the source clone,
+        so the gone-ref shape cannot distinguish colleague from owner. The clone's own
+        git identity is ``Owner`` and the tip is authored by *name*, which makes the
+        split deterministic without depending on whatever identity the host's git
+        config carries. Names only: the guard matches either half of the identity, and
+        a bare name keeps every address shape out of a public diff.
+        """
+        branch = f"authored-by-{name.lower()}"
+        wt_path = self._worktree_on(branch)
+        (wt_path / "work.py").write_text("feat: theirs\n", encoding="utf-8")
+        _git(wt_path, "add", "work.py")
+        _git(wt_path, "commit", "-q", "--author", f"{name} <>", "-m", "feat: theirs")
+        _git(wt_path, "push", "-q", "origin", branch)
+        _git(self.clone, "config", "user.name", _OWNER)
+        row = self._register(wt_path, branch=branch)
+        self._break_checkout(wt_path)
+        return row
