@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.mechanical import (
     HANDLERS,
@@ -92,6 +92,37 @@ class TestCompleteTicket(TestCase):
 
     def test_no_op_when_ticket_id_missing(self) -> None:
         complete_ticket(_payload())
+
+
+class TestCompleteTicketMidChainRefusal(TestCase):
+    """The loop completion path must survive a mid-chain FSM/gate refusal.
+
+    Pre-fix, ``complete_ticket`` cascaded ``request_review`` → ``mark_merged`` →
+    ``retrospect`` with no ``atomic()`` per step and no refusal handling. A
+    ``shipped`` ticket whose issue is done but which lacks merged-SHA evidence
+    committed the ``request_review`` advance, then the merge-evidence gate on
+    ``mark_merged`` raised ``NoMergeEvidenceError``. That escape landed in
+    ``report.errors`` + an ERROR log on EVERY tick, on top of the already-persisted
+    ``in_review`` partial state. Routed through ``Ticket.advance_to_delivered`` the
+    refusal is now caught: the partial progress persists (as the CLI sweep does),
+    but no exception escapes the tick.
+    """
+
+    def setUp(self) -> None:
+        # The merge-evidence gate must bite so ``mark_merged`` genuinely refuses.
+        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+
+    def test_mid_chain_gate_refusal_does_not_escape_the_tick(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/9", state="shipped")
+
+        with self.assertNoLogs("teatree.loop.tick_recovery", level="ERROR"):
+            report = _run_mechanical("ticket_completion", ticket_id=ticket.pk)
+
+        assert report.errors == {}
+        ticket.refresh_from_db()
+        # request_review committed its own atomic step (partial progress);
+        # mark_merged was gate-refused and rolled back — the walk stopped clean.
+        assert ticket.state == Ticket.State.IN_REVIEW
 
 
 class TestReopenTicket(TestCase):

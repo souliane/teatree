@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.request_cache import cached_per_request
+
 if TYPE_CHECKING:
     from teatree.core.models import Mode, ModeSchedule, ModeScheduleSlot
 
@@ -61,6 +63,7 @@ class ActivePreset:
         return self.preset.state_for(loop_name)
 
 
+@cached_per_request
 def resolve_active_preset(now: dt.datetime | None = None) -> ActivePreset | None:
     """The preset governing at *now* (L3 override, then L2 schedule), or ``None``.
 

@@ -18,6 +18,8 @@ Precedence, highest first:
 4.  ``DEFAULT_TIER`` — the conservative default, resolved through ``resolve_tier``.
 """
 
+import dataclasses
+
 from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS, DEFAULT_TIER, resolve_tier
 from teatree.eval.models import EvalSpec
 
@@ -38,3 +40,15 @@ def resolve_eval_model(spec: EvalSpec) -> str:
         tier = DEFAULT_PHASE_MODELS.get(spec.phase.strip(), DEFAULT_TIER)
         return resolve_tier(tier)
     return resolve_tier(DEFAULT_TIER)
+
+
+def resolve_spec_model(spec: EvalSpec) -> EvalSpec:
+    """Return *spec* with its concrete resolved ``model`` — the fresh-run opener.
+
+    Every fresh-run backend opens ``run`` by resolving the abstract tier/phase to a
+    concrete model id and folding it back onto the spec (a no-op when the spec
+    already carries a concrete ``model``, e.g. the matrix/``--model`` lanes set it
+    upstream). The resolved id then flows into the variant parse, the
+    model-presence check, the ledger label, and the report.
+    """
+    return dataclasses.replace(spec, model=resolve_eval_model(spec))

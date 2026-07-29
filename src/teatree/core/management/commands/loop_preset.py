@@ -8,21 +8,22 @@ project's "anything touching the ORM is a management command" rule).
 """
 
 import datetime as dt
-import json
 import re
-from typing import Annotated, Any, NoReturn
+from typing import IO, Annotated, Any, NoReturn, cast
 
 import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import PIN_MODES, Loop, Mode, ModeOverride
+from teatree.core.machine_output import emit
+from teatree.core.mode_resolution import clear_mode_override, posture_label, resolve_active_mode, set_mode_override
+from teatree.core.models import PIN_MODES, Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
+from teatree.loops.preset_editing import apply_entry_edits
 from teatree.loops.preset_status import active_summary, effective_verdicts
 
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$")
 _DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-_ENTRY_VALUES = {"on": True, "off": False}
 
 
 def _parse_duration(raw: str) -> dt.timedelta:
@@ -45,30 +46,15 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
         return _parse_iso(raw)
 
 
-def _apply_entry_edits(entries: object, edits: list[str]) -> dict[str, bool]:
-    """Fold ``inbox=on`` / ``review=off`` / ``dream=inherit`` edits into *entries* (a copy).
+def _resolved_line() -> str:
+    """The resolved mode, the layer that decided it, and its DERIVED posture label.
 
-    *entries* is the raw stored map (a JSONField value, so ``object``); non-bool
-    existing values (a corrupt / legacy row) are dropped, so an edit always produces
-    a clean tri-state map.
+    The one-line answer the retired availability group used to print, now rendered
+    from the resolver's booleans rather than a persisted token (#3826).
     """
-    updated: dict[str, bool] = (
-        {str(key): value for key, value in entries.items() if isinstance(value, bool)}
-        if isinstance(entries, dict)
-        else {}
-    )
-    for edit in edits:
-        loop_name, _, value = edit.partition("=")
-        loop_name = loop_name.strip()
-        value = value.strip().lower()
-        if not loop_name or (value not in _ENTRY_VALUES and value != "inherit"):
-            msg = f"invalid --set {edit!r}; use <loop>=on|off|inherit"
-            raise ValueError(msg)
-        if value == "inherit":
-            updated.pop(loop_name, None)
-        else:
-            updated[loop_name] = _ENTRY_VALUES[value]
-    return updated
+    resolved = resolve_active_mode()
+    posture = posture_label(defers=resolved.defers_questions, pauses=resolved.pauses_self_pump)
+    return f"mode={resolved.name} source={resolved.source} posture={posture}"
 
 
 def _unknown_entry_loops(entries: dict[str, bool]) -> list[str]:
@@ -86,21 +72,20 @@ class Command(TyperCommand):
         active = active_summary()
         active_name = active.name if active is not None else ""
         presets = list(Mode.objects.all())
-        if json_output:
-            payload = [_preset_row(preset, active_name) for preset in presets]
-            self.stdout.write(json.dumps({"active": active_name, "presets": payload}, indent=2))
-            return
+        payload = [_preset_row(preset, active_name) for preset in presets]
         if not presets:
-            self.stdout.write("No presets defined. Run `t3 setup` to seed the defaults.")
-            return
-        self.stdout.write("presets:")
-        for preset in presets:
-            marker = " *ACTIVE*" if preset.name == active_name else ""
-            pin = f" pin={preset.availability_pin}" if preset.availability_pin else ""
-            scope = f" scope={','.join(preset.overlay_scope_names)}" if preset.overlay_scope_names else ""
-            self.stdout.write(f"  {preset.name:<16} {preset.entry_count} entries{pin}{scope}{marker}")
-            if preset.description:
-                self.stdout.write(f"      {preset.description}")
+            human = "No presets defined. Run `t3 setup` to seed the defaults."
+        else:
+            lines = ["presets:"]
+            for preset in presets:
+                marker = " *ACTIVE*" if preset.name == active_name else ""
+                pin = f" pin={preset.availability_pin}" if preset.availability_pin else ""
+                scope = f" scope={','.join(preset.overlay_scope_names)}" if preset.overlay_scope_names else ""
+                lines.append(f"  {preset.name:<16} {preset.entry_count} entries{pin}{scope}{marker}")
+                if preset.description:
+                    lines.append(f"      {preset.description}")
+            human = "\n".join(lines)
+        self._emit({"active": active_name, "presets": payload}, human, json_output=json_output)
 
     @command(name="show")
     def show(
@@ -125,26 +110,38 @@ class Command(TyperCommand):
         reason: Annotated[str, typer.Option("--reason", help="Audit note on the active-preset WHY line.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Activate *name* as the L3 manual override (default: until the next scheduled boundary)."""
+        """Activate *name* as the L3 manual override (default: until the next scheduled boundary).
+
+        Routes through :func:`set_mode_override`, the ONE override write chokepoint, so
+        activating a reachable mode drains the deferred-question backlog to the user's
+        Slack DM exactly as the dash switch does. The drain resolves its Slack target
+        from config; ``auto`` takes explicit routing flags for the rare non-default one.
+        """
         if Mode.objects.by_name(name) is None:
             self._refuse(f"no preset named {name!r} — run `t3 loop preset list`", json_output=json_output)
         until_dt = self._resolve_until(expiry=expiry, hold=hold, json_output=json_output)
-        ModeOverride.objects.set_override(name, until=until_dt, reason=reason)
+        set_mode_override(name, until=until_dt, reason=reason)
         window = "held until cleared" if until_dt is None else f"until {until_dt.isoformat()}"
         self._emit(
             {"preset": name, "until": until_dt.isoformat() if until_dt else None, "reason": reason},
-            f"loop preset {name!r} active ({window}).",
+            f"loop preset {name!r} active ({window}). {_resolved_line()}",
             json_output=json_output,
         )
 
     @command(name="auto")
-    def auto(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
-        """Clear the manual override so the active schedule decides again."""
-        cleared = ModeOverride.objects.clear()
+    def auto(
+        self,
+        *,
+        user_id: Annotated[str, typer.Option("--user-id", help="Slack user id for the backlog drain.")] = "",
+        overlay: Annotated[str, typer.Option("--overlay", help="Overlay name for the drain's bot routing.")] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """Clear the manual override so the active schedule / default mode decides again."""
+        cleared = clear_mode_override(user_id=user_id, overlay=overlay)
         message = (
             "cleared the manual override — the schedule decides again." if cleared else "no manual override was set."
         )
-        self._emit({"cleared": cleared}, message, json_output=json_output)
+        self._emit({"cleared": cleared}, f"{message} {_resolved_line()}", json_output=json_output)
 
     @command(name="create")
     def create(
@@ -210,43 +207,44 @@ class Command(TyperCommand):
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=json_output)
         unknown = _unknown_entry_loops(preset.entries)
-        if json_output:
-            self.stdout.write(json.dumps(_preset_detail(preset, unknown), indent=2))
-            return
-        self.stdout.write(f"preset {preset.name}: {preset.description}")
-        for loop_name, value in sorted(preset.entries.items()):
-            self.stdout.write(f"  {loop_name:<22} {'on' if value else 'off'}")
+        lines = [f"preset {preset.name}: {preset.description}"]
+        lines += [
+            f"  {loop_name:<22} {'on' if value else 'off'}" for loop_name, value in sorted(preset.entries.items())
+        ]
         if unknown:
-            self.stdout.write(f"  WARN entries name unknown loops: {', '.join(unknown)}")
+            lines.append(f"  WARN entries name unknown loops: {', '.join(unknown)}")
+        self._emit(_preset_detail(preset, unknown), "\n".join(lines), json_output=json_output)
 
     def _show_active(self, *, json_output: bool) -> None:
         now = timezone.now()
         summary = active_summary(now)
         verdicts = effective_verdicts(now)
-        if json_output:
-            self.stdout.write(
-                json.dumps(
-                    {
-                        "active": _summary_payload(summary),
-                        "loops": [
-                            {"name": v.name, "admitted": v.admitted, "layer": v.layer, "detail": v.detail}
-                            for v in verdicts
-                        ],
-                    },
-                    indent=2,
-                )
-            )
-            return
         if summary is None:
-            self.stdout.write("active preset: none (no override, no active schedule) — loops run per base config.")
+            lines = ["active preset: none (no override, no active schedule) — loops run per base config."]
         else:
             pin = f", pins availability {summary.availability_pin}" if summary.availability_pin else ""
             until = "" if summary.until is None else f", until {summary.until.isoformat()}"
-            self.stdout.write(f"active preset: {summary.name}  (why: {summary.reason}{until}{pin})")
-        self.stdout.write("per-loop effective verdict:")
+            lines = [f"active preset: {summary.name}  (why: {summary.reason}{until}{pin})"]
+        lines.append(_resolved_line())
+        lines.append("per-loop effective verdict:")
         for verdict in verdicts:
             state = "run" if verdict.admitted else "masked"
-            self.stdout.write(f"  {verdict.name:<22} {state:<7} [{verdict.layer}] {verdict.detail}")
+            lines.append(f"  {verdict.name:<22} {state:<7} [{verdict.layer}] {verdict.detail}")
+        resolved = resolve_active_mode(now)
+        self._emit(
+            {
+                "active": _summary_payload(summary),
+                "mode": resolved.name,
+                "source": resolved.source,
+                "defers_questions": resolved.defers_questions,
+                "pauses_self_pump": resolved.pauses_self_pump,
+                "loops": [
+                    {"name": v.name, "admitted": v.admitted, "layer": v.layer, "detail": v.detail} for v in verdicts
+                ],
+            },
+            "\n".join(lines),
+            json_output=json_output,
+        )
 
     def _resolve_until(self, *, expiry: str, hold: bool, json_output: bool) -> dt.datetime | None:
         if hold:
@@ -261,7 +259,7 @@ class Command(TyperCommand):
 
     def _entries_from_edits(self, entries: object, edits: list[str], *, json_output: bool) -> dict[str, bool]:
         try:
-            return _apply_entry_edits(entries, edits)
+            return apply_entry_edits(entries, edits)
         except ValueError as exc:
             self._refuse(str(exc), json_output=json_output)
 
@@ -279,10 +277,22 @@ class Command(TyperCommand):
         self._emit(_preset_detail(preset, unknown), message, json_output=json_output)
 
     def _emit(self, payload: dict[str, Any], message: str, *, json_output: bool) -> None:
-        self.stdout.write(json.dumps(payload, indent=2) if json_output else message)
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=message,
+        )
 
     def _refuse(self, message: str, *, json_output: bool) -> NoReturn:
-        self.stdout.write(json.dumps({"error": message}, indent=2) if json_output else f"ERROR  {message}")
+        emit(
+            {"error": message},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"ERROR  {message}",
+        )
         raise SystemExit(2)
 
 

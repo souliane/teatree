@@ -664,7 +664,7 @@ class TestClassifierReadsAuthorUsername:
 
         assert states[0].author_username == "me"
         # The author field must be in the requested json columns.
-        assert "state,reviewDecision,author" in captured[0]
+        assert "author" in captured[0][captured[0].index("--json") + 1].split(",")
 
 
 class TestScannerSkipsOnMissingMigration(TestCase):

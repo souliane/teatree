@@ -65,21 +65,22 @@ def default_pid_path(name: str) -> Path:
 def read_pid(pid_path: Path) -> int | None:
     """Return the live pid recorded at ``pid_path``, or ``None``.
 
-    Diagnostic helper (consumed by ``t3 doctor``). Returns ``None`` when
-    the file is missing, malformed, or the recorded pid is dead, and
-    removes the file in the malformed/dead cases. Safe alongside the
-    ``flock``: a live holder always keeps its own (live) pid in the
-    file, so this never unlinks an actively-held lock file.
+    Diagnostic helper (consumed by ``t3 doctor``). Returns ``None`` when the
+    file is missing, malformed, or the recorded pid is dead. It NEVER unlinks
+    the file: the lock file is the ``flock`` anchor, so removing it orphans a
+    live holder's kernel lock on the (now unlinked) inode — every later
+    :func:`flock_is_held` probe then opens a fresh inode, reads "free", and a
+    second worker acquires the singleton next to the live one (#3617). The
+    stale pid is harmless: the next acquirer reuses the file in place
+    (``ftruncate`` + rewrite in :func:`singleton`).
     """
     if not pid_path.is_file():
         return None
     raw = pid_path.read_text(encoding="utf-8").strip()
     if not raw.isdigit():
-        pid_path.unlink(missing_ok=True)
         return None
     pid = int(raw)
     if not pid_alive(pid):
-        pid_path.unlink(missing_ok=True)
         return None
     return pid
 

@@ -4,6 +4,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
 
@@ -51,6 +52,15 @@ class TestWorktreeQuerySet(TestCase):
 
         assert list(Worktree.objects.active()) == [active, also_active]
 
+    def test_for_ticket_scopes_to_the_given_ticket(self) -> None:
+        wanted_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        other_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/be", branch="mine")
+        also_mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/fe", branch="also")
+        Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
+
+        assert list(Worktree.objects.for_ticket(wanted_ticket).order_by("pk")) == [mine, also_mine]
+
 
 class TestIncomingEventQuerySet(TestCase):
     def _slack(self, *, channel: str, thread_ref: str, key: str) -> IncomingEvent:
@@ -92,6 +102,37 @@ class TestIncomingEventQuerySet(TestCase):
         self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
 
         assert IncomingEvent.objects.active_dm_thread(channel="") == ""
+
+    def _event(
+        self, *, key: str, processed: bool = False, dead: bool = False, retry_ahead: bool = False
+    ) -> IncomingEvent:
+        now = timezone.now()
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            idempotency_key=key,
+            received_at=now - timedelta(days=60),
+            processed_at=now if processed else None,
+            dead_lettered_at=now if dead else None,
+            next_retry_at=(now + timedelta(hours=1)) if retry_ahead else None,
+        )
+
+    def test_prunable_is_the_settled_set_processed_or_dead_lettered(self) -> None:
+        processed = self._event(key="k-proc", processed=True)
+        dead = self._event(key="k-dead", dead=True)
+        self._event(key="k-inflight")
+
+        prunable = IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
+
+        assert set(prunable.values_list("pk", flat=True)) == {processed.pk, dead.pk}
+
+    def test_prunable_derives_from_the_unprocessed_boundary_not_its_due_clause(self) -> None:
+        # A backoff-retry event is unsettled but NOT due, so it is absent from BOTH
+        # unprocessed(now) and prunable(). Were prunable defined as the naive complement
+        # of unprocessed(now) it would wrongly prune this in-flight, backing-off row.
+        backoff = self._event(key="k-backoff", retry_ahead=True)
+
+        assert backoff not in IncomingEvent.objects.unprocessed()
+        assert backoff not in IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
 
 
 class TestSessionQuerySet(TestCase):
@@ -224,6 +265,92 @@ class TestTaskQuerySet(TestCase):
         assert claimed is not None
         assert claimed.claimed_by == "loop-slot"
         assert claimed.claimed_by_session == "sess-A"
+
+
+class TestTaskPhaseCadenceQueries(TestCase):
+    """The periodic-scanner dedupe/last-run queries shared via ``PhaseCadence``."""
+
+    OVERLAY = "t3-teatree"
+    PHASE = "eval_local"
+
+    def _task(self, *, overlay: str, phase: str, status: str, started_hours_ago: int | None = None) -> Task:
+        ticket = Ticket.objects.create(overlay=overlay)
+        session = Session.objects.create(overlay=overlay, ticket=ticket, agent_id="a")
+        if started_hours_ago is not None:
+            Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(hours=started_hours_ago))
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
+
+    def test_in_flight_for_phase_matches_pending_and_claimed_only(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        claimed = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.CLAIMED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED)
+
+        in_flight = set(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE))
+
+        assert in_flight == {pending, claimed}
+
+    def test_in_flight_for_phase_scopes_to_overlay_and_phase(self) -> None:
+        target = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay="other-overlay", phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay=self.OVERLAY, phase="scanning_news", status=Task.Status.PENDING)
+
+        assert list(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE)) == [target]
+
+    def test_last_run_at_for_phase_returns_newest_session_start(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=48)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=2)
+
+        last_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert last_run is not None
+        # The newest task started ~2h ago, so the clock reads ~2h, not 48h.
+        assert (timezone.now() - last_run) < timedelta(hours=3)
+
+    def test_last_run_at_for_phase_none_when_no_task(self) -> None:
+        assert Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE) is None
+
+    def test_manager_methods_delegate_to_module_helpers(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=3)
+
+        # The module-level helpers are the concern-split home the manager methods delegate to.
+        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)) == [pending]
+        direct = last_run_at_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)
+        via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+        assert direct == via_manager
+
+    def test_last_run_at_for_phase_completed_statuses_ignores_failed(self) -> None:
+        completed = self._task(
+            overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200
+        )
+        # A newer FAILED task must NOT advance the COMPLETED-only clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+
+        completed_run = Task.objects.last_run_at_for_phase(
+            self.OVERLAY, self.PHASE, statuses=frozenset({Task.Status.COMPLETED})
+        )
+        any_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert completed_run is not None
+        assert (timezone.now() - completed_run) > timedelta(hours=100)  # the old COMPLETED one
+        assert completed_run == Session.objects.get(pk=completed.session_id).started_at
+        # The unfiltered clock still sees the newer FAILED task.
+        assert any_run is not None
+        assert (timezone.now() - any_run) < timedelta(hours=2)
+
+    def test_last_run_at_for_phase_terminal_statuses_counts_failed(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200)
+        # The terminal (COMPLETED|FAILED) clock — the backoff clock — sees the FAILED attempt.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+        # A still-PENDING task is not terminal and must not advance the backoff clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=0)
+
+        terminal_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE, statuses=Task.Status.terminal())
+
+        assert terminal_run is not None
+        # The FAILED one (1h ago) wins over the old COMPLETED (200h); the newer
+        # PENDING (0h) is not terminal, so it must NOT advance the clock.
+        assert timedelta(minutes=30) < (timezone.now() - terminal_run) < timedelta(hours=2)
 
 
 class TestActiveClaimExists(TestCase):

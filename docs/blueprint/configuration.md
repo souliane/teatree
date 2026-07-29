@@ -12,8 +12,9 @@ to one overlay; omit it for the global default). There is no config file to edit
 The overlay-definition registry (`overlays`) and the external-E2E registry
 (`e2e_repos`) are DB-home too — each is one JSON-dict `ConfigSetting` row that
 `loader._inject_db_registries` injects into `config.raw`, so teatree boots fully
-from the DB. `config_setting export` dumps the store to a TOML backup for a
-round-trip interchange.
+from the DB. `config_setting export` / `import` are a byte-stable round-trip
+interchange; the shipped default VALUES, the pydantic schema that hosts them + the
+category taxonomy, and the model-derived registries are described in §10.7.
 
 The keys and value shapes below are illustrative — set each one with
 `config_setting set`; the `[table]` syntax only shows how a key is scoped
@@ -46,7 +47,7 @@ messaging_backend = "slack"
 slack_token_ref = "teatree/slack/another-project"
 slack_user_id = "U01ABCD1234"
 
-# External Playwright E2E repos — used by `t3 e2e external --repo <name>`
+# External Playwright E2E repos — used by `t3 <overlay> e2e external --repo <name>`
 # Teatree clones/updates the repo to ~/.local/share/teatree/e2e-repos/<name>/
 # and runs Playwright from <clone>/<e2e_dir>. `branch` is the default ref;
 # `--branch <name>` (alias `--ref`) overrides it to run the suite from an open
@@ -76,6 +77,7 @@ t3 <overlay> config_setting set require_human_approval_to_merge false --overlay 
 t3 <overlay> config_setting set on_behalf_post_mode immediate
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
 t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # dump the store to a TOML backup (stdout default)
+t3 <overlay> config_setting export --default-keys-only --include-defaults      # the defaults.toml shape: a drop-in replacement for the shipped file
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
@@ -140,9 +142,17 @@ DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
 per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
 per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
-the same default bootstrap path `write_mirror` uses when unset — `statusline_chain` —
+the same default bootstrap path `write_mirror` uses when unset; that default is the SHARED
+data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatree`) plus
+`handover/latest.md` (#3563) — the state dir is runtime-local, so a hand-off created inside
+the worker container wrote its mirror to a filesystem the host could not read and the host's
+`latest.md` stayed pinned to an ancient session, while the data dir is the one directory
+every runtime shares (the deploy already bind-mounts it) — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
-`json_each` — and `autoload` — the #256 engagement flag; its cold SessionStart /
+`json_each` — `statusline_engaged_render` — the #3502 opt-in (strict bool, default OFF)
+that renders the statusline in a hand-engaged session (an engage marker present) even
+with autoload off, read DB-only by the bash statusline
+(`statusline.sh._statusline_engaged_render_db_value`) — and `autoload` — the #256 engagement flag; its cold SessionStart /
 UserPromptSubmit readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
 `statusline.sh` via the `sqlite3` CLI) read the DB ONLY, so a `[teatree] autoload`
 value is ignored on read and the how-to advisory points at
@@ -321,6 +331,12 @@ The code registries are the single source of truth — the curated table below
 explains why representative keys are per-overlay-overridable; consult the
 registries for the full set, type signatures, and defaults.
 
+The `*_gate_enabled` kill-switch keys below each disable one over-deny gate. For
+the flat catalog of EVERY gate's never-lockout paths — the per-call escape marker
+tokens (`[fg-ok: …]`, `[skip-plan-gate: …]`, …), the `t3 <overlay> gate …
+disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
+`hooks/CLAUDE.md` § "Escape markers & kill-switches".
+
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
@@ -344,7 +360,8 @@ registries for the full set, type signatures, and defaults.
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
 | `architectural_review_disabled` | Escape hatch for the periodic architectural-review scanner on a given overlay |
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
-| `architectural_review_cadence_hours` | Per-overlay cadence floor for the architectural-review scanner |
+| `architectural_review_cadence_hours` | Per-overlay success-cadence floor (age of the last COMPLETED review) for the architectural-review scanner (default 168) |
+| `architectural_review_retry_backoff_hours` | Per-overlay post-failure backoff (age of the last terminal attempt of any status) before re-firing after a FAILED review — bounds the retry so a persistent failure backs off instead of storming hourly (default 12) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
 | `e2e_confidence_threshold` | Rubric score (0-100, default `90`) a Playwright spec must reach to be VERIFIED by the `/t3:e2e` verify↔review loop (`/t3:e2e` § "Verify–Review Loop to Threshold"). The single knob both the `/t3:e2e-review` E2E Confidence Rubric and the loop read, so "the threshold" is one resolved value. A stricter client overlay raises it (e.g. `95`); a fast dogfood overlay lowers it. Documentation-driven today (the loop is agent prose, not a deterministic gate) — the typed field is the shared source of truth for the doc value and any future programmatic consumer. |
@@ -359,6 +376,11 @@ registries for the full set, type signatures, and defaults.
 | `backlog_sweep_cadence_hours` | Cadence floor for the backlog-sweep scanner (default 168 = weekly) |
 | `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep issue closes (default `true`). When on, the dispatched skill records each close/fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing — only the high-confidence shipped-by-merged-PR class auto-closes. Per-overlay overridable. |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (default `1`, the headless-safe single in-flight stack; `0` = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay can relax to `0`; enforced by `t3 <overlay> worktree start` / `workspace start` |
+| `task_attempt_retention_days` | #3693: retention window (days) for `TaskAttempt` rows (default `30`, `0` disables). `t3 <overlay> retention prune` deletes attempts OLDER than this window whose owning task AND ticket are TERMINAL — never a live/in-flight row. Dry-run by default (`--apply` deletes). Per-overlay overridable; enforced by `teatree.core.retention`. |
+| `incoming_event_retention_days` | #3693: retention window (days) for `IncomingEvent` rows (default `30`, `0` disables). `retention prune` deletes only FINISHED events (drained/dead-lettered) received before this window; an un-processed, non-dead-lettered event is never pruned. Per-overlay overridable. |
+| `park_attempt_retention_days` | Retention window (days) for limit-PARK audit rows on `TaskAttempt` (default `7`, `0` disables). A separate lane from `task_attempt_retention_days`, because a park RETURNS its task to the queue PENDING — so a park row's owning task is by construction non-terminal and the terminal-owned guard can never reach one, which is why a park-bloated table reported "would prune 0". This lane keys on the canonical `limit_parked:` marker, NEVER deletes a row carrying billed telemetry (the priced rows are the whole cost ledger), and measures age on `ended_at` (the last observation) so a live coalesced park is not deleted. Deletes in separately-committed batches so no single statement holds the SQLite write lock across the whole set. Per-overlay overridable; enforced by `teatree.core.retention` via `TaskAttempt.objects.prunable_parks`. |
+| `ticket_transition_prune_disabled` | #3871: kill switch for the `TicketTransition` lane (default `false`). The lane has no window — its trigger is the owning ticket CLOSING (`Ticket.marker_release_states()` plus RETROSPECTED), because a closed ticket's operational residue is dead weight the moment it closes and waiting out a window is arbitrary. What it removes is decided per ROW, not per table: only a `from_state == to_state` row, which records no edge and so is not history a reopened ticket (`reopen` / `reopen_for_followup` / `rework`) needs. Every real state edge survives for as long as the ticket does. Each ticket's earliest row (the creation proxy `factory_signal_queries` dates a fix ticket by via `Min(created_at)`) and latest row (the last-activity signal the stale-ticket and stuck-redispatch scanners read) are never touched. Per-overlay overridable; enforced by `teatree.core.models.transition`. |
+| `task_result_retention_days` | #3871: retention window (days) for `django_tasks`' `DBTaskResult` table (default `1`, `0` disables the lane). The DELETE is the library's OWN shipped `prune_db_task_results` command — teatree configures the dependency rather than writing a second prune over its table — passed `--queue-name '*'` so the `loops` chain rows are in scope. Short because nothing in teatree reads a FINISHED result row (every consumer filters READY or RUNNING) and the table takes ~400k finished rows a day. Consumed by both `t3 <overlay> retention prune` and the daily `prune_task_results` maintenance chain, through one seam (`teatree.core.retention.task_results`). Per-overlay overridable. |
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking (HEAVY) provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Only steps marked `ProvisionStep.heavy` consult this ceiling — see `provision_fast_step_timeout_seconds` for every other step. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_fast_step_timeout_seconds` | #2949: hard ceiling (seconds) for a FAST provisioning step (symlinks, settings, a compose override) — default `120`. The uniform 1800s ceiling let two grinding fast steps burn an hour before failure surfaced; a step opts into the long ceiling via `ProvisionStep.heavy`. Per-overlay overridable; enforced by `teatree.core.provision.provision_timebox`. |
 | `provision_max_concurrency` | #2949: concurrency cap for `workspace provision`'s bounded worktree-provision subprocess pool (default `0` = auto-derive from `os.cpu_count()` at each read, `teatree.utils.ram_probe.default_provision_concurrency`). A positive value pins an explicit cap. Per-overlay overridable. |
@@ -620,6 +642,314 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 ### 10.3 Logging
 
 `default_logging(namespace)` in `config/loader.py` returns a Django `LOGGING` dict writing to `~/.local/share/teatree/<namespace>/logs/teatree.log` with rotation (5MB, 3 backups).
+
+### 10.6 Term-scanning taxonomy
+
+Every term-scanning gate resolves through one class-tagged source: the DB-home `banned_term_registry` row (or the `$TEATREE_TERM_REGISTRY` CI secret), read by `teatree.hooks.banned_term_registry.terms_for_gate`. Each class is scanned by a specific gate; the registry is registry-first, falling back to a legacy per-source row when it is unset.
+
+| class | scanned by gate | legacy fallback source | unset behaviour |
+|---|---|---|---|
+| `leak` | diff + core + tree | `banned_brands` | fail-loud |
+| `prose_collider` | diff + core | `banned_terms` | fail-loud |
+| `tone` | diff | (none) | inert |
+| `overlay` | overlay core-generic gate | `overlay_leak_terms` | inert |
+| `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | inert |
+
+* **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
+* **Unset behaviour.** `leak`/`prose_collider` REFUSE (`BannedTermsUnsetError`) when both the registry and their legacy source are unset — a leak gate never scans as empty. `tone`/`overlay`/`allow` are optional and default to an inert empty set (the overlay gate is inert-when-empty by design). A malformed registry fails loud everywhere.
+* **Single resolver.** The four legacy keys are read from the store only by the registry module and the legacy resolvers it delegates to; every other gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. `t3 banned-terms migrate-registry` builds the class-tagged value from the current legacy rows and self-verifies it drops no term (`teatree.hooks.banned_term_registry.verify_migration`).
+
+**Code-resident public tier.** A second tier of term data is generic, DB-free, and ships in the repo — it carries no operator-private value, so it stays committed and is NOT part of the registry:
+
+* `teatree.hooks.terminology_gate` — the conflated-terminology vocabulary (generic wording checks).
+* `teatree.hooks.opaque_id` — the real-shaped Slack/forge ID detector and its synthetic-placeholder allowlist.
+* `scripts/privacy_scan.py` — the credential/email/host regexes (`glpat-`, `sk-`, home-directory paths, …).
+* the eval-fixture personal-marker / profanity guard — a generic fixture-hygiene check.
+
+**Secret / defaults boundary.** Every registry class carries operator-private codenames, so the five term keys (`banned_terms`, `banned_terms_allowlist`, `banned_brands`, `overlay_leak_terms`, `banned_term_registry`) are all in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. They must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
+
+### 10.7 Shipped defaults + the unified settings schema
+
+The shipped default VALUES live in one hand-editable, committed file —
+`src/teatree/config/defaults.toml`. Its `[teatree]` table is EXACTLY the
+`config_setting export` / `import` shape — the declaration hierarchy as nested group
+sub-tables, with `speak` / `mr_reminder` as their own settings — and every reader flattens
+it back to the flat key namespace on read; three
+sibling top-level tables — `[loops]`, `[modes]`, `[schedules]` — carry the seed defaults
+for the loop / mode / schedule objects (below). It is NOT a
+per-install config file (there is still nothing to edit per box — operator config lives
+in the DB store); it is the shipped **code-default layer**, the last tier of every
+resolution chain above, and the resolver READS it: `resolution._toml_default_rows` layers
+the file's `[teatree]` table in as the DEFAULTS base under the overlay-code-default tier,
+so each key resolves `env → DB(overlay) → DB(global) → overlay code default → TOML
+default`. The table arrives in stored form, so it goes through
+`resolution._coerce_setting_rows` — the same registry coercer a `ConfigSetting` row goes
+through — which is what keeps the defaults tier and the override tiers type-identical; a
+key the file omits keeps its `UserSettings` dataclass default (the resolver base). The
+file carries EXACTLY the `Category.DEFAULT` keys at their ship values; `Personal` and
+`Secret` keys are ABSENT by construction (they hold the empty code default and are never
+written to a shareable file). Safety-posture keys and dark feature-flags are pinned to
+their fail-closed / off literals.
+
+**The file is the authority; a divergence is a recorded decision.** A maintainer edits a
+per-key value directly and the resolver serves it. Because the resolver reads it, a shipped
+value that differs from its in-code `UserSettings` default MOVES that effective default —
+so the move must be reviewed, not silent. `src/teatree/config/defaults_approvals.toml` is
+that record: one entry per diverging key carrying the exact approved value, who approved
+it, and the deferred question they answered. `config/defaults_approvals.py`'s
+`audit_shipped_defaults` is the gate (asserted by `tests/config/test_defaults_approvals.py`)
+and refuses four states — a divergence with no entry, an entry approving a different value
+than is shipped, an entry left behind after the divergence was reverted, and any divergence
+at all on a safety-posture key or dark feature-flag (those stay pinned fail-closed whatever
+the ledger says). Hand-editing therefore means editing both files in one commit; the PR
+diff IS the review. `tests/config/test_toml_default_tier.py` carries the resolved-object
+half of the same contract: a field's TYPE may never move, and its VALUE only where the
+ledger approves it.
+
+**The loop / mode / schedule seed defaults are settings too, in the same file.** A shipped
+default an operator tunes to kickstart a box IS a setting whatever table it lives in, so
+the 26 default loops, the 7 curated modes and the 2 weekly schedules ship as data beside
+the `[teatree]` keys rather than as Python literals: `[loops.<name>]` (cadence, optional
+`daily_at`, `colleague_facing`, `default_enabled`, `description`, and `prompt_body` for the
+one prompt-backed loop), `[modes.<name>]` (availability posture plus an `entries` table
+masking each loop — a loop ABSENT from `entries` inherits its own enabled flag, which is how
+a destructive-capable loop is never silently re-enabled by a mode switch), and
+`[schedules.<name>]` with its `[[...slots]]` array. `teatree.loops.seed.DEFAULT_LOOPS` and
+`preset_seed.default_preset_specs` / `default_schedule_specs` build their spec dataclasses
+from these tables through `config/seed_defaults.py` — the stdlib-`tomllib` sibling of
+`cold_defaults`, held to the same no-pydantic / no-Django contract by its own subprocess
+control. The `[loops]` table ORDER is the seed order, pinned against the frozen
+`0001_initial` inlined copy by `tests/teatree_core/test_initial_migration_seed.py`; that
+pin is what proves relocating the data retunes nothing. `defaults.toml` is excluded from
+`toml-sort` because that layout is load-bearing. Seeding is unchanged — `get_or_create` by
+name, so editing a seed table changes what a FRESH install gets and never overwrites a row
+an operator already edited.
+
+**The seed rows ride the same export / import as a setting.** `export_db_to_toml` emits
+`[loops.<name>]` / `[modes.<name>]` / `[schedules.<name>]` carrying only the fields a live
+row was tuned AWAY from its shipped seed — the same override rule that makes a
+`ConfigSetting` row exist only off-default — so an untouched box exports no seed table at
+all. `import_toml_to_db` classifies each seed field against what the file ships: equal to
+the seed writes nothing, and an unknown entry, an unknown field or a wrong-typed value
+refuses the WHOLE import. The "`defaults.toml` imports to zero rows" invariant therefore
+holds because every seed entry is UNDERSTOOD, not because the tables are ignored. Two seed
+fields are shipped-only and excluded from the row interchange (`config/seed_defaults.py`'s
+`SHIPPED_ONLY_FIELDS`): a schedule's `slots` are child rows with their own editor, and a
+loop's `prompt_body` seeds a separate `Prompt` row — importing either at its shipped value
+is a no-op, and moving one means editing the file.
+
+**Snapshotting the live box goes through the owner.** `manage.py snapshot_settings_defaults`
+proposes the live GLOBAL-scope `ConfigSetting` values ONTO the current file (the file is
+the base, so a hand-edited value the box does not override survives). It renders the diff —
+key, shipped now, proposed, scope — as a monospace table, records ONE `DeferredQuestion`
+fingerprinted to that exact diff, and writes NOTHING. The owner answers it through the
+existing seam (`t3 teatree questions list`, then `t3 teatree questions answer <id>
+approve`) — the same human-approval primitive the directive loop's ratify step uses — and
+only then does `--apply` write the file and reconcile the approval ledger. An approval does
+not carry over to a different diff: `--apply` re-derives the fingerprint and refuses a
+mismatch. The planner re-renders the `[teatree]` table INTO the current file text
+(`ShippedFile.text`), so every sibling seed table and every hand-written comment survives a
+snapshot run byte-for-byte — a fresh document holding only `[teatree]` would silently delete
+them. Safety-posture keys, dark feature-flags and the owner-workflow / engagement keys
+are declined by the planner, so a live override of one is reported and never written.
+
+`src/teatree/config/schema.py` is the single source of truth for the key set, the value
+taxonomy, and validation. `TeatreeSettingsSchema` is a `pydantic-settings` model over all
+~235 config keys: each field wraps the SAME per-key coercer the four config registries
+already use (as a `BeforeValidator`), so the model HOSTS teatree's #258 strictness rather
+than reinventing pydantic's own rules, and each field carries a `SettingMeta` marker with
+its `Category` (`default` / `personal` / `secret`) and `Registry` (which of the four
+registries it belongs to). `shipped_defaults()` is the `@lru_cache` singleton constructed
+from `defaults.toml`, so a malformed file fails once, loudly.
+
+* **The registries are DERIVED from the model.** `OVERLAY_OVERRIDABLE_SETTINGS`,
+  `COLD_SETTINGS`, `COLD_HOOK_SETTINGS`, and `REGISTRY_SETTINGS` are the `{key: coercer}`
+  maps the resolver / CLI / MCP / import all share; `schema.derive_*` rebuilds each by
+  walking `model_fields` filtered on the field's `Registry` marker. A parity matrix
+  (`tests/config/test_registry_derivation.py`) proves each derived registry equals its
+  hand-maintained counterpart key-for-key and coercer-for-coercer, so the model's taxonomy
+  is the authoritative partition. The runtime dicts stay hand-maintained only because they
+  sit on the cold path (below) — the model binds them by test, not at runtime.
+* **Two default readers, one file.** `effective_default` (the seed-skip / import-skip
+  authority) and the dashboard settings editor read a key's shipped default through the
+  pydantic model, `schema.shipped_defaults()` (~110ms). The resolver's DEFAULTS tier
+  (`resolution._toml_default_rows`) reads the SAME `defaults.toml` through
+  `config/cold_defaults.py` instead — stdlib `tomllib` only, an mtime-keyed process cache,
+  ~2ms. That split is not an optimisation of one call: `teatree.config`'s package init
+  imports `resolution`, and the pre-Django cold path (hook leaves, statusline) loads that
+  package init, so a pydantic read in the tier would put the ~110ms on EVERY hook
+  invocation. Both readers resolve the file from one `cold_defaults.DEFAULTS_TOML` path
+  constant, read at CALL time rather than bound as a default argument (a bound default
+  would make a re-pointed constant invisible to every no-argument caller while the tier —
+  which passes it explicitly — honoured it, so the shipped key SET and the shipped VALUES
+  could come from two different files at once), and a subprocess control pins that importing the stdlib reader pulls in neither
+  pydantic nor Django
+  (`tests/config/test_cold_defaults.py::test_import_does_not_load_pydantic_or_django`).
+  The cold hook leaves themselves do NOT read this file — each gate flag resolves from the
+  `ConfigSetting` store via `cold_reader`, falling back to its compiled-in
+  `COLD_HOOK_SETTINGS` default, so the never-lockout fallback depends on no packaged data
+  file. `tests/config/test_toml_default_tier.py` pins each shipped cold-hook value equal to
+  that registered default.
+
+**Import (`import_toml_to_db(text, dry_run)` + `t3 <overlay> config_setting import`).** The
+precise inverse of `export`: it loads a dump back into the store. Retired aliases fold onto
+their live key; unknown keys and secret / personal-identifier keys are REJECTED, and one
+rejection refuses the WHOLE import (nothing written) so a bad key never leaves a partial
+store — the reject rule reuses the export withhold taxonomy, so a shared export's rows
+import back exactly and a secret can never round-trip in. Every value is validated through
+the resolver's own registry parser. **Zero-row normalization:** a value equal to the shipped
+default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
+dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
+`export → import → export` is byte-stable; a shareable export withholds Secret values and
+keeps Personal ones. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
+CHANGE the store is rejected unless the caller passes `allow_safety_posture`, which defaults
+to False so a caller that never considered the question refuses those keys — the same boundary
+the settings editor's typed confirm and the MCP write-tool refusal enforce, closing the route
+where a pasted dump set `autonomy = "full"` more quietly than editing it would. The CLI passes
+it (typing the command IS the authorization, exactly as `config_setting set` is); the
+dashboard passes it only with the typed confirm phrase, and its dry-run preview classifies as
+if authorized so each safety-posture row is listed and flagged before the operator applies.
+
+**The byte-identical `defaults.toml` round trip
+([#3825](https://github.com/souliane/teatree/issues/3825)).** Zero-row normalization is what
+makes the store a DELTA over the shipped floor, and it is also why the two were not inverses:
+importing `defaults.toml` writes no row, and exporting no rows emits no `[teatree]` table, so
+"export, then drop the file over `config/defaults.toml`" would have dropped every key the box
+had not overridden. Two INDEPENDENT filters — CLI flags `--default-keys-only` /
+`--include-defaults`, and the settings page's two checkboxes, both off by default so an
+unfiltered dump emits exactly the rows it always has (the nesting below re-shapes how they
+RENDER, on every surface, but adds and drops nothing) — make the inverse expressible. `default_keys_only` restricts
+what is ELIGIBLE to the `Category.DEFAULT` key set (dropping registries, secrets, personal
+identifiers and every overlay scope); `include_defaults` widens WHICH eligible keys are
+emitted from divergent-only to all of them, filling a key with no DB row from
+`provenance.resolve_settings(..., persisted_only=True)`. Ticking both is the defaults shape,
+whose emitted key set is asserted EQUAL to the `Category.DEFAULT` set — equality, not a
+subset, because a subset check still passes while a key silently vanishes, which is the
+failure mode that makes replacing the shipped file dangerous. It renders through
+`defaults_snapshot.render_toml`, the SAME emitter `snapshot_settings_defaults` writes with
+(one emitter, two callers — pinned by an identity assertion), and reproduces the seed tables
+from `core.config_seed_tables`. `export(defaults-shape)` after `import(defaults.toml)` is
+therefore byte-for-byte the shipped file, header and seed tables included:
+`tests/teatree_core/test_config_export_filters.py` asserts it against the real committed
+file, with a control proving a single live override moves exactly one line.
+
+**The one settings page** (`/dash/settings/`). Model-driven and EDITABLE: it walks the
+schema so every key is listable with no hand-kept list, writes each edit through
+`ConfigSetting.set_value` (the same validating seam), restores-to-default by DELETING the
+row, gates a safety-posture key behind an extra confirm phrase, and offers export + a
+dry-run preview of an UPLOADED import file. A SECRET value AND its shipped default are
+masked to `***` before the row enters the response context — pinned by a test asserting a
+configured secret never appears in the response bytes.
+
+**One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
+Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key
+at once produced 272 `<form>`, 1,060 `<input>` (812 hidden), 271 CSRF tokens, 260KB and
+14,212px of page. `settings_editor.build_settings_sections` derives the nav from the group
+tree over the key NAMES alone (so listing it resolves no value) and `build_settings_group`
+resolves ONE section's rows, which the nav `hx-get`s into the detail pane. The per-row
+`hx-target="closest tr"` swap is unchanged — an edit still never re-renders the document —
+while `key`/`scope` moved into the `hx-post` URL instead of hidden fields and the body's
+`hx-headers` carries ONE CSRF token per page. The cost is constant in the row count:
+`tests/teatree_dash/views/test_settings.py` pins the page, the pane fragment and the polled
+readouts with `assertNumQueries`, as an EQUALITY between the smallest and the largest
+section rather than a ceiling a growing schema would hide an N+1 under.
+
+**Value provenance, not the setting's kind.** Each row names the tier of the resolution
+chain that actually supplied its effective value — env / DB overlay scope / DB global scope
+/ overlay code default / shipped file / code default. That replaces a `category` column
+showing the setting's KIND, which read `default` for hundreds of consecutive rows and, next
+to a *shipped default* column, was misread as "this value came from the default" on rows
+saying the value differs from it. `teatree.config.provenance` walks the resolver's OWN layer
+readers (`read_setting_layers` / `env_setting_overrides` / `overlay_code_defaults`) instead
+of folding them, so the value and the tier credited with it cannot disagree; its
+`persisted_only` mode restricts the walk to the tiers a FILE can express, which is what the
+defaults-shape export fills an unset key from.
+
+Rows are grouped by `config.setting_groups.group_tree`, a NESTED hierarchy several levels
+deep (`Gates / Quality / Merge & done`) whose membership AND shape are DERIVED, never
+listed: each `UserSettings` declaration base declares its own `GROUP_PATH` class var, and
+the base set and their render ORDER come off `UserSettings.__mro__`, so the module names no
+category and adding a field to a base places it with zero edits anywhere. A key no base
+declares is grouped by the registry that registers it, each registry declaring its path
+beside its own keys. `tests/config/test_settings_group_partition.py` pins the bases
+pairwise-disjoint and exhaustive over the TREE as well as the flat field set: no two bases
+claim one path, no path is a strict prefix of another, and the leaves partition every field
+exactly once — so a node holds rows or subsections, never both.
+
+The grouping is TOTAL: the tree's leaves ARE the sections, so `build_settings_sections` and
+`build_settings_group` come off one walk and their union is the whole schema — every key is
+reachable through exactly one section, asserted across the section list rather than within
+one page. A key whose group is unknown — or whose path names a level nothing else declares —
+collects in a visible leftovers section rather than being dropped. That is the fix for the
+retired `/dash/config` page, whose name-shaped band classifier returned `""` for 130 of 184
+`UserSettings` fields and `continue`d each one out of the page — 185 of the 236 schema keys
+never rendered there at all.
+
+The same tree drives all four surfaces from ONE mechanism, so they cannot disagree: the
+dashboard renders one leaf per request (the nav is the tree's leaves, the pane is
+`dash/partials/_settings_group.html`), and `setting_groups.group_outline` streams it as
+heading-then-row sections for the three text surfaces — `config_setting export`'s
+`[teatree]` table, the shipped `config/defaults.toml`'s `[teatree]` table and
+`config_setting list` (indented headings). The two TOML surfaces render the hierarchy as
+real NESTED sub-tables (`[teatree.Gates.Quality."Merge & done"]`); the KEY NAMESPACE stays
+flat, because that namespace is the persisted contract every reader, env override and cold
+sqlite3 read depends on. `cold_defaults.flatten_settings_table` — the single Django-free
+reader of the table — is the one place the two meet, and needs no marker to disambiguate: a
+sub-table named after a DECLARED setting (`speak`, `mr_reminder`) is that setting's value,
+any other is a group wrapper. Import flattens the same way, so a nested file and a flat one
+resolve to the identical mapping and a grouped dump re-imports byte-identically to an
+ungrouped one.
+
+Both TOML surfaces emit through ONE renderer, `setting_groups.grouped_settings_table` —
+the export dump and `defaults_snapshot.render_toml`, which is what
+`snapshot_settings_defaults --apply` rewrites `[teatree]` with once the owner approves a
+snapshot. A flat writer there would have destroyed the shipped file's grouping on the
+next approved run, so the shared renderer is what makes the grouping durable rather than a
+one-off reformat. `tests/config/test_defaults_file_grouping.py` pins the shipped block's
+key ORDER to that walk and names the banner a stray key belongs under, and
+`tests/config/test_defaults_snapshot.py`'s byte-for-byte fixed-point test keeps the
+committed file a fixed point of the renderer.
+
+`/dash/config/` is retired into this page and redirects to it. Its readouts that are NOT
+`ConfigSetting` rows — the resolved model / reasoning-effort pins, the `pass` entry each
+credential reads plus whether it resolves, and the self-repairs the loop applied without
+paging anyone ([#3665](https://github.com/souliane/teatree/issues/3665)) — live in
+`dash.settings_readouts` and render above the editable groups on their own 15s htmx poll
+(`/dash/settings/readouts/`), keeping their live-value freshness. Every OTHER dial that page
+rendered read-only (kill switches, concurrency and memory caps, the agent / mode / wip /
+autonomy band) is now an editable row under its group.
+
+Each row ALSO carries the shipped default `config/defaults.toml` ships for that key, beside
+a verdict saying whether the effective value still matches it — `✓ same as default` or
+`● differs from default` — so an operator can see at a glance which dials this box has
+moved off the ship values. Colour is never the only signal: each verdict carries a text icon
+AND its own words, so it survives greyscale, colour blindness and a screen reader, and its
+two palette tokens are computed against every surface in both themes rather than assumed
+(`tests/teatree_dash/test_static_assets.py`). The default is read through
+`cold_defaults.shipped_defaults_table()` (which keys carry one) and `schema.shipped_defaults()`
+(the value), never by re-reading the file. A Secret/Personal key is absent from the shipped
+file by construction, so it has no default to compare against and offers no verdict — and its
+default is masked before the row is built either way, exactly as its value is.
+
+Each row's Save/Restore
+answers the edited `<tr>` alone to an htmx request (`dash/partials/_settings_row.html`,
+`hx-target="closest tr"`), so an edit never re-renders the document and the scroll position
+never moves; a refused write answers 400 carrying that same row plus its reason. Both forms
+keep `method`/`action`, so with JavaScript off the pre-htmx redirect path still works.
+
+**Django admin (`ConfigSettingAdmin`).** The fourth config write surface, held to the same
+two boundaries as the other three. A secret's value is MASKED wherever the admin would
+render it — the changelist column, the change form's textarea (a write-only widget, so
+submitting nothing keeps the stored value), the `seed_value` provenance copy, and
+`ConfigSetting.__str__` itself, which reaches log lines and the admin's object labels and
+therefore carries the coordinate alone. Every write runs `ConfigSetting.objects.set_value`,
+so the cross-key check and the seed-provenance clear fire exactly as they do for
+`config_setting set`; `ConfigSetting.clean` runs that same cross-key check, so an
+inconsistent coupled pair is a form error rather than a silent save. The masking taxonomy is
+ONE function (`teatree.core.config_display.is_secret`) shared by all three rendering
+surfaces — it lives in `core` because the admin sits below `dash` in the layer graph. There
+is no `list_editable`: an inline widget must round-trip the raw value (so it cannot mask)
+and the changelist formset writes through `Model.save()` (so it cannot use the seam).
 
 ### 10.4 Data Storage
 

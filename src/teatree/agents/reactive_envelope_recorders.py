@@ -9,7 +9,10 @@ calls :func:`record_reactive_envelopes` after the evidence gate has already
 refused a summary-only run, so each channel field is present and non-empty here.
 """
 
+import logging
 from typing import cast
+
+from django.utils import timezone
 
 from teatree.agents.result_schema import (
     AgentResultBlob,
@@ -20,8 +23,11 @@ from teatree.agents.result_schema import (
     recommendation_issue_url,
     suggestion_url,
 )
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, PendingTriageRecommendation, Task
+from teatree.core.news_digest import DigestItem, render_digest
+from teatree.core.notify import NotifyKind, notify_user
 
 #: Shell-denied reactive phases whose headless agent hands its work back through
 #: a typed envelope channel (#9): the agent cannot run the ``t3`` CLI, so the
@@ -31,6 +37,8 @@ from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Pend
 _SCANNING_NEWS_PHASE = "scanning_news"
 _TRIAGE_ASSESSING_PHASE = "triage_assessing"
 _ANSWERING_PHASE = "answering"
+
+logger = logging.getLogger(__name__)
 
 
 def record_reactive_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> None:
@@ -85,6 +93,37 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
         session_id=task.claimed_by_session or "",
         dedupe_marker=f"news-batch-{task.pk}",
     )
+    _post_press_review_digest(task, recorded)
+
+
+def _post_press_review_digest(task: Task, rows: "list[PendingArticleSuggestion]") -> None:
+    """DM the owner the Slack-formatted press review for this scan (#3669).
+
+    The digest is the DELIVERY the merged press-review sources feed; the
+    ``DeferredQuestion`` above remains the ask-gate record. Both exist because
+    they answer different questions — the question is the approval surface, the
+    digest is the read. Deduped per task by ``notify_user``'s idempotency key, so
+    a re-recorded envelope never re-posts.
+
+    Record-and-proceed: a Slack failure is logged and swallowed. The candidates
+    are already persisted, and losing the read must never lose the backlog.
+    """
+    text = render_digest(
+        [DigestItem(title=row.title or row.url, url=row.url, rationale=row.summary) for row in rows],
+        scanned_on=timezone.localdate().isoformat(),
+    )
+    if not text:
+        return
+    try:
+        notify_user(
+            text,
+            kind=NotifyKind.INFO,
+            idempotency_key=f"news-digest-{task.pk}",
+            audience=NotifyAudience.OWNER_DELIVERY,
+            linkify=False,
+        )
+    except Exception:
+        logger.warning("press-review digest post failed — candidates are recorded regardless", exc_info=True)
 
 
 def _article_batch_question(rows: "list[PendingArticleSuggestion]") -> str:

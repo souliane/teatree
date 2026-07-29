@@ -13,8 +13,10 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, FactoryScoreSnapshot
+from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, FactoryScoreSnapshot, Loop
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
+from teatree.loops.directive_loop.loop import DIRECTIVE_LOOP_NAME
+from teatree.loops.seed import seed_default_loops_and_prompts
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
 _SCOPE = "t3-teatree"
@@ -90,6 +92,15 @@ class TestTickCommand(TestCase):
         call_command("directive", "tick", stdout=out)
         assert "SKIP" in out.getvalue()
         assert "disabled" in out.getvalue()
+
+    def test_a_guard_refusal_prints_warn_not_ok(self) -> None:
+        # #3643: a refused tick is a distinct outcome an operator must be able to see.
+        seed_default_loops_and_prompts()
+        Loop.objects.set_enabled(DIRECTIVE_LOOP_NAME, enabled=True)
+        out = StringIO()
+        call_command("directive", "tick", stdout=out)
+        assert out.getvalue().startswith("WARN")
+        assert "refused" in out.getvalue()
 
 
 class TestResolveRevertCommand(TestCase):

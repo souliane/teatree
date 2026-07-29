@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = REPO_ROOT / "deploy"
 COMPOSE_FILE = DEPLOY / "docker-compose.yml"
 DEPLOY_SH = DEPLOY / "deploy.sh"
+FF_CHECKOUT_SH = DEPLOY / "fast-forward-checkout.sh"
 RAM_PROBE = REPO_ROOT / "src" / "teatree" / "utils" / "ram_probe.py"
 
 
@@ -63,6 +64,10 @@ class TestDeployShRunDerivesWorkerCaps:
         (repo / "deploy").mkdir(parents=True)
         (repo / "src" / "teatree" / "utils").mkdir(parents=True)
         shutil.copy(DEPLOY_SH, repo / "deploy" / "deploy.sh")
+        # deploy.sh delegates the fast-forward to this sibling; staging deploy.sh
+        # alone makes the run die at `No such file or directory` before it reaches
+        # the compose invocation under test.
+        shutil.copy(FF_CHECKOUT_SH, repo / "deploy" / "fast-forward-checkout.sh")
         shutil.copy(RAM_PROBE, repo / "src" / "teatree" / "utils" / "ram_probe.py")
         (repo / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         (repo / "deploy" / "teatree.env").write_text("", encoding="utf-8")

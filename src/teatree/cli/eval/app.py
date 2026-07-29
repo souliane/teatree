@@ -131,7 +131,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model. "
             "Each entry may carry a reasoning-effort variant as model@effort (e.g. "
-            "claude-opus-4-8@xhigh) — the tag is the column/ledger identity."
+            "opus@xhigh) — the tag is the column/ledger identity."
         ),
     ),
     persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -155,7 +155,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Diff this run's per-scenario cost against each model's baseline cost; a relative "
             "rise beyond --cost-regression-tolerance exits non-zero. Distinct from an absolute "
-            "ceiling: a zero-cost (subscription/free) baseline is skipped, never divided by."
+            "ceiling: a zero-cost (subscription) baseline is skipped, never divided by."
         ),
     ),
     cost_regression_tolerance: float = typer.Option(
@@ -200,7 +200,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "same Claude model fresh through the Anthropic Messages API DIRECTLY, no `claude` "
             "CLI child — the CLI-free lane for a harness that forbids the Claude Code CLI, "
             "metered on ANTHROPIC_API_KEY) or 'pydantic_ai' (RUN a non-Claude model through "
-            "the provider-agnostic harness seam, OrcaRouter BYOK — the model-evolution lane). "
+            "the provider-agnostic harness seam, the OpenAI-compatible backend — the model-evolution lane). "
             "--trials and --models require --backend api."
         ),
     ),

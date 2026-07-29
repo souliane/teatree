@@ -15,7 +15,8 @@ human line or banner to stdout interleaves the two; both defeat ``json.loads``.
 The command ALSO returns ``payload`` unchanged so ``call_command`` consumers keep
 getting the typed object; set ``print_result = False`` on the ``TyperCommand`` so
 django-typer does not additionally repr the return onto stdout after the handler
-already emitted through this seam.
+already emitted through this seam. Subclass :class:`MachineOutputCommand` so that
+pin survives the ``call_command(..., stdout=...)`` path too.
 """
 
 import dataclasses
@@ -23,7 +24,36 @@ import datetime
 import enum
 import json
 from collections.abc import Callable
-from typing import IO
+from typing import IO, TextIO, cast
+
+from django_typer.management import OutputWrapper, TyperCommand
+
+
+class MachineOutputCommand(TyperCommand):
+    """A ``TyperCommand`` whose handlers own stdout through :func:`emit`.
+
+    ``BaseCommand.execute`` replaces ``self.stdout`` with **Django's**
+    ``OutputWrapper`` whenever a stream is passed as ``call_command(...,
+    stdout=buf)``. That wrapper has no ``disable`` flag, so django-typer's
+    ``print_result = False`` becomes a silent no-op and the typed return is
+    written to stdout *after* ``emit`` already wrote the JSON there — two
+    documents on the channel a front-end parses. Installing django-typer's
+    disable-capable wrapper here, and withholding the option Django would
+    clobber it with, keeps the pin effective on every call path.
+
+    The pin itself stays per-handler (``self.print_result = False``): a sibling
+    verb in the same command group may still return a human ``str`` for
+    django-typer to print, and a class-level pin would silence it.
+    """
+
+    def execute(self, *args: object, **options: object) -> object:
+        for name in ("stdout", "stderr"):
+            stream = options.pop(name, None)
+            if stream is not None:
+                wrapper = OutputWrapper(cast("TextIO", stream))
+                wrapper.style_func = getattr(self, name).style_func
+                setattr(self, name, wrapper)
+        return super().execute(*args, **options)
 
 
 def _json_default(obj: object) -> object:
@@ -81,4 +111,4 @@ def emit(
     human(err)
 
 
-__all__ = ["emit", "to_jsonable"]
+__all__ = ["MachineOutputCommand", "emit", "to_jsonable"]

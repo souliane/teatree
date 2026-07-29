@@ -44,6 +44,7 @@ from teatree.eval.gate_failures import (
     escalate_gate_failures,
     extract_gate_failures,
     record_gate_failures,
+    recurring_fingerprints,
 )
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_resolver import resolve_transcript
@@ -140,7 +141,7 @@ class Command(TyperCommand):
         store = FindingsStore()
         record_gate_failures(store, failures)
 
-        recurring = store.recurring_fingerprints(min_occurrences=2)
+        recurring = recurring_fingerprints(failures, store=store)
         views = self._gate_failure_views(failures, recurring=recurring)
         self._print_gate_failure_summary(views)
 

@@ -95,8 +95,12 @@ _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("coded", "not_started", "planned", "review_posted", "reviewed", "scoped", "started", "tested"),
         ("review_posted",),
     ),
+    # ``delivered`` is a deliberate SELF-loop source: a re-review at a new head
+    # SHA lands on a ticket the previous pass already delivered, and the
+    # transition must be able to re-stamp ``reviewed_sha``/``last_review_state``
+    # there. Same shape as the sibling ``mark_review_no_action`` (#1431).
     "mark_reviewed_externally": (
-        ("coded", "not_started", "planned", "reviewed", "scoped", "started", "tested"),
+        ("coded", "not_started", "planned", "review_posted", "reviewed", "scoped", "started", "tested"),
         ("review_posted",),
     ),
     "plan": (("started",), ("planned",)),

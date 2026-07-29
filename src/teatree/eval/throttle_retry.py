@@ -21,6 +21,7 @@ from collections.abc import Callable
 from claude_agent_sdk import Message
 
 from teatree.eval.api_errors import (
+    NEVER_RETRY_ERRORS,
     THROTTLE_TERMINAL_PREFIX,
     SuccessMislabelResultError,
     TerminalResultError,
@@ -29,7 +30,6 @@ from teatree.eval.api_errors import (
     classify_transient_throttle,
 )
 from teatree.eval.models import EvalRun
-from teatree.llm.anthropic_limits import CreditExhaustedError
 
 #: Bounded retry envelope. A TRANSIENT throttle backs off exponentially (base ->
 #: cap) plus jitter to de-correlate the concurrent retries on the shared token;
@@ -132,7 +132,7 @@ class ThrottleRetryDriver:
         while True:
             try:
                 messages = drive()
-            except CreditExhaustedError:
+            except NEVER_RETRY_ERRORS:
                 # A $0 metered key is terminal for the WHOLE suite, not a per-run
                 # throttle — propagate so the caller aborts (never retried).
                 raise

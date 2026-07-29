@@ -30,16 +30,15 @@ that does not exist.
 """
 
 import datetime as dt
-import json
 import logging
 import re
-from collections.abc import Callable
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState
 
 logger = logging.getLogger(__name__)
@@ -80,7 +79,11 @@ def _reconcile_timers() -> None:
         )
 
 
-def _require_known_loop(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _out_err(command: TyperCommand) -> tuple[IO[str], IO[str]]:
+    return cast("IO[str]", command.stdout), cast("IO[str]", command.stderr)
+
+
+def _require_known_loop(command: TyperCommand, name: str, *, json_output: bool) -> None:
     """Refuse a NAME with no matching ``Loop`` row before any ``LoopState`` read/write (#3117).
 
     Every verb — the mutating ``pause``/``resume``/``disable``/``enable`` and the
@@ -93,23 +96,25 @@ def _require_known_loop(name: str, *, json_output: bool, stdout_write: Callable[
     if Loop.objects.filter(name=name).exists():
         return
     msg = f"no loop named {name!r} — run `t3 loops list` to see the known loops"
-    if json_output:
-        stdout_write(json.dumps({"name": name, "error": msg}, indent=2))
-    else:
-        stdout_write(f"ERROR  {msg}")
+    out, err = _out_err(command)
+    emit({"name": name, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
     raise SystemExit(2)
 
 
-def _report(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _report(command: TyperCommand, name: str, *, json_output: bool) -> None:
     """Re-read and report the LANDED status after a mutating transition."""
     status = LoopState.objects.status_of(name)
-    if json_output:
-        stdout_write(json.dumps({"name": name, "status": status.value}, indent=2))
-    else:
-        stdout_write(f"OK    loop {name!r} is now {status.value}.")
+    out, err = _out_err(command)
+    emit(
+        {"name": name, "status": status.value},
+        json_output=json_output,
+        out=out,
+        err=err,
+        human=f"OK    loop {name!r} is now {status.value}.",
+    )
 
 
-def _report_status(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _report_status(command: TyperCommand, name: str, *, json_output: bool) -> None:
     """Read-only status report for ``status`` — phrased as a READ, never a mutation.
 
     The mutation verbs print ``is now <status>``; the read prints
@@ -119,20 +124,28 @@ def _report_status(name: str, *, json_output: bool, stdout_write: Callable[[str]
     unaffected.
     """
     status = LoopState.objects.status_of(name)
-    if json_output:
-        stdout_write(json.dumps({"name": name, "status": status.value}, indent=2))
-    else:
-        stdout_write(f"loop {name!r} status: {status.value.upper()}")
+    out, err = _out_err(command)
+    emit(
+        {"name": name, "status": status.value},
+        json_output=json_output,
+        out=out,
+        err=err,
+        human=f"loop {name!r} status: {status.value.upper()}",
+    )
 
 
-def _report_forced(name: str, *, json_output: bool, stdout_write: Callable[[str], object]) -> None:
+def _report_forced(command: TyperCommand, name: str, *, json_output: bool) -> None:
     """Re-read and report the LANDED forced plane after an override."""
     forced = LoopState.objects.forced_of(name)
     word = "neutral" if forced is None else ("on" if forced else "off")
-    if json_output:
-        stdout_write(json.dumps({"name": name, "forced": word}, indent=2))
-    else:
-        stdout_write(f"OK    loop {name!r} override is now {word}.")
+    out, err = _out_err(command)
+    emit(
+        {"name": name, "forced": word},
+        json_output=json_output,
+        out=out,
+        err=err,
+        human=f"OK    loop {name!r} override is now {word}.",
+    )
 
 
 class Command(TyperCommand):
@@ -146,9 +159,9 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Move *name* into the reversible PAUSED hold."""
-        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
+        _require_known_loop(self, name, json_output=json_output)
         LoopState.objects.pause(name)
-        _report(name, json_output=json_output, stdout_write=self.stdout.write)
+        _report(self, name, json_output=json_output)
 
     @command(name="resume")
     def resume(
@@ -158,10 +171,10 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Return *name* to ENABLED, clearing a pause OR a disable — both planes."""
-        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
+        _require_known_loop(self, name, json_output=json_output)
         Loop.objects.resume(name)
         _reconcile_timers()
-        _report(name, json_output=json_output, stdout_write=self.stdout.write)
+        _report(self, name, json_output=json_output)
 
     @command(name="disable")
     def disable(
@@ -171,10 +184,10 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Move *name* into the durable DISABLED kill-switch — both planes."""
-        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
+        _require_known_loop(self, name, json_output=json_output)
         Loop.objects.disable(name)
         _reconcile_timers()
-        _report(name, json_output=json_output, stdout_write=self.stdout.write)
+        _report(self, name, json_output=json_output)
 
     @command(name="enable")
     def enable(
@@ -184,10 +197,10 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Return *name* to ENABLED (alias of resume) — both planes."""
-        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
+        _require_known_loop(self, name, json_output=json_output)
         Loop.objects.enable(name)
         _reconcile_timers()
-        _report(name, json_output=json_output, stdout_write=self.stdout.write)
+        _report(self, name, json_output=json_output)
 
     @command(name="override")
     def override(
@@ -200,11 +213,12 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Set the emergency FORCED plane for *name* — on/off beats a preset, clear returns to neutral."""
-        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
+        _require_known_loop(self, name, json_output=json_output)
+        out, err = _out_err(self)
         normalized = state.strip().lower()
         if normalized not in _OVERRIDE_STATES:
             msg = f"invalid override state {state!r}; use on, off, or clear"
-            self.stdout.write(json.dumps({"name": name, "error": msg}) if json_output else f"ERROR  {msg}")
+            emit({"name": name, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
             raise SystemExit(2)
         if normalized == "clear":
             LoopState.objects.clear_override(name)
@@ -212,10 +226,16 @@ class Command(TyperCommand):
             try:
                 until = _parse_for(for_ttl)
             except ValueError as exc:
-                self.stdout.write(json.dumps({"name": name, "error": str(exc)}) if json_output else f"ERROR  {exc}")
+                emit(
+                    {"name": name, "error": str(exc)},
+                    json_output=json_output,
+                    out=out,
+                    err=err,
+                    human=f"ERROR  {exc}",
+                )
                 raise SystemExit(2) from exc
             LoopState.objects.override(name, on=normalized == "on", until=until, reason=reason)
-        _report_forced(name, json_output=json_output, stdout_write=self.stdout.write)
+        _report_forced(self, name, json_output=json_output)
 
     @command(name="status")
     def status(
@@ -225,5 +245,5 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it."""
-        _require_known_loop(name, json_output=json_output, stdout_write=self.stdout.write)
-        _report_status(name, json_output=json_output, stdout_write=self.stdout.write)
+        _require_known_loop(self, name, json_output=json_output)
+        _report_status(self, name, json_output=json_output)

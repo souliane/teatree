@@ -41,7 +41,7 @@ class TicketCommentRoutesThroughSeam(TestCase):
             patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
             patch.object(loader_mod, "get_code_host_for_url", return_value=host),
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
             pytest.raises(OutboundLeakError, match="privacy gate refused"),
         ):
             call_command("ticket", "comment", _ISSUE_URL, body="ship for SECRETCORP")
@@ -69,7 +69,7 @@ class TicketCreateSubRoutesThroughSeam(TestCase):
             patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
             patch.object(loader_mod, "get_code_host_for_url", return_value=host),
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
             pytest.raises(OutboundLeakError, match="privacy gate refused"),
         ):
             call_command("ticket", "create-sub", parent=_ISSUE_URL, title="ship for SECRETCORP")
@@ -81,7 +81,7 @@ class TicketCreateSubRoutesThroughSeam(TestCase):
             patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
             patch.object(loader_mod, "get_code_host_for_url", return_value=host),
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["SECRETCORP"], [])),
             pytest.raises(OutboundLeakError, match="privacy gate refused"),
         ):
             call_command("ticket", "create-sub", parent=_ISSUE_URL, title="Child", labels="SECRETCORP,ok")

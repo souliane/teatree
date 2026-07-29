@@ -15,8 +15,16 @@ pytestmark = pytest.mark.django_db
 
 
 def _call(*args: str, **kwargs: object) -> str:
+    """Stdout — the machine channel (JSON under ``--json``, empty otherwise)."""
     buf = StringIO()
     call_command("signals", *args, stdout=buf, **kwargs)
+    return buf.getvalue()
+
+
+def _call_human(*args: str, **kwargs: object) -> str:
+    """Stderr — where the seam routes the human view."""
+    buf = StringIO()
+    call_command("signals", *args, stderr=buf, **kwargs)
     return buf.getvalue()
 
 
@@ -39,7 +47,7 @@ class TestSignalsCommand:
         assert payload["window_days"] == 7
 
     def test_human_view_renders_markdown_table(self) -> None:
-        out = _call()
+        out = _call_human()
         assert "Factory signals" in out
         assert "first_try_green" in out
 

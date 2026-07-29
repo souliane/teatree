@@ -35,6 +35,17 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED.
+#   ZERO-IS-RED closes the last vacuous gap: when `detect` promised scenarios
+#   (`run=true`) the eval job asserts it executed >=1 — a run that was SUPPOSED
+#   to execute scenarios but executed ZERO fails, never passes green.
+#
+# SCENARIO-REACHABILITY (advisory, F12 / #3566)
+#   The `detect` job runs `t3 eval reachability` on every PR: it walks every
+#   `t3 …` invocation the shipped scenarios + fixtures cite against the LIVE CLI
+#   registry and reports references that resolve to nothing. ADVISORY (report +
+#   exit 0) — the corpus still carries known false positives (overlay-slot
+#   fixture names, prose fragments) — so it gives the check a live caller without
+#   reddening a PR.
 #
 # TRIALS — single trial + adaptive escalate-on-fail
 #   This PR lane runs `--trials 1` for fast/cheap feedback. A single LLM trial is
@@ -44,6 +55,10 @@
 #   escalation trial is reported flaky-but-passing, NOT red. The common all-green
 #   PR pays nothing extra (only failures are re-run).
 # ============================================================
+
+# TRIGGER: workflow_call only — invoked by the host's `eval-pr.yml` and by an
+# overlay's thin caller; it is never triggered on its own.
+name: Reusable · Selective PR eval
 
 on:
   workflow_call:
@@ -86,7 +101,7 @@ jobs:
       names: ${{ steps.select.outputs.names }}
       run: ${{ steps.select.outputs.run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
           fetch-depth: 0
@@ -97,7 +112,7 @@ jobs:
       # `teatree-repo`, so this step is a no-op for it.
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -108,7 +123,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -147,6 +162,13 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "No scenario file changed → skipping the metered PR eval."
           fi
+      # ADVISORY reachability report (F12 / #3566): give the reachability check a
+      # live production caller. It walks every `t3 …` the shipped scenarios +
+      # fixtures cite against the LIVE CLI registry. ADVISORY by default (exits 0
+      # even with unreachable references) so it never reds a PR; a crash (broken
+      # wiring) still fails loud. Runs on every PR, not only when a scenario changed.
+      - name: Report scenario-reachability (advisory)
+        run: uv run t3 eval reachability
 
   # EVAL: run ONLY the changed scenarios (single trial), in the CI container.
   # Skipped entirely when no scenario changed.
@@ -159,10 +181,10 @@ jobs:
     # diagnosable run instead of stalling to the 6h default.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -173,7 +195,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -185,9 +207,14 @@ jobs:
           command: uv sync
       # Install the Claude CLI the metered api backend shells out to, then ASSERT
       # it — a missing binary must FAIL the job, not skip every scenario green.
+      # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
+      # runner actually execs (`_find_cli` returns the bundle first; this global install
+      # is only the presence-gate). Matching it stops the two CLIs in one image from
+      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
+      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.169
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
@@ -229,21 +256,64 @@ jobs:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
+          # FAILURE OBSERVABILITY (#3744, #3758) — the same contract `eval.yml` and
+          # `eval-weekly-reusable.yml` carry, on the third lane that spends real credit.
+          # The output was STREAMED but never STORED: nothing wrote the run to a file, so
+          # nothing could be uploaded and anything lost to the 80min SIGTERM kill was gone.
+          # It is now teed to a durable $RUNNER_TEMP log (uploaded below, and the ONLY
+          # artifact that exists before the first scenario finishes rendering), and on a
+          # non-zero exit the tail is re-printed into the job log — the first diagnosis
+          # needs no download. Printing INSIDE the retried command is what makes EACH
+          # attempt visible; `tee -a` keeps both attempts in the one uploaded log.
+          # `set -o pipefail` stops `tee` masking the eval's exit code and the block ends
+          # in `exit "$rc"`: this adds visibility, it never swallows the failure.
+          # `-eu` are dropped so the flag set is byte-identical to the other two lanes':
+          # the loop captures every scenario's code in `rc` and re-raises it, so aborting
+          # on the first non-zero would only discard the remaining scenarios' output
+          # while reporting the same red, and an unset EVAL_NAMES still fails loud
+          # through the ZERO-IS-RED guard below rather than through `-u`.
           command: |
-            set -euo pipefail
-            : > "$RUNNER_TEMP/eval-summary.md"
+            set -o pipefail
+            TAIL_LINES=400
+            LOG="$RUNNER_TEMP/eval-run-pr.log"
+            SUMMARY="$RUNNER_TEMP/eval-summary.md"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" >> "$LOG"
+            : > "$SUMMARY"
             rc=0
+            ran=0
             IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
             for name in "${NAMES[@]}"; do
               name="$(echo "$name" | xargs)"
-              [ -z "$name" ] && continue
+              if [ -z "$name" ]; then
+                continue
+              fi
+              ran=$((ran + 1))
               uv run t3 eval run "$name" --backend api \
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || rc=$?
-              [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 | tee -a "$LOG" || rc=$?
+              if [ -f "$RUNNER_TEMP/eval-summary-$name.md" ]; then
+                cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$SUMMARY"
+              fi
             done
+            # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
+            # scenario), so executing ZERO here is a vacuous green, never a pass.
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::detect selected scenarios (run=true) but the eval executed ZERO — vacuous green, failing." >&2
+              exit 1
+            fi
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+            echo "::group::the PR eval FAILED (exit $rc) — last $TAIL_LINES captured lines"
+            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            echo "::endgroup::"
+            if [ -s "$SUMMARY" ]; then
+              cat "$SUMMARY"
+            else
+              echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
+            fi
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly). The summary is the
@@ -256,11 +326,64 @@ jobs:
           fi
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
-      # red run still publishes it.
+      # red run still publishes it. The path is a GLOB: the loop renders ONE report
+      # per scenario (`eval-transcripts-<name>.html`), so the un-suffixed filename
+      # this used to publish was never written by anything — `if-no-files-found:
+      # warn` then made every run, red or green, upload nothing at all.
       - name: Upload the per-trial transcript report (private)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-pr-transcripts
-          path: ${{ runner.temp }}/eval-transcripts.html
+          path: ${{ runner.temp }}/eval-transcripts-*.html
           if-no-files-found: warn
+      # The RAW teed stdout/stderr of every attempt. Unlike the transcript and the
+      # summary (both rendered as each scenario completes), this exists from the first
+      # byte, so it is the only artifact that survives a run killed mid-scenario. It is
+      # UNSANITIZED, so it is private-only and never collected by a publish job.
+      - name: Upload the raw run log (private)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-run-log-pr
+          path: ${{ runner.temp }}/eval-run-pr.log
+          if-no-files-found: warn
+
+  # EVAL-GATE: the single always-reporting merge gate an overlay caller pins as a
+  # required status check. A conditionally-skipped job (the `eval` job skips when no
+  # scenario changed) is a fragile required check — GitHub leaves a skipped required
+  # context pending, wedging every no-change PR. This job ALWAYS runs (`if:
+  # always()`), so it emits exactly ONE conclusive success/failure check (KEEP THE
+  # JOB KEY `eval-gate` STABLE). It PASSes when detection succeeded AND the eval
+  # passed or was legitimately skipped (no scenario changed); it FAILs when
+  # detection failed, when the eval failed (a real regression OR the vacuous
+  # zero-executed case that `exit 1`s inside the eval job), or when either job was
+  # cancelled.
+  eval-gate:
+    needs: [detect, eval]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conclude the selective-eval merge gate
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          EVAL_RESULT: ${{ needs.eval.result }}
+          CHANGED: ${{ needs.detect.outputs.run }}
+        run: |
+          echo "detect=$DETECT_RESULT eval=$EVAL_RESULT changed_scenarios=$CHANGED"
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "::error::eval-gate FAIL — scenario detection did not succeed (detect=$DETECT_RESULT); cannot prove the PR's eval coverage."
+            exit 1
+          fi
+          case "$EVAL_RESULT" in
+            success)
+              echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              ;;
+            skipped)
+              echo "eval-gate PASS — no scenario changed; nothing to eval."
+              ;;
+            *)
+              echo "::error::eval-gate FAIL — the selective eval did not pass (eval=$EVAL_RESULT): a changed scenario failed, the run executed zero scenarios (vacuous), or the job was cancelled."
+              exit 1
+              ;;
+          esac

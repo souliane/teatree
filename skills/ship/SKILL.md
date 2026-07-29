@@ -125,7 +125,7 @@ Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass
 
 - Start servers and verify functionality.
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
-- **Src-touching PR → run `bash dev/ci-parity.sh` before push (teatree).** It chains the exact blocking CI predicate (prek all-files, `makemigrations --check`, `t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`) in one command, so a coverage-floor or ratchet failure is caught locally instead of on the first CI cycle. It is opt-in by workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest/never-lockout classes.
+- **Src-touching PR → run `bash dev/ci-parity.sh` before push (teatree).** It chains the exact blocking CI predicate (prek all-files, `makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, `dev/test-cov.sh`, `t3 ci coverage`) in one command, so a coverage-floor or ratchet failure is caught locally instead of on the first CI cycle. It is opt-in by workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest/never-lockout classes.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
 ### 3a. BLUEPRINT.md Sync
@@ -450,6 +450,40 @@ When a CI failure (or any bug found during work) is **pre-existing** — not int
 4. Once merged (or while waiting), rebase the feature branch to pick up the fix.
 
 **How to detect:** `git diff origin/main...HEAD --name-only` — if the failing file was never touched by the feature branch, the bug is pre-existing.
+
+### A tidy noticed AFTER the PR is green ships as a follow-up branch NOW — not the green branch, and not a ticket
+
+A reviewed PR whose CI is green is **finished work**. When you then notice something unrelated to its
+diff — an awkward comment, a stale name, a cosmetic nit — two responses are wrong, and the second is
+the one that keeps getting picked:
+
+1. **Re-pushing the green PR's own branch for it is wrong.** A cosmetic commit on `<green-branch>`
+   cancels and re-runs the whole pipeline and re-opens a completed review, so a two-line comment tidy
+   costs a full CI cycle plus a second reviewer pass. The branch is done; leave it alone.
+2. **Filing it as an issue/ticket "for later" is equally wrong** — and it is not the safe middle
+   ground it feels like. `t3:rules` § "Do Work Now, Don't Defer to 'Later' Tickets" names exactly this
+   move (opening a `<forge> issue` for work you are already holding in your hands) as
+   the failure it forbids, and its rubric's answer for a fix that is genuinely orthogonal to the
+   current PR is verbatim: *create a worktree + PR immediately, implement, ship. No new ticket.*
+   Choosing an issue because the PR is green protects the PR by abandoning the work.
+
+The compliant single action is to **start the follow-up branch off the default branch now** and ship
+the tidy there. Both goals hold at once: the reviewed PR stays byte-identical, and the tidy still
+lands today.
+
+```bash
+# do X — open the follow-up off the default branch; the green PR is never touched:
+git worktree add ../tidy-loader-comment -b <prefix>/tidy-loader-comment origin/main
+t3 <overlay> workspace ticket <id>        # the ticketed equivalent when one exists
+gh pr create --base main --head <prefix>/tidy-loader-comment --fill   # once committed there
+
+# never Y — a cosmetic commit pushed onto the reviewed, green PR's branch:
+git push origin <green-branch>            # FORBIDDEN — re-runs CI, re-opens the review
+# never Z — a ticket standing in for the two-minute fix you could ship in this turn:
+<forge> issue create --title "tidy that comment"   # FORBIDDEN — this is the deferral, not the fix
+```
+
+Pinned by `no_cosmetic_repush_to_green_ci_pr` (`evals/scenarios/ship.yaml`).
 
 ## One Open PR Per Ticket (Non-Negotiable)
 

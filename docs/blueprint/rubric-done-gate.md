@@ -62,5 +62,5 @@ t3 <overlay> config_setting set require_rubric_verification true --overlay t3-te
 
 - Auto-deriving the rubric from `/plan` → [#2240](https://github.com/souliane/teatree/issues/2240) (this MR accepts explicit criteria only).
 - Automating WHO dispatches the verifier sub-agent — this MR records a verdict; orchestration can reuse the existing review-dispatch machinery later.
-- SDK-cutover of the eval grader (`eval/judge.py`'s `ClaudeJudge.grade`, currently `claude -p`). The LLM-grader prior art is kept SEPARATE from this DB-record path on purpose: extracting a shared grader would couple the metered-LLM path to the durable-record path and pull the SDK cutover into scope.
+- Sharing a grader with the eval LLM-judge (`eval/judge.py`'s `ClaudeJudge.grade`, an in-process `claude-agent-sdk` call). The two are kept SEPARATE on purpose: extracting a shared grader would couple the metered-LLM path to this durable-record path.
 - Re-pending rubric grades on `reopen()` — out of scope for this first MR; the SHA-bind already invalidates stale grades when a new workstream moves the head.

@@ -14,6 +14,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import LoopLease
+from tests._loop_principal_env import pinned_loop_principal
 
 
 def _claim(*args: str, detected: str = "", **kwargs) -> tuple[str, str]:
@@ -24,7 +25,7 @@ def _claim(*args: str, detected: str = "", **kwargs) -> tuple[str, str]:
     """
     out, err = io.StringIO(), io.StringIO()
     with (
-        mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-x"),
+        pinned_loop_principal("sess-x"),
         mock.patch("teatree.loop.driver_detection.detect_driver", return_value=detected),
     ):
         call_command("loop_owner", "claim", *args, stdout=out, stderr=err, **kwargs)
@@ -46,9 +47,9 @@ class TestClaimWithSelfPumpRegisters(TestCase):
 
 class TestClaimWithNothingWarnsLoud(TestCase):
     def test_claim_succeeds_but_warns_with_remediation_verbatim(self) -> None:
-        out, err = _claim(slot="loop:dispatch", detected="")
-        # The claim itself SUCCEEDS (exit 0, OK on stdout) — driverless is a warning, not a refusal.
-        assert "OK    claimed" in out
+        _out, err = _claim(slot="loop:dispatch", detected="")
+        # The claim itself SUCCEEDS (exit 0, OK on the human/stderr channel) — driverless is a warning, not a refusal.
+        assert "OK    claimed" in err
         assert LoopLease.objects.get(name="loop:dispatch").driver == ""
         # The three remedies are named verbatim.
         assert "t3 worker" in err
@@ -74,13 +75,14 @@ class TestOwnerSurfacesDriver(TestCase):
     def test_owner_json_carries_the_driver(self) -> None:
         _claim(slot="loop:dispatch", detected="loop_runner")
         out = io.StringIO()
-        with mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-x"):
+        with pinned_loop_principal("sess-x"):
             call_command("loop_owner", "owner", slot="loop:dispatch", json_output=True, stdout=out)
         assert json.loads(out.getvalue())["driver"] == "loop_runner"
 
     def test_owner_text_reports_driverless(self) -> None:
         _claim(slot="loop:dispatch", detected="")
         out = io.StringIO()
-        with mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-x"):
-            call_command("loop_owner", "owner", slot="loop:dispatch", stdout=out)
-        assert "driver: DRIVERLESS" in out.getvalue()
+        err = io.StringIO()
+        with pinned_loop_principal("sess-x"):
+            call_command("loop_owner", "owner", slot="loop:dispatch", stdout=out, stderr=err)
+        assert "driver: DRIVERLESS" in err.getvalue()

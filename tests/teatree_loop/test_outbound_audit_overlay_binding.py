@@ -267,10 +267,10 @@ class RecordClaimStampsOverlayTests(TestCase):
         Lets the audit verifier re-read with the same credentials that
         posted the DM, closing the multi-overlay drift gap.
         """
-        from teatree.core.notify import _record_outbound_claim  # noqa: PLC0415
+        from teatree.core.notify_ledger import record_outbound_claim  # noqa: PLC0415 — deferred: local import
 
         with patch.dict(os.environ, {"T3_OVERLAY_NAME": "slack-overlay"}, clear=False):
-            _record_outbound_claim(
+            record_outbound_claim(
                 idempotency_key="slack_dm:notify-1",
                 target_url="https://slack.example/p/1",
                 channel="C123",

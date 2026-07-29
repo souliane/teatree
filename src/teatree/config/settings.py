@@ -1,394 +1,28 @@
-"""TeaTree config dataclasses + the per-overlay / env override registries.
+"""TeaTree config dataclasses — ``UserSettings``, ``TeaTreeConfig``, ``OverlayEntry``.
 
-``UserSettings`` (the ``[teatree]`` table), ``TeaTreeConfig``, ``OverlayEntry``,
-the field ``_parse_*`` coercers, and the two override registries
-(``OVERLAY_OVERRIDABLE_SETTINGS`` / ``ENV_SETTING_OVERRIDES``). Split out of the
-package module for the module-health LOC cap; re-exported from
-``teatree.config`` so every ``teatree.config.<name>`` path stays valid.
+The flat persisted schema and its field defaults. WHERE a value may come from and
+HOW a stored one is coerced live in the sibling ``setting_registries``. Both are
+re-exported from ``teatree.config`` so every ``teatree.config.<name>`` path stays
+valid.
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
-from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, parse_harness_name
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
 from teatree.config.enums import (
-    AdmissionPolicy,
     Autonomy,
     CriticGateMode,
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
     SendProxyMode,
-    TeamsDisplay,
     Wip,
 )
-from teatree.config.mr_reminder import MrReminderConfig, parse_mr_reminder_setting
-from teatree.config.setting_parsers import (
-    _parse_env_bool,
-    _parse_env_bool_default_on,
-    _parse_env_positive_int,
-    _parse_env_str_list,
-    _parse_env_teams_display,
-    _parse_handover_mirror_path,
-    _parse_overridable_positive_int,
-    _parse_str_list,
-    _parse_strict_bool,
-    _parse_strict_float,
-    _parse_strict_int,
-    _parse_strict_str,
-    _parse_user_identity_aliases,
-)
+from teatree.config.mr_reminder import MrReminderConfig
 from teatree.config.settings_loop_flags import _LoopFlagAndCredentialSettings
-from teatree.config.speak import parse_speak_setting
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
-
-# The DB-home parser registry (#1775 hard partition). Every DB-home
-# ``UserSettings`` field (see ``config/homes.py``) has an entry here: the parser
-# coerces a stored ``ConfigSetting`` JSON value to the field's type. This registry
-# is the SOLE source for a DB-home field — its ``[teatree]`` / ``[overlays.<name>]``
-# TOML tables are NOT read on resolution; a DB-home key left in TOML is ignored on
-# read (migrate it with ``config_setting import``). ``_db_setting_overrides`` consults this to
-# decide which ``ConfigSetting`` rows supply a value and reuses each entry's
-# parser; a row for a key absent here is ignored. Per DB-home field the chain is
-# ``env -> ConfigSetting (overlay then global) -> dataclass default``. A
-# fitness test asserts this registry covers exactly the DB-home set (no TOML-home
-# key, every DB-home key present).
-OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
-    # Stored as a path STRING (JSONField holds no Path); config.worktree_root() is
-    # the typed accessor that expanduser()-wraps it and applies the per-overlay default.
-    "workspace_dir": _parse_strict_str,
-    "mode": Mode.parse,
-    "autonomy": Autonomy.parse,
-    "wip": Wip.parse,
-    "agent_runtime": AgentRuntime.parse,
-    "agent_harness": parse_harness_name,
-    "agent_harness_provider": AgentHarnessProvider.parse,
-    "enforce_regulated_path": _parse_strict_bool,
-    "regulated_path_model_allowlist": _parse_str_list,
-    "pydantic_ai_request_limit": _parse_strict_int,
-    "pydantic_ai_max_tokens": _parse_strict_int,
-    # #882 / #885 (F9.5): the headless watchdog + per-ticket budget ceilings, folded
-    # off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` / ``TEATREE_TICKET_BUDGET``
-    # dicts into the DB-home config tier so ``config_setting get`` reads them.
-    "watchdog_max_runtime_seconds": _parse_strict_int,
-    "watchdog_max_turns": _parse_strict_int,
-    "watchdog_max_cost_usd": _parse_strict_float,
-    "ticket_budget_max_cost_usd": _parse_strict_float,
-    "orca_router_pass_path": _parse_strict_str,
-    "orca_router_lane": _parse_strict_str,
-    "orca_router_name": _parse_strict_str,
-    "contribute": _parse_strict_bool,
-    "excluded_skills": _parse_str_list,
-    "loop_cadence_seconds": _parse_strict_int,
-    "loop_runner_enabled": _parse_strict_bool,
-    "worker_quiescing": _parse_strict_bool,
-    "teams_enabled": _parse_strict_bool,
-    "teams_max_panes": _parse_overridable_positive_int(1),
-    "teams_idle_minutes": _parse_overridable_positive_int(30),
-    "teams_display": TeamsDisplay.parse,
-    "require_human_approval_to_merge": _parse_strict_bool,
-    "substrate_self_signoff": _parse_strict_bool,
-    "substrate_auto_merge_authorized_by": _parse_strict_str,
-    "max_open_prs_per_repo_per_ticket": _parse_strict_int,
-    "require_human_approval_to_answer": _parse_strict_bool,
-    "on_behalf_post_mode": OnBehalfPostMode.parse,
-    "missing_issue_ref_policy": MissingIssuePolicy.parse,
-    "on_behalf_auto_actions": _parse_str_list,
-    "review_request_post_disabled": _parse_strict_bool,
-    "notify_user_via_bot": _parse_strict_bool,
-    "notify_on_post_on_behalf": _parse_strict_bool,
-    "user_identity_aliases": _parse_user_identity_aliases,
-    "architectural_review_disabled": _parse_strict_bool,
-    "architectural_review_skill": _parse_strict_str,
-    "architectural_review_cadence_hours": _parse_strict_int,
-    "architectural_review_after_merge_count": _parse_strict_int,
-    "review_skill": _parse_strict_str,
-    "admit_colleague_prs_to_board": _parse_strict_bool,
-    "require_review_context": _parse_strict_bool,
-    "e2e_mandatory_gate_enabled": _parse_strict_bool,
-    "attachment_gate_enabled": _parse_strict_bool,
-    "snapshot_baseline_gate_enabled": _parse_strict_bool,
-    "gate_relaxation_gate_enabled": _parse_strict_bool,
-    "incremental_push_gate": _parse_strict_bool,
-    "chrome_devtools_mcp_enabled": _parse_strict_bool,
-    "chrome_devtools_headless": _parse_strict_bool,
-    "colleague_repo_url_pattern": _parse_strict_str,
-    "solo_repo_url_pattern": _parse_strict_str,
-    "require_anti_vacuity_attestation": _parse_strict_bool,
-    "require_reviewed_state_for_review_request": _parse_strict_bool,
-    "require_integration_review": _parse_strict_bool,
-    "require_merge_evidence": _parse_strict_bool,
-    "require_plan_adequacy": _parse_strict_bool,
-    "require_executed_repro": _parse_strict_bool,
-    "require_debt_delta": _parse_strict_bool,
-    "require_merge_quality_verdict": _parse_strict_bool,
-    "expected_required_contexts": _parse_str_list,
-    "critic_gate_mode": CriticGateMode.parse,
-    "send_proxy_mode": SendProxyMode.parse,
-    "send_proxy_allowlist": _parse_str_list,
-    "bulk_close_threshold": _parse_strict_int,
-    "require_rubric_verification": _parse_strict_bool,
-    "require_spec_coverage": _parse_strict_bool,
-    "e2e_confidence_threshold": _parse_strict_int,
-    "scanning_news_disabled": _parse_strict_bool,
-    "scanning_news_skill": _parse_strict_str,
-    "scanning_news_cadence_hours": _parse_strict_int,
-    "ask_before_creating_news_tickets": _parse_strict_bool,
-    "eval_local_disabled": _parse_strict_bool,
-    "eval_local_skill": _parse_strict_str,
-    "eval_local_cadence_hours": _parse_strict_int,
-    "backlog_sweep_disabled": _parse_strict_bool,
-    "backlog_sweep_skill": _parse_strict_str,
-    "backlog_sweep_cadence_hours": _parse_strict_int,
-    "ask_before_backlog_sweep_closes": _parse_strict_bool,
-    "dogfood_smoke_disabled": _parse_strict_bool,
-    "dogfood_smoke_skill": _parse_strict_str,
-    "dogfood_smoke_cadence_hours": _parse_strict_int,
-    "dogfood_smoke_overlay": _parse_strict_str,
-    "self_update_disabled": _parse_strict_bool,
-    "self_update_cadence_hours": _parse_strict_int,
-    "auto_update_reinstall": _parse_strict_bool,
-    "auto_update_require_green_main": _parse_strict_bool,
-    "resource_pressure_disabled": _parse_strict_bool,
-    "resource_pressure_cadence_minutes": _parse_strict_int,
-    "resource_pressure_min_free_interval_minutes": _parse_strict_int,
-    "disk_warn_free_gb": _parse_strict_float,
-    "disk_crit_free_gb": _parse_strict_float,
-    "ram_warn_avail_gb": _parse_strict_float,
-    "ram_crit_avail_gb": _parse_strict_float,
-    "disk_cache_allowlist": _parse_str_list,
-    "allow_destructive_disk": _parse_strict_bool,
-    "worktree_stale_days": _parse_strict_int,
-    "max_worktree_gc_per_tick": _parse_strict_int,
-    "allow_destructive_ram": _parse_strict_bool,
-    "ram_kill_allowlist": _parse_str_list,
-    "task_sweep_disabled": _parse_strict_bool,
-    "task_sweep_recheck_interval_hours": _parse_strict_int,
-    "max_concurrent_local_stacks": _parse_strict_int,
-    "provision_step_timeout_seconds": _parse_strict_int,
-    "idle_stack_reaper_disabled": _parse_strict_bool,
-    "idle_stack_idle_minutes": _parse_strict_int,
-    "idle_stack_reaper_cadence_minutes": _parse_strict_int,
-    "idle_stack_e2e_recent_minutes": _parse_strict_int,
-    "stale_stack_min_age_minutes": _parse_strict_int,
-    "local_stack_queue_disabled": _parse_strict_bool,
-    "local_stack_queue_max_attempts": _parse_strict_int,
-    "clean_ignore": _parse_str_list,
-    "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
-    "pull_main_clone_disabled": _parse_strict_bool,
-    "pull_main_clone_cadence_hours": _parse_strict_int,
-    "review_nag_enabled": _parse_strict_bool,
-    "review_request_dedup_window_days": _parse_overridable_positive_int(30),
-    "review_request_dedup_max_pages": _parse_overridable_positive_int(5),
-    "mr_title_regex": _parse_strict_str,
-    "issue_implementer_enabled": _parse_strict_bool,
-    "issue_implementer_label": _parse_strict_str,
-    "issue_implementer_require_label": _parse_strict_bool,
-    "issue_implementer_max_concurrent": _parse_strict_int,
-    "issue_implementer_cadence_hours": _parse_strict_int,
-    "trusted_issue_authors": _parse_str_list,
-    "admission_policy": AdmissionPolicy.parse,
-    "fleet_claim_enabled": _parse_strict_bool,
-    "auto_disposition_enabled": _parse_strict_bool,
-    "limit_autorecovery_enabled": _parse_strict_bool,
-    # #3201 PR-3b — the CI-eval self-heal autonomous-fixer OFF switch (DARK flag).
-    "ci_eval_heal_autofix_enabled": _parse_strict_bool,
-    "outer_loop_enabled": _parse_strict_bool,
-    "directive_loop_enabled": _parse_strict_bool,
-    # North-star PR-7 — the directive VERIFYING horizon (days) after activation.
-    "directive_verify_days": _parse_strict_int,
-    # T4-PR-3 — the autoresearch outer-loop runtime bounds: the post-implement
-    # measurement horizon (days), the weekly experiment cap, and the convergence
-    # brake (park after N consecutive non-KEPT decisions). All DB-home,
-    # per-overlay overridable — an overlay can trial the loop on its own budget.
-    "outer_loop_measure_days": _parse_strict_int,
-    "outer_loop_max_per_week": _parse_strict_int,
-    "outer_loop_stop_after_consecutive_failures": _parse_strict_int,
-    # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (DARK feature flag) and
-    # the human-approved recipe sha the score stamps against. Both DB-home,
-    # per-overlay overridable — an overlay can trial the score while the global stays OFF.
-    "factory_score_enabled": _parse_strict_bool,
-    "approved_recipe_sha": _parse_strict_str,
-    "auto_disposition_max_closes_per_tick": _parse_strict_int,
-    "triage_assessor_enabled": _parse_strict_bool,
-    "triage_assessor_cadence_hours": _parse_strict_int,
-    "triage_assessor_max_issues_per_tick": _parse_strict_int,
-    # Directive #2 DB-backup scanner knobs. Cadence / retention use the fail-SAFE
-    # coercer (a non-positive or mistyped value degrades to the default), so the
-    # "keep a week of backups" bound cannot be configured away to 0.
-    "db_backup_disabled": _parse_strict_bool,
-    "db_backup_cadence_hours": _parse_overridable_positive_int(24),
-    "db_backup_retention_days": _parse_overridable_positive_int(7),
-    "orchestrate_claim_enabled": _parse_strict_bool,
-    "boost_concurrency": _parse_strict_int,
-    # #1775 newly-DB-home (formerly file-only): these now resolve from the DB store.
-    "agent_signature": _parse_strict_bool,
-    "admin_autologin_enabled": _parse_strict_bool,
-    "claude_chrome": _parse_strict_bool,
-    "repo_mode": _parse_strict_str,
-    "ban_close_trailers_on_namespaces": _parse_str_list,
-    "billing_cycle_anchor_day": _parse_strict_int,
-    "sdk_monthly_credit_usd": _parse_strict_float,
-    # #2697 — bypass readers migrated from bespoke ``os.environ`` reads to DB-home.
-    "gitlab_approval_scanner_enabled": _parse_strict_bool,
-    "contribute_plugin_dir": _parse_strict_bool,
-    "dream_propose_evals": _parse_strict_bool,
-    "hook_fetch_titles": _parse_strict_bool,
-    # Per-account ``pass`` routing for the Anthropic credentials (llm/credentials.py):
-    # an ORDERED LIST of ``pass`` entries the routing selector fans out over per
-    # overlay (empty list = no override, credential keeps its built-in path).
-    "anthropic_oauth_pass_paths": _parse_str_list,
-    "anthropic_api_key_pass_paths": _parse_str_list,
-    # DB-home cutover: ``check_updates``'s sole reader ``check_for_updates``
-    # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
-    # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
-    "check_updates": _parse_strict_bool,
-    # DB-home cutover: ``timezone`` was tagged "needed to open the DB", but Django
-    # ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES``
-    # without reading it — so it is not a bootstrap dep. It has no live reader
-    # (DB-home for partition consistency). (The former sibling ``worktrees_dir``
-    # was removed — it duplicated ``worktree_root()``'s "where worktrees are
-    # created" role with a divergent default; see ``tests/config/
-    # test_removed_dead_settings.py``.)
-    "timezone": _parse_strict_str,
-    # DB-home cutover: the last two per-overlay-TOML-overridable carve-out
-    # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
-    # ``orchestrator_bash_gate_enabled``'s reader (``teatree_gate._gate_key_is_enabled``)
-    # is already DB-first via ``cold_reader`` (toml fallback for the cold self-rescue);
-    # ``privacy`` has no live production reader.
-    "orchestrator_bash_gate_enabled": _parse_strict_bool,
-    "privacy": _parse_strict_str,
-    # DB-home cutover: ``handover_mirror_path``. The pre-Django reader
-    # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
-    # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the
-    # exact path ``write_mirror`` uses when unset — so the "read when the DB is
-    # unreachable" carve-out is satisfied without TOML. Stored as a path STRING.
-    "handover_mirror_path": _parse_handover_mirror_path,
-    # DB-home cutover: ``statusline_chain``. The bash statusline hook now
-    # reads it from the canonical sqlite via the ``sqlite3`` CLI + ``json_each``
-    # (``_statusline_chain_db``) — no importable teatree python, no TOML parse.
-    "statusline_chain": _parse_str_list,
-    # DB-home cutover: ``autoload`` (#256 engagement flag). Read DB-only via
-    # ``cold_reader`` (Python hook ``teatree_settings.autoload_enabled``) and the
-    # ``sqlite3`` CLI (bash ``statusline.sh._autoload_db_value``); a ``[teatree]
-    # autoload`` TOML value is ignored on read. Strict bool, default OFF.
-    "autoload": _parse_strict_bool,
-    # Parallel ticket-workspace provisioning speed + resource-aware admission.
-    # Fast steps (symlinks, settings, a compose override) default to this short
-    # ceiling instead of the uniform 1800s one; a step opts into the long
-    # ceiling via ``ProvisionStep.heavy``. Per-overlay overridable.
-    "provision_fast_step_timeout_seconds": _parse_strict_int,
-    # nCPU-derived default concurrency cap for parallel worktree provisioning
-    # (0 = auto-derive from ``os.cpu_count()`` at each read, never persisted as
-    # a magic number that drifts from the actual host). A positive value pins
-    # an explicit cap. Per-overlay overridable.
-    "provision_max_concurrency": _parse_strict_int,
-    # RAM-used-percent ceiling above which a NEW provision is held (queued, not
-    # started) rather than admitted — mirrors ``DEFAULT_RAM_USED_CEILING_PCT``
-    # in the self-improve budget gate. Per-overlay overridable.
-    "provision_ram_ceiling_percent": _parse_strict_int,
-    # A provision whose total duration exceeds this many seconds triggers a
-    # best-effort out-of-band user alert (the same egress
-    # ``provision_timebox.alert_provision_user`` uses) so a regression in
-    # provisioning speed is never silently absorbed. Per-overlay overridable.
-    "provision_slow_threshold_seconds": _parse_strict_int,
-    # Reference-DB DSLR snapshots older than this many days are STALE — the
-    # snapshot-warmer loop refreshes them out-of-band; a ticket-critical-path
-    # provision facing a stale/missing snapshot fails fast with a pointer to
-    # the warmer instead of silently paying the slow restore+migrate path.
-    # Per-overlay overridable.
-    "snapshot_warmer_max_age_days": _parse_strict_int,
-    "snapshot_warmer_disabled": _parse_strict_bool,
-    # DB-home cutover: the last two carve-out fields — the nested
-    # structured tables ``speak`` / ``mr_reminder``. Each parser validates + stores
-    # the CANONICAL ``to_dict()`` JSON object; the resolver rebuilds the dataclass
-    # bespoke (``resolution._BESPOKE_STRUCTURED_FIELDS``) since a dict cannot
-    # flat-replace the dataclass field. The cold Stop-hook ``speak`` reader uses
-    # ``cold_reader.read_setting`` (a dict), so neither needs TOML.
-    "speak": parse_speak_setting,
-    "mr_reminder": parse_mr_reminder_setting,
-}
-
-# TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
-# DB-home cutover emptied this: the per-overlay override of a setting now
-# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). ``speak`` was
-# never here — its per-overlay override merges bespoke (now off the DB overlay-scope
-# row, ``resolution._resolve_speak_db``); every other field is DB-home. Discovery
-# still unions this with the DB-home registry; with it empty the union is just the
-# DB-home registry.
-TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
-
-# ``T3_*`` env vars that win over both the per-overlay override and the
-# global setting. Mapped to ``(UserSettings field, parser)``.
-ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
-    "T3_MODE": ("mode", Mode.parse),
-    "T3_WIP": ("wip", Wip.parse),
-    "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
-    "T3_AGENT_HARNESS": ("agent_harness", parse_harness_name),
-    "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
-    "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),
-    "T3_ORCA_ROUTER_LANE": ("orca_router_lane", str),
-    "T3_ORCA_ROUTER_NAME": ("orca_router_name", str),
-    "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
-    "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
-    "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
-    "T3_REVIEW_SKILL": ("review_skill", str),
-    "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
-    "T3_ISSUE_IMPLEMENTER_REQUIRE_LABEL": ("issue_implementer_require_label", _parse_env_bool),
-    "T3_TRUSTED_ISSUE_AUTHORS": ("trusted_issue_authors", _parse_env_str_list),
-    "T3_FLEET_CLAIM_ENABLED": ("fleet_claim_enabled", _parse_env_bool),
-    "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
-    "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
-    "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
-    "T3_OUTER_LOOP_ENABLED": ("outer_loop_enabled", _parse_env_bool),
-    "T3_LIMIT_AUTORECOVERY_ENABLED": ("limit_autorecovery_enabled", _parse_env_bool),
-    "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
-    "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
-    "T3_WORKER_QUIESCING": ("worker_quiescing", _parse_env_bool),
-    "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
-    "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
-    "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
-    "T3_TEAMS_DISPLAY": ("teams_display", _parse_env_teams_display),
-    "T3_CONTRIBUTE": ("contribute_plugin_dir", _parse_env_bool),
-    "T3_HOOK_FETCH_TITLES": ("hook_fetch_titles", _parse_env_bool_default_on),
-    "T3_AUTOLOAD": ("autoload", _parse_env_bool),
-}
-
-
-# The ``UserSettings`` fields whose WRITE is itself an authorization / delegation /
-# fail-closed-boundary act — not a tunable knob. Writing one of these does not merely
-# CONFIGURE a gate: it grants authority (``substrate_auto_merge_authorized_by`` — "the
-# config write IS the human authorization"), delegates a keystone sign-off
-# (``substrate_self_signoff``), disarms an egress/on-behalf pre-gate
-# (``on_behalf_post_mode = IMMEDIATE``, ``on_behalf_auto_actions``), or WIDENS a
-# fail-closed intake / egress / regulated allowlist (``trusted_issue_authors``,
-# ``send_proxy_allowlist``, ``regulated_path_model_allowlist``), raises the global
-# autonomy posture (``autonomy``, ``enforce_regulated_path``), or relaxes an
-# autonomous-close boundary (``bulk_close_threshold``). The MCP ``config_setting_set``
-# surface REFUSES every key here by declared EFFECT (``teatree.mcp.write_tools`` reads
-# this set), so a shell-denied MCP agent can never self-grant merge delegation or widen
-# the fail-closed intake allowlist by classifying keys via a name-glob that misses them
-# (F9.1). This is EFFECT-based, not name-shaped: the companion conformance test
-# (``tests/teatree_mcp/test_write_tools_refusals.py``) walks every ``UserSettings`` field
-# and fails CLOSED if a delegation/allowlist/authorization-shaped field is in neither this
-# set nor the explicit reviewed ``teatree.mcp.write_tools.MCP_SETTABLE_OK`` allowlist — so
-# a future safety-posture field can never ship silently MCP-settable.
-SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "autonomy",
-        "enforce_regulated_path",
-        "regulated_path_model_allowlist",
-        "substrate_self_signoff",
-        "substrate_auto_merge_authorized_by",
-        "on_behalf_post_mode",
-        "on_behalf_auto_actions",
-        "send_proxy_allowlist",
-        "trusted_issue_authors",
-        "bulk_close_threshold",
-    }
-)
 
 
 @dataclass
@@ -420,7 +54,14 @@ class _WorkspaceCoreSettings:
 
     A private in-file group base (see :class:`UserSettings`). Pure data-declaration —
     no behaviour — so the flat persisted schema is preserved by inheritance.
+
+    ``GROUP_PATH`` is where this base's fields render in the settings hierarchy —
+    a ``ClassVar``, so it is declaration metadata and never a persisted field. It is
+    the ONLY place this group is named: ``teatree.config.setting_groups`` reads it off
+    the MRO, so a field added below is placed by it with nothing else to edit.
     """
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Workspace", "Engagement & identity")
 
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
     privacy: str = ""
@@ -442,9 +83,22 @@ class _WorkspaceCoreSettings:
     excluded_skills: list[str] = field(default_factory=list)
 
 
+#: Owner-chosen per-request output-token ceiling for the ``pydantic_ai`` harness
+#: (:attr:`_ModeHarnessSettings.pydantic_ai_max_tokens`). Generous by design — a ceiling
+#: only bills for tokens actually generated, and the real spend guards on this lane are the
+#: watchdog cost ceiling and ``pydantic_ai_request_limit``, not this cap. Should a run STILL
+#: hit it, the truncation is recorded FAILED AND escalated to the owner
+#: (:func:`teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so the ceiling can be
+#: raised deliberately rather than failing silently. pydantic_ai's Anthropic binding otherwise
+#: defaults to 4096, which truncates a long result envelope mid-JSON.
+PYDANTIC_AI_MAX_TOKENS_DEFAULT: Final[int] = 16384
+
+
 @dataclass
 class _ModeHarnessSettings:
     """Mode / autonomy + the two-layer agent-harness (runtime / transport / provider) selectors."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Agents", "Mode & harness")
 
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
@@ -462,7 +116,7 @@ class _ModeHarnessSettings:
     # this picks the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
     # behaviour) is the ``claude-agent-sdk`` backend; ``pydantic_ai`` (#2885) is the
-    # OrcaRouter-BYOK, OpenAI-compatible backend. The backend set is OPEN (#3157 E1):
+    # generic OpenAI-compatible backend. The backend set is OPEN (#3157 E1):
     # this is a registry KEY, not a closed enum — an overlay registers a third
     # transport under the ``teatree.harnesses`` entry-point group and selects it here
     # by name (an unregistered name fails LOUD at dispatch, not at config parse). The
@@ -480,12 +134,12 @@ class _ModeHarnessSettings:
     # credential lookup they haven't configured. An explicit ``subscription_oauth``
     # forces the plan's OAuth token (stripping the API key) — the ``claude_sdk``
     # default STANCE once pinned. ``api_key`` forces the metered key — the
-    # ``claude_sdk``-only opt-in. ``orca_router_byok`` is the sole implemented
-    # ``pydantic_ai`` provider today — ``PydanticAiHarness`` does not yet branch
-    # on this field (there is only one option), so it ships wired for the
-    # constraint table and a future Vertex binding rather than as an active
-    # branch on that path. Per-overlay overridable; ``T3_AGENT_HARNESS_PROVIDER``
-    # env wins.
+    # ``claude_sdk``-only opt-in. On the ``pydantic_ai`` lane the harness builder
+    # branches on this field: ``anthropic_api`` selects the native Anthropic
+    # Messages-API binding (real ``cache_control``), anything else the generic
+    # OpenAI-compatible router binding. A Vertex Layer-2 provider is reserved and
+    # carries no enum member yet. Per-overlay overridable;
+    # ``T3_AGENT_HARNESS_PROVIDER`` env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
     # Whether this overlay's headless lane is the REGULATED path — carrying client/
     # bank data under EU data-residency & regulatory compliance (GDPR, data
@@ -494,8 +148,8 @@ class _ModeHarnessSettings:
     # incl. cheap open-source ones). A regulated lane sets this ``True``,
     # restricting inference to the models on ``regulated_path_model_allowlist``.
     # Enforced by ``teatree.agents.model_tiering.assert_model_allowed_on_regulated_path``,
-    # called from ``PydanticAiHarness`` before a resolved OrcaRouter model name is used
-    # (CLIENT-SIDE, best-effort — the OrcaRouter dashboard Allowed-models glob is the
+    # called from ``PydanticAiHarness`` before a resolved model name is used
+    # (CLIENT-SIDE, best-effort — the provider's own allowed-models policy is the
     # hard boundary). Per-overlay overridable; ``T3_ENFORCE_REGULATED_PATH`` env wins.
     enforce_regulated_path: bool = False
     # The EXPLICIT allowlist of model-id patterns eligible to run on the regulated
@@ -505,55 +159,63 @@ class _ModeHarnessSettings:
     # allowlist refuses every model (fail-closed). Inert while ``enforce_regulated_path``
     # is ``False`` (the teatree factory default). Per-overlay overridable.
     regulated_path_model_allowlist: list[str] = field(default_factory=list)
-    # Per-run sequential-request cap for the ``pydantic_ai``/OrcaRouter harness
-    # (OrcaRouter setup plan §4 guardrail #1). Passed as pydantic_ai
+    # Per-run sequential-request cap for the ``pydantic_ai`` harness
+    # (the metered-lane guardrail). Passed as pydantic_ai
     # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
     # so a cheap-model maker cannot drift on a long tool loop — the FSM already
-    # chunks work into phases and the orchestrator re-dispatches, so a tight
-    # per-run cap composes with orchestration rather than killing tasks. Applies
-    # ONLY to the ``pydantic_ai`` harness (the default ``claude_sdk`` harness is
-    # bounded by the loop watchdog instead), so it is inert until an overlay opts
-    # into ``agent_harness=pydantic_ai``. ``0`` disables the cap (the escape
-    # hatch). Per-overlay overridable.
-    pydantic_ai_request_limit: int = 5
+    # chunks work into phases and the orchestrator re-dispatches, so a per-run cap
+    # composes with orchestration rather than killing tasks. The default is a REAL
+    # turn budget: a live Lane-B task runs ~16 model requests, so the earlier cap of
+    # 5 refused mid-task before the run ever reached ``open()``. 40 clears that
+    # measured reality with generous headroom; a positive caller ``max_turns`` (an
+    # ``OneShotSpec`` cap, an eval override) still wins over it (``harness.py`` /
+    # ``eval/pydantic_ai_runner.py``). Applies ONLY to the ``pydantic_ai`` harness
+    # (the default ``claude_sdk`` harness is bounded by the loop watchdog instead),
+    # so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
+    # disables the cap (the escape hatch). Per-overlay overridable.
+    pydantic_ai_request_limit: int = 40
     # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
-    # ``max_tokens`` ``ModelSettings`` key on every run (both the OrcaRouter and native Anthropic
+    # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
     # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
-    # truncates a long result envelope mid-JSON and destroys it; the default is deliberately
-    # GENEROUS (16384) because a generous ceiling only bills for tokens actually generated — the
-    # real spend guards on this lane are the watchdog cost ceiling and ``pydantic_ai_request_limit``,
-    # not this cap. Keep it ≤ the model's own output limit. Applies ONLY to the ``pydantic_ai``
-    # harness, so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
-    # leaves the binding's own default. Per-overlay overridable.
-    pydantic_ai_max_tokens: int = 16384
-    # The ``pass`` store path the OrcaRouter BYOK key is read from. The
-    # ``OrcaRouterCredential`` has NO built-in default, so this is the ONLY ``pass``
-    # source: an operator points teatree at an existing per-account ``pass`` entry
-    # (e.g. ``orcarouter/<account>/api-key``) with no copy. Empty (the default) means
-    # the credential resolves only from ``ORCA_ROUTER_API_KEY`` (which still wins over
-    # ``pass``) and otherwise fails loud naming this setting. Per-overlay overridable.
-    orca_router_pass_path: str = ""
-    # The ``x-lane`` header value every ``pydantic_ai``/OrcaRouter request rides
-    # (OrcaRouter setup plan §3.4), so the named router's analytics — and a future
-    # DSL rule that keys on it — can tell the three call-site lanes apart:
-    # ``factory`` (default — the headless factory dispatch), ``eval`` (the eval CI
-    # job, set via ``T3_ORCA_ROUTER_LANE=eval`` in that job's env), and ``bulk``
-    # (a secondary overlay's cheap bulk legs, set per-overlay). Informational under the shipped
-    # ``gated_adaptive`` router until a DSL rule matches it; resolved SYNCHRONOUSLY in
-    # ``resolve_harness`` and threaded through ``OrcaLaneConfig.lane``. Inert until an
-    # overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable;
-    # ``T3_ORCA_ROUTER_LANE`` env wins.
-    orca_router_lane: str = "factory"
-    # The OrcaRouter router HANDLE (e.g. ``orcarouter/secondary-factory``) this overlay's
-    # ``pydantic_ai`` dispatches resolve to — the ``teatree-factory`` vs secondary-router
-    # two-router split, config/overlay-driven, not hardcoded. Empty (the default) falls
-    # back to the ``PYDANTIC_AI_TIER_MODELS`` handle (``orcarouter/teatree-factory``).
-    # Overrides ONLY the normalise-UP-to-handle branch of ``resolve_pydantic_ai_model``,
-    # so an explicit Orca-native model pin still wins. Resolved SYNCHRONOUSLY in
-    # ``resolve_harness`` and threaded through ``OrcaLaneConfig.router_name``. Inert
+    # truncates a long result envelope mid-JSON and destroys it. The default is the owner-chosen
+    # :data:`PYDANTIC_AI_MAX_TOKENS_DEFAULT` (16384) — deliberately generous because a ceiling
+    # only bills for tokens actually generated. Should a run STILL hit it, the truncation is
+    # recorded FAILED AND escalated to the owner
+    # (``teatree.agents.headless_truncation.alert_owner_max_tokens_truncation``) so the ceiling is raised
+    # deliberately rather than failing silently. Keep it ≤ the model's own output limit. Applies
+    # ONLY to the ``pydantic_ai`` harness, so it is inert until an overlay opts into
+    # ``agent_harness=pydantic_ai``. ``0`` leaves the binding's own default. Per-overlay overridable.
+    pydantic_ai_max_tokens: int = PYDANTIC_AI_MAX_TOKENS_DEFAULT
+    # The generic OpenAI-compatible backend (#3666) — where, which model, whose key.
+    # A provider is ORDINARY CONFIGURATION here, never a code path: pointing the
+    # ``pydantic_ai`` harness at a different OpenAI-compatible API is these settings,
+    # not a new credential class.
+    #
+    # The endpoint. NO default is fabricated — a wrong hardcoded host would silently
+    # route real spend elsewhere — so an empty value with no
+    # ``OPENAI_COMPATIBLE_BASE_URL`` env fails loud when the lane is selected.
+    # Per-overlay overridable; ``T3_OPENAI_COMPATIBLE_BASE_URL`` env wins.
+    openai_compatible_base_url: str = ""
+    # The model id requested from that endpoint. Empty (the default) falls back to the
+    # ``PYDANTIC_AI_TIER_MODELS`` id for the dispatch's abstract tier. Overrides ONLY
+    # the normalise-UP branch of ``resolve_pydantic_ai_model``, so an explicit
+    # provider-native model pin still wins. Per-overlay overridable;
+    # ``T3_OPENAI_COMPATIBLE_MODEL`` env wins.
+    openai_compatible_model: str = ""
+    # The NAME of the credential-store entry the API key is read from (e.g.
+    # ``<provider>/<account>/api-key``) — an entry NAME, never a key value. The
+    # ``OpenAICompatibleCredential`` has no built-in default, so this is the only store
+    # source; empty (the default) means it resolves from ``OPENAI_COMPATIBLE_API_KEY``
+    # alone and otherwise fails loud naming this setting. Per-overlay overridable.
+    openai_compatible_credential_entry: str = ""
+    # The ``x-lane`` header every request rides, so the endpoint's analytics — and any
+    # routing rule keying on it — can tell the call-site lanes apart: ``factory``
+    # (default — the headless factory dispatch), ``eval`` (the eval CI job, set via
+    # ``T3_OPENAI_COMPATIBLE_LANE=eval`` in that job's env), and ``bulk`` (a secondary
+    # overlay's cheap bulk legs). Resolved SYNCHRONOUSLY in ``resolve_harness``. Inert
     # until an overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable;
-    # ``T3_ORCA_ROUTER_NAME`` env wins.
-    orca_router_name: str = ""
+    # ``T3_OPENAI_COMPATIBLE_LANE`` env wins.
+    openai_compatible_lane: str = "factory"
     # Absolute per-RUN watchdog ceilings for the headless ``claude_sdk`` lane (#882,
     # F9.5). Folded off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` dict into
     # the DB-home config tier so ``config_setting get`` sees them (the third config
@@ -571,11 +233,18 @@ class _ModeHarnessSettings:
     # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.
     # ``0.0`` disables the cap. Per-overlay overridable.
     ticket_budget_max_cost_usd: float = 0.0
+    # Deterministic ceiling on how many sub-agents ONE headless run may spawn
+    # (``agents/subagent_ceiling.py``). The runtime watchdog bounds a run's duration,
+    # not its fan-out, so a wall clock cannot see a delegation runaway. ``0`` disables
+    # the gate, matching the watchdog convention above. Per-overlay overridable.
+    subagent_spawn_ceiling: int = 20
 
 
 @dataclass
-class _LoopAndTeamsSettings:
-    """WIP dial + loop cadence/runner + the agent-teams pane budget."""
+class _LoopSettings:
+    """WIP dial + loop cadence/runner + the worker admission gate."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Cadence & throughput")
 
     # How much new work a loop tick admits at once — the bounded-WIP dial. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
@@ -587,6 +256,14 @@ class _LoopAndTeamsSettings:
     # governs *how many* threads run) and never relaxes a safety gate.
     # Per-overlay overridable; ``T3_WIP`` env wins over both.
     wip: Wip = Wip.MEDIUM
+    # #3634 The wip dial's PHASE SPLIT, replacing the single blunt concurrency knob.
+    # ``write_wip`` is how many implementation workers (coding / testing / reviewing)
+    # run concurrently; ``merge_wip`` is the merge lane, single-flight by design so
+    # the next PR always rebases against what just landed. A ``merge_wip`` above 1
+    # forfeits that conflict-safety guarantee, so the resolver clamps it back to 1.
+    # DB-home, per-overlay overridable; ``T3_WRITE_WIP`` / ``T3_MERGE_WIP`` env win.
+    write_wip: int = 3
+    merge_wip: int = 1
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # #1796 / PR-28 — the loop-cadence kill-switch. Default ON: the singleton
@@ -616,50 +293,21 @@ class _LoopAndTeamsSettings:
     # + `T3_WORKER_QUIESCING` env; a TOML value is ignored on read. Set via `t3 worker
     # drain` (which writes it) or `config_setting set worker_quiescing`.
     worker_quiescing: bool = False
-    # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
-    # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
-    # PURE DATA referenced by nothing in the loop/dispatch/claim path: the
-    # WORK-team ships DARK. When flipped on, a LATER PR wires the
-    # `team:<role>` claim namespace + the overlay-seam claim filters into a
-    # pane-backed teammate; this PR adds only the config surface. DB-home
-    # (#1775): resolved from the `ConfigSetting` store (global + overlay rows) +
-    # `T3_TEAMS_ENABLED` env; a `[teams]`/`[overlays.<name>]` TOML value is ignored
-    # on read. Set via `t3 teams on|off` (the DB-row write path).
-    teams_enabled: bool = False
-    # #1838 Track-B PR#7a — the inert maker-only pane budget. `teams_max_panes`
-    # caps how many concurrent maker panes a lead may run; `teams_idle_minutes`
-    # is the idle-pane reaper threshold (a pane with no live Session/Task past
-    # this many minutes is demoted to stopped). Both ship inert with the rest of
-    # the pane layer (referenced by nothing until `teams_enabled` flips on and a
-    # consumer lands). DB-home (#1775): resolved from the `ConfigSetting` store
-    # (global + overlay rows) + `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES`
-    # env; a `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A
-    # non-positive or non-int value FAILS SAFE to the default at every tier — the
-    # safety bound cannot be configured away by a typo.
-    teams_max_panes: int = 1
-    teams_idle_minutes: int = 30
-    # #1838 Track-B WI-5 — the PRESENTATION-only pane-display mode. Governs
-    # whether a maker pane's in-process SDK session is ALSO rendered in a visible
-    # tmux pane (native iTerm2 split under `tmux -CC`, plain tmux pane elsewhere).
-    # The SDK session is the source of truth; this never replaces it. Default
-    # `none` (ships dark, byte-identical to today); `auto`/`tmux` opt into the
-    # display with graceful degradation (no tmux / no TTY / spawn failure falls
-    # back to the in-process path). DB-home (#1775): resolved from the
-    # `ConfigSetting` store (global + overlay rows) + `T3_TEAMS_DISPLAY` env; a
-    # `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A bad value
-    # fails SAFE to `none` at every tier.
-    teams_display: TeamsDisplay = TeamsDisplay.NONE
 
 
 @dataclass
 class _OnBehalfSettings:
     """Human-approval training wheels + the on-behalf post gate + bot→user notify flags."""
 
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Communication", "Posting on your behalf")
+
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
     # human reaction (👍 or `/merge`). The user flips this off only once
     # comfortable (BLUEPRINT § 5.6.2). No effect in `interactive` mode,
-    # where every publishing action prompts regardless.
+    # where every publishing action prompts regardless. NOT tier-governed
+    # (#3630): no `autonomy` value collapses it, so removing review before
+    # merge is always a deliberate, separately-named opt-in.
     require_human_approval_to_merge: bool = True
     # Whether the standing grant may sign off a SUBSTRATE merge (#3223). Default
     # off: a substrate CLEAR (merge keystone, architecture spec, governance doc,
@@ -808,7 +456,14 @@ class _OnBehalfSettings:
 class _IdentityRoutingSettings:
     """Statusline chain, operator identity aliases, repo mode, and the missing-issue policy."""
 
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Communication", "Identity & routing")
+
     statusline_chain: list[str] = field(default_factory=list)
+    # Opt-in (#3502): render the loop statusline in a session the owner explicitly
+    # engaged by hand (an engage marker present) even with autoload off. Read DB-only
+    # by the bash statusline (statusline.sh._statusline_engaged_render_db_value); default
+    # OFF keeps the #256 colleague guarantee unchanged when unset.
+    statusline_engaged_render: bool = False
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
     # Two consumers:
@@ -844,8 +499,10 @@ class _IdentityRoutingSettings:
 
 
 @dataclass
-class _QualityGateSettings:
-    """The architectural-review cadence + the opt-in DoD / merge / critic / send-proxy quality gates."""
+class _ArchitecturalReviewSettings:
+    """The periodic architectural-review cadence + its post-failure backoff."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Architectural review")
 
     # #1136 / #1152 Periodic architectural-review scanner — CORE
     # always-on (not per-overlay opt-in). The cadence applies uniformly
@@ -855,7 +512,20 @@ class _QualityGateSettings:
     architectural_review_disabled: bool = False
     architectural_review_skill: str = "ac-reviewing-codebase"
     architectural_review_cadence_hours: int = 168
+    # After a FAILED review (none completed since), re-fire once the failed
+    # attempt reaches this shorter age instead of the full cadence — bounds the
+    # post-failure retry so a persistent failure backs off to every 12h rather
+    # than storming the expensive review hourly.
+    architectural_review_retry_backoff_hours: int = 12
     architectural_review_after_merge_count: int = 25
+
+
+@dataclass
+class _ReviewGateSettings:
+    """Review-phase evidence gates + review-board admission + the E2E confidence bar."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Review")
+
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
     # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is
     # a NO-OP, so projects that do not configure a review skill keep
@@ -893,6 +563,14 @@ class _QualityGateSettings:
     # combined changeset. A single-repo ticket never trips it. Default false =
     # NO-OP. Per-overlay overridable.
     require_integration_review: bool = False
+
+
+@dataclass
+class _MergeGateSettings:
+    """The opt-in gates a ticket must clear to reach MERGED — evidence, plan, repro, debt."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Merge & done")
+
     # #4a Opt-in merge-evidence FSM gate on ``mark_merged`` / ``reconcile_merged``
     # (``merge_evidence_gate``): the terminal MERGED state is unreachable without
     # real merged-SHA evidence — a keystone ``MergeAudit`` row OR the forge itself
@@ -969,6 +647,14 @@ class _QualityGateSettings:
     # NO-OP (a genuinely gate-less repo still merges); the operator opts in per
     # overlay once their repos carry required checks. Per-overlay overridable.
     expected_required_contexts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _CriticGateSettings:
+    """The user-proxy critic's posture, the send-proxy destination guard, the bulk-close cap."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Critic & send proxy")
+
     # SELFCATCH-5 / #104 The autonomous user-proxy critic's ENFORCEMENT posture on
     # ``mark_delivered`` (``critic_gate``), re-typed from the former boolean
     # enforcement flag. The critic ALWAYS records the cheap deterministic
@@ -1004,6 +690,14 @@ class _QualityGateSettings:
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is
     # always allowed. Per-overlay overridable.
     bulk_close_threshold: int = 5
+
+
+@dataclass
+class _DoneCriteriaSettings:
+    """The acceptance-criteria done-gates — rubric verification, spec coverage, E2E confidence."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Definition of done")
+
     # #2241 Opt-in rubric->verifier done-gate on the keystone merge precondition
     # (``rubric_gate``): the ticket's rubric of acceptance criteria must be fully
     # PASS by an independent verifier (grader != maker) at the merge-time head
@@ -1030,6 +724,8 @@ class _QualityGateSettings:
 @dataclass
 class _ScannerSettings:
     """The periodic loop scanners — news, local-eval, backlog-sweep, dogfood-smoke, self-update cadences."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Scanners")
 
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
@@ -1061,8 +757,8 @@ class _ScannerSettings:
     # #2419 Periodic backlog-sweep scanner — DEFAULT-OFF (kill switch ships
     # ON) with a weekly cadence (168h). Companion to the `sweeping-tickets`
     # skill: once the sweep's verdicts prove trustworthy the loop fires a
-    # low-frequency `backlog_sweep` task that consolidates the issue tracker
-    # (shipped / consolidate-into-epic / regressive / still-standalone
+    # low-frequency `backlog_sweep` task that groups the issue tracker
+    # (shipped / group-into-epic / regressive / still-standalone
     # against current `main`). The sweep is destructive-capable — it can
     # propose closing issues — so unlike the always-on news/eval scanners
     # the kill switch defaults ON: the scanner stays inert until the user
@@ -1108,12 +804,25 @@ class _ScannerSettings:
 # The regenerable cache dirs auto-purged at CRITICAL disk pressure (the
 # ``disk_cache_allowlist`` default). A module constant so the field default stays a
 # single line; ``.copy`` gives each settings instance its own list.
-_DEFAULT_DISK_CACHE_ALLOWLIST = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"]
+#
+# ``~/.cache/prek`` and ``~/.cache/uv`` are deliberately NOT here: prek's per-hook
+# environments have unknown rebuild cost (opt in explicitly), and uv's cache is
+# already pruned safely by the freeing ladder's own ``uv cache prune`` step. An
+# entry that names nothing on this host is reported ABSENT in the plan rather
+# than counted as a 0.00 GB purge (#3852).
+_DEFAULT_DISK_CACHE_ALLOWLIST = [
+    "~/.cache/pre-commit",
+    "~/.cache/puppeteer",
+    "~/.cache/codex-runtimes",
+    "~/.cache/go-build",
+]
 
 
 @dataclass
 class _ResourcePressureSettings:
-    """Resource-pressure auto-free thresholds (disk / RAM) + the destructive-lever opt-ins + task-sweep."""
+    """The resource-pressure scanner cadence and its disk / RAM warn + critical thresholds."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Thresholds & cadence")
 
     # #128 Resource-pressure scanner — teatree-controlled auto-free before
     # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
@@ -1136,6 +845,14 @@ class _ResourcePressureSettings:
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
     disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
+
+
+@dataclass
+class _DestructiveLeverSettings:
+    """The irreversible auto-free levers — worktree GC and process SIGTERM — each opt-in OFF."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Destructive levers")
+
     # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
     # ``worktree_stale_days``) at CRITICAL, capped at
     # ``max_worktree_gc_per_tick`` per pass and never the active session's
@@ -1149,6 +866,14 @@ class _ResourcePressureSettings:
     # process is ever killed even when ``allow_destructive_ram = true``.
     allow_destructive_ram: bool = False
     ram_kill_allowlist: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _RetentionSettings:
+    """Task-sweep, stack concurrency, control-DB retention windows, and session staleness."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Retention & sweeps")
+
     # #129 task-sweep scanner — per-overlay; verifies open teatree Task rows
     # against their artifact's terminal state (issue closed / PR merged) and
     # completes only on durable proof, never in bulk and never on a stale read.
@@ -1157,7 +882,7 @@ class _ResourcePressureSettings:
     # (a task swept within it is skipped this tick) and the idempotency window
     # for the atomic ``last_sweep_check_ts`` stamp. Pre-rename, these keys were
     # ``todo_sweep_*``; a stored row under the old name still resolves via the
-    # backward-compat alias in ``config/resolution.py``.
+    # retired-key registry in ``config/retired_settings.py``.
     task_sweep_disabled: bool = False
     task_sweep_recheck_interval_hours: int = 1
     # #1397 Cap on concurrent locally-running stacks for a single overlay.
@@ -1175,11 +900,60 @@ class _ResourcePressureSettings:
     # overridable: a heavy overlay can cap to ``1`` while a cheap dogfood
     # overlay stays unbounded (``0``).
     max_concurrent_local_stacks: int = 1
+    # #3693 retention windows for the high-churn control-DB tables. A ``prune``
+    # deletes rows OLDER than the window whose owning ticket/task is TERMINAL —
+    # never a live/in-flight row, and never within the window. Days, not a byte
+    # ceiling: age is the operator-legible, safe-by-construction lever. Both
+    # default to a conservative 30 so a fresh install never prunes recent history;
+    # ``0`` disables that table's pruning entirely. Per-overlay overridable.
+    task_attempt_retention_days: int = 30
+    incoming_event_retention_days: int = 30
+    # The PARK lane's own window — separate from the terminal-owned rule above, and
+    # deliberately shorter. A limit-park is a scheduling event on a task the park
+    # itself RETURNS to the queue PENDING, so a park row's owning task is by
+    # construction NON-terminal and the terminal-owned double guard can never see
+    # one: the very rows that grew this table to ~340k are the rows the sanctioned
+    # prune structurally cannot reach. This lane keys on the canonical
+    # ``limit_parked:`` marker instead, and never touches a row carrying billed
+    # telemetry. 7 days because a park's diagnostic value is "is the fleet parked
+    # NOW", which the 24h park-spin detector and ``park_repeats`` already answer;
+    # a week is generous for after-the-fact forensics. ``0`` disables the lane.
+    # Per-overlay overridable.
+    park_attempt_retention_days: int = 7
+    # #3871 kill switch for the FSM-audit-trail lane. There is no window: the lane's
+    # trigger is the ticket CLOSING, not a row aging, and what it removes is decided
+    # per row — a ``from_state == to_state`` row records no edge, so it is not history
+    # and a reopened ticket does not need it. Every real state edge is kept for as
+    # long as the ticket exists (~410 rows on the measured box), so no age bound
+    # applies to them. Per-overlay overridable.
+    ticket_transition_prune_disabled: bool = False
+    # #3871 window for ``django_tasks``' own ``DBTaskResult`` table. The delete is
+    # the library's shipped ``prune_db_task_results`` command; this is only how far
+    # back it is told to go. Short because nothing in teatree reads a FINISHED
+    # result row — every consumer filters on READY or RUNNING — so a finished row is
+    # pure post-mortem material, and the table takes ~400k of them a day. 1 day
+    # matches the cadence the maintenance chain already ran at. ``0`` disables the
+    # lane (the library's own floor is 1 day; sub-day retention is not expressible).
+    task_result_retention_days: int = 1
+    # Fail-safe staleness bound on the OPEN-Session liveness signal every reaper
+    # consults (``Ticket.has_active_work``). An agent that crashed without closing
+    # its Session would otherwise pin its ticket — and so its worktree, its
+    # ``max_concurrent_local_stacks`` slot, and ``workspace relocate`` — busy
+    # forever. An open Session whose last recorded activity (its own
+    # ``started_at``, its tasks' heartbeats, its attempts' start times) is older
+    # than this many hours is NOT live. 12h is 4x the ``watchdog_max_runtime_seconds``
+    # hard cap on a single agent run, so it cannot mask real in-flight work — and
+    # an active (PENDING/CLAIMED) task keeps a ticket busy with NO time bound at
+    # all, independently of this. ``0`` disables the bound (every open Session is
+    # live). Per-overlay overridable.
+    session_stale_after_hours: int = 12
 
 
 @dataclass
 class _ProvisioningSettings:
     """Provisioning timeouts / concurrency + the idle-stack, stale-stack, and queue reaper knobs."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Provisioning")
 
     # #2220 Hard ceiling (seconds) for one long-blocking provisioning subprocess
     # — a DSLR snapshot restore, ``migrate``, or a ``--create-db`` test-DB
@@ -1203,6 +977,13 @@ class _ProvisioningSettings:
     # (:func:`teatree.utils.ram_probe.default_provision_concurrency`); a
     # positive value pins an explicit cap. Per-overlay overridable.
     provision_max_concurrency: int = 0
+    # #3644 The adaptive admission governor's default-ON flag. When true, every
+    # dispatcher consults ``teatree.core.admission_governor`` before admitting work, so
+    # token quota (primary) and machine load (secondary) bound concurrency and the
+    # static concurrency settings become CEILINGS rather than targets. Setting it false
+    # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
+    # pre-governor static behaviour. Per-overlay overridable.
+    admission_governor_enabled: bool = True
     # RAM-used-percent ceiling above which a new provision is HELD (queued,
     # not started) rather than admitted, so a cold multi-repo provision never
     # pushes the host into OOM. Mirrors the self-improve budget gate's
@@ -1267,6 +1048,8 @@ class _ProvisioningSettings:
 @dataclass
 class _PrePublishGateSettings:
     """Slack voice + speak/mr-reminder + the pre-publish / commit-time gate kill-switches and repo patterns."""
+
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Pre-publish")
 
     # #1395 Slack voice/token mismatch classifier. The pre-publish gate
     # between ``chat.postMessage`` and the Slack API refuses (or warns)
@@ -1394,6 +1177,10 @@ class _PrePublishGateSettings:
     # operator explicitly opts into a headed browser. Per-overlay overridable (DB-home).
     chrome_devtools_headless: bool = True
     colleague_repo_url_pattern: str = ""
+    # Names THIS box in the dashboard header. Empty ships as the default because a
+    # machine name cannot be a shipped constant; the header resolves empty to the
+    # hostname, so a multi-machine operator can tell two dashboards apart unconfigured.
+    dashboard_instance_label: str = ""
     solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
     # gh/glab network call (#1540). A non-matching title is rejected with the
@@ -1408,22 +1195,32 @@ class _PrePublishGateSettings:
 class UserSettings(
     _WorkspaceCoreSettings,
     _ModeHarnessSettings,
-    _LoopAndTeamsSettings,
+    _LoopSettings,
     _OnBehalfSettings,
     _IdentityRoutingSettings,
-    _QualityGateSettings,
+    _ArchitecturalReviewSettings,
+    _ReviewGateSettings,
+    _MergeGateSettings,
+    _CriticGateSettings,
+    _DoneCriteriaSettings,
     _ScannerSettings,
     _ResourcePressureSettings,
+    _DestructiveLeverSettings,
+    _RetentionSettings,
     _ProvisioningSettings,
     _PrePublishGateSettings,
     _LoopFlagAndCredentialSettings,
 ):
     """The ``[teatree]`` settings — the FLAT, 160-field persisted contract.
 
-    The fields are declared across ~11 private in-file group bases above purely for
+    The fields are declared across the private in-file group bases above purely for
     readability; ``UserSettings`` is the sole public API and ``dataclasses.fields()``
     stays inheritance-transparent, so the flat field namespace (DB ``ConfigSetting.key``,
     env overrides, cold sqlite3 readers, the rename-guard and golden pin) is unchanged.
+
+    Each base's ``GROUP_PATH`` is where its fields render in the settings hierarchy, and
+    this bases tuple is the hierarchy's ORDER — ``teatree.config.setting_groups`` reads
+    both off the MRO, so adding a base here is all it takes to add a group.
 
     CLAUDE.md's "composition over mixins" targets behaviour-carrying classes; these bases
     are pure data-declaration with no behaviour, and the flat schema IS the persisted

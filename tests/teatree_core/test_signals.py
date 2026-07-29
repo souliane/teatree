@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
+from teatree.backends.slack import reactions as slack_reactions
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
@@ -168,21 +169,12 @@ class TestSlackReactionsOnTransition(TestCase):
     so the gate is disabled inside each test.
     """
 
-    def _ticket_with_mr(self) -> Ticket:
-        return Ticket.objects.create(
-            overlay="test",
-            state=Ticket.State.IN_REVIEW,
-            extra={
-                "mrs": {
-                    "https://gitlab.com/org/repo/-/merge_requests/1": {
-                        "review_permalink": "https://team.slack.com/archives/C999/p1700000000000100",
-                    }
-                }
-            },
-        )
+    def _ticket(self) -> Ticket:
+        # No PR data: the handler targets ``instance.pk`` and the publisher is faked.
+        return Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
 
     def test_mark_merged_invokes_reactions(self) -> None:
-        ticket = self._ticket_with_mr()
+        ticket = self._ticket()
         called: list[tuple[object, str]] = []
 
         def _fake(t: object, name: str) -> int:
@@ -197,7 +189,7 @@ class TestSlackReactionsOnTransition(TestCase):
         assert called[0][1] == "mark_merged"
 
     def test_transition_survives_reaction_failure(self) -> None:
-        ticket = self._ticket_with_mr()
+        ticket = self._ticket()
 
         def _boom(*_a: object, **_kw: object) -> int:
             msg = "slack down"
@@ -211,7 +203,7 @@ class TestSlackReactionsOnTransition(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_different_transitions_forward_their_name(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED, extra={"mrs": {}})
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
         names: list[str] = []
 
         def _record(_ticket: object, name: str) -> int:
@@ -228,7 +220,7 @@ class TestSlackReactionsOnTransition(TestCase):
         """Fail-SAFE: an empty reaction registry → no-op reaction, transition still commits."""
         from teatree.core import reaction_dispatch  # noqa: PLC0415
 
-        ticket = self._ticket_with_mr()
+        ticket = self._ticket()
         original = reaction_dispatch._publisher
         reaction_dispatch._publisher = None
         try:
@@ -240,6 +232,57 @@ class TestSlackReactionsOnTransition(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
+
+
+class TestSlackReactionsReadPrExtra(TestCase):
+    """The registered publisher drives its reactions off ``Ticket.extra["prs"]``.
+
+    The rest of this module fakes the publisher, so no test there proves
+    which ``extra`` key the transition→Slack wiring reads. Renaming the
+    live key (or reverting it to the retired ``mrs``) turns
+    :meth:`test_reacts_on_each_pr_permalink` red.
+    """
+
+    PERMALINK = "https://team.slack.com/archives/C999/p1700000000000100"
+
+    def _react(self, extra: dict[str, object]) -> list[tuple[str, str, str]]:
+        class _Cfg:
+            @staticmethod
+            def get_slack_token() -> str:
+                return "xoxb-token"
+
+            @staticmethod
+            def get_transition_emojis() -> dict[str, str]:
+                return {"mark_merged": "tada"}
+
+        class _Overlay:
+            config = _Cfg()
+
+        recorded: list[tuple[str, str, str]] = []
+
+        def _fake_add_reaction_verified(_token: str, channel: str, ts: str, emoji: str) -> bool:
+            recorded.append((channel, ts, emoji))
+            return True
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra=extra)
+        with (
+            mode_immediate_cm(),
+            patch.object(slack_reactions, "get_overlay", return_value=_Overlay()),
+            patch.object(slack_reactions, "add_reaction_verified", _fake_add_reaction_verified),
+        ):
+            ticket.mark_merged()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        return recorded
+
+    def test_reacts_on_each_pr_permalink(self) -> None:
+        extra = {"prs": {"https://gitlab.com/org/repo/-/merge_requests/1": {"review_permalink": self.PERMALINK}}}
+        assert self._react(extra) == [("C999", "1700000000.000100", "tada")]
+
+    def test_ticket_without_prs_reacts_nothing(self) -> None:
+        assert self._react({}) == []
 
 
 class TestApprovalReactionOnTransition(TestCase):
@@ -352,8 +395,6 @@ class TestApprovalReactionOnTransition(TestCase):
 
     def test_add_approval_reaction_uses_white_check_mark_on_slack_url(self) -> None:
         """End-to-end: the real helper reacts on the PR's stored slack_url."""
-        from teatree.backends.slack import reactions as slack_reactions  # noqa: PLC0415
-
         pr = self._pr()
         recorded: list[tuple[str, str, str]] = []
 
@@ -377,17 +418,6 @@ class TestApprovalReactionOnTransition(TestCase):
 
         assert posted == 1
         assert recorded == [("C9", "1700000000.000100", "white_check_mark")]
-
-    def test_ticket_without_mrs_is_noop(self) -> None:
-        """The real handler is a silent no-op when the ticket has no MRs."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra={})
-        # No patching — the real code path must not raise (even with the
-        # gate on, the transition itself must always succeed).
-        with mode_immediate_cm():
-            ticket.mark_merged()
-            ticket.save()
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.MERGED
 
     def test_approve_marks_review_assignment_rows_approved(self) -> None:
         """#1047: an approve transition closes every linked ``ReviewAssignment`` row.
@@ -431,11 +461,8 @@ class TestTransitionReactionGated(TestCase):
     """
 
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(
-            overlay="test",
-            state=Ticket.State.IN_REVIEW,
-            extra={"mrs": {"https://x/1": {"review_permalink": "https://t.slack.com/archives/C1/p1700000000000100"}}},
-        )
+        # No PR data: the gate keys on ``ticket:<pk>`` and the publisher is faked.
+        return Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
 
     def test_transition_reaction_blocked_when_gate_on_no_approval(self) -> None:
         ticket = self._ticket()
@@ -609,3 +636,72 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
         # states minus SHIPPED, so a future terminal state cannot silently skip
         # purge (SHIPPED stays excluded — its PR is still open).
         assert set(Ticket._TERMINAL_STATES) - {Ticket.State.SHIPPED} == signals_mod._TERMINAL_TARGET_STATES
+
+
+class TestSessionClosedOnTerminalTask(TestCase):
+    """A Session ends when the work it was minted for terminates (the reaper's liveness input).
+
+    Every production ``Session.objects.create`` site mints exactly one Session
+    per dispatched Task, so the Task's terminal transition is the Session's
+    terminal point. Without this, ``ended_at`` was never written in production
+    and every ticket read as permanently busy.
+    """
+
+    @staticmethod
+    def _session_with_task() -> tuple[Session, Task]:
+        # CODED + a ``coding`` task: the completion is an idempotent FSM replay, so
+        # the fixture exercises the close path without dragging in a transition.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        return session, task
+
+    def test_completing_the_owning_task_ends_the_session(self) -> None:
+        session, task = self._session_with_task()
+
+        task.complete()
+
+        session.refresh_from_db()
+        assert session.ended_at is not None
+
+    def test_failing_the_owning_task_ends_the_session(self) -> None:
+        session, task = self._session_with_task()
+
+        task.fail()
+
+        session.refresh_from_db()
+        assert session.ended_at is not None
+
+    def test_a_sibling_task_still_in_flight_keeps_the_session_open(self) -> None:
+        session, task = self._session_with_task()
+        Task.objects.create(
+            ticket=session.ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        task.fail()
+
+        session.refresh_from_db()
+        assert session.ended_at is None
+
+    def test_claiming_a_task_leaves_the_session_open(self) -> None:
+        session, task = self._session_with_task()
+
+        task.claim(claimed_by="worker-1")
+
+        session.refresh_from_db()
+        assert session.ended_at is None
+
+    def test_the_ticket_stops_reading_busy_once_its_task_terminates(self) -> None:
+        session, task = self._session_with_task()
+
+        task.fail()
+
+        assert session.ticket.has_active_work() is False

@@ -34,10 +34,11 @@ def _check_marker_jam() -> bool:
     """Warn when orphaned issue-markers strand the intake budget (#3275).
 
     The jam signature: non-terminal ``ImplementedIssueMarker`` rows whose ticket
-    is already terminal/gone — they never left ``dispatched`` (release-on-
-    completion only fires on the live transition), so they permanently consume
-    the ``issue_implementer_max_concurrent`` budget and no new issue is ever
-    claimed. Reads the non-mutating :meth:`find_stale` preview across every
+    is already terminal, gone, or stalled — they never left ``dispatched`` /
+    ``ticket_created`` (release-on-completion only fires on the live transition),
+    so they permanently consume the ``issue_implementer_max_concurrent`` budget
+    and no new issue is ever claimed. Reads the non-mutating :meth:`find_stale`
+    preview across every
     overlay. A WARN (never a hard FAIL): the loop self-heals each tick, and the
     operator can force it now with ``t3 loop reclaim-markers``. Crash-proof: any
     error degrades to OK so a doctor run never aborts on this check.
@@ -53,7 +54,7 @@ def _check_marker_jam() -> bool:
         return True
     typer.echo(
         f"WARN  {stale.released} orphaned issue-marker(s) hold intake budget but their tickets are "
-        f"terminal/gone ({len(stale.completed)} completed, {len(stale.abandoned)} abandoned) — "
+        f"terminal, gone, or stalled ({len(stale.completed)} completed, {len(stale.abandoned)} abandoned) — "
         "run `t3 loop reclaim-markers` to free the issue_implementer budget (#3275)."
     )
     return False
@@ -121,5 +122,41 @@ def _check_dream_transcript_visibility() -> bool:
         "Docker factory this means the `~/.claude/projects` bind mount is missing "
         "from deploy/docker-compose.yml — every dream pass finds 0 members and is "
         "a permanent no-op (marker never stamped succeeded).",
+    )
+    return False
+
+
+def _check_compose_output_root_pinned() -> bool:
+    """Warn when a compose service does not pin the agent output root (#3641).
+
+    ``deploy/entrypoint.sh`` exports ``TMPDIR`` for a service's MAIN process, but
+    ``docker exec`` does not run the entrypoint — an exec'd agent's transcripts
+    then land under a second, ephemeral root, so every transcript consumer must
+    scan both or silently miss half the data. Only an inline ``environment``
+    entry reaches an exec'd process. Crash-proof: any error degrades to OK.
+    """
+    from teatree.cli.doctor.self_heal import _Probe  # noqa: PLC0415 — deferred: lazy CLI import
+    from teatree.docker.output_root import (  # noqa: PLC0415 — deferred: lazy CLI import
+        OUTPUT_ROOT_ENV,
+        services_missing_output_root,
+    )
+    from teatree.docker.workflow import compose_path  # noqa: PLC0415 — deferred: lazy CLI import
+
+    try:
+        clone = _Probe.runtime_clone_root()
+        if clone is None:
+            return True
+        missing = services_missing_output_root(compose_path(clone))
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Compose-output-root check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not missing:
+        return True
+    typer.echo(
+        f"WARN  {len(missing)} compose service(s) do not pin {OUTPUT_ROOT_ENV} in their "
+        f"`environment` ({', '.join(missing)}). A `docker exec` into them bypasses the "
+        f"entrypoint export, so agent output splits across two roots and every "
+        f"transcript consumer must scan both. Declare {OUTPUT_ROOT_ENV} per service in "
+        "deploy/docker-compose.yml.",
     )
     return False

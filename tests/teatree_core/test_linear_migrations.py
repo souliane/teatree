@@ -26,6 +26,7 @@ import django.conf
 from django.conf import settings
 from django.core.checks import run_checks
 from django.db.migrations.loader import MigrationLoader
+from django.db.migrations.migration import Migration
 from django.test import override_settings
 
 from tests.teatree_core._migration_graph import CORE_MIGRATIONS_DIR
@@ -175,18 +176,36 @@ def test_live_core_graph_is_linear_by_dependency() -> None:
     core = {name: migration for (app, name), migration in loader.disk_migrations.items() if app == "core"}
     assert core, "expected on-disk core migrations to load"
 
+    # A squash migration (non-empty ``replaces``) is a legitimate PARALLEL root: it
+    # carries no dependencies and replaces a contiguous range, so it coexists with
+    # the still-present original chain until every deployed box is past the squash.
+    # It is excluded from the single-chain linearity analysis below (which guards
+    # the ORIGINAL chain), but each squash is separately required to be a clean
+    # parallel root — so a NON-squash stray root is still caught, not waved through.
+    squashes = {name: migration for name, migration in core.items() if migration.replaces}
+    for name, migration in squashes.items():
+        squash_core_parents = [dep_name for dep_app, dep_name in migration.dependencies if dep_app == "core"]
+        assert not squash_core_parents, (
+            f"squash {name} must be a parallel root with no core dependencies, got {squash_core_parents}"
+        )
+    chain_core = {name: migration for name, migration in core.items() if name not in squashes}
+    assert chain_core, "expected non-squash core migrations to load"
+
     # Each migration's dependencies restricted to the core app (a cross-app dep,
-    # e.g. on an initial, is not part of the intra-core chain).
-    core_parents: dict[str, list[str]] = {
-        name: [dep_name for dep_app, dep_name in migration.dependencies if dep_app == "core"]
-        for name, migration in core.items()
-    }
+    # e.g. on an initial, is not part of the intra-core chain), excluding any dep on
+    # a squash so the parallel root never merges into the original-chain analysis.
+    def _chain_parents(migration: Migration) -> list[str]:
+        return [
+            dep_name for dep_app, dep_name in migration.dependencies if dep_app == "core" and dep_name not in squashes
+        ]
+
+    core_parents: dict[str, list[str]] = {name: _chain_parents(migration) for name, migration in chain_core.items()}
     # No migration MERGES two core parents.
     for name, parents in core_parents.items():
         assert len(parents) <= 1, f"{name} depends on multiple core migrations {parents} — the graph merges"
 
     # No parent is depended on by two children — no BRANCH.
-    core_children: dict[str, list[str]] = {name: [] for name in core}
+    core_children: dict[str, list[str]] = {name: [] for name in chain_core}
     for name, parents in core_parents.items():
         for parent in parents:
             core_children[parent].append(name)
@@ -195,15 +214,17 @@ def test_live_core_graph_is_linear_by_dependency() -> None:
 
     roots = [name for name, parents in core_parents.items() if not parents]
     leaves = [name for name, children in core_children.items() if not children]
-    assert roots == ["0001_initial"], f"expected exactly one root (0001_initial), got {roots}"
+    assert roots == ["0001_initial"], f"expected exactly one non-squash root (0001_initial), got {roots}"
     assert len(leaves) == 1, f"expected exactly one leaf migration, got {leaves}"
 
-    # Walk the unique chain from the root and confirm it visits every node — a
-    # disconnected component would leave a node the walk never reaches.
+    # Walk the unique chain from the root and confirm it visits every non-squash
+    # node — a disconnected component would leave a node the walk never reaches.
     chain: list[str] = []
     node: str | None = roots[0]
     while node is not None:
         chain.append(node)
         children = core_children[node]
         node = children[0] if children else None
-    assert set(chain) == set(core), "the dependency chain does not cover every core migration — graph is disconnected"
+    assert set(chain) == set(chain_core), (
+        "the dependency chain does not cover every core migration — graph is disconnected"
+    )

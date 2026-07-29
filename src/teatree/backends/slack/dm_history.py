@@ -12,13 +12,21 @@ message — it is the request parameter, not part of the response — so it is
 stamped here for downstream consumers (#1043).
 """
 
+import logging
 from collections.abc import Callable
 from typing import cast
 
+from teatree.backends.slack.pagination import next_cursor
 from teatree.backends.slack.self_identity import OwnSlackIdentity, is_self_authored, is_thread_root
 from teatree.types import RawAPIDict
 
+logger = logging.getLogger(__name__)
+
 type Getter = Callable[[str, dict[str, str | int]], RawAPIDict]
+
+# 40 pages * 200 replies bounds a runaway walk at ~8000 replies; a hit is logged,
+# never silently truncated, so a dedup caller can trust a full read below the cap.
+_MAX_THREAD_PAGES = 40
 
 
 def _messages(data: RawAPIDict) -> list[RawAPIDict]:
@@ -26,6 +34,32 @@ def _messages(data: RawAPIDict) -> list[RawAPIDict]:
         return []
     messages = data.get("messages")
     return [cast("RawAPIDict", m) for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
+
+
+def _walk_thread(get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
+    """Cursor-follow ``conversations.replies`` across every page of the thread.
+
+    Mirrors the ``conversations.history`` cursor walk in ``client.py`` so a
+    thread with more than one page of replies is read whole — the pre-post dedup
+    and post-delivery verification that read it depend on seeing every reply.
+    """
+    collected: list[RawAPIDict] = []
+    cursor: str | None = None
+    for _ in range(_MAX_THREAD_PAGES):
+        params: dict[str, str | int] = {"channel": channel, "ts": thread_ts, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        data = get("conversations.replies", params)
+        collected.extend(_messages(data))
+        cursor = next_cursor(data)
+        if cursor is None:
+            return collected
+    logger.warning(
+        "Slack conversations.replies hit the %d-page cap on thread %s; the reply read is truncated",
+        _MAX_THREAD_PAGES,
+        thread_ts,
+    )
+    return collected
 
 
 def read_single_message(*, get: Getter, channel: str, ts: str) -> RawAPIDict:
@@ -58,7 +92,7 @@ def read_thread_replies(*, get: Getter, channel: str, thread_ts: str) -> list[Ra
     if not channel or not thread_ts:
         return []
     replies: list[RawAPIDict] = []
-    for reply in _messages(get("conversations.replies", {"channel": channel, "ts": thread_ts, "limit": 50})):
+    for reply in _walk_thread(get, channel, thread_ts):
         reply.setdefault("channel", channel)
         replies.append(reply)
     return replies
@@ -93,7 +127,7 @@ def _thread_replies(
     identity: OwnSlackIdentity | None,
 ) -> list[RawAPIDict]:
     replies: list[RawAPIDict] = []
-    for reply in _messages(get("conversations.replies", {"channel": channel, "ts": thread_ts, "limit": 50})):
+    for reply in _walk_thread(get, channel, thread_ts):
         if reply.get("ts") == thread_ts or (identity is not None and is_self_authored(reply, identity)):
             continue
         reply.setdefault("channel", channel)

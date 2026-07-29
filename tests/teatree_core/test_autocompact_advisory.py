@@ -109,9 +109,28 @@ class TestKillSwitchTripsModelMatrix:
         )
         assert kill_switch_trips(config) is True
 
-    def test_non_opus_47_does_not_trip(self) -> None:
-        # 200k models (opus-4-5, sonnet-4-x) hit the standard auto path
-        # — no kill-switch.
+    def test_every_native_1m_model_trips(self) -> None:
+        # The kill-switch is gated on the harness returning a 1M window, so it
+        # covers EVERY native-1M id in the harness catalog — not just the first
+        # one that shipped. A set frozen at one generation silently stops firing
+        # for the models the factory actually dispatches.
+        for model in (
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-sonnet-5",
+        ):
+            config = _config(
+                CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="25",
+                CLAUDE_CODE_MODEL=model,
+            )
+            assert kill_switch_trips(config) is True, model
+            assert kill_switch_trips(_config(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="25", CLAUDE_CODE_MODEL=f"{model}[1m]"))
+
+    def test_two_hundred_k_models_do_not_trip(self) -> None:
+        # The set is NOT family-shaped: within a family the previous generation is
+        # 200k and hits the standard auto path, so a family-substring match would
+        # fire falsely here.
         for model in (
             "claude-opus-4-5",
             "claude-opus-4-6",

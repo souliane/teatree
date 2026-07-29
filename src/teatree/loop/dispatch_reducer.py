@@ -120,12 +120,6 @@ def dispatch_flag_no_review(signal: ScanSignal) -> list[DispatchAction] | None:
     return [DispatchAction(kind="statusline", zone="in_flight", detail=signal.summary, payload=signal.payload)]
 
 
-def dispatch_assigned_issue(signal: ScanSignal) -> list[DispatchAction] | None:
-    if signal.payload.get("auto_start") is not True:
-        return None
-    return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
-
-
 def codex_review_dispatch(signal: ScanSignal) -> list[DispatchAction]:
     """Route ``codex_review.dispatch`` to the variant agent named in the payload (#1254).
 

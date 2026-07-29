@@ -4,7 +4,10 @@ import enum
 import io
 import json
 
-from teatree.core.machine_output import emit, to_jsonable
+from django.core.management import call_command
+from django.test import TestCase
+
+from teatree.core.machine_output import MachineOutputCommand, emit, to_jsonable
 
 
 class _Color(enum.Enum):
@@ -77,3 +80,34 @@ class TestEmit:
         emit({"a": 1}, json_output=False, out=out, err=err)
         assert out.getvalue() == ""
         assert err.getvalue() == ""
+
+
+class TestMachineOutputCommandPinsPrintResult(TestCase):
+    """``print_result = False`` must survive ``call_command(..., stdout=...)``.
+
+    ``BaseCommand.execute`` swaps in Django's own ``OutputWrapper`` for a passed
+    stream, and that wrapper has no ``disable`` flag — so without the base the pin
+    is a silent no-op and the typed return lands on stdout after ``emit`` already
+    wrote the JSON there.
+    """
+
+    @staticmethod
+    def _channels(*args: str, **kwargs: object) -> tuple[str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        call_command("signals", *args, stdout=out, stderr=err, **kwargs)
+        return out.getvalue(), err.getvalue()
+
+    def test_command_subclasses_the_seam_base(self) -> None:
+        from teatree.core.management.commands.signals import Command  # noqa: PLC0415 — deferred: app registry
+
+        assert issubclass(Command, MachineOutputCommand)
+
+    def test_json_stdout_carries_exactly_one_document(self) -> None:
+        out, err = self._channels("--json")
+        assert json.loads(out)
+        assert err == ""
+
+    def test_human_mode_writes_nothing_to_stdout(self) -> None:
+        out, err = self._channels()
+        assert out == ""
+        assert err != ""

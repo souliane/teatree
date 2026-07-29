@@ -6,7 +6,6 @@ tick stubbed so the five-step body is exercised without spawning a real tick.
 """
 
 import datetime as dt
-import os
 import types
 import uuid
 
@@ -16,8 +15,6 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops import timer_chains
-from teatree.utils.run import spawn_session_leader
-from teatree.utils.singleton import pid_alive
 
 
 def _fire(name: str, *, task_id: uuid.UUID | None = None) -> dict:
@@ -362,53 +359,7 @@ class TestLoopTimerKillSwitch(django.test.TestCase):
         with pytest.MonkeyPatch.context() as mp:
             mp.delenv("T3_LOOP_RUNNER_ENABLED", raising=False)
             mp.setattr(timer_chains, "run_deadlined_tick", _fake_tick)
-            assert timer_chains._loop_runner_enabled() is True  # default resolves ON
+            assert timer_chains.loop_runner_enabled() is True  # default resolves ON
             result = _fire("inbox")
 
         assert result["action"] == "ticked"
-
-
-class TestLiveTickProcessGroups(django.test.SimpleTestCase):
-    """The worker-shutdown kill surface: in-flight tick groups are tracked + killed."""
-
-    def setUp(self) -> None:
-        timer_chains._LIVE_TICK_PGIDS.clear()  # process-global registry — isolate from other tests
-
-    def test_kill_live_tick_process_groups_kills_a_registered_group(self) -> None:
-        proc = spawn_session_leader(["sleep", "30"])  # a stand-in in-flight tick
-        pgid = os.getpgid(proc.pid)
-        timer_chains._register_tick_pgid(pgid)
-        try:
-            assert pid_alive(proc.pid)
-            killed = timer_chains.kill_live_tick_process_groups()
-            assert pgid in killed
-            proc.wait(timeout=5)
-            assert not pid_alive(proc.pid)
-        finally:
-            timer_chains._unregister_tick_pgid(pgid)
-            timer_chains._killpg(pgid)
-
-    def test_completed_tick_leaves_no_group_registered(self) -> None:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(timer_chains, "_tick_argv", lambda name: ["true"])
-            timer_chains.run_deadlined_tick("x", deadline=30)
-        assert timer_chains.kill_live_tick_process_groups() == []  # nothing leaked past the tick
-
-
-class TestRunDeadlinedTick(django.test.SimpleTestCase):
-    """The deadlined-subprocess + whole-group-kill contract, argv stubbed to shell tools."""
-
-    def test_success_returns_returncode(self) -> None:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(timer_chains, "_tick_argv", lambda name: ["true"])
-            outcome = timer_chains.run_deadlined_tick("x", deadline=30)
-        assert outcome == {"timed_out": False, "returncode": 0}
-
-    def test_deadline_kills_the_process_group(self) -> None:
-        started = timezone.now()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(timer_chains, "_tick_argv", lambda name: ["sleep", "30"])
-            outcome = timer_chains.run_deadlined_tick("x", deadline=0.3)
-        elapsed = (timezone.now() - started).total_seconds()
-        assert outcome["timed_out"] is True
-        assert elapsed < 10  # the deadline fired and killed the group, not waited out the sleep

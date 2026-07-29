@@ -229,6 +229,15 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 ### Giving Code Review
 
+#### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
+
+This chapter's deliverable is one of two things, and the reporting rules are **opposite** between them. Decide which before drafting anything.
+
+- **Colleague-facing post** — a comment, discussion, or approval published on someone else's MR/PR **under the owner's identity**. Noise costs real credibility here, so the suppression rules below are binding on this lane: scale severity to confidence, say nothing on a check that came back clean, don't police formatting, don't block on style.
+- **Verdict envelope** — the headless cold reviewer's `review_verdict` result (`teatree.agents.result_schema.ReviewVerdictEnvelope`), recorded server-side as the durable `ReviewVerdict` the merge gate reads. Nothing is published and `findings` is schema-optional, so suppression here buys nothing and costs only recall.
+
+**In the envelope, record what you actually observed** — every finding, including the uncertain and the low-severity ones, each carrying its severity and your confidence. Coverage is your job; filtering is the merge gate's, downstream. Silence on a check you performed is a **missing record**, not a clean bill of health. `verdict: merge_safe` with an empty `findings` array asserts you looked and found nothing worth saying — emit it only when that is true, and record anything you could not check as a finding rather than leaving the array empty.
+
 #### Fetch-Only vs Comprehensive Review — Pick the Right Entry Command (do X — never Y)
 
 A colleague-authored MR on a **shared product repo** (a repo you do NOT solely own — shared with colleagues, gated on their review) is **review work, not merge work**. The action when you are handed one is to **fetch its diff and review it** — never to land it yourself. Do X (fetch + review); never Y (merge a teammate's product-repo MR):
@@ -259,6 +268,31 @@ The A/B distinction: your own solo-owned overlay repo, green and cleared → mer
 Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
 
 **BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it. To enumerate the open MRs you are scanning and move to the next unclaimed candidate, list them with `glab mr list` (GitLab) / `gh pr list` (GitHub), then skip past any that already carry a colleague's :eyes: — there is no `t3` command for advancing to the next MR, so do not invent one.
+
+#### The review-DONE Slack signal is `t3 slack react`, with three positional arguments
+
+A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. There is
+exactly one command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
+and no reaction subcommand under `t3 review` (there is none; do not invent one), and the emoji name
+carries **no colons**:
+
+```bash
+t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark
+```
+
+The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
+posts, so a hand-issued reaction matches what the loop would have emitted:
+
+| verdict | emoji argument |
+| --- | --- |
+| clean — no blocking findings | `white_check_mark` |
+| has blocking comments | `question` |
+
+The command is idempotent: an emoji already on the message (whether teatree placed it or a colleague did)
+is skipped and still exits `0`. So when a colleague's `:white_check_mark:` is already there and your own
+verdict differs, react with **your** verdict only — one command, the emoji that is actually yours. Never
+re-issue the reaction that is already present, and never substitute a DM to the author for the reaction;
+the substance of a review is its inline MR comments, and the reaction is the only Slack signal it emits.
 
 #### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
 
@@ -342,9 +376,9 @@ Investigate first by exhausting the sources you **can** reach:
 
 Only after all reachable sources are exhausted can you post a question-style comment — and only when the answer truly requires access you do not have (partner portal behind SSO, vendor-only documentation, product owner's desk knowledge). State what you checked and why the answer isn't reachable, so the author sees you did the work.
 
-**Scale severity to confidence.** A speculative "maybe wrong?" is a nit at best; drop it. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review.
+**Scale severity to confidence — on a colleague-facing post, drop what stays speculative.** A speculative "maybe wrong?" is a nit at best; do not post it under the owner's name. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review. In the **verdict envelope** the disposal is the opposite: record the uncertain observation with its confidence rather than dropping it.
 
-**When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR.
+**When the investigation confirms the code is correct, post nothing — on a colleague-facing post.** Silence on a check you performed is the correct outcome there, not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR. In the **verdict envelope** that same clean check is *recorded*, not silenced: name what you checked and that it came back clean.
 
 **Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
 
@@ -420,7 +454,7 @@ When posting on the PR, prefer **inline** (line-anchored) discussions over **gen
 
 **Step 2 — Review Tone & Formatting:**
 
-Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?"
+Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?" That governs the **verdict**, not the record: a style preference is not a reason to `hold`, and it is still worth recording as a low-severity finding in the verdict envelope.
 
 Comments are posted under the user's name. They must sound like a **real human colleague** wrote them — not an AI, not a linter, not a manager.
 
@@ -474,13 +508,13 @@ This step is the **`autonomy = "babysit"`** flow (the conservative default). Und
 
 This prevents noise from multiple review passes or multiple reviewers covering the same ground.
 
-**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
+**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. A draft note is colleague-invisible until the user submits it, so the user is the filter here exactly as the merge gate is on the verdict envelope — the suppression rules bind on what reaches a colleague, never on what reaches a curator. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
 **Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review/service.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `run`, `post-comment`, `authorize`, `approve-live-post`, `delete-draft-note`, `delete-discussion`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`, `approve`, `unapprove`. (`post-draft-note` is deprecated — see below.)
 
-**Read-only review-shape audit — `t3 review run <MR_URL>` (#1206).** Run before manually scanning the diff: the CLI emits a JSON summary (`changes.{files,additions,deletions}`, `complexity`, `existing_review.{open_discussions,draft_notes,approvals}`, `findings_catalog`, `verdict`) so every reviewer sub-agent starts from the same shape instead of improvising. The command never publishes; it just gathers what the reviewer needs to decide what to post via `post-comment` / `post-draft-note`. GitHub PR URLs return `unsupported_forge` (exit 2) deterministically — no masquerading success.
+**Read-only review-shape audit — `t3 review run <MR_URL>` (#1206).** Run before manually scanning the diff: the CLI emits a JSON summary (`changes.{files,additions,deletions}`, `complexity`, `existing_review.{open_discussions,draft_notes,approvals}`, `findings_catalog`, `verdict`) so every reviewer sub-agent starts from the same shape instead of improvising. The command never publishes; it just gathers what the reviewer needs to decide what to post via `post-comment` / `post-draft-note`. GitHub PR URLs and GitLab MR URLs both audit into the same payload shape; a URL naming neither forge exits 2 with `bad_url` — no masquerading success.
 
 **Default-safe `t3 review post-comment` (Mandatory, #1207).** The subcommand creates a DRAFT by default and DMs the user the link — the CLI itself enforces the draft-by-default rule, so no separate prose check is required. To publish live (colleague-visible), authorize the MR in **one step** with `t3 review authorize <repo>!<mr> --approver <user-id>` (records the durable on-behalf authorization AND mints the single-use live-post token), then the agent re-runs with `--live`. Without an authorization `--live` refuses without any GitLab side effect, naming the `authorize` command in the refusal. The earlier two-command dance (`approve-on-behalf` + `approve-live-post --from-on-behalf`) still works and remains for the Slack-ts verification path, but `authorize` is the one-step collapse (#126).
 

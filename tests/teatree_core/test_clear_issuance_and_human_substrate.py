@@ -38,9 +38,6 @@ from teatree.core.models import ClearIssuanceError, ConfigSetting, MergeAudit, M
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
-
 
 @pytest.fixture(autouse=True)
 def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1493,11 +1490,15 @@ class TestClearResolvesVerdictSlugBeforeIssuing(TestCase):
                     blast_class="logic",
                 ),
             )
-        assert result["issued"]
-        clear = MergeClear.objects.get(pk=result["clear_id"])
-        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
-        assert verdict.slug == "souliane/teatree"
-        assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+            assert result["issued"]
+            clear = MergeClear.objects.get(pk=result["clear_id"])
+            verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+            assert verdict.slug == "souliane/teatree"
+            # Inside the patch: the CLEAR's slug is a WORKSTREAM slug, so this
+            # re-resolution takes fallback (3) — the live clone origin — exactly
+            # like the issuance above. Asserted outside, it reads the developer's
+            # real `origin` and only passes in a clone of souliane/teatree itself.
+            assert resolve_pr_repo_slug(clear) == "souliane/teatree"
         assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
 
 

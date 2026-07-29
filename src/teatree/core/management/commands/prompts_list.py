@@ -7,12 +7,12 @@ management command (the project's "anything touching the ORM is a management
 command" rule). Strictly read-only — never mutates a row.
 """
 
-import json
-from typing import Annotated, Any
+from typing import IO, Annotated, Any, cast
 
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.machine_output import emit
 from teatree.core.models import Prompt
 
 
@@ -41,9 +41,11 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit the prompts as JSON.")] = False,
     ) -> None:
         prompts = list(Prompt.objects.all())
-        if json_output:
-            self.stdout.write(json.dumps({"prompts": [_payload(p) for p in prompts]}, indent=2))
-            return
-        self.stdout.write("prompts:")
-        for prompt in prompts:
-            self.stdout.write(_line(prompt))
+        human = "\n".join(["prompts:", *(_line(prompt) for prompt in prompts)])
+        emit(
+            {"prompts": [_payload(p) for p in prompts]},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )

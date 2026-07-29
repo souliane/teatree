@@ -6,6 +6,7 @@ import pytest
 import teatree.skill_support.loading as skill_loading_mod
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.skill_support.loading import SkillLoadingPolicy, _git_remote_urls
+from tests._unreadable_file import skip_if_root
 
 
 def test_resolve_skill_bundle_basic(tmp_path: Path) -> None:
@@ -121,6 +122,7 @@ def test_detect_framework_django_from_pyproject(tmp_path: Path) -> None:
     assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
 
 
+@skip_if_root
 def test_detect_framework_pyproject_read_error(tmp_path: Path) -> None:
     pp = tmp_path / "pyproject.toml"
     pp.write_text("placeholder", encoding="utf-8")

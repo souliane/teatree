@@ -22,12 +22,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from teatree.config import clone_root
+from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import Worktree
-from teatree.core.worktree.branch_classification import (
-    _branch_tree_matches_squash,
-    prefilter_branch_commits_by_subject,
-    probe_host_cli,
-)
+from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -65,22 +62,13 @@ class BranchReport:
 def find_open_pr(repo: str, branch: str) -> str:
     """Return the URL of the open PR for ``branch``, or ``""`` if none.
 
-    Queries GitHub (``gh pr list``) and GitLab (``glab mr list``). Returns ``""``
-    when neither CLI is available (sandbox, CI without auth) — callers treat
-    that as "no open PR known" rather than erroring.
+    A thin :meth:`~teatree.core.forge_pr_probe.PrProbe.url_or_empty` adapter over
+    the shared :func:`find_open_pr_for_branch`: a probe that could not run (no CLI
+    in a sandbox, CI without auth) collapses to ``""`` here, because the orphan
+    scan surfaces the branch as an orphan either way — the distinction the
+    fail-closed teardown gate needs does not change what this caller does.
     """
-    url = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--limit", "1"],
-        repo,
-        lambda data: data[0]["url"],
-    )
-    if url:
-        return url
-    return probe_host_cli(
-        ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json", "-P", "1"],
-        repo,
-        lambda data: data[0]["web_url"],
-    )
+    return find_open_pr_for_branch(repo, branch).url_or_empty()
 
 
 def _origin_default_branch_target(repo: str) -> str:

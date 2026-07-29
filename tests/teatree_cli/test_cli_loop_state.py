@@ -107,8 +107,9 @@ class TestLoopStateCommandIsReadOnly(TestCase):
 
     def test_loop_state_output_reads_as_a_status(self) -> None:
         result = runner.invoke(loop_app, ["loop-state", "review"])
-        assert "is now" not in result.stdout
-        assert "ENABLED" in result.stdout
+        # The human view routes through the emit() seam to stderr; stdout stays a clean JSON channel.
+        assert "is now" not in result.stderr
+        assert "ENABLED" in result.stderr
 
 
 class TestUnknownLoopNameRefused(TestCase):
@@ -134,5 +135,5 @@ class TestUnknownLoopNameRefused(TestCase):
 
     def test_refusal_names_the_loop_and_suggests_loops_list(self) -> None:
         result = runner.invoke(loop_app, ["pause", self._BOGUS, "--emergency"])
-        assert self._BOGUS in result.stdout
-        assert "t3 loops list" in result.stdout
+        assert self._BOGUS in result.stderr
+        assert "t3 loops list" in result.stderr

@@ -6,7 +6,7 @@ the worktree-cwd resolver (:func:`_resolve_task_cwd`), the resumable-session wal
 (:func:`_get_resume_session_id`), and the spawn constants they read. Re-exported
 from ``teatree.agents.headless`` so ``from teatree.agents.headless import
 _build_options`` (and the ``_MAX_TURNS`` / ``_PERMISSION_MODE`` / ``UUID_RE`` /
-``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in ``teams.pane_spawn`` and
+``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in
 ``core.management.commands.tasks``) stays valid.
 """
 
@@ -18,9 +18,16 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
 from teatree.agents import permission_modes
-from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
+from teatree.agents.model_tiering import (
+    model_supports_thinking,
+    resolve_fallback_model,
+    resolve_spawn_effort,
+    resolve_spawn_model,
+)
 from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
+from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
@@ -148,6 +155,12 @@ def _build_options(
             exclude_dynamic_sections=True,
         ),
         model=spawn_model or None,
+        # Capacity-exhaustion degrade: when the spawn model's pool is exhausted the
+        # SDK continues for a turn on the next-cheaper catalog rung rather than
+        # parking the task (claude-agent-sdk ``fallback_model``). ``None`` when the
+        # spawn model is at the cheapest rung / a pin teatree does not recognise / an
+        # inherited default — byte-identical to before the field existed.
+        fallback_model=resolve_fallback_model(spawn_model),
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
@@ -169,11 +182,22 @@ def _build_options(
     )
     if env is not None:
         options.env = env
+    options.hooks = spawn_ceiling_hooks(SpawnCeiling(limit=resolve_spawn_ceiling()))
     if is_reader_phase(phase):
         _apply_reader_tool_lockdown(options)
     else:
         _wire_teatree_mcp_server(options)
     return options
+
+
+def resolve_spawn_ceiling() -> int:
+    """The configured per-run sub-agent spawn ceiling; ``0`` disables the gate.
+
+    Resolved ONCE here rather than inside the hook: the hook runs on the SDK's
+    async path, where a DB read would be both a per-tool-call cost and an
+    async-context hazard. The dispatch closes over the resolved int instead.
+    """
+    return get_effective_settings().subagent_spawn_ceiling
 
 
 def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:
@@ -238,7 +262,7 @@ def _resolve_task_cwd(task: Task) -> str | None:
     Every other phase keeps the historical ``None`` (cwd unset) when no ticket
     worktree exists.
     """
-    worktree = Worktree.objects.filter(ticket=task.ticket).order_by("pk").first()
+    worktree = Worktree.objects.for_ticket(task.ticket).order_by("pk").first()
     if worktree and Path(worktree.repo_path).is_dir():
         return str(worktree.repo_path)
     return _main_clone_cwd(task)

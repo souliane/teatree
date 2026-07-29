@@ -19,8 +19,9 @@ from django.test import TestCase
 
 from teatree.cli import recover as cli_recover
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
+from teatree.core.management.commands.recover import RecoverPayload
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.worktree.recover import RecoverReport, gather_recover_report, requeue_failed_tasks
+from teatree.core.worktree.recover import RecoverReport, RecoverReportDict, gather_recover_report, requeue_failed_tasks
 from teatree.core.worktree.recovery_sweeps import BootSweepCounts
 
 
@@ -200,12 +201,12 @@ class TestRecoverCommand(TestCase):
     def test_dry_run_mutates_nothing(self) -> None:
         task = _failed_outage_task(url="https://x/i/4")
         with _mocked_probes():
-            out = StringIO()
-            call_command("recover", stdout=out)
+            err = StringIO()
+            call_command("recover", stderr=err)
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert "DRY RUN" in out.getvalue()
+        assert "DRY RUN" in err.getvalue()
 
     def test_requeue_flag_reopens_outage_task(self) -> None:
         task = _failed_outage_task(url="https://x/i/5")
@@ -214,6 +215,11 @@ class TestRecoverCommand(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+
+    def test_returns_exactly_the_declared_payload_shape(self) -> None:
+        with _mocked_probes():
+            payload = call_command("recover", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(RecoverPayload.__annotations__) | set(RecoverReportDict.__annotations__)
 
     def test_json_output_shape(self) -> None:
         orphans = [BranchReport(repo="/r", branch="b", status=BranchStatus.UNPUSHED_ORPHAN, ahead_count=1)]

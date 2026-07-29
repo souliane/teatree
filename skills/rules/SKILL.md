@@ -19,6 +19,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 
 1. [Invoke Skills Before ANY Response](#invoke-skills-before-any-response)
 2. [Verification Before Completion](#verification-before-completion-non-negotiable)
+2a. [An Acceptance Criterion That Cannot Fail Is Not a Criterion](#an-acceptance-criterion-that-cannot-fail-is-not-a-criterion-non-negotiable)
 3. [Grep Before Claiming Cross-Reference Coverage](#grep-before-claiming-cross-reference-coverage-non-negotiable)
 4. [Verify Imports Before Applying External Code](#verify-imports-before-applying-external-code)
 4a. [Read the Canonical Source Before Fixing a Conformance Bug](#read-the-canonical-source-before-fixing-a-conformance-bug)
@@ -96,7 +97,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Design principles**
 
 39. [Prefer Standard Over Clever](#prefer-standard-over-clever)
-40. [Never Slim Skills](#never-slim-skills)
+40. [Split Long Skills With Progressive Disclosure](#split-long-skills-with-progressive-disclosure)
 41. [Session Scope Management](#session-scope-management)
 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
 43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
@@ -144,6 +145,23 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 This is enforced, not just prose: the BLOCKING Stop gate `handle_completion_claim_gate` (#2665) refuses turn-end on a multi-deliverable completion claim with no complete on-target deliverable→evidence map. It fires only on loop-driven turns; a legitimate single-deliverable "done" or a complete on-target map is never blocked. Never-lockout escapes: the `[skip-completion-gate: <reason>]` token in the turn text and the `[teatree] completion_claim_gate_enabled = false` kill-switch (`t3 <overlay> gate completion-claim disable`). This is the hard-blocking sibling of the WARN-only closure-reverify advisory (#1448).
 
+**The answer to a gate rejection is evidence, not concessions (Non-Negotiable).** When the gate above — or any blocking gate, hook, or reviewer — rejects a claim, re-derive the assessment from the evidence. Do **not** go looking through your own correct work for something to concede so the pushback has an answer. Inventing defects is a worse failure than the over-claim the gate was catching: it corrupts every future self-assessment, and acting on a fabricated finding causes real damage (retracting a sound artifact, "fixing" correct text into something wrong). Concretely:
+
+- A rejection means _"prove it"_, not _"find something wrong"_. Answer with the deliverable→evidence map; where a deliverable genuinely lacks on-target evidence, say so — and leave every other verdict untouched.
+- Before reporting a defect in your own artifact, **quote the exact text and name the concrete failure**. If the quoted text does not actually exhibit the flaw, there is no finding — drop it.
+- Keep the severity vocabulary honest: a **conflict** contradicts the spec; a **gap** is uncovered scope; an **optional extra** is a side note someone flagged as nice-to-have. Reporting a gap or a side note as a conflict inflates severity and invites a needless retraction.
+- **In a bug report, "Actual Behavior" states the DEFECT, not the target.** Evidence and test plans demonstrate the _Expected Behavior_; never judge them for disagreeing with the Actual section. Misreading those two inverts the entire review.
+
+## An Acceptance Criterion That Cannot Fail Is Not a Criterion (Non-Negotiable)
+
+`/t3:code` § "TDD Discipline" mandates observing every regression test RED before trusting its green. This is that rule one level up, applied to feature acceptance: **before building against a criterion, name the state of the world that makes it FAIL.** If no such state exists, it is not a criterion — it certifies whatever you do, including doing nothing.
+
+- **Absence-satisfied criteria are the highest-risk shape.** "X stays unchanged", "Y is untouched", "no regression in Z", "suite S still passes unmodified" are all satisfied by never touching the module — so skipping the work scores as success, and the skipped phase reports complete.
+- **Pair every absence-satisfied criterion with a positive one only the implemented feature can satisfy** — a behaviour observably absent before the change and observably present after. The positive criterion is what the phase is verified against; the absence one is a guard, never the proof.
+- **Say so when a handed-down criterion is unfalsifiable.** It is a defect in the spec, not a licence to satisfy it cheaply — surface it and add the positive pair before implementing.
+
+The E2E-scoped statements of the same principle are `/t3:e2e` § "Writing Tests" (author side) and `/t3:e2e-review` § "Test the ticket, not the MR diff" (reviewer side): a test built against the diff's current behaviour passes regardless of whether the feature is correct. This section is the general form — apply it to acceptance criteria; they apply it to tests.
+
 ## Grep Before Claiming Cross-Reference Coverage (Non-Negotiable)
 
 When the user asks how their codebase or harness compares to an external reference — an article, a framework's docs, a competitor's product, a popular library — the reflex is to pattern-match: a name in the reference resembles a skill or file or function the agent has seen, so the agent claims it's covered (or claims the inverse). This pattern-match is unreliable across naming differences and partial-implementation gaps, and it always defaults toward overclaiming coverage when the agent has the user's project context loaded.
@@ -181,16 +199,14 @@ This composes with § "User Instructions Are Priority 1" (an EXPLICIT destructiv
 
 When the auto-mode classifier denies a tool call (Bash command rejected, MCP call refused, "permission denied" from the harness, etc.), **stop immediately**. Do not retry, do not work around it with a different command, do not "find another way". A classifier denial is an **immediate session blocker** — handle it before doing anything else.
 
-**Step 0 — read the denial reason and check existing allow-rules before escalating.** The denial message states _why_ it was blocked, and that reason frequently names the in-scope form the action must take (e.g. "database outside the authorized `development-<tenant>` scope" → the authorized DB name is `development-<tenant>`, not the one you used). Before treating this as "needs relaxation": (a) parse the stated reason for the corrective scope, and (b) read the user's `~/.claude/settings.json` `autoMode.allow` and `permissions.allow` entries for a rule that already authorizes this action under the correct form. If either resolves it, the action was never out of policy — re-issue it in the **authorized form** (this is not a relaxation and needs no user prompt). Only if neither the reason nor an existing rule resolves it do you run the escalation below. Skipping Step 0 and escalating a mere wrong-form mistake wastes the user's time on a decision they should never have been asked.
+**Step 0 — the denial reason usually names the in-scope form; re-issue in it rather than escalating.** Parse the stated reason for the corrective scope, and check the user's `~/.claude/settings.json` `autoMode.allow` / `permissions.allow` for a rule that already authorizes the action under the correct form. If either resolves it, the action was never out of policy — re-issue it in the **authorized form**; that is not a relaxation and needs no user prompt. Escalate only when neither resolves it: escalating a wrong-form mistake wastes the user's time on a decision they should never have been asked.
 
 **Required response when Step 0 does not resolve it:**
 
 1. **Stop.** Drop whatever you were doing. Do not start an alternative approach in the same response.
 2. **Inform the user** in plain text: which command was denied, what you were trying to accomplish, and the smallest static permission rule that would have allowed it (e.g. `Bash(gh issue create *)`, `Bash(docker buildx prune *)`). The rule must be the smallest rule that covers the use case — never a blanket `Bash` or `Bash(* *)`.
-3. **Ask via `AskUserQuestion`** with two options:
-   - **"Allow it (relax classifier)"** — preferred. You then attempt the edit yourself (see step 4); only if the harness blocks the write do you fall back to a paste-ready snippet for the user to apply.
-   - **"Keep the denial (do it differently)"** — you propose a concrete alternative path (different tool, manual step, API call) and proceed only after the user picks one.
-4. **If the user picked "Allow it":** attempt to add the rule to the user's `~/.claude/settings.json` (`permissions.allow` array) yourself, via the `Edit` tool. Read the file first, merge the new entry into the existing array, write it back. **If the write succeeds**, retry the original command. **If the write is denied** by the harness self-modification guardrail, only then fall back: hand over a paste-ready snippet, wait for the user to apply it, then retry. Do not preemptively skip the edit attempt — the goal is zero manual operations for the user when the harness allows it.
+3. **Ask via `AskUserQuestion`** with exactly two options: **"Allow it (relax classifier)"** — the preferred one — or **"Keep the denial (do it differently)"**, for which you propose a concrete alternative path and proceed only after the user picks one.
+4. **If the user picked "Allow it":** attempt the `~/.claude/settings.json` edit yourself via `Edit`, then retry the original command. A paste-ready snippet for the user to apply is the fallback **after** the harness blocks that write, never the default path.
 5. **Wait for the answer.** Do not retry the denied command, do not invent workarounds, do not file tickets, do not start unrelated work, until the user has chosen and (if relaxing) the new rule is in place.
 
 **Banned reactions to a classifier denial:**
@@ -198,18 +214,10 @@ When the auto-mode classifier denies a tool call (Bash command rejected, MCP cal
 - Silently retrying with a different argument shape hoping the classifier passes (`gh issue create` → `gh api repos/.../issues`).
 - Switching tools (Bash → MCP, MCP → Python subprocess) to bypass the rule.
 - Decomposing the command into pieces that each pass individually.
-- Editing teatree's plugin `settings.json`, `CLAUDE.md`, or any plugin-distributed permissions file to add an allow rule.
+- Editing teatree's plugin `settings.json`, `CLAUDE.md`, or any plugin-distributed permissions file to add an allow rule — the user-scope `settings.json` is the only right knob, and teatree never relaxes permissions on the user's behalf.
 - Continuing the surrounding work and "leaving the denial for later".
 
-**Why this rule exists.** The classifier exists to give the user a final say on standing-permission expansions. Auto-mode aggressiveness combined with classifier strictness is a recurring source of teatree workflow breakage — agents that retry, decompose, or sidestep silently accumulate scope, lose user trust, and ship work the user never authorized. The right escalation is to **ask once, fix permission at the user-scope settings file, retry**.
-
-**Standing recommended set (proactive, not reactive).** This protocol governs _reacting_ to a mid-session denial. The _standing_ generic set of authorizations that prevents most denials in the first place — and the read-only `t3 doctor authorizations` check that suggests (never applies) the absent ones — is documented in `skills/setup/references/recommended-automode-authorizations.md`. That doc and this section do not duplicate: one is the standing recommendation, the other the in-session escalation.
-
-**Boundary: who edits permissions where.**
-
-- Teatree (this skill, BLUEPRINT, plugin `settings.json`) defines the _protocol_. Teatree never relaxes permissions on the user's behalf.
-- The agent **attempts** the edit to `~/.claude/settings.json` (user scope) directly — that's the path with zero manual steps for the user. Many users have a standing authorization for this in their `autoMode.allow`. The agent only falls back to handing over a paste-ready snippet **after** the harness self-modification guardrail blocks the write — never as the default path. The snippet is the manual fallback, not the primary mechanism.
-- Plugin-distributed permissions (`plugins/t3/settings.json`, `CLAUDE.md` standing clauses) are **never** the right place to relax for a single workflow — that would grant the standing right to every user of the plugin. Refuse if asked to do this; explain that user-scope `settings.json` is the right knob.
+The Step 0 worked example, the settings-file edit procedure, the rationale, the standing recommended authorization set (and the read-only `t3 doctor authorizations` check that suggests it), and the full permissions boundary are in [`skills/rules/references/classifier-denial-escalation.md`](references/classifier-denial-escalation.md).
 
 ## Anticipate a Predictable Gate: Offer Enable-Setting or Approve-Once, Never Bypass-or-DIY (Non-Negotiable)
 
@@ -335,7 +343,7 @@ Id references must be namespace-qualified — they are never bare. A harness/tea
 
   Inside the repo's own working tree (`gh`/`glab` resolve the repo from the git remote), `--repo`/`-R` can be omitted — `gh issue view 50` is fine there. Add the flag whenever the command runs outside that repo's tree, or whenever the surrounding text disambiguates against a same-numbered task id and the command must stay unambiguous too.
 
-This is the canonical home; `/t3:todos` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `evals/scenarios/id_namespace_disambiguation.yaml`.
+This is the canonical home; `/t3:checking` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `evals/scenarios/id_namespace_disambiguation.yaml`.
 
 ## Read Secrets From the Secret Store (Non-Negotiable)
 
@@ -362,12 +370,12 @@ Reference the variable (`"$TOKEN"`) in the call that needs it; never the literal
 
 Before a **structural** action — standing up an agent team / fleet, spawning panes, reorganizing worktrees, changing an extension-point contract, anything that commits the session to a topology — **read the canonical source that defines that structure FIRST**, in the same turn, before you dispatch anything. The structure's source of truth (a skill's SKILL.md, the BLUEPRINT roles section, the loops skill, CLAUDE.md) is the spec; acting from memory invents a divergent shape that then has to be unwound.
 
-- Asked to "enable team mode" / "enable agent team mode": your single next action is **one** `Read` of the canonical role split — for team mode that file is **`skills/loops/SKILL.md`** (the loops skill owns the team-role split; BLUEPRINT.md's roles section or CLAUDE.md are equivalent canonical sources) — and it names the panes/roles and the overlay seam (one pane teatree, one pane the overlay). Issue that `Read` **before** any `Agent`/`Task` dispatch. **You ALREADY know the canonical roles from prior context — that knowledge is NOT a license to skip the Read.** Spawning `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes "from memory" because you remember the role names is the exact drift: read the source first even when you are confident you recall it, because the source is the spec and your memory is not. The Read comes first; the spawn comes after.
-- **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/loops/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try. **And the STOP is symmetric — do not path-hunt AFTER the read either.** The metered drift the lane caught is read-FIRST-then-over-explore: the agent issues the correct canonical `Read`, then keeps going with `find`/`grep`/`git rev-parse`/`ls`/`echo`/`cat` calls to locate or re-locate the file "to be thorough" before acting. That over-exploration is the same violation in mirror image — the canonical read already gave you the spec, so once it returns, proceed to the structural action (or stop); do NOT shell out to hunt for the file again. One canonical Read, then act — no path-hunting on either side of it.
+- Asked to "enable team mode" / "enable agent team mode": your single next action is **one** `Read` of the canonical role split — for team mode that file is **`skills/health/SKILL.md`** (the health skill owns the team-role split; BLUEPRINT.md's roles section or CLAUDE.md are equivalent canonical sources) — and it names the panes/roles and the overlay seam (one pane teatree, one pane the overlay). Issue that `Read` **before** any `Agent`/`Task` dispatch. **You ALREADY know the canonical roles from prior context — that knowledge is NOT a license to skip the Read.** Spawning `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes "from memory" because you remember the role names is the exact drift: read the source first even when you are confident you recall it, because the source is the spec and your memory is not. The Read comes first; the spawn comes after.
+- **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/health/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try. **And the STOP is symmetric — do not path-hunt AFTER the read either.** The metered drift the lane caught is read-FIRST-then-over-explore: the agent issues the correct canonical `Read`, then keeps going with `find`/`grep`/`git rev-parse`/`ls`/`echo`/`cat` calls to locate or re-locate the file "to be thorough" before acting. That over-exploration is the same violation in mirror image — the canonical read already gave you the spec, so once it returns, proceed to the structural action (or stop); do NOT shell out to hunt for the file again. One canonical Read, then act — no path-hunting on either side of it.
 
 ```bash
 # do X first — ONE canonical read by its repo-relative path, then stop:
-#   Read(file_path="BLUEPRINT.md")            # or skills/loops/SKILL.md / CLAUDE.md
+#   Read(file_path="BLUEPRINT.md")            # or skills/health/SKILL.md / CLAUDE.md
 # never Y — do not hunt for the path with shell calls before the read:
 #   Bash(command="find ~ -name BLUEPRINT.md")  ← FORBIDDEN: the Read is the action
 # never Z — do not dispatch panes from memory before that read:
@@ -462,6 +470,17 @@ The gate is **satisfiable, not pure suppression**. The teatree code paths consul
 - **Out of scope** (no pre-ask needed): DMs _to the user themselves_ (`Replier.post_dm`), the DailyDigest user thread, the `AskUserQuestion` Slack mirror, the bot→user notify path, and internal-only orchestration writes — our own teatree backlog issues, durable memory, task bookkeeping, the sanctioned `t3 <overlay> ticket clear` / `ticket merge` keystone. The CLI for a bot→user self-DM is **`t3 <overlay> notify send <body> --idempotency-key <key>`** — not `notify post` (which is the gated colleague/channel path that routes via `OnBehalfSlackEgress` and requires `--channel` + `--text`).
 - **Relationship to the notify-_after_ rule:** this is the _pre_-gate; the post-on-behalf notification is the _after_ receipt, now a real default-ON DB-home `UserSettings` field `notify_on_post_on_behalf` (default `true`, per-overlay overridable, **no env var**) — set with `t3 <overlay> config_setting set notify_on_post_on_behalf <true|false>` (`--overlay <name>` for the per-overlay scope). After every colleague-visible on-behalf publish, `teatree.core.on_behalf_post_receipt.notify_user_on_behalf_post` DMs the user the destination, a clickable artifact link, and a one-line summary (recorded in the `BotPing` ledger; record-and-proceed — it never blocks or rolls back the post). This durable enforcement **retires** the per-session memory `notify-user-on-every-post-on-behalf` (souliane/teatree#949). Both ship on. The user widens `on_behalf_post_mode` per-overlay (`"draft_or_ask"` → `"immediate"`) once confident the system posts well via `config_setting set on_behalf_post_mode immediate --overlay <name>`; set `notify_on_post_on_behalf` to `false` per-overlay independently — the notify stays on longer.
 - **Backward compatibility:** the legacy `ask_before_post_on_behalf` boolean is retired — under the #1775 partition its old `[teatree]` TOML key is ignored on read. Use `on_behalf_post_mode` (DB-home): `t3 <overlay> config_setting set on_behalf_post_mode <value>`.
+
+**Which CLI to run — the DESTINATION picks the credential, you never name one.** Both shapes below route through `OnBehalfSlackEgress`, which classifies the destination and selects the credential itself: the user's own DM goes out as the overlay bot, a colleague or channel goes out under the user's own identity. So the command carries only a destination and a body. No teatree surface accepts a credential or an identity-switch flag — if you find yourself reaching for one, the command is wrong, not incomplete.
+
+```bash
+# colleague channel (or a colleague's DM) — gated, then routed to the user's own identity:
+t3 <overlay> notify post --channel <channel> --text '<message>'
+# the user's OWN DM (bot→user self-DM) — exempt from the gate, never on-behalf:
+t3 <overlay> notify send '<body>' --idempotency-key <key>
+```
+
+Never hand-roll the colleague egress: a raw Slack Web API call carrying your own credential, or any post/react outside that class, fails an import-guard test in the build.
 
 **Failure mode this prevents:** the agent posts a poorly-worded reply or an approval the user did not intend under the user's name to a colleague, and the user only learns of it after the fact (or via the notify receipt). The pre-gate keeps the user in control of their own voice until they choose to delegate it.
 
@@ -566,7 +585,7 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **Exception:** Skills with `subagent_safe: true` in their YAML frontmatter are pure methodology/guidelines that work without shell functions, MCP tools, or cross-skill state.
 
-**Exception (monitor/work-trigger loop only):** `/teatree-batch` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. The singleton constraint is scoped narrowly to the loop that _monitors external systems and triggers work_ — it says nothing about loops in general or sub-agent use in general, and an ordinary session remains free to use loops and sub-agents as usual. The canonical statement (with the full scope boundary) lives in `/teatree-batch` § Rules "Singleton delivery sub-agent (canonical statement)"; this is a reference to it, not a second copy.
+**Exception (monitor/work-trigger loop only):** `/t3:wip` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. The singleton constraint is scoped narrowly to the loop that _monitors external systems and triggers work_ — it says nothing about loops in general or sub-agent use in general, and an ordinary session remains free to use loops and sub-agents as usual. The canonical statement (with the full scope boundary) lives in `/t3:wip` § Rules "Singleton delivery sub-agent (canonical statement)"; this is a reference to it, not a second copy.
 
 **Every raw Agent-tool spawn MUST carry the skill preamble (Non-Negotiable).** A sub-agent dispatched through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the SKILL.md bodies the orchestrator has loaded, so it over-provisions for remote e2e, runs raw `playwright`/`glab` instead of `t3`, and ignores overlay rules. Before spawning an e2e / coder / reviewer sub-agent, generate the inline skill preamble with `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` (it concatenates each `SKILL.md` body, resolving framework **and** the active overlay's skills) and **prepend it to the brief**. The dispatched prompt must contain the embedded skill bodies (the `--- SKILL: <name> ---` markers), not a bare task description. A bare brief is the bug this gate exists to catch. (Pinned by `evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`; the headless dispatch path injects the same bodies via `teatree.agents.skill_injection`.)
 
@@ -982,7 +1001,7 @@ The test is sharp: _can I reach the best outcome by doing the work?_ If yes → 
 
 **This is hook-enforced, not a remembered preference (#807).** A `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, a "let me know if/whether …" soft-ask, an ANNOUNCED-but-unissued ask — "**Action:** Ask about X" / "I'll ask the user which …" with no tool call — or a PRINTED call, `AskUserQuestion(...)` emitted as text instead of invoked; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it, and the legitimate one-ask-then-wait disposition ("once you answer, I'll ask the second decision") is guarded so a compliant walk-through is never re-ask-looped. **Scope:** the gate only enforces on a loop-driven turn (`_session_drives_loop`: this session owns the tick, or there is no live owner) — that is where an inline question is invisible (it reads as a log line, so the decision is lost). In an attended interactive session that a _different_ live owner is driving, a human is reading the prose, so the gate is skipped; an unknown/unreadable ownership signal fails safe and keeps it firing. See `BLUEPRINT.md` §17.1 invariant 9 and its production-hooks eval-lane bullet for the surrounding contract; the heuristic itself lives in `hooks/scripts/question_gates.py`.
 
-**Away-mode (24/7 dual question-mode, #58).** When `t3 teatree availability show` resolves to `away`, the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:availability` for the configuration surface (`t3 teatree availability away`, `t3 teatree availability present`, `t3 teatree availability auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
+**Away-mode (24/7 dual question-mode, #58).** When the active mode's posture defers questions (`t3 loop preset show`), the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:mode` for the configuration surface (`t3 loop preset use offline`, `t3 loop preset use engaged`, `t3 loop preset auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
 
 ### Receiving a structured answer (apply X — never apply a stale Y)
 
@@ -1003,6 +1022,7 @@ When a fix trips a real linter/type error, a failing test, or an awkward edge, t
 
 - a lint/type **suppression** — `# noqa`, `# type: ignore`, a new `per-file-ignores` entry, a relaxed ruff rule;
 - a **TODO/FIXME-for-later** left in code instead of the fix;
+- a **comment or docstring that ADMITS the implementation is incomplete** — "not wired in yet", "carve-out retained but currently empty", "placeholder until X lands" — shipped in place of finishing the work;
 - a **workaround** that masks the cause rather than removing it;
 - a **weakened, xfailed, or skipped test** (`pytest.mark.xfail` / `.skip`) slapped on instead of making the assertion pass honestly;
 - lowering a **coverage threshold** or adding a file to a coverage/omit list.
@@ -1017,48 +1037,20 @@ Edit(file_path="module.py", old_string="<the tangled function>", new_string="<th
 
 **Reduce debt when you are already there.** If the file you are fixing carries existing debt — a stale suppression you can now remove, a duplicated helper you can collapse, a misleading name you can rename — clean it in the same change. You are already in the file; leaving the debt for "later" is the deferral the rule above forbids, applied to code health.
 
+**Never file a confession in prose — finish the phase, or do not ship it.** A comment or docstring stating that the implementation is partial is not a disclosure; it is a note left where nothing will read it again, because CI is green and review passed, so the gap becomes permanent and invisible. The same shape is banned in documentation: a BLUEPRINT/README promise deferred to an untracked follow-up. Prose that admits incompleteness is inadmissible in a shipped change.
+
 **The carve-out is the same as everywhere else: ASK, don't suppress silently.** If a clean fix genuinely needs significant refactoring or a structural config change (a ruff rule, a coverage floor), surface the trade-off via `AskUserQuestion` with concrete options — never quietly add the suppression and move on. Introducing debt is a decision the user makes explicitly, not a shortcut the agent takes to save time. Pinned by `no_tech_debt_fixes_cleanly_not_a_suppression` (`evals/scenarios/do_the_best_no_tech_debt.yaml`); the project-level bar is `CLAUDE.md` § "No tech debt without explicit approval".
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
 The DB-home `mode` setting (`t3 <overlay> config_setting set mode <interactive|auto>`, or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
-### Resolve the effective mode before every publishing decision
+**Resolve the effective mode before every publishing decision — never assume `interactive`.** The chain is `T3_MODE` → per-overlay `mode` → global `mode` → per-repo memory overrides → `interactive`. The recurring failure is skipping that resolution and saying "not pushed, interactive mode" on a repo the user already opted into `auto`; that reads as ignoring their configured preference. Once it resolves to `auto`, do not ask "should I push?" — push and open the PR.
 
-Do not assume interactive mode. Before saying "not pushed, your call", before asking "push?", and before prompting for any publishing confirmation, **actively resolve the effective mode in this order** (first match wins):
+- **`interactive`:** each publishing action needs its own explicit confirmation. Commit approval ≠ push approval; rebase approval ≠ force-push approval; "recheck" is verify-only and never re-authorizes an approval.
+- **`auto`:** ship end to end without confirm prompts — push, open the PR, watch CI, then merge via the §17.4 keystone (`t3 <overlay> ticket clear …` → `t3 <overlay> ticket merge <clear_id>`, never raw `gh pr merge`). The one place you still stop is the merge, and only while `require_human_approval_to_merge` is `true` for the active overlay. Quality gates still run — `auto` drops the confirmation, not the checks.
 
-1. `T3_MODE` environment variable (`auto` or `interactive`).
-2. Active overlay's per-overlay `mode` value in the `ConfigSetting` DB store (`config_setting set mode … --overlay <active>`, where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay). The `[overlays.<active>] mode` TOML key is ignored on read.
-3. Global `mode` value in the `ConfigSetting` DB store (`config_setting set mode …`). The `[teatree] mode` TOML key is ignored on read.
-4. Per-repo overrides from agent memory / personal config (e.g. "this repo is auto — don't ask"). These supplement the config.
-5. If nothing matched: default to `interactive`.
-
-If the effective mode resolves to `auto`, apply the auto-mode doctrine below — do not ask for push confirmation, do not phrase the end-of-task as "your call", just push.
-
-The most common failure mode is defaulting to `interactive` without performing steps 1-4 — saying "not pushed, interactive mode" on a repo the user has already opted into auto. That reads as the agent ignoring the user's configured preference and forces them to repeat it every session.
-
-### Interactive mode (default)
-
-Commit approval ≠ push approval. **Squash approval ≠ push approval. "All done" ≠ push approval. Rebase approval ≠ force-push approval.** Always present the final state and ask "Push?" as a **separate question** after committing, squashing, or rebasing — use `AskUserQuestion`, not an inline question.
-
-- Every publishing action (push, PR create/update, PR merge, PR approve/unapprove, remote branch delete, Slack post) requires a separate explicit confirmation. "Recheck" / "re-review" / "look again" are verify-only instructions — they do **not** authorize re-approval.
-- **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
-
-### Auto mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`)
-
-The user has opted into end-to-end autonomy. The agent ships complete features without pausing for confirm prompts on the publishing actions listed above. In particular:
-
-- Push the feature branch after local quality gates pass (lint, tests, `makemigrations --dry-run --check`).
-- Open the PR, watch the pipeline, then **merge via the §17.4 keystone** (orchestrator `t3 <overlay> ticket clear …` → loop `t3 <overlay> ticket merge <clear_id>`; never raw `gh pr merge`) **when green unless `require_human_approval_to_merge` is `true` for the active overlay**, delete the remote branch.
-- Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
-
-**`require_human_approval_to_merge` is the merge-only carve-out.** Some overlays opt into auto-push but keep auto-merge gated because the upstream enforces a human-review gate (e.g., GitLab Code Review approval rules where CI green is necessary but not sufficient). The setting lives on `UserSettings` (DB-home) and is overridable per-overlay via `t3 <overlay> config_setting set require_human_approval_to_merge true --overlay <name>`. When `true`, the agent pushes and opens the PR/MR without asking but stops before issuing the per-diff CLEAR (`t3 <overlay> ticket clear …`) or running the keystone merge (`t3 <overlay> ticket merge <clear_id>`) — raw `gh pr merge` / `glab mr merge` are mechanically blocked regardless. The user flips it to `false` once they're comfortable trusting CI green alone. Default is `true` (training wheel on). The setting is intentionally orthogonal to `mode`: `mode = "auto"` everywhere is fine while `require_human_approval_to_merge` stays `true` on client/team overlays.
-
-**Mode is per-overlay.** A per-overlay `mode` value (`config_setting set mode … --overlay <name>`) overrides the global `mode` value. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
-
-**Quality gates still run — they just don't depend on user confirmation.** The objection auto mode answers is "stop gating on _confirmation_," not "skip quality checks."
-
-**Don't ask after resolving to `auto`.** Once steps 1–3 of the resolution order resolve to `auto`, asking "should I push?" or "should I open the PR?" reads as ignoring the user's configured preference and forces them to repeat it every session. Just push and open the PR. The only place you still ask is the merge step, and only when `require_human_approval_to_merge` is `true` for the active overlay.
+The resolution order in full, the per-mode expansion, and the `require_human_approval_to_merge` carve-out are in [`skills/rules/references/publishing-mode-doctrine.md`](references/publishing-mode-doctrine.md).
 
 ### Always-Gated Actions (Non-Negotiable, both modes)
 
@@ -1161,9 +1153,14 @@ When posting inline PR comments, target **added lines only** — not context or 
 
 When choosing between a clever in-process approach and the framework's standard approach, choose the standard. Prefer explicit/standard/boring over clever/implicit. If you're uncertain which is better, that uncertainty is the signal to go standard. Django's `setup()` is designed to be called once per process — subprocess via `__main__.py` beats in-process `call_command()` for entry-point overlays.
 
-## Never Slim Skills
+## Split Long Skills With Progressive Disclosure
 
-Never extract SKILL.md content into `references/` files to save tokens. Agents don't reliably load reference files on demand, so critical instructions get ignored. When optimizing context consumption, focus on phase-scoped loading (only embed the skills needed for the task), not on shrinking individual skills.
+A long `SKILL.md` keeps only its **decision-relevant spine** — the rules that change what an agent does — and moves the mechanics behind them into `references/*.md`. Split largest-section-first; a skill that outgrows its budget is split, never left whole.
+
+- **A rule that changes a decision stays in the spine.** The trigger ("when does this apply"), the verdict ("do X, never Y"), and any always-gated safety list are spine content. The step-by-step procedure, the config precedence chain, the per-flag rationale, and the worked recipes are reference content.
+- **Every spine entry names its reference by repo-relative path** (`skills/<skill>/references/<file>.md`), so a dispatch with no Skill tool can still reach it with `Read`. A pointer that only says "see the reference" without a path is not loadable.
+- **Move, never delete.** A safety rule that leaves the spine lands in a reference file intact. Deleting it is a separate, reviewed decision — a reference file is still loaded; a deleted rule is gone.
+- **Phase-scoped loading still matters** and is not a substitute: embed only the skills a phase needs, _and_ keep each of those skills split. The two levers compose.
 
 ## Session Scope Management
 

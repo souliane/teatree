@@ -109,6 +109,33 @@ class DiskCachePurgeTests(TestCase):
         assert "PURGE cache" in marker.last_plan
         assert marker.last_freed_at is not None
 
+    def test_an_absent_allowlist_entry_is_named_in_the_plan(self) -> None:
+        """A stale allow-list entry must be VISIBLE, not silently worth 0.00 GB (#3852).
+
+        Every entry of the shipped default was absent on the host that produced
+        this ticket (``pre-commit`` had been replaced by ``prek``, and neither
+        puppeteer nor codex was installed), so each CRITICAL tick purged nothing
+        and reported the same "~0.00 GB" a genuinely-clean cache produces. The
+        alarm therefore re-fired forever with no way to tell why.
+        """
+        free_resources({"resource": "disk", "disk_cache_allowlist": [str(self.tmp / "never-installed")]})
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "SKIP cache" in plan
+        assert "absent" in plan
+        assert "never-installed" in plan
+
+    def test_a_present_entry_is_still_a_purge_not_a_skip(self) -> None:
+        """Anti-vacuous control: the SKIP line must not swallow the real purge case."""
+        cache = self.tmp / "pre-commit"
+        _write_file(cache / "blob", 1024)
+
+        free_resources({"resource": "disk", "disk_cache_allowlist": [str(cache)]})
+
+        plan = ResourcePressureMarker.load().last_plan
+        assert "PURGE cache" in plan
+        assert "SKIP cache" not in plan
+
 
 class DryRunFirstTests(TestCase):
     """The plan is persisted before execution, and recorded even when flags are off."""

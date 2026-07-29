@@ -10,7 +10,7 @@ live, in-memory session state, and the Task tools bypass ``PreToolUse`` /
 ``PostToolUse`` hooks (a known harness regression — see
 ``docs/claude-code-internals.md`` § 9), so a ``t3`` CLI subprocess can only
 read a stale on-disk snapshot (``~/.claude/tasks/<session>/*.json``) that lags
-the live session and is never reliably in sync. ``/t3:todos`` therefore builds
+the live session and is never reliably in sync. ``/t3:checking`` therefore builds
 the harness half **dynamically from the live ``TaskList`` harness tool** — not
 from this CLI. Keeping the CLI's session view scoped to the teatree ``Task``
 rows means it can never masquerade as the live session todo list.
@@ -22,10 +22,10 @@ through this interface-layer command. There is NO teatree-written mirror of the
 harness list (the old ``<session>.todos`` materialiser was removed — it was a
 stale mistake-source that nothing load-bearing read). The reconciliation
 discipline that keeps the LIVE harness TODO list faithful belongs to the
-in-session agent, which applies ``/t3:todos`` § "Harness-TODO maintenance" (and
+in-session agent, which applies ``/t3:checking`` § "Harness-TODO maintenance" (and
 the ``tasks reconcile-checklist`` emitter) with its own ``TaskList`` /
 ``TaskUpdate`` / ``TaskCreate`` tools. The fix is to keep the best-effort disk
-read OUT of the interactive ``/t3:todos`` path, where the agent must read the
+read OUT of the interactive ``/t3:checking`` path, where the agent must read the
 live list.
 """
 
@@ -74,7 +74,7 @@ def render_session_view(
     """Render the session's teatree tasks, grouped pending / in_progress / completed.
 
     Only the teatree ``Task`` rows render here — the harness TODO list is built
-    from the live ``TaskList`` harness tool by ``/t3:todos``, never from this
+    from the live ``TaskList`` harness tool by ``/t3:checking``, never from this
     CLI (a subprocess can only read a stale on-disk snapshot of it).
     """
     console = Console(file=stream) if stream is not None else Console()

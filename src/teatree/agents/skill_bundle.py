@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from teatree.agents.phase_agent_skills import declared_skills_for_phase
 from teatree.skill_support.deps import SkillIndex
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
 from teatree.types import SkillMetadata
@@ -166,6 +167,11 @@ def resolve_skill_bundle(
     resolution (#3206) so a dispatch that also builds the prompts does not
     re-resolve (re-warn / re-read SKILL.md) per builder; when absent it is
     resolved here.
+
+    The phase's ``agents/*.md`` declaration is authoritative for the lifecycle
+    skills (#3667) — the same declaration the interactive lane resolves, so a
+    headless coding dispatch loads ``architecture-design`` rather than only
+    ``code``.
     """
     if stage_skills is None:
         stage_skills = active_overlay_stage_skills(phase)
@@ -179,5 +185,6 @@ def resolve_skill_bundle(
         pr_review_companion=active_overlay_pr_review_companion(),
         review_skills=active_overlay_review_skills(),
         stage_skills=stage_skills,
+        agent_declared_skills=declared_skills_for_phase(phase),
     )
     return result.skills

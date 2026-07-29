@@ -32,6 +32,7 @@ import typer
 from teatree.agents import permission_modes
 from teatree.cli.loop.claim_next import claim_next_command
 from teatree.cli.loop.drain_queue import drain_queue_app
+from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.listing import list_command
 from teatree.cli.loop.owner import register as register_loop_owner
 from teatree.cli.loop.preset import register as register_loop_preset
@@ -243,7 +244,10 @@ def start_command(
 def _session_pin_flags() -> list[str]:
     """The loop session's ``--permission-mode`` / ``--model`` / ``--effort`` pins.
 
-    The mode is pinned UNCONDITIONALLY. This session is attended at LAUNCH —
+    The mode defaults to the unattended pin, overridable by the operator through
+    ``agent_session_permission_mode`` / ``T3_AGENT_SESSION_PERMISSION_MODE``
+    (#3528) — the default is unchanged, the escape hatch is new. This session is
+    attended at LAUNCH —
     ``start_command`` refuses a non-terminal stdin, and the operator is there to
     see the child's own auth behaviour, which is why the base-URL guard
     deliberately skips this exec. But it long outlives that moment: it drives the
@@ -252,7 +256,8 @@ def _session_pin_flags() -> list[str]:
     operator's ``permissions.defaultMode`` — ``t3 doctor check`` advises ``auto``
     there, and pinning here is what makes that advice safe to follow. It is the
     same :data:`~teatree.agents.permission_modes.UNATTENDED` the headless dispatch
-    options pin, so the unattended lanes cannot drift apart.
+    options pin, so the unattended lanes cannot drift apart unless the operator
+    deliberately narrows this one.
 
     Model and effort are session-level pins so the user never runs ``/model`` (or
     sets the effort) by hand. They are injected ONLY into the interactive
@@ -267,7 +272,7 @@ def _session_pin_flags() -> list[str]:
 
     cfg = resolve_agent_config()
     session_model = cfg.session_model
-    flags: list[str] = ["--permission-mode", permission_modes.UNATTENDED]
+    flags: list[str] = ["--permission-mode", cfg.session_permission_mode or permission_modes.UNATTENDED]
     if session_model:
         flags.extend(["--model", session_model])
     if cfg.session_effort:
@@ -301,11 +306,15 @@ def self_improve_run_command(
     tier: str = typer.Option(
         "cheap",
         "--tier",
-        help="Cost tier: cheap|medium|expensive|all (default: cheap; Phase 1 ships cheap only).",
+        help="Cost tier: cheap|all (default: cheap). medium/expensive have no detectors and are refused.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the cycle report as JSON."),
 ) -> None:
-    """Run one self-improve schedule cycle for the given tier."""
+    """Run one self-improve schedule cycle for the given tier.
+
+    Delegates to the loop_self_improve management command, which refuses a
+    tier with no detectors — both surfaces exit 2 with the same message.
+    """
     ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
@@ -392,6 +401,10 @@ loop_app.command("claim-next")(claim_next_command)
 # #1744 — the read-only live loop-status view. Split off (same module-health
 # reason) and registered as a flat ``t3 loop list``.
 loop_app.command("list")(list_command)
+
+# #3632 — the DB-free owner-intake loop names the deploy fleet policy must never
+# force off; a flat ``t3 loop intake-loops`` the entrypoint reseed reads.
+loop_app.command("intake-loops")(intake_loops_command)
 
 # #3275 — the on-demand issue-marker reconciler: flat ``t3 loop reclaim-markers``.
 # The sanctioned way to unjam stranded intake budget (raw SQL is classifier-blocked).

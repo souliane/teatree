@@ -10,13 +10,12 @@ of the loop tick fan-out to stay under the module-health LOC cap.
 import os
 from pathlib import Path
 
-from teatree.config import TeamsDisplay, discover_active_overlay, discover_overlays, get_effective_settings, load_config
+from teatree.config import discover_active_overlay, discover_overlays, load_config
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
 from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (
-    AssignedIssuesScanner,
     BacklogSweepScanner,
     CiEvalHealScanner,
     DbBackupScanner,
@@ -25,7 +24,6 @@ from teatree.loop.scanners import (
     LocalStackQueueDrainerScanner,
     MyPrsScanner,
     NotionViewScanner,
-    PaneReaperScanner,
     ResourcePressureScanner,
     ReviewerPrsScanner,
     Scanner,
@@ -297,27 +295,6 @@ def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None
     return LocalStackQueueDrainerScanner(overlay=overlay_name)
 
 
-def _pane_reaper_scanner() -> PaneReaperScanner | None:
-    """Build the global idle-maker-pane reaper scanner from teatree config (#1838 PR#7b).
-
-    Returns ``None`` when ``teams_enabled`` is false — the DEFAULT-OFF path, so
-    installing the pane-reaper mini-loop changes no behaviour until the user
-    flips the feature on. The reaper is a global concern (it demotes any idle
-    ``team:<role>`` claim regardless of overlay), so it carries no overlay
-    anchor; the idle threshold is ``teams_idle_minutes``. The in-scanner
-    ``teams_enabled`` guard is belt-and-braces with this ``None``-when-off
-    return, so neither the mini-loop nor the scanner can act while teams is off.
-    """
-    settings = get_effective_settings()
-    if not settings.teams_enabled:
-        return None
-    return PaneReaperScanner(
-        teams_enabled=True,
-        idle_minutes=settings.teams_idle_minutes,
-        display_enabled=settings.teams_display is not TeamsDisplay.NONE,
-    )
-
-
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
     """Build a global scanning-news scanner from teatree-core config.
 
@@ -412,7 +389,6 @@ def build_default_jobs(
     host: CodeHostBackend | None = None,
     messaging: MessagingBackend | None = None,
     notion_client: NotionLike | None = None,
-    ready_labels: tuple[str, ...] = (),
 ) -> list[_ScannerJob]:
     """Build the default scanner jobs from one or more overlays.
 
@@ -466,7 +442,6 @@ def build_default_jobs(
                 [
                     _ScannerJob(scanner=MyPrsScanner(host=host), overlay=""),
                     _ScannerJob(scanner=ReviewerPrsScanner(host=host), overlay=""),
-                    _ScannerJob(scanner=AssignedIssuesScanner(host=host, ready_labels=ready_labels), overlay=""),
                 ],
             )
         if messaging is not None:
@@ -485,7 +460,6 @@ def build_default_scanners(
     host: CodeHostBackend | None,
     messaging: MessagingBackend | None,
     notion_client: NotionLike | None = None,
-    ready_labels: tuple[str, ...] = (),
 ) -> list[Scanner]:
     """Single-overlay scanner builder kept for tests and ad-hoc CLI use."""
     return [
@@ -494,6 +468,5 @@ def build_default_scanners(
             host=host,
             messaging=messaging,
             notion_client=notion_client,
-            ready_labels=ready_labels,
         )
     ]

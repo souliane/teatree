@@ -50,7 +50,7 @@ from teatree.core.gates.schema_guard import (
     require_current_schema,
 )
 from teatree.core.models import MergeClear
-from tests.teatree_core._migration_graph import core_migration_names
+from tests.teatree_core._migration_graph import core_head_migration, core_migration_names
 from tests.teatree_core.conftest import SchemaGuardAlias
 
 
@@ -160,7 +160,10 @@ class TestSchemaGuardOnPrivateAlias:
         assert result is False
         out = buffer.getvalue()
         assert "unapplied migration" in out
-        assert "0001_initial" in out
+        # A fresh/zero DB applies the current head (the squash replaces the range it
+        # collapses), so the doctor names ``core.<head>`` — derived from disk so a
+        # future squash/leaf never re-breaks this.
+        assert core_head_migration() in out
 
     def test_migrate_failure_fails_loud_with_remediation(self, schema_guard_alias: SchemaGuardAlias) -> None:
         alias = schema_guard_alias.make_stale()

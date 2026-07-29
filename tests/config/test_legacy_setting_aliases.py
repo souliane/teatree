@@ -3,7 +3,7 @@
 
 A DB-home ``UserSettings`` field renamed without an alias (or a data migration)
 silently discards any ``ConfigSetting`` row stored under the old key: the row
-falls through ``_coerce_db_rows`` and the field takes its dataclass default. The
+falls through ``_coerce_setting_rows`` and the field takes its dataclass default. The
 ``speed`` -> ``wip`` rename (#2951) was exactly that — an install that set
 ``speed = full`` silently ran at ``Wip.MEDIUM``.
 
@@ -83,7 +83,7 @@ class AliasFoldedGatePinSurvivesAutonomyCollapse(TestCase):
     """A global approval-gate row stored under a RETIRED alias still pins the gate (config §3d #1).
 
     ``get_effective_settings`` folds a legacy-alias row's VALUE onto its current
-    field via ``_coerce_db_rows`` — but the autonomy-collapse pin set must be keyed
+    field via ``_coerce_setting_rows`` — but the autonomy-collapse pin set must be keyed
     off those FOLDED field names, not the raw row keys. On the buggy code the pin
     set was ``set(global_rows)`` (raw keys), so an approval gate stored under a
     renamed key resolved its value while its pin vanished: the ``full``/``notify``

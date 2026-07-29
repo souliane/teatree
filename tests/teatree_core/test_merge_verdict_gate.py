@@ -151,8 +151,8 @@ class TestKeystoneMergeVerdictGate(TestCase):
         # RED before #2829: an even-later HOLD re-blocks; the newest verdict wins.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket=ticket)
-        _record("merge_safe", at=_T0)
-        _record("hold", at=_T0 + dt.timedelta(seconds=1))
+        _record("merge_safe", reviewer="reviewer-a", at=_T0)
+        _record("hold", reviewer="reviewer-b", at=_T0 + dt.timedelta(seconds=1))
         with pytest.raises(MergePreconditionError, match="an independent reviewer recorded a HOLD at this head"):
             _merge(clear)
         ticket.refresh_from_db()
@@ -164,8 +164,8 @@ class TestKeystoneMergeVerdictGate(TestCase):
         # HOLD (the safe direction), never silently overridden to merge-safe.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket=ticket)
-        _record("merge_safe", at=_T0)
-        _record("hold", at=_T0)
+        _record("merge_safe", reviewer="reviewer-a", at=_T0)
+        _record("hold", reviewer="reviewer-b", at=_T0)
         with pytest.raises(MergePreconditionError, match="an independent reviewer recorded a HOLD at this head"):
             _merge(clear)
         ticket.refresh_from_db()
@@ -315,10 +315,12 @@ class TestEffectiveStateAtTieBreak(TestCase):
     """The tie-break: a same-timestamp PASS+HOLD resolves to HOLD (the safe direction)."""
 
     def test_same_timestamp_pass_and_hold_holds(self) -> None:
-        # Low finding: a HOLD recorded in the same instant as a PASS must NOT be
-        # silently overridden — the tie resolves to HOLD.
-        _record("hold", at=_T0)
-        _record("merge_safe", at=_T0)
+        # Low finding: an independent reviewer's HOLD recorded in the same instant
+        # as another's PASS must NOT be silently overridden — the tie resolves to
+        # HOLD. Two distinct identities, since one identity's re-review is now a
+        # single idempotent row (F8).
+        _record("hold", reviewer="reviewer-a", at=_T0)
+        _record("merge_safe", reviewer="reviewer-b", at=_T0)
         state = ReviewVerdict.objects.effective_state_at(slug=_SLUG, pr_id=_PR, head_sha=_HEAD)
         assert state is HeadVerdictState.HOLD
 

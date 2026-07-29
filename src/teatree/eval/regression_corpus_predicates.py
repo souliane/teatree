@@ -63,7 +63,7 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     now — its home is the DB).
 
     It pins the per-overlay DB scope for *overlay_name* (alias-tolerant) to the
-    staged raw value — exercising the real ``_coerce_db_rows`` parser path — and
+    staged raw value — exercising the real ``_coerce_setting_rows`` parser path — and
     neutralises the global DB scope and the env tier to ``{}`` for the block so a
     live ``ConfigSetting`` row on the host (an overlay such as ``t3-teatree``
     pinned to ``full``) or a ``T3_*`` env var cannot win over the staged value.
@@ -81,7 +81,7 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     with (
         patch("teatree.config.resolution._load_global_rows", return_value={}),
         patch("teatree.config.resolution._load_overlay_rows", side_effect=_staged_overlay_rows),
-        patch("teatree.config.resolution._env_setting_overrides", return_value={}),
+        patch("teatree.config.resolution.env_setting_overrides", return_value={}),
     ):
         yield
 

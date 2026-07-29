@@ -8,6 +8,7 @@ signal it relies on (:func:`_branch_captured_upstream`) lives in
 
 import re
 
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.worktree.branch_classification import _branch_captured_upstream
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -29,7 +30,7 @@ def _stash_branch(line: str) -> str:
     return "" if branch == "(no branch)" else branch
 
 
-def drop_orphaned_stashes(repo: str) -> list[str]:
+def drop_orphaned_stashes(repo: str, *, dry_run: bool = False) -> list[str]:
     """Drop stashes whose branch is gone — but ONLY when their changes are merged.
 
     A stash is the *only* copy of its work. Dropping it because its owning branch
@@ -73,6 +74,11 @@ def drop_orphaned_stashes(repo: str) -> list[str]:
             cleaned.append(
                 f"Kept orphaned stash {label} (was on {branch}): changes are NOT merged — "
                 f"dropping would lose them. Recover with `git stash apply {ref}`."
+            )
+            continue
+        if dry_run:
+            cleaned.append(
+                preview_line(f"Drop orphaned stash: {label} (was on {branch}; changes already merged)", dry_run=True)
             )
             continue
         git.run(repo=repo, args=["stash", "drop", ref])

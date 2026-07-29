@@ -10,22 +10,17 @@ leaking MR comment bound for a public repo is REFUSED before the wire call.
 
 from unittest.mock import patch
 
-import pytest
+from django.test import TestCase
 
 from teatree.cli.review.send_routing import route_forge_send
 from teatree.core.models import SendAudit
 
-# route_forge_send delegates through route_forge_write -> route_send, which
-# writes a SendAudit row, so the DB is required for the audited paths.
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
 
-
-class TestRouteForgeSendLeakScan:
+class TestRouteForgeSendLeakScan(TestCase):
     def test_leaking_comment_to_a_public_repo_is_refused_before_the_wire(self) -> None:
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
         ):
             note, refusal = route_forge_send(
                 repo="souliane/teatree", mr=7, action="post_comment", note="rolling out for Contoso"

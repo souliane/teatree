@@ -25,6 +25,8 @@ are out of this gate's structural derivation.
 import ast
 from pathlib import Path
 
+from teatree.config.seed_defaults import _cache as _seed_defaults_cache
+from teatree.config.seed_defaults import reset_seed_defaults_cache
 from teatree.core.backend_factory import _code_host_cache, _messaging_cache, reset_backend_caches
 from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
 from teatree.utils.throttled_log import _last_warned, reset_throttle
@@ -139,6 +141,11 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
     "teatree.hooks.quote_scanner:_BLOCKLIST_CACHE": "reset_blocklist_cache",
+    # The shipped seed tables are read by the `config_setting import` classifier, and tests
+    # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
+    # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
+    # below because nothing but the resolver reads that one.
+    "teatree.config.seed_defaults:_cache": "reset_seed_defaults_cache",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.
@@ -149,10 +156,35 @@ EXEMPT: dict[str, str] = {
     "teatree.core.factory.chokepoint_registry:_REGISTRY": "import-populated chokepoint registry; process-stable",
     "teatree.core.modelkit.gate_registry:_REGISTRY": "import-populated modelkit gate registry; process-stable",
     "teatree.core.intake.attachment_fetch_registry:_fetchers": "app-ready-populated fetcher registry; process-stable",
+    "teatree.core.deterministic_phases:_RUNNERS": (
+        "app-ready-populated deterministic-phase runner registry (#3570); process-stable — the one test "
+        "that varies it patches the binding rather than mutating it"
+    ),
+    "teatree.agents.model_tiering:PYDANTIC_AI_TIER_MODELS": (
+        "empty-by-default tier catalog merged UNDER config (#3666), never accumulated at runtime; "
+        "resetting it would clear nothing"
+    ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
     "teatree.cli.overlay:OVERLAY_PROXY_COMMANDS": "import-populated command map; not mutated at runtime",
-    "teatree.config.settings:TOML_OVERLAY_OVERRIDABLE_SETTINGS": "import-populated constant; not mutated at runtime",
-    "teatree.loops.timer_chains:_LIVE_TICK_PGIDS": "live tick subprocess PGIDs; process-lifecycle, not a per-test memo",
+    "teatree.config.setting_registries:TOML_OVERLAY_OVERRIDABLE_SETTINGS": (
+        "import-populated constant; not mutated at runtime"
+    ),
+    "teatree.config.cold_defaults:_cache": (
+        "single-entry mtime-keyed memo of the packaged defaults.toml, self-evicting (clears itself on "
+        "each parse so it holds at most the current mtime); keyed by an immutable-in-production file, "
+        "so resetting it would only force a re-parse of the identical file — it isolates no test state"
+    ),
+    "teatree.config.schema:_NO_INIT_OVERRIDES": (
+        "empty-overrides constant spread into the shipped_defaults() constructor; never mutated at runtime"
+    ),
+    "teatree.config.schema:shipped_defaults": (
+        "@lru_cache singleton of the pydantic model built from the packaged defaults.toml; process-stable "
+        "(the file is immutable in production and no test rebinds _DEFAULTS_TOML), so resetting it would "
+        "only rebuild the identical model"
+    ),
+    "teatree.loops.deadlined_tick:_LIVE_TICK_PGIDS": (
+        "live tick subprocess PGIDs; process-lifecycle, not a per-test memo"
+    ),
 }
 
 
@@ -225,6 +257,7 @@ class TestProcessCacheResetRoster:
             (_last_warned, "sentinel-key", reset_throttle),
             (_code_host_cache, "sentinel-overlay", reset_backend_caches),
             (_messaging_cache, "sentinel-overlay", reset_backend_caches),
+            (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
         ]
         for container, key, reset_fn in cases:
             container[key] = object()  # type: ignore[index]

@@ -87,8 +87,14 @@ repos:
   - repo: https://github.com/pappasam/toml-sort
     rev: 4ec24891e200ae663aa2a7cecd19516080777133  # v0.24.2
     hooks:
+      # `config/defaults.toml` is excluded because its LAYOUT is load-bearing, not
+      # cosmetic: `[teatree]` leads under the hand-written header (the renderer reproduces
+      # the file byte-for-byte, so a reshuffle would show as churn in every snapshot diff),
+      # and the `[loops.<name>]` table order IS the seed order pinned against the frozen
+      # `0001_initial` copy. toml-sort would sort the top-level tables alphabetically and
+      # move `[teatree]` last. The `[teatree]` keys stay sorted by the renderer itself.
       - id: toml-sort-fix
-        exclude: ^(pyproject\.toml|uv\.lock)$
+        exclude: ^(pyproject\.toml|uv\.lock|src/teatree/config/defaults\.toml)$
 
   # Phase 3 - Fast syntax
   - repo: https://github.com/pre-commit/pre-commit-hooks

@@ -1,45 +1,94 @@
-"""Safety-biased incremental test selection (#113).
+"""Safety-biased incremental test selection (#113, #3672 cutover).
 
 Fast-feedback ONLY. The whole-tree sharded run stays the merge/coverage gate; this
 selector is opt-in local tooling and is NEVER wired into the pre-push gate.
 
-Given a diff, decide which pytest test files to run. A changed ``src/teatree/**``
-module expands to its transitive dependents — the reverse-import closure from
-``tach map --direction dependents`` — and every test whose first-party imports hit
-any module in that closure is selected, unioned with the mirror-convention test path
-and an always-run floor. ANY change the classifier cannot prove local (conftest,
-settings, migrations, non-``.py`` data files, deletions/renames, files outside the
-modelled roots) degrades to a whole-tree FULL run. Over-run is free; under-run is a
-false green — the same doctrine as :mod:`teatree.quality.changed_set`, the shared
-changed-set + FULL-trigger normalizer this builds on.
+The impact engine is the tach pytest plugin (`--tach --tach-base origin/main`): it
+walks the import graph natively and deselects the tests a diff cannot reach. This
+module no longer re-implements that graph walk — the hand-rolled subprocess and the
+graph-adjacency parsing it used to maintain are gone (#3672).
+
+What survives is the ESCALATION policy, a safety contract the plugin cannot infer:
+
+- ``classify_selection`` — force-FULL on this lane's OWN selection machinery / conftest /
+factories / test settings / migrations / any unclassifiable executable change, and
+``--create-db`` on a migration. A FULL verdict runs the whole suite with the plugin OFF,
+so nothing is deselected.
+- ``build_force_keep`` — on a SCOPED verdict, the floor dirs, the reference-reader
+mapping, the test-path-mirror rule, and the changed test files themselves become a
+FORCE-KEEP layer applied over the plugin's deselection by
+``teatree.quality.force_keep_plugin``, in the SAME pytest session. Zero test runs twice.
+
+Under-run is a false green — the same doctrine as :mod:`teatree.quality.changed_set`,
+the shared changed-set + FULL-trigger normalizer this builds on. Over-run is not free
+either (#3645): a one-module fix escalated to 30182 tests over 59m32s because the diff
+carried the ``BLUEPRINT.md`` edit the blueprint-sync gate compels. Docs are therefore
+classified rather than blanket-escalated (:mod:`teatree.quality.doc_impact`) and mapped
+to the tests that READ them; the escalation stays exactly as conservative for anything
+executable.
+
+The ``dev/`` lane runners are the same shape as docs and are classified the same way
+(#3817). The shared classifier calls the whole ``dev/`` tree un-modellable toolchain —
+right for CI-lane routing and the push gate, which own whole-tree backstops of their
+own — but a shell / compose / Dockerfile asset under ``dev/`` is never imported and
+never executed by the local suite, so the only test that can observe an edit to it is
+one whose source NAMES it. Blanket-escalating them made a one-line edit to a lane
+runner select the whole tree, i.e. the change that most needs a local run was the one
+change that could not get one. The fail-safe that escalation provided by accident is
+now explicit and strictly stronger: :data:`SELECTION_DEFINING_PATHS` forces FULL for
+every file that decides WHICH tests run — including the ``src/teatree/quality`` modules
+this lane is built from, which the shared classifier scoped like any other src module.
 """
 
-import ast
-import json
-import shutil
-import sys
-from collections import deque
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, FullTrigger, changed_paths, classify, is_migration
-from teatree.quality.test_path_mirror import collect_test_files, expected_test_dir
-from teatree.utils.run import run_allowed_to_fail
+from teatree.quality.doc_impact import disk_reference_reader_lookup, is_doc_path, reference_tokens
+from teatree.quality.test_path_mirror import expected_test_dir
 
-#: Cross-cutting, subprocess-heavy suites an import graph cannot fully model — run
+#: The tach pytest plugin's default base — our escalation diff pins the same ref, so the
+#: force-keep layer and the plugin agree on which commits count as "changed".
+DEFAULT_BASE = "origin/main"
+
+#: The dotted import path pytest loads the force-keep layer from (``-p <this>``).
+FORCE_KEEP_PLUGIN = "teatree.quality.force_keep_plugin"
+
+#: Cross-cutting, subprocess-heavy suites an import graph cannot fully model — force-keep
 #: them on EVERY scoped selection so their blind spot is a constant cost, not a skip.
 FLOOR_DIRS: tuple[str, ...] = ("tests/quality", "tests/integration", "tests/conformance")
 
-_FIRST_PARTY_ROOT = "teatree"
+#: The lane's own selection machinery. A diff that edits any of these changes WHICH tests
+#: this lane picks, so the lane cannot be trusted to validate its own change: the verdict
+#: is FULL before any other classification runs. Membership is by exact path — the test
+#: ``test_every_pinned_path_exists_on_disk`` fails on a stale entry, so a rename cannot
+#: silently drop a file out of the fail-safe. Everything reachable only THROUGH these (the tach
+#: plugin, ``pyproject.toml``'s pytest config, ``conftest.py``) already forces FULL by its
+#: own trigger, and CI's whole-tree sharded lane is the backstop for all of it.
+SELECTION_DEFINING_PATHS: frozenset[str] = frozenset(
+    {
+        "src/teatree/quality/affected_tests.py",  # this module: the escalation policy
+        "src/teatree/quality/changed_set.py",  # the shared changed-set + FULL-trigger classifier
+        "src/teatree/quality/doc_impact.py",  # the non-imported-path partition + reference map
+        "src/teatree/quality/force_keep_plugin.py",  # applies force-keep over tach's deselection
+        "src/teatree/quality/test_path_mirror.py",  # the mirror + test-file resolvers both consume
+        "src/teatree/cli/affected_tests_tools.py",  # emits the pytest invocation
+        "dev/test-affected.sh",  # the runner that consumes it
+    }
+)
+
+#: ``dev/`` holds lane runners — shell / compose / Dockerfile assets nothing imports and
+#: the local suite never executes. Their impact is mapped by reference (like docs), not
+#: escalated. A ``.py`` under ``dev/`` is excluded: python IS importable, so it falls
+#: through to the shared classifier's out-of-root FULL.
+_LANE_RUNNER_PREFIX = "dev/"
+_PYTHON_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
+
 _SRC_MODULE_PREFIX = "src/teatree/"
 _SRC_PREFIX = "src/"
 _TESTS_PREFIX = "tests/"
 _TESTS_CONFIG_PREFIX = "tests/config/"
-
-
-class TachUnavailableError(RuntimeError):
-    """Raised when the tach dependency map cannot be produced — the caller runs FULL."""
 
 
 @dataclass(frozen=True)
@@ -49,13 +98,29 @@ class SelectionVerdict:
     create_db: bool
     scoped_src: tuple[Path, ...] = ()
     scoped_tests: tuple[Path, ...] = ()
+    #: Changed paths nothing imports (docs + ``dev/`` lane runners) — mapped to the tests
+    #: whose source NAMES them rather than escalated to the whole tree.
+    scoped_reference_mapped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SelectionReason:
     test: str
-    kind: str  # self-changed | import-match | mirror
+    kind: str  # floor | reference-read | mirror | self-changed
     chain: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ForceKeep:
+    """The escalation set force-kept over the tach plugin's deselection (SCOPED only)."""
+
+    paths: tuple[str, ...] = ()
+    reasons: tuple[SelectionReason, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def covers(self, rel_path: str) -> bool:
+        """True when *rel_path* is force-kept — an exact match or under a kept directory."""
+        return any(rel_path == kept or rel_path.startswith(f"{kept}/") for kept in self.paths)
 
 
 @dataclass(frozen=True)
@@ -63,44 +128,50 @@ class Selection:
     full: bool
     reason: str
     create_db: bool = False
-    test_files: tuple[str, ...] = ()
-    floor_dirs: tuple[str, ...] = FLOOR_DIRS
+    base_ref: str = DEFAULT_BASE
+    force_keep: tuple[str, ...] = ()
     doctest_targets: tuple[str, ...] = ()
     reasons: tuple[SelectionReason, ...] = ()
     changed_src: tuple[str, ...] = ()
     changed_tests: tuple[str, ...] = ()
+    changed_reference_mapped: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def pytest_args(self, *, test_db_cloned: bool = False) -> list[str]:
         """Positional pytest args for this selection.
 
-        ``create_db`` normally emits ``--create-db`` (pytest-django replays every
-        migration from zero). When the caller has already refreshed the test DB via
-        the opt-in template clone (:func:`teatree.utils.django_db.prepare_test_db`,
-        souliane/teatree#3326), pass ``test_db_cloned=True`` so the same drift
-        instead emits ``--reuse-db``: the freshly cloned DB is current, and a
-        ``--create-db`` would wipe it and replay. Default (``False``) is
-        byte-identical to the pre-#3326 behaviour.
+        A FULL verdict emits at most a DB flag and runs the whole suite with the plugin
+        OFF. A SCOPED verdict activates the tach plugin (``--tach --tach-base <base>``)
+        and loads the force-keep layer (``-p teatree.quality.force_keep_plugin``); the
+        two run in ONE session. Changed src modules keep CI's ``--doctest-modules``
+        parity — passing them (and an explicit ``tests`` root, so the positionals do not
+        clobber ``testpaths``) as collection roots.
+
+        ``create_db`` normally emits ``--create-db``; when the caller has refreshed the
+        test DB via the opt-in template clone (souliane/teatree#3326), pass
+        ``test_db_cloned=True`` so the same drift instead emits ``--reuse-db``.
         """
         db = (["--reuse-db"] if test_db_cloned else ["--create-db"]) if self.create_db else []
         if self.full:
-            return db  # empty positionals ⇒ the runner executes the whole suite
-        doctest = ["--doctest-modules", *self.doctest_targets] if self.doctest_targets else []
-        return [*db, *self.test_files, *doctest, *self.floor_dirs]
+            return db  # plugin OFF ⇒ the runner executes the whole suite
+        plugin = ["--tach", "--tach-base", self.base_ref, "-p", FORCE_KEEP_PLUGIN]
+        if self.doctest_targets:
+            return [*db, *plugin, _TESTS_PREFIX.rstrip("/"), *self.doctest_targets, "--doctest-modules"]
+        return [*db, *plugin]
 
     def report(self) -> str:
         if self.full:
             return f"affected-tests: FULL — {self.reason}"
         return (
-            f"affected-tests: SCOPED — {len(self.test_files)} test file(s) + "
-            f"{len(self.floor_dirs)} floor dir(s), {len(self.doctest_targets)} changed src module(s); "
-            "full-run triggers: none"
+            f"affected-tests: SCOPED (tach plugin + force-keep) — {len(self.force_keep)} force-kept path(s), "
+            f"{len(self.doctest_targets)} changed src module(s), "
+            f"{len(self.changed_reference_mapped)} changed non-imported path(s)"
         )
 
     def explain(self, test: str | None = None) -> list[str]:
         chosen = [reason for reason in self.reasons if test is None or reason.test == test]
         if test is not None and not chosen:
-            return [f"{test}: not selected by this diff"]
+            return [f"{test}: not force-kept by this diff (tach selects it only if a changed module reaches it)"]
         return [f"{reason.test} [{reason.kind}]: " + " -> ".join(reason.chain) for reason in chosen]
 
 
@@ -110,6 +181,28 @@ def module_of(path: str) -> str | None:
         return None
     dotted = path[len(_SRC_PREFIX) : -len(".py")].replace("/", ".")
     return dotted.removesuffix(".__init__")
+
+
+def is_lane_runner(path: str) -> bool:
+    """True when *path* is a ``dev/`` lane runner — nothing imports it, no test executes it.
+
+    Excludes python (importable ⇒ the shared classifier's out-of-root FULL owns it) and
+    the selection-defining ``dev/test-affected.sh``, which forces FULL before any
+    reference mapping is reached.
+    """
+    if path in SELECTION_DEFINING_PATHS or path.endswith(_PYTHON_SUFFIXES):
+        return False
+    return path.startswith(_LANE_RUNNER_PREFIX)
+
+
+def is_reference_mapped(path: str) -> bool:
+    """True when *path* has no import-graph edges, so its impact is mapped textually.
+
+    Docs (#3645) and ``dev/`` lane runners (#3817): the only test that can observe a
+    change to one is a test whose source NAMES it, so ``build_force_keep`` maps it to
+    those readers instead of escalating the whole tree.
+    """
+    return is_doc_path(path) or is_lane_runner(path)
 
 
 def _extra_full_trigger(path: str) -> str | None:
@@ -130,26 +223,47 @@ def _extra_full_trigger(path: str) -> str | None:
 
 
 def classify_selection(changed: ChangedSet) -> SelectionVerdict:
-    """Route a diff to FULL or the scoped src+test lists, reusing the shared classifier.
+    """Route a diff to FULL or the scoped src+test+reference lists, reusing the shared classifier.
 
-    Adds the #113-only escalations on top of :func:`teatree.quality.changed_set.classify`:
-    factories/settings force FULL, a migration additionally requires ``--create-db``,
-    and a file the shared classifier merely IGNORED (doc/markdown outside the code
-    roots) becomes FULL — a doc/skill-parsing test may read it, so scoping it away
-    would risk an under-select.
+    The lane's own selection machinery is checked FIRST: a diff touching
+    :data:`SELECTION_DEFINING_PATHS` is FULL unconditionally, because a selection cannot
+    validate a change to the code that computes it.
+
+    Non-imported paths — docs (#3645) and ``dev/`` lane runners (#3817) — are partitioned
+    out next so they never reach the shared classifier's out-of-root escalation; their
+    impact is mapped to the tests that NAME them instead. Everything else keeps the #113
+    escalations on top of :func:`teatree.quality.changed_set.classify`: factories/settings
+    force FULL, a migration additionally requires ``--create-db``, and any remaining path
+    the shared classifier merely IGNORED still becomes FULL.
     """
-    base: FullTrigger = classify(changed)
     create_db = any(is_migration(path) for path in changed.paths)
+    selection_defining = sorted(path for path in changed.paths if path in SELECTION_DEFINING_PATHS)
+    if selection_defining:
+        return SelectionVerdict(
+            full=True,
+            reason=(
+                f"the lane's own test-selection machinery changed ({selection_defining[0]}) — "
+                "a selection cannot validate its own change"
+            ),
+            create_db=create_db,
+        )
+
+    reference_mapped = tuple(sorted({entry.path for entry in changed.entries if is_reference_mapped(entry.path)}))
+    executable = ChangedSet(
+        entries=tuple(entry for entry in changed.entries if not is_reference_mapped(entry.path)),
+        base_ref=changed.base_ref,
+    )
+    base: FullTrigger = classify(executable)
     if base.full:
         return SelectionVerdict(full=True, reason=base.reason, create_db=create_db)
 
-    for entry in changed.entries:
+    for entry in executable.entries:
         extra = _extra_full_trigger(entry.path)
         if extra:
             return SelectionVerdict(full=True, reason=f"{extra} ({entry.path})", create_db=create_db)
 
     scoped = {str(p) for p in base.scoped_src} | {str(p) for p in base.scoped_tests}
-    ignored = [path for path in changed.paths if path not in scoped]
+    ignored = [path for path in executable.paths if path not in scoped]
     if ignored:
         return SelectionVerdict(
             full=True,
@@ -162,225 +276,12 @@ def classify_selection(changed: ChangedSet) -> SelectionVerdict:
         create_db=create_db,
         scoped_src=base.scoped_src,
         scoped_tests=base.scoped_tests,
+        scoped_reference_mapped=reference_mapped,
     )
 
 
-def dependents_closure(seeds: Iterable[str], dependents_map: Mapping[str, list[str]]) -> dict[str, str | None]:
-    """Transitive reverse-import closure of *seeds* with parent pointers (for --explain).
-
-    Each closure file maps to the file that pulled it in (a seed maps to ``None``).
-    ``dependents_map[f]`` are the files that DEPEND ON ``f`` (tach's
-    ``--direction dependents`` adjacency), so BFS from a changed seed reaches every
-    transitive dependent.
-    """
-    parent: dict[str, str | None] = {}
-    queue: deque[str] = deque()
-    for seed in seeds:
-        if seed not in parent:
-            parent[seed] = None
-            queue.append(seed)
-    while queue:
-        node = queue.popleft()
-        for dependent in dependents_map.get(node, ()):
-            if dependent not in parent:
-                parent[dependent] = node
-                queue.append(dependent)
-    return parent
-
-
-def _prefixes(module: str) -> list[str]:
-    parts = module.split(".")
-    return [".".join(parts[: index + 1]) for index in range(len(parts))]
-
-
-def _closure_index(parent: Mapping[str, str | None]) -> tuple[dict[str, str], dict[str, str]]:
-    """Index the closure files by exact module and by every ancestor prefix."""
-    module_to_file: dict[str, str] = {}
-    prefix_to_file: dict[str, str] = {}
-    for file in sorted(parent):
-        module = module_of(file)
-        if module is None:
-            continue
-        module_to_file.setdefault(module, file)
-        for prefix in _prefixes(module):
-            prefix_to_file.setdefault(prefix, file)
-    return module_to_file, prefix_to_file
-
-
-def _match_closure_file(
-    imported: str, module_to_file: Mapping[str, str], prefix_to_file: Mapping[str, str]
-) -> str | None:
-    """The closure file a test's import overlaps, or ``None`` (over-selects on hierarchy).
-
-    A match holds when the import is an ancestor-or-equal of a closure module
-    (``imported in prefix_to_file``) OR a closure module is an ancestor-or-equal of the
-    import (an ancestor of ``imported`` is an exact closure module) — the symmetric
-    prefix overlap covers the ``from teatree.foo import bar`` granularity gap.
-    """
-    if imported in prefix_to_file:
-        return prefix_to_file[imported]
-    for ancestor in reversed(_prefixes(imported)):
-        if ancestor in module_to_file:
-            return module_to_file[ancestor]
-    return None
-
-
-def _seed_chain(node: str, parent: Mapping[str, str | None]) -> list[str]:
-    trail = [node]
-    current = parent.get(node)
-    while current is not None:
-        trail.append(current)
-        current = parent.get(current)
-    trail.reverse()
-    return trail
-
-
-def _import_chain(test: str, imported: str, closure_file: str, parent: Mapping[str, str | None]) -> tuple[str, ...]:
-    trail = _seed_chain(closure_file, parent)
-    annotated = [file + (" (changed)" if index == 0 else " (dependent)") for index, file in enumerate(trail)]
-    annotated.append(f"{test} imports {imported}")
-    return tuple(annotated)
-
-
-def _under_floor(path: str, floor_dirs: Iterable[str]) -> bool:
+def _under_floor(path: str, floor_dirs: tuple[str, ...]) -> bool:
     return any(path == floor or path.startswith(f"{floor}/") for floor in floor_dirs)
-
-
-def select(
-    *,
-    changed: ChangedSet,
-    dependents_map: Mapping[str, list[str]],
-    test_imports: Mapping[str, tuple[str, ...]],
-    mirror_lookup: Callable[[str], str | None],
-    floor_dirs: tuple[str, ...] = FLOOR_DIRS,
-) -> Selection:
-    """The pure selection core: classify, expand the reverse-import closure, match tests.
-
-    Every input is injected (the changed set, the dependents adjacency, the
-    test→imports map, the mirror resolver) so the selection is deterministic and needs
-    no tach/disk — the impure edges live in :func:`build_selection`.
-    """
-    verdict = classify_selection(changed)
-    if verdict.full:
-        return Selection(full=True, reason=verdict.reason, create_db=verdict.create_db, floor_dirs=floor_dirs)
-
-    changed_src = tuple(str(p) for p in verdict.scoped_src)
-    changed_tests = tuple(str(p) for p in verdict.scoped_tests)
-
-    parent = dependents_closure(changed_src, dependents_map)
-    module_to_file, prefix_to_file = _closure_index(parent)
-
-    selected: dict[str, SelectionReason] = {}
-
-    for test in changed_tests:
-        if not _under_floor(test, floor_dirs):
-            selected[test] = SelectionReason(test=test, kind="self-changed", chain=(f"{test} (changed test)",))
-
-    for test in sorted(test_imports):
-        if test in selected or _under_floor(test, floor_dirs):
-            continue
-        for imported in test_imports[test]:
-            closure_file = _match_closure_file(imported, module_to_file, prefix_to_file)
-            if closure_file is not None:
-                selected[test] = SelectionReason(
-                    test=test, kind="import-match", chain=_import_chain(test, imported, closure_file, parent)
-                )
-                break
-
-    warnings: list[str] = []
-    for module in sorted(module_to_file):
-        mirror = mirror_lookup(module)
-        if mirror and mirror not in selected and not _under_floor(mirror, floor_dirs):
-            selected[mirror] = SelectionReason(test=mirror, kind="mirror", chain=(f"mirror path of {module}",))
-            warnings.append(f"mirror {mirror} for {module} not caught by the import scan — included belt-and-braces")
-
-    ordered = sorted(selected)
-    return Selection(
-        full=False,
-        reason=verdict.reason or "scoped to the diff — no FULL trigger",
-        create_db=verdict.create_db,
-        test_files=tuple(ordered),
-        floor_dirs=floor_dirs,
-        doctest_targets=changed_src,
-        reasons=tuple(selected[test] for test in ordered),
-        changed_src=changed_src,
-        changed_tests=changed_tests,
-        warnings=tuple(warnings),
-    )
-
-
-def _is_first_party(dotted: str) -> bool:
-    return dotted == _FIRST_PARTY_ROOT or dotted.startswith(f"{_FIRST_PARTY_ROOT}.")
-
-
-def first_party_imports_deep(source: str) -> tuple[str, ...]:
-    """Every first-party ``teatree.*`` module imported ANYWHERE in *source*.
-
-    Walks the full AST — not only module level, unlike the mirror gate's top-level
-    scan — so a deferred / ``TYPE_CHECKING`` import of a changed module still selects
-    the test. The no-under-select bias favours the deeper walk (more over-selection).
-    """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return ()
-    modules: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.extend(alias.name for alias in node.names if _is_first_party(alias.name))
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module and _is_first_party(node.module):
-            modules.append(node.module)
-    return tuple(dict.fromkeys(modules))
-
-
-def _is_test_module(path: Path) -> bool:
-    name = path.name
-    return name.startswith("test_") or name.endswith("_test.py")
-
-
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def _resolve_tach() -> str | None:
-    """The tach executable — on PATH, else beside the interpreter (a uv-tool venv bin)."""
-    on_path = shutil.which("tach")
-    if on_path is not None:
-        return on_path
-    adjacent = Path(sys.executable).parent / "tach"
-    return str(adjacent) if adjacent.is_file() else None
-
-
-def run_tach_dependents_map(root: Path) -> dict[str, list[str]]:
-    """The ``tach map --direction dependents`` file-level reverse-adjacency, freshly built."""
-    tach = _resolve_tach()
-    if tach is None:
-        message = "tach executable not found on PATH or beside the interpreter"
-        raise TachUnavailableError(message)
-    result = run_allowed_to_fail([tach, "map", "--direction", "dependents"], expected_codes=None, cwd=root)
-    if result.returncode != 0:
-        message = f"tach map failed ({result.returncode}): {result.stderr.strip()[:200]}"
-        raise TachUnavailableError(message)
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        message = f"tach map emitted invalid JSON: {exc}"
-        raise TachUnavailableError(message) from exc
-
-
-def scan_test_imports(root: Path) -> dict[str, tuple[str, ...]]:
-    """Map every test file under ``tests/`` to its first-party imports (AST, no execution)."""
-    imports: dict[str, tuple[str, ...]] = {}
-    for path in collect_test_files(root):
-        if not _is_test_module(path):
-            continue
-        modules = first_party_imports_deep(_read_text(path))
-        if modules:
-            imports[path.relative_to(root).as_posix()] = modules
-    return imports
 
 
 def disk_mirror_lookup(root: Path) -> Callable[[str], str | None]:
@@ -397,13 +298,79 @@ def disk_mirror_lookup(root: Path) -> Callable[[str], str | None]:
     return lookup
 
 
-def build_selection(root: Path, base_ref: str = "origin/main") -> Selection:
-    """Wire the impure edges (git diff, tach map, disk scan) around the pure core.
+class _ForceKept:
+    """Accumulates path → reason, first pass wins, never listing a floor-dir test twice."""
 
-    Fail-safe throughout: a dirty/shallow merge-base or an unavailable tach map both
-    degrade to a whole-tree FULL run — a selector that cannot prove its selection must
-    run everything, never skip-as-pass. tach is skipped entirely when the diff already
-    classifies FULL.
+    def __init__(self, floor_dirs: tuple[str, ...]) -> None:
+        self._floor_dirs = floor_dirs
+        self.reasons: dict[str, SelectionReason] = {}
+
+    def add(self, path: str, kind: str, chain: tuple[str, ...]) -> bool:
+        if path in self.reasons or _under_floor(path, self._floor_dirs):
+            return False
+        self.reasons[path] = SelectionReason(test=path, kind=kind, chain=chain)
+        return True
+
+
+def build_force_keep(
+    root: Path,
+    verdict: SelectionVerdict,
+    *,
+    floor_dirs: tuple[str, ...] = FLOOR_DIRS,
+    reference_reader_lookup: Callable[[frozenset[str]], tuple[str, ...]] | None = None,
+    mirror_lookup: Callable[[str], str | None] | None = None,
+) -> ForceKeep:
+    """The escalation set force-kept over the tach plugin, computed from *verdict*.
+
+    A FULL verdict never runs the plugin, so its force-keep is irrelevant → empty. A
+    SCOPED verdict force-keeps the floor dirs (always), the changed test files, the tests
+    that NAME any changed non-imported path (a doc or a ``dev/`` lane runner), and the
+    mirror test of each changed src module (belt-and-braces: the plugin's import walk
+    should already reach it). The disk resolvers are injected so the pure assembly is
+    testable without disk.
+    """
+    if verdict.full:
+        return ForceKeep()
+
+    reader_lookup = (
+        reference_reader_lookup if reference_reader_lookup is not None else disk_reference_reader_lookup(root)
+    )
+    mirror = mirror_lookup if mirror_lookup is not None else disk_mirror_lookup(root)
+
+    kept = _ForceKept(floor_dirs)
+    warnings: list[str] = []
+
+    for floor in floor_dirs:
+        kept.reasons[floor] = SelectionReason(test=floor, kind="floor", chain=(f"{floor} always runs (cross-cutting)",))
+
+    for changed_test in (str(p) for p in verdict.scoped_tests):
+        kept.add(changed_test, "self-changed", (f"{changed_test} (changed test)",))
+
+    for reader in reader_lookup(reference_tokens(verdict.scoped_reference_mapped)):
+        kept.add(reader, "reference-read", (f"{reader} names a changed non-imported path",))
+
+    for module in (module_of(str(p)) for p in verdict.scoped_src):
+        if module is None:
+            continue
+        mirror_path = mirror(module)
+        if mirror_path and kept.add(mirror_path, "mirror", (f"mirror path of {module}",)):
+            warnings.append(f"mirror {mirror_path} for {module} force-kept over tach — belt-and-braces")
+
+    ordered = sorted(kept.reasons)
+    return ForceKeep(
+        paths=tuple(ordered),
+        reasons=tuple(kept.reasons[path] for path in ordered),
+        warnings=tuple(warnings),
+    )
+
+
+def build_selection(root: Path, base_ref: str = DEFAULT_BASE) -> Selection:
+    """Wire the impure edge (git diff) around the escalation policy — NO tach subprocess.
+
+    Fail-safe: a dirty/shallow merge-base degrades to a whole-tree FULL run with the
+    plugin OFF — a selector that cannot prove its scope must run everything, never
+    skip-as-pass. On a scoped verdict the tach plugin does the reverse-import graph walk
+    in-session; this returns only the escalation force-keep layer over it.
     """
     try:
         changed = changed_paths(base_ref=base_ref, cwd=root)
@@ -412,21 +379,20 @@ def build_selection(root: Path, base_ref: str = "origin/main") -> Selection:
 
     verdict = classify_selection(changed)
     if verdict.full:
-        return Selection(full=True, reason=verdict.reason, create_db=verdict.create_db)
+        return Selection(full=True, reason=verdict.reason, create_db=verdict.create_db, base_ref=base_ref)
 
-    try:
-        dependents_map = run_tach_dependents_map(root)
-    except TachUnavailableError as exc:
-        return Selection(
-            full=True,
-            reason=f"tach dependency map unavailable ({exc}) — FULL (fail-safe)",
-            create_db=verdict.create_db,
-        )
-
-    return select(
-        changed=changed,
-        dependents_map=dependents_map,
-        test_imports=scan_test_imports(root),
-        mirror_lookup=disk_mirror_lookup(root),
-        floor_dirs=FLOOR_DIRS,
+    force_keep = build_force_keep(root, verdict)
+    changed_src = tuple(str(p) for p in verdict.scoped_src)
+    return Selection(
+        full=False,
+        reason=verdict.reason or "scoped to the diff — no FULL trigger",
+        create_db=verdict.create_db,
+        base_ref=base_ref,
+        force_keep=force_keep.paths,
+        doctest_targets=changed_src,
+        reasons=force_keep.reasons,
+        changed_src=changed_src,
+        changed_tests=tuple(str(p) for p in verdict.scoped_tests),
+        changed_reference_mapped=verdict.scoped_reference_mapped,
+        warnings=force_keep.warnings,
     )

@@ -203,8 +203,13 @@ assert_gh_token_permissions() {
         exit 1
     fi
 
-    # RECOMMENDED (WARN-tier) probes — never exit 1. workflows:write is never actively probed (see above).
-    warn_missing=("workflows: write")
+    # RECOMMENDED (WARN-tier) probes — never exit 1. workflows:write is never actively
+    # probed for a fine-grained token (see above), so it is NOT seeded here: "no
+    # reliable probe exists" is not evidence the permission is absent. Seeding it made
+    # every deploy tell the operator to recreate a token that may already carry it,
+    # with no action able to clear the warning. It rides along on the recreate line
+    # only when a REAL gap already means a recreate.
+    warn_missing=()
     _gh_probe_denied --method POST "repos/$slug/actions/workflows/0/dispatches" -f ref=teatree-preflight-nonexistent &&
         warn_missing+=("actions: write")
     _gh_probe_denied "repos/$slug/actions/artifacts?per_page=1" && warn_missing+=("actions: read")
@@ -221,7 +226,7 @@ assert_gh_token_permissions() {
     # projects: read needs an overlay's configured Projects-v2 board, which this
     # bash preflight cannot see — `t3 doctor check` probes it when configured.
     if [ ${#warn_missing[@]} -gt 0 ]; then
-        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, workflow-file pushes, the CI OAuth-account switch) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL" >&2
+        echo "entrypoint: WARN TEATREE_GH_TOKEN is missing recommended permission(s): ${warn_missing[*]} - these degrade optional features (CI trigger/status, auto-merge's required-checks rollup, the CI OAuth-account switch) but do NOT block boot. Fine-grained tokens cannot be widened via the API either - recreate it with these permissions added: $_GH_FINE_GRAINED_TOKENS_URL. While recreating, also include 'workflows: write': it cannot be probed on a fine-grained token, so its presence is unknown here - a push touching .github/workflows/* is what proves it either way." >&2
     fi
     echo "teatree-init: GitHub token permissions verified (required issues/pull_requests/contents write present on $slug)"
 }
@@ -359,8 +364,14 @@ seed_setting() {
 # owner overlay, so `inbox` — the inbound-messaging scanners (Slack DM →
 # PendingChatInjection, review-intent, red-card, mentions) — MUST run here; it
 # feeds the drain → 👀-ack → answer cycle that posts replies. The COLLEAGUE-facing
-# Slack loops the laptop owns stay off here: `review` (colleague PR review → Slack)
-# and `directive_loop` (asks the human via Slack).
+# Slack loop the laptop owns stays off here: `review` (colleague PR review → Slack).
+#
+# OWNER-INTAKE loops are NEVER forced off here (#3632): `directive_loop` interprets
+# the owner's captured directives and `dispatch` posts deferred owner questions.
+# `autonomous_away` means the human is unreachable *now* — captured intent must
+# QUEUE for later, not be dropped unread. A prior default forced `directive_loop`
+# off on every deploy, so captured owner directives sat uninterpreted for days; the
+# owner-intake set (`t3 loop intake-loops`) is pruned from the DISABLED set below.
 #
 # Per-loop enable/disable/pause/resume is now EMERGENCY-only (#3248): the normal
 # handle is presets/schedules and the emergency per-loop handle is `t3 loop
@@ -375,11 +386,12 @@ seed_setting() {
 #   * ENABLED set (default `inbox`) → `t3 loop enable <name> --emergency`, which
 #     clears any stale hold AND sets `Loop.enabled=True`, so a box whose inbox a
 #     prior deploy durably disabled recovers. Idempotent (a no-op when already on).
-#   * DISABLED set (default `review,directive_loop`) → `t3 loop override <name> off`,
-#     the sanctioned, NON-emergency forced-off that supersedes the deprecated
+#   * DISABLED set (default `review`) → `t3 loop override <name> off`, the
+#     sanctioned, NON-emergency forced-off that supersedes the deprecated
 #     `t3 loop disable`. Forced-off beats the preset mask AND the base config, so a
 #     colleague/human-facing loop stays off here regardless of any mode the owner
-#     later selects. Idempotent.
+#     later selects. Idempotent. Owner-intake loops (`t3 loop intake-loops`) are
+#     pruned from this set before it is applied, so they can never be re-masked.
 #
 # TEATREE_ENABLED_LOOPS / TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
 # override the defaults; empty values act on nothing. Every name in BOTH lists is
@@ -387,8 +399,8 @@ seed_setting() {
 # loudly before anything is touched (rather than silently mis-configuring the box).
 apply_fleet_loop_policy() {
     local enabled_raw="${TEATREE_ENABLED_LOOPS-inbox}"
-    local disabled_raw="${TEATREE_DISABLED_LOOPS-review,directive_loop}"
-    local field loop registered
+    local disabled_raw="${TEATREE_DISABLED_LOOPS-review}"
+    local field loop registered intake
     local fields=() enable_loops=() disable_loops=()
 
     IFS=',' read -ra fields <<<"$enabled_raw"
@@ -416,6 +428,13 @@ apply_fleet_loop_policy() {
         fi
     done
 
+    # The owner-intake loops (single source of truth in Python) that must never be
+    # forced off, so the owner's captured intent is always at least ingested (#3632).
+    if ! intake="$(t3 loop intake-loops)"; then
+        echo "entrypoint: could not read the owner-intake loop set ('t3 loop intake-loops' failed) - confirm the t3 install is healthy and re-run Deploy" >&2
+        exit 1
+    fi
+
     # A loop in BOTH lists is a contradiction: the ENABLE pass forces it on, then
     # the DISABLE pass would immediately force it off (admission resolves
     # forced > preset > base), leaving a sanctioned-enabled loop silently MASKED
@@ -426,7 +445,7 @@ apply_fleet_loop_policy() {
     # failure here would crash-loop init on an already-deployed box that carries
     # the overlap (the very config that shipped), turning a silent mask into an
     # outage. The warning tells the operator to de-dup teatree.env.
-    local pruned_disable=()
+    local pruned_disable=() dropped=()
     for loop in ${disable_loops[@]+"${disable_loops[@]}"}; do
         local overlaps=
         for other in ${enable_loops[@]+"${enable_loops[@]}"}; do
@@ -436,11 +455,31 @@ apply_fleet_loop_policy() {
             fi
         done
         if [ -n "$overlaps" ]; then
-            echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); remove it from TEATREE_DISABLED_LOOPS in teatree.env to silence this warning" >&2
+            dropped+=("$loop")
+            echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
+        elif grep -qxF "$loop" <<<"$intake"; then
+            dropped+=("$loop")
+            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even under autonomous_away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
         else
             pruned_disable+=("$loop")
         fi
     done
+
+    # NET-EFFECT report. The per-name lines above each say "this one name was not
+    # applied"; none of them says what the operator actually needs to know when
+    # EVERY name was pruned: the declaration masks nothing at all, AND declaring it
+    # at all replaced the built-in default (`review`, the colleague-facing loop this
+    # box must not run), so that is no longer forced off either. That silent
+    # displacement is the real harm, and it survives every redeploy unreported.
+    #
+    # Still a warning, not `exit 1`: init crash-looping on the very config the box
+    # already shipped turns a mis-mask into an outage. The durable escalation is the
+    # `fleet_loop_policy_contradiction` health signal (teatree.config.fleet_policy),
+    # which keeps the chip yellow until the repo variable is fixed - stderr here
+    # scrolls away, a KnownIssue row does not.
+    if [ ${#dropped[@]} -gt 0 ] && [ ${#pruned_disable[@]} -eq 0 ]; then
+        echo "entrypoint: CONTRADICTORY FLEET CONFIG - every name in TEATREE_DISABLED_LOOPS ('${disabled_raw}') is unmaskable here, so NO loop is forced off on this box; and setting the variable at all displaced the built-in default ('review'), which is therefore NOT masked either. Fix the SOURCE: the deploy workflow rewrites teatree.env from the repository variables on every run, so a hand-edit on the box is reverted. Run 'gh variable set TEATREE_DISABLED_LOOPS --repo <owner>/<repo> --body review' (or 'gh variable delete TEATREE_DISABLED_LOOPS --repo <owner>/<repo>' to restore the default) and re-run Deploy." >&2
+    fi
     disable_loops=(${pruned_disable[@]+"${pruned_disable[@]}"})
 
     # ENABLE clears any durable hold (only `enable` can) and sets Loop.enabled=True.
@@ -542,22 +581,27 @@ ensure_clone() {
 # `t3 slack check` exits 0 when it drained messages and 1 with NO output when the
 # queue was empty (the common, healthy case on a quiet box) — so a non-zero exit
 # is NOT itself a failure. A REAL failure is a non-zero exit that ALSO produced
-# output (a Django boot traceback, a DB error). Those increment a consecutive-
-# failure counter and are logged to stderr (visible in `docker compose logs
+# STDOUT (a Django boot traceback, a DB error). STDERR is captured SEPARATELY:
+# every t3 invocation emits a benign WARNING there (an overlay's skills-root
+# notice), so folding it into the emptiness test (2>&1) would misread every
+# empty-queue poll as a failure. Real failures increment a consecutive-failure
+# counter and log BOTH streams to stderr (visible in `docker compose logs
 # teatree-slack-listener`); an empty-queue exit never does.
 #
 # Each pass rewrites a heartbeat file that `t3 doctor` reads from another
-# container to surface a stuck/failed drain (self_heal `_check_slack_drain_alive`).
+# container to surface a stuck/failed drain (`self_heal_slack_drain.check_slack_drain_alive`).
 # The heartbeat path mirrors teatree.paths.DATA_DIR ($HOME/.local/share/teatree) —
 # the filename is pinned to the doctor side by tests/test_deploy_slack_listener.py.
 slack_drain_loop() {
     local interval="${SLACK_CHECK_INTERVAL_SECONDS:-15}"
     local heartbeat="${SLACK_DRAIN_HEARTBEAT:-$HOME/.local/share/teatree/slack-drain-heartbeat.json}"
-    local consecutive=0 last_ok=null now out rc
+    local consecutive=0 last_ok=null now out err rc errfile
+    errfile="$(mktemp)"
+    trap 'rm -f "$errfile"' EXIT
     mkdir -p "$(dirname "$heartbeat")"
     while true; do
         now="$(date +%s)"
-        out="$(t3 slack check 2>&1)" && rc=0 || rc=$?
+        out="$(t3 slack check 2>"$errfile")" && rc=0 || rc=$?
         if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ -z "$out" ]; }; then
             consecutive=0
             last_ok="$now"
@@ -565,6 +609,8 @@ slack_drain_loop() {
             consecutive=$((consecutive + 1))
             echo "entrypoint: slack drain (t3 slack check) FAILED rc=$rc (consecutive=$consecutive):" >&2
             printf '%s\n' "$out" >&2
+            err="$(cat "$errfile")"
+            [ -n "$err" ] && printf '%s\n' "$err" >&2
         fi
         printf '{"updated_at": %s, "interval_seconds": %s, "consecutive_failures": %s, "last_ok_at": %s}\n' \
             "$now" "$interval" "$consecutive" "$last_ok" >"$heartbeat"
@@ -592,7 +638,7 @@ init)
         # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
         # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
         # /opt/teatree/uv is a named volume that shadows any image-baked install.
-        uv tool install prek==0.3.13
+        uv tool install prek==0.4.10
     else
         # OFFLINE: the interpreter, editable install, and prek are baked into the
         # image, so init proceeds with no cold fetch. Fail loud only if the image

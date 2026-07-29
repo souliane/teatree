@@ -10,16 +10,18 @@ not a real ``bool``-or-``StrEnum`` ``UserSettings`` field registered in
 ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
 without a code-reviewed stage demotion.
 
-The live registry is seeded with several real flags — mostly ``DARK`` plus one
-``SETTLING`` (``incremental_push_gate``, graduated by #122). ``REMOVE`` is not
-represented live, so the stage-discrimination invariants are proven non-vacuously
-over a MIXED FIXTURE rather than the live set's accidental composition.
+The live registry is seeded with several real flags — mostly ``DARK`` plus a couple
+of ``SETTLING`` (``incremental_push_gate``, graduated by #122, and
+``limit_autorecovery_enabled``, graduated by #3691). ``REMOVE`` is not represented
+live, so the stage-discrimination invariants are proven non-vacuously over a MIXED
+FIXTURE rather than the live set's accidental composition.
 """
 
 import dataclasses
 from enum import StrEnum
 
 from teatree.config import (
+    DURABLE_GATE_SETTINGS,
     FEATURE_FLAGS,
     OVERLAY_OVERRIDABLE_SETTINGS,
     CriticGateMode,
@@ -61,7 +63,7 @@ class TestRegistrySeededNonVacuously:
     def test_canonical_seed_flag_present(self) -> None:
         # The canonical DARK flags plus a retro-classified one — loop_runner_enabled was
         # graduated OUT by PR-28 (durable kill-switch, no longer a dying flag).
-        assert {"outer_loop_enabled", "teams_enabled"} <= set(FEATURE_FLAGS)
+        assert {"outer_loop_enabled", "factory_score_enabled"} <= set(FEATURE_FLAGS)
         assert "loop_runner_enabled" not in FEATURE_FLAGS
 
 
@@ -104,6 +106,39 @@ class TestRegisteredHome:
     def test_every_flag_field_is_overlay_overridable(self) -> None:
         unregistered = sorted(key for key in FEATURE_FLAGS if key not in OVERLAY_OVERRIDABLE_SETTINGS)
         assert unregistered == [], f"feature flags not in OVERLAY_OVERRIDABLE_SETTINGS: {unregistered}"
+
+
+class TestEveryGateToggleIsClassified:
+    """No ``require_*`` toggle ships unclassified — the hole ``require_spec_coverage`` fell through.
+
+    Its ON state refused every RETROSPECTED→DELIVERED advance (a missing manifest
+    is itself a block) while no command could write the manifest, and nothing
+    reviewed that because the flag was in no registry at all. Classification is
+    now mandatory: a new gate toggle is a dying ``FEATURE_FLAGS`` entry or a
+    declared-durable operator policy, never neither.
+    """
+
+    def _gate_toggles(self) -> set[str]:
+        return {f.name for f in dataclasses.fields(UserSettings) if f.name.startswith("require_")}
+
+    def test_every_gate_toggle_is_a_flag_or_a_durable_setting(self) -> None:
+        unclassified = sorted(self._gate_toggles() - set(FEATURE_FLAGS) - DURABLE_GATE_SETTINGS)
+        assert unclassified == [], (
+            f"gate toggles in neither FEATURE_FLAGS nor DURABLE_GATE_SETTINGS: {unclassified} — "
+            f"register a dying flag, or declare it durable operator policy"
+        )
+
+    def test_the_two_buckets_are_disjoint(self) -> None:
+        assert set(FEATURE_FLAGS) & DURABLE_GATE_SETTINGS == set()
+
+    def test_durable_bucket_names_only_real_gate_toggles(self) -> None:
+        assert self._gate_toggles() >= DURABLE_GATE_SETTINGS
+
+    def test_spec_coverage_gate_is_governed_dark_and_off(self) -> None:
+        flag = FEATURE_FLAGS["require_spec_coverage"]
+        assert flag.stage is FlagStage.DARK
+        assert "2232" in flag.tracking_issue
+        assert UserSettings().require_spec_coverage is False
 
 
 class TestLifecycleFields:
@@ -164,6 +199,44 @@ class TestDarkDefaultsOff:
         for ships_off_default, off_value in ((True, inverted.off_value), (False, positive.off_value)):
             assert ships_off_default == off_value
             assert (not ships_off_default) != off_value
+
+
+class TestResilienceRecoveryGraduation:
+    """The idle usage-window auto-recovery flag graduated DARK -> SETTLING (default ON).
+
+    A fresh deploy self-recovers from an exhausted usage window out of the box; the
+    recovery flag survives only as a per-overlay escape hatch during its soak. The
+    deep-merge SAFETY-posture gates are deliberately left DARK — this is a resilience
+    default, not a safety loosening.
+    """
+
+    def test_limit_autorecovery_graduated_to_settling(self) -> None:
+        flag = FEATURE_FLAGS["limit_autorecovery_enabled"]
+        assert flag.stage is FlagStage.SETTLING
+        assert flag.off_value is False
+
+    def test_limit_autorecovery_defaults_on_for_a_fresh_deploy(self) -> None:
+        # The whole point of the graduation: a fresh deploy no longer idles on the
+        # first usage-window exhaustion — the recovery chain arms by default.
+        assert UserSettings().limit_autorecovery_enabled is True
+
+    def test_safety_posture_gates_stay_dark(self) -> None:
+        # The deep-merge / safety-posture dark gates MUST NOT graduate alongside the
+        # resilience-recovery flag: they stay OFF by default, each equal to its off_value.
+        defaults = UserSettings()
+        safety_posture_flags = {
+            "require_plan_adequacy",
+            "critic_gate_mode",
+            "send_proxy_mode",
+            "require_debt_delta",
+            "require_executed_repro",
+            "require_merge_quality_verdict",
+            "ci_eval_heal_autofix_enabled",
+        }
+        for key in safety_posture_flags:
+            flag = FEATURE_FLAGS[key]
+            assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it is a safety-posture gate"
+            assert getattr(defaults, key) == flag.off_value, f"{key!r} must ship OFF by default"
 
 
 class TestQueryHelpers:

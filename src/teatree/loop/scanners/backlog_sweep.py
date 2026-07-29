@@ -4,10 +4,10 @@ Companion to the ``sweeping-tickets`` skill: once the sweep's verdicts prove
 trustworthy, the loop fires a low-frequency ``backlog_sweep`` task that
 consolidates the issue tracker (shipped / consolidate-into-epic /
 regressive / still-standalone against current ``main``) without depending
-on an external cron. The scanner mirrors the shape of
-:mod:`teatree.loop.scanners.scanning_news` but bakes in two safety
-properties from day one because the sweep is destructive-capable (it can
-propose closing issues):
+on an external cron. The scanner is one of the periodic task-queuing family
+that share :class:`teatree.loop.scanners.phase_cadence.PhaseCadence`, and bakes
+in two safety properties from day one because the sweep is destructive-capable
+(it can propose closing issues):
 
 * **Default-OFF.** Unlike the always-on news/eval scanners, the kill
     switch (``backlog_sweep_disabled``) defaults *on* at the wiring layer,
@@ -20,7 +20,7 @@ propose closing issues):
     mass-folds unattended. Only the high-confidence shipped-by-merged-PR
     class auto-closes (the skill's own discipline).
 
-Other invariants mirror ``scanning_news``:
+Other invariants mirror the family:
 
 * **Single trigger.** Only a cadence (``backlog_sweep_cadence_hours``,
     default 168h = weekly). A fixed-rate platform behaviour, not coupled
@@ -35,32 +35,13 @@ Other invariants mirror ``scanning_news``:
     ``Session.started_at`` is the "last run" timestamp.
 """
 
-import datetime as dt
-import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
 
-from django.apps import apps
-from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
-from teatree.loop.scanners.base import ScanSignal, hours_since
-
-if TYPE_CHECKING:
-    from teatree.core.models import Session as _Session
-    from teatree.core.models import Task as _Task
-    from teatree.core.models import Ticket as _Ticket
-
-logger = logging.getLogger(__name__)
-
-#: Canonical phase token written to ``Task.phase`` for backlog-sweep tasks. Owned by the
-#: canonical phase vocabulary and re-exported here, so the phase can never exist without
-#: a declared ``SCANNER_DISPATCHED_PHASES`` producer + tool-least-privilege entry.
-
-#: States that mean a sweep task is still in-flight (cannot queue a dupe).
-_IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
+from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 
 @dataclass(slots=True)
@@ -97,16 +78,20 @@ class BacklogSweepScanner:
     name: str = "backlog_sweep"
 
     def scan(self) -> list[ScanSignal]:
-        if self._in_flight_task_exists():
+        cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE, cadence_hours=self.cadence_hours)
+        if cadence.in_flight_exists():
             return []
 
-        now = timezone.now()
-        last_run_at = self._last_run_at()
-        trigger = self._evaluate_trigger(now=now, last_run_at=last_run_at)
+        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
             return []
 
-        task = self._queue_task(trigger=trigger)
+        task = cadence.queue_task(
+            placeholder_issue_url=f"backlog-sweep://{self.overlay_name}",
+            agent_id=f"backlog-sweep-{self.overlay_name}",
+            execution_reason=self._execution_reason(trigger),
+            log_label="BacklogSweepScanner",
+        )
         if task is None:
             return []
         return [
@@ -123,79 +108,6 @@ class BacklogSweepScanner:
                 },
             ),
         ]
-
-    def _in_flight_task_exists(self) -> bool:
-        """True iff a pending/claimed backlog-sweep task already exists."""
-        task_model = _task_model()
-        if task_model is None:
-            return False
-        return task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=BACKLOG_SWEEP_PHASE,
-            status__in=_IN_FLIGHT_TASK_STATES,
-        ).exists()
-
-    def _last_run_at(self) -> dt.datetime | None:
-        """Return the most recent task's Session.started_at, or None.
-
-        ``None`` when no prior backlog-sweep task has been recorded — the
-        bootstrap case where the cadence is trivially elapsed.
-        """
-        task_model = _task_model()
-        if task_model is None:
-            return None
-        aggregate = task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=BACKLOG_SWEEP_PHASE,
-        ).aggregate(ts=Max("session__started_at"))
-        return aggregate["ts"]
-
-    def _evaluate_trigger(self, *, now: dt.datetime, last_run_at: dt.datetime | None) -> str | None:
-        """Return the trigger name (``bootstrap`` / ``cadence``) or None."""
-        if last_run_at is None:
-            return "bootstrap"
-        if hours_since(last_run_at, now=now) >= self.cadence_hours:
-            return "cadence"
-        return None
-
-    def _queue_task(self, *, trigger: str) -> "_Task | None":
-        """Create a Task + Session row anchored at the overlay placeholder ticket.
-
-        Wrapped in ``transaction.atomic()`` so a concurrent scanner on a
-        second loop process can't double-queue: the in-flight check and
-        the insert run under one DB transaction. A DB error is logged but
-        never raised — losing one tick's sweep queue is acceptable;
-        crashing the tick is not.
-        """
-        ticket_model = _ticket_model()
-        task_model = _task_model()
-        session_model = _session_model()
-        if ticket_model is None or task_model is None or session_model is None:
-            return None
-        try:
-            with transaction.atomic():
-                ticket, _created = ticket_model.objects.get_or_create(
-                    issue_url=self._placeholder_issue_url(),
-                    defaults={"overlay": self.overlay_name, "role": "author"},
-                )
-                if ticket.overlay != self.overlay_name:
-                    ticket.overlay = self.overlay_name
-                    ticket.save(update_fields=["overlay"])
-                session = session_model.objects.create(
-                    overlay=self.overlay_name,
-                    ticket=ticket,
-                    agent_id=f"backlog-sweep-{self.overlay_name}",
-                )
-                return task_model.objects.create(
-                    ticket=ticket,
-                    session=session,
-                    phase=BACKLOG_SWEEP_PHASE,
-                    execution_target=task_model.ExecutionTarget.HEADLESS,
-                    execution_reason=self._execution_reason(trigger),
-                )
-        except Exception:
-            logger.exception("BacklogSweepScanner: failed to queue backlog-sweep task")
-            return None
 
     def _execution_reason(self, trigger: str) -> str:
         """Build the dispatcher directive, embedding the ask-gate contract.
@@ -221,31 +133,6 @@ class BacklogSweepScanner:
                 "(#2419, #1931)"
             )
         return base
-
-    def _placeholder_issue_url(self) -> str:
-        """Stable synthetic URL for the overlay-anchored placeholder ticket."""
-        return f"backlog-sweep://{self.overlay_name}"
-
-
-def _ticket_model() -> "type[_Ticket] | None":
-    try:
-        return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
-        return None
-
-
-def _task_model() -> "type[_Task] | None":
-    try:
-        return cast("type[_Task]", apps.get_model("core", "Task"))
-    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
-        return None
-
-
-def _session_model() -> "type[_Session] | None":
-    try:
-        return cast("type[_Session]", apps.get_model("core", "Session"))
-    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
-        return None
 
 
 __all__ = [

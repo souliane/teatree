@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from teatree.config.settings import _parse_strict_bool, _parse_strict_int
+from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_int
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,10 @@ class ColdHookSetting:
 # They stay GLOBAL-scope only — never per-overlay overridable. A fitness test enumerates
 # the live cold-read sites and asserts every one is registered here, so a new hook gate
 # flag added without an entry turns the suite red.
+#: Where these keys render in the settings hierarchy — declared HERE, beside the keys
+#: they group, so adding one below needs no edit in ``setting_groups``.
+COLD_HOOK_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Gates", "Pre-Django hooks")
+
 COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     # ``teatree_bool_setting`` gate kill-switches the hook leaves read cold.
     "memory_recall_enabled": ColdHookSetting(_parse_strict_bool, default=True),

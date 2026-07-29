@@ -23,14 +23,13 @@ from ._types import (
     ReviewCommentDetail,
     TaskAttemptDetail,
     TaskDetail,
-    TaskGraphNode,
     TaskRelatedRow,
     UnifiedSessionRow,
 )
 from .activity import build_active_sessions, build_recent_activity
 from .automation import _check_pr, build_action_required, build_automation_summary
 from .queues import _last_result_for_tasks, build_headless_queue, build_interactive_queue
-from .tasks import build_task_detail, build_task_graph, build_ticket_lifecycle_mermaid
+from .tasks import build_task_detail, build_ticket_lifecycle_mermaid
 from .unified import build_unified_sessions
 
 __all__ = [
@@ -44,7 +43,6 @@ __all__ = [
     "ReviewCommentDetail",
     "TaskAttemptDetail",
     "TaskDetail",
-    "TaskGraphNode",
     "TaskRelatedRow",
     "UnifiedSessionRow",
     "_check_pr",
@@ -63,7 +61,6 @@ __all__ = [
     "build_interactive_queue",
     "build_recent_activity",
     "build_task_detail",
-    "build_task_graph",
     "build_ticket_lifecycle_mermaid",
     "build_unified_sessions",
 ]

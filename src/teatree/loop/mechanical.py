@@ -70,7 +70,12 @@ def ignore_disposed_ticket(payload: ActionPayload) -> None:
 def complete_ticket(payload: ActionPayload) -> None:
     """Transition a ticket from its current post-ship state toward delivered.
 
-    FSM path: shipped → request_review → mark_merged → retrospect.
+    FSM path: shipped → request_review → mark_merged → retrospect. Delegates to
+    ``Ticket.advance_to_delivered`` so this loop path shares the CLI's
+    atomic-per-step + refusal-safe semantics: a mid-chain gate refusal (e.g. the
+    merge-evidence gate on ``mark_merged``) stops the walk gracefully instead of
+    escaping as an exception after a partial commit — the every-tick error the
+    ungated cascade used to raise.
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
@@ -80,15 +85,16 @@ def complete_ticket(payload: ActionPayload) -> None:
         return
     ticket = ticket_model.objects.get(pk=ticket_id)
 
-    if ticket.state == "shipped":
-        ticket.request_review()
-        ticket.save()
-    if ticket.state == "in_review":
-        ticket.mark_merged()
-        ticket.save()
-    if ticket.state == "merged":
-        ticket.retrospect()
-        ticket.save()
+    result = ticket.advance_to_delivered()
+    if result.refused:
+        logger.info(
+            "complete_ticket: ticket %s advance stopped at %s (%s → %s): %s",
+            ticket_id,
+            result.to_state,
+            result.from_state,
+            result.to_state,
+            result.error,
+        )
 
 
 def reopen_ticket(payload: ActionPayload) -> None:
@@ -215,6 +221,7 @@ def task_completion(payload: ActionPayload) -> None:
     done all no-op silently rather than crash the tick.
     """
     from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.utils.url_slug import is_synthetic_loop_umbrella_url  # noqa: PLC0415 — deferred: tick-time import
 
     task_id = payload.get("task_id")
     if task_id is None:
@@ -224,6 +231,12 @@ def task_completion(payload: ActionPayload) -> None:
     except Task.DoesNotExist:
         return
     if task.status in Task.Status.terminal():
+        return
+    # Defence in depth (#3706): a synthetic loop ticket anchors on the shared umbrella
+    # issue, whose upstream closed state says nothing about whether the loop work is done.
+    # The sweep already excludes these, so this signal should never carry one — never
+    # artifact-complete it if one slips through.
+    if is_synthetic_loop_umbrella_url(task.ticket.issue_url):
         return
     if not _artifact_still_terminal(task):
         logger.info("task_completion: task %s artifact no longer terminal — skipping completion", task_id)

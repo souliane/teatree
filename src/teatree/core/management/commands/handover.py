@@ -11,15 +11,15 @@ ORM access is here (a management command, not a plain typer command) per
 the project's "anything touching the ORM is a management command" rule.
 """
 
-import json
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.handover import create_handover
+from teatree.core.handover import claim_handovers, create_handover
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
+from teatree.core.machine_output import emit
 from teatree.loop.session_identity import current_session_id
 
 
@@ -59,33 +59,46 @@ class Command(TyperCommand):
         from_session = current_session_id()
         if not from_session:
             msg = "no Claude session id — run inside a Claude Code session to hand off its state"
-            if json_output:
-                self.stdout.write(json.dumps({"ok": False, "error": msg}, indent=2))
-            else:
-                self.stdout.write(f"ERROR  {msg}")
+            emit(
+                {"ok": False, "error": msg},
+                json_output=json_output,
+                out=cast("IO[str]", self.stdout),
+                err=cast("IO[str]", self.stderr),
+                human=f"ERROR  {msg}",
+            )
             raise SystemExit(2)
 
         handover, mirror = create_handover(from_session=from_session, explicit_to=to)
         recipient = handover.to_session or "next-session"
         pushes = self._drive_subagents() if drive_subagents else []
-        if json_output:
-            self.stdout.write(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "from_session": handover.from_session,
-                        "to_session": handover.to_session,
-                        "parked_for_next": handover.is_for_next_session,
-                        "mirror_path": str(mirror),
-                        "subagent_pushes": [self._push_json(push) for push in pushes],
-                    },
-                    indent=2,
-                )
+        # A hand-off that reports OK while transferring nothing is worse than one
+        # that fails: the operator moves on believing state was carried over, and
+        # the receiving session claims a row with nothing in it (#3551).
+        empty = not handover.payload.strip()
+        status = "WARN " if empty else "OK   "
+        human_lines = [f"{status} handed off to {recipient}; mirror written to {mirror}."]
+        human_lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
+        emit(
+            {
+                "ok": not empty,
+                "empty_payload": empty,
+                "from_session": handover.from_session,
+                "to_session": handover.to_session,
+                "parked_for_next": handover.is_for_next_session,
+                "mirror_path": str(mirror),
+                "subagent_pushes": [self._push_json(push) for push in pushes],
+            },
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(human_lines),
+        )
+        if empty:
+            self.stderr.write(
+                f"ERROR hand-off {handover.pk} carries NO durable state — no PreCompact snapshot for session "
+                f"{from_session}, and no in-flight worktrees, tickets or PRs to derive one from."
             )
-        else:
-            self.stdout.write(f"OK    handed off to {recipient}; mirror written to {mirror}.")
-            for push in pushes:
-                self.stdout.write(f"      sub-agent {push.branch}: {self._push_summary(push)}")
+            raise SystemExit(1)
 
     def _drive_subagents(self) -> list[SubagentPush]:
         """Fast-push in-flight sub-agent worktrees; a failure here never fails the hand-off.
@@ -133,12 +146,13 @@ class Command(TyperCommand):
     ) -> None:
         """Print this Claude session's own id (the hand-off ``--to`` target)."""
         session_id = current_session_id()
-        if json_output:
-            self.stdout.write(json.dumps({"session_id": session_id}, indent=2))
-        elif session_id:
-            self.stdout.write(session_id)
-        else:
-            self.stdout.write("(no Claude session id — not running inside a Claude Code session)")
+        emit(
+            {"session_id": session_id},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=session_id or "(no Claude session id — not running inside a Claude Code session)",
+        )
 
     @command(name="claim-on-start")
     def claim_on_start(
@@ -154,21 +168,11 @@ class Command(TyperCommand):
         "next session", marks it claimed so it injects exactly once, and
         prints the payload. Empty payload when nothing is claimable.
         """
-        from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-        session_id = session or current_session_id()
-        claimed = SessionHandover.objects.claim_next(session_id) if session_id else None
-        payload = claimed.payload if claimed else ""
-        if json_output:
-            self.stdout.write(
-                json.dumps(
-                    {
-                        "claimed": claimed is not None,
-                        "from_session": claimed.from_session if claimed else "",
-                        "payload": payload,
-                    },
-                    indent=2,
-                )
-            )
-        elif payload:
-            self.stdout.write(payload)
+        payload, origin = claim_handovers(session or current_session_id())
+        emit(
+            {"claimed": bool(payload), "from_session": origin, "payload": payload},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=payload or None,
+        )

@@ -71,7 +71,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
     def test_off_live_tick_loop_is_never_picked_up(self) -> None:
         # An off_live_tick loop (the heavy ``dream`` pass, #1933 § 3) is enabled
         # and due, yet the live loop tick must NEVER invoke its build_jobs or
-        # bump its last_run_at — it is driven by its own low-frequency cron.
+        # bump its last_run_at — the off-live-tick driver chain drives it.
         now = timezone.now()
         Loop.objects.create(name="m-dream", delay_seconds=60, prompt=_prompt())  # enabled + never run -> due
         off = MiniLoop(

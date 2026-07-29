@@ -44,4 +44,4 @@ t3 prompts render <name> --arg who=adrien --arg what=ship   # substitute declare
 
 ## Relationship to loops
 
-A prompt-backed `Loop` runs its prompt's body as the per-tick instruction (e.g. "run a sub-agent to do X"). See `/t3:loops` for the loop side. The domain scanners under `teatree.loops` stay as the scan units a loop invokes — the prompt says *what* to run, not new behaviour.
+A prompt-backed `Loop` runs its prompt's body as the per-tick instruction (e.g. "run a sub-agent to do X"). See `/t3:health` for the loop side. The domain scanners under `teatree.loops` stay as the scan units a loop invokes — the prompt says *what* to run, not new behaviour.

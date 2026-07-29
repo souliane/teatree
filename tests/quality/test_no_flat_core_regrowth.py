@@ -82,13 +82,70 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # resolver (resolve_active_mode + the set/clear override chokepoint). A genuine new
 # core concern that MUST live at the core root: its domain-layer consumers speak.py and
 # stop_snapshot.py cannot import the orchestration layer, so the resolver cannot live in
-# teatree.loop; and it composes teatree.core.models + teatree.core.availability (the
+# teatree.loop; and it composes teatree.core.models + teatree.live_presence (the
 # presence heartbeat) + teatree.loop.preset_resolution, fitting no existing subpackage.
 # 80: +git_merge_driver.py (#3582) — the per-clone `merge.generated.driver` registration
 # seam, the exact sibling of the flat git-hooks install helper prek_hook.py (both are
 # per-checkout .git/config installers consumed by `t3 setup` + worktree provisioning).
 # Django-free and owned by no subpackage — gates/ is gate/deny logic, not an installer.
-PINNED_FLAT_CORE_MODULES = 80
+# 92: +loop_lease_liveness.py — the ORM-free lease-liveness predicates (lease_is_live +
+# live_foreign_owner_session + pid_is_foreign + anchorable_owner_pid) carved out of the
+# flat loop_lease_manager.py queryset hub to hold it under the 500-LOC module-health cap.
+# A pure-predicate leaf helper of that flat root hub, owned by no existing subpackage,
+# mirroring managers_overlay.py beside managers.py.
+# 93: +headless_admission.py — the F9 headless-lane admission chokepoint (governor consult)
+# 94: +managers_task_claim.py — the claim-admission/ordering concern carved from managers.py (module health)
+# 96: +notify_types.py / notify_ledger.py — carved out of notify.py to hold it under the 500-LOC
+# module-health cap. notify_types (the NotifyKind/NotifyReason/NotifyOutcome/NotifyOptions value
+# vocabulary) and notify_ledger (the BotPing/OutboundClaim/PendingChatInjection durable-audit ops)
+# are flat leaf helpers of the flat root notify.py hub, mirroring notify_targets.py beside notify.py.
+# Owned by no existing subpackage.
+# 97: +managers_issue_match.py — the issue-URL alias-collapse Q-builder (matching_issue_q) carved
+# out of managers.py to hold it under the 500-LOC module-health cap. A pure Q-builder leaf helper of
+# the flat root managers.py queryset hub, mirroring managers_overlay.py / managers_task_claim.py.
+# 98: +overlay_name_resolution.py — the overlay-name resolvers (cwd_overlay_name / overlay_name_of /
+# resolve_overlay_name) carved out of overlay_loader.py to hold it under the 500-LOC module-health cap.
+# A leaf helper of the flat root overlay_loader.py hub, owned by no existing subpackage.
+# 99: +retention.py (#3693) — the age-based prune of the high-churn control-DB tables. A genuine new
+# root data-lifecycle concern: it spans TaskAttempt + IncomingEvent + Ticket and fits no existing
+# subpackage (cleanup/ is worktree/branch/stash reaping, not DB-row retention).
+# 100: +forge_pr_probe.py — the single tri-state open-PR probe (find_open_pr_for_branch → FOUND/NONE/
+# UNKNOWN) that unified the three hand-rolled `gh pr list` / `glab mr list` probes. A genuine shared
+# root leaf bridging two gates/ modules (orphan_guard, open_pr_teardown_gate) and the flat root
+# fast_push.py: gates/ is gate/deny logic, not a forge-transport probe, and no other subpackage owns it.
+# 101: +managers_phase_cadence.py — the periodic-scanner dedupe/last-run Task queryset helpers
+# (in_flight_for_phase + last_run_at_for_phase) carved out of managers.py to hold it under the 500-LOC
+# module-health cap. A pure queryset-builder leaf helper of the flat root managers.py hub, mirroring
+# managers_overlay.py / managers_issue_match.py / managers_task_claim.py. Owned by no existing subpackage.
+# 102: +managers_session.py — SessionQuerySet (overlay/agent scoping + the bounded-liveness
+# `live()` query) carved out of managers.py to hold it under the 500-LOC module-health cap.
+# A queryset leaf helper of the flat root managers.py hub, mirroring managers_phase_cadence.py /
+# managers_overlay.py / managers_issue_match.py / managers_task_claim.py. Owned by no existing
+# subpackage — models/ may not import config, and this reads `session_stale_after_hours`.
+# 103: +config_display.py — the setting-name secrecy taxonomy (is_secret) and the one
+# value-to-display rule, relocated out of teatree.dash. Three surfaces now consume it —
+# the two dash config pages and ConfigSettingAdmin — and the admin sits in the domain
+# layer, which may not import the interface-layer dash. It must also stay OUT of
+# core/models/ (which may not import teatree.config, and this reads the settings schema),
+# so no existing subpackage owns it.
+# 102: -availability.py (#3826) — the legacy availability layer is retired. Its fast-hook
+# posture mirror is deleted (the hooks cold-read the control DB instead), and the two
+# things that survived it were never mode concepts: the keyboard heartbeat moved DOWN to
+# the foundation leaf teatree.live_presence (so the Django resolver, the cold resolver and
+# the bare UserPromptSubmit hook share ONE implementation), and the two DeferredQuestion
+# helpers collapsed onto DeferredQuestion.pending, which already was their whole body.
+# 103: +config_seed_tables.py (#3825) — the seed half of the TOML interchange (the
+# [loops]/[modes]/[schedules] classify + emit + write) carved out of config_migration.py
+# to hold that hub's growth once the two export filters and the defaults-shape emitter
+# landed. A leaf helper of the flat root config_migration.py hub and consumed by it
+# alone; owned by no existing subpackage, mirroring speak_cleaning.py beside speak.py
+# and managers_overlay.py beside managers.py.
+# 102: -retention.py (#3871) — retention became the subpackage core/retention/ once it grew
+# a second module. The #3693 lane orchestrator is now retention/prune.py and the adapter onto
+# django_tasks_db's own shipped prune is retention/task_results.py, kept apart so the
+# orchestrator never imports a third-party table's library directly. Two root leaves collapse
+# to one package entry, mirroring cleanup/ and evidence/.
+PINNED_FLAT_CORE_MODULES = 102
 
 
 def _flat_core_modules() -> list[str]:

@@ -3,27 +3,36 @@
 The behavioral eval lane must be able to grade a non-Claude model so a GPT/OSS swap
 is verifiable. These tests drive the runner with pydantic_ai's own model doubles
 (`FunctionModel` / `TestModel`) under `ALLOW_MODEL_REQUESTS=False`, so they run with
-no network, no OrcaRouter credential, and zero tokens.
+no network, no the OpenAI-compatible backend credential, and zero tokens.
 """
 
 import asyncio
 import dataclasses
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from claude_agent_sdk.types import EffortLevel
 from django.test import TestCase
 from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import RunContext
 
-from teatree.agents.pydantic_ai_config import LANE_EVAL
+from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
+from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
+from teatree.core.models import ConfigSetting
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.pydantic_ai_runner import PydanticAiRunner
+from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner
 from teatree.eval.report import evaluate
 
 
@@ -54,6 +63,34 @@ def _tool_call_then_text(command: str, text: str) -> FunctionModel:
             yield text
 
     return FunctionModel(stream_function=stream_fn)
+
+
+class _RecordingOpenAIModel(OpenAIChatModel):
+    """A REAL ``OpenAIChatModel`` whose requests are served offline, recording their settings.
+
+    Subclassing the real provider model keeps the runner's provider branch honest —
+    the settings class is chosen from the model, so a stand-in would grade the test's
+    own guess. Requests go to *offline*, so no key and no network are used.
+    """
+
+    def __init__(self, offline: Model) -> None:
+        super().__init__("gpt-5", provider=OpenAIProvider(api_key="offline-double"))
+        self._offline = offline
+        self.recorded: list[ModelSettings | None] = []
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[None] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        self.recorded.append(model_settings)
+        async with self._offline.request_stream(
+            messages, model_settings, model_request_parameters, run_context
+        ) as response:
+            yield response
 
 
 class TestBackendSelection:
@@ -128,8 +165,9 @@ class TestNonClaudeScenarioRunsGreen:
         assert run.terminal_reason == "success"
 
     def test_a_scenario_effort_pin_is_carried_into_the_run(self) -> None:
-        # A `model@effort` pin resolves to OpenAI reasoning-effort model settings
-        # (dropped for a text/function double, but the effort-settings path is taken).
+        # A `model@effort` pin must reach the model under the key an OpenAI-compatible
+        # provider reads — asserted on the settings the model was handed, since a run
+        # that merely finishes proves nothing about a setting the provider ignores.
         spec = EvalSpec(
             name="effort_scenario",
             scenario="run with high effort",
@@ -139,9 +177,13 @@ class TestNonClaudeScenarioRunsGreen:
             source_path=Path("/tmp/spec.yaml"),
             model="claude-sonnet-5@high",
         )
-        runner = PydanticAiRunner(model=_tool_call_then_text("uv run pytest", "done"))
-        run = runner.run(spec)
+        model = _RecordingOpenAIModel(_tool_call_then_text("uv run pytest", "done"))
+        run = PydanticAiRunner(model=model).run(spec)
         assert run.terminal_reason == "success"
+        assert model.recorded, "the model was never asked for a request"
+        assert model.recorded[0] is not None
+        assert model.recorded[0].get("openai_reasoning_effort") == "high"
+        assert "anthropic_effort" not in model.recorded[0]
 
 
 class TestRunnerWithSettings(TestCase):
@@ -150,23 +192,63 @@ class TestRunnerWithSettings(TestCase):
     def test_make_runner_builds_the_pydantic_ai_runner_on_the_eval_lane(self) -> None:
         runner = make_runner(PYDANTIC_AI_BACKEND)
         assert isinstance(runner, PydanticAiRunner)
-        # The eval runner tags its OrcaRouter dispatch with the `eval` x-lane header.
-        assert runner._orca.lane == LANE_EVAL
+        # The eval runner tags its the OpenAI-compatible backend dispatch with the `eval` x-lane header.
+        assert runner._backend.lane == LANE_EVAL
 
-    def test_resolve_model_builds_the_orca_router_model_on_the_eval_lane(self) -> None:
-        # With no injected model, `_resolve_model` builds a real OrcaRouter
-        # OpenAI-compatible model — mocked at the credential boundary so the test
-        # needs no live BYOK key or network.
+    def test_make_runner_threads_the_configured_output_ceiling(self) -> None:
+        ConfigSetting.objects.set_value("pydantic_ai_max_tokens", value=24576)
+        runner = make_runner(PYDANTIC_AI_BACKEND)
+        assert isinstance(runner, PydanticAiRunner)
+        assert runner._caps.max_tokens == 24576
+
+    def test_resolve_model_builds_the_configured_model_on_the_eval_lane(self) -> None:
+        # With no injected model, `_resolve_model` builds a real OpenAI-compatible
+        # model — mocked at the credential boundary so the test needs no live key
+        # or network.
         spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
         spec = dataclasses.replace(spec, model="claude-opus-4-8")
+        runner = PydanticAiRunner(
+            backend=OpenAICompatibleLaneConfig(
+                lane=LANE_EVAL, base_url="https://backend.example/v1", model="vendor/some-model"
+            )
+        )
         with patch(
-            "teatree.eval.pydantic_ai_runner.resolve_orca_router_provider_config",
-            lambda **_: SimpleNamespace(base_url="https://orca.example/v1", api_key="k"),
+            "teatree.eval.pydantic_ai_runner.resolve_openai_compatible_backend",
+            lambda **_: SimpleNamespace(base_url="https://backend.example/v1", api_key="k"),
         ):
-            model = PydanticAiRunner()._resolve_model(spec)
+            model = runner._resolve_model(spec)
         assert isinstance(model, OpenAIChatModel)
-        # The abstract Claude id normalises UP to the OrcaRouter router handle.
-        assert model.model_name == "orcarouter/teatree-factory"
+        # The abstract Claude id normalises UP to the CONFIGURED model id.
+        assert model.model_name == "vendor/some-model"
+
+
+class TestOutputCeilingOnTheRouterLane:
+    """``max_tokens`` is a base settings key both bindings honour — it rides here too.
+
+    The Anthropic instruction-cache key is NOT: it is Anthropic-namespaced, and a
+    foreign key on an OpenAI-compatible request is at best ignored and at worst
+    rejected by the endpoint.
+    """
+
+    def _recorded_settings(self, *, effort: EffortLevel | None = None) -> ModelSettings:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        model = _RecordingOpenAIModel(_tool_call_then_text("uv run pytest", "done"))
+        PydanticAiRunner(model=model, caps=EvalDriveCaps(effort=effort)).run(spec)
+        assert model.recorded, "the model was never asked for a request"
+        settings = model.recorded[0]
+        assert settings is not None
+        return settings
+
+    def test_an_output_ceiling_is_always_sent(self) -> None:
+        assert self._recorded_settings().get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+
+    def test_the_anthropic_cache_key_never_reaches_the_router(self) -> None:
+        assert "anthropic_cache_instructions" not in self._recorded_settings(effort="high")
+
+    def test_the_ceiling_rides_alongside_the_openai_effort(self) -> None:
+        settings = self._recorded_settings(effort="high")
+        assert settings.get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+        assert settings.get("openai_reasoning_effort") == "high"
 
 
 class TestEvalToolset:
@@ -198,3 +280,30 @@ class TestWatchdog:
         run = runner.run(spec)
         assert run.is_error is True
         assert run.terminal_reason == "timeout"
+
+
+class TestProviderFailureFoldsIntoTheRun:
+    """A provider error is a GRADED error run, not a crash out of the scenario.
+
+    ``PydanticAiRunner._drive`` reuses ``PydanticAiHarnessSession``, so the session's
+    failure mapping reaches this lane too: a throttled or refused request now ends the
+    scenario as an ``is_error`` run the report can record, where it previously escaped
+    ``asyncio.run`` and took the whole scenario down with a traceback.
+    """
+
+    def test_a_refused_request_ends_the_scenario_as_an_error_run(self) -> None:
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            await asyncio.sleep(0)
+            raise ModelHTTPError(
+                status_code=429,
+                model_name="claude-sonnet-5",
+                body={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}},
+            )
+            yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
+
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"))
+        run = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn)).run(spec)
+
+        assert run.is_error is True
+        assert run.terminal_reason == "error_during_execution"
+        assert not evaluate(spec, run).passed, "a run that never happened must never grade green"

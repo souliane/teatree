@@ -18,42 +18,35 @@ Two hard invariants (mirroring the disposition scanner's conservative doctrine):
     that RETURNS a typed ``triage_recommendations`` envelope; the recorder persists
     one PENDING ask-gate row per issue plus one ``DeferredQuestion`` DMing the user.
 
-The dedup contract is the ``scanning_news`` shape: a pending/claimed
-``triage_assessing`` task is the lock, and the most-recent task's
-``Session.started_at`` is the "last run" timestamp (no new model fields). The
-whole scanner is gated default-OFF one layer up
+The dedup / last-run / bootstrap-cadence machinery is shared with the other
+periodic task-queuing scanners via
+:class:`teatree.loop.scanners.phase_cadence.PhaseCadence`; the survivors filter (a
+genuine variant — no other scanner reads the forge) stays local. The whole
+scanner is gated default-OFF one layer up
 (:func:`teatree.loop.scanner_factories._triage_assessor_scanner_for`): with
 ``triage_assessor_enabled = false`` no scanner is built, so this never runs.
 """
 
-import datetime as dt
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
-from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.loop.scanners.base import ScanSignal, hours_since
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.needs_triage_query import _issue_labels, _issue_title, _issue_url, needs_triage_issues
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.models import PendingTriageRecommendation as _PendingTriageRecommendation
-    from teatree.core.models import Session as _Session
-    from teatree.core.models import Task as _Task
-    from teatree.core.models import Ticket as _Ticket
 
 logger = logging.getLogger(__name__)
 
 #: Canonical phase token written to ``Task.phase`` for triage-assessment tasks.
 TRIAGE_ASSESSOR_PHASE = "triage_assessing"
-
-#: States that mean an assessor task is still in-flight (cannot queue a dupe).
-_IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
 
 
 @dataclass(slots=True)
@@ -80,11 +73,11 @@ class TriageAssessorScanner:
         assignees = self._resolve_identities()
         if not assignees:
             return []
-        if self._in_flight_task_exists():
+        cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE, cadence_hours=self.cadence_hours)
+        if cadence.in_flight_exists():
             return []
 
-        now = timezone.now()
-        trigger = self._evaluate_trigger(now=now, last_run_at=self._last_run_at())
+        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
             return []
 
@@ -92,7 +85,13 @@ class TriageAssessorScanner:
         if not survivors:
             return []
 
-        task = self._queue_task(survivors=survivors, trigger=trigger)
+        task = cadence.queue_task(
+            placeholder_issue_url=f"triage-assessor://{self.overlay_name}",
+            agent_id=f"triage-assessor-{self.overlay_name}",
+            execution_reason=self._execution_reason(survivors=survivors, trigger=trigger),
+            subject=f"Triage assessment: {self.overlay_name}",
+            log_label="TriageAssessorScanner",
+        )
         if task is None:
             return []
         return [
@@ -139,74 +138,6 @@ class TriageAssessorScanner:
                 break
         return survivors
 
-    def _in_flight_task_exists(self) -> bool:
-        """True iff a pending/claimed triage-assessing task already exists."""
-        task_model = _task_model()
-        if task_model is None:
-            return False
-        return task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=TRIAGE_ASSESSOR_PHASE,
-            status__in=_IN_FLIGHT_TASK_STATES,
-        ).exists()
-
-    def _last_run_at(self) -> dt.datetime | None:
-        """The most recent task's ``Session.started_at``, or ``None`` (bootstrap)."""
-        task_model = _task_model()
-        if task_model is None:
-            return None
-        aggregate = task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=TRIAGE_ASSESSOR_PHASE,
-        ).aggregate(ts=Max("session__started_at"))
-        return aggregate["ts"]
-
-    def _evaluate_trigger(self, *, now: dt.datetime, last_run_at: dt.datetime | None) -> str | None:
-        """Return the trigger name (``bootstrap`` / ``cadence``) or ``None``."""
-        if last_run_at is None:
-            return "bootstrap"
-        if hours_since(last_run_at, now=now) >= self.cadence_hours:
-            return "cadence"
-        return None
-
-    def _queue_task(self, *, survivors: list[RawAPIDict], trigger: str) -> "_Task | None":
-        """Create a Task + Session row anchored at the overlay placeholder ticket.
-
-        Wrapped in ``transaction.atomic()`` so a concurrent scanner on a second
-        loop process can't double-queue. A DB error is logged but never raised —
-        losing one tick's assessment queue is acceptable; crashing the tick is not.
-        """
-        ticket_model = _ticket_model()
-        task_model = _task_model()
-        session_model = _session_model()
-        if ticket_model is None or task_model is None or session_model is None:
-            return None
-        try:
-            with transaction.atomic():
-                ticket, _created = ticket_model.objects.get_or_create(
-                    issue_url=self._placeholder_issue_url(),
-                    defaults={"overlay": self.overlay_name, "role": "author"},
-                )
-                if ticket.overlay != self.overlay_name:
-                    ticket.overlay = self.overlay_name
-                    ticket.save(update_fields=["overlay"])
-                session = session_model.objects.create(
-                    overlay=self.overlay_name,
-                    ticket=ticket,
-                    agent_id=f"triage-assessor-{self.overlay_name}",
-                )
-                return task_model.objects.create(
-                    ticket=ticket,
-                    session=session,
-                    phase=TRIAGE_ASSESSOR_PHASE,
-                    execution_target=task_model.ExecutionTarget.HEADLESS,
-                    subject=f"Triage assessment: {self.overlay_name}",
-                    execution_reason=self._execution_reason(survivors=survivors, trigger=trigger),
-                )
-        except Exception:
-            logger.exception("TriageAssessorScanner: failed to queue triage-assessing task")
-            return None
-
     @staticmethod
     def _execution_reason(*, survivors: list[RawAPIDict], trigger: str) -> str:
         """Build the dispatcher directive: the ASK-GATE marker + the serialized issue list.
@@ -227,31 +158,6 @@ class TriageAssessorScanner:
             f"The recorder persists each as a PendingTriageRecommendation for user approval; "
             f"nothing is closed/commented without per-item approval.\nISSUES:\n{lines}"
         )
-
-    def _placeholder_issue_url(self) -> str:
-        """Stable synthetic URL for the overlay-anchored placeholder ticket."""
-        return f"triage-assessor://{self.overlay_name}"
-
-
-def _ticket_model() -> "type[_Ticket] | None":
-    try:
-        return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
-        return None
-
-
-def _task_model() -> "type[_Task] | None":
-    try:
-        return cast("type[_Task]", apps.get_model("core", "Task"))
-    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
-        return None
-
-
-def _session_model() -> "type[_Session] | None":
-    try:
-        return cast("type[_Session]", apps.get_model("core", "Session"))
-    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
-        return None
 
 
 def _recommendation_model() -> "type[_PendingTriageRecommendation] | None":

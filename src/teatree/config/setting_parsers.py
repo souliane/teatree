@@ -20,7 +20,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from teatree.config import value_coercion
-from teatree.config.enums import TeamsDisplay
 
 
 def _parse_str_list(raw: object) -> list[str]:
@@ -33,7 +32,12 @@ def _parse_str_list(raw: object) -> list[str]:
     return value_coercion.strict_str_list(raw)
 
 
-_DEFAULT_DISK_CACHE_ALLOWLIST = ("~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes")
+_DEFAULT_DISK_CACHE_ALLOWLIST = (
+    "~/.cache/pre-commit",
+    "~/.cache/puppeteer",
+    "~/.cache/codex-runtimes",
+    "~/.cache/go-build",
+)
 
 
 def _parse_disk_cache_allowlist(raw: object) -> list[str]:
@@ -69,26 +73,6 @@ def _parse_env_bool_default_on(raw: str) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _parse_env_positive_int(default: int) -> Callable[[str], int]:
-    """A ``T3_*`` env coercer that fails SAFE to *default* on a bad value.
-
-    Returns a parser that accepts a positive integer string and degrades to
-    *default* for anything non-positive or non-integer. A pane-budget env var
-    (``T3_TEAMS_MAX_PANES`` / ``T3_TEAMS_IDLE_MINUTES``) must never silently
-    disable the safety bound by parsing to ``0`` or raising into the resolver —
-    the conservative bound cannot be configured away by a typo.
-    """
-
-    def parse(raw: str) -> int:
-        try:
-            value = int(raw.strip())
-        except (TypeError, ValueError):
-            return default
-        return value if value > 0 else default
-
-    return parse
-
-
 def _parse_env_str_list(raw: str) -> list[str]:
     """Coerce a ``T3_*`` comma-separated env string to ``list[str]`` for the env tier.
 
@@ -97,22 +81,6 @@ def _parse_env_str_list(raw: str) -> list[str]:
     clears the allowlist rather than reading as one empty action.
     """
     return [token for token in (part.strip() for part in raw.split(",")) if token]
-
-
-def _parse_env_teams_display(raw: str) -> TeamsDisplay:
-    """Coerce a ``T3_TEAMS_DISPLAY`` env string, failing SAFE to ``NONE`` (#1838 WI-5).
-
-    The presentation-only display mode must never crash the config resolver or
-    escalate itself ON via a typo in the env tier: a mistyped value degrades to
-    the conservative :attr:`TeamsDisplay.NONE` (no display, in-process path
-    unchanged). This is the env-tier counterpart to :meth:`TeamsDisplay.parse`,
-    which raises LOUD for the TOML/DB tiers where a write-time validator catches
-    the typo at set time.
-    """
-    try:
-        return TeamsDisplay.parse(raw)
-    except ValueError:
-        return TeamsDisplay.NONE
 
 
 def _parse_strict_bool(raw: object) -> bool:
@@ -138,9 +106,9 @@ def _parse_strict_int(raw: object) -> int:
 
 
 def _parse_overridable_positive_int(default: int) -> Callable[[object], int]:
-    """An overridable-int coercer that fails SAFE to *default* (mirrors ``_parse_env_positive_int``).
+    """An overridable-int coercer that fails SAFE to *default* on a bad value.
 
-    Used for the pane-budget settings (``teams_max_panes`` / ``teams_idle_minutes``)
+    Used for the bounded positive-int settings (review-request dedup, db-backup cadence)
     in ``OVERLAY_OVERRIDABLE_SETTINGS``: a per-overlay or DB-tier value that is
     non-positive, a ``bool``, a ``float``, or a non-numeric string degrades to
     *default* rather than raising into the config resolver. The safety bound the
@@ -210,12 +178,18 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 def _default_handover_mirror_path() -> Path:
     """Human-readable mirror of the latest session hand-off.
 
-    ``${XDG_STATE_HOME:-~/.local/state}/teatree/handover/latest.md`` — XDG
-    *state* (not data) because a hand-off is regenerable transient session
-    state, not durable user data. Overridable via ``[teatree]
-    handover_mirror_path``. The DB row is the source of truth; this file
-    is for human-readability and for bootstrapping a brand-new session.
+    Written under the SHARED teatree data dir — ``$T3_DATA_DIR`` when set, else
+    ``${XDG_DATA_HOME:-~/.local/share}/teatree`` — rather than the XDG *state*
+    dir it used to use (#3563). The state dir is runtime-local: a hand-off
+    created inside the worker container wrote its mirror to a filesystem the
+    host could not read, so a fresh HOST session could never bootstrap from it
+    and the host's ``latest.md`` stayed pinned to an ancient session. The data
+    dir is the one directory every runtime shares. Overridable via the
+    ``handover_mirror_path`` setting; the DB row is still the source of truth.
     """
-    xdg_state = os.environ.get("XDG_STATE_HOME")
-    base = Path(xdg_state) if xdg_state else Path.home() / ".local" / "state"
+    explicit = os.environ.get("T3_DATA_DIR")
+    if explicit:
+        return Path(explicit) / "handover" / "latest.md"
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data) if xdg_data else Path.home() / ".local" / "share"
     return base / "teatree" / "handover" / "latest.md"

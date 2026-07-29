@@ -118,15 +118,6 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
-        "pane_reaper",
-        300,
-        None,
-        None,
-        "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
-        False,
-        True,
-    ),
-    (
         "issue_disposition",
         300,
         None,
@@ -155,10 +146,10 @@ _DEFAULT_LOOPS = (
     ),
     (
         "issue_implementer",
-        3600,
+        1800,
         None,
         None,
-        "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; hourly, default-off behind a triple gate.",
+        "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; every 30m, default-off behind a triple gate.",
         False,
         False,
     ),
@@ -175,11 +166,25 @@ _DEFAULT_LOOPS = (
         False,
     ),
     (
+        "dm_sweep",
+        3600,
+        None,
+        None,
+        (
+            "Sweeps the owner's DM threads hourly and resolves the ones that no longer need "
+            "them (owner already replied, subject merged/closed, duplicate of an open thread); "
+            "leaves anything older than a day for the resurfacing side, and says nothing when "
+            "it resolved nothing."
+        ),
+        False,
+        False,
+    ),
+    (
         "housekeeping",
         3600,
         None,
         None,
-        "Fast-forwards the editable teatree and overlay installs (self-update) and pulls each overlay's main clone hourly.",
+        "Fast-forwards the editable teatree and overlay installs (self-update), pulls each overlay's main clone, and reconciles the ticket board against forge truth, hourly.",
         False,
         True,
     ),
@@ -257,10 +262,16 @@ _DEFAULT_LOOPS = (
     ),
     (
         "directive_loop",
-        86400,
+        3600,
         None,
         None,
-        "Advances one ratified directive one step per day (implement, configure, verify, keep-only-if-verified, else human-asked revert), off the live tick; ships disabled behind the directive_loop_enabled flag and the critic-live guard.",
+        (
+            "Hourly, off the live tick: interprets captured owner directives up to "
+            "directive_intake_per_tick per pass and stops at the human ratify gate, then advances "
+            "one ratified directive one step (implement, configure, verify, keep-only-if-verified, "
+            "else human-asked revert); ships disabled behind the directive_loop_enabled flag, and "
+            "the execution arc additionally needs the critic-live guard."
+        ),
         False,
         False,
     ),
@@ -270,6 +281,15 @@ _DEFAULT_LOOPS = (
         None,
         None,
         "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row.",
+        False,
+        False,
+    ),
+    (
+        "memory_skim",
+        604800,
+        None,
+        None,
+        "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF.",
         False,
         False,
     ),

@@ -14,10 +14,16 @@ Integration-first: real ``ConfigSetting`` rows against the real DB, the active
 overlay set via ``T3_OVERLAY_NAME``.
 """
 
+import os
+from unittest import mock
+
 import pytest
+from django.core.exceptions import AppRegistryNotReady
+from django.db.utils import OperationalError, ProgrammingError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
+from teatree.config.resolution import _load_global_rows, _load_overlay_rows, env_setting_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
 
 
@@ -151,3 +157,147 @@ class TestPerOverlayDbScope(TestCase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert ConfigSetting.objects.count() == 0
         assert get_effective_settings().issue_implementer_enabled is False
+
+
+class TestOverrideReadSignalsOnRealFailure(TestCase):
+    """The DB override read never SILENTLY empties the tier on a REAL error (P1-B).
+
+    ``_load_global_rows`` / ``_load_overlay_rows`` degrade to ``{}`` SILENTLY only for
+    genuine bootstrap states (missing table, DB not ready). A real read bug drops the
+    whole override tier — including the ``autonomy`` / ``require_human_approval_to_merge``
+    safety gates — back to the dataclass defaults; that fail-open must be SIGNALLED loud
+    (ERROR log + traceback), not silently swallowed, so operator monitoring surfaces it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_bootstrap_missing_table_error_is_a_silent_no_op(self) -> None:
+        # A pre-migration / missing-table read while the app registry is NOT ready is the
+        # legitimate bootstrap no-op: {} and NO error log. `_app_registry_ready` is patched
+        # False to model the genuine bootstrap state (this TestCase has Django set up).
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=False),
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("no such table")
+            ),
+            self.assertNoLogs("teatree.config", level="ERROR"),
+        ):
+            assert _load_global_rows() == {}
+
+    def test_app_registry_not_ready_error_is_always_silent(self) -> None:
+        # AppRegistryNotReady is an unambiguous bootstrap state — silent regardless of the
+        # readiness predicate (it is the very signal the predicate reads as not-ready).
+        with (
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=AppRegistryNotReady("apps not ready")
+            ),
+            self.assertNoLogs("teatree.config", level="ERROR"),
+        ):
+            assert _load_global_rows() == {}
+
+    def test_runtime_operational_error_is_logged_loud_not_silent(self) -> None:
+        # THE fix: an OperationalError raised while the app registry IS ready (a locked DB,
+        # a lock timeout, a mid-session drop) is a RUNTIME fault, not a bootstrap no-op — it
+        # still degrades to {} but MUST be signalled loud, else the operator's DB-override
+        # tier (autonomy, per-overlay mode, worker_quiescing) silently reverts to defaults.
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("database is locked")
+            ),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_global_rows() == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_runtime_programming_error_is_logged_loud_not_silent(self) -> None:
+        # ProgrammingError shares the runtime-vs-bootstrap distinction with OperationalError.
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch.object(
+                ConfigSetting.objects, "overrides_for_scope", side_effect=ProgrammingError("relation gone")
+            ),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_global_rows() == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_runtime_operational_error_on_overlay_read_is_logged_loud(self) -> None:
+        # The per-overlay reader shares the runtime-vs-bootstrap distinction.
+        with (
+            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch.object(ConfigSetting.objects, "exclude", side_effect=OperationalError("database is locked")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_overlay_rows("my-overlay") == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_real_read_error_is_logged_loud_not_silent(self) -> None:
+        # A genuine read bug (not a bootstrap state) degrades to {} but is SIGNALLED loud —
+        # never a silent empty override tier that fails OPEN on the safety gates.
+        with (
+            mock.patch.object(ConfigSetting.objects, "overrides_for_scope", side_effect=RuntimeError("corrupt read")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_global_rows() == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_real_read_error_signals_through_effective_settings(self) -> None:
+        # End to end: a real read failure surfaces loud (ERROR) rather than silently
+        # resolving the safety gates to their fail-open defaults with no trace.
+        with (
+            mock.patch.object(ConfigSetting.objects, "overrides_for_scope", side_effect=RuntimeError("corrupt read")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            get_effective_settings()
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+    def test_overlay_read_real_error_is_logged_loud(self) -> None:
+        # The per-overlay reader shares the same signal-on-real-failure contract.
+        with (
+            mock.patch.object(ConfigSetting.objects, "exclude", side_effect=RuntimeError("corrupt read")),
+            self.assertLogs("teatree.config", level="ERROR") as captured,
+        ):
+            assert _load_overlay_rows("my-overlay") == {}
+        assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
+
+
+class TestTheTierSeamsAreTheOneReader(TestCase):
+    """``read_setting_layers`` / ``env_setting_overrides`` are public for ONE reason.
+
+    ``get_effective_settings`` FOLDS the tiers into a ``UserSettings``; ``config.provenance``
+    WALKS the same two seams to say which tier supplied a value. A second reader on either
+    side would be a second resolution path, and the value shown and the tier credited for it
+    could then disagree — so each seam's own answer is pinned here, together with the fold
+    agreeing with it.
+    """
+
+    def test_the_two_db_scopes_come_back_separately(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="demo")
+        global_rows, overlay_rows = read_setting_layers("demo").db_rows
+        assert (global_rows["merge_wip"], overlay_rows["merge_wip"]) == (4, 7)
+
+    def test_an_unnamed_overlay_sees_no_overlay_rows(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="demo")
+        _global_rows, overlay_rows = read_setting_layers("").db_rows
+        assert "merge_wip" not in overlay_rows
+
+    def test_the_shipped_file_tier_is_carried_beside_the_db_scopes(self) -> None:
+        assert "merge_wip" in read_setting_layers("").toml_rows
+
+    def test_the_fold_serves_what_the_layers_say_wins(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        global_rows, _overlay_rows = read_setting_layers("").db_rows
+        assert get_effective_settings().merge_wip == global_rows["merge_wip"]
+
+    def test_an_unset_env_contributes_nothing(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert "merge_wip" not in env_setting_overrides()
+
+    def test_a_t3_variable_is_read_under_its_flat_key_and_beats_a_stored_row(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        with mock.patch.dict(os.environ, {"T3_MERGE_WIP": "9"}):
+            assert env_setting_overrides()["merge_wip"] == get_effective_settings().merge_wip == 9

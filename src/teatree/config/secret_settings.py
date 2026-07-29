@@ -17,7 +17,20 @@ is sufficient):
 
 ``config_setting export`` filters both by default and WARNS what it dropped; the
 ``--include-private`` flag exports everything for a PERSONAL (never-shared) backup.
+
+Beyond the explicit ``SECRET_SETTINGS`` denylist (customer/brand keys a rule cannot
+derive), two rule-driven classes are withheld from a shared export so no second
+hand-kept list can drift out of date:
+
+- **Credential coordinates** — a setting that names WHERE a secret lives (a ``pass``
+    entry / token reference), matched by :func:`is_credential_reference`. This is the
+    SAME suffix rule the dashboard's credential band uses, so export and dashboard
+    agree on "this is a credential coordinate" from one source of truth.
+- **Personal identifiers** — :data:`PERSONAL_IDENTIFIERS`, an operator's own account
+    handles / channel / schedule that carry no brand term but are not shareable.
 """
+
+import re
 
 # Membership == the ``private`` flag. Keep alphabetised.
 SECRET_SETTINGS: frozenset[str] = frozenset(
@@ -35,3 +48,27 @@ SECRET_SETTINGS: frozenset[str] = frozenset(
         "user_token_ref",
     }
 )
+
+#: A credential-reference setting NAMES where a secret lives (a ``pass`` entry / token
+#: reference), never the secret itself. Matched by suffix so a renamed reference keeps
+#: its classification with no second registration. The single source of truth for
+#: "is this a credential coordinate": the dashboard credential band AND the config
+#: export withhold-set both resolve through it (F2).
+CREDENTIAL_REFERENCE_RE = re.compile(r"(pass_path|pass_paths|pass_key|token_ref|credential_entry)$")
+
+#: An operator's OWN personal identifiers — account handle, channel, schedule. They
+#: carry no customer/brand term (so the banned-term scan misses them) and are not a
+#: credential coordinate (so the suffix rule misses them), yet must not reach a shared
+#: export. Kept explicit because there is no derivable rule for "this is personal" (F2).
+PERSONAL_IDENTIFIERS: frozenset[str] = frozenset(
+    {
+        "availability_schedule",
+        "slack_user_channel",
+        "slack_user_id",
+    }
+)
+
+
+def is_credential_reference(name: str) -> bool:
+    """Whether *name* is a credential-coordinate setting (it names where a secret lives)."""
+    return bool(CREDENTIAL_REFERENCE_RE.search(name))

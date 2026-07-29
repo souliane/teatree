@@ -11,6 +11,11 @@ approach:
 - ``;``, ``|``, ``&``, ``&&``, ``||`` and ``\n`` are emitted as standalone
     metacharacter tokens regardless of surrounding whitespace, so
     ``cmd "x";echo --quote-ok`` is split at the ``;`` even with no space.
+- A bare ``(`` at a command boundary (not glued inside a token) is emitted as
+    a subshell-open separator, so a publish wrapped in ``(gh …)`` becomes its own
+    segment led by the forge tool instead of a ``(gh`` leader the catalogue
+    misses (F1). A ``(`` seen mid-token is left glued — it is the second char of
+    a ``$(`` / ``<(`` / ``>(`` substitution and must not split.
 - ANSI-C ``$'...'`` is decoded directly per the bash man-page (handling
     ``\\``, ``\'``, ``\"``, control letters, ``\xHH``, ``\uHHHH``,
     ``\UHHHHHHHH``, ``\nnn`` octal, ``\cX`` control) — no round-trip
@@ -373,6 +378,11 @@ def _match_operator(state: _LexerState) -> str | None:
     return None
 
 
+def _consume_open_paren(state: _LexerState) -> None:
+    """Emit a bare ``(`` as a subshell-open separator (fresh-token position only)."""
+    state.append_op("(", 1)
+
+
 def _consume_ansi_c(state: _LexerState) -> None:
     r"""Consume a ``$'...'`` sequence at the current cursor."""
     state.begin_token()
@@ -508,6 +518,17 @@ def _rule_hash(state: _LexerState, _command: str, _n: int) -> _Handler | None:
     return _consume_comment
 
 
+def _rule_open_paren(state: _LexerState, _command: str, _n: int) -> _Handler | None:
+    # ``(`` opens a subshell ONLY at a command boundary (no token open). Inside a
+    # token it is glued word content -- the second char of a ``$(`` / ``<(`` /
+    # ``>(`` command/process substitution (or an ``arr=(...)`` array literal) --
+    # and must NOT split, or substitution parsing and its live/inert
+    # classification would break.
+    if state.in_token:
+        return None
+    return _consume_open_paren
+
+
 _STRUCTURED_RULES: Final[dict[str, _Rule]] = {
     " ": _rule_inline_ws,
     "\t": _rule_inline_ws,
@@ -518,6 +539,7 @@ _STRUCTURED_RULES: Final[dict[str, _Rule]] = {
     "'": _rule_single_quote,
     '"': _rule_double_quote,
     "#": _rule_hash,
+    "(": _rule_open_paren,
 }
 
 
@@ -525,8 +547,8 @@ def tokenize(command: str) -> list[Token]:
     r"""Return the bash-equivalent token stream for ``command``.
 
     The result preserves operator tokens (``;`` / ``|`` / ``&`` /
-    ``&&`` / ``||`` / ``\n``) as standalone :class:`Token` instances
-    with :attr:`TokenKind.OP`, and emits regular words as
+    ``&&`` / ``||`` / ``\n`` / a fresh-token ``(``) as standalone
+    :class:`Token` instances with :attr:`TokenKind.OP`, and emits regular words as
     :attr:`TokenKind.WORD` with their decoded value. Line continuations
     inside a quoted region are preserved literally; outside any quote
     they are eliminated when token-internal and treated as whitespace
@@ -544,8 +566,10 @@ def tokenize(command: str) -> list[Token]:
     return state.tokens
 
 
-# Operator values that delimit one logical command from the next.
-_COMMAND_SEPARATORS: Final[frozenset[str]] = frozenset({";", "|", "&", "&&", "||", "\n"})
+# Operator values that delimit one logical command from the next. A bare ``(``
+# (emitted only at a command boundary — never the ``$(`` / ``<(`` / ``>(`` glue)
+# opens a subshell whose body is a fresh command list, so it delimits too (F1).
+_COMMAND_SEPARATORS: Final[frozenset[str]] = frozenset({";", "|", "&", "&&", "||", "\n", "("})
 
 
 def is_command_separator(token: Token) -> bool:

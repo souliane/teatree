@@ -42,7 +42,7 @@ class TestPostTestPlanLeakScan(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
         ):
             result = cast(
                 "dict[str, object]", call_command("pr", "post-test-plan", "10", "--body", "rolling out for Contoso")
@@ -58,7 +58,7 @@ class TestPostTestPlanLeakScan(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=([], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
         ):
             result = cast("dict[str, object]", call_command("pr", "post-test-plan", "10", "--body", "all green on dev"))
         assert result == {"id": 1}
@@ -71,7 +71,7 @@ class TestPostTestPlanLeakScan(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
         ):
             result = cast(
                 "dict[str, object]", call_command("pr", "post-evidence", "10", "--body", "shipping for Contoso")

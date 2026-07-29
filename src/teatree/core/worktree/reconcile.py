@@ -21,7 +21,7 @@ from teatree.config import clone_root, worktree_root
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.worktree.branch_classification import RedundancyVerdict, branch_redundancy
-from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.clone_paths import resolve_clone_path, stored_clone_path
 from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
 from teatree.core.worktree.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
@@ -56,6 +56,19 @@ class StaleWorktreeDir:
 @dataclass(frozen=True, slots=True)
 class MissingWorktreeDir:
     """Worktree row claims a path that no longer exists on disk."""
+
+    worktree_pk: int
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class StaleClonePath:
+    """Worktree row records a ``clone_path`` that no longer resolves as a git checkout.
+
+    Every redundancy probe runs against this path, and a probe that cannot read a
+    repo answers the same as a branch holding nothing — so a stale value silently
+    turns "unverifiable" into "redundant" for whoever reads the emit record.
+    """
 
     worktree_pk: int
     path: Path
@@ -165,6 +178,7 @@ class Drift:
     orphan_dbs: list[OrphanDB] = field(default_factory=list)
     stale_worktree_dirs: list[StaleWorktreeDir] = field(default_factory=list)
     missing_worktree_dirs: list[MissingWorktreeDir] = field(default_factory=list)
+    stale_clone_paths: list[StaleClonePath] = field(default_factory=list)
     missing_env_caches: list[MissingEnvCache] = field(default_factory=list)
     env_cache_drifts: list[EnvCacheDrift] = field(default_factory=list)
     missing_dbs: list[MissingDB] = field(default_factory=list)
@@ -181,6 +195,7 @@ class Drift:
                 self.orphan_dbs,
                 self.stale_worktree_dirs,
                 self.missing_worktree_dirs,
+                self.stale_clone_paths,
                 self.missing_env_caches,
                 self.env_cache_drifts,
                 self.missing_dbs,
@@ -198,6 +213,7 @@ class Drift:
             *(f"orphan-db: {d.db_name}" for d in self.orphan_dbs),
             *(f"stale-worktree-dir: {d.path}" for d in self.stale_worktree_dirs),
             *(f"missing-worktree-dir: wt#{d.worktree_pk} {d.path}" for d in self.missing_worktree_dirs),
+            *(f"stale-clone-path: wt#{d.worktree_pk} {d.path}" for d in self.stale_clone_paths),
             *(f"missing-env-cache: wt#{d.worktree_pk} {d.cache_path}" for d in self.missing_env_caches),
             *(f"env-cache-drift: wt#{d.worktree_pk} {d.cache_path}" for d in self.env_cache_drifts),
             *(f"missing-db: wt#{d.worktree_pk} {d.db_name}" for d in self.missing_dbs),
@@ -275,6 +291,10 @@ def _reconcile_worktree_row(drift: Drift, wt: Worktree) -> None:
 
     if wt_path and not wt_path.is_dir():
         drift.missing_worktree_dirs.append(MissingWorktreeDir(worktree_pk=wt.pk, path=wt_path))
+
+    clone_path_str = extra.get("clone_path", "")
+    if clone_path_str and stored_clone_path(wt) is None:
+        drift.stale_clone_paths.append(StaleClonePath(worktree_pk=wt.pk, path=Path(clone_path_str)))
 
     try:
         _reconcile_overlay_dependent_stores(drift, wt)
@@ -471,7 +491,7 @@ def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
     clone_workspace = clone_root()
-    worktrees = list(Worktree.objects.filter(ticket=ticket))
+    worktrees = list(Worktree.objects.for_ticket(ticket))
 
     for wt in worktrees:
         _reconcile_worktree_row(drift, wt)
@@ -546,7 +566,7 @@ def reconcile_work_state_ticket(ticket: Ticket) -> Drift:
     :func:`reconcile_ticket` runs for ``workspace doctor``.
     """
     drift = Drift(ticket_pk=ticket.pk)
-    worktrees = list(Worktree.objects.filter(ticket=ticket))
+    worktrees = list(Worktree.objects.for_ticket(ticket))
     _collect_work_state_drift(drift, ticket, worktrees, clone_root())
     return drift
 

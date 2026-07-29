@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.project --> teatree.paths
+    teatree.live_presence --> teatree.paths
     teatree.llm --> teatree.utils
     teatree.credential_config --> teatree.config
     teatree.credential_config --> teatree.core.models
@@ -15,13 +16,6 @@ graph TD
     teatree.ci_oauth_switch --> teatree.credential_config
     teatree.ci_oauth_switch --> teatree.token_report
     teatree.ci_oauth_switch --> teatree.utils
-    teatree.teams --> teatree.core
-    teatree.teams --> teatree.core.models
-    teatree.teams --> teatree.core.loop_lease_manager
-    teatree.teams --> teatree.config
-    teatree.teams --> teatree.agents
-    teatree.teams --> teatree.skill_support
-    teatree.teams --> teatree.utils
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -39,6 +33,7 @@ graph TD
     teatree.skill_support --> teatree.types
     teatree.skill_support --> teatree.utils
     teatree.skill_support --> teatree.project
+    teatree.provisioning --> teatree.utils
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
     teatree.core --> teatree.pricing
@@ -61,13 +56,20 @@ graph TD
     teatree.core --> teatree.core.session_identity
     teatree.core --> teatree.loop.loop_cadences
     teatree.core --> teatree.loop.preset_resolution
+    teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.loop_lease_manager --> teatree.utils
+    teatree.core.managers_session --> teatree.config
+    teatree.core.managers_session --> teatree.core.managers_overlay
     teatree.core.managers --> teatree.config
     teatree.core.managers --> teatree.utils
     teatree.core.managers --> teatree.core.modelkit
     teatree.core.managers --> teatree.core.models.errors
     teatree.core.managers --> teatree.core.loop_lease_manager
+    teatree.core.managers --> teatree.core.managers_issue_match
     teatree.core.managers --> teatree.core.managers_overlay
+    teatree.core.managers --> teatree.core.managers_phase_cadence
+    teatree.core.managers --> teatree.core.managers_session
+    teatree.core.managers --> teatree.core.managers_task_claim
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
     teatree.core.models --> teatree.core.modelkit
@@ -98,6 +100,7 @@ graph TD
     teatree.backends --> teatree.llm
     teatree.backends --> teatree.backends.errors
     teatree.backends --> teatree.backends.types
+    teatree.backends --> teatree.backends.http_retry
     teatree.backends --> teatree.backends.forge_merge_rpc
     teatree.backends --> teatree.backends.github
     teatree.backends --> teatree.backends.gitlab
@@ -111,6 +114,7 @@ graph TD
     teatree.backends.slack --> teatree.core.models
     teatree.backends.slack --> teatree.identity
     teatree.backends.slack --> teatree.url_classify
+    teatree.backends.slack --> teatree.backends.http_retry
     teatree.backends.gitlab --> teatree.types
     teatree.backends.gitlab --> teatree.utils
     teatree.backends.gitlab --> teatree.core
@@ -118,6 +122,7 @@ graph TD
     teatree.backends.gitlab --> teatree.llm
     teatree.backends.gitlab --> teatree.backends.errors
     teatree.backends.gitlab --> teatree.backends.types
+    teatree.backends.gitlab --> teatree.backends.http_retry
     teatree.backends.gitlab --> teatree.backends.forge_merge_rpc
     teatree.backends.gitlab --> teatree.backends.slack
     teatree.backends.github --> teatree.types
@@ -202,7 +207,6 @@ graph TD
     teatree.loop --> teatree.backends.gitlab
     teatree.loop --> teatree.backends.slack
     teatree.loop --> teatree.messaging
-    teatree.loop --> teatree.teams
     teatree.loop --> teatree.loop.loop_cadences
     teatree.loop --> teatree.loop.session_identity
     teatree.loop --> teatree.loop.loop_scoping
@@ -213,6 +217,7 @@ graph TD
     teatree.loop --> teatree.loop.statusline_render
     teatree.loop --> teatree.loop.url_specificity
     teatree.loop --> teatree.loop.review_claim_signals
+    teatree.loop --> teatree.loop.review_done_reactions
     teatree.loop --> teatree.loop.loop_state_db
     teatree.loop --> teatree.loop.review_request_tracker
     teatree.loop --> teatree.loop.dispatch_tables
@@ -249,6 +254,11 @@ graph TD
     teatree.loop.review_claim_signals --> teatree.types
     teatree.loop.review_claim_signals --> teatree.core.models
     teatree.loop.review_claim_signals --> teatree.loop.loop_state_db
+    teatree.loop.review_done_reactions --> teatree.types
+    teatree.loop.review_done_reactions --> teatree.utils
+    teatree.loop.review_done_reactions --> teatree.core
+    teatree.loop.review_done_reactions --> teatree.core.models
+    teatree.loop.review_done_reactions --> teatree.loop.review_claim_signals
     teatree.loop.loop_state_db --> teatree.core.models
     teatree.loop.loop_state_db --> teatree.loop.preset_resolution
     teatree.loop.preset_resolution --> teatree.core.models
@@ -259,14 +269,15 @@ graph TD
     teatree.loop.scanners --> teatree.core
     teatree.loop.scanners --> teatree.core.modelkit
     teatree.loop.scanners --> teatree.core.models
+    teatree.loop.scanners --> teatree.core.models.errors
     teatree.loop.scanners --> teatree.backends
     teatree.loop.scanners --> teatree.backends.errors
     teatree.loop.scanners --> teatree.backends.github
     teatree.loop.scanners --> teatree.backends.gitlab
     teatree.loop.scanners --> teatree.backends.slack
-    teatree.loop.scanners --> teatree.teams
     teatree.loop.scanners --> teatree.loop.url_specificity
     teatree.loop.scanners --> teatree.loop.review_claim_signals
+    teatree.loop.scanners --> teatree.loop.review_done_reactions
     teatree.loop.scanners --> teatree.loop.review_request_tracker
     teatree.loop.scanners --> teatree.loop.pr_ticket_index
     teatree.loop.dispatch_reducer --> teatree.url_classify
@@ -356,6 +367,7 @@ graph TD
     teatree.url_classify --> teatree.utils
     teatree.quality --> teatree.utils
     teatree.paths
+    teatree.request_cache
     teatree.types
     teatree.pricing
     teatree.verification
@@ -368,7 +380,11 @@ graph TD
     teatree.core.session_handover_manager
     teatree.core.repair_loop
     teatree.core.managers_overlay
+    teatree.core.managers_task_claim
+    teatree.core.managers_issue_match
+    teatree.core.managers_phase_cadence
     teatree.backends.errors
+    teatree.backends.http_retry
     teatree.backends.types
     teatree.cli._format_opts
     teatree.loop.statusline_palette

@@ -15,6 +15,7 @@ import typer
 
 from teatree.cli.eval.multi_trial import TrialPolicy, collect_matrix_rows
 from teatree.eval.models import EvalRun, EvalSpec
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
 def _spec(name: str) -> EvalSpec:
@@ -87,6 +88,18 @@ class _AlwaysRaisesRunner:
             msg = "permanently broken cell"
             raise Exception(msg)  # noqa: TRY002 — mirrors the SDK's bare-Exception transient
         return _clean_run(spec)
+
+
+class _CreditExhaustedRunner:
+    """Every cell hits a $0 / over-quota metered key, counting attempts."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.attempts += 1
+        msg = "Credit balance is too low — top up at console.anthropic.com"
+        raise CreditExhaustedError(msg)
 
 
 class _RaisesTyperExitRunner:
@@ -198,6 +211,27 @@ class TestPerCellErrorIsolation:
         specs = [_spec("alpha")]
         with pytest.raises(type(exc)):
             collect_matrix_rows(specs, ["opus"], runner=_RaisesBaseExceptionRunner(exc), policy=TrialPolicy(trials=1))
+
+
+class TestCreditExhaustionAbortsTheMatrix:
+    """A dead metered key is terminal for the run, never a per-cell transient.
+
+    ``CreditExhaustedError`` is a ``RuntimeError``, so the cell-isolation
+    ``except Exception`` would otherwise retry it three times per cell across every
+    cell — burning the whole metered comparison on a permanent config fault that no
+    amount of retrying can clear.
+    """
+
+    def test_credit_exhaustion_aborts_instead_of_erroring_every_cell(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        with pytest.raises(CreditExhaustedError, match=r"console\.anthropic\.com"):
+            collect_matrix_rows(specs, ["opus", "haiku"], runner=_CreditExhaustedRunner(), policy=TrialPolicy(trials=1))
+
+    def test_the_dead_key_is_hit_once_not_retried(self) -> None:
+        runner = _CreditExhaustedRunner()
+        with pytest.raises(CreditExhaustedError):
+            collect_matrix_rows([_spec("alpha")], ["opus"], runner=runner, policy=TrialPolicy(trials=1))
+        assert runner.attempts == 1
 
 
 class TestMatrixCellCapTaint:

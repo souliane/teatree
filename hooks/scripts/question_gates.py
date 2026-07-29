@@ -444,3 +444,55 @@ def handle_warn_batched_questions(data: dict) -> None:
     if not isinstance(questions, list) or len(questions) <= 1:
         return
     sys.stderr.write(_BATCHED_QUESTION_WARN.format(n=len(questions)) + "\n")
+
+
+def _answer_text_from_tool_response(data: dict) -> str:
+    """The user's in-client choice, or a neutral marker when the shape is unfamiliar.
+
+    The harness's ``AskUserQuestion`` response shape is not contractual, so this reads
+    the common carriers and otherwise records that the question WAS answered here. The
+    exact text matters less than the resolution: an unresolved row keeps pinging Slack.
+    """
+    response = data.get("tool_response")
+    if isinstance(response, str) and response.strip():
+        return response.strip()
+    if isinstance(response, dict):
+        for key in ("answer", "choice", "label", "response", "text"):
+            value = response.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "answered in session"
+
+
+def handle_resolve_answered_question(data: dict) -> None:
+    """PostToolUse: close the mirrored ``DeferredQuestion`` once the user answers in-client (#3642).
+
+    The interactive arm of the router's ``handle_mirror_question_to_slack`` records
+    every question so it is answerable from Slack. That makes an in-client answer a
+    resolution the Slack side must see: without this the row would stay pending, keep
+    binding Slack replies, and be re-raised by the resurfacing side after the owner had
+    already answered. Matches on the harness ``tool_use_id`` — the same identifier the
+    capture stored — so it can never resolve a different question.
+
+    Crash-proof and best-effort, like every hook: an unavailable teatree, an unmatched
+    id, or an already-resolved row all degrade to doing nothing.
+    """
+    if data.get("tool_name") != "AskUserQuestion":
+        return
+    tool_use_id = str(data.get("tool_use_id", "")).strip()
+    if not tool_use_id:
+        return
+    try:
+        from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
+
+        if not bootstrap_teatree_django():
+            return
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+
+        row = DeferredQuestion.objects.filter(
+            tool_use_id=tool_use_id, answered_at__isnull=True, dismissed_at__isnull=True
+        ).first()
+        if row is not None:
+            row.apply_answer(_answer_text_from_tool_response(data), resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
+        return

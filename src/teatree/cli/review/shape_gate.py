@@ -36,6 +36,8 @@ forge-neutral — future GitHub PR support is a single-method extension
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
+from teatree.cli.review.guarded_read import guarded_read
+
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
 
@@ -54,6 +56,11 @@ def fetch_mr_author(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> str:
     The cache lookup is best-effort: a non-canonical API stub without
     the cache helpers degrades gracefully to an un-cached GET (the gate
     is still correct, just one extra GET per call).
+
+    A FAILED author read still returns ``""`` — failing closed here would break
+    every on-behalf review post and every existing test stub — but it goes through
+    :func:`~teatree.cli.review.guarded_read.guarded_read`, so the failure is logged
+    rather than silently reading as "not a colleague MR" (#3509).
     """
     cache_key = f"mr_author:{encoded_repo}:{mr}"
     get_cached = getattr(api, "_get_cached", None)
@@ -61,10 +68,12 @@ def fetch_mr_author(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> str:
         cached = get_cached(cache_key, _TTL_MR_AUTHOR)
         if cached is not None:
             return str(cached)
-    try:
-        data = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}")
-    except Exception:  # noqa: BLE001 — network/auth failure → fail-open
+    outcome = guarded_read(
+        f"the author of MR !{mr}", lambda: api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}"), neutral=None
+    )
+    if outcome.failed:
         return ""
+    data = outcome.value
     author = ""
     if isinstance(data, dict):
         raw_author: object = data.get("author")

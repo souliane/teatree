@@ -34,7 +34,7 @@ class VariantSummary:
     total_cost_usd: float
     #: Metered cost summed across the executed cells, split into the requested
     #: MAIN model (the headline comparison number) and the AUXILIARY background
-    #: (Claude Code's ``claude-haiku-4-5``). ``main + aux`` need NOT equal
+    #: (Claude Code's Haiku model). ``main + aux`` need NOT equal
     #: ``total_cost_usd`` exactly — the API's billed total can carry rounding /
     #: per-call fees the per-model split doesn't — so the billed total stays the
     #: headline and the split is the observability around it.

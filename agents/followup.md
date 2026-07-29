@@ -9,7 +9,7 @@ disallowedTools:
 skills:
   - rules
   - platforms
-  - followup
+  - checking
 ---
 
 # Followup Agent

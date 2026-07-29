@@ -11,11 +11,13 @@ FSM condition); the outer loop gains ZERO new merge authority.
 from teatree.core.models import OuterLoopExperiment
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 #: The standing umbrella issue every outer-loop experiment's synthetic ticket
 #: anchors under; the ``#outer-loop-experiment=<pk>`` fragment makes each unique
 #: while still resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url``.
-OUTER_LOOP_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
+#: Single-sourced from the ONE umbrella anchor the task sweep recognises (#3706).
+OUTER_LOOP_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
 _EXPERIMENT_KEY = "outer_loop_experiment_id"
 _TARGET_KEY = "outer_loop_target"

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,7 +30,7 @@ from teatree.core.backend_factory import (
     sentry_client_from_overlay,
     sharepoint_client_from_overlay,
 )
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.backend_protocols import BackendResolutionError, MessagingBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
@@ -661,3 +661,59 @@ def test_reset_clears_the_none_ttl_maps() -> None:
         reset_backend_caches()
         # After a reset the stale-None window is gone — the next call rebuilds.
         assert code_host_from_overlay("r") is not None
+
+
+# --- Account-switch self-heal: a /login switch must reset the caches ----------
+
+
+class TestAccountSwitchSelfHeal:
+    """A Claude ``/login`` switch self-resets the caches in long-lived processes.
+
+    The MCP server and loop worker never re-run the SessionStart switch detector,
+    so before this guard they kept serving the backend resolved under the *old*
+    account and dropped every owner DM silently. The cache-read path now
+    re-resolves the moment the live account fingerprint diverges from the one the
+    cache was populated under — no restart needed.
+    """
+
+    def test_messaging_re_resolves_after_account_switch(self) -> None:
+        fingerprint = {"value": "acct-A"}
+        first = MagicMock(spec=MessagingBackend)
+        second = MagicMock(spec=MessagingBackend)
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_messaging", side_effect=[first, second]) as build,
+        ):
+            assert messaging_from_overlay("acct") is first
+            assert messaging_from_overlay("acct") is first  # same account → served from cache, no rebuild
+            fingerprint["value"] = "acct-B"
+            assert messaging_from_overlay("acct") is second  # switch → cache reset → re-resolved
+        assert build.call_count == 2
+
+    def test_code_host_re_resolves_after_account_switch(self) -> None:
+        fingerprint = {"value": "acct-A"}
+        first = GitHubCodeHost(token="tok-A")
+        second = GitHubCodeHost(token="tok-B")
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_code_host", side_effect=[first, second]) as build,
+        ):
+            assert code_host_from_overlay("acct") is first
+            fingerprint["value"] = "acct-B"
+            assert code_host_from_overlay("acct") is second
+        assert build.call_count == 2
+
+    def test_unreadable_fingerprint_never_wipes_a_healthy_cache(self) -> None:
+        # An empty fingerprint means "cannot tell" (unreadable ~/.claude.json) and
+        # must never reset a working cache — otherwise a transient read failure
+        # would rebuild the backend on every call.
+        fingerprint = {"value": "acct-A"}
+        real = MagicMock(spec=MessagingBackend)
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_messaging", side_effect=[real]) as build,
+        ):
+            assert messaging_from_overlay("acct") is real
+            fingerprint["value"] = ""  # cannot tell
+            assert messaging_from_overlay("acct") is real  # cache held, not rebuilt
+        assert build.call_count == 1

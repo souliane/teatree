@@ -50,13 +50,12 @@ AGENT_BY_KIND: dict[str, str] = {
     # ``RedCardSignal`` row id so the orchestrator can stamp the filed
     # issue URL back onto the row via ``RedCardSignal.link_issue``.
     "red_card.signal": "t3:orchestrator",
-    # #1554: a newly-claimed auto-implement issue routes to the orchestrator
-    # as a MAKER-side kickoff — it starts the normal maker pipeline for the
-    # claimed issue. It issues no MergeClear and gains no new merge authority
-    # (the §17.4 maker≠checker boundary is untouched). Mirrored into the
-    # statusline below so the user sees the claimed issue without waiting on
-    # the agent.
-    "issue_implementer.claimed": "t3:orchestrator",
+    # #3634: a newly-admitted issue routes to the orchestrator as a MAKER-side
+    # kickoff — it starts the normal maker pipeline. It issues no MergeClear and
+    # gains no new merge authority (the §17.4 maker≠checker boundary is
+    # untouched). Mirrored into the statusline below so the user sees the
+    # admitted issue without waiting on the agent.
+    "issue_intake.admitted": "t3:orchestrator",
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
@@ -67,10 +66,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.dm": "action_needed",
     "slack.review_intent": "action_needed",
     "red_card.signal": "action_needed",
-    "assigned_issue.ready": "action_needed",
-    # #1554: a claimed auto-implement issue is in-flight maker work the user
-    # should see surfaced while the orchestrator picks it up.
-    "issue_implementer.claimed": "action_needed",
+    # #3634: an admitted issue is in-flight maker work the user should see
+    # surfaced while the orchestrator picks it up.
+    "issue_intake.admitted": "action_needed",
+    # #3841 board janitor. Emitted ONLY per APPLIED transition (a run that changed
+    # nothing is silent), so it is the record of cards teatree moved on its own — a
+    # completed action, not a request, hence in_flight rather than action_needed.
+    "board.reconciled": "in_flight",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
     "ticket.stale": "action_needed",
@@ -102,6 +104,14 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # #129 task-sweep — an orphaned (unverifiable) teatree task surfaces for
     # operator review; the completion path routes through the mechanical handler below.
     "task.orphaned": "action_needed",
+    # Directive 32's weekly skim: the question it records asks the owner which memories
+    # to promote and which to drop, so the signal IS a pending owner decision — the
+    # generic in_flight fallback would file it under work-in-progress instead.
+    "memory.skim_promotable": "action_needed",
+    # The recurring question digest exists BECAUSE the first posts (the in_flight
+    # ``deferred_question.mirrored`` above) did not get an answer, so the nag is the
+    # escalation and belongs where the owner looks for what they owe.
+    "deferred_question.resurfaced": "action_needed",
     # Only the CI-green-gate skips reach here (see is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
@@ -127,6 +137,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # action_needed so orphaned work is never silently green.
     "workstate.drift": "action_needed",
     "workstate.probe_error": "action_needed",
+    # #3658 owner-DM hygiene sweep. Emitted ONLY when the pass actually resolved
+    # something (a pass with nothing to do is silent), so it is the record of
+    # threads teatree closed on the owner's behalf — they must see that it
+    # happened rather than find questions silently gone. It reports a COMPLETED
+    # action, never a request, so it renders in ``in_flight`` rather than
+    # crowding ``action_needed``.
+    "dm_sweep.resolved": "in_flight",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -145,6 +162,11 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "outbound.",
     "review_nag.",
     "review_request_merge_react.",
+    # The review-DONE ack is the same shape as its merge-react sibling: the
+    # reaction IS the user-visible outcome, posted on the colleague's broadcast.
+    # Re-rendering it as a statusline row would duplicate a signal the user
+    # already sees in Slack, once per tick until the window closes.
+    "review_done_ack.",
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
@@ -188,10 +210,9 @@ DUAL_DISPATCH: frozenset[str] = frozenset(
         # #1130: the orchestrator runs AND we mirror the RED CARD into the
         # statusline so the user sees the pending corrective-action workflow.
         "red_card.signal",
-        # #1554: the orchestrator runs (maker-side kickoff) AND we mirror the
-        # claimed issue into the statusline so the user sees the in-flight
-        # auto-implement work.
-        "issue_implementer.claimed",
+        # #3634: the orchestrator runs (maker-side kickoff) AND we mirror the
+        # admitted issue into the statusline so the user sees the in-flight work.
+        "issue_intake.admitted",
         # #1295 cap D: the t3:debug agent runs AND we mirror the failed
         # PR into the statusline so the user sees the red MR even when
         # the ledger idempotency gate suppresses the agent dispatch on

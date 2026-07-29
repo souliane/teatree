@@ -44,6 +44,8 @@ Design choices:
 import re
 from typing import TYPE_CHECKING, NamedTuple, cast
 
+from teatree.cli.review.guarded_read import guarded_read
+
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
 
@@ -124,16 +126,20 @@ def _collect_added_lines_with_text(diff_text: str) -> dict[int, str]:
 
 
 def _fetch_file_diff(api: "GitLabHTTPClient", encoded_repo: str, mr: int, file: str) -> str:
-    """Return the unified diff for ``file`` in the MR, or ``""`` on any failure.
+    """Return the unified diff for ``file`` in the MR, or ``""`` when it cannot be read.
 
     Independent of :func:`teatree.cli.review.diff.fetch_file_diff` to keep
-    the failure mode purely fail-open — any error path returns ``""`` and
-    the gate proceeds to allow the post.
+    the failure mode fail-open — the gate proceeds to allow the post rather
+    than refuse every post whenever the forge is unreachable. The fail-open is
+    the caller's deliberate choice; the SILENCE was the bug (#3509), so the read
+    goes through :func:`~teatree.cli.review.guarded_read.guarded_read` and a
+    failure is logged rather than presented as a clean empty diff.
     """
-    try:
-        changes = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/changes?access_raw_diffs=true")
-    except Exception:  # noqa: BLE001 — fail-open on any network/auth failure
+    endpoint = f"projects/{encoded_repo}/merge_requests/{mr}/changes?access_raw_diffs=true"
+    outcome = guarded_read(f"the diff of MR !{mr}", lambda: api.get_json(endpoint), neutral=None)
+    if outcome.failed:
         return ""
+    changes = outcome.value
     if not isinstance(changes, dict):
         return ""
     files_raw = changes.get("changes")

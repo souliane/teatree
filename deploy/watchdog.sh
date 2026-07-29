@@ -15,12 +15,16 @@
 #      EXCLUDED (an empirical fact — `up -d --no-recreate` re-runs a completed
 #      init every pass, which would replay the heavy ~minute init on every tick),
 #      while a missing/failed init IS included so the init-failure outage recovers.
-#   2. `t3 doctor check --json` inside a live container — read the factory health,
+#   2. `t3 doctor check --json` inside the WORKER (the container sized for heavy
+#      work; see EXEC_SERVICES) — read the factory health,
 #      including the H24 self-heal detectors (dead containers, a free worker flock
 #      over overdue loop work, stranded headless tasks, stale timers, unrunnable
 #      interactive tasks, failed tasks on live tickets, a drifted runtime clone).
 #   3. On any red finding, DM the owner via `t3 teatree notify send`, keyed on the
-#      finding set so an ongoing outage does not re-spam every pass.
+#      finding set so an ongoing outage does not re-spam every pass. Three of those
+#      findings — a free worker flock, a down slack-listener, a clone behind
+#      origin — are what a ROLLING DEPLOY looks like mid-swap, so they are gated on
+#      the deploy-awareness block below; every other finding pages as before.
 #
 # Safe by construction: the ONLY mutating docker op is `up -d --no-recreate`
 # (idempotent, never destructive, never recreates a running container). The
@@ -35,8 +39,18 @@ OVERLAY="${TEATREE_WATCHDOG_OVERLAY:-teatree}"
 INTERVAL="${TEATREE_WATCHDOG_INTERVAL:-300}"
 PASS_TIMEOUT="${TEATREE_WATCHDOG_PASS_TIMEOUT:-300}"
 INIT_SERVICE="${TEATREE_WATCHDOG_INIT_SERVICE:-teatree-init}"
-# Services to `exec` the read commands in (first reachable one wins).
-EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-admin teatree-worker}"
+# Services to `exec` the read commands in (first reachable one wins). The WORKER
+# leads (#3651): `t3 doctor check --json` boots Django, scans the DB and makes live
+# third-party HTTP round-trips — measured at 380 MiB peak, which under the admin's
+# then-512m cap (257 MiB idle just serving the dashboard) left ~130 MiB of headroom
+# and restarted the admin on every pass. The admin cap is now 2g, but the worker is
+# still the container sized for heavy work, so nothing recurring competes with
+# gunicorn; the admin stays the fallback so a down worker never blinds the watchdog.
+EXEC_SERVICES="${TEATREE_WATCHDOG_EXEC_SERVICES:-teatree-worker teatree-admin}"
+# Bounded retry for a probe that could not RUN because its target was mid-restart or
+# not yet up — a transient, distinct from a completed run that returned no verdict.
+DOCTOR_RETRIES="${TEATREE_WATCHDOG_DOCTOR_RETRIES:-3}"
+DOCTOR_RETRY_DELAY="${TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY:-15}"
 # Services restarted when init has already completed (init excluded — see header).
 read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatree-admin teatree-slack-listener teatree-watchdog}"
 
@@ -45,11 +59,29 @@ read -ra APP_SERVICES <<<"${TEATREE_WATCHDOG_APP_SERVICES:-teatree-worker teatre
 # temp is routed to disk (/var/tmp) by the entrypoint + settings template, but a
 # crashed/abandoned run can still leave pytest/uv/claude scratch behind that grows
 # unbounded over weeks — the periodic half of the tmpfs-fill guard.
-TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-worker teatree-admin}"
+TEMP_TRIM_SERVICES="${TEATREE_WATCHDOG_TEMP_TRIM_SERVICES:-teatree-admin teatree-worker}"
 TEMP_TRIM_ROOTS="${TEATREE_WATCHDOG_TEMP_TRIM_ROOTS:-/var/tmp /tmp}"
 TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
 
+# Deploy-awareness (#3732). deploy.sh holds this host flock for the whole
+# convergence (path-identity mounted read-only into this container, see
+# docker-compose.yml); the recreate window is the grace after a container was
+# CREATED, one watchdog interval by default; the pending-state file carries the
+# two-strikes ledger across passes.
+DEPLOY_LOCK="${TEATREE_WATCHDOG_DEPLOY_LOCK:-${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}}"
+DEPLOY_RECREATE_WINDOW="${TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW:-$INTERVAL}"
+DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-watchdog-deploy-sensitive.state}"
+
+# Re-surface ledger: "<episode> <digest>" of the LAST observed red finding set. The
+# episode counts green→red transitions, so a finding set that CLEARS and later returns
+# is a new incident rather than a repeat of its own pre-clear key.
+RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-/var/tmp/teatree-watchdog-red.state}"
+
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
+
+# The UTC day the DM keys bucket on — the deliberate long re-surface interval. Overridable
+# so the multi-day re-surface behaviour is testable without waiting a day.
+day_bucket() { printf '%s' "${TEATREE_WATCHDOG_DAY_BUCKET:-$(date -u +%Y%m%d)}"; }
 
 compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
 
@@ -122,22 +154,62 @@ compose_states_b64() {
 # made the red-findings DM path below dead code). Reachability is probed
 # separately (a trivial `exec ... true`); only a genuinely unreachable service
 # falls through to the next one. Returns 0 when a service was reached (DOCTOR_RAW
-# set, possibly empty), 125 when NO exec service could be reached at all.
-run_doctor() {
-  local svc states_b64
+# set, possibly empty), 125 when NO exec service could be reached at all. Either
+# way DOCTOR_ERR carries the daemon's stderr, which run_doctor classifies.
+_doctor_attempt() {
+  local svc states_b64 err_file probe_err
   DOCTOR_RAW=""
+  DOCTOR_ERR=""
   states_b64="$(compose_states_b64)"
+  err_file="$(mktemp)"
   for svc in $EXEC_SERVICES; do
-    if compose exec -T "$svc" true >/dev/null 2>&1; then
+    probe_err="$(compose exec -T "$svc" true 2>&1 >/dev/null)" && {
       # `|| true`: doctor exits non-zero on red findings; keep its stdout, drop
       # the exit code (set -e must not abort, and the code is NOT the signal).
       # `-e TEATREE_DOCTOR_COMPOSE_PS`: hand the socket-only container states to the
       # doctor's compose-stack detector, which cannot reach the daemon itself.
-      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>/dev/null || true)"
+      DOCTOR_RAW="$(compose exec -T -e "TEATREE_DOCTOR_COMPOSE_PS=$states_b64" "$svc" t3 doctor check --json 2>"$err_file" || true)"
+      DOCTOR_ERR="$(cat "$err_file")"
+      rm -f "$err_file"
+      return 0
+    }
+    DOCTOR_ERR="$DOCTOR_ERR$probe_err"$'\n'
+  done
+  rm -f "$err_file"
+  return 125
+}
+
+# A daemon refusal to exec into a container that is restarting / not (yet) running.
+# This is the target being momentarily UNAVAILABLE, never a statement about doctor.
+_is_transient_exec_error() {
+  case "$1" in
+    *"is restarting"* | *"is not running"* | *"is paused"* | *"No such container"* | *"not running"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Run the doctor probe, retrying a bounded number of times while the only failure is
+# a transient target unavailability. Returns 0 when a run COMPLETED (DOCTOR_RAW set,
+# possibly empty — an empty completed run is RED), 125 when no exec service could be
+# reached for a non-transient reason, and 126 when the target stayed unavailable for
+# every attempt (a transient the caller must NOT page on).
+run_doctor() {
+  local attempt=1 rc
+  while :; do
+    _doctor_attempt && rc=0 || rc=$?
+    if [ "$rc" -eq 0 ] && { [ -n "$DOCTOR_RAW" ] || ! _is_transient_exec_error "$DOCTOR_ERR"; }; then
       return 0
     fi
+    if [ "$rc" -ne 0 ] && ! _is_transient_exec_error "$DOCTOR_ERR"; then
+      return "$rc"
+    fi
+    if [ "$attempt" -ge "$DOCTOR_RETRIES" ]; then
+      return 126
+    fi
+    log "doctor probe target unavailable (attempt $attempt/$DOCTOR_RETRIES) — retrying in ${DOCTOR_RETRY_DELAY}s"
+    attempt=$((attempt + 1))
+    sleep "$DOCTOR_RETRY_DELAY"
   done
-  return 125
 }
 
 # Trim ONLY well-known stale scratch (pytest / uv / claude) older than the age
@@ -159,6 +231,152 @@ trim_stale_temp() {
   log "stale-temp trim swept ${TEMP_TRIM_SERVICES// /, } (>${TEMP_TRIM_MIN_AGE_MIN}min under ${TEMP_TRIM_ROOTS// /, })"
 }
 
+# The finding's deploy-sensitive class token, non-zero when it is not one. Keyed on
+# the class rather than the message text: the clone-behind count changes between
+# passes, so a text-keyed ledger could never match two observations of it.
+#
+# The patterns are deliberately narrow. A loose `holds the flock` would also swallow
+# the INVERSE finding — "the worker holds the flock but these loops are not
+# advancing" — a wedged worker, which is a real outage that must page on sight. A
+# wording drift here un-gates a finding (back to a false page), never gates a real
+# outage: the safe direction.
+_deploy_sensitive_token() {
+  case "$1" in
+    *"no loop worker holds the flock"*) printf 'worker-flock-not-held' ;;
+    *"slack-listener receiver is DOWN"*) printf 'slack-listener-down' ;;
+    *"commit(s) behind origin/"*) printf 'clone-behind-origin' ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when deploy.sh's single-convergence flock is held. READ-ONLY by construction:
+# it matches the lock file's device+inode against /proc/locks and never opens the
+# file for locking. A probe that briefly ACQUIRED the lock would make a deploy
+# starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
+# that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
+# (lock invisible from this container, /proc/locks unreadable, macOS host); the
+# caller then falls back to the recreation signal, so a probe that cannot run fails
+# toward alerting rather than toward silence.
+deploy_lock_held() {
+  local fields maj min ino
+  [ -r /proc/locks ] || return 1
+  fields="$(stat -c '%Hd %Ld %i' "$DEPLOY_LOCK" 2>/dev/null)" || return 1
+  read -r maj min ino <<<"$fields"
+  [ -n "${ino:-}" ] || return 1
+  grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
+}
+
+# True when a stack container was CREATED within the grace window — the fingerprint
+# of the image swap. Created (never started) is the discriminating field: a
+# crash-looping container restarts without being recreated, so a genuine outage is
+# never mistaken for a deploy.
+#
+# The timestamp comes from `inspect .Created` (RFC3339 UTC, e.g.
+# 2026-07-25T09:01:41.683288764Z), NEVER from `ps --format {{.CreatedAt}}`, whose
+# local-zone abbreviation form ("… +0200 CEST") GNU date REFUSES to parse on a
+# tzdata-less image — which this one is, so every sample would silently fail to
+# parse and the probe would never fire on the box.
+stack_recently_recreated() {
+  local now created epoch
+  local -a ids
+  now="$(date -u +%s 2>/dev/null)" || return 1
+  mapfile -t ids < <(docker ps --all --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}' 2>/dev/null)
+  [ "${#ids[@]}" -gt 0 ] || return 1
+  while IFS= read -r created; do
+    [ -n "$created" ] || continue
+    if ! epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
+      log "unreadable container creation time ('$created') — not treating the stack as mid-deploy"
+      continue
+    fi
+    if [ "$((now - epoch))" -lt "$DEPLOY_RECREATE_WINDOW" ]; then
+      return 0
+    fi
+  done < <(docker inspect --format '{{.Created}}' "${ids[@]}" 2>/dev/null)
+  return 1
+}
+
+deploy_in_flight() {
+  if deploy_lock_held; then
+    log "deploy lock $DEPLOY_LOCK is held — a convergence is in flight"
+    return 0
+  fi
+  if stack_recently_recreated; then
+    log "a stack container was created <${DEPLOY_RECREATE_WINDOW}s ago — the image swap is still settling"
+    return 0
+  fi
+  return 1
+}
+
+# The re-surface ledger, "<episode> <digest>". Absent/unreadable reads as episode 0 with
+# no digest — i.e. "the last pass was green", so a red pass still pages.
+_read_red_state() { cat "$RED_STATE" 2>/dev/null || printf '0'; }
+
+# Best-effort, exactly like the deploy-sensitive ledger: losing it costs one extra DM,
+# never the supervisor.
+_write_red_state() {
+  printf '%s %s' "$1" "$2" >"$RED_STATE" 2>/dev/null ||
+    log "could not persist the re-surface ledger at $RED_STATE"
+}
+
+# Record that the box is red with finding digest $1, and echo the current episode.
+_observe_red() {
+  local episode digest
+  read -r episode digest <<<"$(_read_red_state)"
+  _write_red_state "${episode:-0}" "$1"
+  printf '%s' "${episode:-0}"
+}
+
+# Announce ONCE that a previously-reported finding set has cleared, and open the next
+# episode. Silent when the last pass was already green (nothing to un-say). The episode
+# bump is what lets the SAME finding set page again if it returns: without it the
+# returning set would reuse its own pre-clear key and the notify seam would swallow it.
+_announce_findings_cleared() {
+  local episode digest
+  read -r episode digest <<<"$(_read_red_state)"
+  [ -n "${digest:-}" ] || return 0
+  printf 'teatree watchdog: the red findings previously reported (%s) have CLEARED — the box is green again.' "$digest" \
+    | notify_owner "watchdog:cleared:$digest:$episode"
+  _write_red_state "$((${episode:-0} + 1))" ""
+}
+
+_read_pending_findings() { cat "$DEPLOY_PENDING_STATE" 2>/dev/null || true; }
+
+# Best-effort: an unwritable state root must never retire the only supervisor.
+# Losing the ledger costs one extra pass before a persisting finding pages.
+_write_pending_findings() {
+  printf '%s' "$1" >"$DEPLOY_PENDING_STATE" 2>/dev/null ||
+    log "could not persist the deploy-sensitive ledger at $DEPLOY_PENDING_STATE"
+}
+
+# Emit (stdout) the FAIL messages that page THIS pass, reading all of them on stdin
+# one per line. A deploy-sensitive finding is dropped while a convergence is in
+# flight, and otherwise pages only on a SECOND consecutive observation — so a swap
+# window that ended moments ago cannot page either, while a worker down over two
+# clean passes pages exactly as it did before. Log lines go to stderr, never into
+# the DM body.
+_findings_that_page() {
+  local in_flight=false previous observed="" message token
+  deploy_in_flight && in_flight=true
+  previous="$(_read_pending_findings)"
+  while IFS= read -r message; do
+    [ -n "$message" ] || continue
+    if ! token="$(_deploy_sensitive_token "$message")"; then
+      printf '%s\n' "$message"
+      continue
+    fi
+    if [ "$in_flight" = true ]; then
+      log "deploy in flight — skipping $token this pass"
+      continue
+    fi
+    observed="$observed$token"$'\n'
+    case "$previous" in
+      *"$token"*) printf '%s\n' "$message" ;;
+      *) log "first observation of $token with no deploy in flight — re-probing next pass before paging" ;;
+    esac
+  done
+  _write_pending_findings "$observed"
+}
+
 # The three hard-outage alarms below key on a DAILY bucket (`%Y%m%d`), not an
 # hourly one: `notify_user` dedups on the key, so an hourly bucket re-DM'd the
 # identical "stack down" alarm every hour (13+ overnight copies observed). A
@@ -176,7 +394,16 @@ run_pass() {
   # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
   trim_stale_temp
 
-  if ! run_doctor; then
+  local doctor_rc
+  run_doctor && doctor_rc=0 || doctor_rc=$?
+  if [ "$doctor_rc" -eq 126 ]; then
+    # The probe could not RUN: its target was restarting / not running for every
+    # attempt. That is a transient (#3651) — a retry is the whole remedy, and it
+    # must never page the owner the way a completed-but-silent doctor does.
+    log "doctor probe target unavailable after $DOCTOR_RETRIES attempts — transient, not paging"
+    return 0
+  fi
+  if [ "$doctor_rc" -ne 0 ]; then
     # No exec service could be reached at all — a genuine transport failure, the
     # ONLY case that is truly "unreachable" (distinct from doctor running and
     # returning a red verdict, which is handled below).
@@ -196,7 +423,7 @@ run_pass() {
     # is itself a RED condition, not a healthy pass (the old code treated it as
     # healthy and stayed silent). DM at most once per day so a persistent breakage is seen.
     log "doctor reachable but produced no JSON verdict — treating as RED"
-    printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-admin`.' "$PROJECT" \
+    printf 'teatree watchdog: `t3 doctor check --json` ran but produced NO parseable verdict — doctor may be crashing on the box. SSH in and run `t3 doctor check` in `docker compose -p %s exec teatree-worker`.' "$PROJECT" \
       | notify_owner "watchdog:doctor-no-verdict:$(date -u +%Y%m%d)"
     return 0
   fi
@@ -204,14 +431,33 @@ run_pass() {
   case "$json" in
     *'"ok": true'*)
       log "doctor: all green"
+      # "Two CONSECUTIVE passes": a green pass resets the two-strikes ledger.
+      _write_pending_findings ""
+      _announce_findings_cleared
       return 0
       ;;
   esac
 
-  # Red: build the DM body (FAIL findings) and a stable idempotency key from them.
-  local body key
-  body="$(printf '%s' "$json" | _extract_fail_body)"
-  key="watchdog:red:$(printf '%s' "$body" | _stable_key)"
+  # Red: build the DM body from the FAIL messages and the idempotency key from their
+  # volatility-normalized IDENTITIES, which is what makes "same findings as last pass"
+  # cheap and exact. Keying on the rendered body instead re-paged an unchanged condition
+  # on every pass, because several FAIL lines carry a counter that ticks between passes.
+  local fails body digest key
+  fails="$(printf '%s' "$json" | _fail_messages)"
+  if [ -n "$fails" ]; then
+    fails="$(printf '%s\n' "$fails" | _findings_that_page)"
+    if [ -z "$fails" ]; then
+      log "every red finding was deploy-sensitive and gated this pass — not paging"
+      return 0
+    fi
+    body="$(printf '%s\n' "$fails" | cut -f2- | sed 's/^/- /')"
+    digest="$(printf '%s\n' "$fails" | cut -f1 | sort -u | _stable_key)"
+  else
+    # Nothing to classify — a red verdict is never silently dropped.
+    body="$(_generic_fail_body)"
+    digest="$(printf '%s' "$body" | _stable_key)"
+  fi
+  key="watchdog:red:$digest:$(_observe_red "$digest"):$(day_bucket)"
   log "doctor RED — DMing owner"
   printf 'teatree watchdog found red findings on the box:\n\n%s\n\nThe stack was already `up -d`-restarted this pass; SSH in if it persists.' "$body" \
     | notify_owner "$key"
@@ -229,22 +475,36 @@ run_loop() {
   done
 }
 
-# Extract the FAIL messages from the doctor JSON (read on stdin). Uses python3
-# (present on the box) and degrades to a generic body when it is absent. Uses
-# `python3 -c` rather than a `-` heredoc: a `python3 - <<'PY'` feeds the heredoc
-# as the PROGRAM on stdin, leaving `sys.stdin` at EOF so the piped verdict is
-# never read — the body would always be the generic fallback.
-_extract_fail_body() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c '
+# Extract the FAIL findings from the doctor JSON (read on stdin) as `<identity>\t<message>`
+# lines, so each can be classified for deploy-sensitivity (on the message) and digested
+# for the DM key (on the identity). `identity` is the doctor's volatility-normalized form
+# — see teatree.cli.doctor.finding_digest — and falls back to the message itself, so a
+# rolling deploy where the worker still runs an older doctor keeps paging normally rather
+# than going silent. Empty when there are no FAILs or python3 is absent; the caller then
+# falls back to `_generic_fail_body`. Uses `python3 -c` rather than a `-` heredoc: a
+# `python3 - <<'PY'` feeds the heredoc as the PROGRAM on stdin, leaving `sys.stdin` at EOF
+# so the piped verdict is never read — every body would be the generic fallback.
+_fail_messages() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 -c '
 import json, sys
+def flat(text):
+    return " ".join(str(text).split())
 try:
     data = json.load(sys.stdin)
-    fails = [f["message"] for f in data.get("findings", []) if f.get("level") == "FAIL"]
 except Exception:
-    fails = []
-print("\n".join(f"- {m}" for m in fails) if fails else "- (see `t3 doctor check` on the box for detail)")
+    sys.exit(0)
+for f in data.get("findings", []):
+    if f.get("level") == "FAIL":
+        message = flat(f.get("message", ""))
+        print(flat(f.get("identity") or message) + "\t" + message)
 '
+}
+
+# The body for a red verdict whose FAIL lines could not be extracted.
+_generic_fail_body() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "- (see \`t3 doctor check\` on the box for detail)"
   else
     printf '%s' "- one or more red findings (install python3 on the box for detail, or run \`t3 doctor check\`)"
   fi

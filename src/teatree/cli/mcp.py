@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 import typer
 
+from teatree.mcp.serve_lifecycle import reap_orphaned_servers, start_parent_death_watch
 from teatree.utils.django_bootstrap import ensure_django
 
 mcp_app = typer.Typer(
@@ -47,7 +48,15 @@ def open_reconnect_targets(reconnect_urls: list[str], *, opener: Callable[[str],
 
 @mcp_app.command()
 def serve() -> None:
-    """Run the structured-search MCP server over stdio (blocks until stdin closes)."""
+    """Run the structured-search MCP server over stdio (blocks until stdin closes).
+
+    Every start first reaps orphaned predecessors (servers reparented to PID 1 —
+    their client is gone, they can never serve again) and arms the parent-death
+    watchdog so THIS server exits even when a leaked fd keeps its stdin from
+    ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
+    """
+    reap_orphaned_servers()
+    start_parent_death_watch()
     ensure_django()
 
     from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred: keeps CLI startup light

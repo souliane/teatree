@@ -249,18 +249,40 @@ authoritative planes:
 - **ENABLED set** (default `inbox`) → `t3 loop enable <name> --emergency`, the one
   handle that clears a stale hold and sets `Loop.enabled=True`, so a box whose
   `inbox` an older image disabled recovers. Idempotent.
-- **DISABLED set** (default `review,directive_loop`) → `t3 loop override <name> off`,
-  the sanctioned NON-emergency forced-off that replaces the deprecated
+- **DISABLED set** (default `review`) → `t3 loop override <name> off`, the
+  sanctioned NON-emergency forced-off that replaces the deprecated
   `t3 loop disable`. Forced-off beats the preset mask and the base config, so the
-  colleague/human-facing loops stay off here under any mode. Idempotent.
+  colleague-facing `review` loop stays off here under any mode. Idempotent.
+- **OWNER-INTAKE loops are never forced off** (`t3 loop intake-loops` —
+  `directive_loop` / `dispatch` / `inbox`). They interpret the owner's captured
+  directives and deliver deferred owner questions; `autonomous_away` means the
+  human is unreachable *now*, so that intent must QUEUE for later, not be dropped
+  unread. Any intake loop listed in `TEATREE_DISABLED_LOOPS` is pruned (with a
+  warning) before the DISABLED set is applied, so a redeploy can never re-mask it.
 
 `TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` (comma-separated) override the
 defaults; an **empty** value acts on nothing. Every name in both lists is
 validated against the registered mini-loops first, so a typo fails the deploy
-loudly. Set them in the box env file (`teatree.env`) to change the split. Because
-the deploy workflow rewrites `teatree.env` from repository variables on every run,
-a persistent override belongs in that workflow's env-file writer (the
-`TEATREE_ENABLED_LOOPS` / `TEATREE_DISABLED_LOOPS` lines), not a hand-edit on the box.
+loudly. **The repository variables are the authority** — the deploy workflow
+rewrites `teatree.env` from them on every run, so a hand-edit on the box is
+reverted by the next deploy:
+
+```bash
+gh variable set TEATREE_DISABLED_LOOPS --repo <owner>/<repo> --body review
+gh variable delete TEATREE_DISABLED_LOOPS --repo <owner>/<repo>   # restore the default
+```
+
+**Setting the variable REPLACES the default — it does not extend it.** Declaring
+`TEATREE_DISABLED_LOOPS=inbox,directive_loop` masks neither name (both are
+owner-intake, and `inbox` also sits in the ENABLED set) *and* drops the `review`
+default, so the colleague-facing loop is no longer forced off either. When every
+declared name is pruned that way the entrypoint prints one consolidated net-effect
+line naming the displaced default, and
+`teatree.config.fleet_policy.fleet_policy_contradiction` raises a
+`fleet-loop-policy-contradiction` health WARNING that keeps the chip yellow until
+the variable is fixed — deploy stderr scrolls away, a `KnownIssue` row does not.
+Init still warns rather than exiting: crash-looping on the config the box already
+shipped would turn a mis-mask into an outage.
 
 ## One-time bootstrap (on the box)
 
@@ -554,10 +576,53 @@ service is down — exactly the outage it exists to repair.
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the
    findings are visible in the watchdog's own container logs and `t3 doctor check`.)
+   Three of those findings are **deploy-gated** — see below.
 
 The DM leaves the box via a `docker compose exec` inside a *live app container*,
 not from the watchdog itself — the watchdog runs `network_mode: none`, so the
 docker socket is its only channel.
+
+### Deploy-awareness (#3732)
+
+`deploy.sh` fast-forwards the checkout and swaps the image, which **recreates**
+the worker and the slack-listener. A watchdog pass landing in that window samples
+a healthy rolling deploy and used to DM it as an outage — one red DM per merge,
+which on a busy day makes a genuine freeze indistinguishable from routine noise.
+
+Exactly three findings are what a deploy manufactures, so exactly three are gated:
+**worker-flock-not-held**, **slack-listener-down**, **clone-behind-origin**. Every
+other finding pages on the first observation, unchanged.
+
+A convergence is detected two ways, either sufficient:
+
+- **The deploy flock.** `deploy.sh` holds `${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}`
+  for its whole run. The watchdog probes it **read-only** — it matches the file's
+  device+inode against `/proc/locks` and never opens it for locking, because a
+  probe that briefly *acquired* the lock would make a deploy starting in that
+  instant see it as busy, and `deploy.sh` exits 0 on a busy lock (a silently
+  skipped deploy). The host `/tmp` is mounted read-only at `/host-tmp` so the lock
+  is visible; without that mount the probe degrades to the signal below.
+- **Very-recent container creation**, read from the docker socket. `Created` (not
+  started) is the discriminating field: a crash-looping container restarts without
+  being recreated, so a genuine outage never reads as a deploy. The grace window is
+  one watchdog interval. The timestamp comes from `inspect --format '{{.Created}}'`
+  (RFC3339 UTC) and never `ps --format '{{.CreatedAt}}'`, whose local-zone
+  abbreviation (`… +0200 CEST`) GNU date refuses to parse on this tzdata-less image
+  — every sample would fail to parse and the probe would silently never fire.
+
+Then:
+
+| Situation | Behaviour |
+| --- | --- |
+| deploy in flight | the three findings are skipped for this pass (logged with the reason) |
+| no deploy, first observation | recorded in a small state file, **not** paged — a swap window that just ended cannot page either |
+| no deploy, second consecutive observation | **paged**, exactly as before |
+| any other finding | paged immediately, deploy or not |
+
+No blanket time-based mute, and the findings are never silenced outright: a worker
+down over two clean passes still reaches the owner. A green pass resets the count,
+and a deploy pass is not a strike. If the deploy probe itself errors it reports "no
+deploy", so a broken probe fails toward alerting rather than toward silence.
 
 ### What it does — and does not — survive
 
@@ -569,6 +634,7 @@ same-daemon supervisor can cover, and is honest about the two it cannot:
 | `teatree-init` crash-loop (the recorded 7h freeze) | ✅ | next pass's gated `up -d --no-recreate` re-runs the failed init; while the root cause persists the doctor step reddens and DMs the owner |
 | an app service crashed / exited | ✅ | `up -d --no-recreate` restarts it |
 | the **watchdog itself** crashed | ✅ | `restart: always` — the daemon relaunches it in seconds |
+| the probe's target is mid-restart when the pass runs | ✅ | the daemon's "container is restarting" refusal is classified as transient and retried (`TEATREE_WATCHDOG_DOCTOR_RETRIES`); it never pages the owner. A run that COMPLETED but emitted no verdict is still RED and still DMs |
 | the daemon restarted (e.g. host reboot with Docker enabled on boot) | ✅ | `restart: always` brings it back with the stack |
 | `docker compose down` (deliberate teardown) | ❌ (intentional) | the operator took the stack down on purpose; nothing should fight that |
 | the Docker **daemon** is dead | ❌ | its supervisor is gone; an external uptime check is the backstop |
@@ -590,9 +656,14 @@ docker compose -p teatree logs -f teatree-watchdog
 | `TEATREE_WATCHDOG_PASS_TIMEOUT` | `300` | hard cap on a single pass; a wedged pass is killed and the loop continues |
 | `TEATREE_WATCHDOG_PROJECT` | `teatree` | the compose project the watchdog drives |
 | `TEATREE_WATCHDOG_OVERLAY` | `teatree` | the overlay used for the owner DM |
-| `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-admin teatree-worker` | services (first reachable wins) to run the doctor/DM commands in |
+| `TEATREE_WATCHDOG_EXEC_SERVICES` | `teatree-worker teatree-admin` | services (first reachable wins) to run the doctor/DM commands in — the worker leads because the health probe is heavy (#3651) |
+| `TEATREE_WATCHDOG_DOCTOR_RETRIES` | `3` | attempts when the probe cannot run because its target is restarting / not running |
+| `TEATREE_WATCHDOG_DOCTOR_RETRY_DELAY` | `15` | seconds between those retries |
 | `TEATREE_WATCHDOG_APP_SERVICES` | `teatree-worker teatree-admin teatree-slack-listener teatree-watchdog` | services restarted when init has already completed (init excluded) |
 | `TEATREE_WATCHDOG_INIT_SERVICE` | `teatree-init` | the one-shot init service the pass gates on |
+| `TEATREE_WATCHDOG_DEPLOY_LOCK` | `/host-tmp/teatree-deploy.lock` (compose) | deploy.sh's convergence flock, as seen from this container — the deploy-in-flight probe |
+| `TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW` | `$TEATREE_WATCHDOG_INTERVAL` | seconds after a container was *created* that still count as the image swap settling |
+| `TEATREE_WATCHDOG_DEPLOY_PENDING_STATE` | `/var/tmp/teatree-watchdog-deploy-sensitive.state` | the two-strikes ledger for the deploy-gated findings |
 
 It needs `python3` in the image for the richest DM body (baked into the image);
 without it the DM degrades to a generic "red findings" body.

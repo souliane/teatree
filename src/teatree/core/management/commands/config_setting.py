@@ -24,48 +24,41 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 """
 
 import json
-from collections.abc import Callable
+import sys
+import tomllib
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
+from django.core.exceptions import ValidationError
 from django_typer.management import TyperCommand, command
 
-from teatree.config import COLD_HOOK_SETTINGS, FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings
+from teatree.config import (
+    ALL_KNOWN_CONFIG_SETTINGS,
+    COLD_HOOK_SETTINGS,
+    FEATURE_FLAGS,
+    effective_default,
+    get_effective_settings,
+)
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
-from teatree.core.config_migration import export_db_to_toml
+from teatree.config.setting_groups import group_outline
+from teatree.config.stored_row_health import stored_row_note
+from teatree.config.write_validation import ConfigWriteError, validate_config_write
+from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
-from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 
-# Every key ``config_setting`` knows: the ``UserSettings`` DB partition, the
-# injected registries (``overlays`` / ``e2e_repos``), the cold-read keys (codename
-# lists, ``[agent]`` spawn tables, tunables), and the pre-Django cold-hook gate
-# flags / budgets (``COLD_HOOK_SETTINGS``, e.g. ``out_of_band_merge_gate_enabled``).
-# Their union is the SINGLE known-key set shared by get/list/set/clear: every key
-# ``list`` can display is one ``get`` resolves and ``set``/``clear`` accept, and an
-# admin still cannot stash a row no reader would consult.
-_ALLOWED_SETTINGS: dict[str, Callable[[Any], Any]] = {
-    **OVERLAY_OVERRIDABLE_SETTINGS,
-    **REGISTRY_SETTINGS,
-    **COLD_SETTINGS,
-    **{key: setting.parse for key, setting in COLD_HOOK_SETTINGS.items()},
-}
-
-# Sentinel for "no known code default" — a registry/cold key that is not a
-# ``UserSettings`` field. It never equals a real seed value, so a seed of such a
-# key is always written rather than mistaken for a redundant code-default seed.
-_NO_CODE_DEFAULT: object = object()
+# Every key ``config_setting`` knows — the SINGLE known-key set shared by
+# get/list/set/clear AND the MCP ``config_setting_get`` read tool
+# (``teatree.config.known_settings``): every key ``list`` can display is one
+# ``get`` resolves and ``set``/``clear`` accept, and an admin still cannot stash
+# a row no reader would consult.
+_ALLOWED_SETTINGS = ALL_KNOWN_CONFIG_SETTINGS
 
 _OverlayOption = Annotated[
     str,
     typer.Option("--overlay", help="Overlay name to scope the row to; omit for the global scope (every overlay)."),
 ]
-
-
-def _scope_label(scope: str) -> str:
-    """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
-    return "global" if not scope else f"overlay {scope!r}"
 
 
 def _flag_suffix(key: str) -> str:
@@ -78,18 +71,14 @@ def _flag_suffix(key: str) -> str:
     return f"  {trailer}" if trailer else ""
 
 
-def _code_default(key: str) -> object:
-    """The pure CODE default for *key* — the ``UserSettings`` field default.
+def _stored_row_suffix(key: str) -> str:
+    """A leading-space ``[retired …]`` / ``[internal state …]`` trailer, or ``""``.
 
-    A bare ``UserSettings()`` carries the dataclass field defaults with NO env or
-    DB layer applied, so this is the value a setting resolves to when nothing
-    overrides it. Returns :data:`_NO_CODE_DEFAULT` when *key* is not a
-    ``UserSettings`` field (a registry/cold key), so the seeder never mistakes a
-    non-``UserSettings`` seed for a redundant code-default write.
+    So a stored row no live setting declaration owns can never be read as a live
+    control — the harm in souliane/teatree#3862.
     """
-    from teatree.config.settings import UserSettings  # noqa: PLC0415 — deferred: heavy config import
-
-    return getattr(UserSettings(), key, _NO_CODE_DEFAULT)
+    note = stored_row_note(key)
+    return f"  {note}" if note else ""
 
 
 class Command(TyperCommand):
@@ -125,10 +114,9 @@ class Command(TyperCommand):
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        parser = _ALLOWED_SETTINGS[key]
         try:
-            canonical = parser(parsed)
-        except (ValueError, TypeError, AttributeError) as exc:
+            canonical = validate_config_write(key, parsed)
+        except ConfigWriteError as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         # Persist the CANONICAL parsed value, not the raw user value, so the DB
@@ -138,10 +126,18 @@ class Command(TyperCommand):
         # type — scalar, list, or a ``StrEnum`` (which a ``JSONField`` persists as
         # its string value) — so the parsed value round-trips through the store
         # and the read tier re-coerces it to the same value.
-        ConfigSetting.objects.set_value(key, canonical, scope=overlay)
+        try:
+            ConfigSetting.objects.set_value(key, canonical, scope=overlay)
+        except ValidationError as exc:
+            # A coupled-key inconsistency (#3688) — e.g. an agent_harness_provider
+            # no resulting agent_harness would accept at dispatch. Refuse loudly at
+            # write time, leaving the store untouched, instead of a fleet-wide
+            # repair-halt flood on every later dispatch.
+            self.stderr.write(f"  refusing inconsistent config for {key!r}: {exc.messages[0]}")
+            raise SystemExit(2) from exc
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
-        self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]{_flag_suffix(key)}")
+        self.stdout.write(f"  set {key} = {stored!r}  [{scope_label(overlay)}]{_flag_suffix(key)}")
 
     @command()
     def seed(
@@ -172,22 +168,21 @@ class Command(TyperCommand):
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        parser = _ALLOWED_SETTINGS[key]
         try:
-            canonical = parser(parsed)
-        except (ValueError, TypeError, AttributeError) as exc:
+            canonical = validate_config_write(key, parsed)
+        except ConfigWriteError as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         outcome = ConfigSetting.objects.seed(
             key,
             canonical,
-            code_default=_code_default(key),
+            code_default=effective_default(key),
             seeded_by=seeded_by,
             scope=overlay,
         )
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         self.stdout.write(
-            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{_scope_label(overlay)}]{_flag_suffix(key)}"
+            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{scope_label(overlay)}]{_flag_suffix(key)}"
         )
 
     @command()
@@ -204,20 +199,33 @@ class Command(TyperCommand):
         silent.
         """
         if ConfigSetting.objects.clear(key, scope=overlay):
-            self.stdout.write(f"  cleared DB override for {key}  [{_scope_label(overlay)}]")
+            self.stdout.write(f"  cleared DB override for {key}  [{scope_label(overlay)}]")
             return
-        self.stderr.write(f"  no DB override row for {key}  [{_scope_label(overlay)}]")
+        self.stderr.write(f"  no DB override row for {key}  [{scope_label(overlay)}]")
         raise SystemExit(1)
 
     @command(name="list")
     def list_rows(self) -> None:
-        """List every DB config override row, naming each row's scope (read-only)."""
+        """List every DB config override row under its group, naming each row's scope.
+
+        Rows are grouped by the SAME nested hierarchy the dashboard and the TOML export
+        render, indented one level per depth, so the three surfaces read alike. A row no
+        declaration owns still prints, under the leftovers heading — carrying a trailer
+        naming it retired, internal state, or unknown, so it cannot be mistaken for a
+        live control.
+        """
         rows = list(ConfigSetting.objects.all())
         if not rows:
             self.stdout.write("  (no DB config overrides)")
             return
-        for row in rows:
-            self.stdout.write(f"  {row.key} = {row.value!r}  [{_scope_label(row.scope)}]")
+        for section in group_outline(rows, key_of=lambda row: row.key):
+            for heading in section.headings:
+                self.stdout.write(f"{'  ' * heading.depth}{heading.label}")
+            for row in section.rows:
+                indent = "  " * (section.depth + 1)
+                self.stdout.write(
+                    f"{indent}{row.key} = {row.value!r}  [{scope_label(row.scope)}]{_stored_row_suffix(row.key)}"
+                )
 
     @command()
     def flags(self) -> None:
@@ -251,7 +259,7 @@ class Command(TyperCommand):
             raise SystemExit(2)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
-            self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]{_flag_suffix(key)}")
+            self.stdout.write(f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]{_flag_suffix(key)}")
             return
         cold_hook = COLD_HOOK_SETTINGS.get(key)
         if cold_hook is not None:
@@ -276,6 +284,22 @@ class Command(TyperCommand):
                 help="Also export private/secret rows (terms/brands, token refs) — PERSONAL backup only, never share.",
             ),
         ] = False,
+        default_keys_only: Annotated[
+            bool,
+            typer.Option(
+                "--default-keys-only",
+                help="Restrict the dump to the Category.DEFAULT keys defaults.toml ships "
+                "(drops registries, secrets, identifiers and overlay scopes).",
+            ),
+        ] = False,
+        include_defaults: Annotated[
+            bool,
+            typer.Option(
+                "--include-defaults",
+                help="Also emit keys with no DB row, at their resolved effective value. "
+                "With --default-keys-only this is the defaults.toml shape.",
+            ),
+        ] = False,
     ) -> None:
         """Dump the ``ConfigSetting`` store to TOML — the inverse of ``import``.
 
@@ -292,10 +316,21 @@ class Command(TyperCommand):
         even though the private DB store keeps it. Each withheld row is named on
         stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
         backup.
+
+        Two INDEPENDENT filters widen the dump, both off by default. ``--default-keys-only``
+        restricts it to the ``Category.DEFAULT`` keys ``defaults.toml`` ships;
+        ``--include-defaults`` also emits the eligible keys that have no DB row, at their
+        resolved effective value. Passing BOTH produces the defaults shape — a complete,
+        drop-in replacement for ``config/defaults.toml``, header and seed tables included.
         """
-        result = export_db_to_toml(overlay or None, include_private=include_private)
+        result = export_db_to_toml(
+            overlay or None,
+            include_private=include_private,
+            default_keys_only=default_keys_only,
+            include_defaults=include_defaults,
+        )
         for row in result.redacted:
-            self.stderr.write(f"  withheld {row.key}  [{_scope_label(row.scope)}]  ({row.reason})")
+            self.stderr.write(f"  withheld {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.redacted:
             self.stderr.write(
                 f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
@@ -305,3 +340,51 @@ class Command(TyperCommand):
             self.stdout.write(f"  exported config store to {output}")
             return
         self.stdout.write(result.toml, ending="")
+
+    @command(name="import")
+    def import_config(
+        self,
+        *,
+        input_path: Annotated[
+            str,
+            typer.Option("--input", help="Read the TOML dump from this path; omit to read stdin."),
+        ] = "",
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run", help="Classify every row (folded / written / skipped / rejected); write nothing."
+            ),
+        ] = False,
+    ) -> None:
+        """Load a ``config_setting export`` TOML dump into the store — the inverse of ``export``.
+
+        Retired aliases fold onto their live key; unknown keys and secret/personal-identifier
+        rows are REJECTED and the WHOLE import is refused (nothing written) so one bad key never
+        leaves a partial store; every value is validated through the same registry parser the
+        resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
+        ``defaults.toml`` imports to zero rows). ``--dry-run`` classifies without writing.
+
+        Safety-posture keys import here without a confirm phrase: typing this command IS the
+        operator's authorization, exactly as ``config_setting set`` is. The dashboard's import
+        textarea is the surface that demands one, because a paste is not a per-key intent.
+        """
+        text = Path(input_path).expanduser().read_text(encoding="utf-8") if input_path else sys.stdin.read()
+        try:
+            result = import_toml_to_db(text, dry_run=dry_run, allow_safety_posture=True)
+        except tomllib.TOMLDecodeError as exc:
+            self.stderr.write(f"  invalid TOML: {exc}")
+            raise SystemExit(2) from exc
+        for old, new in result.folded:
+            self.stdout.write(f"  folded retired alias {old} -> {new}")
+        for row in result.rejected:
+            self.stderr.write(f"  rejected {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
+        if result.rejected:
+            self.stderr.write(f"  {len(result.rejected)} row(s) rejected; nothing was imported.")
+            raise SystemExit(2)
+        verb = "would import" if dry_run else "imported"
+        for row in result.written:
+            self.stdout.write(f"  {verb} {row.key} = {row.value!r}  [{scope_label(row.scope)}]")
+        self.stdout.write(
+            f"  {verb} {len(result.written)} row(s); "
+            f"{len(result.skipped_default)} equal to the shipped default (no row)."
+        )

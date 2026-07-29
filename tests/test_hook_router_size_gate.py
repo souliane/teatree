@@ -29,7 +29,11 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # managed_repo sibling (cwd_teatree_managed_state).
 # Lowered by #F7.9, which extracted the resolved-verdict router-side I/O into the
 # quote_scanner_verdict_io sibling (the quote-gate fail-open NOTE stays in the router).
-_CEILING_LOC = 4487
+# Lowered again when the current-turn transcript projections (edited paths /
+# assistant text) moved into the turn_inspect sibling.
+# Lowered by #3810, which moved the SessionStart hand-off pickup into the
+# session_handover_pickup sibling.
+_CEILING_LOC = 4353
 
 
 def _count_loc(text: str) -> int:

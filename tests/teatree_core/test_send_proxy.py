@@ -8,6 +8,8 @@ destination is denied and the payload is redacted — the attack surface these
 tests pin.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from teatree.config.enums import SendProxyMode
@@ -18,6 +20,7 @@ from teatree.core.send_proxy import (
     SendBlockedError,
     SendChannel,
     SendRequest,
+    _redact_terms,
     destination_allowed,
     read_posting_credential,
     redact_payload,
@@ -205,3 +208,10 @@ class TestNeverRaise:
         verdict = route_send(_request())
         assert verdict.allowed is True
         assert SendAudit.objects.count() == 0
+
+
+class TestRedactTerms:
+    def test_redact_terms_is_empty_when_privacy_rules_are_unresolvable(self) -> None:
+        """A ``None`` from overlay_privacy_rules degrades to no redaction terms (best-effort)."""
+        with patch("teatree.core.send_proxy.overlay_privacy_rules", return_value=None):
+            assert _redact_terms("some-overlay") == []

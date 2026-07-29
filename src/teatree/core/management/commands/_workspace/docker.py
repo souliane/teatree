@@ -23,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from teatree.config import get_effective_settings
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.docker.reap import reap_orphan_compose_projects, reap_stale_compose_projects
@@ -43,14 +44,19 @@ def _live_compose_projects() -> set[str]:
     return live
 
 
-def reap_orphan_worktree_docker() -> list[str]:
+def reap_orphan_worktree_docker(*, dry_run: bool = False) -> list[str]:
     """Reap docker containers + images for compose projects with no live worktree.
 
     Scoped by the ``com.docker.compose.project`` label, so base/official images
     and the main-clone deps image — none of which carry a worktree project label
     — are never touched.
     """
-    return [str(result) for result in reap_orphan_compose_projects(_live_compose_projects())]
+    live = _live_compose_projects()
+    if dry_run:
+        from teatree.docker.reap import orphan_compose_projects  # noqa: PLC0415 — selection-only, dry-run path
+
+        return [preview_line(f"Reap orphan compose project: {p}", dry_run=True) for p in orphan_compose_projects(live)]
+    return [str(result) for result in reap_orphan_compose_projects(live)]
 
 
 def reap_stale_local_stacks(write_out: Callable[[str], object] | None = None) -> int:

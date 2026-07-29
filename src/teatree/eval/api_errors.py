@@ -14,7 +14,7 @@ from enum import Enum
 
 from claude_agent_sdk import Message
 
-from teatree.llm.anthropic_limits import LimitCause, classify_limit, window_horizon
+from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit, window_horizon
 
 BUDGET_EXCEEDED_REASON = "budget_exceeded"
 MAX_TURNS_REASON = "max_turns"
@@ -174,6 +174,16 @@ _RESULT_EVENT_WRAPPER = "returned an error result:"
 #: out inside a single run (surface loud). The remaining causes ARE retriable —
 #: RATE_LIMIT as TRANSIENT, SUBSCRIPTION_SESSION as a bounded SUSTAINED window wait.
 _NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset({LimitCause.API_CREDIT, LimitCause.SUBSCRIPTION_WEEKLY})
+
+#: Exception types no retry loop may ever ride out, on ANY lane — the typed
+#: counterpart to :data:`_NEVER_RETRY_CAUSES`. A dead metered key is terminal for the
+#: whole run, so retrying it per cell burns the rest of a metered suite on a permanent
+#: config fault. ``CreditExhaustedError`` subclasses ``RuntimeError``, so a bare
+#: ``except Exception`` cell-isolation swallows it unless the site re-raises these
+#: first: every such retry loop (:mod:`teatree.eval.throttle_retry`,
+#: :mod:`teatree.eval.ladder`, :mod:`teatree.cli.eval.multi_trial`) keys on this single
+#: tuple rather than a per-site copy.
+NEVER_RETRY_ERRORS: tuple[type[Exception], ...] = (CreditExhaustedError,)
 
 
 def _throttle_from_limit(cause: LimitCause) -> ThrottleSignal | None:

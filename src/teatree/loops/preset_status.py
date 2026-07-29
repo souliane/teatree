@@ -20,6 +20,7 @@ from django.utils import timezone
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loop.preset_resolution import ActivePreset, preset_state_for, resolve_active_preset
 from teatree.loop.statusline_loops import PresetLineHandles
+from teatree.request_cache import cached_per_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ def active_summary(now: dt.datetime | None = None) -> PresetSummary | None:
     )
 
 
+@cached_per_request
 def effective_verdicts(now: dt.datetime | None = None) -> list[LoopVerdict]:
     """The effective run verdict + deciding layer for every ``Loop`` row, sorted by name."""
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)

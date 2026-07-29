@@ -41,13 +41,13 @@ chokepoint every path to MERGED funnels through. On a block it raises
 
 import logging
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from teatree.config import get_effective_settings
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models import MergeAudit, PullRequest
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
@@ -79,8 +79,7 @@ def has_merge_audit_evidence(ticket: "Ticket") -> bool:
 
 
 def _pr_host_kind(pr: PullRequest) -> str:
-    host = (urlparse(pr.url).hostname or "").lower()
-    return "gitlab" if "gitlab" in host else "github"
+    return forge_from_remote(pr.url) or "github"
 
 
 def forge_confirms_merged(ticket: "Ticket") -> bool:

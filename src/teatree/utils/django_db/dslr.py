@@ -1,14 +1,13 @@
 """DSLR snapshot helpers for Django database provisioning.
 
-Handles discovery, restore, pruning, and environment setup for DSLR
-(Django Lightweight Snapshot Restore) snapshots used by the DB import
-engine in the sibling ``importer`` module.
+Handles discovery, restore, and environment setup for DSLR (Django
+Lightweight Snapshot Restore) snapshots used by the DB import engine in the
+sibling ``importer`` module. Retention/pruning lives in ``dslr_prune``.
 """
 
 import os
 import re
 import shutil
-import sys
 from datetime import UTC, datetime
 
 from teatree.utils import bad_artifacts
@@ -90,57 +89,3 @@ def restore_ref_from_dslr(dslr_cmd: list[str], env: dict[str, str], snap_name: s
 def extract_failing_migration(stdout: str) -> str | None:
     match = re.search(r"Applying (\w+\.\w+)\.\.\.", stdout)
     return match.group(1) if match else None
-
-
-def parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
-    """Parse ``dslr list`` output, group snapshot names by tenant (suffix after date)."""
-    by_tenant: dict[str, list[str]] = {}
-    for line in stdout.splitlines():
-        token = line.strip().split()[0] if line.strip() else ""
-        if not token:
-            continue
-        if "_" in token:
-            tenant = token.split("_", maxsplit=1)[1]
-            by_tenant.setdefault(tenant, []).append(token)
-    for names in by_tenant.values():
-        names.sort(reverse=True)
-    return by_tenant
-
-
-def prune_dslr_snapshots(
-    *,
-    keep: int = 1,
-    snapshot_tool: str = "dslr",
-    main_repo_path: str = "",
-    in_use_tenants: set[str] | None = None,
-) -> list[str]:
-    """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
-
-    Returns a list of deleted snapshot names.
-
-    *in_use_tenants* (souliane/teatree#1306): tenants whose snapshots
-    must NOT be touched because an in-flight worktree depends on them.
-    A worktree mid-provision (state CREATED, DB not yet imported) needs
-    the snapshot to remain restorable until provisioning completes;
-    pruning unconditionally and globally destroys that with no way to
-    recover short of a fresh remote dump. Pass the set of tenant strings
-    (matching the DSLR snapshot suffix after the date) to skip entirely.
-    """
-    dslr_cmd = find_dslr_cmd(snapshot_tool, main_repo_path)
-    if not dslr_cmd:
-        return []
-    result = run_allowed_to_fail([*dslr_cmd, "list"], expected_codes=None)
-    if result.returncode != 0:
-        return []
-    in_use = in_use_tenants or set()
-    by_tenant = parse_dslr_snapshots(result.stdout)
-    deleted: list[str] = []
-    for tenant, names in by_tenant.items():
-        if tenant in in_use:
-            sys.stdout.write(f"  Skipping DSLR prune for in-use tenant: {tenant}\n")
-            continue
-        for old in names[keep:]:
-            sys.stdout.write(f"  Pruning DSLR snapshot: {old} (tenant={tenant})\n")
-            run_allowed_to_fail([*dslr_cmd, "delete", "-y", old], expected_codes=None)
-            deleted.append(old)
-    return deleted

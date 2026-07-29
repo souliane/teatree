@@ -1,6 +1,7 @@
 """``review_request_dedup_max_pages`` — configurable channel-scan page cap (#3292 part 4)."""
 
-from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
+from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.settings import UserSettings
 
 
 class TestDedupMaxPagesDefault:

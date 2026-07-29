@@ -13,10 +13,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
 from teatree.core.runners import heal_missing_provisioned_db
 from teatree.core.worktree.readiness import run_and_report_probes
+from teatree.utils import git
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -110,10 +112,18 @@ def dslr_tenants_in_use() -> set[str]:
     return {overlay.provisioning.resolve_variant(v).canonical_tenant for v in variants if v}
 
 
-def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> list[str]:
+def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str], dry_run: bool = False) -> list[str]:
     """Prune DSLR snapshots (skipping in-use tenants) and return cleanup labels."""
-    from teatree.utils.django_db import prune_dslr_snapshots  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.utils.django_db import (  # noqa: PLC0415 — deferred: keeps command import light
+        prune_dslr_snapshots,
+        stale_dslr_snapshots,
+    )
 
+    if dry_run:
+        return [
+            preview_line(f"Prune DSLR snapshot: {name}", dry_run=True)
+            for name in stale_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
+        ]
     pruned = prune_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
     return [f"Pruned DSLR snapshot: {name}" for name in pruned]
 
@@ -177,3 +187,18 @@ def heal_db_or_record_failure(
         failures.append(wt.repo_path)
         return True
     return False
+
+
+def branch_prefix() -> str:
+    """The initials a new ticket branch is prefixed with, from env or the git identity.
+
+    Beside the other ``workspace ticket`` intake helpers rather than in the CLI module:
+    deriving a name from config is the engine's job, and ``workspace.py`` only passes
+    the result on.
+    """
+    prefix = os.environ.get("T3_BRANCH_PREFIX", "")
+    if not prefix:
+        name = git.run(args=["config", "user.name"])
+        if name:
+            prefix = "".join(word[0].lower() for word in name.split() if word)
+    return prefix or "dev"

@@ -58,7 +58,7 @@ class TestPhaseScopedToolsExecute:
     def test_coding_phase_can_write_and_read(self, tmp_path: Path) -> None:
         config = LaneBToolConfig(fs_root=tmp_path, phase="coding")
         model = _scripted(
-            _call("write_file", {"path": "out.txt", "content": "hi"}),
+            _call("Write", {"path": "out.txt", "content": "hi"}),
             _text("wrote it"),
         )
         result = _run(_agent(config, model), "go")
@@ -69,7 +69,7 @@ class TestPhaseScopedToolsExecute:
 class TestPhaseScopedToolsHidden:
     def test_review_phase_does_not_expose_write_file(self, tmp_path: Path) -> None:
         config = LaneBToolConfig(fs_root=tmp_path, phase="reviewing")
-        model = _scripted(_call("write_file", {"path": "x", "content": "y"}), _text("ok"))
+        model = _scripted(_call("Write", {"path": "x", "content": "y"}), _text("ok"))
         # write_file is not in the review-phase allowance → the model's call finds
         # no such tool and is retried; it must NOT have written the file.
         _run(_agent(config, model), "go")
@@ -82,7 +82,7 @@ class TestHardDenyWithinAssembledToolsets:
         clone = managed_main_clone(tmp_path / "teatree")
         config = LaneBToolConfig(fs_root=clone, phase="coding")
         model = _scripted(
-            _call("shell", {"command": "git reset --hard HEAD~1"}),
+            _call("Bash", {"command": "git reset --hard HEAD~1"}),
             _text("understood, i will not"),
         )
         result = _run(_agent(config, model), "go")
@@ -98,7 +98,7 @@ class TestHardDenyWithinAssembledToolsets:
         clone = managed_main_clone(tmp_path / "teatree")
         wt = linked_worktree(clone, tmp_path / "wt")
         config = LaneBToolConfig(fs_root=wt, phase="coding")
-        model = _scripted(_call("shell", {"command": "git reset --hard HEAD"}), _text("done"))
+        model = _scripted(_call("Bash", {"command": "git reset --hard HEAD"}), _text("done"))
         result = _run(_agent(config, model), "go")
         assert result.output == "done"
         assert not [
@@ -108,7 +108,7 @@ class TestHardDenyWithinAssembledToolsets:
     def test_safe_shell_command_runs(self, tmp_path: Path) -> None:
         (tmp_path / "marker").write_text("")
         config = LaneBToolConfig(fs_root=tmp_path, phase="coding")
-        model = _scripted(_call("shell", {"command": "ls"}), _text("listed"))
+        model = _scripted(_call("Bash", {"command": "ls"}), _text("listed"))
         result = _run(_agent(config, model), "go")
         returns = [
             p for m in result.all_messages() for p in getattr(m, "parts", []) if type(p).__name__ == "ToolReturnPart"

@@ -40,14 +40,12 @@ def on_behalf_gate_active() -> bool:
     permitted (returns ``False``) under
     :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
 
-    Wired through a soft import so this command works whether or not the
-    gate PR has merged yet: if the module is absent the gate is treated
-    as inactive (no behaviour change until it lands).
+    The import stays lazy so ``teatree.cli`` is importable before
+    ``django.setup()``, but it is never guarded: an unresolvable gate must surface,
+    never resolve to "gate off" — a safety gate has no fail-OPEN degradation.
     """
-    try:
-        from teatree.on_behalf_gate import on_behalf_post_will_block  # noqa: PLC0415 — lazy CLI import
-    except ModuleNotFoundError:
-        return False
+    from teatree.on_behalf_gate import on_behalf_post_will_block  # noqa: PLC0415 — lazy CLI import
+
     # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under ASK
     # and DRAFT_OR_ASK (AUTO_DRAFT never fires for "approve"), so the proactive
     # will-block pre-check is exactly this gate's active predicate.

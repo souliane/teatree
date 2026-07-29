@@ -1,6 +1,7 @@
-"""Shell capability — a denylist/timeout-guarded command runner (Bash parity).
+"""Shell capability — a denylist/timeout-guarded command runner exposed as ``Bash``.
 
-A single ``shell`` tool on a teatree-owned ``FunctionToolset``. The coarse
+A single tool on a teatree-owned ``FunctionToolset``, exposed to the model under the
+skill/SDK name ``Bash`` (:mod:`teatree.agents.lane_b.tool_names`). The coarse
 denylist + per-command timeout live here; the AUTHORITATIVE parity surface is the
 shared hard-deny gate registry (:mod:`teatree.agents.lane_b.gating`), which wraps
 this toolset and is consulted for the exact same set of refusals Lane A's
@@ -14,6 +15,7 @@ from pathlib import Path
 from pydantic_ai.toolsets.function import FunctionToolset
 
 from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.tool_names import TOOL_BASH
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -75,5 +77,7 @@ def build_shell_toolset(config: LaneBToolConfig) -> FunctionToolset[None]:
         )
         return f"exit={result.returncode}\n{result.stdout}{result.stderr}"
 
-    toolset.add_function(shell, takes_ctx=False)
+    # Exposed to the model as ``Bash`` (the skill/SDK vocabulary) so a skill saying
+    # ``Bash`` names this tool; the pythonic ``shell`` function name stays local.
+    toolset.add_function(shell, takes_ctx=False, name=TOOL_BASH)
     return toolset

@@ -19,6 +19,7 @@ from teatree.agents.lane_b.filesystem import build_filesystem_toolset
 from teatree.agents.lane_b.gating import DEFAULT_SOFT_GATED, HardDenyToolset, make_soft_gate_predicate
 from teatree.agents.lane_b.mcp import build_mcp_toolsets
 from teatree.agents.lane_b.shell import build_shell_toolset
+from teatree.agents.lane_b.tool_names import lane_b_tool_name
 from teatree.core.modelkit.phase_tools import tools_for_phase
 
 
@@ -61,7 +62,10 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
 
     combined: AbstractToolset[None] = CombinedToolset(capability_toolsets)
     if allowed is not None:
-        allowed_names = allowed  # bind for the closure
+        # The allowance is in NEUTRAL capability names; the assembled tool_defs carry
+        # the model-visible skill names (Bash/Read/…). Map the allowance UP to the
+        # display vocabulary so the filter compares like with like.
+        allowed_names = {lane_b_tool_name(capability) for capability in allowed}
         combined = combined.filtered(lambda _ctx, tool_def: tool_def.name in allowed_names)
 
     gated: AbstractToolset[None] = HardDenyToolset(combined, cwd=config.fs_root)

@@ -16,10 +16,20 @@ resolvable target scans, never skips. The offline ``private_repos`` allowlist
 remains the reliable, network-free way to declare a private repo so an
 own-private post to it still skips without a probe.
 
+**Owner decision, #3477: a GENUINELY-unresolvable publish destination is SCANNED,
+not allowed through.** An EMPTY slug, or one carrying an unexpanded ``$VAR``, used
+to classify ``NON_PUBLIC`` (skip-eligible) on the reasoning that there is no target
+to probe. But ``$OWNER`` expands at run time and can expand to a PUBLIC repo, and
+the sibling classifier :func:`publish_destination.is_public_destination` has always
+treated both as PUBLIC -- the two disagreed, and the disagreement was the fail-OPEN
+half. Both now resolve ``UNKNOWN`` -> scan. The cost is a scan on a command whose
+target cannot be read; the cost of the other choice is an unscanned public egress.
+Declare an own-private repo in ``private_repos`` to keep it skip-eligible offline.
+
 The visibility verdict is resolved from the command's OWN target (the
 ``--repo``/``-R`` flag, the ``gh``/``glab api`` URL path, or the cwd git remote
 -- reusing ``publish_destination``'s resolver), then classified into
-:class:`_Visibility`: an allowlisted-private slug, an internal-namespace slug,
+:class:`~teatree.hooks.leak_policy.Visibility`: an allowlisted-private slug, an internal-namespace slug,
 and a ``private``/``internal`` probe verdict resolve ``NON_PUBLIC``; a ``public``
 probe verdict on a non-allowlisted slug is ``PUBLIC``; a resolvable slug the
 probe cannot confirm is ``UNKNOWN`` (fail closed -> scan). The verdict is
@@ -39,12 +49,12 @@ and :mod:`teatree.hooks._repo_visibility` are both at the per-file LOC cap.
 """
 
 import sys
-from enum import Enum
 from pathlib import Path
 
 from teatree.hooks import _commit_carve_out, _repo_visibility
 from teatree.hooks._gh_glab_hiding import command_segments_with_raw
 from teatree.hooks._publish_detection import segment_is_api_read, segment_is_api_write
+from teatree.hooks.leak_policy import Visibility, scans_on_visibility
 from teatree.hooks.publish_destination import (
     Destination,
     _destination_from_api,
@@ -63,66 +73,57 @@ _SKIP_PUBLISH = "skip-publish"  # skip-eligible AND counts as a repo-targeted pu
 _SKIP_INERT = "skip-inert"  # skip-eligible, not a publish (nav/local/api-read)
 
 
-class _Visibility(Enum):
-    """Three-valued affirmative-public visibility of a RESOLVED destination.
+def destination_visibility(dest: Destination, *, config_path: Path | None = None) -> Visibility:
+    """Classify a RESOLVED ``dest`` into :class:`~teatree.hooks.leak_policy.Visibility`.
 
-    ``PUBLIC`` (confirmed-public probe verdict) and ``UNKNOWN`` (a resolvable
-    slug the probe could not confirm) both SCAN; only ``NON_PUBLIC`` (provably
-    private/internal) is skip-eligible. ``UNKNOWN`` is the fail-CLOSED case the
-    old boolean collapsed into "not public -> skip", which let a probe error on a
-    resolvable slug ride out unscanned (#3442).
-    """
-
-    PUBLIC = "public"
-    NON_PUBLIC = "non-public"
-    UNKNOWN = "unknown"
-
-
-def _destination_visibility(dest: Destination, *, config_path: Path | None) -> _Visibility:
-    """Classify a RESOLVED ``dest`` into :class:`_Visibility` for the leak-gate scope.
-
-    ``NON_PUBLIC`` (skip-eligible) when the target is PROVABLY non-public: an
-    empty / unexpanded-``$`` slug (no resolvable target to probe), an
+    ``NON_PUBLIC`` (skip-eligible) only when the target is PROVABLY non-public: an
     ``internal_publish_namespaces`` match, a ``private_repos`` allowlist match, or
     a ``private``/``internal`` (any non-``PUBLIC``, non-``None``) probe verdict.
     ``PUBLIC`` only on a confirmed-``PUBLIC`` probe verdict for a non-allowlisted
-    slug. ``UNKNOWN`` when the slug IS probe-resolvable but the visibility probe
-    returns no verdict (``None`` -- a network/API error, an absent ``gh``/``glab``,
-    or an unrecognised answer): the fail-CLOSED case the gate must SCAN, mirroring
-    the bash pre-push gate and the fail-closed-always doctrine (#3442).
+    slug. ``UNKNOWN`` -- the fail-CLOSED case the gate must SCAN -- in the two
+    can't-tell cases:
+
+    * the slug IS probe-resolvable but the probe returns no verdict (``None`` --
+        a network/API error, an absent ``gh``/``glab``, an unrecognised answer)
+        (#3442); and
+    * the destination is GENUINELY unresolvable -- an EMPTY slug, or one carrying
+        an unexpanded ``$VAR`` whose run-time value could be a PUBLIC repo (#3477).
+        This case used to resolve ``NON_PUBLIC``, disagreeing with the sibling
+        classifier :func:`publish_destination.is_public_destination`, which has
+        always scanned it. The two now agree, fail-closed.
 
     ``dest.forge`` qualifies a bare ``owner/repo`` slug up to its canonical host
     so the host-keyed probe routes to the right tool.
     """
     slug = dest.slug.strip().lower()
     if not slug or "$" in slug:
-        return _Visibility.NON_PUBLIC
+        return Visibility.UNKNOWN
     if any(_repo_visibility.slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
-        return _Visibility.NON_PUBLIC
+        return Visibility.NON_PUBLIC
     if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-        return _Visibility.NON_PUBLIC
+        return Visibility.NON_PUBLIC
     probe_slug = _repo_visibility.forge_qualified_slug(slug, dest.forge)
     verdict = _repo_visibility.slug_visibility(probe_slug)
     if verdict == _PUBLIC:
-        return _Visibility.PUBLIC
+        return Visibility.PUBLIC
     if verdict is None:
-        return _Visibility.UNKNOWN
-    return _Visibility.NON_PUBLIC
+        return Visibility.UNKNOWN
+    return Visibility.NON_PUBLIC
 
 
 def is_affirmatively_public(dest: Destination | None, *, config_path: Path | None = None) -> bool:
     """Return True iff ``dest`` resolves to an affirmatively-PUBLIC repo.
 
     True ONLY on a confirmed-``PUBLIC`` probe verdict for a non-allowlisted slug
-    (:attr:`_Visibility.PUBLIC`); every other case -- private/internal/allowlisted
-    (``NON_PUBLIC``) and a resolvable slug the probe cannot confirm (``UNKNOWN``)
-    -- is False. Callers that must FAIL CLOSED on ``UNKNOWN`` (the leak-gate
-    scope) use :func:`_destination_visibility` directly rather than this boolean,
-    which cannot distinguish ``UNKNOWN`` from ``NON_PUBLIC``.
+    (:attr:`Visibility.PUBLIC`); every other case -- private/internal/allowlisted
+    (``NON_PUBLIC``) and a target the probe cannot confirm (``UNKNOWN``) -- is
+    False. Callers that must FAIL CLOSED on ``UNKNOWN`` (the leak-gate scope) use
+    :func:`destination_visibility` directly rather than this boolean, which cannot
+    distinguish ``UNKNOWN`` from ``NON_PUBLIC``.
     """
     if dest is None:
         return False
-    return _destination_visibility(dest, config_path=config_path) is _Visibility.PUBLIC
+    return destination_visibility(dest, config_path=config_path) is Visibility.PUBLIC
 
 
 def _signal_probe_error_scan(slug: str) -> None:
@@ -142,17 +143,18 @@ def _signal_probe_error_scan(slug: str) -> None:
 
 
 def _visibility_segment_verdict(dest: Destination, *, config_path: Path | None) -> str:
-    """Map a RESOLVED destination's :class:`_Visibility` to a segment verdict.
+    """Map a RESOLVED destination's :class:`Visibility` to a segment verdict.
 
-    ``NON_PUBLIC`` -> :data:`_SKIP_PUBLISH` (skip-eligible). ``PUBLIC`` ->
-    :data:`_SCAN`. ``UNKNOWN`` (resolvable slug, unconfirmed probe) FAILS CLOSED
-    to :data:`_SCAN` and emits :func:`_signal_probe_error_scan` so the decision is
-    never silent (#3442).
+    The scan/skip half of the decision comes from the one policy
+    (:func:`~teatree.hooks.leak_policy.scans_on_visibility`): only ``NON_PUBLIC``
+    is skip-eligible. ``UNKNOWN`` (an unconfirmed probe, or a genuinely
+    unresolvable target) FAILS CLOSED to :data:`_SCAN` and emits
+    :func:`_signal_probe_error_scan` so the decision is never silent (#3442/#3477).
     """
-    visibility = _destination_visibility(dest, config_path=config_path)
-    if visibility is _Visibility.NON_PUBLIC:
+    visibility = destination_visibility(dest, config_path=config_path)
+    if not scans_on_visibility(visibility):
         return _SKIP_PUBLISH
-    if visibility is _Visibility.UNKNOWN:
+    if visibility is Visibility.UNKNOWN:
         _signal_probe_error_scan(dest.slug)
     return _SCAN
 

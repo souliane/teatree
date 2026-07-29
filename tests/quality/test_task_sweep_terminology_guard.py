@@ -7,9 +7,9 @@ because it acts on teatree **tasks**, never the harness **TODO** list. This guar
 turns that rename into a mechanical floor: any reappearance of the conflating
 identifiers in ``src/`` / ``tests/`` / ``skills/`` / ``BLUEPRINT.md`` is RED.
 
-The single sanctioned exception is the backward-compat alias surface: the alias
-mapping (``config/resolution.py``), its test, the settings docstring that
-documents the rename, and the BLUEPRINT row that points at it all reference the
+The single sanctioned exception is the backward-compat alias surface: the retired-key
+registry (``config/retired_settings.py``, #3527), its test, the settings docstring
+that documents the rename, and the BLUEPRINT row that points at it all reference the
 retired ``todo_sweep_*`` key on purpose — they pair the old name with the new
 rather than conflating the two. That surface is allow-listed by exact relative
 path so the guard cannot be defeated by planting a conflation elsewhere.
@@ -34,7 +34,7 @@ _FORBIDDEN = re.compile(r"todo_sweep|TodoSweep|todo_completion|todo\.completion_
 # be widened by accident.
 _LEGACY_ALIAS_ALLOWLIST = frozenset(
     {
-        "src/teatree/config/resolution.py",
+        "src/teatree/config/retired_settings.py",
         "src/teatree/config/settings.py",
         "tests/teatree_loop/test_task_sweep_wiring.py",
         "tests/quality/test_task_sweep_terminology_guard.py",
@@ -90,7 +90,7 @@ class TestNoTodoSweepConflation:
     def test_allowlist_entries_exist_and_actually_reference_the_alias(self) -> None:
         # An allow-listed file that no longer references the retired key is dead
         # carve-out — drop it, so the guard cannot silently widen its exemption.
-        alias_refs = {"src/teatree/config/resolution.py", "src/teatree/config/settings.py"}
+        alias_refs = {"src/teatree/config/retired_settings.py", "src/teatree/config/settings.py"}
         for rel in alias_refs:
             path = _REPO_ROOT / rel
             assert path.exists(), f"allow-listed alias file missing: {rel}"
@@ -109,4 +109,4 @@ class TestGuardBites:
         planted.write_text("class TodoSweepScanner: ...\n", encoding="utf-8")
         assert _FORBIDDEN.search(planted.read_text(encoding="utf-8")) is not None
         # And the same string in an allow-listed path is permitted (the alias surface).
-        assert "src/teatree/config/resolution.py" in _LEGACY_ALIAS_ALLOWLIST
+        assert "src/teatree/config/retired_settings.py" in _LEGACY_ALIAS_ALLOWLIST

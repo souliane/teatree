@@ -666,11 +666,26 @@ class TestNewSessionHijackFix(TestCase):
         assert row.session_id == "foreign"
 
     def test_live_dead_pid_lease_is_evicted(self) -> None:
-        """Dead owner pid + live (unexpired) lease → EVICT (owner process gone)."""
+        """Dead owner pid + live (unexpired) lease → EVICT (owner process gone).
+
+        The claim path refuses to ANCHOR on a provably-dead pid (#3646), so the
+        row is seeded directly: this state only arises when the owning process
+        dies mid-lease, which is exactly what the dead-pid eviction branch
+        resolves. The assertion — eviction — is unchanged.
+        """
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         # PID 999999 is almost certainly dead.
-        LoopLease.objects.claim_ownership("t3-master", session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        now = timezone.now()
+        LoopLease.objects.update_or_create(
+            name="t3-master",
+            defaults={
+                "session_id": "dead-owner",
+                "owner_pid": 999999,
+                "acquired_at": now,
+                "lease_expires_at": now + timedelta(seconds=1800),
+            },
+        )
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 

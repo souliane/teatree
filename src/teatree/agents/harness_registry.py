@@ -61,7 +61,7 @@ class HarnessCapabilities:
 
     *   ``spawns_cli_child`` — spawns the bundled ``claude`` CLI child, so dispatch resolves
         the Layer-2 provider child env for it (only the ``claude_sdk`` backend does).
-    *   ``metered_lane`` — the transport FIXES the run to the metered Layer-2 lane (OrcaRouter
+    *   ``metered_lane`` — the transport FIXES the run to the metered Layer-2 lane (the OpenAI-compatible backend
         BYOK or the native Anthropic key), unlike the ``claude_sdk`` subscription lane whose
         attribution is resolved from the explicit provider pin.
     """

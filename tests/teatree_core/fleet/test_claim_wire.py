@@ -7,7 +7,7 @@ stamped with the fencing sha (via ``cache_from_fleet_claim``), and the ship fenc
 (:func:`run_fleet_claim_fence_gate`) refuses to open the PR for a claim this
 instance no longer holds. All against a real local bare-git origin.
 
-The fleet acquire is wired at the dispatch layer (``IssueImplementerScanner``), not
+The fleet acquire is wired at the dispatch layer (``IssueIntakeScanner``), not
 in the model manager, so ``teatree.core.models`` keeps no dependency on the higher
 ``teatree.core`` coordination modules (the tach boundary).
 """
@@ -22,7 +22,7 @@ from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
 from teatree.core.models import ImplementedIssueMarker, Ticket, Worktree
-from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 
 from ._git_origin import init_bare, init_client, ref_sha
 
@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 _ISSUE = "https://github.com/souliane/teatree/issues/4242"
 
 
-def _scanner() -> IssueImplementerScanner:
-    return IssueImplementerScanner(host=cast("CodeHostBackend", object()), label="impl", overlay_name="acme")
+def _scanner() -> IssueIntakeScanner:
+    return IssueIntakeScanner(host=cast("CodeHostBackend", object()), admit_label="t3-auto", overlay_name="acme")
 
 
 def _enable_and_route(client: Path) -> tuple:
@@ -105,8 +105,8 @@ class TestScannerHeartbeatOnly(TestCase):
     """At full budget (``can_claim=False``) the scanner heartbeats but claims nothing."""
 
     def test_scan_heartbeats_and_claims_nothing(self) -> None:
-        scanner = IssueImplementerScanner(
-            host=cast("CodeHostBackend", object()), label="impl", overlay_name="acme", can_claim=False
+        scanner = IssueIntakeScanner(
+            host=cast("CodeHostBackend", object()), admit_label="t3-auto", overlay_name="acme", can_claim=False
         )
         with patch.object(fleet_claim_wire, "heartbeat_inflight_claims") as beat:
             signals = scanner.scan()

@@ -179,6 +179,30 @@ start). Both plugins are pinned in the managed
 `deploy/claude-settings.template.json` `enabledPlugins`, so every seeded container
 enables them and the host drift check re-asserts them.
 
+### Declared dependencies — provisioned by setup, gated by doctor
+
+Teatree's configuration declares the dependencies it mandates in three places, and
+those declarations — not a list inside the checker — are what `t3 doctor check`
+enumerates ([#3652](https://github.com/souliane/teatree/issues/3652)):
+
+| Surface | Declares | Provisioned by |
+| --- | --- | --- |
+| `apm.yml` → `dependencies.apm` | mandated skills (`ac-python`, `ac-django`, …) | `t3 setup` (`MandatedSkillProvisioner`) |
+| `pyproject.toml` → `[tool.teatree.provisioning].required_binaries` | required tools (`direnv`, `git`, `jq`) | the operator's package manager |
+| `~/.claude/settings.json` → `enabledPlugins` | enabled agent plugins | `t3 setup` (plugin registrars) |
+
+A declared dependency that is not actually provisioned is a **hard FAIL** naming the
+dependency, the surface that declares it, and the remediation — silence is never an
+outcome, and a surface that cannot be read is its own WARN rather than a
+confidently-empty pass. Declaring a new mandate is the whole change: the gate picks it
+up with no edit to the check.
+
+`t3 setup` installs the manifest-declared skills no plugin ships, cloning each from the
+source its declaration names into `~/.local/share/teatree/skill-sources` and symlinking
+it into `~/.claude/skills`. It is idempotent — an already-loadable skill is skipped — so
+the container entrypoint's every-start `t3 setup` converges without re-fetching. `apm`
+remains the primary installer when it is present.
+
 The hooks cover these events:
 
 | Event | Matcher | Purpose |

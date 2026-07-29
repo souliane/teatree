@@ -7,9 +7,11 @@ the FIRST boot costs the whole ~8s cold UPS tax — paid even when there is noth
 record beyond the heartbeat and nothing to inject (the common case). This sibling removes
 that tax:
 
-:func:`record_presence` writes the heartbeat in pure stdlib — the write never needed
-Django (the handler only booted it to *import* the availability module for
-``PRESENCE.record``), and the on-disk bytes are identical to ``PresenceHeartbeat.record``.
+:func:`record_presence` writes the heartbeat with NO Django — the write never needed it.
+It calls ``PresenceHeartbeat.record`` itself: :mod:`teatree.live_presence` is a
+foundation leaf importing only the standard library plus :mod:`teatree.paths`, so the
+bare hook shares the one implementation instead of re-deriving the on-disk format
+(which is how two writers of one artifact start to disagree).
 
 :func:`has_pending_question_work` and :func:`has_pending_chat_work` are Django-free
 ``sqlite3`` existence probes (via ``teatree.config.cold_reader``) that let the inject
@@ -24,17 +26,7 @@ the shared :func:`teatree_src_on_path` (#1314). A bare sibling of ``hook_router`
 over-cap, shrink-only router gains the behaviour without growing (``hooks/CLAUDE.md``).
 """
 
-import json
-import os
-import tempfile
-from datetime import UTC, datetime
-from pathlib import Path
-
 from hooks.scripts.managed_repo import teatree_src_on_path
-
-# Mirrors ``teatree.core.availability.presence_path`` (``DATA_DIR / <name>``) and
-# ``pending_chat_injection`` / ``deferred_question`` ``Meta.db_table``.
-_PRESENCE_FILENAME = "availability_presence"
 
 # DeferredQuestion needs handling when a row is answered-but-not-applied (the apply
 # leg) OR still pending (unanswered + not dismissed — the backlog leg). Mirrors
@@ -52,32 +44,22 @@ _PENDING_CHAT_WORK_SQL = "SELECT 1 FROM teatree_pending_chat_injection WHERE con
 
 
 def record_presence(session_id: str) -> None:
-    """Stamp the live-presence heartbeat file in pure stdlib (no ``django.setup()``).
+    """Stamp the live-presence heartbeat with no ``django.setup()``.
 
-    Writes ``{"at": <iso>, "session": <id>}`` (``sort_keys``) + a trailing newline
-    atomically (temp file + ``os.replace``) to ``<PRIMARY data dir>/availability_presence``
-    — byte-identical to ``PresenceHeartbeat.record``, which ``availability.resolve_mode``
-    reads to upgrade a schedule-derived ``away`` to ``present``. Best-effort and silent:
-    an unresolvable data dir or any OS error records nothing (the schedule then decides),
-    exactly as the handler's prior fail-open ``bootstrap`` path did.
+    Calls the shared :meth:`teatree.live_presence.PresenceHeartbeat.record` — a
+    foundation leaf needing only the stdlib and :mod:`teatree.paths`, reachable from
+    the bare hook through the same ``src/`` bootstrap the cold reader uses. The
+    resolver reads the same file through the same class, so there is exactly one
+    definition of where the heartbeat lives and what it contains. Best-effort and
+    silent: an unresolvable data dir or any OS error records nothing (the schedule
+    then decides), exactly as the handler's prior fail-open ``bootstrap`` path did.
     """
-    target = _presence_path()
-    if target is None:
-        return
     try:
-        moment = datetime.now(tz=UTC).isoformat()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_str = tempfile.mkstemp(prefix=".presence-", suffix=".tmp", dir=str(target.parent))
-        tmp_path = Path(tmp_str)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"at": moment, "session": session_id}, fh, sort_keys=True)
-                fh.write("\n")
-            tmp_path.replace(target)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
-            raise
-    except OSError:
+        with teatree_src_on_path():
+            from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import
+
+            PRESENCE.record(session_id=session_id)
+    except Exception:  # noqa: BLE001 — hook crash-proof: an unrecordable heartbeat leaves the schedule deciding
         return
 
 
@@ -100,22 +82,6 @@ def has_pending_chat_work() -> bool:
     unreadable-DB error so a queued Slack reply is never dropped.
     """
     return _row_exists(_PENDING_CHAT_WORK_SQL)
-
-
-def _presence_path() -> Path | None:
-    """``<PRIMARY data dir>/availability_presence``; ``None`` when unresolvable.
-
-    Reuses ``cold_reader``'s DB-home resolution (``canonical_config_db().parent`` is the
-    PRIMARY data dir the installed ``t3`` reads/writes, correct even from a worktree), so
-    the heartbeat lands where ``availability.presence_path`` expects it.
-    """
-    try:
-        with teatree_src_on_path():
-            from teatree.config.cold_reader import canonical_config_db  # noqa: PLC0415 — deferred: cold-hook import
-
-            return canonical_config_db().parent / _PRESENCE_FILENAME
-    except Exception:  # noqa: BLE001 — hook crash-proof: unresolvable data dir ⇒ no heartbeat
-        return None
 
 
 def _row_exists(query: str) -> bool:

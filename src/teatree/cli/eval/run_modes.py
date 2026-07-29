@@ -248,7 +248,7 @@ class RegressionGates:
 
         Returns ``True`` (caller exits non-zero) when any scenario's cost rose by
         more than *tolerance* (relative drift) versus the baseline run. A scenario
-        whose baseline cost is ``0.0`` (subscription/free baseline — no metered
+        whose baseline cost is ``0.0`` (subscription baseline — no metered
         reference) has an undefined relative drift, so it is skipped, never flagged
         and never a divide-by-zero. When no model has a baseline at all, the gate
         reports "no cost baseline" and passes.

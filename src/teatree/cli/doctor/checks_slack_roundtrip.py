@@ -10,18 +10,24 @@ exit) the moment teatree would react-but-never-answer:
     messaging backend, so a reply CAN be posted. ``--slack-roundtrip`` additionally
     runs a LIVE ``auth.test`` per backend (proves the bot token actually reaches
     Slack, not just that config is present).
-2. **Owner resolution** — the global :func:`teatree.core.notify.resolve_user_id`
+2. **Ambient egress** — ``messaging_from_overlay()`` with NO overlay name, the exact
+    seam ``notify_user`` calls headlessly. Probing only the by-name form (1) reports
+    CONFIG RESOLUTION as readiness, which is how a green doctor coexisted with a
+    completely dead notification path.
+3. **Owner resolution** — the global :func:`teatree.core.notify.resolve_user_id`
     the headless egress calls resolves NON-empty. The empty-string headless failure
     (``T3_OVERLAY_NAME`` unset, no global setting) is exactly the observed bug: the
     answer pipeline silently NOOPs its reply.
-3. **Inbound listener** — the Socket-Mode ``slack-listener`` singleton is live, so
+4. **Inbound listener** — the Socket-Mode ``slack-listener`` singleton is live, so
     inbound events are being queued at all.
-4. **Answer pipeline** — the ``inbox`` loop is enabled + unmasked and a loop worker
+5. **Answer pipeline** — the ``inbox`` loop is enabled + unmasked and a loop worker
     is draining the queue, so a queued message actually gets answered.
-5. **Evidence** — no message sits reacted-👀 but never loop-replied past the
-    staleness window (the smoking gun of the observed bug, read from real traffic).
+6. **Evidence** — no message sits reacted-👀 but never loop-replied past the
+    staleness window, and no owner-audience ``BotPing`` was dropped in the last day
+    (both smoking guns, read from real traffic rather than inferred from config).
 
-Unlike the surfacing-only Slack DM-readiness check, THIS check gates the overall
+Unlike the surfacing-only Slack DM CONFIG check (:mod:`teatree.cli.slack.dm_doctor`,
+which resolves overlays BY NAME and proves config only), THIS check gates the overall
 doctor exit code — a silent break must be a doctor failure, not a surprise. Slack
 stays optional: with no Slack-backed overlay the check is a silent no-op.
 """
@@ -42,6 +48,12 @@ from teatree.cli.slack.socket_doctor import Level
 #: "reacts-but-never-answers" signature read from real inbound traffic. Generous
 #: relative to the ~20s answer cadence so a mid-flight cycle never false-alarms.
 _UNANSWERED_STALENESS = dt.timedelta(minutes=5)
+
+#: How far back the ledger is read for owner notifications that never landed. A day
+#: is the horizon the operator actually cares about ("did the factory tell me about
+#: today's work?") and long enough that an overnight break is still on screen at
+#: the next doctor run.
+_UNDELIVERED_NOTIFY_WINDOW = dt.timedelta(hours=24)
 
 #: The durable ``Loop`` row that gates the reactive Slack-answer / DM-inbound work.
 _ANSWER_LOOP = "inbox"
@@ -182,6 +194,65 @@ def _probe_auth_test(overlay: str, backend: object) -> RoundtripFinding:
     return RoundtripFinding(Level.OK, f"[{overlay}] live Slack auth.test ok (bot {body.get('user_id', '?')}).")
 
 
+def _probe_ambient_egress() -> RoundtripFinding:
+    """The EXACT seam ``notify_user`` calls — :func:`teatree.core.notify.resolve_owner_dm_backend`.
+
+    :func:`_probe_outbound` resolves each overlay BY NAME, which the headless egress
+    never does: the worker, the loop, and the MCP server export no ``T3_OVERLAY_NAME``,
+    so ``notify_user`` resolves through the owner-DM tiers (active overlay → sole
+    credentialed overlay). Probing only the named form reports CONFIG RESOLUTION and
+    calls it readiness — that is how a green doctor coexisted with a totally dead
+    notification path for a full day. This probe asks the transport the same question
+    the runtime asks and surfaces the egress's own typed refusal on failure.
+    """
+    from teatree.core.notify import resolve_owner_dm_backend  # noqa: PLC0415 — deferred: ORM-backed resolution
+
+    backend, refusal = resolve_owner_dm_backend()
+    if backend is not None:
+        return RoundtripFinding(Level.OK, "ambient egress resolves a real backend (the headless notify_user seam).")
+    return RoundtripFinding(
+        Level.FAIL,
+        f"ambient egress is DEAD ({refusal.value}) — EVERY headless notify_user (review done, task complete, "
+        f"answers) parks its DM undelivered even though the per-overlay probes above resolve fine. "
+        f"{refusal.detail}.",
+    )
+
+
+def _probe_undelivered_owner_notifications(*, now: dt.datetime | None = None) -> RoundtripFinding | None:
+    """Real-traffic proof that the owner went un-notified — the ledger, read back.
+
+    The durable counterpart to :func:`_probe_unanswered_evidence`: every notification
+    that could not be delivered leaves a NOOP/FAILED/EXPIRED :class:`BotPing` row
+    carrying its reason. A notification nobody is watching MUST leave a trace loud
+    enough to find, so the doctor reads that trace rather than trusting config.
+    Returns ``None`` when no owner-audience notification was dropped in the window.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.modelkit.notify_policy import OWNER_AUDIENCE_VALUES  # noqa: PLC0415 — deferred: ORM-adjacent
+    from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the registry
+
+    cutoff = (now or timezone.now()) - _UNDELIVERED_NOTIFY_WINDOW
+    dropped = BotPing.objects.filter(
+        audience__in=OWNER_AUDIENCE_VALUES,
+        status__in=(BotPing.Status.NOOP, BotPing.Status.FAILED, BotPing.Status.EXPIRED),
+        posted_at__gte=cutoff,
+    )
+    count = dropped.count()
+    if count == 0:
+        return None
+    latest = dropped.order_by("-posted_at").first()
+    reason = (latest.error_message or latest.status) if latest is not None else "unknown"
+    key = latest.idempotency_key if latest is not None else ""
+    hours = int(_UNDELIVERED_NOTIFY_WINDOW.total_seconds() // 3600)
+    return RoundtripFinding(
+        Level.FAIL,
+        f"{count} owner notification(s) NEVER REACHED THE OWNER in the last {hours}h — the factory did the work and "
+        f"said nothing. Latest: key={key!r} reason={reason!r}. Fix the transport (the ambient-egress finding above "
+        "usually names it); the undelivered_notify drain re-attempts recoverable rows on the next tick.",
+    )
+
+
 def _probe_owner_resolution() -> RoundtripFinding:
     """The global owner id the headless egress DMs resolves non-empty (THE observed bug).
 
@@ -315,11 +386,15 @@ def run_slack_roundtrip_probes(
     resolved_env = env if env is not None else dict(os.environ)
     findings: list[RoundtripFinding] = []
     findings.extend(_probe_outbound(overlays, deep=deep))
-    findings.extend((_probe_owner_resolution(), _probe_listener(headless=_is_headless(resolved_env))))
+    findings.extend(
+        (_probe_ambient_egress(), _probe_owner_resolution(), _probe_listener(headless=_is_headless(resolved_env))),
+    )
     findings.extend(_probe_answer_pipeline())
-    evidence = _probe_unanswered_evidence(now=now)
-    if evidence is not None:
-        findings.append(evidence)
+    findings.extend(
+        finding
+        for finding in (_probe_unanswered_evidence(now=now), _probe_undelivered_owner_notifications(now=now))
+        if finding is not None
+    )
     return RoundtripOutcome(findings=tuple(findings))
 
 

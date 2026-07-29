@@ -80,6 +80,14 @@ class TestCliErrorPrimitiveSurfacesStructured(TestCase):
         with pytest.raises(Exception, match="invalid JSON"):
             _call("config_setting_set", {"key": "loop_cadence_seconds", "value": "not-json{"})
 
+    def test_config_setting_inconsistent_harness_provider_pair_is_refused(self) -> None:
+        # #3688: the same write-time cross-key guard fires through the MCP seam
+        # (which wraps the CLI), surfacing the refusal as a structured error with
+        # the store left untouched — not a silent accept that dooms every dispatch.
+        with pytest.raises(Exception, match="inconsistent config"):
+            _call("config_setting_set", {"key": "agent_harness_provider", "value": '"openai_compatible"'})
+        assert not ConfigSetting.objects.filter(key="agent_harness_provider").exists()
+
     def test_question_answer_unknown_id_surfaces_message(self) -> None:
         with pytest.raises(Exception, match="not found or already resolved"):
             _call("question_answer", {"question_id": 999999, "text": "yes"})

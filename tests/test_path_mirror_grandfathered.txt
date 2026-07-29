@@ -104,7 +104,6 @@ tests/teatree_loop/slack_answer/test_loop_slack_answer_command.py
 tests/teatree_loop/test_active_tickets.py
 tests/teatree_loop/test_architectural_review_scanner.py
 tests/teatree_loop/test_askuserquestion_reply_scanner.py
-tests/teatree_loop/test_assigned_issues_db.py
 tests/teatree_loop/test_backlog_sweep_scanner.py
 tests/teatree_loop/test_bug_fixes.py
 tests/teatree_loop/test_codex_review_scanner.py
@@ -114,7 +113,6 @@ tests/teatree_loop/test_external_tickets_scanner.py
 tests/teatree_loop/test_failed_e2e_scanner.py
 tests/teatree_loop/test_gitlab_approvals_scanner.py
 tests/teatree_loop/test_incoming_events_scanner.py
-tests/teatree_loop/test_issue_implementer_scanner.py
 tests/teatree_loop/test_multi_identity_scanners.py
 tests/teatree_loop/test_outbound_audit.py
 tests/teatree_loop/test_outbound_audit_overlay_binding.py
@@ -149,8 +147,6 @@ tests/teatree_loops/test_backward_compat_shims.py
 tests/teatree_loops/test_mini_loop_jobs.py
 tests/teatree_loops/test_run_tick_shim.py
 tests/teatree_skill_support/test_teatree_skill_cli_reference.py
-tests/teatree_teams/test_inert.py
-tests/test_away_mode_hook.py
 tests/test_banned_terms_tree_scan.py
 tests/test_claude_handover.py
 tests/test_cli_assess.py
@@ -158,7 +154,6 @@ tests/test_cli_autonomy.py
 tests/test_cli_ci.py
 tests/test_cli_overlay_groups.py
 tests/test_cli_review.py
-tests/test_cli_teams.py
 tests/test_cli_update.py
 tests/test_cli_wip.py
 tests/test_close_trailer_scanner.py

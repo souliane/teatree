@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 from teatree.loop.dispatch_gates import dispatch_incoming_task, dispatch_slack_message, gate_review_intent
 from teatree.loop.dispatch_reducer import (
     codex_review_dispatch,
-    dispatch_assigned_issue,
     dispatch_flag_no_review,
     dispatch_pending_task,
     is_statusline_dropped,
@@ -62,7 +61,6 @@ _CONDITIONAL_HANDLERS: dict[str, "Callable[[ScanSignal], list[DispatchAction] | 
     "slack.mention": dispatch_slack_message,
     "slack.dm": dispatch_slack_message,
     "incoming_event.task_needed": dispatch_incoming_task,
-    "assigned_issue.ready": dispatch_assigned_issue,
     "codex_review.dispatch": codex_review_dispatch,
 }
 

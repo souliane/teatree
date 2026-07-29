@@ -17,11 +17,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace.orphan_worktrees import (
-    _db_tracked_paths,
-    _raw_worktree_paths,
-    reap_orphan_raw_worktrees,
-)
+from teatree.core.management.commands._workspace.checkout_registry import raw_worktree_paths
+from teatree.core.management.commands._workspace.orphan_worktrees import _db_tracked_paths, reap_orphan_raw_worktrees
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
@@ -69,7 +66,7 @@ class _OrphanWorktreeFixture(TestCase):
             env=_clean_env(),
         ).stdout
 
-    def _reap(self) -> list[str]:
+    def _reap(self, *, dry_run: bool = False) -> list[str]:
         # Force cwd-based clone discovery onto the tmp main clone.
         with (
             patch(
@@ -81,20 +78,20 @@ class _OrphanWorktreeFixture(TestCase):
                 return_value=self.repo_main,
             ),
         ):
-            return reap_orphan_raw_worktrees(self.workspace)
+            return reap_orphan_raw_worktrees(self.workspace, dry_run=dry_run)
 
 
 class TestRawWorktreeDiscovery(_OrphanWorktreeFixture):
     def test_lists_linked_worktrees_excluding_the_main_checkout(self) -> None:
         wt_path = self._add_orphan("feat-a")
-        worktrees = _raw_worktree_paths(str(self.repo_main))
+        worktrees = raw_worktree_paths(str(self.repo_main))
         assert str(self.repo_main) not in {str(Path(p)) for p in worktrees}
         assert str(wt_path) in worktrees
         assert worktrees[str(wt_path)] == "feat-a"
 
     def test_detached_worktree_records_head(self) -> None:
         wt_path = self._add_orphan("detached-x", detach=True)
-        worktrees = _raw_worktree_paths(str(self.repo_main))
+        worktrees = raw_worktree_paths(str(self.repo_main))
         assert worktrees[str(wt_path)] == "HEAD"
 
     def test_db_tracked_paths_are_absolute(self) -> None:
@@ -126,6 +123,17 @@ class TestReapsMergedOrphan(_OrphanWorktreeFixture):
         results = self._reap()
         assert not wt_path.exists()
         assert any("Reaped orphan worktree" in line for line in results)
+
+    def test_dry_run_previews_the_reap_without_removing(self) -> None:
+        # #3489: a reapable orphan is PREVIEWED, prefixed WOULD, and left on disk.
+        wt_path = self._add_orphan("synced-preview", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "synced-preview", cwd=wt_path)
+
+        results = self._reap(dry_run=True)
+
+        assert wt_path.exists(), "dry-run must not remove the orphan worktree"
+        assert str(wt_path) in self._registered_paths()
+        assert any(line.startswith("WOULD Reap orphan worktree") and "synced-preview" in line for line in results)
 
 
 class TestKeepsUnpushedOrphan(_OrphanWorktreeFixture):

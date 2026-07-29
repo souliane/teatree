@@ -1,9 +1,12 @@
 """Session model tests (souliane/teatree#443 split of test_models.py)."""
 
+from datetime import timedelta
+
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.models import QualityGateError, Session, Ticket
+from teatree.core.models import QualityGateError, Session, Task, Ticket
 
 
 class TestSession(TestCase):
@@ -186,6 +189,37 @@ class TestSession(TestCase):
         from teatree.core.modelkit.phases import CANONICAL_PHASES  # noqa: PLC0415
 
         assert Session._GATE_PHASES <= CANONICAL_PHASES
+
+    def test_close_stamps_ended_at_once(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+        moment = timezone.now() - timedelta(hours=2)
+
+        assert session.close(at=moment) is True
+        assert session.close() is False, "a second close must not re-stamp an already-closed session"
+
+        session.refresh_from_db()
+        assert session.ended_at == moment
+
+    def test_close_if_idle_keeps_a_session_with_an_active_task_open(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+        Task.objects.create(ticket=session.ticket, session=session, status=Task.Status.CLAIMED)
+
+        assert session.close_if_idle() is False
+
+        session.refresh_from_db()
+        assert session.ended_at is None
+
+    def test_close_if_idle_closes_once_every_task_is_terminal(self) -> None:
+        session = Session.objects.create(ticket=Ticket.objects.create())
+        task = Task.objects.create(ticket=session.ticket, session=session)
+        # Bulk update, not ``complete()``: this isolates ``close_if_idle`` from the
+        # post_save receiver that would otherwise have closed the session already.
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED)
+
+        assert session.close_if_idle() is True
+
+        session.refresh_from_db()
+        assert session.ended_at is not None
 
     def test_repo_tracking(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())

@@ -8,7 +8,7 @@ singleton ``t3 worker`` owns that cadence now. The owner session's
 (sub-minute cadence, not a cron). A non-owner / fresh session emits nothing; a
 loser with a live foreign owner backs off and writes no marker. The seam
 ``teatree.loop.loop_cadences.reactive_slot_directives`` is the single source of
-truth, shared with the ``/t3:loops`` skill and the ``t3 loop <slot> start`` CLI.
+truth, shared with the ``/t3:health`` skill and the ``t3 loop <slot> start`` CLI.
 
 The pure prompt recognisers (``is_bare_loop_tick_prompt`` / ``loop_name_from_prompt``)
 stay: ``hook_router`` and ``cron_tracking`` still classify a per-loop tick prompt

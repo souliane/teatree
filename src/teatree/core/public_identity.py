@@ -5,7 +5,8 @@ GitHub ``users.noreply.github.com`` author identity rather than the
 machine's inherited git identity. Strictly scoped by remote host AND
 visibility — non-github (e.g. GitLab) and private remotes are excluded
 so their own configured identity is left as-is. Reused by the worktree
-provisioner and the merge author-verification helper.
+provisioner and the fast-push commit-identity leak gate
+(:meth:`teatree.core.fast_push.LeakGateScan._author_identity`).
 
 The gate is HOST-AWARE (#2655): callers pass the full remote URL (host
 intact), never the host-stripped slug — a bare ``owner/repo`` from a
@@ -47,10 +48,6 @@ _OWNER_REPO_PARTS = 2
 
 _CANONICAL_NAME = "souliane"
 _CANONICAL_EMAIL = "21343492+souliane@users.noreply.github.com"
-
-
-class MergeAuthorMismatchError(RuntimeError):
-    """A squash-merge author did not match the required noreply pattern."""
 
 
 def is_noreply_email(email: str) -> bool:

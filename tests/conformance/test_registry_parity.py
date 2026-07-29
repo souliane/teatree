@@ -25,6 +25,7 @@ import pytest
 from django.db.models import Q
 
 from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS
+from teatree.core.deterministic_phases import deterministic_phase_runner
 from teatree.core.management.commands import loop_dispatch
 from teatree.core.managers import TaskQuerySet
 from teatree.core.modelkit.phase_tools import _TOOLS_BY_PHASE, tools_for_phase
@@ -301,9 +302,22 @@ class TestPhaseToolsTotalityParity:
         assert "write_file" not in tools
         assert "edit_file" not in tools
 
+    def test_an_empty_allowance_scanner_phase_is_executed_deterministically(self) -> None:
+        # The other half of #3386: an explicit entry is not enough if that entry is the
+        # EMPTY allowance. A scanner-dispatched phase with no tools that still routes to
+        # an agent is handed a ticket-work brief it cannot act on, parks on an
+        # unanswerable question, and — the scanner's dedup filter ignoring FAILED — is
+        # re-enqueued every tick. Such a phase MUST carry a deterministic runner.
+        for phase in SCANNER_DISPATCHED_PHASES:
+            if tools_for_phase(phase):
+                continue
+            assert deterministic_phase_runner(phase) is not None, phase
+
     def test_cardinality_floor_anti_vacuity(self) -> None:
         assert len(self._dispatchable_phases()) >= 14, self._dispatchable_phases()
         assert len(_TOOLS_BY_PHASE) >= 14, set(_TOOLS_BY_PHASE)
+        empty_allowance = {p for p in SCANNER_DISPATCHED_PHASES if not tools_for_phase(p)}
+        assert empty_allowance, "the empty-allowance lane must cover at least one phase"
 
 
 #: teatree capability name <- each ``claude_sdk`` built-in tool an agent md may list.

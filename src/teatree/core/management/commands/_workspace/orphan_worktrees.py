@@ -32,38 +32,15 @@ import logging
 from pathlib import Path
 
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.management.commands._workspace.checkout_registry import candidate_clones, raw_worktree_paths
+from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import is_squash_merged
-from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
-
-
-def _raw_worktree_paths(repo: str) -> dict[str, str]:
-    """Return ``{worktree_path: branch}`` for every LINKED worktree of ``repo``.
-
-    Parses ``git worktree list --porcelain``. The main checkout (the record whose
-    path is ``repo`` itself) is excluded — only the linked worktrees are
-    candidates. A detached worktree carries no ``branch`` line; it is recorded
-    with the literal ``HEAD`` (:data:`git.DETACHED_HEAD`).
-    """
-    raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
-    main = str(Path(repo).resolve())
-    result: dict[str, str] = {}
-    current_path = ""
-    current_branch = ""
-    for line in [*raw.splitlines(), "worktree "]:  # trailing sentinel flushes the last record
-        if line.startswith("worktree "):
-            if current_path and str(Path(current_path).resolve()) != main:
-                result[current_path] = current_branch or git.DETACHED_HEAD
-            current_path = line.removeprefix("worktree ")
-            current_branch = ""
-        elif line.startswith("branch refs/heads/"):
-            current_branch = line.removeprefix("branch refs/heads/")
-    return result
 
 
 def _db_tracked_paths() -> list[str]:
@@ -74,26 +51,6 @@ def _db_tracked_paths() -> list[str]:
     twin a ``git worktree list`` path may carry).
     """
     return [wt.worktree_path for wt in Worktree.objects.all() if wt.worktree_path]
-
-
-def _candidate_clones(workspace: Path) -> set[str]:
-    """The main clones whose worktree registries may hold orphaned worktrees.
-
-    A worktree's registry lives in its source clone, so orphans are found by
-    listing each known main clone's worktrees. The known clones are the
-    ``clone_path`` of every ``Worktree`` row (where sub-agents branch from) plus
-    the current working directory when it is itself a main clone (``.git`` is a
-    directory, not the gitdir-pointer file a linked worktree carries).
-    """
-    clones: set[str] = set()
-    for wt in Worktree.objects.all():
-        clone = resolve_clone_path(workspace, wt)
-        if clone is not None and (clone / ".git").is_dir():
-            clones.add(str(clone.resolve()))
-    cwd = Path.cwd()
-    if (cwd / ".git").is_dir():
-        clones.add(str(cwd.resolve()))
-    return clones
 
 
 def _branch_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
@@ -144,7 +101,7 @@ def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
     return True
 
 
-def _reap_one_orphan(repo: str, wt_path: str, branch: str) -> str:
+def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = False) -> str:
     """Dispose of one orphaned raw worktree under the keep-unproven-work policy."""
     label = f"{branch} ({wt_path})"
     if is_clean_ignored(branch):
@@ -153,12 +110,14 @@ def _reap_one_orphan(repo: str, wt_path: str, branch: str) -> str:
         return f"KEPT orphan '{label}': uncommitted changes — never reaped"
     if _branch_has_unique_work(repo, branch, wt_path):
         return f"KEPT orphan '{label}': unpushed work not on any remote — push it to salvage, never reaped"
+    if dry_run:
+        return preview_line(f"Reap orphan worktree (work already on remote): {label}", dry_run=True)
     if _remove_orphan(repo, wt_path, branch):
         return f"Reaped orphan worktree (work already on remote): {label}"
     return f"SKIPPED orphan '{label}': git worktree remove failed"
 
 
-def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
+def reap_orphan_raw_worktrees(workspace: Path, *, dry_run: bool = False) -> list[str]:
     """Discover and dispose of raw git worktrees no ``Worktree`` row tracks (#2361).
 
     For every main clone teatree knows about, every linked worktree whose
@@ -178,9 +137,9 @@ def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
     """
     tracked = _db_tracked_paths()
     cleaned: list[str] = []
-    for repo in sorted(_candidate_clones(workspace)):
+    for repo in sorted(candidate_clones(workspace)):
         try:
-            worktrees = _raw_worktree_paths(repo)
+            worktrees = raw_worktree_paths(repo)
         except CommandFailedError as exc:
             cleaned.append(f"SKIPPED clone {repo}: could not list worktrees ({exc})")
             continue
@@ -198,5 +157,5 @@ def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
             )
             continue
         for wt_path, branch in orphans:
-            cleaned.append(_reap_one_orphan(repo, wt_path, branch))
+            cleaned.append(_reap_one_orphan(repo, wt_path, branch, dry_run=dry_run))
     return cleaned

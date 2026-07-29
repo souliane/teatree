@@ -42,18 +42,18 @@ its own dedicated ``LoopLease``.
 """
 
 import datetime as dt
-import json
 import os
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from django_typer.management import TyperCommand
 
-from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
+from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
+from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
@@ -62,8 +62,6 @@ from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from teatree.core.backend_factory import OverlayBackends
     from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.tick import TickReport, TickRequest
@@ -108,23 +106,43 @@ def _focus_scoped_backends() -> list["OverlayBackends"]:
     return filtered or backends
 
 
-def _scoped_jobs_builder(only: str) -> "Callable[[TickRequest, dt.datetime], list[_ScannerJob]]":
-    """A jobs builder scoped to the ONE enabled loop ``t3 loops tick --loop`` fires (#2650).
+@dataclass(slots=True)
+class _ScopedJobsBuilder:
+    """The jobs builder scoped to the ONE loop ``t3 loops tick --loop`` fires (#2650).
 
-    Returns a closure that scopes :func:`build_loop_table_jobs` to that single
-    row, so the per-loop ``/loop`` runs exactly its own loop and every other row
-    is untouched (its cadence anchor unconsumed).
+    Scopes the loop-table fan-out to that single row, so the per-loop ``/loop``
+    runs exactly its own loop and every other row is untouched (its cadence
+    anchor unconsumed) — AND records why that row produced no jobs when the
+    loop-table refused it (#3843).
+
+    That second job is why this is an object rather than a closure. A refused
+    loop and a loop that swept and found nothing both hand ``run_tick`` an empty
+    job list, so without the recorded reason the command renders a control-plane
+    hold as ``ran … 0 signal(s), 0 action(s)`` — the false-green that kept the
+    review lane dark for hours while every tick reported success.
     """
 
-    def builder(request: "TickRequest", started_at: dt.datetime) -> "list[_ScannerJob]":
-        from teatree.loops.loop_table import build_loop_table_jobs  # noqa: PLC0415 — deferred: lazy command import
+    loop: str
+    blocked_reason: str = ""
 
-        return build_loop_table_jobs(_scanner_context(request), now=started_at, only=only)
+    def __call__(self, request: "TickRequest", started_at: dt.datetime) -> "list[_ScannerJob]":
+        from teatree.loops.loop_table import dispatch_loop_table  # noqa: PLC0415 — deferred: lazy command import
 
-    return builder
+        outcomes = dispatch_loop_table(_scanner_context(request), now=started_at, only=self.loop)
+        outcome = next((candidate for candidate in outcomes if candidate.name == self.loop), None)
+        if outcome is None:
+            self.blocked_reason = "no mini-loop of that name is registered"
+            return []
+        self.blocked_reason = outcome.blocked_reason
+        return list(outcome.jobs)
 
 
-def _report_to_dict(report: "TickReport") -> ReportDict:
+def _report_to_dict(report: "TickReport", *, blocked_reason: str = "") -> ReportDict:
+    """The structured tick report, carrying any loop-table refusal as a real skip.
+
+    A loop the loop-table declined to dispatch is ``skipped`` — NOT a zero-signal
+    run — so a structured consumer reads the same distinction the console does.
+    """
     return {
         "started_at": report.started_at.isoformat(),
         "signal_count": report.signal_count,
@@ -132,8 +150,8 @@ def _report_to_dict(report: "TickReport") -> ReportDict:
         "statusline_path": str(report.statusline_path) if report.statusline_path else "",
         "errors": report.errors,
         "actions": [asdict(action) for action in report.actions],
-        "skipped": False,
-        "skipped_reason": "",
+        "skipped": bool(blocked_reason),
+        "skipped_reason": blocked_reason,
     }
 
 
@@ -185,24 +203,72 @@ class Command(TyperCommand):
 
         now = dt.datetime.now(tz=dt.UTC)
         _write_tick_meta(now, target=statusline_file)
-        if json_output:
-            self.stdout.write(json.dumps(_skipped_report_dict(now, reason), indent=2))
-        else:
-            self.stdout.write(f"SKIP  {reason}")
+        emit(
+            _skipped_report_dict(now, reason),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"SKIP  {reason}",
+        )
 
     def _build_request(self, overlay: str) -> "TickRequest":
+        """The tick's scan request — ALWAYS overlay backends, never a bare host (#3843).
+
+        ``--overlay <name>`` used to swap the full backend set for a lone
+        ``CodeHostBackend``. That is not a narrower scan, it is a DIFFERENT and
+        strictly poorer one: a mini-loop's ``host`` arm can only build the
+        scanners a bare host supports, and the ones that need the overlay object
+        — the review domain's own-PR arm among them — are silently dropped for
+        the whole tick. On a solo repo that is fatal rather than merely partial:
+        self-assignment as a reviewer is forbidden, so a colleague-only review
+        intake makes no PR reviewable at all. Scoping the backend LIST by name
+        keeps every per-overlay scanner and simply narrows which overlay runs.
+
+        An ``--overlay`` naming no registered overlay fails loud rather than
+        silently widening to the fleet or scanning nothing.
+        """
         from teatree.loop.tick import TickRequest  # noqa: PLC0415 — deferred: keeps command import light
 
-        if overlay:
-            return TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
-        return TickRequest(backends=_focus_scoped_backends())
+        if not overlay:
+            return TickRequest(backends=_focus_scoped_backends())
+        named = [backend for backend in iter_overlay_backends() if backend.name == overlay]
+        if not named:
+            self.stderr.write(
+                f"--overlay {overlay!r} matches no registered overlay. Run `t3 info` for the registered "
+                "overlays, or omit --overlay to scan the whole fleet."
+            )
+            raise SystemExit(2)
+        return TickRequest(backends=named)
 
-    def _emit_report(self, report: "TickReport", *, json_output: bool) -> None:
-        if json_output:
-            self.stdout.write(json.dumps(_report_to_dict(report), indent=2))
-            return
-        for name, message in report.errors.items():
-            self.stdout.write(f"WARN  {name}: {message}")
+    def _emit_report(self, report: "TickReport", loop: str, *, blocked_reason: str, json_output: bool) -> None:
+        """Emit the tick report, leading with a ``ran`` OR a reasoned ``SKIP`` verdict.
+
+        A tick used to print NOTHING on the success path (``human`` was ``None``
+        whenever ``errors`` was empty), so a loop that ran and found no work was
+        byte-for-byte indistinguishable from one that never ran at all. Every
+        tick now states its outcome (#3810), which is what made the SKIP
+        starvation invisible for hours.
+
+        #3843 closes the other half: a loop the loop-table REFUSED (force-OFF,
+        held, disabled, not due, colleague-facing under an away mode) hands
+        ``run_tick`` an empty job list, so it used to render as ``ran … 0
+        signal(s)`` — a control-plane hold reading as a healthy quiet tick. When
+        *blocked_reason* is set the verdict is a SKIP naming what refused the
+        loop and how to lift it.
+        """
+        verdict = (
+            f"SKIP  loop {loop!r} did not run — {blocked_reason}"
+            if blocked_reason
+            else f"ran   loop {loop!r} — {report.signal_count} signal(s), {report.action_count} action(s)"
+        )
+        warnings = [f"WARN  {name}: {message}" for name, message in report.errors.items()]
+        emit(
+            _report_to_dict(report, blocked_reason=blocked_reason),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join([verdict, *warnings]),
+        )
 
     def handle(
         self,
@@ -262,22 +328,27 @@ class Command(TyperCommand):
         run_loop_connector_preflight(loop)
 
         from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
-        from teatree.loop.session_identity import (  # noqa: PLC0415 — deferred: keeps command import light
-            current_session_id,
-            current_session_pid,
-        )
+        from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
         owner_slot = per_loop_owner_slot(loop)
         tick_mutex = f"{PER_LOOP_TICK_MUTEX_PREFIX}{loop}"
 
-        session_id = current_session_id()
-        # The lease ``owner_pid`` MUST be the durable session process, not
+        # ONE identity seam for every loop-ownership call site (#3810), so a
+        # claim and the release that follows it can never resolve to two
+        # different principals. The loop runner declares its own durable
+        # principal, so its next tick re-claims the lease its previous tick took
+        # instead of meeting it as a stranger; a Claude self-pump still resolves
+        # its own session exactly as before.
+        #
+        # The lease ``owner_pid`` MUST be the durable owning process, not
         # ``os.getppid()`` of this tick subprocess (the self-pump runs it inside a
         # Bash-tool shell the harness tears down seconds later — anchoring on it
-        # collapses the pid-liveness protection back to TTL-only, #1706). The
-        # durable session pid comes from the loop registry; ``os.getppid()`` is the
-        # fallback only for a direct in-session invocation with no registry record.
-        owner_pid = current_session_pid() or os.getppid()
+        # collapses the pid-liveness protection back to TTL-only, #1706). It is
+        # the runner's own pid for a runner tick and the loop registry's durable
+        # session pid for a self-pump; ``os.getppid()`` is the fallback only for a
+        # direct in-session invocation with no registry record.
+        session_id, principal_pid = loop_principal()
+        owner_pid = principal_pid or os.getppid()
         # The per-tick re-claim IS the heartbeat, so it self-heals the driver: a
         # tick that detects a live driver registers/updates it, while a tick whose
         # detection momentarily returns blank PRESERVES the stored value
@@ -326,16 +397,17 @@ class Command(TyperCommand):
         set_mini_loop_schedules_reader(mini_loop_schedules)
         set_preset_line_reader(preset_line_handles)
         set_overridden_loops_reader(overridden_loop_names)
+        builder = _ScopedJobsBuilder(loop=loop)
         try:
             request = self._build_request(overlay)
-            report = run_tick(request, statusline_path=statusline_file, jobs_builder=_scoped_jobs_builder(loop))
+            report = run_tick(request, statusline_path=statusline_file, jobs_builder=builder)
         finally:
             set_mini_loop_schedules_reader(None)
             set_preset_line_reader(None)
             set_overridden_loops_reader(None)
             LoopLease.objects.release(tick_mutex, owner=owner)
 
-        self._emit_report(report, json_output=json_output)
+        self._emit_report(report, loop, blocked_reason=builder.blocked_reason, json_output=json_output)
         self._hard_exit_if_subprocess()
 
     @staticmethod
@@ -350,7 +422,9 @@ class Command(TyperCommand):
         ``run_deadlined_tick`` sets, so an in-process ``call_command`` (tests) NEVER
         hits it. Streams are flushed first because ``os._exit`` skips atexit flushing.
         """
-        from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER  # noqa: PLC0415 — deferred: keep import light
+        from teatree.loops.deadlined_tick import (  # noqa: PLC0415 — deferred: keep import light
+            TICK_SUBPROCESS_ENV_MARKER,
+        )
 
         if not os.environ.get(TICK_SUBPROCESS_ENV_MARKER):
             return

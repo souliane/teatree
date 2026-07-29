@@ -136,6 +136,14 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
     graded and it is capped (``model="haiku"``, ``maxTurns=1``, a reply-and-STOP
     prompt) so it cannot burn the run's budget or turn caps while the (correct)
     main-agent dispatch is what the scenario actually measures.
+
+    That bound holds ONLY for a spawn that NAMES the stub, which is why
+    :data:`~teatree.eval.prompt_framing.DELEGATION_FRAMING` tells the model the one
+    registered type. Measured against the bundled CLI: a spawn omitting
+    ``subagent_type`` runs the UNBOUNDED built-in ``general-purpose`` agent, and an
+    ``agents`` entry keyed ``general-purpose`` is ACCEPTED but does NOT shadow that
+    built-in — so registering the stub under the built-in's name is not a usable
+    second line of defence, and the framing is the only route to the bound.
     """
     if not scenario_exposes_subagent_spawn(spec):
         return None

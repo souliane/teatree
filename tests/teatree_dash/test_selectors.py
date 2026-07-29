@@ -1,10 +1,14 @@
 """``build_kanban_columns`` groups tickets by FSM state with the right card badges (#3162)."""
 
-from django.test import TestCase
+from datetime import timedelta
 
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.dash.selectors import BoardFilters, KanbanBoard, KanbanCard, build_kanban_columns
+from teatree.dash.selectors import STALE_ERROR_AFTER, BoardFilters, KanbanBoard, KanbanCard, build_kanban_columns
 from tests.factories import PullRequestFactory, SessionFactory, TaskAttemptFactory, TaskFactory, TicketFactory
 
 State = Ticket.State
@@ -15,8 +19,8 @@ def _cards_by_state(board: KanbanBoard) -> dict[str, list[KanbanCard]]:
     for group in board.groups:
         for column in group.columns:
             cards[column.state] = list(column.cards)
-    if board.ignored is not None:
-        cards[board.ignored.state] = list(board.ignored.cards)
+    for column in board.hidden:
+        cards[column.state] = list(column.cards)
     return cards
 
 
@@ -56,6 +60,12 @@ class BuildKanbanColumnsTestCase(TestCase):
         shown = build_kanban_columns(BoardFilters(include_ignored=True))
         assert _find_card(shown, ignored.pk) is not None
 
+    def test_review_posted_hidden_by_default_and_shown_on_toggle(self) -> None:
+        posted = TicketFactory(state=State.REVIEW_POSTED)
+        assert _find_card(build_kanban_columns(), posted.pk) is None
+        shown = build_kanban_columns(BoardFilters(include_ignored=True))
+        assert _find_card(shown, posted.pk) is not None
+
     def test_active_dot_from_pending_task(self) -> None:
         ticket = TicketFactory(state=State.CODED)
         TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket), status="pending", phase="testing")
@@ -89,6 +99,31 @@ class BuildKanbanColumnsTestCase(TestCase):
         card = _find_card(build_kanban_columns(), ticket.pk)
         assert card is not None
         assert card.last_error == ""
+
+    def test_last_error_expires_once_it_predates_the_freshness_window(self) -> None:
+        # #3841 item 3: cards rendered tracebacks naming paths that no longer exist
+        # on this box. A failure old enough to predate the current deployment is not
+        # current state, so the board stops presenting it as if it were.
+        ticket = TicketFactory(state=State.CODED)
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket))
+        attempt = TaskAttemptFactory(task=task, error='Traceback (most recent call last): File "/gone/tasks.py"')
+        TaskAttempt.objects.filter(pk=attempt.pk).update(
+            started_at=timezone.now() - STALE_ERROR_AFTER - timedelta(minutes=1)
+        )
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == ""
+
+    def test_a_fresh_error_still_renders(self) -> None:
+        ticket = TicketFactory(state=State.CODED)
+        task = TaskFactory(ticket=ticket, session=SessionFactory(ticket=ticket))
+        attempt = TaskAttemptFactory(task=task, error="boom: it failed")
+        TaskAttempt.objects.filter(pk=attempt.pk).update(
+            started_at=timezone.now() - STALE_ERROR_AFTER + timedelta(minutes=1)
+        )
+        card = _find_card(build_kanban_columns(), ticket.pk)
+        assert card is not None
+        assert card.last_error == "boom: it failed"
 
     def test_dwell_from_latest_transition(self) -> None:
         ticket = TicketFactory(state=State.STARTED)

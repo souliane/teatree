@@ -60,8 +60,11 @@ _COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
 # classifier and the cold-review record that DEFINE the trust boundary itself
 # (``merge_clear.py`` — this module — and ``review_verdict.py``, the maker≠checker
 # guard), every merge/safety gate (``core/gates/``), the trust classifier
-# (``author_trust.py``), the intake gate (``issue_implementer.py`` /
-# ``scanner_factories.py``), the autonomy/trust configuration (``config/`` —
+# (``author_trust.py``), the intake/admission trust boundary — the ONE decision
+# function (``factory_admission.py``), the scanner that consumes it
+# (``issue_intake.py``), the PR-side stranger-admission gate
+# (``stranger_pr.py``), and the wiring that arms them (``scanner_factories.py``)
+# — the autonomy/trust configuration (``config/`` —
 # autonomy tiers and the ``substrate_auto_merge_authorized_by`` default), the
 # on-behalf authorisation gate (``on_behalf_gate.py``), and the PreToolUse/Stop
 # safety hooks (``hooks/``). Schema migrations (``core/migrations/``, incl.
@@ -82,9 +85,11 @@ _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/gates/",
     "src/teatree/core/migrations/",
     "src/teatree/core/review/author_trust.py",
+    "src/teatree/core/review/stranger_pr.py",
+    "src/teatree/core/intake/factory_admission.py",
     "src/teatree/config/",
     "src/teatree/on_behalf_gate.py",
-    "src/teatree/loop/scanners/issue_implementer.py",
+    "src/teatree/loop/scanners/issue_intake.py",
     "src/teatree/loop/scanner_factories.py",
     "hooks/",
     "docs/blueprint/",
@@ -101,7 +106,8 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     factory's self-governance seams (#3244) — the merge/CLEAR classifier and
     cold-review record that DEFINE the trust boundary (``merge_clear.py`` /
     ``review_verdict.py``), every merge/safety gate (``core/gates/``), the trust
-    classifier (``author_trust.py``), the intake gate (``issue_implementer.py`` /
+    classifier (``author_trust.py``), the intake/admission trust boundary
+    (``factory_admission.py`` / ``issue_intake.py`` / ``stranger_pr.py`` /
     ``scanner_factories.py``), the autonomy/trust config (``config/``), the
     on-behalf gate (``on_behalf_gate.py``) and the safety hooks (``hooks/``) — and
     schema migrations (``core/migrations/``, incl. destructive DROP / data

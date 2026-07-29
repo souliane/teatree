@@ -78,11 +78,6 @@ def skill_loading_gate_is_enabled() -> bool:
     return _gate_key_is_enabled(SKILL_GATE_KEY)
 
 
-def plan_edit_gate_is_enabled() -> bool:
-    """Resolve the plan-edit gate (``PLAN_GATE_KEY``, default True)."""
-    return _gate_key_is_enabled(PLAN_GATE_KEY)
-
-
 def config_overwrite_gate_is_enabled() -> bool:
     """Resolve the read-before-overwrite config gate (``CONFIG_OVERWRITE_GATE_KEY``, default True)."""
     return _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY)

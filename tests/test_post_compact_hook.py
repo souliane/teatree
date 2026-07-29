@@ -25,6 +25,7 @@ from hooks.scripts.hook_router import (
     handle_pre_compact,
     handle_session_start_bootstrap,
 )
+from tests._unreadable_file import skip_if_root
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +77,7 @@ class TestRecoverSnapshotContext:
     def test_no_files_returns_none(self) -> None:
         assert _recover_snapshot_context("no-such-session") is None
 
+    @skip_if_root
     def test_unreadable_file_is_skipped(self) -> None:
         session_id = "perm-denied"
         f = router.STATE_DIR / f"{_T3_TEMP_PREFIX}{session_id}-20260403-1200.md"

@@ -19,12 +19,15 @@ _SNAPSHOT_USER = "dash-snapshot"
 # The CSRF token is embedded once in the base template's ``hx-headers`` and is
 # per-request volatile; freeze it so the committed snapshot is stable.
 _CSRF_HX = re.compile(r'("X-CSRFToken": ")[^"]*(")')
+# The header names the box, falling back to its hostname. Freezing it keeps the
+# snapshot machine-independent — and keeps a real hostname out of a public repo.
+_INSTANCE_LABEL = re.compile(r'(<span class="dash-instance"[^>]*>)[^<]*(</span>)')
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "board.html"
 
 
 def _canonical_html(html: str) -> str:
-    frozen = _CSRF_HX.sub(r"\1CSRF\2", html)
+    frozen = _INSTANCE_LABEL.sub(r"\1INSTANCE\2", _CSRF_HX.sub(r"\1CSRF\2", html))
     return "\n".join(line.rstrip() for line in frozen.split("\n"))
 
 

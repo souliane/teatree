@@ -22,7 +22,7 @@ up the snapshot deltas the outer loop diffs.
 
 import dataclasses
 from datetime import datetime
-from typing import Any
+from typing import TypedDict, cast
 
 from teatree.core.factory.factory_recipe import Recipe, RecipeSignal, load_recipe
 from teatree.core.factory.factory_signals import (
@@ -35,6 +35,34 @@ from teatree.core.factory.factory_signals import (
     compute_factory_signals,
 )
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
+
+
+class ScoredSignalDict(TypedDict):
+    """The wire shape of one :class:`ScoredSignal`."""
+
+    provider_id: str
+    status: str
+    value: float | None
+    normalized: float | None
+    weight: float
+    covered: bool
+    red: bool
+    verdict: str
+
+
+class FactoryScoreDict(TypedDict):
+    """The wire shape of a :class:`FactoryScore` — what ``t3 <overlay> recipe score --json`` emits."""
+
+    aggregate: float | None
+    verdict: str
+    coverage: float
+    coverage_floor: float
+    recipe_sha: str
+    recipe_approved: bool
+    window_days: int
+    delta_vs_previous: float | None
+    delta_vs_last_different_recipe_sha: float | None
+    signals: list[ScoredSignalDict]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -50,8 +78,8 @@ class ScoredSignal:
     red: bool
     verdict: str
 
-    def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+    def to_dict(self) -> ScoredSignalDict:
+        return cast("ScoredSignalDict", dataclasses.asdict(self))
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -69,7 +97,7 @@ class FactoryScore:
     delta_vs_previous: float | None = None
     delta_vs_last_different_recipe_sha: float | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> FactoryScoreDict:
         return {
             "aggregate": self.aggregate,
             "verdict": self.verdict,

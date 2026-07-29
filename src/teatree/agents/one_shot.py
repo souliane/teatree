@@ -1,7 +1,7 @@
 """One shared ``run_one_shot`` seam for cheap, single-turn aux LLM calls.
 
 The aux one-shot call sites — Slack ``simple_answer``, ``ticket_short_describe``
-— used to hardcode ``claude-haiku-4-5`` and drive :func:`claude_agent_sdk.query`
+— used to hardcode the cheap tier's model id and drive :func:`claude_agent_sdk.query`
 directly, bypassing BOTH the tier-resolution seam and the harness seam, so they
 silently broke off-Claude (§3a #1, §7 #2). This module collapses them onto ONE
 helper that:
@@ -11,7 +11,7 @@ helper that:
     DB row reaches the call; and
 *   routes the turn through the provider-agnostic harness seam
     (:func:`~teatree.agents.harness.resolve_harness`), so the SAME clean-room
-    turn runs on ``claude_sdk`` or ``pydantic_ai``/OrcaRouter with no code edit.
+    turn runs on ``claude_sdk`` or ``pydantic_ai`` with no code edit.
 
 The turn is CLEAN-ROOM: an empty ``setting_sources`` and empty ``settings`` (no
 hooks), no tools, and a single ``max_turns`` so the model answers from the
@@ -26,7 +26,7 @@ operator misconfiguration that must surface, not a turn that silently answered
 ``None`` and stranded every caller on its fallback forever with nothing naming
 the cause. TWO refusal paths raise: the ambient base-URL guard, checked while
 building the options before the turn is attempted; and a credential the
-``pydantic_ai`` lane resolves LAZILY inside ``harness.open()`` (the OrcaRouter BYOK
+``pydantic_ai`` lane resolves LAZILY inside ``harness.open()`` (the the OpenAI-compatible backend
 key or the native Anthropic key), which sits INSIDE the degrade-to-``None`` try and
 so is re-raised explicitly ahead of the blanket handler.
 """

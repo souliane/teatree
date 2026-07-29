@@ -49,10 +49,10 @@ def assert_model_allowed_on_regulated_path(
     config-policy violation.
 
     CLIENT-SIDE ONLY (best-effort): this rejects an ineligible id BEFORE the request,
-    but with the default ``orcarouter/teatree-factory`` router handle the OrcaRouter
-    SERVER-SIDE bandit can still route to a model not on the allowlist. An operator
-    needing a HARD regulated-path restriction must ALSO constrain the OrcaRouter
-    dashboard (Allowed-models glob) or pin explicit model ids.
+    but a configured ``openai_compatible_model`` that is itself a SERVER-SIDE routing
+    handle can still land on a model not on the allowlist. An operator needing a HARD
+    regulated-path restriction must ALSO constrain the provider's own allowed-models
+    policy or pin explicit model ids.
 
     *enforce_regulated_path* / *allowlist* are injectable for tests; the defaults
     read the resolved DB-home settings.

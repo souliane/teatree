@@ -4,6 +4,7 @@ Backs ``t3 review-request check --mr-url <url>``: the agent runs this in
 the SAME turn as a review-request post and aborts on SUPPRESS.
 """
 
+import os
 from typing import cast
 from unittest.mock import patch
 
@@ -44,6 +45,66 @@ class TestReviewRequestCheckCommand(TestCase):
             )
         assert result["action"] == "suppress"
         assert result["reason"] == "no_review_channel_or_token"
+
+    def test_threads_the_url_owning_overlay_into_the_guard(self) -> None:
+        """With no ``T3_OVERLAY_NAME`` the overlay comes from the MR URL (#1310).
+
+        The MCP surface runs this command IN-PROCESS: it sets no env var and
+        every overlay is registered, so the guard resolved no overlay at all
+        and answered ``suppress`` / ``no_review_channel_or_token`` while
+        ``t3 review-request check`` — whose CLI bridge exports the env var —
+        answered truthfully on the very same MR. The two surfaces must agree.
+        """
+        seen: dict[str, str] = {}
+        target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")
+
+        with (
+            patch.dict(os.environ),
+            patch(
+                "teatree.core.management.commands.review_request_check.overlay_for_mr_url",
+                return_value="acme",
+            ),
+            patch(
+                "teatree.core.management.commands.review_request_check.resolve_guard_target",
+                side_effect=lambda **kw: (seen.update(kw), target)[1],
+            ),
+            patch(
+                "teatree.core.management.commands.review_request_check.peek_should_post_review_request",
+                return_value=GuardDecision(action="post"),
+            ),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            result = cast(
+                "dict[str, object]",
+                call_command("review_request_check", "--mr-url", _MR_URL),
+            )
+
+        assert seen["overlay_name"] == "acme"
+        assert result["action"] == "post"
+
+    def test_explicit_env_overlay_defers_to_the_cli_bridge(self) -> None:
+        """``T3_OVERLAY_NAME`` wins: pass ``""`` so ``get_overlay`` consumes it."""
+        seen: dict[str, str] = {}
+        target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")
+
+        with (
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "acme"}),
+            patch(
+                "teatree.core.gates.review_request_guard.infer_overlay_for_url",
+                side_effect=AssertionError("must not infer when the env var is set"),
+            ),
+            patch(
+                "teatree.core.management.commands.review_request_check.resolve_guard_target",
+                side_effect=lambda **kw: (seen.update(kw), target)[1],
+            ),
+            patch(
+                "teatree.core.management.commands.review_request_check.peek_should_post_review_request",
+                return_value=GuardDecision(action="post"),
+            ),
+        ):
+            call_command("review_request_check", "--mr-url", _MR_URL)
+
+        assert seen["overlay_name"] == ""
 
     def test_passes_through_post_decision(self) -> None:
         target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")

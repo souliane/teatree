@@ -148,6 +148,48 @@ _remote_sha_is_trusted_base() {
   [ -n "${tracked}" ] && [ "${tracked}" = "${sha}" ]
 }
 
+# On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
+# changed file within a commit — so the refusal names the exact commit + file a
+# finding lives in. Without this the finding's line number is only an offset into
+# a concatenated multi-commit blob, unlocatable in public history; an operator who
+# cannot find the reported finding learns to distrust (and bypass) the gate. Only
+# the RARE blocked path pays this per-commit cost: a clean push is decided by the
+# single whole-range scan and never enters here. Args are the `<sha> --not
+# <public-tips>` range; uses the globals ${scan_cmd}/${findings_code}. Returns 0 if
+# it attributed at least one finding, 1 if none (caller then prints the raw report).
+_attribute_findings() {
+  local printed=1
+  local sha f sub sub_rc
+  while read -r sha; do
+    [ -n "${sha}" ] || continue
+    # A finding that lives only in the commit MESSAGE (a Co-authored-by line, a
+    # banned term in the subject) has no file, so scan the message on its own.
+    sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
+    sub_rc=0
+    git show -s --format='%B' "${sha}" | ${scan_cmd} - >"${sub}" 2>&1 || sub_rc=$?
+    if [ "${sub_rc}" -eq "${findings_code}" ]; then
+      echo "  commit ${sha} (commit message):"
+      sed 's/^/    /' "${sub}"
+      printed=0
+    fi
+    rm -f "${sub}"
+    # Then each changed file's patch in this commit, named individually.
+    while read -r f; do
+      [ -n "${f}" ] || continue
+      sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-file.XXXXXX")
+      sub_rc=0
+      git show --format= --patch --cc "${sha}" -- "${f}" | ${scan_cmd} - >"${sub}" 2>&1 || sub_rc=$?
+      if [ "${sub_rc}" -eq "${findings_code}" ]; then
+        echo "  commit ${sha} file ${f}:"
+        sed 's/^/    /' "${sub}"
+        printed=0
+      fi
+      rm -f "${sub}"
+    done < <(git show --no-commit-id --name-only --format= "${sha}" 2>/dev/null)
+  done < <(git rev-list --reverse "$@" 2>/dev/null)
+  return "${printed}"
+}
+
 blocked=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
@@ -221,11 +263,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   printf '%s\n' "${content}" | ${scan_cmd} - >"${report}" 2>&1 || scan_rc=$?
   if [ "${scan_rc}" -eq "${findings_code}" ]; then
     echo "✗ refuse: push to PUBLIC repo '${slug}' carries privacy findings on '${local_ref}'."
-    echo "  Findings (line / category / redacted match):"
-    # The scanner writes a deterministic plain-text summary to stdout
-    # (captured here via 2>&1), so the user sees exactly which line/
-    # category tripped the gate — not just a generic "carries findings".
-    sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
+    echo "  Findings by commit + file (locate each in the pushed history and scrub it):"
+    # Attribute each finding to its commit + file so the operator can find it.
+    # Fall back to the whole-range report (a deterministic per-line summary the
+    # scanner writes to stdout, captured via 2>&1) only if attribution found
+    # nothing to pin — e.g. a merge combined-diff finding — so a finding is
+    # never hidden behind an empty locatable list.
+    if ! _attribute_findings "${new_commits[@]}"; then
+      sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
+    fi
     echo "  Scrub the diff (generic placeholders) before pushing to a public repo."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
     blocked=1

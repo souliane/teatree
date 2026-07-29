@@ -11,7 +11,7 @@ enum, so a future ``Ticket.State`` value cannot silently drop off the board.
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from django.db.models import Max
 from django.utils import timezone
@@ -28,21 +28,26 @@ from teatree.dash.issue_link import issue_link
 State = Ticket.State
 
 # The four visual groupings (lifecycle order). The union of every grouped state
-# plus the toggle-hidden IGNORED equals ``Ticket.State`` exactly — pinned by
+# plus the toggle-hidden set equals ``Ticket.State`` exactly — pinned by
 # ``test_kanban_conformance``. A card keeps its own state sub-column within a
-# group; the grouping is purely visual. REVIEW_POSTED (reviewer terminal) sits
-# under "Reviewing", NOT "Landed": "Landed" is author work merged to main, so a
-# reviewer ghost must never read as merged-and-shipped there.
+# group; the grouping is purely visual.
 COLUMN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Backlog", (State.NOT_STARTED, State.SCOPED)),
     ("Building", (State.STARTED, State.PLANNED, State.CODED, State.TESTED)),
-    ("Reviewing", (State.REVIEWED, State.SHIPPED, State.IN_REVIEW, State.REVIEW_POSTED)),
+    ("Reviewing", (State.REVIEWED, State.SHIPPED, State.IN_REVIEW)),
     ("Landed", (State.MERGED, State.RETROSPECTED, State.DELIVERED)),
 )
-# Hidden by default behind the board's ``ignored`` toggle (abandoned tickets).
-HIDDEN_STATES: tuple[str, ...] = (State.IGNORED,)
+# Terminal, non-actionable states hidden by default behind the board's toggle:
+# IGNORED (abandoned) and REVIEW_POSTED (reviewer finished cold-reviewing a PR).
+HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_POSTED)
 
-# Every column the board renders, in lifecycle order (excludes IGNORED).
+# How long a task failure stays CURRENT STATE for card-rendering purposes (#3841).
+# Cards were rendering tracebacks whose file paths no longer exist on this box —
+# a failure from a prior deployment presented as if it were live. The attempt row
+# itself is never touched (it is audit); only the board stops showing it.
+STALE_ERROR_AFTER = timedelta(days=2)
+
+# Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
 BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
 
 # state -> group slug (backlog/building/reviewing/landed/ignored), the ONE mapping
@@ -107,12 +112,12 @@ class KanbanGroup:
 class KanbanBoard:
     groups: tuple[KanbanGroup, ...]
     include_ignored: bool
-    ignored: KanbanColumn | None = None
+    hidden: tuple[KanbanColumn, ...] = ()
 
     @property
     def total(self) -> int:
         shown = sum(column.count for group in self.groups for column in group.columns)
-        return shown + (self.ignored.count if self.ignored else 0)
+        return shown + sum(column.count for column in self.hidden)
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,12 +167,12 @@ def build_kanban_columns(filters: BoardFilters | None = None) -> KanbanBoard:
         )
         for name, states in COLUMN_GROUPS
     )
-    ignored = (
-        KanbanColumn(state=State.IGNORED, label=_label(State.IGNORED), cards=tuple(by_state[State.IGNORED]))
+    hidden = (
+        tuple(KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in HIDDEN_STATES)
         if active.include_ignored
-        else None
+        else ()
     )
-    return KanbanBoard(groups=groups, include_ignored=active.include_ignored, ignored=ignored)
+    return KanbanBoard(groups=groups, include_ignored=active.include_ignored, hidden=hidden)
 
 
 def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
@@ -250,7 +255,10 @@ def _last_error_by_ticket(ticket_ids: list[int]) -> dict[int, str]:
         .annotate(latest_pk=Max("pk"))
         .values_list("latest_pk", flat=True)
     )
-    attempts = TaskAttempt.objects.filter(pk__in=list(latest_pks)).select_related("task")
+    attempts = TaskAttempt.objects.filter(
+        pk__in=list(latest_pks),
+        started_at__gte=timezone.now() - STALE_ERROR_AFTER,
+    ).select_related("task")
     return {attempt.task.ticket_id: attempt.error for attempt in attempts if attempt.error}
 
 

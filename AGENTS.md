@@ -2,6 +2,24 @@
 
 This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 
+## First Principles (Non-Negotiable — outrank BLUEPRINT.md and every section below)
+
+These are the owner's standing directives. Where anything else in this repo conflicts with them, they win.
+
+1. **Zero regression allowed.** A fix without a regression test is not a fix. An AI *behavioural* fix without a regression **eval** is not a fix. Find the right surface to test: prefer **integration** tests over unit tests; reach for **evals** and **E2E** when those are what actually observe the behaviour. A test that passes on the buggy code guards nothing — observe it RED first.
+2. **Code is improved continuously**, not just extended: factorized, clean, maintainable, robust, extensible, bullet-proof — with as **few comments as possible**. Comments as code: express intent in names, types and structure so prose is not needed. Comment only what the code genuinely cannot say (a non-obvious *why*, a measured constant, a deliberate divergence).
+3. **Instructions are a fallback** for whatever cannot be ENFORCED deterministically. If a rule can be made mechanical, make it mechanical and delete the prose.
+4. **Checks and gates are a safety net** for whatever could not be properly ENFORCED. They catch what the design failed to prevent; they are not the design.
+5. **The factory requires as little human intervention as possible.** Every question asked of the owner is a cost — remove its cause where you can.
+6. **The factory is RESILIENT: it auto-repairs and auto-improves itself.** A failure that needs a human to notice it is an unfinished failure.
+
+Read 3 and 4 together, and mind *who acts*:
+
+- **When the actor is deterministic** (code, CI, a hook), enforce it mechanically. A rule that can be made impossible to break should be impossible to break, and the prose restating it should then be deleted.
+- **When the actor is an AI**, the instruction comes FIRST. A gate does not prevent an agent from doing the wrong thing — it fires after the fact, so every trigger costs a whole repair cycle in tokens and wall-clock. The instruction is what makes the behaviour right on the first attempt; the gate only catches what the instruction failed to convey.
+
+So a gate is never the answer to "how do we make the agent do X". It is the net under X, sized for the times the instruction did not land. Prose that restates what a mechanism already makes impossible is duplication; prose that shapes agent behaviour is the cheapest control there is.
+
 ## Repo Change Safety
 
 - Never create a new plan file, memory file, journal file, or repo-instruction file in this repository without the user's explicit approval first.
@@ -111,6 +129,7 @@ records.
 - Tracks visited phases across tasks within a conversation (not FSM-driven)
 - **Fields:** overlay, ticket (FK), visited_phases (JSONField), phase_visits (JSONField), started_at, ended_at, agent_id, repos_modified, repos_tested
 - Quality gates enforce ordering: reviewing requires testing, shipping requires reviewing
+- **Terminal point:** `ended_at` is written by `Session.close()`, driven from the `_close_session_on_terminal_task` `post_save` receiver — a Task reaching COMPLETED/FAILED closes its session once no sibling task on it is still active. `SessionQuerySet.live()` bounds the open-session liveness signal by `session_stale_after_hours` so a crashed agent cannot pin its ticket busy forever
 
 ### TaskAttempt — Execution history (FK → Task)
 

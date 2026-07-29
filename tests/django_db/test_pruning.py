@@ -11,7 +11,7 @@ import pytest
 from teatree.utils import run as run_mod
 from teatree.utils.django_db import dslr as dslr_mod
 from teatree.utils.django_db import prune_dslr_snapshots
-from teatree.utils.django_db.dslr import parse_dslr_snapshots as _parse_dslr_snapshots
+from teatree.utils.django_db.dslr_prune import parse_dslr_snapshots as _parse_dslr_snapshots
 
 
 class TestParseDslrSnapshots:

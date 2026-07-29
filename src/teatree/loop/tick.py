@@ -188,5 +188,4 @@ def _resolve_jobs(
         host=request.host,
         messaging=request.messaging,
         notion_client=request.notion_client,
-        ready_labels=request.ready_labels,
     )

@@ -73,6 +73,16 @@ class TestTierResolution:
         assert price_for_model("claude-sonnet-5").input_per_mtok == pytest.approx(3.0)
         assert price_for_model("claude-sonnet-5").output_per_mtok == pytest.approx(15.0)
 
+    def test_opus_5_maps_to_opus_tier_and_price(self) -> None:
+        # The frontier tier's model is now Opus 5; the substring-keyed lookup
+        # resolves it to the ``opus`` tier (same $5/$25 sticker as the prior Opus
+        # frontier entry) with no new PRICE_TABLE entry, and NOT to the unpriced
+        # bucket.
+        assert tier_of_model("claude-opus-5") == "opus"
+        assert price_for_model("claude-opus-5").input_per_mtok == pytest.approx(5.0)
+        assert price_for_model("claude-opus-5").output_per_mtok == pytest.approx(25.0)
+        assert tier_rank("claude-opus-5") == tier_rank("frontier")
+
     def test_none_falls_back_to_conservative_reasoning_tier(self) -> None:
         # A ``None`` model inherited the user's own (uncaptured) default — priced
         # conservatively at the reasoning tier, NOT the unpriced bucket.
@@ -262,6 +272,17 @@ class TestCostBreakdown:
         assert breakdown.per_tier_usd["opus"] == pytest.approx(3.0)
         assert breakdown.per_tier_usd["sonnet"] == pytest.approx(0.5)
 
+    def test_opus_5_usage_record_costs_to_the_opus_tier(self) -> None:
+        # A dated opus-5 usage record buckets under the ``opus`` tier and prices
+        # from the price table — it never returns None nor crashes on the
+        # frontier-generation id.
+        usage = AttemptUsage("claude-opus-5", None, 1_000_000, 1_000_000, 0, 0)
+        breakdown = CostBreakdown.from_usages([usage])
+        # 1M input @ $5 + 1M output @ $25 = $30 at the opus rate.
+        assert breakdown.total_usd == pytest.approx(30.0)
+        assert breakdown.per_tier_usd == {"opus": pytest.approx(30.0)}
+        assert UNPRICED_TIER not in breakdown.per_tier_usd
+
     def test_empty_is_zero(self) -> None:
         breakdown = CostBreakdown.from_usages([])
         assert breakdown.total_usd == pytest.approx(0.0)
@@ -295,6 +316,28 @@ class TestCostBreakdown:
         usages = [AttemptUsage("opus", 1.0, 0, 0, 0, 0)]
         breakdown = CostBreakdown.from_usages(usages)
         assert set(breakdown.per_lane_usd) == {"unattributed"}
+
+    def test_splits_by_phase(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 0, 0, 0, 0, phase="coding"),
+            AttemptUsage("opus", 2.0, 0, 0, 0, 0, phase="reviewing"),
+            AttemptUsage("opus", 0.5, 0, 0, 0, 0, phase="reviewing"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert breakdown.per_phase_usd["coding"] == pytest.approx(1.0)
+        assert breakdown.per_phase_usd["reviewing"] == pytest.approx(2.5)
+
+    def test_unattributed_phase_buckets_separately(self) -> None:
+        breakdown = CostBreakdown.from_usages([AttemptUsage("opus", 1.0, 0, 0, 0, 0)])
+        assert set(breakdown.per_phase_usd) == {"unattributed"}
+
+    def test_per_phase_dollars_sum_to_the_total(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 0, 0, 0, 0, phase="coding"),
+            AttemptUsage("haiku", 2.0, 0, 0, 0, 0, phase="reviewing"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert sum(breakdown.per_phase_usd.values()) == pytest.approx(breakdown.total_usd)
 
 
 class TestCycleStart:

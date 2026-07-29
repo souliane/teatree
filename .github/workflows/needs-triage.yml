@@ -1,4 +1,6 @@
-name: Needs triage
+# TRIGGER: issue opened — auto-apply the `needs-triage` label to any issue a
+# non-owner files, gating the factory's issue-implementer claim path.
+name: Issues · Auto-label needs-triage
 
 on:
   issues:

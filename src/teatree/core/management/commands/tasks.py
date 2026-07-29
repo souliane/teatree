@@ -1,19 +1,16 @@
 import logging
-import os
 import pathlib
-import shutil
 import sys
 from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.agents._headless_options import UUID_RE
-from teatree.agents.prompt import build_interactive_context
-from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.core.deterministic_phases import run_deterministic_phase
+from teatree.core.headless_dispatch import interactive_claim_refusal, loop_dispatch_refusal
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
-from teatree.core.management.commands._deterministic_phases import run_deterministic_phase
+from teatree.core.management.commands.tasks_interactive_launch import build_claude_command, exec_inline
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
     render_reconcile_checklist,
@@ -21,7 +18,6 @@ from teatree.core.management.commands.tasks_session_view import (
     render_tasks_table,
 )
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
 
@@ -378,7 +374,7 @@ class Command(TyperCommand):
         render the harness TODO list: that list is the agent's live in-memory
         ``TaskCreate`` / ``TaskUpdate`` state, which a CLI subprocess cannot read
         (it can only see a stale on-disk snapshot that lags the live session).
-        ``/t3:todos`` builds the harness half from the live ``TaskList`` harness
+        ``/t3:checking`` builds the harness half from the live ``TaskList`` harness
         tool instead, so this view never masquerades as the live session list.
         """
         session_id = current_session_id()
@@ -456,11 +452,11 @@ class Command(TyperCommand):
             self.stdout.write("No interactive tasks pending.")
             return
 
-        command_argv = _build_claude_command(task)
+        command_argv = build_claude_command(task)
         TaskAttempt.objects.create(task=task, execution_target=task.execution_target, launch_url="")
 
         self.stdout.write(f"Starting task {task.pk} (ticket {task.ticket.ticket_number}) in the current terminal…")
-        _exec_inline(command_argv)
+        exec_inline(command_argv)
 
     def _resolve_interactive_task(self, *, task_id: int, claimed_by: str) -> Task | None:
         if task_id:
@@ -474,6 +470,10 @@ class Command(TyperCommand):
                 self.stderr.write(f"Task {task_id} is not an interactive task.")
                 raise SystemExit(1)
 
+            if (refusal := interactive_claim_refusal(task)) is not None:
+                self.stderr.write(refusal)
+                raise SystemExit(1)
+
             try:
                 task.claim(claimed_by=claimed_by)
             except InvalidTransitionError as exc:
@@ -484,13 +484,16 @@ class Command(TyperCommand):
         return self._claim_next_task(execution_target=Task.ExecutionTarget.INTERACTIVE, claimed_by=claimed_by)
 
     def _claim_next_task(self, *, execution_target: str, claimed_by: str) -> Task | None:
-        if execution_target == Task.ExecutionTarget.INTERACTIVE:
-            queryset = Task.objects.claimable_for_interactive()
-        else:
-            queryset = Task.objects.claimable_for_headless()
+        interactive = execution_target == Task.ExecutionTarget.INTERACTIVE
+        queryset = Task.objects.claimable_for_interactive() if interactive else Task.objects.claimable_for_headless()
 
         task = queryset.first()
         if task is None:
+            return None
+
+        refusal = interactive_claim_refusal(task) if interactive else None
+        if refusal is not None:
+            self.stderr.write(refusal)
             return None
 
         task.claim(claimed_by=claimed_by)
@@ -501,7 +504,6 @@ class Command(TyperCommand):
         import traceback  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         from teatree.agents.headless import run_headless  # noqa: PLC0415 — deferred: keeps command import light
-        from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415 — lazy command import
 
         # Fail-closed billing guard, shared with ``execute_headless_task`` via
         # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
@@ -555,33 +557,6 @@ def _task_row(task: Task) -> TaskRow:
     )
 
 
-def _build_claude_command(task: Task) -> list[str]:
-    """Build the ``claude`` argv for an interactive task.
-
-    Resumes the prior session when the task carries a Claude session UUID,
-    otherwise starts a fresh session with the interactive system context
-    pre-loaded via ``--append-system-prompt``.
-    """
-    claude_bin = shutil.which("claude")
-    if claude_bin is None:
-        msg = "claude CLI is not installed"
-        raise FileNotFoundError(msg)
-
-    agent_id = task.session.agent_id if task.session else ""
-    if agent_id and UUID_RE.match(agent_id):
-        logger.info("Resuming claude session %s for task %s", agent_id, task.pk)
-        return [claude_bin, "--resume", agent_id]
-
-    overlay_skill_metadata = get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata()
-    skills = resolve_skill_bundle(
-        phase=task.phase,
-        overlay_skill_metadata=overlay_skill_metadata,
-        worktree_path=dispatch_worktree_path(task.ticket),
-    )
-    system_context = build_interactive_context(task, skills=skills)
-    return [claude_bin, "--append-system-prompt", system_context]
-
-
 def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:
     if reason == "-":
         return sys.stdin.read()
@@ -590,12 +565,3 @@ def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:
     if reason_file is not None:
         return reason_file.read_text()
     return ""
-
-
-def _exec_inline(argv: list[str]) -> None:
-    from teatree.utils.run import run_streamed  # noqa: PLC0415 — deferred: keeps command import light
-
-    orig_cwd = os.environ.get("T3_ORIG_CWD", "")
-    cwd = orig_cwd if orig_cwd and pathlib.Path(orig_cwd).is_dir() else None
-    rc = run_streamed(argv, cwd=cwd, check=False)
-    raise SystemExit(rc)

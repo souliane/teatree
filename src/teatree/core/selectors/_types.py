@@ -157,14 +157,3 @@ class TaskDetail:
     parent: TaskRelatedRow | None
     children: list[TaskRelatedRow]
     attempts: list[TaskAttemptDetail]
-
-
-@dataclass(frozen=True, slots=True)
-class TaskGraphNode:
-    task_id: int
-    phase: str
-    status: str
-    execution_target: str
-    execution_reason: str
-    depth: int
-    children: list["TaskGraphNode"]

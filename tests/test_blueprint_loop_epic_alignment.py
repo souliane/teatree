@@ -101,25 +101,22 @@ class TestAnyWindowHasHelper:
         assert _any_window_has("nothing here", "#X", "ok") is False
 
 
-class TestTrackABOverviewPresent:
-    """The § 5.6 opening must make Track A vs Track B unmistakable (#1838).
+class TestLoopRestructureOverviewPresent:
+    """The § 5.6 opening must state the no-panes loop restructure (#1838/#3734).
 
     Anti-vacuous: revert the overview and these go RED. ``_any_window_has``
     scans all occurrences so an unrelated later mention of a token never
     satisfies the assertion on its own.
     """
 
-    def test_track_a_described_as_no_panes_loop_restructure(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "Track A", "no panes", "orchestrate")
-        assert _any_window_has(loop_topology, "Track A", "per-loop ownership")
+    def test_restructure_described_as_no_panes_on_the_lead_session(self, loop_topology: str) -> None:
+        assert _any_window_has(loop_topology, "NO panes", "orchestrate")
+        assert _any_window_has(loop_topology, "NO panes", "per-loop ownership")
 
-    def test_track_b_described_as_pane_backed_teammates(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "Track B", "pane", "separate long-lived")
-        assert _any_window_has(loop_topology, "Track B", "REVIEWER", "prohibited")
-
-    def test_master_off_switch_note_present(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "teams", "enabled = false", "off switch")
-        assert _any_window_has(loop_topology, "teams", "classic", "sub-agent")
+    def test_pane_layer_documented_as_retired_not_as_current_design(self, loop_topology: str) -> None:
+        # The vocabulary may appear ONLY retirement-framed, attributed to #3734.
+        assert _any_window_has(loop_topology, "teatree.teams", "retired", "#3734")
+        assert _any_window_has(loop_topology, "classic", "sub-agent")
 
     def test_dedicated_loops_toggle_retired_for_per_loop_default(self, loop_topology: str) -> None:
         # LOOP-PR-A deleted the dedicated_loops setting; #2650's one-`/loop`-per-

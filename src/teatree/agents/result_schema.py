@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TypedDict, cast
 
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
 
 
@@ -94,11 +95,13 @@ class AnswerEnvelope(TypedDict, total=False):
 class ReviewVerdictEnvelope(TypedDict, total=False):
     """A reviewing-phase agent's typed verdict, recorded server-side (corr-11).
 
-    A headless reviewing phase is denied the shell (PR-11), so it cannot run
-    ``t3 <overlay> review record``. It RETURNS this instead: the orchestrator
+    A headless reviewing phase must not run ``t3 <overlay> review record`` —
+    maker≠checker reserves that write for another actor. It RETURNS this instead: the orchestrator
     (a different actor) records the ``ReviewVerdict`` from it, so maker≠checker
     holds by construction. ``reviewed_sha`` is the full 40-char SHA the review
-    bound to; ``verdict`` is ``merge_safe`` / ``hold``.
+    bound to; ``verdict`` is ``merge_safe`` / ``hold``; ``findings`` is the record of
+    what the reviewer observed, independent of the verdict it reached
+    (:data:`~teatree.core.modelkit.review_contract.ENVELOPE_FINDINGS_RULE`).
     """
 
     verdict: str
@@ -248,6 +251,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                 "blast_class": {"type": "string", "enum": ["substrate", "logic", "docs"]},
                 "findings": {
                     "type": "array",
+                    "description": ENVELOPE_FINDINGS_RULE,
                     "items": {
                         "type": "object",
                         "properties": {
@@ -383,10 +387,14 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:
 #: - ``coding``: at least one file change recorded.
 #: - ``testing``: at least one test result OR a positive ``tests_passed``.
-#: - ``reviewing``: at least one design decision recorded, OR a typed
-#:   ``review_verdict`` returned for server-side recording (corr-11) — a
-#:   headless reviewer denied the shell proves the review happened by the
-#:   verdict it hands back, not only by a decision list.
+#: - ``reviewing``: a typed ``review_verdict`` returned for server-side
+#:   recording (corr-11), carrying a verdict the recorder can persist.
+#:   ``decisions`` used to satisfy this too, and that alternative is what let
+#:   138 reviewing tasks complete having recorded no verdict at all while every
+#:   open PR logged ``solo_overlay_no_review`` (#3654): a summary-plus-decisions
+#:   result is indistinguishable from a healthy review, so the absence was
+#:   invisible. The verdict is the only artifact the merge gate consumes, so it
+#:   is the only accepted evidence.
 #: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
 #: - ``scanning_news``: at least one ``article_suggestion`` returned — the
 #:   shell-denied scanner hands its candidates back through the envelope, so a
@@ -394,16 +402,18 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
 #:   a summary-only run dropped the drafted reply.
 #:
-#: Phases not in this map carry no evidence requirement. Of those, the
-#: intentionally-lightweight ``scoping`` and ``retro`` phases additionally
-#: accept a prose-only summary when the agent emits no JSON envelope at all —
-#: see :data:`PROSE_SUMMARY_ACCEPTED_PHASES`, the sibling that gates the
-#: no-envelope fallback for every OTHER uncovered phase.
+#: Phases not in this map carry no evidence requirement of their own.
+#: ``scoping`` and ``retro`` are intentionally lightweight and may complete on
+#: prose alone (:data:`PROSE_SUMMARY_ACCEPTED_PHASES`); every OTHER absent phase
+#: — ``debugging``, ``bughunt``, ``e2e``, ``e2e_reviewing``, ``requesting_review``,
+#: ``architectural_review``, ``backlog_sweep``, ``dogfood_smoke``, ``eval_local``,
+#: the ``codex_*`` review variants, and any free-form phase — must still RETURN a
+#: result envelope, which :func:`prose_summary_allowed` enforces.
 PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
-    "reviewing": ("decisions", "review_verdict"),
+    "reviewing": ("review_verdict",),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
     "directive_reading": ("directive_candidate",),
@@ -420,18 +430,51 @@ def required_evidence_for_phase(phase: str) -> tuple[str, ...]:
 
 
 #: Phases whose no-envelope run may still record the prose-only ``{"summary":
-#: ...}`` fallback — exactly the intentionally-lightweight phases the sibling
-#: :data:`PHASE_REQUIRED_EVIDENCE` block calls out. Data, not harness logic: a
-#: run on ANY other phase that emits no JSON result envelope is a contract
-#: violation (``prompt.py`` demands a final JSON object from every phase), so
-#: ``_record_success`` refuses it rather than laundering prose into a false
-#: success. Widen this table — never the harness — to exempt a new phase.
+#: ...}`` fallback because the prose IS the deliverable — exactly the two the
+#: :data:`PHASE_REQUIRED_EVIDENCE` block calls intentionally lightweight. Data,
+#: not harness logic: widen this table — never the runner — to exempt a new phase.
 PROSE_SUMMARY_ACCEPTED_PHASES: frozenset[str] = frozenset({"scoping", "retro"})
 
 
-def prose_summary_accepted(phase: str) -> bool:
-    """Whether ``phase`` may record a prose summary when the agent emits no JSON envelope."""
-    return normalize_phase(phase) in PROSE_SUMMARY_ACCEPTED_PHASES
+class ProseSummaryPolicy:
+    """Phase predicates gating the envelope-less prose-only ``{"summary": ...}`` fallback."""
+
+    @staticmethod
+    def accepted(phase: str) -> bool:
+        """Whether ``phase`` may record a prose summary when the agent emits no JSON envelope."""
+        return normalize_phase(phase) in PROSE_SUMMARY_ACCEPTED_PHASES
+
+    @staticmethod
+    def allowed(phase: str) -> bool:
+        """Whether ``_record_success`` may hand an envelope-less run on *phase* to the recorder.
+
+        The runner-side sibling of :meth:`accepted`, and deliberately wider than
+        it. ``_record_success`` manufactures ``{"summary":
+        agent_text[:1000]}`` when :func:`~teatree.agents.headless_result.parse_result`
+        finds no JSON anywhere in the agent's output. That fallback is what let a run
+        which produced *nothing* — the model asked for tools it did not have and
+        stopped early — record COMPLETED and advance the ticket FSM: every gate in
+        ``record_result_envelope`` passes, because a phase absent from
+        :data:`PHASE_REQUIRED_EVIDENCE` has nothing to check. The generic task brief
+        demands a final JSON object from EVERY phase (``agents/prompt.py``), so
+        prose-only is a contract violation on every lane; the fallback laundered it
+        into a completion.
+
+        Two disjoint reasons the runner still hands the manufactured summary on
+        rather than refusing it outright:
+
+        * :meth:`accepted` — the lightweight phases, exempt by design.
+        * A phase that HAS an evidence requirement — the manufactured summary is
+            already refused downstream by :func:`check_evidence`, with a message naming
+            the missing field, and only after ``attempt_recorder._salvage_coding_result``
+            has had its chance to rescue a coder that committed real work but omitted the
+            envelope (#3263). Refusing here would preempt both, replacing a specific
+            diagnosis with a generic one and stranding a landed branch.
+
+        Every other phase has no gate at all, so this is the only thing between a
+        vacuous run and a completed task.
+        """
+        return ProseSummaryPolicy.accepted(phase) or normalize_phase(phase) in PHASE_REQUIRED_EVIDENCE
 
 
 type AgentResultBlob = dict[str, object]
@@ -519,6 +562,22 @@ def interpretation_carries_payload(envelope: object) -> bool:
     return isinstance(questions, list) and any(str(q).strip() for q in questions)
 
 
+def verdict_carries_payload(envelope: object) -> bool:
+    """Whether a review-verdict envelope names a verdict the recorder can persist (#3654).
+
+    ``ReviewVerdict.record`` only knows ``merge_safe`` / ``hold``; a reviewer that
+    hands back ``PASS`` / ``LGTM`` — or an envelope carrying only findings — writes
+    no row, so the merge gate stays unfed. Matching the recorder's vocabulary here
+    keeps a reviewing task from completing over a verdict that never lands.
+    """
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    if not isinstance(envelope, dict):
+        return False
+    verdict = str(cast("ReviewVerdictEnvelope", envelope).get("verdict") or "").strip().lower()
+    return verdict in {choice.value for choice in ReviewVerdict.Verdict}
+
+
 #: Channels whose "evidence present" test is stricter than coarse truthiness:
 #: the field must carry what the recorder actually PERSISTS (a url-bearing
 #: suggestion, a text-bearing answer). Without this a schema-violating-but-
@@ -531,6 +590,7 @@ _FIELD_PERSISTS: dict[str, Callable[[object], bool]] = {
     "answer": lambda v: bool(answer_text(v)),
     "directive_interpretation": interpretation_carries_payload,
     "directive_candidate": candidate_carries_payload,
+    "review_verdict": verdict_carries_payload,
 }
 
 

@@ -140,4 +140,4 @@ This skill holds the core. Load the mode-specific skill for the task in hand —
 | Skill | When to load |
 |-------|--------------|
 | `/dogfooding-teatree` | Validating a CLI, loop, or statusline change; or self-QA on the loop and statusline — find, file, and fix bugs in one session |
-| `/teatree-batch` | Working the open issue tracker (and its tracking epics) unattended, one ticket at a time |
+| `/t3:wip` | Working the open issue tracker (and its tracking epics) unattended, one ticket at a time |

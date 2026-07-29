@@ -57,21 +57,28 @@ def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
 def diff_coverage(
     *,
     repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
-    base: str = typer.Option("origin/main", "--base", help="Ref to diff against (merge-base..HEAD)"),
+    base: str = typer.Option(
+        "",
+        "--base",
+        help="Ref to diff against (merge-base..HEAD). Default: T3_DIFF_COVERAGE_BASE, else the repo's default branch.",
+    ),
     coverage_file: Path = typer.Option(Path(".coverage"), "--coverage-file", help="Path to .coverage data file"),
     output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
 
     Measures coverage on the *branch's* added production lines — the committed
-    diff against its merge-base with ``--base`` (default ``origin/main``), NOT the
-    clone's working tree, so unrelated uncommitted edits never enter the gate.
+    diff against its merge-base with ``--base``, NOT the clone's working tree, so
+    unrelated uncommitted edits never enter the gate. When ``--base`` is omitted it
+    resolves the configured base branch (``T3_DIFF_COVERAGE_BASE``) or the repo's
+    ACTUAL default branch, never a hardcoded ``origin/main`` — the latter grades a
+    ``master``-default repo or a fork's whole integration branch as new/uncovered.
     Requires every new/changed production symbol to be imported by a changed test
     (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
     uncovered or a symbol is unreferenced.
     """
     from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.utils.git import branch_diff  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git import branch_diff, resolve_diff_base  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     if not coverage_file.exists():
         typer.echo(
@@ -87,7 +94,7 @@ def diff_coverage(
             err=True,
         )
 
-    diff = branch_diff(str(repo), base)
+    diff = branch_diff(str(repo), base or resolve_diff_base(str(repo)))
     report = measure_diff_coverage(diff, coverage_data_file=coverage_file, repo_root=repo)
     if output_json:
         typer.echo(

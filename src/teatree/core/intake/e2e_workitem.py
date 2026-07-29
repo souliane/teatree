@@ -128,7 +128,7 @@ def _workspace_repo_dirs(ticket: Ticket) -> dict[str, str]:
     is dropped here — the ladder must never adopt a path that disappeared.
     """
     dirs: dict[str, str] = {}
-    for wt in Worktree.objects.filter(ticket=ticket):
+    for wt in Worktree.objects.for_ticket(ticket):
         path = wt.worktree_path
         if path and Path(path).exists():
             dirs[str(wt.repo_path)] = path
@@ -149,7 +149,7 @@ def _recipe_repo_names(ticket: Ticket, recipe: E2ERecipe) -> list[str]:
     if names:
         return names
     seen: dict[str, None] = {}
-    for wt in Worktree.objects.filter(ticket=ticket).order_by("pk"):
+    for wt in Worktree.objects.for_ticket(ticket).order_by("pk"):
         seen.setdefault(str(wt.repo_path), None)
     return list(seen)
 

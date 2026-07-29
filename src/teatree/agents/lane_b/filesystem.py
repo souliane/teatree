@@ -12,6 +12,8 @@ from pathlib import Path
 
 from pydantic_ai.toolsets.function import FunctionToolset
 
+from teatree.agents.lane_b.tool_names import TOOL_EDIT, TOOL_GREP, TOOL_READ, TOOL_WRITE
+
 _MAX_READ_BYTES = 1_000_000
 _MAX_SEARCH_HITS = 200
 
@@ -57,8 +59,11 @@ def build_filesystem_toolset(root: Path, *, allow_write: bool = True) -> Functio
         """Return worktree file paths whose text contains *pattern* (substring)."""
         return _search(root, pattern, glob)
 
-    toolset.add_function(read_file, takes_ctx=False)
-    toolset.add_function(search_files, takes_ctx=False)
+    # Exposed under the skill/SDK vocabulary (Read/Grep/Write/Edit) so a skill
+    # instruction naming ``Read`` maps to the actual tool; the pythonic function
+    # names stay descriptive. See :mod:`teatree.agents.lane_b.tool_names`.
+    toolset.add_function(read_file, takes_ctx=False, name=TOOL_READ)
+    toolset.add_function(search_files, takes_ctx=False, name=TOOL_GREP)
     if allow_write:
         _add_write_tools(toolset, root)
     return toolset
@@ -101,5 +106,5 @@ def _add_write_tools(toolset: FunctionToolset[None], root: Path) -> None:
         target.write_text(text.replace(old, new, 1), encoding="utf-8")
         return f"edited {path}"
 
-    toolset.add_function(write_file, takes_ctx=False)
-    toolset.add_function(edit_file, takes_ctx=False)
+    toolset.add_function(write_file, takes_ctx=False, name=TOOL_WRITE)
+    toolset.add_function(edit_file, takes_ctx=False, name=TOOL_EDIT)

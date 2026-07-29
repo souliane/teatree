@@ -1,4 +1,13 @@
-"""``t3 doctor`` Slack DM-readiness — fail-loud diagnosis per Slack overlay.
+"""``t3 doctor`` Slack DM CONFIG completeness — per-overlay, resolved BY NAME.
+
+Scope, deliberately narrow: this answers "is each Slack overlay's DM config filled
+in", NOT "does a notification actually reach the owner". It resolves each overlay
+BY NAME, while the headless egress resolves ambiently with no ``T3_OVERLAY_NAME``
+— so a complete per-overlay config here is fully compatible with a dead runtime
+transport. Deliverability belongs to
+:mod:`teatree.cli.doctor.checks_slack_roundtrip`, which probes the ambient seam and
+reads the ``BotPing`` ledger back. The OK line here must therefore never be worded
+so an operator can read it as "notifications work".
 
 Consolidates the exact gaps a DM-only bot hits at runtime: an overlay declaring
 ``messaging_backend = "slack"`` that still cannot message or read its owner.
@@ -11,8 +20,8 @@ For every Slack-backed overlay in the DB ``overlays`` registry this reports:
     neither DM nor read its owner.
 3. WARN when ``slack_dm_channel_id`` is empty — the per-overlay IM has not been
     provisioned yet (``t3 setup`` opens it).
-4. OK when the backend resolves, the owner id is recorded, and the DM channel id
-    is cached.
+4. OK when the by-name backend resolves, the owner id is recorded, and the DM
+    channel id is cached — CONFIG COMPLETE, not "DMs deliver".
 
 The doctor renderer (:func:`check_and_render_dm_ready`) consumes the structured
 :class:`DmReadinessOutcome` this returns; it is surfacing-only, so a FAIL here
@@ -78,7 +87,12 @@ def _check_overlay_dm_readiness(overlay: str) -> list[DmReadinessFinding]:
         findings.append(DmReadinessFinding(overlay, Level.WARN, "DM channel not provisioned yet (run `t3 setup`)."))
     if not findings:
         findings.append(
-            DmReadinessFinding(overlay, Level.OK, "Slack DM-ready — backend resolved, owner id + DM channel set.")
+            DmReadinessFinding(
+                overlay,
+                Level.OK,
+                "Slack DM config complete (backend resolved by name, owner id + DM channel set) — config only, "
+                "NOT proof a DM delivers; the Slack round-trip gate owns deliverability.",
+            )
         )
     return findings
 
@@ -101,12 +115,14 @@ def check_slack_dm_ready() -> DmReadinessOutcome:
 
 
 def check_and_render_dm_ready(echo: Callable[[str], object] = typer.echo) -> bool:
-    """Report Slack DM-readiness per overlay — fail-loud diagnosis of DM/read gaps.
+    """Report Slack DM CONFIG completeness per overlay — fail-loud diagnosis of config gaps.
 
     For every overlay declaring ``messaging_backend = "slack"`` it surfaces the
     exact gaps that leave a DM-only bot unable to message or read its owner: a
     no-op backend (bot tokens missing), an empty ``slack_user_id``, or an
     unprovisioned DM channel. Consumes the structured :class:`DmReadinessOutcome`.
+    An all-OK verdict means the config is filled in, never that a DM delivers —
+    see this module's docstring for why the two are not the same question.
 
     Surfacing-only: always returns ``True`` so it never gates the overall doctor
     exit code (Slack is optional — it must never become mandatory). Crash-proof:

@@ -19,32 +19,6 @@
       ]
     },
     {
-      "help": "``t3 teatree availability`` group root.",
-      "name": "availability",
-      "subcommands": [
-        {
-          "help": "Alias: set the holiday ``offline`` mode (defer + pause) until *until* \u2014 or forever",
-          "name": "away"
-        },
-        {
-          "help": "Alias: set the ``engaged`` present-class mode until *until* \u2014 or forever",
-          "name": "present"
-        },
-        {
-          "help": "Clear the manual mode override; the schedule / default mode decides again",
-          "name": "auto"
-        },
-        {
-          "help": "Print the current resolved mode and which layer decided it",
-          "name": "show"
-        },
-        {
-          "help": "Force autonomous-away \u2014 defer questions but KEEP self-pumping (#2544)",
-          "name": "autonomous-away"
-        }
-      ]
-    },
-    {
       "help": "``t3 <overlay> checking`` group root.",
       "name": "checking",
       "subcommands": [
@@ -83,8 +57,12 @@
           "name": "export"
         },
         {
-          "help": "List every DB config override row, naming each row's scope (read-only)",
+          "help": "List every DB config override row under its group, naming each row's scope",
           "name": "list"
+        },
+        {
+          "help": "Load a ``config_setting export`` TOML dump into the store \u2014 the inverse of ``export``",
+          "name": "import"
         }
       ]
     },
@@ -196,7 +174,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Run E2E specs and post their evidence \u2014 the overlay-agnostic e2e verbs.",
       "name": "e2e",
       "subcommands": [
         {
@@ -485,7 +463,7 @@
           "name": "whoami"
         },
         {
-          "help": "Release this session's t3-master claim (CAS \u2014 non-owner is a no-op)",
+          "help": "Release this session's t3-master claim (CAS \u2014 non-owner is a no-op unless --force)",
           "name": "release"
         }
       ]
@@ -503,7 +481,7 @@
           "name": "use"
         },
         {
-          "help": "Clear the manual override so the active schedule decides again",
+          "help": "Clear the manual override so the active schedule / default mode decides again",
           "name": "auto"
         },
         {
@@ -802,7 +780,7 @@
       ]
     },
     {
-      "help": "",
+      "help": "Score the factory against the committed recipe, and pin an approved recipe sha.",
       "name": "recipe",
       "subcommands": [
         {
@@ -839,6 +817,16 @@
         {
           "help": "Record the harness-run PASSING GREEN and freeze the provenance verdict (#118)",
           "name": "record-green"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> retention`` group root.",
+      "name": "retention",
+      "subcommands": [
+        {
+          "help": "Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply)",
+          "name": "prune"
         }
       ]
     },
@@ -943,12 +931,29 @@
         {
           "help": "Refresh the durable recovery artifacts (idempotent, safe to re-run)",
           "name": "prepare-stop"
+        },
+        {
+          "help": "Append an item to this session's durable working list",
+          "name": "todo-add"
+        },
+        {
+          "help": "List this session's working items, in working order",
+          "name": "todo-list"
+        },
+        {
+          "help": "Move one working item to *status*",
+          "name": "todo-set"
         }
       ]
     },
     {
       "help": "Print the five factory signals over the trailing window vs its baseline.",
       "name": "signals",
+      "subcommands": []
+    },
+    {
+      "help": "Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).",
+      "name": "snapshot_settings_defaults",
       "subcommands": []
     },
     {
@@ -1076,7 +1081,11 @@
           "name": "comment"
         },
         {
-          "help": "Check post-ship tickets against upstream issues and advance completed ones",
+          "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",
+          "name": "record-spec-coverage"
+        },
+        {
+          "help": "Reconcile the ticket board against forge truth and advance what has landed",
           "name": "sync-completions"
         },
         {
@@ -1238,7 +1247,7 @@
           "name": "clean-merged"
         },
         {
-          "help": "Stamp the scoped noreply git identity onto an existing souliane clone (#762)",
+          "help": "Stamp the scoped noreply git identity onto an existing public GitHub clone (#762)",
           "name": "stamp-identity"
         },
         {
@@ -1254,8 +1263,16 @@
           "name": "reclaim-disk"
         },
         {
+          "help": "Record which checkout owns each auto-isolated env dir THIS venue can see (#3872)",
+          "name": "stamp-owners"
+        },
+        {
           "help": "Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR",
           "name": "clean-all"
+        },
+        {
+          "help": "Release registered rows whose checkout is provably dead \u2014 ROWS ONLY (dry run unless --apply)",
+          "name": "release-dead-rows"
         }
       ]
     },

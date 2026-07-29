@@ -18,7 +18,10 @@ from typer.testing import CliRunner
 from teatree.agents import permission_modes
 from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
 from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
+from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
+from teatree.config.fleet_policy import OWNER_INTAKE_LOOPS
+from tests._loop_principal_env import pinned_loop_principal
 
 runner = CliRunner()
 
@@ -344,7 +347,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+            pinned_loop_principal("sess-cli"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--json"])
 
@@ -355,7 +358,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+            pinned_loop_principal("sess-cli"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by", "worker-7"])
 
@@ -372,7 +375,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-auto"),
+            pinned_loop_principal("sess-auto"),
         ):
             result = runner.invoke(loop_app, ["claim-next"])
 
@@ -384,7 +387,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="should-not-be-used"),
+            pinned_loop_principal("should-not-be-used"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by-session", "sess-explicit"])
 
@@ -396,7 +399,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value=""),
+            pinned_loop_principal(),
         ):
             result = runner.invoke(loop_app, ["claim-next"])
 
@@ -519,6 +522,33 @@ class TestSelfImproveStartCommand:
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
+class TestSelfImproveUnbuiltTierParity:
+    """Both surfaces must refuse an unbuilt tier identically (no silent no-op)."""
+
+    @pytest.mark.parametrize("tier", ["medium", "expensive", "phase-99-future"])
+    def test_typer_cli_and_management_command_refuse_alike(self, tier: str) -> None:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: non-Django module (docstring)
+
+        from teatree.loop.self_improve import UnimplementedTierError  # noqa: PLC0415 — deferred: pulls in the ORM
+
+        cli = runner.invoke(loop_app, ["self-improve", "run", "--tier", tier])
+        with pytest.raises(SystemExit) as raised:
+            call_command("loop_self_improve", tier=tier)
+
+        assert cli.exit_code == raised.value.code == 2
+        assert str(UnimplementedTierError(tier)) in cli.output
+
+    def test_implemented_tier_still_runs_through_both_surfaces(self) -> None:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: non-Django module (docstring)
+
+        cli = runner.invoke(loop_app, ["self-improve", "run", "--tier", "cheap"])
+        call_command("loop_self_improve", tier="cheap")
+
+        assert cli.exit_code == 0
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
 class TestLoopOwnerCli:
     """``t3 loop claim/owner/release`` end-to-end through the mgmt command (#1073)."""
 
@@ -529,16 +559,17 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0, result.stdout
-        assert "claimed loop slot" in result.stdout
+        assert "claimed loop slot" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "cli-session"
 
-    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 2
-        assert "refusing to claim loop ownership without a Claude session id" in result.stdout
+        assert "refusing to claim loop ownership without a Claude session id" in result.stderr
 
     def test_owner_reports_live_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -547,13 +578,13 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["owner"])
 
         assert result.exit_code == 0
-        assert "held-by" in result.stdout
+        assert "held-by" in result.stderr
 
     def test_owner_reports_unclaimed(self) -> None:
         result = runner.invoke(loop_app, ["owner"])
 
         assert result.exit_code == 0
-        assert "unclaimed" in result.stdout
+        assert "unclaimed" in result.stderr
 
     def test_release_only_clears_own_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -563,7 +594,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
-        assert "nothing released" in result.stdout
+        assert "nothing released" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "other-session"
 
     def test_release_clears_when_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -574,7 +605,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
-        assert "released loop slot" in result.stdout
+        assert "released loop slot" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == ""
 
     def test_take_over_seizes_live_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -585,7 +616,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim", "--take-over"])
 
         assert result.exit_code == 0
-        assert "claimed loop slot" in result.stdout
+        assert "claimed loop slot" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "main"
 
     def test_claim_without_take_over_is_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -596,7 +627,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0
-        assert "held by session hijacker" in result.stdout
+        assert "held by session hijacker" in result.stderr
         assert LoopLease.objects.get(name="t3-master").session_id == "hijacker"
 
     def test_owner_json_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -636,7 +667,7 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim", "--driver", "bogus"])
 
         assert result.exit_code == 2
-        assert "invalid --driver" in result.stdout
+        assert "invalid --driver" in result.stderr
 
     def test_claim_json_success_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415
@@ -655,11 +686,12 @@ class TestLoopOwnerCli:
             "driverless": True,
         }
 
-    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         import json  # noqa: PLC0415
 
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim", "--json"])
 
         assert result.exit_code == 2
@@ -677,4 +709,28 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["release", "--json"])
 
         assert result.exit_code == 0
-        assert json.loads(result.stdout) == {"ok": True, "slot": "t3-master"}
+        # `owner_session`/`you`/`forced` are load-bearing (#3810): a NOOP release must
+        # name the holder and the caller, so an operator can see WHY it was a NOOP.
+        assert json.loads(result.stdout) == {
+            "ok": True,
+            "slot": "t3-master",
+            "owner_session": "rel-sess",
+            "you": "rel-sess",
+            "forced": False,
+        }
+
+
+class TestIntakeLoopsCommand:
+    """``t3 loop intake-loops`` prints the owner-intake names the fleet policy reads (#3632)."""
+
+    def test_prints_owner_intake_names_sorted(self) -> None:
+        result = runner.invoke(loop_app, ["intake-loops"])
+
+        assert result.exit_code == 0
+        assert result.stdout.split() == sorted(OWNER_INTAKE_LOOPS)
+        assert "directive_loop" in result.stdout
+
+    def test_command_callable_prints_each_name(self, capsys: pytest.CaptureFixture[str]) -> None:
+        intake_loops_command()
+
+        assert capsys.readouterr().out.split() == sorted(OWNER_INTAKE_LOOPS)

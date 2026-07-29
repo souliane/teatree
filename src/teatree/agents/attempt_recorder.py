@@ -69,6 +69,11 @@ class AttemptUsage:
     # reported (CLI/SDK/metered-router) figure. Default True so a recorder path that does
     # not compute a reported cost is flagged conservatively as an estimate.
     cost_is_estimated: bool = True
+    # #3673 Tier 3 dispatch provenance: the per-tier reasoning effort the spawn
+    # resolved and the resolved skill-bundle names. Both empty on a recorder path
+    # that has no dispatch context (e.g. an in-session record-attempt).
+    reasoning_effort: str = ""
+    skills_loaded: list[str] = dataclasses.field(default_factory=list)
 
 
 class ResultEnvelopeError(ValueError):
@@ -99,8 +104,9 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
 def validate_result_keys(result: AgentResultBlob) -> str:
     """Return an error message if *result* carries keys outside the schema.
 
-    Only the ``additionalProperties: false`` rule is enforced (no full
-    JSON-Schema dependency), mirroring the headless path's ``headless_result.validate_result``.
+    The single validation seam for every agent result — the headless driver and
+    ``record-attempt`` both land here. Only the ``additionalProperties: false``
+    rule is enforced (no full JSON-Schema dependency).
     """
     allowed = set(RESULT_JSON_SCHEMA.get("properties", {}).keys())  # type: ignore[union-attr]
     unexpected = set(result) - allowed
@@ -179,6 +185,8 @@ def record_result_envelope(
         num_turns=usage.num_turns,
         lane=usage.lane,
         cost_is_estimated=usage.cost_is_estimated,
+        reasoning_effort=usage.reasoning_effort,
+        skills_loaded=list(usage.skills_loaded),
     )
     task.complete(result_artifact_path="")
     return attempt
@@ -377,7 +385,7 @@ def _salvage_coding_result(task: Task, result: AgentResultBlob, *, phase: str) -
 
 def _committed_file_changes(task: Task) -> list[dict[str, str]]:
     """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``."""
-    for worktree in Worktree.objects.filter(ticket=task.ticket):
+    for worktree in Worktree.objects.for_ticket(task.ticket):
         if not worktree_has_commits_ahead(worktree):
             continue
         paths = _committed_paths(worktree)

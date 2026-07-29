@@ -1,10 +1,11 @@
 """Self-improving monitor for the autonomous factory (BLUEPRINT § 5.7).
 
-Phase 1 surface: a tier-dispatched cadence shell that runs three cheap
-detectors (``DispatchGapDetector``, ``ForgottenMergeDetector``,
+A tier-dispatched cadence shell that runs three cheap detectors
+(``DispatchGapDetector``, ``ForgottenMergeDetector``,
 ``StaleStatuslineEntryDetector``), dedups firings against the durable
 ``SelfImproveFiring`` table, and reacts via a five-rung action ladder
-bounded per-detector.
+bounded per-detector. The cheap tier is the only one with detectors;
+every other tier name is refused (``UnimplementedTierError``).
 
 Reuses the existing scanner protocol (``loop/scanners/base.py``) — every
 detector is a ``Scanner`` plus a ``DetectorReport`` with the dedup key,
@@ -17,7 +18,7 @@ from teatree.loop.self_improve.budget import BudgetVerdict, precheck_budget
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import DetectorReport, SelfImproveDetector
 from teatree.loop.self_improve.persistence import SLACK_RATE_CAP_SECONDS, recent_slack_firings_within, record_firing
-from teatree.loop.self_improve.schedule import Tier, run_tier
+from teatree.loop.self_improve.schedule import Tier, UnimplementedTierError, run_tier
 
 __all__ = [
     "SLACK_RATE_CAP_SECONDS",
@@ -27,6 +28,7 @@ __all__ = [
     "DetectorReport",
     "SelfImproveDetector",
     "Tier",
+    "UnimplementedTierError",
     "canonical_key",
     "format_slack_payload",
     "precheck_budget",

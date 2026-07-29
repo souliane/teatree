@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TeaTree · Board</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c9973f' d='M16 3C9 8 6 14 8 22c1 4 4 6 8 7 4-1 7-3 8-7 2-8-1-14-8-19Z'/%3E%3Cpath fill='%2310140f' d='M16 8c-3 4-4 9-2 15h4c2-6 1-11-2-15Z' opacity='.35'/%3E%3C/svg%3E">
+  <link rel="icon" href="/static/dash/favicon.svg">
   <link rel="stylesheet" href="/static/dash/css/dash.css">
   <script>
     // Apply the operator's pinned theme before first paint (no flash). Absent a
@@ -19,14 +19,16 @@
   <script src="/static/dash/js/idiomorph-ext-0.7.3.min.js" defer></script>
 </head>
 <body hx-headers='{"X-CSRFToken": "CSRF"}' hx-ext="morph">
+  <a class="skip-link" href="#dash-main">Skip to main content</a>
   <header class="dash-header">
     <span class="dash-brand">
       <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true">
         <path fill="currentColor" d="M16 3C9 8 6 14 8 22c1 4 4 6 8 7 4-1 7-3 8-7 2-8-1-14-8-19Z"/>
       </svg>
       TeaTree
+      <span class="dash-instance" title="which machine this dashboard is served from">INSTANCE</span>
     </span>
-    <nav class="dash-nav">
+    <nav class="dash-nav" aria-label="Dashboard sections">
 
         <a href="/dash/board/" class="active">Board</a>
 
@@ -34,11 +36,15 @@
 
         <a href="/dash/loops/" class="">Loops</a>
 
+        <a href="/dash/sessions/" class="">Sessions</a>
+
+        <a href="/dash/presets/" class="">Schedule</a>
+
+        <a href="/dash/settings/" class="">Settings</a>
+
     </nav>
     <div class="dash-actions">
-      {# Always-visible loopback terminal: POSTs to the same debug_session endpoint
-      the drawer uses (a fresh generic session, no ticket id); body hx-headers
-      carries the CSRF token. #}
+
       <button type="button" class="dash-btn" data-terminal
         hx-post="/dash/debug/session/" hx-target="#terminal-result" hx-swap="innerHTML"
         hx-confirm="Start a loopback debug session?"
@@ -53,7 +59,8 @@
     </div>
   </header>
   <div id="terminal-result" class="terminal-result"></div>
-  <main class="dash-main">
+  <main class="dash-main" id="dash-main">
+    <h1 class="dash-h1">Board</h1>
 
   <form class="dash-filters" method="get" action="/dash/board/">
     <input type="text" name="text" value="" placeholder="search #/description">
@@ -76,6 +83,7 @@
   <div id="board"
     hx-get="/dash/board/columns/?text=&overlay=&role=&kind="
     hx-trigger="every 4s"
+    hx-sync="this:drop"
     hx-swap="morph:innerHTML">
     <div class="fsm-rail" role="presentation">
 
@@ -155,11 +163,6 @@
 
           <div class="kanban-column" data-state="in_review">
             <h3><span>In review</span><span class="count">0</span></h3>
-            <p class="column-empty">—</p>
-          </div>
-
-          <div class="kanban-column" data-state="review_posted">
-            <h3><span>Review posted</span><span class="count">0</span></h3>
             <p class="column-empty">—</p>
           </div>
 
@@ -244,6 +247,24 @@
   </script>
 
   <script>
+    // A morph writes the DOM value PROPERTY, bypassing the dirty-value flag, so a
+    // polled swap resets whatever field has focus. Idiomorph's own ignoreActiveValue
+    // is too blunt for that: it ALSO skips morphing the active element's children,
+    // freezing the label of the button you just clicked. Guard a focused text
+    // field's value only. Deferred scripts run before this event.
+    document.addEventListener("DOMContentLoaded", function () {
+      if (!window.Idiomorph) { return; }
+      Idiomorph.defaults.callbacks.beforeAttributeUpdated = function (name, node) {
+        var active = document.activeElement;
+        var editable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+        return !(name === "value" && node === active && editable);
+      };
+    });
+    // A refused write answers 400 carrying the surface plus its reason; htmx discards
+    // non-2xx bodies by default, so opt every dash swap into showing it instead.
+    document.body.addEventListener("htmx:beforeSwap", function (evt) {
+      if (evt.detail.xhr.status === 400) { evt.detail.shouldSwap = true; evt.detail.isError = false; }
+    });
     (function () {
       // Theme toggle: flip data-theme, persist, and re-theme any live mermaid.
       function currentTheme() {
@@ -257,6 +278,12 @@
           document.documentElement.dataset.theme = next;
           try { localStorage.setItem("t3-theme", next); } catch (e) {}
           window.dispatchEvent(new CustomEvent("t3:theme"));
+          return;
+        }
+        var transcriptClose = evt.target.closest("[data-transcript-close]");
+        if (transcriptClose) {
+          var viewer = document.getElementById("transcript-viewer");
+          if (viewer) { viewer.innerHTML = ""; }
           return;
         }
         // Right side panel: close button clears the drawer.

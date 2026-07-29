@@ -184,9 +184,12 @@ class ScannedBroadcast(models.Model):
         review only became reachable if a reviewer task was actually created.
         A row whose task was never recorded, was deleted, or FAILED lost its
         emission and must be re-emitted. A COMPLETED task still counts as
-        covered: the review happened, and the broadcast signal carries no head
-        SHA for the downstream at-head dedup to key on, so re-emitting on it
-        would re-review on every tick.
+        covered: the review happened, and this ledger tracks one broadcast
+        *message*, not the MR's evolving head — re-emitting on it would
+        re-review on every tick. Re-opening the review when the author pushes
+        is owned by
+        :class:`teatree.loop.scanners.reviewed_pr_head.ReviewedPrHeadScanner`,
+        which keys on the reviewer ticket's recorded ``reviewed_sha`` instead.
         """
         if self.classification != self.Classification.PENDING:
             return False

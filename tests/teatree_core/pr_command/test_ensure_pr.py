@@ -7,13 +7,14 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import UserSettings
-from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, PullRequestSpec
 from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.overlay_loader import get_overlay
 from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY
@@ -360,15 +361,12 @@ class TestEnsurePr(TestCase):
         host.create_pr.assert_not_called()
 
 
-class TestCreatePrTitleSourcing(TestCase):
-    """#1534: the PR title/body must come from the branch's OWN commit.
+class _RealGitOrphanBranch(TestCase):
+    """Real git under ``tmp_path`` for the orphan-branch create path.
 
-    Real git under ``tmp_path`` — only the forge ``create_pr`` is mocked.
     ``origin/main`` carries an unrelated, already-merged commit ``M``; the
-    feature branch carries its own work ``B``. The repo's WORKING TREE is left
-    checked out on the default branch at ``M`` (the main-clone / wrong-ref /
-    slug condition #1534 describes), so the former ``HEAD``-based sourcing
-    would title the PR after ``M``. The opened PR must be titled after ``B``.
+    feature branch carries its own work ``B``, and the working tree is left on
+    the default branch at ``M``. Only the forge ``create_pr`` is mocked.
     """
 
     @pytest.fixture(autouse=True)
@@ -409,6 +407,15 @@ class TestCreatePrTitleSourcing(TestCase):
         host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
         return host
+
+
+class TestCreatePrTitleSourcing(_RealGitOrphanBranch):
+    """#1534: the PR title/body must come from the branch's OWN commit.
+
+    The former ``HEAD``-based sourcing would title the PR after the unrelated
+    already-merged ``M`` (the main-clone / wrong-ref / slug condition #1534
+    describes). The opened PR must be titled after ``B``.
+    """
 
     def test_title_derives_from_branch_commit_not_default_head(self) -> None:
         clone = self._origin_and_feature(["fix(y): the real work"])
@@ -453,6 +460,45 @@ class TestCreatePrTitleSourcing(TestCase):
         (spec,) = host.create_pr.call_args.args
         assert spec.title == "WIP: empty-branch"
         assert "1426" not in spec.title
+
+
+class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
+    """The no-orphan hook's own PR body must pass the repo's PR-description gate.
+
+    The hook filled the body from the commit message alone, which carries no
+    ``## What`` / ``## Why`` header — so every PR it opened was born failing the
+    very ``validate_pr`` the repo enforces on every other PR, and had to be
+    patched by hand afterwards.
+    """
+
+    def _created_spec(self) -> object:
+        clone = self._origin_and_feature(["fix(y): the real work"])
+        host = self._host()
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            create_or_defer_pr(str(clone), "1534-fix-the-real-work")
+        (spec,) = host.create_pr.call_args.args
+        return spec
+
+    def test_generated_body_passes_the_description_gate(self) -> None:
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            validation = get_overlay().metadata.validate_pr(spec.title, spec.description)
+
+        assert validation["errors"] == []
+
+    def test_why_section_asks_the_author_instead_of_inventing_a_rationale(self) -> None:
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        why = spec.description.split("## Why", 1)[1].strip()
+        assert why.startswith("TODO")
+        assert "no-orphan" in why
+
+    def test_what_section_carries_the_branch_commit(self) -> None:
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        what = spec.description.split("## What", 1)[1].split("## Why", 1)[0]
+        assert "fix(y): the real work" in what
 
 
 class TestEnsurePrResolutionError:

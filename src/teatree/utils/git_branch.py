@@ -5,9 +5,43 @@ here resolves or mutates a branch/ref by shelling out through the
 :mod:`teatree.utils.git_run` runners.
 """
 
+import os
+
 from teatree.utils.git_run import check, run, run_strict
 
 DETACHED_HEAD = "HEAD"
+
+DIFF_BASE_ENV = "T3_DIFF_COVERAGE_BASE"
+
+
+def resolve_diff_base(repo: str = ".") -> str:
+    """Resolve the ref the per-diff gates diff against (BLUEPRINT §17.6.3).
+
+    A hardcoded ``origin/main`` grades every commit as new whenever the branch's
+    real base is NOT ``main`` — a ``master``-default repo, or a fork whose
+    integration branch is ahead of a stale ``main`` — so the whole history diffs
+    as uncovered. Resolution order:
+
+    1. ``T3_DIFF_COVERAGE_BASE`` — the *configured* base branch. A bare name is
+        remote-qualified (``origin/<name>``); an already-qualified ref
+        (``origin/…`` / ``refs/…``) or a SHA passes through untouched.
+    2. the repo's ACTUAL default branch (``origin/HEAD``), so a ``master``-default
+        repo resolves ``origin/master`` rather than a nonexistent ``origin/main``.
+    3. ``origin/main`` only as the last-resort fallback (default branch unresolvable).
+    """
+    configured = os.environ.get(DIFF_BASE_ENV, "").strip()
+    if configured:
+        return _qualify(configured)
+    try:
+        return f"origin/{default_branch(repo)}"
+    except RuntimeError:
+        return "origin/main"
+
+
+def _qualify(ref: str) -> str:
+    if ref.startswith(("origin/", "refs/")):
+        return ref
+    return f"origin/{ref}"
 
 
 def default_branch(repo: str = ".") -> str:

@@ -20,6 +20,7 @@ def cost(
 
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-    # The ``cost`` TyperCommand echoes its rendered output to stdout itself
-    # (django-typer serialises the return value); call it for the side effect.
+    # The ``cost`` TyperCommand writes its own output through the machine-output
+    # seam (JSON to stdout under ``--json``, the human view to stderr); call it
+    # for the side effect.
     call_command("cost", json_output=json_output)

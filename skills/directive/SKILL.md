@@ -63,7 +63,7 @@ This skill NEVER:
 - interprets the directive or writes a mechanism sketch,
 - edits code, config, or any file to satisfy the directive,
 - answers its own ratify question (that is the human's headlight — maker≠checker),
-- runs `t3 directive tick` (the loop's own cron entry advances the FSM, not you).
+- runs `t3 directive tick` (the worker's off-live-tick driver chain advances the FSM, not you).
 
 Capturing is the whole job. Interpretation, ratification, and implementation belong
 to the loop and the human, not to the capture turn.

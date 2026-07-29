@@ -1,8 +1,9 @@
 """``t3 directive`` — the directive self-modification operator surface (north-star PR-6 + PR-7).
 
 Thin Typer wrapper: ``capture`` records a plain-language directive; ``tick`` is the
-off-live-tick cron entry point (schedule it low-frequency, decoupled from the live
-loop); ``resolve-revert`` closes a reverted directive; ``list`` / ``status`` /
+off-live-tick entry point the worker's
+:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` chain fires (and an
+operator can run by hand); ``resolve-revert`` closes a reverted directive; ``list`` / ``status`` /
 ``history`` are read-only. Each bootstraps Django and delegates to the ``directive``
 management command via ``call_command`` (anything touching the ORM is a management
 command). The cron mechanics (cadence gate, in-flight lease) and the guarded directive

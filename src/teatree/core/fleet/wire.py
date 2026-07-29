@@ -25,7 +25,8 @@ from teatree.config.loader import clone_root
 from teatree.core.fleet import claim
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.instance_id import instance_id
-from teatree.utils import git
+from teatree.utils import git, git_remote
+from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.models import ImplementedIssueMarker, Ticket
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ISSUE_URL_MARKERS = ("/-/issues/", "/-/merge_requests/", "/issues/", "/pull/", "/merge_requests/")
+#: An ssh-alias expansion is a local config read; it must never stall a claim.
+_SSH_PROBE_TIMEOUT = 5.0
 
 
 def fleet_claim_enabled(overlay: str) -> bool:
@@ -77,6 +80,59 @@ def _origin_hosts_issue(repo: str, expected_slug: str) -> bool:
     return False
 
 
+def host_from_issue_url(issue_url: str) -> str:
+    """The forge host an issue/PR URL lives on (``github.com``), or ``""``."""
+    remainder = issue_url.split("://", 1)[-1]
+    return git_remote.host_from_remote(f"https://{remainder}") if remainder else ""
+
+
+def _ssh_resolved_hostname(host: str) -> str:
+    """The real ``HostName`` an ssh ``Host`` alias expands to, or ``""`` when unresolvable.
+
+    ``git@github-work:owner/repo`` is a perfectly ordinary work-account setup where
+    ``github-work`` is a ``Host`` block in ``~/.ssh/config``. Comparing the raw token
+    against ``github.com`` would call that a different forge, so the alias is expanded
+    through the same resolver the git transport itself uses. No ssh on PATH, a
+    non-zero exit, or an alias ssh cannot expand all yield ``""`` — UNKNOWN, which the
+    caller must not read as "different".
+    """
+    with contextlib.suppress(Exception):
+        result = run_allowed_to_fail(["ssh", "-G", host], expected_codes=None, timeout=_SSH_PROBE_TIMEOUT)
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                key, _, value = line.strip().partition(" ")
+                if key == "hostname" and value:
+                    return git_remote.host_from_remote(f"https://{value}/x")
+    return ""
+
+
+def _resolved_origin_host(repo: str) -> str:
+    """*repo*'s ``origin`` host with any ssh alias expanded, or ``""`` when unknown."""
+    with contextlib.suppress(Exception):
+        host = git_remote.host_from_remote(git.remote_url(repo=repo))
+        if not host:
+            return ""
+        # A dotless token cannot be a public forge FQDN, so it is an ssh alias (or a
+        # LAN short name) — ask ssh what it expands to before judging it different.
+        return host if "." in host else _ssh_resolved_hostname(host)
+    return ""
+
+
+def _forge_host_conflict(repo: str, issue_url: str) -> bool:
+    """``True`` only when BOTH forge hosts are known AND they differ.
+
+    An unknown host on either side (a ``file://`` or filesystem-path origin, an ssh
+    alias ssh could not expand, an unparsable issue URL) is non-discriminating: the
+    slug verdict stands, exactly as before. Only two confidently-read, different
+    hosts are a conflict.
+    """
+    issue_host = host_from_issue_url(issue_url)
+    if not issue_host:
+        return False
+    origin_host = _resolved_origin_host(repo)
+    return bool(origin_host) and origin_host != issue_host
+
+
 def resolve_claim_repo(issue_url: str) -> str:
     """The local clone to push claim refs from — one whose ``origin`` HOSTS the issue.
 
@@ -87,6 +143,23 @@ def resolve_claim_repo(issue_url: str) -> str:
     issue URL's ``owner/repo`` — on a mismatch, an unparsable slug, or an absent
     origin, return ``""`` and fail SAFE (do not claim) rather than push to the wrong
     remote.
+
+    The slug alone is not the repo's identity. ``owner/repo`` is unique per FORGE, not
+    globally, and the claim ref is a compare-and-swap on ONE server's receive-pack: an
+    instance pushing to ``gitlab.com/owner/repo`` and one pushing to
+    ``github.com/owner/repo`` each create their own ref and each believe they won, so
+    the mutex stops excluding anything precisely when it matters. The host is
+    therefore part of the identity — but only when it can be read CONFIDENTLY:
+
+    *   an **ssh alias** (``git@github-work:owner/repo``) is expanded via ``ssh -G``,
+        so a work-account remote matches the forge it actually reaches;
+    *   a **``file://`` or filesystem-path** origin names no forge, so it is unknown
+        rather than different and the slug verdict stands unchanged;
+    *   a **mirror on another host** IS rejected, deliberately. A mirror has its own
+        receive-pack, so a claim pushed there excludes nobody on the forge that owns
+        the issue — accepting it would manufacture a mutex that does not exist.
+        Refusing degrades to local-only behaviour (the same as no clone resolving)
+        and logs why; point ``origin`` at the arbitrating forge to opt back in.
     """
     candidate = _resolve_clone(issue_url)
     if not candidate:
@@ -97,6 +170,17 @@ def resolve_claim_repo(issue_url: str) -> str:
             "fleet_claim: resolved clone %s does not host %s (origin mismatch) — failing safe (not claiming)",
             candidate,
             expected or issue_url,
+        )
+        return ""
+    if _forge_host_conflict(candidate, issue_url):
+        logger.warning(
+            "fleet_claim: resolved clone %s carries slug %s but its origin is on %s, not %s — "
+            "a claim pushed there would not exclude an instance claiming on the issue's own forge; "
+            "failing safe (not claiming)",
+            candidate,
+            expected,
+            _resolved_origin_host(candidate),
+            host_from_issue_url(issue_url),
         )
         return ""
     return candidate

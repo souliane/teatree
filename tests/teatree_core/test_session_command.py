@@ -55,9 +55,9 @@ class TestPrepareStopCommand(TestCase):
         work = self.tmp / "work2"
         work.mkdir()
         os.chdir(work)
-        out = StringIO()
-        call_command("session", "prepare-stop", stdout=out)
-        text = out.getvalue()
+        err = StringIO()
+        call_command("session", "prepare-stop", stdout=StringIO(), stderr=err)
+        text = err.getvalue()
         assert "resume plan:" in text
         assert "at-risk worktrees: none" in text
 

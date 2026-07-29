@@ -14,7 +14,25 @@ updates:
       python-deps:
         patterns:
           - "*"
+    ignore:
+      # QUARANTINE, not staleness: a bundled claude CLI at/after 2.1.204 emits a
+      # markdown `**AskUserQuestion**` chip instead of a `tool_use` block, so
+      # every AskUserQuestion eval scenario reds. The exact pin alone did not
+      # hold the quarantine — an automated bump rewrote the pin and its guard
+      # constant in one change. A bump must be opened by hand and re-verified
+      # against the metered eval lane (souliane/teatree#3125).
+      - dependency-name: "claude-agent-sdk"
 
+  # There is deliberately NO `npm` ecosystem for the pinned `@anthropic-ai/claude-code`
+  # (and `pyright`) installs. Dependabot's npm ecosystem reads a package.json/lockfile,
+  # and its docker ecosystem reads `FROM` lines — neither can see a bare `npm install -g`
+  # in a Dockerfile `RUN` or a workflow `run:` block, so adding the ecosystem would watch
+  # nothing. Manufacturing a package.json just to give the bot a manifest would not update
+  # those strings either, and the eval/test tier is a QUARANTINE tied to the SDK bundle,
+  # for the same reason `claude-agent-sdk` sits in the ignore list above. The pins are
+  # instead held by tests/test_claude_cli_pin.py, which reds when a site drifts or a new
+  # one appears unclassified (souliane/teatree#3748).
+  #
   # SHA-pinned actions are kept current by Dependabot: it reads the `# vN`
   # comment tag and proposes a PR when a new release resolves to a different SHA.
   - package-ecosystem: "github-actions"

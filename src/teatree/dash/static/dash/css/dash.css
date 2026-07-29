@@ -59,6 +59,36 @@ select:focus-visible,
 .dash-brand svg {
   color: var(--brand);
 }
+.dash-instance {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--ink-muted);
+  padding: 0 var(--sp-2);
+  border-left: 1px solid var(--line);
+}
+/* Off-screen until focused — a keyboard user's first Tab reaches the content. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--brand);
+}
+.skip-link:focus {
+  left: var(--sp-3);
+}
+.dash-h1 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0 0 var(--sp-3);
+  color: var(--ink-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .dash-nav {
   display: flex;
   gap: var(--sp-4);
@@ -333,13 +363,9 @@ select:hover {
 .card-num {
   font-weight: 500;
   color: var(--ink);
-}
-.card-issue {
-  color: var(--ink-muted);
   text-decoration: none;
-  font-size: var(--text-sm);
 }
-.card-issue:hover {
+a.card-num:hover {
   color: var(--brand);
   text-decoration: underline;
 }
@@ -449,6 +475,61 @@ a.chip:hover {
   margin: var(--sp-3) 0 var(--sp-2);
 }
 
+/* Settings: sections on the LEFT, the selected section's rows on the RIGHT. The nav
+ * column is fixed so the detail pane owns the remaining width and the table never
+ * forces the page wider than the viewport. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 16rem) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 60rem) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.settings-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.settings-nav-item:hover { background: var(--surface-alt, rgba(127, 127, 127, 0.12)); }
+.settings-nav-item.active { background: var(--surface-alt, rgba(127, 127, 127, 0.18)); font-weight: 600; }
+.settings-nav-parent {
+  grid-column: 1;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.settings-nav-count {
+  grid-row: 1;
+  grid-column: 2;
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+.settings-detail { min-width: 0; }
+.settings-detail table { width: 100%; }
+.settings-pane { overflow-x: auto; }
+.setting-source {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
 /* Health verdict as the page lead. */
 .verdict-lead {
   display: flex;
@@ -485,6 +566,17 @@ a.chip:hover {
   border-radius: var(--r-md);
   margin-bottom: var(--sp-3);
   font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+/* The softer sibling of banner-red: a gap worth seeing, not a failure. */
+.banner-amber {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  margin-bottom: var(--sp-3);
   font-size: var(--text-sm);
 }
 
@@ -530,6 +622,27 @@ table.dash th.num {
 }
 .eff-no {
   color: var(--danger);
+}
+/* "No opinion" must read as its own third state, never as a quieter "off". */
+.eff-inherit {
+  color: var(--brand);
+}
+
+/* Preset tab strip on the schedule editor. */
+.tabs {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.daybox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--text-sm);
+}
+.dash-btn.seg-inherit {
+  border-style: dashed;
 }
 
 /* Effective-state dot + word in the loops table. */
@@ -670,4 +783,104 @@ pre.output {
   .dash-btn {
     transition: none;
   }
+}
+
+/* --- Per-task provenance panel (#3673) --- */
+.task-block {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+table.dash.provenance {
+  margin-top: var(--sp-2);
+  font-size: var(--text-xs);
+}
+.provenance .small,
+.mono.small {
+  font-size: var(--text-xs);
+}
+.provenance-extra td {
+  padding-top: 0;
+}
+.attempt-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.attempt-refs {
+  margin-top: var(--sp-1);
+}
+/* Estimated vs reported cost must read differently at a glance (#3673). */
+.cost .cost-tag {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+}
+.cost.est {
+  color: var(--warn);
+}
+.cost.est .cost-tag {
+  background: var(--warn);
+  color: var(--surface);
+}
+.cost.reported {
+  color: var(--ok);
+}
+.cost.reported .cost-tag {
+  background: var(--ok);
+  color: var(--surface);
+}
+
+/* --- Opt-in redacted transcript viewer (#3673 Tier 2) --- */
+.transcript {
+  margin-top: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.transcript-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.transcript-lines {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-4);
+  max-height: 40vh;
+  overflow-y: auto;
+  font-size: var(--text-xs);
+}
+.transcript-line {
+  margin: var(--sp-1) 0;
+}
+.transcript-text {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- Settings: shipped-default comparison. Colour is never the only signal — each
+verdict carries an icon and its own words, so it survives greyscale and colour blindness.
+Both tokens are existing palette entries that clear 4.5:1 on every surface in both
+themes. --- */
+.default-match,
+.default-differs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--text-xs);
+}
+.default-match {
+  color: var(--ok);
+}
+.default-differs {
+  color: var(--warn);
+  font-weight: 600;
 }

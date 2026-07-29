@@ -1,7 +1,6 @@
 """Conformance test § 5.1: registered overlays override every falsy-default hook.
 
-The forensic provisioning root-cause analysis
-(``docs/provisioning-rootcause-2026-05-27.md``) identifies Pattern A: an
+Pattern A of the provisioning failure taxonomy: an
 overlay can forget ``get_required_ports`` /
 ``provisioning.db_import_strategy`` / ``runtime.readiness_probes`` and the lifecycle
 reports green. The default returns falsy, the FSM never checks, and the
@@ -107,5 +106,5 @@ def test_every_overlay_overrides_every_falsy_default_hook(
         "Overlays inherit falsy-default hooks (Pattern A silent degradation):\n  "
         + "\n  ".join(violations)
         + "\n\nEach listed (overlay, hook) pair is a silent no-op at runtime. "
-        "See docs/provisioning-rootcause-2026-05-27.md § 2 Pattern A and § 3.1."
+        "A falsy default must not be indistinguishable from a deliberate empty override."
     )

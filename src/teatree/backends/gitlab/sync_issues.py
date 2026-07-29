@@ -36,8 +36,11 @@ def fetch_assigned_issues(
 ) -> None:
     """Upsert tickets for issues assigned to *username* that have no PR yet.
 
-    Tickets keyed by the same ``issue_url`` are consolidated with PR-based
-    tickets so each ticket is represented by a single row.
+    Tickets for the same forge issue are folded together with PR-based tickets so
+    each issue is represented by a single row — deduped on the collision-free
+    ``repo_namespaced_key`` (via :meth:`TicketQuerySet.matching_issue`), which
+    folds the ``/-/issues/<n>`` and ``/-/work_items/<n>`` URL aliases together
+    so a sibling-alias row is reused rather than colliding on INSERT.
 
     This is the second issue intake alongside the ``assigned_issues`` scanner,
     so it runs the same :func:`intake_admits` label gate: an assignment alone
@@ -62,7 +65,7 @@ def fetch_assigned_issues(
         repo_path = extract_issue_repo_path(issue_url)
         repo_short = repo_path.rsplit("/", maxsplit=1)[-1] if repo_path else ""
 
-        existing = Ticket.objects.filter(issue_url=issue_url).first()
+        existing = Ticket.objects.matching_issue(issue_url).first()
         if existing is not None:
             if repo_short and isinstance(existing.repos, list) and repo_short not in existing.repos:
                 existing.repos = [*existing.repos, repo_short]

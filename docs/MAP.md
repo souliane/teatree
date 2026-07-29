@@ -41,7 +41,6 @@ lightweight entry-point packages. The Python source lives under
 | `src/teatree/verification/` | Deterministic existence checks for cited external sources (intake-source verification) | [§4](../BLUEPRINT.md#4-domain-models) |
 | `src/teatree/skill_support/` | Skill metadata, loading policy, dependency resolution, and schema/ref validation | [§11](../BLUEPRINT.md#11-skills--plugin-architecture) |
 | `src/teatree/hooks/` | Pre-publish enforcement primitives consumed by the PreToolUse hook chain (leak/term/opaque-id matchers) | [§11](../BLUEPRINT.md#11-skills--plugin-architecture) |
-| `src/teatree/teams/` | Agent-teams WORK layer — the inert team-role registry (ships dark) | [§5](../BLUEPRINT.md#5-agent-execution) |
 | `src/teatree/overlay_sdk/` | Surface-frozen overlay-authoring namespace — the stable teatree symbols an overlay subclasses | [§6](../BLUEPRINT.md#6-overlay-system) |
 | `src/teatree/utils/` | Pure utility modules — git, ports, db, diff coverage, compose contract, dependency drift, postgres secret helpers | [§3](../BLUEPRINT.md#3-package-structure) |
 | `src/teatree/overlay_init/` | `t3 startoverlay` scaffold generation logic | [§6](../BLUEPRINT.md#6-overlay-system) |
@@ -64,7 +63,6 @@ lightweight entry-point packages. The Python source lives under
 | `docs/` | User-facing documentation (mkdocs site) plus `generated/` auto-generated reference |
 | `scripts/` | Standalone build, install, lint, and hook helper scripts (`privacy_scan.py`, `ai_signature_scan.py`, `hooks/`, `lib/`) |
 | `dev/` | Local dev/test infrastructure — docker compose, test/e2e Dockerfiles, the test matrix script |
-| `docs/audits/` | Periodic codebase audit notes |
 
 ## Related navigation
 

@@ -11,8 +11,8 @@ back off the ``ResultMessage.structured_output`` — no free-text regex.
 
 Cost controls, by construction:
 
-*   the judge model defaults to the same Sonnet tier as a run
-    (``claude-sonnet-5``) and is per-scenario overridable to a cheaper tier;
+*   the judge model defaults to the same mid tier as a run
+    (the catalog's ``balanced`` entry) and is per-scenario overridable to a cheaper tier;
 *   ``max_budget_usd`` caps spend per judge call;
 *   a process-wide :class:`JudgeBudget` caps the number of judge calls per run,
     so a large suite cannot silently fan out into an unbounded bill.

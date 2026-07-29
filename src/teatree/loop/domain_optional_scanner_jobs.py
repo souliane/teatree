@@ -12,11 +12,11 @@ from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,
     _issue_disposition_scanner_for,
-    _issue_implementer_scanner_for,
+    _issue_intake_scanner_for,
     _pull_main_clone_scanner_for,
     _triage_assessor_scanner_for,
 )
-from teatree.loop.scanners import Scanner
+from teatree.loop.scanners import BoardReconcileScanner, Scanner
 
 
 def _arch_review_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
@@ -43,22 +43,29 @@ def _audit_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
 
 
 def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay pull-main-clone scanner (workspace-repo fast-forward)."""
+    """Per-overlay pull-main-clone scanner + the board reconcile (#3841).
+
+    The board janitor is hosted here rather than on ``followup`` because
+    ``followup`` is ``colleague_facing`` and is therefore skipped under an
+    away-class mode — the very situation in which merged tickets pile up
+    unreconciled. ``housekeeping`` is enabled, non-colleague-facing, and hourly.
+    """
+    jobs = [_ScannerJob(scanner=BoardReconcileScanner(overlay_name=backend.name), overlay=backend.name)]
     scanner = _pull_main_clone_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+    if scanner is not None:
+        jobs.append(_ScannerJob(scanner=scanner, overlay=backend.name))
+    return jobs
 
 
 def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """Per-overlay issue-implementer scanner behind the default-OFF triple gate (#1553).
 
-    Empty by default — :func:`_issue_implementer_scanner_for` returns
+    Empty by default — :func:`_issue_intake_scanner_for` returns
     ``None`` unless the overlay opts in and has in-flight budget — so this
     domain slice contributes nothing to either fan-out path until an overlay
     enables the loop, keeping the registry/legacy parity green.
     """
-    scanner = _issue_implementer_scanner_for(backend)
+    scanner = _issue_intake_scanner_for(backend)
     if scanner is None:
         return []
     return [_ScannerJob(scanner=scanner, overlay=backend.name)]

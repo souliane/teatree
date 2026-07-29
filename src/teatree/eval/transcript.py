@@ -16,6 +16,7 @@ import json
 import re
 from typing import Any
 
+from teatree.agents.model_aliases import family_alias_models
 from teatree.eval.models import EvalToolCall, GateEvent, TokenUsage
 
 #: Cap on the captured ``output`` snippet of a hook_response event — enough to
@@ -45,41 +46,32 @@ _MODEL_USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
 _MODEL_COST_KEY = "costUSD"
 
 #: A model id may carry a trailing ``-YYYYMMDD`` date suffix (``model_usage`` keys
-#: are dated, the requested tag usually is not). The base id is the comparison key
-#: for fallback detection and the cost split.
+#: are dated, the requested tag usually is not) and a ``[1m]`` long-context suffix
+#: (the same model, a wider window). The base id is the comparison key for fallback
+#: detection and the cost split.
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
-
-#: The documented short aliases (`--models opus,sonnet,haiku`, README/app.py) map
-#: onto their full base ids. A requested tag may arrive as a short alias, so it is
-#: normalized UP to the canonical full id at the same chokepoint a dated
-#: ``model_usage`` key is normalized DOWN — otherwise ``opus`` never matches the
-#: ``claude-opus-4-8`` usage key and fallback detection / the cost split break.
-#:
-#: GENERATION BUMP: these full ids are the current model generation and will
-#: stale on the next generation. They are the same ids the sibling eval-layer
-#: defaults carry — ``eval.loader.DEFAULT_MODEL`` / ``DEFAULT_JUDGE_MODEL``,
-#: ``eval.api_runner.FALLBACK_MODEL``, and ``eval.models.EvalSpec.model`` /
-#: ``JudgeSpec.model``. Bump all of those together; ``core.cost.PRICE_TABLE``
-#: keys on the short tier name (``opus``), so it prices a dated bump correctly
-#: without a new entry and is NOT part of this set.
-_SHORT_ALIAS_TO_BASE: dict[str, str] = {
-    "opus": "claude-opus-4-8",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5",
-}
+_LONG_CONTEXT_SUFFIX = "[1m]"
 
 
 def _base_model_id(model: str) -> str:
-    """Normalize a model id to its base form: short alias, ``@effort`` tag, and ``-YYYYMMDD`` date suffix.
+    """Normalize a model id to its base form: short alias, ``@effort``, ``[1m]``, and ``-YYYYMMDD`` suffixes.
 
     The requested tag is ``model[@effort]`` (effort is not a model) and may be a
-    documented short alias (``opus``/``sonnet``/``haiku``); a ``model_usage`` key
-    is the dated full model id. Both sides normalize through here — short aliases
-    are mapped UP to the canonical full id, the date suffix is stripped — so a
-    short-alias or dated request matches the full ``model_usage`` key.
+    documented short FAMILY alias (``opus``/``sonnet``/``haiku``); a ``model_usage``
+    key is the dated full model id, optionally ``[1m]``-suffixed. Both sides
+    normalize through here — aliases mapped UP to the concrete id, the date and
+    long-context suffixes stripped — so a short-alias / dated / long-context
+    request matches the ``model_usage`` key.
+
+    The alias map is DERIVED from the tier catalog
+    (:func:`teatree.agents.model_aliases.family_alias_models`) rather than pinned
+    here: a stale copy would make ``--models opus`` REQUEST the previous
+    generation while the transcript REPORTS the current one, silently zeroing
+    :func:`extract_model_cost_split`'s MAIN bucket and reporting a phantom
+    fallback out of :func:`requested_model_present`.
     """
-    base = _DATE_SUFFIX_RE.sub("", model.split("@", 1)[0])
-    return _SHORT_ALIAS_TO_BASE.get(base, base)
+    base = _DATE_SUFFIX_RE.sub("", model.split("@", 1)[0].removesuffix(_LONG_CONTEXT_SUFFIX))
+    return family_alias_models().get(base, base)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -319,8 +311,8 @@ def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
 def requested_model_present(events: list[StreamJsonEvent], requested: str) -> bool | None:
     """Return whether the REQUESTED main model is present in ``model_usage`` — the fallback signal.
 
-    Claude Code ALWAYS runs ``claude-haiku-4-5`` as a cheap auxiliary model
-    alongside the requested main model, so an auxiliary key in ``model_usage`` is
+    Claude Code ALWAYS runs a cheap Haiku auxiliary model alongside the requested
+    main model, so an auxiliary key in ``model_usage`` is
     NORMAL — it is not a fallback. A fallback is the requested main model being
     SUBSTITUTED away: present here means absent from the ``model_usage`` keys.
 
@@ -348,7 +340,7 @@ class ModelCostSplit:
 
     The MAIN model is the requested base model (the comparison number the
     benchmark cares about); AUXILIARY is the sum of every other ``model_usage``
-    entry (Claude Code's background ``claude-haiku-4-5``). Both default to zero,
+    entry (Claude Code's background Haiku model). Both default to zero,
     so a non-metered / unobservable run yields an all-zero split, never a raise.
     """
 
@@ -363,7 +355,7 @@ def extract_model_cost_split(events: list[StreamJsonEvent], requested: str) -> M
 
     Each ``model_usage`` entry carries a per-model ``costUSD`` and camelCase token
     counts. The requested base model's entry is the MAIN split; every other entry
-    sums into the AUXILIARY split (the background ``claude-haiku-4-5``). A missing
+    sums into the AUXILIARY split (the background Haiku model). A missing
     or malformed map yields an all-zero split — never a raise.
     """
     for event in reversed(events):

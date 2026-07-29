@@ -7,13 +7,13 @@ lives in a management command (the project's "anything touching the ORM is a
 management command" rule).
 """
 
-import json
 import zoneinfo
-from typing import Annotated, Any, NoReturn
+from typing import IO, Annotated, Any, NoReturn, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
 from teatree.core.models import ConfigSetting, ModeSchedule
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 
@@ -39,29 +39,34 @@ class Command(TyperCommand):
         """List every schedule with its timezone, slot count, and the ACTIVE marker."""
         active = _active_schedule_name()
         schedules = list(ModeSchedule.objects.all())
-        if json_output:
-            payload = [
-                {
-                    "name": schedule.name,
-                    "timezone": schedule.timezone,
-                    "slots": schedule.slots.count(),
-                    "active": schedule.name == active,
-                }
-                for schedule in schedules
-            ]
-            self.stdout.write(json.dumps({"active": active, "schedules": payload}, indent=2))
-            return
+        payload = [
+            {
+                "name": schedule.name,
+                "timezone": schedule.timezone,
+                "slots": schedule.slots.count(),
+                "active": schedule.name == active,
+            }
+            for schedule in schedules
+        ]
         if not schedules:
-            self.stdout.write("No schedules defined. Run `t3 setup` to seed the defaults.")
-            return
-        self.stdout.write("schedules:")
-        for schedule in schedules:
-            marker = " *ACTIVE*" if schedule.name == active else ""
-            self.stdout.write(
-                f"  {schedule.name:<20} tz={schedule.timezone_label:<18} {schedule.slots.count()} slots{marker}"
-            )
-        if not active:
-            self.stdout.write("  (no active schedule — presets apply only via a manual override)")
+            human = "No schedules defined. Run `t3 setup` to seed the defaults."
+        else:
+            lines = ["schedules:"]
+            for schedule in schedules:
+                marker = " *ACTIVE*" if schedule.name == active else ""
+                lines.append(
+                    f"  {schedule.name:<20} tz={schedule.timezone_label:<18} {schedule.slots.count()} slots{marker}"
+                )
+            if not active:
+                lines.append("  (no active schedule — presets apply only via a manual override)")
+            human = "\n".join(lines)
+        emit(
+            {"active": active, "schedules": payload},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     @command(name="show")
     def show(
@@ -78,28 +83,28 @@ class Command(TyperCommand):
         if schedule is None:
             self._refuse(f"no schedule named {resolved!r}", json_output=json_output)
         slots = list(schedule.slots.all())
-        if json_output:
-            self.stdout.write(
-                json.dumps(
+        human_lines = [f"schedule {schedule.name} (tz={schedule.timezone_label}): {schedule.description}"]
+        human_lines += [
+            f"  {_slot_days(slot):<28} {slot.start_time.strftime('%H:%M')} -> {slot.preset_name}" for slot in slots
+        ]
+        emit(
+            {
+                "name": schedule.name,
+                "timezone": schedule.timezone,
+                "slots": [
                     {
-                        "name": schedule.name,
-                        "timezone": schedule.timezone,
-                        "slots": [
-                            {
-                                "days": sorted(slot.weekdays),
-                                "start_time": slot.start_time.strftime("%H:%M"),
-                                "preset": slot.preset_name,
-                            }
-                            for slot in slots
-                        ],
-                    },
-                    indent=2,
-                )
-            )
-            return
-        self.stdout.write(f"schedule {schedule.name} (tz={schedule.timezone_label}): {schedule.description}")
-        for slot in slots:
-            self.stdout.write(f"  {_slot_days(slot):<28} {slot.start_time.strftime('%H:%M')} -> {slot.preset_name}")
+                        "days": sorted(slot.weekdays),
+                        "start_time": slot.start_time.strftime("%H:%M"),
+                        "preset": slot.preset_name,
+                    }
+                    for slot in slots
+                ],
+            },
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(human_lines),
+        )
 
     @command(name="set-active")
     def set_active(
@@ -156,8 +161,20 @@ class Command(TyperCommand):
         self._emit({"cleared": cleared}, message, json_output=json_output)
 
     def _emit(self, payload: dict[str, Any], message: str, *, json_output: bool) -> None:
-        self.stdout.write(json.dumps(payload, indent=2) if json_output else message)
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=message,
+        )
 
     def _refuse(self, message: str, *, json_output: bool) -> NoReturn:
-        self.stdout.write(json.dumps({"error": message}, indent=2) if json_output else f"ERROR  {message}")
+        emit(
+            {"error": message},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"ERROR  {message}",
+        )
         raise SystemExit(2)

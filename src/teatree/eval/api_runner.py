@@ -48,6 +48,7 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
 from teatree.agents import permission_modes
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
     SuccessMislabelResultError,
@@ -63,7 +64,7 @@ from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ep
 from teatree.eval.git_fixture import provision_fixture
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
-from teatree.eval.model_resolution import resolve_eval_model
+from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
@@ -110,7 +111,9 @@ WATCHDOG_SECONDS = resolve_watchdog_seconds()
 #: thread a generous cap so a finishing scenario is measured, not truncated. See
 #: :data:`CleanRoomConfig.max_budget_usd` and ``METERED_DEFAULT_BUDGET_USD``.
 MAX_BUDGET_USD = "0.10"
-FALLBACK_MODEL = "claude-sonnet-5"
+#: The capacity-exhaustion fallback for an eval spawn — the conservative mid
+#: tier, DERIVED from the tier catalog so a generation bump carries it.
+FALLBACK_MODEL = TIER_MODELS[DEFAULT_TIER]
 EMPTY_SETTINGS = '{"hooks":{}}'
 
 #: Local-plugin path (relative to the teatree repo root) for the eval-only
@@ -414,7 +417,7 @@ class ApiInProcessRunner:
         # spec already carries a concrete ``model``, e.g. the matrix/--model lanes
         # set it upstream). The resolved id flows into _drive's variant parse, the
         # model-presence check, the ledger label, and the report.
-        spec = dataclasses.replace(spec, model=resolve_eval_model(spec))
+        spec = resolve_spec_model(spec)
         if resolve_claude_path() is None:
             if self._require_executed:
                 msg = (
@@ -425,7 +428,7 @@ class ApiInProcessRunner:
                     "decoratively skip."
                 )
                 raise ClaudeCliMissingError(msg)
-            return self._skip_run(spec, "claude binary not on PATH")
+            return EvalRun.skipped(spec.name, "claude binary not on PATH")
 
         clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
         system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
@@ -441,18 +444,19 @@ class ApiInProcessRunner:
             # A throttle that outlasted its retry budget surfaces loud as an errored
             # run stamped with the retry count (visible to the AIMD governor).
             surface_throttled=lambda reason, retries: dataclasses.replace(
-                self._terminal_run(spec, terminal_reason=reason), throttle_retries=retries
+                EvalRun.terminal(spec.name, terminal_reason=reason), throttle_retries=retries
             ),
         )
         return self._retry.run(_drive_once, handlers)
 
-    def _grade_success(self, spec: EvalSpec, messages: list[Message], retries: int) -> EvalRun:
+    @staticmethod
+    def _grade_success(spec: EvalSpec, messages: list[Message], retries: int) -> EvalRun:
         # A hooked run that captured ZERO hook events means the shipped plugin did
         # NOT register (the lane silently degraded to raw-model measurement) — fail
         # loud rather than report a spurious pass. Otherwise grade the trajectory and
         # carry the retry count for the AIMD governor.
         if spec.production_hooks and not has_hook_events(messages):
-            return self._terminal_run(spec, terminal_reason="hooks_not_registered")
+            return EvalRun.terminal(spec.name, terminal_reason="hooks_not_registered")
         run = eval_run_from_messages(spec, messages)
         return dataclasses.replace(run, throttle_retries=retries) if retries else run
 
@@ -464,7 +468,7 @@ class ApiInProcessRunner:
         ``is_error`` (the cap is surfaced via ``terminal_reason``, not the error flag).
         Cost comes from the message's ``($X)``, else a captured ``ResultMessage``, else
         ``0.0``; a run that captured NOTHING falls back to the empty
-        :meth:`_terminal_run` (whose budget cost floors to the cap).
+        :meth:`EvalRun.terminal` (whose budget cost floors to the cap).
         """
         message_amount = budget_amount_from_message(str(terminal.cause))
         if not terminal.messages:
@@ -474,7 +478,7 @@ class ApiInProcessRunner:
             effective_cap = spec.max_budget_usd if spec.max_budget_usd is not None else self._max_budget_usd
             cost = budget_floor_from_message(str(terminal.cause), cap=effective_cap)
             empty_cost = cost if terminal.terminal_reason == BUDGET_EXCEEDED_REASON else 0.0
-            return self._terminal_run(spec, terminal_reason=terminal.terminal_reason, cost_usd=empty_cost)
+            return EvalRun.terminal(spec.name, terminal_reason=terminal.terminal_reason, cost_usd=empty_cost)
         graded = eval_run_from_messages(spec, terminal.messages)
         cost = message_amount if message_amount is not None else graded.cost_usd
         return dataclasses.replace(
@@ -568,38 +572,6 @@ class ApiInProcessRunner:
             checkout = stack.enter_context(provision_ephemeral_checkout())
             isolated_env = ephemeral_checkout_env(env, checkout)
             yield checkout, str(checkout), isolated_env
-
-    @staticmethod
-    def _terminal_run(spec: EvalSpec, *, terminal_reason: str, cost_usd: float = 0.0) -> EvalRun:
-        """Build an error-shaped :class:`EvalRun` for a run that never produced a transcript.
-
-        The timeout and budget-exceeded paths share this shape: no captured tool
-        calls/text, ``is_error=True``, and a terminal reason that grades the cell
-        to a FAIL signal rather than crashing the run. Mirrors how the timeout
-        path built its EvalRun before being extracted here.
-        """
-        return EvalRun(
-            spec_name=spec.name,
-            tool_calls=(),
-            text_blocks=(),
-            terminal_reason=terminal_reason,
-            is_error=True,
-            raw_stdout="",
-            raw_stderr="",
-            cost_usd=cost_usd,
-        )
-
-    @staticmethod
-    def _skip_run(spec: EvalSpec, reason: str) -> EvalRun:
-        return EvalRun(
-            spec_name=spec.name,
-            tool_calls=(),
-            text_blocks=(),
-            terminal_reason=f"skipped: {reason}",
-            is_error=False,
-            raw_stdout="",
-            raw_stderr="",
-        )
 
 
 async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:

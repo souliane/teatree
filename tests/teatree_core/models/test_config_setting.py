@@ -12,7 +12,17 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
-from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome, scope_label
+
+
+class TestScopeLabel:
+    """The one ``scope_label`` home shared by the config CLI and the TOML export."""
+
+    def test_empty_scope_is_global(self) -> None:
+        assert scope_label("") == "global"
+
+    def test_named_scope_is_overlay_quoted(self) -> None:
+        assert scope_label("myproj") == "overlay 'myproj'"
 
 
 class TestConfigSettingStore(TestCase):
@@ -52,6 +62,23 @@ class TestConfigSettingStore(TestCase):
     def test_str_is_informative(self) -> None:
         row = ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
         assert "issue_implementer_enabled" in str(row)
+
+
+class TestConfigSettingEmptyValuesRoundTrip(TestCase):
+    """``[]``/``{}`` survive the manager's write→read path, not just ``full_clean``.
+
+    ``TestConfigSettingValueValidation`` covers the form/validation layer; these
+    prove an empty override actually comes back out of the store, so a caller
+    reading ``statusline_chain`` gets the override rather than the shipped default.
+    """
+
+    def test_empty_list_round_trips(self) -> None:
+        ConfigSetting.objects.set_value("statusline_chain", [])
+        assert ConfigSetting.objects.get_effective("statusline_chain") == []
+
+    def test_empty_dict_round_trips(self) -> None:
+        ConfigSetting.objects.set_value("agent_skill_models", {})
+        assert ConfigSetting.objects.get_effective("agent_skill_models") == {}
 
 
 class TestConfigSettingScope(TestCase):
@@ -186,3 +213,53 @@ class TestConfigSettingValueValidation(TestCase):
         with pytest.raises(ValidationError) as caught:
             row.full_clean()
         assert "value" in caught.value.message_dict
+
+
+class TestConfigSettingCrossKeyConsistency(TestCase):
+    """``set_value`` rejects an inconsistent (agent_harness, agent_harness_provider) pair (#3688).
+
+    A provider valid only under ``pydantic_ai`` written while ``agent_harness``
+    sits at its ``claude_sdk`` default would be accepted silently today, then fail
+    EVERY later dispatch. The guard moves that rejection to write time; the store
+    is left untouched on rejection.
+    """
+
+    def test_provider_inconsistent_with_default_harness_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") is None
+
+    def test_retired_orca_router_byok_under_default_harness_is_rejected(self) -> None:
+        # The exact production trigger from #3688.
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+
+    def test_provider_valid_under_default_harness_is_accepted(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "subscription_oauth"
+
+    def test_harness_then_matching_provider_is_accepted(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "openai_compatible"
+
+    def test_harness_change_conflicting_with_stored_provider_is_rejected(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        # The harness row is unchanged — the rejected write left the store intact.
+        assert ConfigSetting.objects.get_effective("agent_harness") == "pydantic_ai"
+
+    def test_overlay_scope_pair_is_checked_against_the_default_harness(self) -> None:
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible", scope="acme")
+
+    def test_overlay_scope_provider_matches_overlay_scope_harness(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai", scope="acme")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible", scope="acme")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider", scope="acme") == "openai_compatible"
+
+    def test_unrelated_key_write_is_never_touched(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True

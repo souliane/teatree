@@ -1,12 +1,10 @@
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
-from django.db.models.expressions import BaseExpression
 from django.utils import timezone
 
 from teatree.config import worker_is_quiescing
@@ -19,8 +17,13 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
+from teatree.core.managers_issue_match import matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
+from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
+from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
+from teatree.core.managers_session import SessionQuerySet
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
@@ -52,32 +55,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class ClaimOrder:
-    """Optional ordering for :meth:`TaskManager.claim_next_pending` (PR-13).
-
-    Bundles the ``.annotate()`` kwargs and the resulting ``order_by`` fields so a
-    caller can pick the claim order (admission priority: a queued TODO/followup
-    before a new-ticket auto-start) through one parameter. The default claim path
-    passes no ``ClaimOrder`` and stays plain oldest-``pk``.
-    """
-
-    annotations: dict[str, BaseExpression]
-    order_by: tuple[str, ...]
-
-
 logger = logging.getLogger(__name__)
-
-
-def _claimable_now_q(now: datetime) -> Q:
-    """The ``not_before`` admission predicate — a task is claimable now iff not window-parked.
-
-    A null ``not_before`` (every task never limit-parked) or an elapsed one is claimable; a
-    future ``not_before`` (a task parked behind an exhausted usage window, Directive #3)
-    is skipped until the window re-arms. Shared by both claim paths so the gate can never
-    drift between "is there work" and the actual claim.
-    """
-    return Q(not_before__isnull=True) | Q(not_before__lte=now)
 
 
 class TicketQuerySet(models.QuerySet):
@@ -122,18 +100,17 @@ class TicketQuerySet(models.QuerySet):
             raise ticket_model.DoesNotExist(msg)
         return ticket
 
+    def matching_issue(self, issue_url: str) -> models.QuerySet:
+        # Tickets that ARE the given issue — the issue-URL alias-collapse predicate
+        # (#2293) lives in :func:`~teatree.core.managers_issue_match.matching_issue_q`.
+        return self.filter(matching_issue_q(issue_url))
+
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
             self.for_overlay(overlay)
-            .exclude(
-                state__in=[
-                    ticket_model.State.DELIVERED,
-                    ticket_model.State.REVIEW_POSTED,
-                    ticket_model.State.IGNORED,
-                ],
-            )
+            .exclude(state__in=ticket_model.in_flight_excluded_states())
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
@@ -143,6 +120,9 @@ class WorktreeQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         return _for_overlay(self, overlay)
 
+    def for_ticket(self, ticket: "Ticket") -> models.QuerySet:
+        return self.filter(ticket=ticket)
+
     def active(self, overlay: str | None = None) -> models.QuerySet:
         """Worktrees whose ticket is still in flight (not delivered, review-posted, or ignored).
 
@@ -151,15 +131,7 @@ class WorktreeQuerySet(models.QuerySet):
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
-            self.for_overlay(overlay)
-            .exclude(
-                ticket__state__in=[
-                    ticket_model.State.DELIVERED,
-                    ticket_model.State.REVIEW_POSTED,
-                    ticket_model.State.IGNORED,
-                ],
-            )
-            .order_by("pk")
+            self.for_overlay(overlay).exclude(ticket__state__in=ticket_model.in_flight_excluded_states()).order_by("pk")
         )
 
     def stamp_e2e_run(self, ticket_pk: int, *, now: datetime | None = None) -> int:
@@ -179,12 +151,11 @@ class WorktreeQuerySet(models.QuerySet):
         ).update(last_e2e_run=now or timezone.now())
 
 
-class SessionQuerySet(models.QuerySet):
-    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
-        return _for_overlay(self, overlay)
-
-    def for_agent(self, agent_id: str) -> models.QuerySet:
-        return self.filter(agent_id=agent_id).order_by("pk")
+# The settled/in-flight boundary, defined ONCE (#3693): an event is UNSETTLED until it is
+# drained (``processed_at``) or dead-lettered. ``unprocessed()`` filters this in (plus a
+# due clause); ``prunable()`` excludes it (the exact settled complement). Deriving both
+# from this one Q keeps the boundary from drifting between the two call sites.
+_UNSETTLED = Q(processed_at__isnull=True, dead_lettered_at__isnull=True)
 
 
 class IncomingEventQuerySet(models.QuerySet):
@@ -198,9 +169,13 @@ class IncomingEventQuerySet(models.QuerySet):
         dead-lettered poison out of the queue rather than block behind it.
         """
         moment = now or timezone.now()
-        return self.filter(processed_at__isnull=True, dead_lettered_at__isnull=True).filter(
-            Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment)
-        )
+        return self.filter(_UNSETTLED).filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment))
+
+    def prunable(self, cutoff: datetime) -> models.QuerySet:
+        # Settled events before *cutoff*, safe to delete (#3693). Excludes the _UNSETTLED
+        # boundary itself (drained/dead-lettered) — NOT unprocessed(): a not-yet-due backoff
+        # row is still in-flight and must never be pruned however old.
+        return self.exclude(_UNSETTLED).filter(received_at__lt=cutoff)
 
     def dead_lettered(self) -> models.QuerySet:
         """Poisoned events that exhausted their retries — the dead-letter view (#673)."""
@@ -292,6 +267,16 @@ class TaskQuerySet(models.QuerySet):
             phase__in=phase_spellings(phase),
             status__in=task_model.Status.active(),
         )
+
+    def in_flight_for_phase(self, overlay: str, phase: str) -> models.QuerySet:
+        """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
+        return _in_flight_for_phase(self, overlay, phase)
+
+    def last_run_at_for_phase(
+        self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
+    ) -> datetime | None:
+        """Most recent ``Session.started_at`` for an overlay+phase task, or ``None`` — the cadence clock."""
+        return _last_run_at_for_phase(self, overlay, phase, statuses=statuses)
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
@@ -551,6 +536,27 @@ class TaskQuerySet(models.QuerySet):
         return (
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
+
+    def live_headless_agent_count(self) -> int:
+        """Live HEADLESS agents in flight — CLAIMED, unexpired-lease, HEADLESS target.
+
+        The single divisor for the per-agent test-worker budget AND the
+        governor's ceiling comparison (#3644/F9). Counts EVERY live headless
+        agent — a registered-phase task AND a free-form one (``architectural_review``
+        etc.). ``dispatchable_q()`` selects only ``(role, phase)`` pairs with a
+        registered sub-agent, so counting through it UNDERcounted the free-form
+        headless agents that go through the very ``with_test_worker_cap`` this
+        number divides — a smaller divisor gave each agent MORE pytest workers,
+        the melt direction. Counting the true live-agent set fixes it.
+        """
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        now = timezone.now()
+        return self.filter(
+            status=task_model.Status.CLAIMED,
+            lease_expires_at__gt=now,
+            execution_target=task_model.ExecutionTarget.HEADLESS,
+        ).count()
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

@@ -27,6 +27,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
@@ -153,16 +154,20 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
 
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
-    raw_description = (
-        f"{commit_subject}\n\n{commit_body}"
-        if commit_subject and commit_body
-        else (commit_subject or commit_body or f"PR auto-created to track branch `{branch_name}`.")
-    )
+    overlay = get_overlay()
     close_ticket = should_close_ticket(
         _ticket_extra_for_branch(branch_name),
-        setting_enabled=get_overlay().config.mr_close_ticket,
+        setting_enabled=overlay.config.mr_close_ticket,
     )
-    description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
+    description = sanitize_close_keywords(
+        auto_created_description(title, commit_body),
+        close_ticket=close_ticket,
+    )
+    description = ensure_standard_body(
+        description,
+        required_sections=overlay.metadata.get_required_description_sections(),
+        section_defaults=overlay.metadata.get_description_section_defaults(),
+    )
     warn_if_open_questions_missing(description)
     warn_if_precheck_incomplete(description)
 

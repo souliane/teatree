@@ -165,7 +165,7 @@ class TestForgeWriteScrub(TestCase):
         fake = _FakeForge()
         with (
             _forge_env(fake, public=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
             pytest.raises(Exception, match="privacy gate refused"),
         ):
             _call(
@@ -179,7 +179,7 @@ class TestForgeWriteScrub(TestCase):
         fake = _FakeForge()
         with (
             _forge_env(fake, public=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
         ):
             _call(
                 "github_issue_create",
@@ -196,7 +196,7 @@ class TestForgeWriteScrub(TestCase):
         fake = _FakeForge()
         with (
             _forge_env(fake, public=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
             pytest.raises(Exception, match="privacy gate refused"),
         ):
             _call(
@@ -215,7 +215,7 @@ class TestForgeWriteScrub(TestCase):
         fake = _FakeForge()
         with (
             _forge_env(fake, public=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
         ):
             _call(
                 "github_issue_create",

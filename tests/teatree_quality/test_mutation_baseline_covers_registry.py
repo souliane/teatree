@@ -68,7 +68,7 @@ class TestGreenAtCurrentState:
         per_module = load_baseline_per_module()
         outcome = self._all_modules_outcome(per_module)
         assert outcome.total_mutants == settings.baseline_total
-        assert BaselineRatchet.verdict(outcome, mode=settings.mode, baseline=settings.baseline_total) == 0
+        assert BaselineRatchet.verdict(outcome, baseline=settings.baseline_total) == 0
 
     def test_attribution_reproduces_the_committed_per_module_floor(self) -> None:
         per_module = load_baseline_per_module()
@@ -106,7 +106,7 @@ class TestRatchetStillBites:
         per_module = load_baseline_per_module()
         outcome = self._all_modules_outcome(per_module, extra=1)
         assert BaselineRatchet.exceeds_baseline(outcome, baseline=settings.baseline_total) is True
-        assert BaselineRatchet.verdict(outcome, mode=settings.mode, baseline=settings.baseline_total) == 1
+        assert BaselineRatchet.verdict(outcome, baseline=settings.baseline_total) == 1
 
     def test_per_module_update_refuses_to_loosen_on_a_new_survivor(self) -> None:
         per_module = load_baseline_per_module()

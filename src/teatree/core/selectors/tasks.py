@@ -1,6 +1,8 @@
+from django.db.models import Min
+
 from teatree.core.models import Task, Ticket, TicketTransition
 
-from ._types import TaskAttemptDetail, TaskDetail, TaskGraphNode, TaskRelatedRow
+from ._types import TaskAttemptDetail, TaskDetail, TaskRelatedRow
 
 
 def build_task_detail(task_id: int) -> TaskDetail | None:
@@ -60,44 +62,32 @@ def build_task_detail(task_id: int) -> TaskDetail | None:
     )
 
 
-def build_task_graph(ticket_id: int) -> list[TaskGraphNode]:
-    """Build a tree of tasks for a ticket, rooted at tasks with no parent."""
-    tasks = list(Task.objects.filter(ticket_id=ticket_id).select_related("parent_task").order_by("pk"))
-    children_map: dict[int | None, list[Task]] = {}
-    for task in tasks:
-        children_map.setdefault(task.parent_task_id, []).append(task)
-
-    def _build(parent_id: int | None, depth: int) -> list[TaskGraphNode]:
-        return [
-            TaskGraphNode(
-                task_id=task.pk,
-                phase=task.phase,
-                status=task.get_status_display(),  # ty: ignore[unresolved-attribute]
-                execution_target=task.get_execution_target_display(),  # ty: ignore[unresolved-attribute]
-                execution_reason=task.execution_reason[:120],
-                depth=depth,
-                children=_build(task.pk, depth + 1),
-            )
-            for task in children_map.get(parent_id, [])
-        ]
-
-    return _build(None, 0)
-
-
 def build_ticket_lifecycle_mermaid(ticket_id: int) -> str:
-    """Build a Mermaid stateDiagram-v2 from recorded TicketTransition rows."""
+    """Build a Mermaid stateDiagram-v2 from the DISTINCT edges the ticket recorded.
+
+    A state diagram is a set of edges, so a repair loop that re-ran one transition
+    22,965 times must still draw one arrow — the deployed box's worst ticket holds
+    exactly that many rows across ten distinct edges. Grouping in SQL keeps both the
+    query result and the rendered diagram bounded by the FSM's own transition space
+    instead of by how long the ticket has been worked.
+    """
     ticket = Ticket.objects.get(pk=ticket_id)
-    transitions = list(TicketTransition.objects.filter(ticket_id=ticket_id).select_related("session"))
+    edges = (
+        TicketTransition.objects.filter(ticket_id=ticket_id)
+        .values("from_state", "to_state", "triggered_by", "session_id")
+        .annotate(first_seen=Min("created_at"))
+        .order_by("first_seen")
+    )
 
     lines = ["stateDiagram-v2", f"    [*] --> {ticket.State.NOT_STARTED}"]
     referenced: set[str] = {ticket.State.NOT_STARTED}
 
-    for t in transitions:
-        label = f"{t.triggered_by}()"
-        if t.session_id:
-            label += f" S{t.session_id}"
-        lines.append(f"    {t.from_state} --> {t.to_state}: {label}")
-        referenced.update((t.from_state, t.to_state))
+    for edge in edges:
+        label = f"{edge['triggered_by']}()"
+        if edge["session_id"]:
+            label += f" S{edge['session_id']}"
+        lines.append(f"    {edge['from_state']} --> {edge['to_state']}: {label}")
+        referenced.update((edge["from_state"], edge["to_state"]))
 
     # mermaid v11 stateDiagram-v2 requires every state in a ``note`` to be defined
     # by an edge. Without recorded transitions a ticket whose state is not the
