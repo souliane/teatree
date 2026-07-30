@@ -1,5 +1,6 @@
 """Per-phase auto-dispatch tests (souliane/teatree#443 split of test_models.py)."""
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
+from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -17,11 +19,21 @@ from tests.teatree_core.models._shared import (
 
 
 class TestPhaseAutoDispatch(TestCase):
-    """Auto-dispatch of next-phase tasks at each phase boundary (issue #364)."""
+    """Auto-dispatch of next-phase tasks at each phase boundary (issue #364).
+
+    The assertions below are about the IN-SESSION lane a loop-dispatched phase lands
+    in, so the runtime is named: the shipped ``agent_runtime`` is ``headless`` (#3895),
+    under which the same phase rows stay HEADLESS for the headless factory.
+    """
 
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        with interactive_runtime():
+            yield
 
     def test_start_provisions_then_schedules_planning_task(self) -> None:
         ticket = Ticket.objects.create()
@@ -148,6 +160,10 @@ class TestPhaseAutoDispatch(TestCase):
     def test_shipping_gates_on_user_approval_when_db_mode_is_manual(self) -> None:
         from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
+        # A GLOBAL ``mode`` row is a workspace default, not a hard pin, so it does not
+        # beat the ``autonomy = full`` collapse that pins ``mode = auto`` (#3895).
+        # Manual ship is therefore expressed as the tier the operator actually holds.
+        ConfigSetting.objects.set_value("autonomy", value="babysit")
         ConfigSetting.objects.set_value("mode", value="interactive")
         ticket = Ticket.objects.create()
 
@@ -165,6 +181,7 @@ class TestPhaseAutoDispatch(TestCase):
         # resolves mode=manual — the resolved mode is the sole authority.
         from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
+        ConfigSetting.objects.set_value("autonomy", value="babysit")
         ConfigSetting.objects.set_value("mode", value="interactive")
         ticket = Ticket.objects.create()
 

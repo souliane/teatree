@@ -55,7 +55,7 @@ def runs_in_session(*, role: str, phase: str) -> bool:
     chokepoint, the auto-enqueue signal, the queue-drain safety net, and
     :func:`loop_dispatch_refusal`): a ``(role, phase)`` with a registered phase
     agent (:func:`has_registered_phase_agent`) runs in-session ONLY when the
-    ``agent_runtime`` setting selects ``interactive`` (the default). Under the
+    ``agent_runtime`` setting selects ``interactive``. Under the shipped
     ``headless`` lane the SAME phase work runs headless via ``agents/headless.py``
     behind the two-layer ``agent_harness`` / ``agent_harness_provider`` pair
     (#2887), so this returns ``False`` and the headless lane (auto-enqueue →
@@ -114,7 +114,7 @@ def interactive_claim_refusal(task: "Task") -> str | None:
     the ``agent_runtime`` split: under ``agent_runtime=headless`` a
     loop-dispatched phase task is owned by the headless factory, so an
     interactive session must not claim it and hand-do the work. Under
-    ``agent_runtime=interactive`` (the default) the in-session ``/loop`` slot IS
+    ``agent_runtime=interactive`` the in-session ``/loop`` slot IS
     that owner, so this returns ``None`` and the claim proceeds. Free-form work
     (no registered phase agent) is never headless-reserved.
 
