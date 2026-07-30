@@ -357,6 +357,7 @@ xfail_strict = true
 markers = [
   "integration: tests that run real subprocesses (shell scripts, git, etc.)",
   "push_heavy: whole-tree subprocess checks (jscpd scan, mutmut run) deselected from the fast inner-loop lane (dev/ci-parity-fast.sh), run in CI",
+  "real_schema_readiness: opt out of the autouse pending-migration stub so the gate walks the real migration graph",
 ]
 
 # --- Coverage ---

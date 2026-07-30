@@ -93,6 +93,7 @@ eval_local_skill = "eval"
 scanning_news_cadence_hours = 24
 scanning_news_disabled = false
 scanning_news_skill = "scanning-news"
+schema_readiness_gate_enabled = true
 self_update_cadence_hours = 1
 self_update_disabled = false
 

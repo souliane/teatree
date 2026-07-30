@@ -152,7 +152,12 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # managers_* leaves it belongs with (managers_overlay, managers_issue_match,
 # managers_phase_cadence, managers_task_claim); filing it under a subpackage would separate it
 # from its siblings to satisfy a counter.
-PINNED_FLAT_CORE_MODULES = 103
+# 104: +schema_readiness.py (#3901) — the schema-vs-code admission predicate plus the
+# `pending_migrations` graph walk it now owns. A genuine new root concern with no other
+# home: the claim chokepoint reads it through managers_task_claim (its own tach node), and
+# core/gates/schema_guard reads the same primitive, so putting it under gates/ would put
+# managers on the teatree.core node it is itself a dependency OF — a cycle tach refuses.
+PINNED_FLAT_CORE_MODULES = 104
 
 
 def _flat_core_modules() -> list[str]:

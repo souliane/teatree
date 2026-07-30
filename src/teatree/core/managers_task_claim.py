@@ -8,11 +8,17 @@ re-exports :class:`ClaimOrder` and :func:`_claimable_now_q`, so existing
 ``core.tasks``, ``core.models.task_claim``) are unchanged.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 from django.db.models import Q
 from django.db.models.expressions import BaseExpression
+
+from teatree.core.schema_readiness import schema_admission_block_reason
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,3 +44,22 @@ def _claimable_now_q(now: datetime) -> Q:
     drift between "is there work" and the actual claim.
     """
     return Q(not_before__isnull=True) | Q(not_before__lte=now)
+
+
+def schema_behind_code() -> bool:
+    """Deploy-order gate (#3901) — refuse admission while the DB lags the running code.
+
+    `self_update` advances a live worker's HEAD on a cadence while applying the schema
+    is a separate boot-time step, so the process can hold code whose models the control
+    DB does not carry. Dispatching into that window crashes the agent on the first
+    missing relation; deferring the claim costs one tick and self-heals the moment the
+    migrations land.
+    """
+    reason = schema_admission_block_reason()
+    if reason:
+        # Throttled: this is the claim hot path and the refusal repeats once per
+        # refused claim for as long as the park lasts. The first refusal (and the
+        # first after each quiet window) warns, the rest go to debug — the park
+        # stays visible at a bounded cadence instead of drowning the log.
+        warn_throttled(logger, "task-claim:schema-behind", "task claim deferred: %s", reason)
+    return bool(reason)

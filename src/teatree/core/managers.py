@@ -24,7 +24,7 @@ from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_session import SessionQuerySet
-from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, schema_behind_code
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
@@ -278,10 +278,12 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        # Drain gate (rolling deploy): while the worker is quiescing, admit NO new
-        # task — the CAS never fires, so claimed ≡ spawned stays true and in-flight
-        # CLAIMED leases (which renew via ``renew_lease``, not this path) are untouched.
-        if worker_is_quiescing():
+        # Two admission gates, both admitting NO new task: the drain gate (a rolling
+        # deploy is quiescing this worker) and the deploy-order gate (#3901 — the control
+        # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
+        # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
+        # are untouched by either.
+        if worker_is_quiescing() or schema_behind_code():
             return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
@@ -551,7 +553,7 @@ class TaskQuerySet(models.QuerySet):
         # the interactive/headless claim commands admit zero new tasks during the
         # deploy window. Orthogonal to the supervisor's stop condition — in-flight
         # leases keep renewing.
-        if worker_is_quiescing():
+        if worker_is_quiescing() or schema_behind_code():
             return self.none()
         now = timezone.now()
         qs = (

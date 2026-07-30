@@ -15,12 +15,17 @@
 #      EXCLUDED (an empirical fact — `up -d --no-recreate` re-runs a completed
 #      init every pass, which would replay the heavy ~minute init on every tick),
 #      while a missing/failed init IS included so the init-failure outage recovers.
-#   2. `t3 doctor check --json` inside the WORKER (the container sized for heavy
+#   2. Announce the repair. State is sampled BEFORE the `up -d` and re-read after, so
+#      every service the watchdog had to bring back is DMed with how long it had been
+#      gone (the liveness ledger below). A silent auto-heal is indistinguishable from
+#      a healthy idle factory — that is how a 4h worker outage reached the owner only
+#      because they happened to open the dashboard. Gated on deploy-awareness too.
+#   3. `t3 doctor check --json` inside the WORKER (the container sized for heavy
 #      work; see EXEC_SERVICES) — read the factory health,
 #      including the H24 self-heal detectors (dead containers, a free worker flock
 #      over overdue loop work, stranded headless tasks, stale timers, unrunnable
 #      interactive tasks, failed tasks on live tickets, a drifted runtime clone).
-#   3. On any red finding, DM the owner via `t3 teatree notify send`, keyed on the
+#   4. On any red finding, DM the owner via `t3 teatree notify send`, keyed on the
 #      finding set so an ongoing outage does not re-spam every pass. Three of those
 #      findings — a free worker flock, a down slack-listener, a clone behind
 #      origin — are what a ROLLING DEPLOY looks like mid-swap, so they are gated on
@@ -76,6 +81,11 @@ DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-
 # episode counts green→red transitions, so a finding set that CLEARS and later returns
 # is a new incident rather than a repeat of its own pre-clear key.
 RED_STATE="${TEATREE_WATCHDOG_RED_STATE:-/var/tmp/teatree-watchdog-red.state}"
+
+# Liveness ledger: "<service> <epoch-last-seen-running>" per line. It exists so "inactive
+# since when" is answerable from the DM itself rather than from `docker inspect` after
+# the fact.
+LIVENESS_STATE="${TEATREE_WATCHDOG_LIVENESS_STATE:-/var/tmp/teatree-watchdog-liveness.state}"
 
 log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 
@@ -140,11 +150,91 @@ notify_owner() {
 # real outage. Empty on any docker/base64 failure — the doctor then degrades to a
 # pass exactly as it did before this handoff, and its other detectors still run.
 compose_states_b64() {
-  local ps
-  ps="$(docker ps --all \
-        --filter "label=com.docker.compose.project=$PROJECT" \
-        --format '{{.Label "com.docker.compose.service"}}'$'\t''{{.State}}'$'\t''{{.Status}}' 2>/dev/null)" || return 0
-  printf '%s' "$ps" | base64 -w0 2>/dev/null || true
+  printf '%s' "$(compose_service_states)" | base64 -w0 2>/dev/null || true
+}
+
+# One `docker ps` shape for the whole script: `<service><TAB><State><TAB><Status>` rows
+# for this compose project. Both consumers — the doctor handoff above and the liveness
+# ledger below — read it, so a format change can never desync them. Empty on any docker
+# failure, which every consumer treats as "cannot tell", never as "everything is up".
+compose_service_states() {
+  docker ps --all \
+    --filter "label=com.docker.compose.project=$PROJECT" \
+    --format '{{.Label "com.docker.compose.service"}}'$'\t''{{.State}}'$'\t''{{.Status}}' 2>/dev/null || true
+}
+
+# The APP_SERVICES the daemon does NOT report as `running`, one per line — a service
+# with no container at all counts as down. Yields NOTHING when the daemon could not be
+# read: the caller must not turn an unreadable socket into "the stack is healthy".
+down_app_services() {
+  local states svc state
+  states="$(compose_service_states)"
+  [ -n "$states" ] || return 0
+  for svc in "${APP_SERVICES[@]}"; do
+    state="$(printf '%s\n' "$states" | awk -F'\t' -v s="$svc" '$1 == s { print $2; exit }')"
+    [ "$state" = running ] || printf '%s\n' "$svc"
+  done
+}
+
+# Epoch this service was last OBSERVED running, empty when the ledger has never seen it.
+# `|| true` because the whole script runs under `set -e` and an absent ledger (the first
+# pass on a fresh box) makes awk exit non-zero — which would abort the pass.
+_last_seen_running() {
+  awk -v s="$1" '$1 == s { print $2; exit }' "$LIVENESS_STATE" 2>/dev/null || true
+}
+
+# Stamp every running service at $1 and carry each down service's previous stamp forward
+# — that carried stamp IS the "inactive since when" the owner had to read `docker inspect`
+# for. Best-effort like the other ledgers: losing it costs the duration in one DM, never
+# the supervisor.
+_record_liveness() {
+  local now="$1" down="$2" svc rows=""
+  for svc in "${APP_SERVICES[@]}"; do
+    if printf '%s\n' "$down" | grep -qxF "$svc"; then
+      rows="$rows$svc $(_last_seen_running "$svc")"$'\n'
+    else
+      rows="$rows$svc $now"$'\n'
+    fi
+  done
+  printf '%s' "$rows" >"$LIVENESS_STATE" 2>/dev/null ||
+    log "could not persist the liveness ledger at $LIVENESS_STATE"
+}
+
+_downtime_phrase() {
+  local last
+  last="$(_last_seen_running "$1")"
+  if [ -z "$last" ]; then
+    printf 'down for an unknown period'
+  else
+    printf 'down ~%s min' "$(((${2} - last) / 60))"
+  fi
+}
+
+# DM the owner naming every service that was DOWN before this pass restarted it, and for
+# how long it had been gone. The restart IS the news: a silent auto-heal that took hours
+# is indistinguishable from a healthy idle factory, which is exactly how a 4h outage
+# reached the owner only because they happened to look at the dashboard. Verified by
+# re-read — the post-restart state decides whether each service is reported recovered or
+# STILL DOWN, so the DM never claims a repair that did not land. Skipped while a
+# convergence is in flight: a rolling swap legitimately stops containers.
+announce_repaired_services() {
+  local down="$1" still_down="$2" now="$3" body="" svc
+  [ -n "$down" ] || return 0
+  if deploy_in_flight; then
+    log "deploy in flight — not paging for the services this pass restarted"
+    return 0
+  fi
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    if printf '%s\n' "$still_down" | grep -qxF "$svc"; then
+      body="$body- $svc ($(_downtime_phrase "$svc" "$now")) — STILL DOWN after the restart"$'\n'
+    else
+      body="$body- $svc ($(_downtime_phrase "$svc" "$now")) — restarted"$'\n'
+    fi
+  done <<<"$down"
+  log "watchdog repaired down services — DMing owner"
+  printf 'teatree watchdog found stack services DOWN and ran `up -d`:\n\n%s\nA silent auto-heal is indistinguishable from an idle factory, so the restart itself is reported. Nothing else was changed.' "$body" |
+    notify_owner "watchdog:repaired:$(printf '%s' "$down" | _stable_key):$(day_bucket)"
 }
 
 # Run `t3 doctor check --json` in the first REACHABLE exec service, capturing its
@@ -383,6 +473,12 @@ _findings_that_page() {
 # daily bucket collapses a persisting unchanged outage to at most one DM/day
 # while still re-alerting each day it persists and on a next-day recurrence.
 run_pass() {
+  # Sample who is down BEFORE the restart — afterwards the evidence is gone, which is
+  # why an outage the watchdog silently healed left no trace anyone could act on.
+  local now down still_down
+  now="$(date -u +%s 2>/dev/null || printf 0)"
+  down="$(down_app_services)"
+
   log "restarting any down services (gated on init state)"
   if ! restart_down_services; then
     # The stack could not even be brought up — the strongest outage signal.
@@ -390,6 +486,12 @@ run_pass() {
       | notify_owner "watchdog:compose-up-failed:$(date -u +%Y%m%d)"
     return 0
   fi
+
+  # Announce BEFORE stamping: the durations come from the pre-restart ledger, and
+  # stamping first would report a just-recovered service as down ~0 min.
+  still_down="$(down_app_services)"
+  announce_repaired_services "$down" "$still_down" "$now"
+  _record_liveness "$now" "$still_down"
 
   # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
   trim_stale_temp
