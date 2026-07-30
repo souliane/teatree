@@ -209,13 +209,18 @@ def _orphaned_task_signals(
     candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
     # One query for the whole sweep — this walks every reviewer ticket per tick,
     # so the armed check must not become a per-ticket round trip.
+    # A POSITIVE filter, so all three conditions bind to the same joined task row.
+    # `.exclude(tasks__auto_review_dispatches__isnull=True)` reads like the same
+    # thing but compiles to an UNCORRELATED `NOT EXISTS` over every task on the
+    # ticket in any phase — it means "every task is armed", so one ordinary
+    # sibling task empties this set and the terminal branch reaps the armed
+    # review again.
     armed_ticket_ids = set(
         ticket_model.objects.filter(
             tasks__phase="reviewing",
             tasks__status__in=open_statuses,
-        )
-        .exclude(tasks__auto_review_dispatches__isnull=True)
-        .values_list("pk", flat=True)
+            tasks__auto_review_dispatches__isnull=False,
+        ).values_list("pk", flat=True)
     )
     signals: list[ScanSignal] = []
     for ticket in candidates:

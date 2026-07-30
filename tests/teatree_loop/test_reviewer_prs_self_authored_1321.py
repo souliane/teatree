@@ -286,6 +286,32 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
         AutoReviewDispatch.objects.create(slug="x", pr_id=400, head_sha="abc", pr_url=url, task=task)
         return ticket, task
 
+    def test_armed_review_survives_alongside_an_unarmed_sibling_task(self) -> None:
+        """A ticket is exempt when it carries an armed review, not only when EVERY task is armed.
+
+        The reason this case is spelled out rather than folded into the test
+        above: a single-task ticket passes under `.exclude(...__isnull=True)`,
+        which compiles to an UNCORRELATED `NOT EXISTS` over every task on the
+        ticket in any phase, and so silently means "all tasks are armed". A
+        terminal reviewer ticket almost always carries a completed earlier
+        review — that is WHY it went terminal — so the single-task shape is the
+        rare one and this is the shape the factory actually deadlocked in.
+        """
+        url = "https://github.com/souliane/teatree/pull/402"
+        ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        schedule_external_review(ticket)
+        host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
+        scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
+
+        signals = [s for s in scanner.scan() if s.kind == "reviewer_pr.task_orphaned"]
+
+        assert signals == [], (
+            "one ordinary sibling task made the ticket look unarmed, so the terminal branch "
+            "reaped the armed review and the open PR is deadlocked again"
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
     def test_armed_review_on_a_terminal_ticket_survives_while_the_pr_is_open(self) -> None:
         url = "https://github.com/souliane/teatree/pull/400"
         _ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
