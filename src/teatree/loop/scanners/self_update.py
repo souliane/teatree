@@ -47,7 +47,12 @@ from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
-from teatree.loop.scanners.self_update_schema import SchemaReconcileState, reconcile_schema_after_pull
+from teatree.loop.scanners.self_update_schema import (
+    SchemaReconcile,
+    SchemaReconcileState,
+    reconcile_schema_after_pull,
+    retry_pending_reconcile,
+)
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -137,18 +142,26 @@ class SelfUpdateScanner:
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
+        advanced = False
         for label, path in self.repos:
             outcome = self._process_one(label=label, path=path)
             _maybe_notify_stale_clone(label=label, path=path, outcome=outcome)
             signals.append(_signal_from_outcome(label=label, outcome=outcome))
             signals.extend(_schema_signals(label=label, outcome=outcome))
+            advanced = advanced or outcome.outcome == "updated"
             logger.info(
                 "self_update %s outcome=%s reason=%s",
                 label,
                 outcome.outcome,
                 outcome.reason,
             )
+        if not advanced:
+            signals.extend(_schema_retry_signals(label=self._control_db_label()))
         return signals
+
+    def _control_db_label(self) -> str:
+        """The clone the control DB belongs to — the running install, first configured."""
+        return self.repos[0][0] if self.repos else self.name
 
     def _process_one(self, *, label: str, path: Path) -> _PullOutcome:
         if self._cadence_blocks(label=label):
@@ -245,6 +258,29 @@ def _schema_signals(*, label: str, outcome: _PullOutcome) -> list[ScanSignal]:
     except Exception as exc:
         logger.exception("self_update %s post-pull schema reconcile crashed", label)
         return [_schema_behind_signal(label=label, detail=f"{exc.__class__.__name__}: {exc}")]
+    return _reconcile_signals(label=label, reconcile=reconcile)
+
+
+def _schema_retry_signals(*, label: str) -> list[ScanSignal]:
+    """Re-attempt a reconcile a previous tick left FAILED, on a tick where nothing advanced.
+
+    Without this the outage is terminal until a human acts: the clone's HEAD already
+    moved, so every later tick reports ``up_to_date`` and the ``updated``-only
+    reconcile above never runs again. The retry is cheap on the healthy path — the
+    memoised admission verdict short-circuits it before any migration-graph walk.
+    """
+    try:
+        reconcile = retry_pending_reconcile(label=label, head_sha=_recorded_sha(label))
+    except Exception as exc:
+        logger.exception("self_update %s schema reconcile retry crashed", label)
+        return [_schema_behind_signal(label=label, detail=f"{exc.__class__.__name__}: {exc}")]
+    if reconcile is None:
+        return []
+    return _reconcile_signals(label=label, reconcile=reconcile)
+
+
+def _reconcile_signals(*, label: str, reconcile: SchemaReconcile) -> list[ScanSignal]:
+    """Translate one reconcile verdict into its signals — ``CURRENT`` is silent."""
     if reconcile.state is SchemaReconcileState.FAILED:
         return [_schema_behind_signal(label=label, detail=reconcile.detail)]
     if reconcile.state is SchemaReconcileState.MIGRATED:
@@ -256,6 +292,18 @@ def _schema_signals(*, label: str, outcome: _PullOutcome) -> list[ScanSignal]:
             )
         ]
     return []
+
+
+def _recorded_sha(label: str) -> str:
+    """The clone's last recorded HEAD, so a retry pages under the first failure's key."""
+    from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    try:
+        marker = SelfUpdateMarker.objects.filter(repo_label=label).only("last_pulled_sha").first()
+    except Exception:
+        logger.exception("self_update could not read the recorded HEAD for %s", label)
+        return ""
+    return marker.last_pulled_sha if marker is not None else ""
 
 
 def _schema_behind_signal(*, label: str, detail: str) -> ScanSignal:

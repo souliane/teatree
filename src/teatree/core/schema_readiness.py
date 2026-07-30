@@ -108,7 +108,15 @@ def pending_migrations(alias: str = DEFAULT_DB_ALIAS) -> list[str]:
 
 
 def read_schema_readiness(alias: str = DEFAULT_DB_ALIAS) -> SchemaReadiness:
-    """Walk the migration graph now and classify the result — never memoised."""
+    """Walk the migration graph now and classify the result — never memoised.
+
+    Deliberately asymmetric with ``gates.schema_guard.doctor_check_self_db_migrations``,
+    which treats an ``OperationalError`` as WARN-and-pass: a DB that is absent/offline
+    is a valid session-start state for a *report*, but not a licence to admit work. So
+    during a DB blip the doctor reads green while claims park. Both directions are the
+    safe one for their own caller, and the disagreement is bounded by
+    :data:`READINESS_TTL_SECONDS` — the probe re-runs the moment the blip clears.
+    """
     try:
         pending = tuple(pending_migrations(alias))
     except Exception as exc:  # noqa: BLE001 — a failed probe is UNKNOWN, never a silent CURRENT

@@ -16,6 +16,7 @@ from django.db.models import Q
 from django.db.models.expressions import BaseExpression
 
 from teatree.core.schema_readiness import schema_admission_block_reason
+from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -56,5 +57,9 @@ def schema_behind_code() -> bool:
     """
     reason = schema_admission_block_reason()
     if reason:
-        logger.warning("task claim deferred: %s", reason)
+        # Throttled: this is the claim hot path and the refusal repeats once per
+        # refused claim for as long as the park lasts. The first refusal (and the
+        # first after each quiet window) warns, the rest go to debug — the park
+        # stays visible at a bounded cadence instead of drowning the log.
+        warn_throttled(logger, "task-claim:schema-behind", "task claim deferred: %s", reason)
     return bool(reason)

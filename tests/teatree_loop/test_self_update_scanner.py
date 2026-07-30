@@ -33,11 +33,18 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.gates.schema_guard import SelfDbMigrationError
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.self_update_marker import SelfUpdateMarker
+from teatree.core.schema_readiness import invalidate_schema_readiness
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.self_update import SelfUpdateScanner
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
 from teatree.loop.scanners.self_update_schema import SchemaReconcile, SchemaReconcileState
+
+_READINESS_PROBE = "teatree.core.schema_readiness.pending_migrations"
+_SELF_DB_MIGRATE = "teatree.loop.scanners.self_update_schema.migrate_self_db"
+_SCHEMA_NOTIFY = "teatree.loop.scanners.self_update_schema.notify_user"
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -526,6 +533,62 @@ class SelfUpdatePostPullSchemaTests(TestCase):
             signals = self._scanner(self.clone).scan()
 
         assert [signal.kind for signal in signals] == ["self_update.updated", "self_update.schema_behind"]
+
+
+class SelfUpdateSchemaRetryTests(TestCase):
+    """#3901: a reconcile that failed once must be retried, not parked until a human acts.
+
+    Only an ``updated`` outcome reconciles, and the pull is never replayed — HEAD has
+    already moved. So a first reconcile that failed (a transient locked SQLite is
+    enough on a box running parallel agents) left every later tick reporting
+    ``up_to_date`` with the claim gate shut and nothing re-attempting it.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="self_update_retry_"))
+        self.addCleanup(_rmtree_safe, str(self._tmp))
+        self.origin = self._tmp / "origin.git"
+        _seed_origin_with_two_commits(self.origin)
+        self.clone = self._tmp / "current"
+        _clone_up_to_date(origin=self.origin, clone=self.clone)
+        invalidate_schema_readiness()
+        self.addCleanup(invalidate_schema_readiness)
+
+    def _scan(self) -> list[ScanSignal]:
+        scanner = SelfUpdateScanner(repos=(("teatree", self.clone),), ci_status=_StubCiStatus(CiVerdict.GREEN))
+        return scanner.scan()
+
+    def test_a_still_behind_control_db_is_retried_when_nothing_advanced(self) -> None:
+        with (
+            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
+            patch(_SELF_DB_MIGRATE, return_value=["core.0042_widget"]) as migrate,
+            patch(_SCHEMA_NOTIFY),
+        ):
+            signals = self._scan()
+
+        migrate.assert_called_once()
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date", "self_update.schema_migrated"]
+
+    def test_a_retry_that_fails_again_re_surfaces_the_outage(self) -> None:
+        with (
+            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
+            patch(_SELF_DB_MIGRATE, side_effect=SelfDbMigrationError("database is locked")),
+            patch(_SCHEMA_NOTIFY),
+        ):
+            signals = self._scan()
+
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date", "self_update.schema_behind"]
+        assert "database is locked" in signals[1].summary
+
+    def test_a_current_control_db_never_pays_for_a_retry(self) -> None:
+        with (
+            patch(_READINESS_PROBE, return_value=[]),
+            patch(_SELF_DB_MIGRATE) as migrate,
+        ):
+            signals = self._scan()
+
+        migrate.assert_not_called()
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
 
 
 def _rmtree_safe(path: str) -> None:

@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.schema_readiness import SchemaState, invalidate_schema_readiness, read_schema_readiness
+from teatree.core.schema_readiness import (
+    SchemaState,
+    cached_schema_readiness,
+    invalidate_schema_readiness,
+    read_schema_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,26 @@ def reconcile_schema_after_pull(*, label: str, head_sha: str) -> SchemaReconcile
     return SchemaReconcile(state=SchemaReconcileState.MIGRATED, applied=applied)
 
 
+def retry_pending_reconcile(*, label: str, head_sha: str) -> SchemaReconcile | None:
+    """Re-attempt a reconcile an earlier tick left unresolved, or ``None`` if there is none.
+
+    Only a clone that ADVANCES reconciles, and the pull is never replayed — HEAD has
+    already moved. So a reconcile that failed once (a transient locked SQLite is
+    enough) would never be retried: every later tick reads ``up_to_date`` and the
+    claim gate stays shut until a human intervenes. This is that retry, run on the
+    ticks where nothing advanced.
+
+    It is gated on the MEMOISED admission verdict, so the healthy path costs a dict
+    lookup and never walks the migration graph; only a control DB that is already
+    refusing work pays for a second attempt. Passing the clone's recorded HEAD keeps
+    the owner page keyed exactly as the first failure was, so a persistent park pages
+    once rather than once per tick.
+    """
+    if cached_schema_readiness().admits_work:
+        return None
+    return reconcile_schema_after_pull(label=label, head_sha=head_sha)
+
+
 def _fail(*, label: str, head_sha: str, pending: tuple[str, ...], detail: str) -> SchemaReconcile:
     logger.error("self_update %s left the control DB behind its code: %s", label, detail)
     _page_owner(label=label, head_sha=head_sha, pending=pending, detail=detail)
@@ -102,5 +127,6 @@ __all__ = [
     "SchemaReconcile",
     "SchemaReconcileState",
     "reconcile_schema_after_pull",
+    "retry_pending_reconcile",
     "schema_behind_code_message",
 ]
