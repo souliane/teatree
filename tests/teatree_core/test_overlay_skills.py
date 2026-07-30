@@ -6,7 +6,7 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core import overlay_skills
-from teatree.core.overlay_skills import overlay_skill_metadata, overlay_skills_root
+from teatree.core.overlay_skills import overlay_declares_tool_commands, overlay_skill_metadata, overlay_skills_root
 
 
 class TestOverlaySkillsRoot:
@@ -51,4 +51,41 @@ class TestOverlaySkillMetadata:
         assert overlay_skill_metadata("anything") == {}
 
     def test_module_exports_resolver(self) -> None:
-        assert set(overlay_skills.__all__) == {"overlay_skill_metadata", "overlay_skills_root"}
+        assert set(overlay_skills.__all__) == {
+            "overlay_declares_tool_commands",
+            "overlay_skill_metadata",
+            "overlay_skills_root",
+        }
+
+
+class TestOverlayDeclaresToolCommands:
+    """``skill_root`` is not a tool claim; ``get_tool_commands()`` is (#3904, #3915)."""
+
+    @staticmethod
+    def _patch(monkeypatch: pytest.MonkeyPatch, tool_commands: list[dict[str, str]]) -> None:
+        class _Meta:
+            @staticmethod
+            def get_tool_commands() -> list[dict[str, str]]:
+                return tool_commands
+
+        class _Overlay:
+            metadata = _Meta()
+
+        monkeypatch.setattr("teatree.core.overlay_loader.get_overlay", lambda _name: _Overlay())
+
+    def test_true_when_the_overlay_declares_commands(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, [{"name": "widget", "command": "widget_cmd"}])
+        assert overlay_declares_tool_commands("t3-teatree") is True
+
+    def test_false_for_an_overlay_that_ships_only_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, [])
+        assert overlay_declares_tool_commands("t3-teatree") is False
+
+    def test_false_when_overlay_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Build time again: an unreadable declaration is not a misconfiguration.
+        def _raise(_name: str | None) -> object:
+            msg = "settings are not configured"
+            raise ImproperlyConfigured(msg)
+
+        monkeypatch.setattr("teatree.core.overlay_loader.get_overlay", _raise)
+        assert overlay_declares_tool_commands("anything") is False

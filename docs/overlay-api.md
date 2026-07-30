@@ -87,7 +87,7 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers and evidence posting |
 | `get_e2e_config()` | `{}` | E2E runner config: `runner` (`"project"` / `"external"`), plus `test_dir` / `settings_module` (project runner) or `project_path` / `ref` (external runner) |
 | `detect_variant()` | `""` | Detect the current tenant variant from project context |
-| `get_tool_commands()` | `[]` | Custom tool commands exposed via `t3 <overlay> tool run` |
+| `get_tool_commands()` | `[]` | Custom tool commands exposed via `t3 <overlay> tool run`. Declaring the surface is separate from declaring where skills live (`get_skill_metadata()`'s `skill_root`): the CLI group itself registers from the skill tree's `*/hook-config/tool-commands.json`, and a non-empty declaration with no such manifest is the one warned misconfiguration. Leaving this at `[]` is the ordinary case for an overlay that ships skills and no tools — it is silent |
 | `get_issue_title(url)` | `""` | Fetch the title of an issue from its URL |
 
 ## `OverlayBase`
