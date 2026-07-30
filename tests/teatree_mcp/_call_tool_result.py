@@ -1,23 +1,38 @@
-"""Decode the JSON a `call_tool` result carries, across every shape mcp has used.
+"""Decode the JSON a `call_tool` result carries.
 
-Four test modules each carried their own copy of this decoder, so the mcp 2.0
-return-type change (a `CallToolResult` object where 1.x yielded a bare block
-list or a `(blocks, ...)` tuple) broke all four at once. One decoder means the
-next shape change is one edit.
+Four test modules each carried their own copy of this decoder, so a change to
+mcp's return type broke all four at once. One decoder means the next change is
+one edit.
+
+`MCPServer.call_tool` returns `CallToolResult | InputRequiredResult`; only the
+former carries tool output, and the discriminator is `result_type`. Decoding an
+elicitation result is a caller error, not another shape to unwrap — a pydantic
+model iterates and `getattr`s without complaint, so an undiscriminated decode
+returns plausible nonsense instead of failing.
 """
 
 import json
 from typing import Any
 
+from mcp.types import CallToolResult
+
+
+class NotACompletedToolResultError(TypeError):
+    def __init__(self, result: Any) -> None:
+        described = getattr(result, "result_type", None) or type(result).__name__
+        super().__init__(f"call_tool returned {described}, which carries no tool output")
+
+
+def _completed(result: Any) -> CallToolResult:
+    """*result* as a completed tool result, or a loud failure."""
+    if not isinstance(result, CallToolResult) or result.result_type != "complete":
+        raise NotACompletedToolResultError(result)
+    return result
+
 
 def content_blocks(result: Any) -> list[Any]:
-    """The content blocks of *result*, whichever container mcp wrapped them in."""
-    blocks = getattr(result, "content", None)
-    if blocks is not None:
-        return list(blocks)
-    if isinstance(result, tuple):
-        return list(result[0])
-    return list(result)
+    """The content blocks of *result*."""
+    return list(_completed(result).content)
 
 
 def payloads(result: Any) -> list[Any]:
@@ -32,9 +47,7 @@ def structured(result: Any) -> Any:
     callers assert against the value itself, so the envelope is peeled here
     rather than in every test.
     """
-    value = getattr(result, "structured_content", None)
-    if value is None:
-        value = result[1] if isinstance(result, tuple) else result
+    value = _completed(result).structured_content
     if isinstance(value, dict) and set(value) == {"result"}:
         return value["result"]
     return value
