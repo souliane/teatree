@@ -5,6 +5,7 @@ import pytest
 
 import teatree.skill_support.loading as skill_loading_mod
 from teatree.skill_support.loading import (
+    INTERNALS_SKILL_NAME,
     SkillLoadingPolicy,
     SkillSelectionResult,
     _dedupe,
@@ -487,6 +488,43 @@ def test_detect_walks_parents(tmp_path: Path):
     subdir.mkdir(parents=True)
     (tmp_path / "manage.py").touch()
     assert SkillLoadingPolicy.detect_framework_skills(subdir) == ["ac-django"]
+
+
+# ── detect_internals_skill ──────────────────────────────────────────
+
+
+def _make_teatree_checkout(root: Path) -> Path:
+    package = root / "src" / "teatree"
+    package.mkdir(parents=True)
+    (package / "__init__.py").touch()
+    return root
+
+
+def test_detect_internals_in_a_teatree_checkout(tmp_path: Path):
+    assert SkillLoadingPolicy.detect_internals_skill(_make_teatree_checkout(tmp_path)) == [INTERNALS_SKILL_NAME]
+
+
+def test_detect_internals_walks_parents(tmp_path: Path):
+    subdir = _make_teatree_checkout(tmp_path) / "src" / "teatree" / "mcp"
+    subdir.mkdir(parents=True)
+    assert SkillLoadingPolicy.detect_internals_skill(subdir) == [INTERNALS_SKILL_NAME]
+
+
+def test_detect_internals_skipped_outside_a_teatree_checkout(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["teatree>=1"]')
+    assert SkillLoadingPolicy.detect_internals_skill(tmp_path) == []
+
+
+def test_a_teatree_checkout_dispatch_carries_the_internals_skill(tmp_path: Path):
+    result = _launch(_make_teatree_checkout(tmp_path), explicit_phase="coding")
+    assert INTERNALS_SKILL_NAME in result.skills
+
+
+def test_a_non_teatree_dispatch_does_not_carry_the_internals_skill(tmp_path: Path):
+    (tmp_path / "manage.py").touch()
+    result = _launch(tmp_path, explicit_phase="coding")
+    assert INTERNALS_SKILL_NAME not in result.skills
+    assert "ac-django" in result.skills
 
 
 _OSERROR_MSG = "permission denied"
