@@ -24,6 +24,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -438,6 +439,36 @@ class MergeClear(models.Model):
                 "once checks are green (§17.4.3 / PR-07)"
             )
             raise ClearIssuanceError(msg)
+
+    def record_merged_pull_request(self) -> "Ticket | None":
+        """Bind a landed merge to the PR-side records; return the ticket the FSM must advance.
+
+        The merge keystone is the authoritative moment the PR became merged — the
+        open-PR-only reconciler that used to be ``PullRequest.mark_merged``'s sole
+        caller can never observe a PR that merged between two of its ticks.
+        """
+        PullRequest.objects.record_forge_merge(slug=self.slug, pr_id=self.pr_id)
+        return self.adopt_owning_ticket()
+
+    def adopt_owning_ticket(self) -> "Ticket | None":
+        """Persist the PR's owning ticket onto a ticketless CLEAR; return the ticket adopted.
+
+        ``--ticket-id`` is optional on ``ticket clear`` and the loop never passed one,
+        so a CLEAR is routinely born with no ticket and the merge keystone then has no
+        FSM to advance. The PR itself knows its ticket, so recover the link from there.
+
+        Adoption is bookkeeping, never authorisation: the merge gates that read
+        ``clear.ticket`` (anti-vacuity, rubric) run BEFORE the merge, so adopting
+        post-merge can never let something through that would otherwise be held.
+        """
+        if self.ticket is not None:
+            return self.ticket
+        ticket = PullRequest.objects.owning_ticket(slug=self.slug, pr_id=self.pr_id)
+        if ticket is None:
+            return None
+        self.ticket = ticket
+        self.save(update_fields=["ticket"])
+        return ticket
 
     def is_actionable(self) -> bool:
         """True iff every load-bearing field is populated and the CLEAR is unconsumed.

@@ -6,8 +6,9 @@ accumulates (a real host reached 183). These tests drive
 :func:`reap_orphan_raw_worktrees` against a real ``git worktree`` under
 ``tmp_path`` and prove BOTH directions: an orphan whose work is on a remote (or
 detached with nothing unique) is reaped; an orphan with unpushed unique work (or
-uncommitted changes) is KEPT — the #706 data-loss guard, never destroyed and
-never snapshot. Salvage is a separate explicit action (push the branch to a PR).
+uncommitted changes) is KEPT — the #706 data-loss guard, never destroyed. Salvage
+to a PR stays a separate explicit action; what the pass does add is a read-only
+capture of whatever the orphan holds, so a kept one is observable.
 """
 
 import subprocess
@@ -15,11 +16,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core.cleanup.unshipped_work import bundle_path
 from teatree.core.management.commands._workspace.checkout_registry import raw_worktree_paths
 from teatree.core.management.commands._workspace.orphan_worktrees import _db_tracked_paths, reap_orphan_raw_worktrees
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -30,6 +33,7 @@ class _OrphanWorktreeFixture(TestCase):
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
+        self.captures = tmp_path / "captures"
         self.origin = tmp_path / "origin.git"
         self.origin.mkdir()
         _run_git("init", "-q", "--bare", "-b", "main", cwd=self.origin)
@@ -66,17 +70,19 @@ class _OrphanWorktreeFixture(TestCase):
             env=_clean_env(),
         ).stdout
 
-    def _reap(self, *, dry_run: bool = False) -> list[str]:
-        # Force cwd-based clone discovery onto the tmp main clone.
+    def _reap(self, *, dry_run: bool = False, clean_ignored: bool = False) -> list[str]:
+        # Force cwd-based clone discovery onto the tmp main clone, and keep the
+        # pre-reap capture's bundles inside tmp_path instead of the real data dir.
         with (
             patch(
                 "teatree.core.management.commands._workspace.orphan_worktrees.is_clean_ignored",
-                return_value=False,
+                return_value=clean_ignored,
             ),
             patch(
                 "teatree.core.management.commands._workspace.orphan_worktrees.Path.cwd",
                 return_value=self.repo_main,
             ),
+            patch("teatree.core.cleanup.unshipped_work.get_data_dir", return_value=self.captures),
         ):
             return reap_orphan_raw_worktrees(self.workspace, dry_run=dry_run)
 
@@ -256,3 +262,79 @@ class TestStaleRemoteTrackingRefNeverReaped(_OrphanWorktreeFixture):
 
         assert wt_path.exists(), "a clone whose remote refs could not be refreshed must keep its orphans"
         assert any("could not refresh remote refs" in line for line in results), results
+
+
+class TestCapturesUnshippedWorkBeforeDisposition(_OrphanWorktreeFixture):
+    """A kept orphan is now OBSERVED — it used to be indistinguishable from a busy one."""
+
+    def _record(self, wt_path: Path) -> UnshippedWorkRecord | None:
+        return UnshippedWorkRecord.objects.filter(checkout_path=str(wt_path)).first()
+
+    def test_staged_only_orphan_is_captured_with_the_index_in_the_patch(self) -> None:
+        wt_path = self._add_orphan("staged-feat", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "staged-feat", cwd=wt_path)
+        (wt_path / "f.txt").write_text("staged edit")
+        _run_git("add", "f.txt", cwd=wt_path)
+
+        self._reap()
+
+        record = self._record(wt_path)
+        assert record is not None, "a staged-only orphan left no durable record"
+        assert record.dirty_paths == ["f.txt"]
+        patch_text = bundle_path(record.artifact_prefix, ".uncommitted.patch").read_text(encoding="utf-8")
+        assert "staged edit" in patch_text
+
+    def test_unpushed_orphan_is_captured_before_it_is_kept(self) -> None:
+        wt_path = self._add_orphan("unpushed-capture", files={"new.txt": "unique work"})
+
+        results = self._reap()
+
+        assert wt_path.exists(), "the disposition is unchanged — unpushed work is still KEPT"
+        assert any("KEPT orphan" in line for line in results)
+        record = self._record(wt_path)
+        assert record is not None
+        assert len(record.unpushed_commits) == 1
+        commits = bundle_path(record.artifact_prefix, ".commits.patch").read_text(encoding="utf-8")
+        assert "unique work" in commits
+
+    def test_dry_run_previews_without_capturing(self) -> None:
+        wt_path = self._add_orphan("dry-capture", files={"new.txt": "unique work"})
+
+        self._reap(dry_run=True)
+
+        assert self._record(wt_path) is None, "a preview must not write capture artifacts"
+        assert not self.captures.exists()
+
+    def test_reaped_orphan_holding_nothing_leaves_no_record(self) -> None:
+        wt_path = self._add_orphan("synced-capture", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "synced-capture", cwd=wt_path)
+
+        self._reap()
+
+        assert not wt_path.exists()
+        assert self._record(wt_path) is None
+
+    def test_clean_ignored_orphan_is_captured_before_it_is_skipped(self) -> None:
+        wt_path = self._add_orphan("spike-capture", files={"new.txt": "unique work"})
+
+        results = self._reap(clean_ignored=True)
+
+        assert wt_path.exists(), "the disposition is unchanged — a clean_ignore match is still kept"
+        assert any("matches clean_ignore" in line for line in results), results
+        assert self._record(wt_path) is not None, "a KEPT clean-ignored checkout is a disposition too"
+
+    def test_a_control_db_the_capture_cannot_write_does_not_abort_the_sweep(self) -> None:
+        kept = self._add_orphan("unpushed-resilient", files={"new.txt": "unique work"})
+        reapable = self._add_orphan("synced-resilient", files={"f.txt": "hi"})
+        _run_git("push", "-q", "-u", "origin", "synced-resilient", cwd=reapable)
+
+        with patch.object(
+            UnshippedWorkRecord.objects,
+            "update_or_create",
+            side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+        ):
+            results = self._reap()
+
+        assert kept.exists(), "the keep disposition must survive an uncapturable checkout"
+        assert not reapable.exists(), "one uncapturable checkout must not abort the rest of the sweep"
+        assert any("KEPT orphan" in line for line in results), results

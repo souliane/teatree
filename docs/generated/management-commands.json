@@ -704,6 +704,10 @@
           "name": "sweep"
         },
         {
+          "help": "Drop a deferred-PR obligation the drain can never discharge",
+          "name": "discharge-pending"
+        },
+        {
           "help": "Create a PR for an orphan branch (idempotent, no-op when a PR already exists)",
           "name": "ensure-pr"
         },
@@ -1079,6 +1083,10 @@
         {
           "help": "Post a comment to an issue or work item by its URL",
           "name": "comment"
+        },
+        {
+          "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",
+          "name": "backfill-clears"
         },
         {
           "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",

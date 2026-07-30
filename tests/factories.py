@@ -31,6 +31,7 @@ from teatree.core.models import (
     TicketTransition,
     Worktree,
 )
+from teatree.core.models.pending_pull_request import SerializedPrSpec
 
 _FORTY_HEX = "c" * 40
 
@@ -280,3 +281,17 @@ class ReplyDispatchFactory(DjangoModelFactory[ReplyDispatch]):
 
     class Params:
         dead = factory.Trait(status=ReplyDispatch.Status.DEAD_LETTER)
+
+
+def serialized_pr_spec(title: str = "feat: the feature", branch: str = "feat/orphan") -> SerializedPrSpec:
+    """A ``PullRequestSpec`` in the shape ``PendingPullRequest.spec`` stores."""
+    return SerializedPrSpec(
+        repo="souliane/teatree",
+        branch=branch,
+        title=title,
+        description="body",
+        target_branch="",
+        labels=[],
+        assignee="",
+        draft=False,
+    )

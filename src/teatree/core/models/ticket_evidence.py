@@ -109,6 +109,14 @@ class TicketEvidenceModel(TicketFacet):
         appends only the new item to whatever the locked re-read holds, so the
         concurrent writer's entry survives. Items already present are not
         duplicated.
+
+        A merge that changes nothing issues no ``UPDATE``. Re-stamping a value the
+        row already holds is what a replaying caller does — the review sweep
+        re-stamps every closed reviewer ticket's ``reviewed_sha`` on every tick —
+        and on the write-serialised production SQLite each such write takes the
+        database's single write lock to store the bytes already there. Whether the
+        merge is a no-op is only knowable from the locked re-read, so the lock is
+        still taken; the write it was taken for is not.
         """
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
@@ -125,9 +133,14 @@ class TicketEvidenceModel(TicketFacet):
                 merged[key] = base
             for key in pop_keys or []:
                 merged.pop(key, None)
+            unchanged = locked.extra == merged and all(
+                getattr(locked, field) == value for field, value in (also_set or {}).items()
+            )
             self.extra = merged
             for field, value in (also_set or {}).items():
                 setattr(self, field, value)
+            if unchanged:
+                return
             type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
 
     def record_review_skill_run(self, skill: str) -> None:

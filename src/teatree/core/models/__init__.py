@@ -84,6 +84,7 @@ from teatree.core.models.outer_loop_experiment import (
 )
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
 from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_pull_request import PendingPullRequest, PendingPullRequestManager
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.plan_artifact import PlanArtifact
@@ -120,6 +121,7 @@ from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.session_todo import SessionTodo, SessionTodoManager
 from teatree.core.models.slack_self_ack import SlackSelfAckReaction
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
+from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -133,6 +135,7 @@ from teatree.core.models.ticket_artifacts import (
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
+from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
 from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
@@ -248,6 +251,8 @@ __all__ = [
     "OuterLoopExperimentManager",
     "PendingArticleSuggestion",
     "PendingChatInjection",
+    "PendingPullRequest",
+    "PendingPullRequestManager",
     "PendingReinstall",
     "PendingTriageRecommendation",
     "PlanArtifact",
@@ -301,10 +306,13 @@ __all__ = [
     "SessionTodo",
     "SessionTodoManager",
     "Severity",
+    "SkipObservation",
     "SlackSelfAckReaction",
     "StandingGoal",
     "StandingGoalError",
     "StandingGoalManager",
+    "SweepSkipStreak",
+    "SweepSkipStreakManager",
     "Task",
     "TaskAttempt",
     "Ticket",
@@ -314,6 +322,7 @@ __all__ = [
     "TrajectoryToolCall",
     "TrustedIdentity",
     "TrustedIdentityManager",
+    "UnshippedWorkRecord",
     "UsageWindowState",
     "UsageWindowStateQuerySet",
     "WaitingItem",

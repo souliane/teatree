@@ -82,6 +82,51 @@ class TestMarkerReleaseOnCompletion(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
 
+    def test_state_preserving_transition_releases_nothing(self) -> None:
+        """Release is the side effect of REACHING terminal, not of sitting on it.
+
+        ``mark_review_no_action`` lists its own target as a source so a re-dispatched
+        orphan is a no-op, and the boot/tick replay sweep re-fires that self-loop per
+        reviewer ticket per tick — each pass rewriting the same COMPLETED value under
+        a write lock. A marker still held against an already-terminal ticket belongs
+        to ``reconcile_stale``, the retroactive drain (asserted below).
+        """
+        ticket = TicketFactory(
+            overlay="t3-teatree",
+            issue_url=URL,
+            state=Ticket.State.REVIEW_POSTED,
+            role=Ticket.Role.REVIEWER,
+        )
+        marker = ImplementedIssueMarkerFactory(overlay="t3-teatree", issue_url=URL, ticket=ticket, ticket_created=True)
+
+        ticket.mark_review_no_action()
+        ticket.save()
+
+        marker.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+
+        ImplementedIssueMarker.objects.reconcile_stale("t3-teatree")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+
+    def test_entering_review_posted_from_elsewhere_still_releases(self) -> None:
+        """Anti-vacuity: the guard suppresses the self-loop only, never a real entry."""
+        ticket = TicketFactory(
+            overlay="t3-teatree",
+            issue_url=URL,
+            state=Ticket.State.REVIEWED,
+            role=Ticket.Role.REVIEWER,
+        )
+        marker = ImplementedIssueMarkerFactory(overlay="t3-teatree", issue_url=URL, ticket=ticket, ticket_created=True)
+
+        ticket.mark_review_no_action()
+        ticket.save()
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+
     def test_only_matching_issue_url_markers_are_released(self) -> None:
         released = self._ticket_with_marker(state=Ticket.State.IN_REVIEW)
         other = ImplementedIssueMarkerFactory(

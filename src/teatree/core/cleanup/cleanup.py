@@ -23,6 +23,7 @@ from teatree.core import prek_hook
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.cleanup.cleanup_result import CleanupResult
+from teatree.core.cleanup.unshipped_work import capture_unshipped_work
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -581,6 +582,9 @@ def cleanup_worktree(
     # worktree it then "kept". Both probe the SAME git-resolved effective target
     # (immune to a drifted DB slug, aware of a dangling post-merge HEAD).
     target = _effective_target(str(repo_main), wt_path, worktree)
+    # Ahead of the guards, so it also covers the ``force=True`` hard-delete they
+    # do not protect — the one path where unshipped work leaves no trace.
+    capture_unshipped_work(Path(wt_path), branch=worktree.branch, overlay=worktree.overlay)
     _guard_or_warn_dirty_worktree(worktree, wt_path, target, keep_if_dirty=keep_if_dirty, force=force)
     _run_data_loss_guards(repo_main, worktree, target, force=force, strict_hygiene=strict_hygiene)
 

@@ -33,7 +33,7 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # assistant text) moved into the turn_inspect sibling.
 # Lowered by #3810, which moved the SessionStart hand-off pickup into the
 # session_handover_pickup sibling.
-_CEILING_LOC = 4353
+_CEILING_LOC = 4289
 
 
 def _count_loc(text: str) -> int:

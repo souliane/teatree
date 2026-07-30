@@ -216,6 +216,33 @@ class TestSlackReactionsOnTransition(TestCase):
 
         assert names == ["rework"]
 
+    def test_state_preserving_transition_posts_no_reaction(self) -> None:
+        # An emoji announces ENTERING a state. ``mark_review_no_action`` lists its own
+        # target as a source so a re-dispatched orphan is a no-op, and the boot/tick
+        # replay sweep re-fires such a self-loop per reviewer ticket per tick — each
+        # re-firing spent a single-use OnBehalfApproval, re-DM'd the user a receipt,
+        # and re-ran the post + verify-by-reread round trip for an emoji already there.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_POSTED, role=Ticket.Role.REVIEWER)
+        names: list[str] = []
+
+        with mode_immediate_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
+            ticket.mark_review_no_action()
+            ticket.save()
+
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert names == [], f"reaction re-posted for a state the ticket never left: {names}"
+
+    def test_entering_the_same_state_from_elsewhere_still_reacts(self) -> None:
+        # Anti-vacuity: the guard suppresses the self-loop only, never a real entry.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED, role=Ticket.Role.REVIEWER)
+        names: list[str] = []
+
+        with mode_immediate_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
+            ticket.mark_review_no_action()
+            ticket.save()
+
+        assert names == ["mark_review_no_action"]
+
     def test_transition_commits_when_no_publisher_registered(self) -> None:
         """Fail-SAFE: an empty reaction registry → no-op reaction, transition still commits."""
         from teatree.core import reaction_dispatch  # noqa: PLC0415
@@ -629,6 +656,25 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
         ):
             ticket.scope()
             ticket.save()
+        teardown.enqueue.assert_not_called()
+
+    def test_state_preserving_terminal_transition_does_not_enqueue_teardown(self) -> None:
+        # #3879: teardown is the side effect of a ticket BECOMING terminal. Several
+        # transitions list their own target as a source so a re-run is safe
+        # (``mark_reviewed_externally`` re-stamps a moved head SHA and stays at
+        # REVIEW_POSTED) — idempotent in STATE but not in side effects, so every
+        # re-run minted another teardown job for worktrees the first one already
+        # reaped. Sibling of the audit-row suppression in ``_log_ticket_transition``.
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — deferred: the module object the receiver patches
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_POSTED, role=Ticket.Role.REVIEWER)
+        with (
+            patch.object(tasks_mod, "execute_teardown") as teardown,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            ticket.mark_review_no_action()
+            ticket.save()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
         teardown.enqueue.assert_not_called()
 
     def test_teardown_target_states_are_ticket_terminal_minus_shipped(self) -> None:
