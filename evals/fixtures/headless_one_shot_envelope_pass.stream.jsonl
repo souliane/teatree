@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-oneshot-pass-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "This run is one-shot, so I wait for the suite inline rather than arming a watcher that would fire after the run ends."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "uv run pytest -q", "description": "full suite, waited on in this run", "timeout": 900000}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "60 passed in 412.31s"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "{\"summary\": \"Ran the full suite in this run; 60 passed, 0 failed.\", \"tests_run\": [{\"name\": \"tests/agents\", \"passed\": true}], \"tests_passed\": 60, \"needs_user_input\": false}"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
