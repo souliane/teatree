@@ -5,16 +5,15 @@ Docker disk reclaim, idle-container stop, flag-gated worktree GC, flag-gated
 renderer SIGTERM) lives in one self-describing module and ``mechanical.py``
 only registers the entry point in ``HANDLERS``.
 
-Docker disk reclaim (the RETRO fix): the disk-full incident was driven by
-Docker build cache (~15.5 GB) + unused images (~22 GB) — the real ~37 GB hog —
-which the disk ladder previously never reaped (it only purged file caches and
-stopped idle containers in the RAM ladder). The disk ladder now routes the
-sanctioned :func:`teatree.docker.reclaim.reclaim_disk` (build cache +
-DANGLING-only images + UNREFERENCED-only volumes via a FIXED argv that can
-never contain ``-a`` / ``system prune``), so a running container's images, a
-tagged application image, and an attached DB volume backing a live worktree all
-survive. It is non-destructive by construction, so — like the cache purge and
-``uv cache prune`` — it runs WITHOUT the ``allow_destructive_disk`` flag.
+Docker disk reclaim: build cache and unused images are typically the largest
+reclaimable consumers on a host that builds often, and file-cache purging alone
+does not touch them. The disk ladder routes the sanctioned
+:func:`teatree.docker.reclaim.reclaim_disk` (build cache + DANGLING-only images
++ UNREFERENCED-only volumes via a FIXED argv that can never contain ``-a`` /
+``system prune``), so a running container's images, a tagged application image,
+and an attached DB volume backing a live worktree all survive. It is
+non-destructive by construction, so — like the cache purge and ``uv cache
+prune`` — it runs WITHOUT the ``allow_destructive_disk`` flag.
 
 Contract — every step is dry-run-first and best-effort. (1) Compute the
 freeing *plan* (candidate paths/targets + byte estimates) and persist it to

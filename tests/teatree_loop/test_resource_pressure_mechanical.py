@@ -140,12 +140,11 @@ class DiskCachePurgeTests(TestCase):
 class DiskDockerReclaimTests(TestCase):
     """Under disk pressure the ladder reaps Docker build cache + dangling/unused images.
 
-    The disk-full incident: the build cache (15.5 GB) + unused images (~22 GB)
-    were the real ~37 GB hog, and the disk ladder only purged file caches +
-    stopped idle containers (RAM ladder) — it never reaped Docker disk. The fix
-    routes the safety-vetted ``reclaim_disk`` (build cache + DANGLING-only images
-    + UNREFERENCED-only volumes, never ``-a``) into the disk freeing pass, so a
-    running container's images can never be removed.
+    Build cache and unused images are typically the largest reclaimable
+    consumers, and the file-cache purge does not touch them. The disk freeing
+    pass routes the safety-vetted ``reclaim_disk`` (build cache + DANGLING-only
+    images + UNREFERENCED-only volumes, never ``-a``), so a running container's
+    images can never be removed.
     """
 
     def setUp(self) -> None:
