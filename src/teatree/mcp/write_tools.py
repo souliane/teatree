@@ -325,7 +325,7 @@ async def _review_post_draft_note(repo: str, mr: int, note: str) -> dict[str, An
     gates still apply. Inline (file/line) anchoring stays on the CLI for now.
     """
     message, code = await sync_to_async(
-        lambda: review_post_seam().post_draft_note(repo, mr, note),
+        lambda: review_post_seam(repo).post_draft_note(repo, mr, note),
         thread_sensitive=True,
     )()
     return {"message": message, "code": code}
@@ -340,7 +340,7 @@ async def _review_post_comment(repo: str, mr: int, note: str, *, live: bool = Fa
     Inline (file/line) anchoring stays on the CLI for now.
     """
     message, code = await sync_to_async(
-        lambda: review_post_seam().post_comment(repo, mr, note, live=live),
+        lambda: review_post_seam(repo).post_comment(repo, mr, note, live=live),
         thread_sensitive=True,
     )()
     return {"message": message, "code": code}

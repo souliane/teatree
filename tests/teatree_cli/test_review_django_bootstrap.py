@@ -157,7 +157,7 @@ class TestReviewPostDraftNoteBootstrapsDjango:
     ``DJANGO_SETTINGS_MODULE`` pre-exported, the way a normal shell invocation
     would be. It must NOT crash with ``ImproperlyConfigured`` — the typer
     command body is responsible for calling ``django.setup()`` before the gate
-    chain executes. We patch ``ReviewService.get_gitlab_token`` to return a
+    chain executes. We patch ``ReviewService.read_gitlab_token`` to return a
     sentinel and the underlying GitLab API call to a no-op so we never hit the
     network; the only behaviour under test is the bootstrap path.
     """
@@ -174,9 +174,11 @@ class TestReviewPostDraftNoteBootstrapsDjango:
             "from typer.testing import CliRunner\n"
             "from teatree.cli import app\n"
             "from teatree.cli.review import ReviewService\n"
+            "from teatree.cli.review.guarded_read import ReadOutcome\n"
             "\n"
             "runner = CliRunner()\n"
-            "with patch.object(ReviewService, 'get_gitlab_token', return_value='t'), \\\n"
+            "with patch.object(ReviewService, 'read_gitlab_token',\n"
+            "                  return_value=ReadOutcome(value='t', failed=False)), \\\n"
             "     patch.object(ReviewService, '_post_draft_note_impl',\n"
             "                  return_value=('OK draft_note_id=99', 0)):\n"
             "    result = runner.invoke(app, ['review', 'post-draft-note',\n"

@@ -77,7 +77,7 @@ def _delete_draft_note(
     """Delete a draft note from a GitLab MR."""
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.delete_draft_note(repo, mr, note_id)
     typer.echo(msg)
     if code:
@@ -99,7 +99,7 @@ def _delete_discussion(
     """
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.delete_discussion(repo, mr, note_id)
     typer.echo(msg)
     if code:
@@ -126,7 +126,7 @@ def _delete_issue_note(
     """
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.delete_issue_note(repo, issue_iid, note_id)
     typer.echo(msg)
     if code:
@@ -140,7 +140,7 @@ def _publish_draft_notes(
     """Publish all draft notes on a GitLab MR (bulk submit)."""
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.publish_draft_notes(repo, mr)
     typer.echo(msg)
     if code:
@@ -154,7 +154,7 @@ def _list_draft_notes(
     """List draft notes on a GitLab MR."""
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, _code = service.list_draft_notes(repo, mr)
     typer.echo(msg)
 
@@ -168,7 +168,7 @@ def _update_note(
     """Update a note on a GitLab MR — auto-detects draft vs published."""
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.update_note(repo, mr, note_id, body)
     typer.echo(msg)
     if code:
@@ -185,7 +185,7 @@ def _resolve_discussion(
     """Mark a GitLab MR discussion thread resolved or unresolved."""
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.resolve_discussion(repo, mr, discussion_id, resolved=resolved)
     typer.echo(msg)
     if code:

@@ -28,6 +28,7 @@ invocation publishes and consumes the row.
 """
 
 from http import HTTPStatus
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -36,6 +37,7 @@ from teatree.cli.review.audit import gitlab_mr_url
 from teatree.cli.review.diff import find_added_line, resolve_inline_position
 from teatree.cli.review.drafts import register as _register_drafts
 from teatree.cli.review.evidence_gate import FindingEvidence
+from teatree.cli.review.forge_target import read_token, resolve_base_url
 from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
@@ -46,7 +48,9 @@ from teatree.cli.review.on_behalf import (
 from teatree.cli.review.on_behalf import register as _register_on_behalf
 from teatree.cli.review.send_routing import route_forge_send
 from teatree.cli.review.shape_gate import check_review_shape
-from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.cli.review.guarded_read import ReadOutcome
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
 # after extraction to :mod:`teatree.cli.review.diff` /
@@ -60,7 +64,6 @@ _on_behalf_gate_active = on_behalf_gate_active
 _resolve_inline_position = resolve_inline_position
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
-_TOKEN_PARTS_COUNT = 2
 
 
 class ReviewService:
@@ -70,57 +73,34 @@ class ReviewService:
     publish drafts, reply, resolve, update note, approve, unapprove,
     delete discussion) is wrapped by the recorded-approval on-behalf
     pre-gate. See module docstring for the full contract.
+
+    ``repo`` is the target the service was built for; both forge coordinates
+    (base URL, API token) derive from the overlay that owns it — see
+    :mod:`teatree.cli.review.forge_target`.
     """
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, repo: str = "") -> None:
         self.token = token
+        self.repo = repo
 
     @staticmethod
-    def get_gitlab_token() -> str:
-        """Extract GitLab token from glab auth or GITLAB_TOKEN env var."""
-        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
+    def read_gitlab_token(repo: str = "") -> "ReadOutcome[str]":
+        """The API token for the forge that owns *repo*, with a failed read kept distinct."""
+        return read_token(repo)
 
-        token = os.environ.get("GITLAB_TOKEN", "")
-        if token:
-            return token
-        result = run_allowed_to_fail(["glab", "auth", "status", "-t"], expected_codes=None)
-        for line in result.stderr.splitlines():
-            if "Token" in line and ":" in line:
-                token_value = line.rsplit(":", 1)[-1].strip()
-                if token_value:
-                    return token_value
-        return ""
+    @staticmethod
+    def get_gitlab_token(repo: str = "") -> str:
+        """The API token for the forge that owns *repo*, or ``""`` when it cannot be read."""
+        return read_token(repo).value
 
     def _get_api(self):  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
         from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
 
-    @staticmethod
-    def _resolve_base_url() -> str:
-        """The GitLab API base URL every review post is addressed to — overlay first, then env.
-
-        REFUSES rather than guessing (#3509). This used to swallow an unreadable overlay
-        config and fall back to ``$GITLAB_URL`` / ``gitlab.com`` with no log, so a broken
-        overlay config could silently redirect an outbound review post to a DIFFERENT
-        GitLab instance. An explicitly-set ``$GITLAB_URL`` is still honoured — that is an
-        operator's stated choice, not a guess — but with nothing to fall back to the read
-        raises :class:`~teatree.cli.review.guarded_read.ReadRefusedError`.
-        """
-        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-        from teatree.cli.review.guarded_read import guarded_read, read_or_refuse  # noqa: PLC0415 — deferred CLI import
-
-        def _overlay_url() -> str:
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-            return get_overlay().config.gitlab_url
-
-        env_url = os.environ.get("GITLAB_URL", "").strip()
-        if not env_url:
-            return read_or_refuse("the review GitLab base URL from the overlay config", _overlay_url)
-        outcome = guarded_read("the review GitLab base URL from the overlay config", _overlay_url, neutral=env_url)
-        return outcome.value or env_url
+    def _resolve_base_url(self) -> str:
+        """The GitLab API base URL this service's posts are addressed to."""
+        return resolve_base_url(self.repo)
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""

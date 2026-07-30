@@ -13,8 +13,9 @@ from teatree.cli.review.service import ReviewService
 from teatree.mcp.review_seam import register_review_post_seam
 
 
-def _build_review_service() -> ReviewService:
-    return ReviewService(ReviewService.get_gitlab_token())
+def _build_review_service(repo: str) -> ReviewService:
+    """Build the gated service for *repo* — its forge target derives from that slug (#3793)."""
+    return ReviewService(ReviewService.get_gitlab_token(repo), repo=repo)
 
 
 def register() -> None:
