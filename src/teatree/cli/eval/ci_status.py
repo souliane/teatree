@@ -7,6 +7,11 @@ head_sha / url). On a completed FAILURE it also downloads the publish-safe
 :func:`teatree.eval.triage.classify_red` embedded at render time — the loop never
 re-derives it. A download that fails is surfaced loud (a note), never a silent
 empty red set.
+
+An ``interactive``-surface row is still listed — this is the TRIAGE surface, so a
+real interactive regression must stay visible — but tagged ``ADVISORY`` rather than
+``RED``, because it gates nothing: see
+:data:`teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS`.
 """
 
 import dataclasses
@@ -29,9 +34,18 @@ from teatree.utils.run import CommandFailedError
 
 @dataclasses.dataclass(frozen=True)
 class RedScenario:
+    """One triaged row from the artifact — reported whatever its surface.
+
+    ``advisory`` marks an ``interactive``-surface row: still shown, because this is
+    the TRIAGE surface and hiding a real interactive regression would be worse than
+    a stale gate, but tagged so nobody reads it as a verdict the lane failed on
+    (souliane/teatree#3855, souliane/teatree#3921).
+    """
+
     name: str
     lane: str
     triage_class: str
+    advisory: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -96,6 +110,7 @@ def _reds_from_payload(payload: RawAPIDict) -> tuple[RedScenario, ...]:
                 name=str(record.get("name", "")),
                 lane=str(record.get("lane", "")),
                 triage_class=str(triage_class),
+                advisory=bool(record.get("advisory")),
             )
         )
     return tuple(reds)
@@ -157,7 +172,10 @@ def _render_text(report: CiStatusReport) -> str:
     lines = [f"{report.ref}: status={report.status} conclusion={report.conclusion or '-'} ({report.url})"]
     if report.note:
         lines.append(f"  note: {report.note}")
-    lines.extend(f"  RED {red.name} [{red.lane}] -> {red.triage_class}" for red in report.reds or ())
+    lines.extend(
+        f"  {'ADVISORY' if red.advisory else 'RED'} {red.name} [{red.lane}] -> {red.triage_class}"
+        for red in report.reds or ()
+    )
     return "\n".join(lines)
 
 

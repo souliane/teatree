@@ -127,6 +127,28 @@ class TestCiStatusService:
         )
         assert report.note == ""
 
+    def test_an_advisory_row_is_listed_but_tagged_not_red(self) -> None:
+        # ci-status is the TRIAGE surface, so an interactive regression must stay
+        # visible — but it gates nothing, so it must not read as a RED verdict.
+        client = _FakeClient()
+        client.run_view = {"status": "completed", "conclusion": "failure", "headSha": _SHA, "url": "u"}
+        client.artifact_payload = {
+            "scenarios": [
+                {"name": "chip", "lane": "clean_room", "triage_class": "behavioral", "advisory": True},
+                {"name": "slack", "lane": "clean_room", "triage_class": "behavioral", "advisory": False},
+            ]
+        }
+        report = resolve_ci_status(client, ref="fix-branch", run_id="42")
+        assert [(r.name, r.advisory) for r in report.reds or ()] == [("chip", True), ("slack", False)]
+
+    def test_a_row_without_the_flag_reads_as_gating(self) -> None:
+        # An artifact predating souliane/teatree#3921 must never be silently exempted.
+        client = _FakeClient()
+        client.run_view = {"status": "completed", "conclusion": "failure", "headSha": _SHA, "url": "u"}
+        client.artifact_payload = {"scenarios": [{"name": "old", "lane": "clean_room", "triage_class": "behavioral"}]}
+        reds = resolve_ci_status(client, ref="fix-branch", run_id="42").reds
+        assert reds == (RedScenario(name="old", lane="clean_room", triage_class="behavioral", advisory=False),)
+
     def test_failure_download_error_surfaces_a_loud_note(self) -> None:
         client = _FakeClient()
         client.run_view = {"status": "completed", "conclusion": "failure", "headSha": _SHA, "url": "u"}
