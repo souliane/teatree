@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """``consolidation-registry.json``'s cold WRITER and Django READER agree (#3828).
 
 The per-agent consolidation registry is a cross-tier artifact of the

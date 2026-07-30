@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """``statusline.txt``'s Django RENDERER and the shell CONSUMER agree (#3830).
 
 The statusline is a cross-tier artifact of the #3499 / #3819 / #3826 shape,
