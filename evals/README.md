@@ -1352,8 +1352,18 @@ Fields:
   model-alone regression can never hide behind the gate. A hooked run that captures
   ZERO hook events is a FAIL-LOUD `hooks_not_registered` error (the plugin silently
   failed to register → the lane would degrade to raw-model measurement). The
-  end-to-end wiring is pinned empirically by the `harness_canary_stop_gate_fires`
-  canary (a prose-only decision that can pass ONLY via the #807 bounce). See
+  end-to-end wiring is REPORTED empirically by the `harness_canary_stop_gate_fires`
+  canary (a prose-only decision that can pass ONLY via the #807 bounce) — but the
+  canary is `surface: interactive` (it can pass only via a captured
+  `AskUserQuestion` call), so its verdict is ADVISORY, not gating. Six of the seven
+  `production_hooks` scenarios are advisory; `done_only_on_deployed_dev_evidence`
+  (the #2665 completion-claim gate) is the one on the blocking headless surface, and
+  it is what still reds a lane on a hook regression or on `hooks_not_registered`
+  (which is a graded FAIL result, not a raised exception, so the surface exemption
+  covers it too on the other six). That scenario is `lane: under_load`, so any leg
+  that does not run it — the nightly's `--lane clean_room` shards, the
+  changed-scenarios PR lane, `--surface interactive`, a `--name` run — reports the
+  degradation without gating on it. See
   `teatree.eval.api_runner` (`_t3_plugin`, `hooked_env`, the fail-loud) and
   `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
 - `surface` — optional `headless` (default) or `interactive`. The question/answer
