@@ -1710,16 +1710,19 @@ class TestCleanAllDryRun(TestCase):
             patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
             patch.object(ws_clean_all_mod, "reap_done_worktrees", side_effect=_spy),
             patch.object(ws_clean_all_mod, "drop_orphan_databases", return_value=[]) as mock_drop,
-            patch.object(ws_clean_all_mod, "reap_broken_worktree_dirs") as mock_broken,
+            patch.object(
+                ws_clean_all_mod, "report_unresolvable_worktree_dirs", return_value=["UNKNOWN worktree dir 'x'"]
+            ) as mock_unresolvable,
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all", "--dry-run"))
 
         assert reaper_calls["dry_run"] is True
         assert any("WOULD WIPE" in line for line in cleaned)
         assert mock_drop.call_args.kwargs["dry_run"] is True
-        # The one pass with no dry-run mode is named, never silently omitted.
-        mock_broken.assert_not_called()
-        assert any("NOT PREVIEWED" in line for line in cleaned)
+        # The unresolvable-dir pass deletes nothing, so a preview runs it for real:
+        # its lines are identical either way, and omitting it would understate scope.
+        mock_unresolvable.assert_called_once()
+        assert any("UNKNOWN worktree dir" in line for line in cleaned)
 
 
 @_no_orphan_raw

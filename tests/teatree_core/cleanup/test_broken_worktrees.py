@@ -1,9 +1,12 @@
-"""Broken worktree checkouts are reaped, not accumulated (#3583).
+"""Unresolvable worktree dirs are REPORTED, never removed (#3912, #3853).
 
-A dir whose ``.git`` pointer no longer resolves is invisible to every reaper
-keyed on ``git worktree list``, so they piled up (16 on a real host) and emitted
-an ``is not a git checkout`` WARN on every session setup. The reaper drops them;
-the guards keep it from touching anything that could hold work.
+A dir whose ``.git`` pointer does not resolve here used to be wiped on the
+reasoning that a broken checkout holds nothing recoverable. A checkout created
+in another execution context presents exactly that evidence while being
+perfectly healthy, so the pass now reports and deletes nothing — UNKNOWN never
+authorises a deletion.
+
+Real dirs under ``tmp_path`` and the real ``git rev-parse`` probe throughout.
 """
 
 import tempfile
@@ -12,13 +15,7 @@ from unittest import mock
 
 from django.test import TestCase
 
-import teatree.core.management.commands._workspace.broken_worktrees as broken_mod
-from teatree.core.management.commands._workspace.broken_worktrees import (
-    CheckoutState,
-    probe_checkout,
-    reap_broken_worktree_dirs,
-)
-from teatree.core.models import ConfigSetting, Ticket, Worktree
+from teatree.core.management.commands._workspace.broken_worktrees import report_unresolvable_worktree_dirs
 from teatree.utils import git
 
 
@@ -28,11 +25,11 @@ def _real_checkout(path: Path) -> Path:
     return path
 
 
-def _broken_checkout(path: Path) -> Path:
-    """A dir left behind when its source clone's worktree admin entry went away."""
+def _unresolvable_checkout(path: Path) -> Path:
+    """A checkout naming an admin dir this venue cannot reach — live elsewhere, or dead."""
     path.mkdir(parents=True)
-    (path / ".git").write_text("gitdir: /nonexistent/clone/.git/worktrees/gone\n", encoding="utf-8")
-    (path / "leftover.txt").write_text("x", encoding="utf-8")
+    (path / ".git").write_text("gitdir: /nonexistent/other-context/.git/worktrees/gone\n", encoding="utf-8")
+    (path / "work.py").write_text("x", encoding="utf-8")
     return path
 
 
@@ -45,19 +42,28 @@ class _TmpPathTestCase(TestCase):
         self.tmp_path = Path(tmp_dir.name)
 
 
-class TestBrokenWorktreeReaper(_TmpPathTestCase):
-    def test_a_dir_that_fails_rev_parse_is_dropped(self) -> None:
-        broken = _broken_checkout(self.tmp_path / "roots" / "statusline-refresh")
+class TestUnresolvableWorktreeReport(_TmpPathTestCase):
+    def test_an_unresolvable_dir_is_named_and_survives(self) -> None:
+        candidate = _unresolvable_checkout(self.tmp_path / "roots" / "statusline-refresh")
 
-        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+        outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "roots")
 
-        assert not broken.exists()
+        assert candidate.is_dir(), "an UNKNOWN checkout must never be removed"
+        assert (candidate / "work.py").is_file()
         assert any("statusline-refresh" in line for line in outcomes)
+        assert any("never removed" in line for line in outcomes)
 
-    def test_a_healthy_checkout_is_never_touched(self) -> None:
+    def test_the_report_names_the_admin_dir_this_venue_cannot_reach(self) -> None:
+        _unresolvable_checkout(self.tmp_path / "roots" / "elsewhere")
+
+        outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "roots")
+
+        assert any("does not exist in this execution context" in line for line in outcomes)
+
+    def test_a_healthy_checkout_is_never_reported(self) -> None:
         healthy = _real_checkout(self.tmp_path / "roots" / "live-work")
 
-        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+        outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "roots")
 
         assert healthy.is_dir()
         assert outcomes == []
@@ -67,83 +73,36 @@ class TestBrokenWorktreeReaper(_TmpPathTestCase):
         env_dir.mkdir(parents=True)
         (env_dir / "db.sqlite3").write_text("", encoding="utf-8")
 
-        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+        outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "roots")
 
         assert env_dir.is_dir(), "an auto-isolated env dir is another reaper's business"
         assert outcomes == []
 
-    def test_a_db_tracked_dir_is_left_to_the_row_reaper_that_already_ran(self) -> None:
-        # Not a dead end: clean-all runs the ROW reaper first, and it releases a
-        # provably-dead checkout whose branch holds nothing unrecoverable
-        # (tests/teatree_core/worktree/test_broken_checkout.py). A dir still tracked
-        # HERE is one that pass deliberately kept.
-        broken = _broken_checkout(self.tmp_path / "roots" / "tracked")
-        ticket = Ticket.objects.create(issue_url="https://example.invalid/org/repo/issues/1")
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="",
-            repo_path="org/repo",
-            branch="tracked",
-            extra={"worktree_path": str(broken)},
-        )
-
-        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
-
-        assert broken.is_dir()
-        assert any("the row reaper ran first" in line for line in outcomes)
-
-    def test_a_dir_git_could_not_classify_is_kept(self) -> None:
-        broken = _broken_checkout(self.tmp_path / "roots" / "unanswerable")
+    def test_a_dir_git_could_not_classify_is_reported_as_unknown(self) -> None:
+        candidate = _unresolvable_checkout(self.tmp_path / "roots" / "unanswerable")
         refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: detected dubious ownership in repository")
 
         with mock.patch("teatree.core.worktree.worktree_roots.run_allowed_to_fail", return_value=refusal):
-            outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
+            outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "roots")
 
-        assert broken.is_dir()
-        assert any("git declined to say" in line for line in outcomes)
+        assert candidate.is_dir()
+        assert any("UNKNOWN worktree dir" in line for line in outcomes)
 
-    def test_several_roots_are_drained_in_one_pass(self) -> None:
-        canonical = _broken_checkout(self.tmp_path / "canonical" / "one")
-        alternate = _broken_checkout(self.tmp_path / "alternate" / "two")
+    def test_several_roots_are_reported_in_one_pass(self) -> None:
+        _unresolvable_checkout(self.tmp_path / "canonical" / "one")
+        _unresolvable_checkout(self.tmp_path / "alternate" / "two")
 
-        reap_broken_worktree_dirs(self.tmp_path / "canonical", self.tmp_path / "alternate")
+        outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "canonical", self.tmp_path / "alternate")
 
-        assert not canonical.exists()
-        assert not alternate.exists()
+        assert any("'one'" in line for line in outcomes)
+        assert any("'two'" in line for line in outcomes)
 
     def test_the_same_candidate_is_visited_once_across_repeated_roots(self) -> None:
-        # A KEPT candidate (clean_ignore) survives the first root pass, so the same
-        # root passed twice exercises the seen-set de-dup rather than re-deciding it.
-        ConfigSetting.objects.set_value("clean_ignore", ["spike-*"])
-        broken = _broken_checkout(self.tmp_path / "roots" / "spike-dupe")
+        _unresolvable_checkout(self.tmp_path / "roots" / "dupe")
 
-        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots", self.tmp_path / "roots")
+        outcomes = report_unresolvable_worktree_dirs(self.tmp_path / "roots", self.tmp_path / "roots")
 
-        assert broken.is_dir()
-        # Decided exactly once despite appearing under two (identical) roots.
-        assert len([line for line in outcomes if "spike-dupe" in line]) == 1
+        assert len([line for line in outcomes if "dupe" in line]) == 1
 
-    def test_a_clean_ignore_match_is_kept(self) -> None:
-        ConfigSetting.objects.set_value("clean_ignore", ["spike-*"])
-        broken = _broken_checkout(self.tmp_path / "roots" / "spike-keepme")
-
-        outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
-
-        assert broken.is_dir()
-        assert any("matches clean_ignore" in line for line in outcomes)
-
-    def test_a_removal_failure_is_reported_and_the_dir_is_kept(self) -> None:
-        broken = _broken_checkout(self.tmp_path / "roots" / "wontgo")
-
-        with mock.patch.object(broken_mod.shutil, "rmtree", side_effect=OSError("permission denied")):
-            outcomes = reap_broken_worktree_dirs(self.tmp_path / "roots")
-
-        assert broken.is_dir()
-        assert any("removal failed" in line for line in outcomes)
-
-
-class TestCheckoutProbe(_TmpPathTestCase):
-    def test_probe_agrees_with_git(self) -> None:
-        assert probe_checkout(_real_checkout(self.tmp_path / "ok")) is CheckoutState.CHECKOUT
-        assert probe_checkout(_broken_checkout(self.tmp_path / "bad")) is CheckoutState.NOT_A_CHECKOUT
-        assert probe_checkout(self.tmp_path / "absent") is CheckoutState.INCONCLUSIVE
+    def test_a_root_that_does_not_exist_yields_nothing(self) -> None:
+        assert report_unresolvable_worktree_dirs(self.tmp_path / "no-such-root") == []

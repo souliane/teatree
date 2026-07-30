@@ -63,16 +63,24 @@ def _clone_with_remote(root: Path) -> Path:
     return work
 
 
-def _break_checkout(clone: Path, wt_path: Path) -> None:
-    """Prune the worktree's git admin entry, exactly as the real decay does.
-
-    The gitfile pointer survives in the checkout, so the dir still LOOKS like a
-    worktree while every git command inside it exits 128.
-    """
+def _prune_admin_entry(clone: Path, wt_path: Path) -> None:
+    """Prune the worktree's git admin entry, leaving the checkout's gitfile pointing at nothing."""
     admin = clone / ".git" / "worktrees" / wt_path.name
     for child in sorted(admin.rglob("*"), reverse=True):
         child.unlink() if child.is_file() else child.rmdir()
     admin.rmdir()
+
+
+def _break_checkout(clone: Path, wt_path: Path) -> None:
+    """Reduce the checkout to the one dead shape a single venue can PROVE.
+
+    The admin entry goes, and so does the checkout's own ``.git``. What is left
+    claims nothing: git reports no repository, and there is no pointer that some
+    other execution context might still resolve. That is the whole standard for
+    ``NOT_A_CHECKOUT``, and the only state a release may rest on.
+    """
+    _prune_admin_entry(clone, wt_path)
+    (wt_path / ".git").unlink()
 
 
 class _BrokenWorktreeCase(TestCase):
@@ -158,19 +166,49 @@ class TheDoctorRemedyClosesTheLoopTest(_BrokenWorktreeCase):
         row, wt_path = self._merged_broken_worktree()
 
         red, message = _doctor_checkout_verdict()
-        assert red is False, "the doctor must FAIL on a registered row whose dir is not a checkout"
+        assert red is False, "the doctor must FAIL on a registered row whose dir never was a checkout"
         assert "workspace clean-all" in message, "the remedy the doctor prints is the one under test"
 
         lines = self._run_remedy()
 
         assert not Worktree.objects.filter(pk=row.pk).exists(), f"the row was never released: {lines}"
-        assert not wt_path.exists(), f"the dead dir survived the remedy: {lines}"
+        # The DIRECTORY is not the remedy's to remove. Its files were never proven
+        # redundant by anything the sweep read, so disposing of them stays an
+        # explicit operator decision (#3912).
+        assert wt_path.is_dir(), f"the remedy removed a directory it had no proof about: {lines}"
         green, after = _doctor_checkout_verdict()
         assert green is True, f"the doctor is still RED after its own remedy: {after}"
 
 
 class FailClosedControlsTest(_BrokenWorktreeCase):
     """A release needs POSITIVE proof; every uncertainty keeps the row."""
+
+    def test_a_checkout_whose_pointer_only_its_creator_can_resolve_is_never_released(self) -> None:
+        # #3912/#3853: the admin entry is gone from THIS clone, and the checkout
+        # still names one. That is exactly what a healthy checkout created in
+        # another execution context looks like from here, so it is UNKNOWN — the
+        # branch is never even consulted, and no release is authorised.
+        wt_path = self._worktree_on("elsewhere", commit="feat: work")
+        row = self._register(wt_path, branch="elsewhere")
+        _prune_admin_entry(self.clone, wt_path)
+
+        verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.UNVERIFIABLE
+        assert "does not exist in this execution context" in verdict.reason
+
+    def test_a_checkout_the_visible_clone_still_vouches_for_is_live(self) -> None:
+        # The false-dead report itself: the checkout's recorded admin dir is
+        # unreachable, but the clone this venue CAN see holds its entry.
+        wt_path = self._worktree_on("relocated", commit="feat: work")
+        row = self._register(wt_path, branch="relocated")
+        (wt_path / ".git").write_text(
+            f"gitdir: /nonexistent/other-context/.git/worktrees/{wt_path.name}\n", encoding="utf-8"
+        )
+
+        verdict = classify_broken_checkout(row, workspace=self.workspace)
+
+        assert verdict.state is BrokenCheckout.LIVE_CHECKOUT
 
     def test_a_healthy_checkout_is_never_a_release_candidate(self) -> None:
         wt_path = self._worktree_on("live", commit="feat: in progress")
