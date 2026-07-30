@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
     from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,24 @@ def overlay_skills_root(skill_metadata: "SkillMetadata", project_path: Path | No
     return None
 
 
+def _overlay_or_none(overlay_name: str) -> "OverlayBase | None":
+    """The registered overlay for *overlay_name*, or ``None`` when unavailable.
+
+    The single guarded load both resolvers below share. It is guarded because
+    they run at CLI-BUILD time — before Django is configured — where
+    :func:`teatree.core.overlay_loader.get_overlay` raises
+    :class:`~django.core.exceptions.ImproperlyConfigured`. Each caller then
+    answers with its neutral default, so a build-time caller never regresses.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI/build startup light
+
+    try:
+        return get_overlay(overlay_name or None)
+    except ImproperlyConfigured:
+        logger.debug("overlay %r unavailable; answering with the neutral default", overlay_name)
+        return None
+
+
 def overlay_declares_tool_commands(overlay_name: str) -> bool:
     """Whether *overlay_name* claims a ``t3 <overlay> tool`` surface.
 
@@ -57,37 +76,22 @@ def overlay_declares_tool_commands(overlay_name: str) -> bool:
     the separate, optional ``get_tool_commands()`` extension point. The tool
     registrar keys its missing-manifest warning on THIS, so an overlay that ships
     skills and no tools — the common, correct case — stays silent (#3904, #3915).
-
-    Guarded exactly like :func:`overlay_skill_metadata`: at CLI-BUILD time the
-    overlay is unavailable, and a declaration that cannot be read is not a
-    misconfiguration worth warning about on every invocation.
+    A declaration that cannot be read is not a misconfiguration to warn about.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI/build startup light
-
-    try:
-        return bool(get_overlay(overlay_name or None).metadata.get_tool_commands())
-    except ImproperlyConfigured:
-        logger.debug("tool-command declaration unavailable for overlay %r; assuming none", overlay_name)
-        return False
+    overlay = _overlay_or_none(overlay_name)
+    return bool(overlay.metadata.get_tool_commands()) if overlay is not None else False
 
 
 def overlay_skill_metadata(overlay_name: str) -> "SkillMetadata":
     """Best-effort :class:`SkillMetadata` for *overlay_name*; ``{}`` when unavailable.
 
-    Guarded because the overlay-tool registrar runs at CLI-BUILD time — before
-    Django is configured — where :func:`teatree.core.overlay_loader.get_overlay`
-    raises :class:`~django.core.exceptions.ImproperlyConfigured`. The resolver
-    then falls back to ``<project>/skills`` exactly as before, so a build-time
-    caller never regresses; a caller that runs with Django up (doctor,
-    skill-preamble) gets the overlay's declared root.
+    Unavailable is the CLI-BUILD-time case (see :func:`_overlay_or_none`), where
+    ``{}`` falls the root back to ``<project>/skills``, so a build-time caller
+    never regresses; a caller that runs with Django up (doctor, skill-preamble)
+    gets the overlay's declared root.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI/build startup light
-
-    try:
-        return get_overlay(overlay_name or None).metadata.get_skill_metadata()
-    except ImproperlyConfigured:
-        logger.debug("skill metadata unavailable for overlay %r; using the default root", overlay_name)
-        return {}
+    overlay = _overlay_or_none(overlay_name)
+    return overlay.metadata.get_skill_metadata() if overlay is not None else {}
 
 
 __all__ = ["overlay_declares_tool_commands", "overlay_skill_metadata", "overlay_skills_root"]
