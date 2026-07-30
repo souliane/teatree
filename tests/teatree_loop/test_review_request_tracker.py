@@ -1,6 +1,7 @@
 """Tests for record_review_request_post (#1038)."""
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.review_request_tracker import record_review_request_post
@@ -16,7 +17,7 @@ class TestRecordReviewRequestPost(TestCase):
         )
         assert post.pk is not None
         assert post.bot_id == "B123"
-        assert post.last_nag_step == 0
+        assert post.last_nag_at is None
         assert post.done_at is None
 
     def test_idempotent_re_post_updates_thread_reference(self) -> None:
@@ -25,9 +26,9 @@ class TestRecordReviewRequestPost(TestCase):
             slack_channel_id="C0DEMOCHAN1",
             slack_thread_ts="1700000000.001",
         )
-        # Bump the nag step to simulate a real escalation already in flight.
+        # Stamp a re-ping to simulate a nag already in flight.
         post = ReviewRequestPost.objects.get(mr_url="https://gitlab.example/x/-/merge_requests/2")
-        post.last_nag_step = 2
+        post.last_nag_at = timezone.now()
         post.save()
 
         updated = record_review_request_post(
@@ -36,8 +37,8 @@ class TestRecordReviewRequestPost(TestCase):
             slack_thread_ts="1700000999.999",
         )
         assert updated.pk == post.pk
-        # State machine state is preserved across re-posts.
-        assert updated.last_nag_step == 2
+        # Nag state is preserved across re-posts.
+        assert updated.last_nag_at is not None
         # Thread reference is refreshed.
         assert updated.slack_thread_ts == "1700000999.999"
         # Only one row total.

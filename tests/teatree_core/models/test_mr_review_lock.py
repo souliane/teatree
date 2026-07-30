@@ -101,26 +101,6 @@ class TestReacquireAfterResolveOrStale:
         assert second.deadline > past
 
 
-class TestMarkVerdictPending:
-    def test_transitions_review_dispatched_to_verdict_pending(self) -> None:
-        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-
-        assert MRReviewLock.mark_verdict_pending(slug=SLUG, pr_id=PR_ID) is True
-
-        row = MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID)
-        assert row.state == MRReviewLock.State.VERDICT_PENDING
-        assert row.is_locked()
-
-    def test_no_op_when_no_row_is_review_dispatched(self) -> None:
-        assert MRReviewLock.mark_verdict_pending(slug=SLUG, pr_id=PR_ID) is False
-
-        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-        MRReviewLock.mark_verdict_pending(slug=SLUG, pr_id=PR_ID)
-
-        # Already verdict_pending — calling again is a no-op, not an error.
-        assert MRReviewLock.mark_verdict_pending(slug=SLUG, pr_id=PR_ID) is False
-
-
 class TestResolve:
     """Acceptance: lock resolution — verdict recorded -> resolved."""
 
@@ -133,15 +113,6 @@ class TestResolve:
         assert row.state == MRReviewLock.State.RESOLVED
         assert row.resolved_at is not None
         assert row.is_locked() is False
-
-    def test_resolve_from_verdict_pending(self) -> None:
-        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-        MRReviewLock.mark_verdict_pending(slug=SLUG, pr_id=PR_ID)
-
-        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is True
-
-        row = MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID)
-        assert row.state == MRReviewLock.State.RESOLVED
 
     def test_resolve_with_no_row_is_a_no_op(self) -> None:
         assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is False
@@ -314,7 +285,7 @@ class TestAcquirablePredicateIsTheOneRule:
     def _matches(self, row: MRReviewLock, *, now: dt.datetime) -> bool:
         predicate = acquirable_q(
             always_acquirable=[MRReviewLock.State.IDLE, MRReviewLock.State.RESOLVED],
-            active=[MRReviewLock.State.REVIEW_DISPATCHED, MRReviewLock.State.VERDICT_PENDING],
+            active=[MRReviewLock.State.REVIEW_DISPATCHED],
             now=now,
         )
         return MRReviewLock.objects.filter(predicate, pk=row.pk).exists()

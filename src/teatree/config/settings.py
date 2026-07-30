@@ -1088,8 +1088,8 @@ class _PrePublishGateSettings:
     # per-overlay) as the escape hatch.
     pull_main_clone_disabled: bool = False
     pull_main_clone_cadence_hours: int = 1
-    # Fibonacci review-channel nag scanner (#1038). Ships DISABLED: a
-    # concurrent-tick race on ``ReviewRequestPost.last_nag_step`` let two
+    # Review-channel nag scanner (#1038). Ships DISABLED: a
+    # concurrent-tick race on ``ReviewRequestPost`` let two
     # sessions double-post bump replies into the colleague review channel,
     # including against already-merged MRs. Re-enable per-overlay via
     # ``[overlays.<name>].review_nag_enabled = true`` only after the
