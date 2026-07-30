@@ -43,6 +43,7 @@ from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
 from teatree.loop.scanners.self_update_schema import SchemaReconcile, SchemaReconcileState
 
 _READINESS_PROBE = "teatree.core.schema_readiness.pending_migrations"
+_GATE_ENABLED = "teatree.core.schema_readiness.schema_readiness_gate_enabled"
 _SELF_DB_MIGRATE = "teatree.loop.scanners.self_update_schema.migrate_self_db"
 _SCHEMA_NOTIFY = "teatree.loop.scanners.self_update_schema.notify_user"
 
@@ -581,13 +582,40 @@ class SelfUpdateSchemaRetryTests(TestCase):
         assert "database is locked" in signals[1].summary
 
     def test_a_current_control_db_never_pays_for_a_retry(self) -> None:
+        """The retry CONSULTS the verdict, then does nothing with a current schema.
+
+        Asserting only "no migrate, no extra signal" would pass with the retry
+        removed entirely, so it also pins that the gate was actually reached — the
+        scanner has no other reason to walk the migration graph.
+        """
         with (
-            patch(_READINESS_PROBE, return_value=[]),
+            patch(_READINESS_PROBE, return_value=[]) as probe,
             patch(_SELF_DB_MIGRATE) as migrate,
         ):
             signals = self._scan()
 
+        assert probe.call_count >= 1, "the retry never consulted the admission verdict"
         migrate.assert_not_called()
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
+
+    def test_the_kill_switch_stands_the_retry_down_with_the_rest_of_the_gate(self) -> None:
+        """``schema_readiness_gate_enabled=false`` must disable this mechanism too.
+
+        The switch exists for a box whose PROBE misfires. If the retry gated on the
+        raw verdict it would keep migrating and keep filing an ``action_needed`` row
+        every tick off that same bad verdict, on exactly the box the operator just
+        stood the gate down on.
+        """
+        with (
+            patch(_GATE_ENABLED, return_value=False),
+            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
+            patch(_SELF_DB_MIGRATE) as migrate,
+            patch(_SCHEMA_NOTIFY) as notify,
+        ):
+            signals = self._scan()
+
+        migrate.assert_not_called()
+        notify.assert_not_called()
         assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
 
 

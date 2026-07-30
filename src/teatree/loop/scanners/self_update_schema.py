@@ -27,9 +27,9 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.schema_readiness import (
     SchemaState,
-    cached_schema_readiness,
     invalidate_schema_readiness,
     read_schema_readiness,
+    schema_admission_block_reason,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,13 +82,21 @@ def retry_pending_reconcile(*, label: str, head_sha: str) -> SchemaReconcile | N
     claim gate stays shut until a human intervenes. This is that retry, run on the
     ticks where nothing advanced.
 
-    It is gated on the MEMOISED admission verdict, so the healthy path costs a dict
-    lookup and never walks the migration graph; only a control DB that is already
-    refusing work pays for a second attempt. Passing the clone's recorded HEAD keeps
-    the owner page keyed exactly as the first failure was, so a persistent park pages
-    once rather than once per tick.
+    It is gated on :func:`schema_admission_block_reason` — the claim chokepoint's OWN
+    face of the verdict — and not on the raw readiness read, because that function is
+    what consults the ``schema_readiness_gate_enabled`` kill switch. Gating on the bare
+    verdict would leave the never-lockout escape half-effective: on the box the switch
+    exists for, one whose probe MISFIRES, the operator would stand the gate down and
+    still get a migrate attempt and an ``action_needed`` row every tick from the same
+    bad verdict. Switch off means this mechanism is off too.
+
+    The gate reuses the memoised verdict, so it never walks the migration graph more
+    than once per :data:`READINESS_TTL_SECONDS` — but the TTL is on the order of the
+    tick, so on a quiet box expect roughly one graph walk per minute, not a free dict
+    lookup. Passing the clone's recorded HEAD keeps the owner page keyed exactly as the
+    first failure was, so a persistent park pages once rather than once per tick.
     """
-    if cached_schema_readiness().admits_work:
+    if not schema_admission_block_reason():
         return None
     return reconcile_schema_after_pull(label=label, head_sha=head_sha)
 

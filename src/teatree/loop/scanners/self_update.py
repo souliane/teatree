@@ -57,6 +57,13 @@ from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
+# The label the core editable clone is configured under, and therefore the one the
+# control DB belongs to. The retry names it directly rather than taking whichever
+# clone happens to be configured first: on a non-editable install `T3_REPO` does not
+# resolve, so the first configured repo is an OVERLAY, and a retry keyed on that
+# label would page about an overlay clone while migrating the control DB.
+CORE_REPO_LABEL = "teatree"
+
 _CI_SKIP_REASON: dict[CiVerdict, str] = {
     CiVerdict.RED: "ci_red",
     CiVerdict.PENDING: "ci_pending",
@@ -156,12 +163,8 @@ class SelfUpdateScanner:
                 outcome.reason,
             )
         if not advanced:
-            signals.extend(_schema_retry_signals(label=self._control_db_label()))
+            signals.extend(_schema_retry_signals(label=CORE_REPO_LABEL))
         return signals
-
-    def _control_db_label(self) -> str:
-        """The clone the control DB belongs to — the running install, first configured."""
-        return self.repos[0][0] if self.repos else self.name
 
     def _process_one(self, *, label: str, path: Path) -> _PullOutcome:
         if self._cadence_blocks(label=label):
