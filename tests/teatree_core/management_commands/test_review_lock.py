@@ -1,6 +1,7 @@
 """``t3 <overlay> review lock-acquire`` / ``review lock-status`` — the manual Agent() dispatch lock seam (#1405)."""
 
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
@@ -14,6 +15,7 @@ pytestmark = pytest.mark.django_db
 _URL = "https://github.com/souliane/teatree/pull/1405"
 _SLUG = "souliane/teatree"
 _PR = 1405
+_SWEEP_MOD = "teatree.loop.sweep_on_demand"
 
 
 def _acquire(**overrides: object) -> dict[str, object]:
@@ -61,6 +63,50 @@ class TestLockAcquireCommand(TestCase):
 
         assert result["acquired"] is True
         assert result["holder"] == "t3:reviewer-agent-b"
+
+
+class TestRecordReleasesTheLockItCannotName(TestCase):
+    """#3920 at the seam a reviewer actually uses: ``lock-acquire`` then ``record``.
+
+    A reviewer concluding a review shells ``t3 <overlay> review record`` and has no
+    way to learn the ``--holder`` the dispatcher acquired under, so it passes no
+    ``--lock-holder``. That verdict must still release the lock — a lock stranded
+    for its full 2h deadline is what leaves the PR unmergeable and escalating.
+    """
+
+    def test_a_verdict_recorded_without_lock_holder_releases_the_held_lock(self) -> None:
+        _acquire(holder="t3:reviewer-agent-a")
+
+        with patch(f"{_SWEEP_MOD}._sweep_scanner_for_overlay", side_effect=RuntimeError("no forge in tests")):
+            call_command(
+                "review",
+                "record",
+                str(_PR),
+                _SLUG,
+                reviewed_sha="c" * 40,
+                verdict="merge_safe",
+                reviewer_identity="cold-reviewer-agent",
+            )
+
+        assert MRReviewLock.active_lock_for(slug=_SLUG, pr_id=_PR) is None
+        assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR).state == MRReviewLock.State.RESOLVED
+
+    def test_a_verdict_naming_a_different_lock_holder_releases_nothing(self) -> None:
+        _acquire(holder="t3:reviewer-agent-a")
+
+        with patch(f"{_SWEEP_MOD}._sweep_scanner_for_overlay", side_effect=RuntimeError("no forge in tests")):
+            call_command(
+                "review",
+                "record",
+                str(_PR),
+                _SLUG,
+                reviewed_sha="c" * 40,
+                verdict="merge_safe",
+                reviewer_identity="codex-self-review",
+                lock_holder="codex-self-review",
+            )
+
+        assert MRReviewLock.active_lock_for(slug=_SLUG, pr_id=_PR) is not None
 
 
 class TestLockStatusCommand(TestCase):

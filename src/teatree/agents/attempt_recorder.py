@@ -238,7 +238,8 @@ class _ReviewTarget:
     head_sha: str
     ticket: "Ticket | None"
     #: Identity under which THIS dispatch path holds the per-MR review lock, or
-    #: "" for a path that took none. Only a holder may release its own lock.
+    #: "" for a path that took none and cannot know whose identity did. A named
+    #: non-holder releases nothing; an unnamed one releases (MRReviewLock.resolve).
     lock_holder: str = ""
 
 
@@ -321,7 +322,9 @@ def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
     ref = pr_ref_from_url(pr.url)
     if ref is None:
         return None
-    # The ReviewLoop reviewer leg takes no MRReviewLock, so its verdict releases none.
+    # The ReviewLoop reviewer leg takes no MRReviewLock and cannot learn whose
+    # identity holds one, so it names none: its verdict releases whatever lock
+    # the MR holds rather than stranding it (MRReviewLock.resolve).
     return _ReviewTarget(slug=ref.slug, pr_id=ref.pr_id, head_sha="", ticket=ticket)
 
 

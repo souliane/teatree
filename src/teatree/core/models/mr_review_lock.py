@@ -6,7 +6,7 @@ lock:
 *Takes the lock.* The loop's
 :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` scanner
 enqueue, and a human/orchestrator manually spawning a ``t3:reviewer`` sub-agent
-after ``t3 review lock-acquire``. Neither path knew about the other, so a
+after ``t3 <overlay> review lock-acquire``. Neither path knew about the other, so a
 manually-dispatched review already in flight for an MR did not stop the loop
 from enqueuing a second, duplicate reviewer for the SAME MR on the very next
 tick (the observed recurrence: five manual dispatches in flight, the next loop
@@ -19,7 +19,9 @@ self-PR review claims (``persistence.py``, ``persistence_self_pr_review.py``).
 For those four the #1405 guarantee — "never merge while a review is in flight" —
 does not hold: nothing they dispatch is visible to the merge gate's lock
 consult. What IS enforced is that a verdict from one of them cannot release
-somebody else's lock, because :meth:`resolve` matches the holder.
+somebody else's lock ONCE IT NAMES ITS OWN LOCK IDENTITY — :meth:`resolve`
+refuses a mismatched holder. Naming one is the caller's choice, not a
+requirement; see :meth:`resolve` for why demanding it would strand locks.
 
 ``MRReviewLock`` is the single per-MR lock both paths acquire before
 dispatching. It carries an explicit state machine:
@@ -175,34 +177,41 @@ class MRReviewLock(models.Model):
         return bool(updated)
 
     @classmethod
-    def resolve(cls, *, slug: str, pr_id: int, holder: str) -> bool:
-        """Release the lock on ``(slug, pr_id)`` — but ONLY if *holder* is holding it.
+    def resolve(cls, *, slug: str, pr_id: int, holder: str = "") -> bool:
+        """Release the lock on ``(slug, pr_id)`` — refused only for a MISMATCHED *holder*.
 
         Called when a :class:`~teatree.core.models.review_verdict.ReviewVerdict`
         is recorded for the PR — merge_safe or hold, either way THAT review
         concluded. Returns ``True`` iff a row was transitioned; ``False`` when no
-        row is held by *holder* (already resolved, idle, absent, or held by
-        someone else — never an error, since resolving an unheld MR is a
-        legitimate no-op).
+        row is held (already resolved, idle, absent) or when *holder* names an
+        identity that is not the one holding it — never an error, since resolving
+        an unheld MR is a legitimate no-op.
 
-        The holder check is load-bearing, not defensive. Six code paths now
-        produce a ``Task(phase="reviewing")`` and only this lock's two acquirers
-        take the lock, so a verdict recorded by one of the other four used to
-        release a lock held by a DIFFERENT reviewer that was still running. The
-        merge then proceeded on verdict A while reviewer B was mid-flight and
-        about to record a HOLD — precisely the race #1405 exists to prevent. A
-        blank *holder* is the honest answer for a path that took no lock: it
-        releases nothing, and the real holder's lock lives out its deadline.
+        *holder* is the releaser's own lock identity, and the check it drives is
+        ANTI-THEFT, not proof-of-ownership. Six code paths produce a
+        ``Task(phase="reviewing")`` and only this lock's two acquirers take the
+        lock, so a verdict recorded by one of the other four used to release a
+        lock held by a DIFFERENT reviewer that was still running: the merge then
+        proceeded on verdict A while reviewer B was mid-flight and about to
+        record a HOLD, precisely the race #1405 exists to prevent. A caller that
+        names an identity is taken at its word and can no longer do that.
+
+        An ABSENT *holder* means "I cannot know who holds this lock", NOT "I hold
+        nothing", and releases it. That asymmetry is deliberate: the recorded
+        ``holder`` is a DISPATCHER identity (``LOOP_SCANNER_HOLDER``, or the
+        ``--holder`` of a manual ``t3 <overlay> review lock-acquire``) while the
+        releaser is the REVIEWER that concluded, and a reviewer shelling ``t3
+        <overlay> review record`` has no way to learn the dispatcher's. Demanding
+        a match there would hold the lock for its whole ``deadline`` on every
+        CLI-recorded verdict, and a stranded lock is exactly what leaves a PR
+        unmergeable and escalating (#3920). A PR with no live reviewing work must
+        never be left holding a lock, so an unidentified releaser releases.
         """
+        held = cls.objects.filter(slug=slug.strip(), pr_id=pr_id, state__in=cls._ACTIVE_STATES)
         claimant = holder.strip()
-        if not claimant:
-            return False
-        updated = (
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, holder=claimant)
-            .filter(state__in=cls._ACTIVE_STATES)
-            .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
-        )
-        return bool(updated)
+        if claimant:
+            held = held.filter(holder=claimant)
+        return bool(held.update(state=cls.State.RESOLVED, resolved_at=timezone.now()))
 
     @classmethod
     def reconcile_stale(cls, *, at: "dt.datetime | None" = None) -> int:

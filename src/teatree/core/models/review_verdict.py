@@ -357,9 +357,13 @@ class ReviewVerdict(models.Model):
             # Both claims this verdict concludes, retired in the same transaction
             # that records it. The per-HEAD dispatch claim is spent outright — a
             # verdict covers this exact tree, so re-arming it would be churn. The
-            # per-MR lock is released only if *lock_holder* is the one holding
-            # it: a verdict from a path that took no lock must not release a lock
-            # a different, still-running reviewer holds (see MRReviewLock.resolve).
+            # per-MR lock is released too, UNLESS *lock_holder* names a lock
+            # identity that is not the one holding it: a self-identifying verdict
+            # from a path that took no lock must not free a still-running
+            # reviewer's lock. An absent *lock_holder* is ignorance of the
+            # dispatcher's identity, not a claim of holding nothing, and still
+            # releases — a concluded review may never strand a lock (#3920). See
+            # MRReviewLock.resolve for the full asymmetry.
             AutoReviewDispatch.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
             return recorded

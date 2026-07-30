@@ -153,8 +153,10 @@ class Command(TyperCommand):
             str,
             typer.Option(
                 "--lock-holder",
-                help="Identity this reviewer holds the MRReviewLock under (the --holder passed to "
-                "`review lock-acquire`). Releases that lock; only the holder may. Omit if no lock was taken.",
+                help="Lock identity the MRReviewLock is held under (the --holder passed to "
+                "`review lock-acquire`), when you know it. Omit when you do not: the verdict "
+                "releases the lock either way, since a concluded review must never strand one. "
+                "Naming a DIFFERENT identity releases nothing.",
             ),
         ] = "",
     ) -> RecordResult:
