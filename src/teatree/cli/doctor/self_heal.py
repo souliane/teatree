@@ -55,9 +55,6 @@ _STALE_TIMER_CADENCE_MULTIPLIER = 2
 _MIN_STALE_TIMER_SECONDS = 300
 #: A loop with no interval/daily cadence falls back to this nominal cadence.
 _DEFAULT_CADENCE_SECONDS = 300
-#: Grace before a RUNNING headless task with no live worker is deemed stranded —
-#: absorbs a brief worker restart that momentarily frees the flock mid-claim.
-_STRANDED_HEADLESS_GRACE_SECONDS = 900
 #: The box's runtime clone; used as a fallback when the running code's repo root
 #: cannot be resolved (``deploy/docker-compose.yml`` mounts the clone here).
 _BOX_RUNTIME_CLONE = Path("/home/teatree/teatree")
@@ -193,9 +190,12 @@ class _Probe:
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep
 
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: task import needs the registry
+        from teatree.core.tasks import (  # noqa: PLC0415 — deferred: task import needs the registry
+            STRANDED_JOB_GRACE_SECONDS,
+            execute_headless_task,
+        )
 
-        cutoff = now - dt.timedelta(seconds=_STRANDED_HEADLESS_GRACE_SECONDS)
+        cutoff = now - dt.timedelta(seconds=STRANDED_JOB_GRACE_SECONDS)
         rows = DBTaskResult.objects.filter(
             task_path=execute_headless_task.module_path,
             status=TaskResultStatus.RUNNING,

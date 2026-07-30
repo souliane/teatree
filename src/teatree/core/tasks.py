@@ -1,3 +1,4 @@
+import datetime as dt
 import logging
 from typing import TYPE_CHECKING, TypedDict
 
@@ -21,6 +22,15 @@ if TYPE_CHECKING:
     from django.tasks import Task as DjangoTask
 
 logger = logging.getLogger(__name__)
+
+#: Grace before a RUNNING ``DBTaskResult`` with no live worker reads as stranded
+#: rather than in flight. A killed worker leaves its row RUNNING with nothing to
+#: move it — retention never deletes READY/RUNNING and every reaper is per-task-path
+#: — so anything treating RUNNING as live needs a bound. Long enough to absorb a
+#: worker restart, short enough that a crash cannot indefinitely convince a reader
+#: that dead work is live. Shared by the doctor's stranded-headless probe and
+#: :meth:`TeardownDispatch.outstanding_for`.
+STRANDED_JOB_GRACE_SECONDS = 900
 
 # The initial claim lease for a headless task must match the heartbeat's renewal
 # window (``agents.headless._LEASE_SECONDS`` = 900s), NOT ``Task.claim``'s 300s
@@ -427,28 +437,51 @@ class TeardownDispatch:
     TASK_PATH = execute_teardown.module_path
 
     @staticmethod
-    def outstanding_for(ticket_id: int) -> bool:
-        """True iff a teardown job for *ticket_id* is queued (READY) or in flight (RUNNING).
+    def outstanding_for(ticket_id: int, *, now: "dt.datetime | None" = None) -> bool:
+        """True iff a LIVE teardown job for *ticket_id* is queued (READY) or in flight (RUNNING).
 
         Reads the job queue directly — the queue IS the record of "this teardown is
         already scheduled", so no parallel marker is introduced beside it. Mirrors
         :func:`teatree.loops.timer_chains._live_loop_timers`, the same READY-or-RUNNING
         self-dedup the loop-timer chains use.
 
-        A FINISHED job (SUCCESSFUL or FAILED) is deliberately NOT outstanding. The
-        reaper refuses rather than raises when it leaves a worktree standing (unsynced
-        work is KEPT, #706/#707), so a SUCCESSFUL job routinely means "ran, and the
-        worktree is still there" — treating it as covering the ticket forever would
-        turn this guard into a permanent block on legitimate re-attempts.
+        Three states, three reasons.
+
+        READY is outstanding unbounded: the queue owns the row and will run it, so a
+        backlog is a queue-depth problem that re-queueing would only deepen.
+
+        RUNNING is outstanding only within :data:`STRANDED_JOB_GRACE_SECONDS` of
+        ``started_at``. A worker killed mid-run leaves the row RUNNING with nothing to
+        move it, so an unbounded RUNNING arm would let one crash permanently suppress
+        both the FSM receiver AND the operator drain — and that drain is the escape
+        hatch for worktrees that never got reaped. Past the grace the row reads as
+        stranded and the next attempt queues; a row whose ``started_at`` is unset
+        cannot be aged, so it reads as stranded too. This guard must never be the
+        reason teardown stops happening.
+
+        FINISHED (SUCCESSFUL or FAILED) is never outstanding. The reaper refuses
+        rather than raises when it leaves a worktree standing (#706/#707), so
+        SUCCESSFUL routinely means "ran, and the worktree is still there".
         """
+        from django.utils import timezone  # noqa: PLC0415 — deferred: keeps the module import Django-light
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-        return DBTaskResult.objects.filter(
+        rows = DBTaskResult.objects.filter(
             task_path=TeardownDispatch.TASK_PATH,
             status__in=[TaskResultStatus.READY, TaskResultStatus.RUNNING],
             args_kwargs__args=[int(ticket_id)],
-        ).exists()
+        ).only("status", "started_at")
+        cutoff = (now or timezone.now()) - dt.timedelta(seconds=STRANDED_JOB_GRACE_SECONDS)
+        # The ``status__in`` above is the FINISHED exclusion, and the only one — a
+        # second status check here would be a redundant guard that no single test
+        # could fail, which is how an untested axis hides. What SQL cannot express is
+        # the age arm: among the rows that survive the filter, READY is live
+        # unconditionally, RUNNING only while its worker plausibly still is.
+        return any(
+            row.status == TaskResultStatus.READY or (row.started_at is not None and row.started_at >= cutoff)
+            for row in rows
+        )
 
     @staticmethod
     def enqueue_once(ticket_id: int, *, executor: "DjangoTask | None" = None) -> bool:
@@ -459,15 +492,15 @@ class TeardownDispatch:
         *executor* lets a caller that defers the enqueue past its own frame — the FSM's
         ``transaction.on_commit`` receiver — bind ``execute_teardown`` while it is still
         in scope and hand the task in, exactly as that receiver's sibling transition
-        workers do. Omitting it resolves the module attribute now, which is what a
-        synchronous caller wants.
+        workers do. Omitting it resolves the module attribute now.
 
-        Deliberately NOT deduplicated against a finished job — see
-        :meth:`outstanding_for`. A genuine second attempt after a reaper refusal or a
-        failed run still queues.
+        Deliberately NOT deduplicated against a finished or stranded job (see
+        :meth:`outstanding_for`), and suppression logs at INFO rather than DEBUG:
+        "the teardown you asked for was not queued" is the one outcome an operator
+        running the drain needs to see, and DEBUG is invisible by default.
         """
         if TeardownDispatch.outstanding_for(ticket_id):
-            logger.debug("teardown already outstanding for ticket %s — not queuing another", ticket_id)
+            logger.info("teardown already outstanding for ticket %s — not queuing another", ticket_id)
             return False
         (executor if executor is not None else execute_teardown).enqueue(int(ticket_id))
         return True

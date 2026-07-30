@@ -107,14 +107,12 @@ class TestScheduleHeadlessStillMintsLegitimateRework(TestCase):
         assert Task.objects.filter(ticket=ticket).count() == 2
 
     def test_a_sibling_ticket_in_the_same_phase_is_not_a_duplicate(self) -> None:
+        # Overlay scoping is NOT asserted here: this seam narrows by ``ticket``, which
+        # already implies the overlay, so an overlay case at this level passes with the
+        # overlay predicate deleted. That axis belongs to — and is pinned at — the
+        # manager (``test_in_flight_for_phase_scopes_to_overlay_and_phase``).
         mine = self._author()
         theirs = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3")
 
         assert mine.schedule_coding().pk != theirs.schedule_coding().pk
         assert Task.objects.filter(phase="coding").count() == 2
-
-    def test_a_sibling_overlay_in_the_same_phase_is_not_a_duplicate(self) -> None:
-        mine = self._author()
-        theirs = Ticket.objects.create(overlay="other", issue_url="https://example.com/issues/4")
-
-        assert mine.schedule_coding().pk != theirs.schedule_coding().pk

@@ -69,10 +69,18 @@ class TicketSchedulingModel(TicketFacet):
         (#3903). An in-flight sibling — a PENDING or CLAIMED Task on the same
         ``(ticket, phase)``, in any accepted spelling — is RETURNED rather than
         raced: two coding Tasks were once claimed and dispatched concurrently
-        against one worktree because every caller carried its own read-then-write
-        guard and one of them raced. The dedupe lock is
+        against one worktree because the only guards were read-then-write checks in
+        the callers, and one of them raced. The dedupe lock is
         :meth:`TaskQuerySet.in_flight_for_phase`, the same SSOT the periodic
-        scanners read, consulted here at the write instead of restated per caller.
+        scanners read, consulted here at the write.
+
+        Callers keep their own pre-checks (``loop/persistence.py``,
+        ``loops/outer_loop/implement.py``, ``loops/directive_loop/implement.py``,
+        ``loops/dream/umbrella_ledger.py``): they short-circuit before doing useless
+        setup work, which is worth having. What changed is that they are no longer
+        load-bearing for CORRECTNESS — a caller that forgets one, or whose
+        read-then-write races, can no longer mint a rival task, because this seam
+        checks under the same lock it writes in.
 
         The check and the mint share one ``atomic`` block, so the guard is a real
         CAS: SQLite is opened in ``transaction_mode="IMMEDIATE"``, so the first
