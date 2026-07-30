@@ -15,10 +15,14 @@ terminal-state ``on_commit`` hook and the operator drain — go through
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 from teatree.core.models import Ticket
 from teatree.core.tasks import execute_teardown
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
+
+if TYPE_CHECKING:
+    from django.tasks import Task as DjangoTask
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +55,16 @@ def teardown_outstanding_for(ticket_id: int) -> bool:
     ).exists()
 
 
-def enqueue_teardown_once(ticket_id: int) -> bool:
+def enqueue_teardown_once(ticket_id: int, *, executor: "DjangoTask | None" = None) -> bool:
     """Queue ``execute_teardown`` for *ticket_id* unless one is already outstanding.
 
-    Returns whether this call minted a job. The executor is reached through the
-    ``tasks`` module attribute rather than a bound import, so the FSM receivers'
-    patch of ``tasks.execute_teardown`` stays visible through this seam.
+    Returns whether this call minted a job.
+
+    *executor* lets a caller that defers the enqueue past its own frame — the FSM's
+    ``transaction.on_commit`` receiver — bind ``tasks.execute_teardown`` while it is
+    still in scope and hand the task in, exactly as that receiver's sibling
+    transition workers do. Omitting it resolves the module attribute now, which is
+    what a synchronous caller wants.
 
     Deliberately NOT deduplicated against a finished job — see
     :func:`teardown_outstanding_for`. A genuine second attempt after a reaper
@@ -67,7 +75,7 @@ def enqueue_teardown_once(ticket_id: int) -> bool:
     if teardown_outstanding_for(ticket_id):
         logger.debug("teardown already outstanding for ticket %s — not queuing another", ticket_id)
         return False
-    tasks_mod.execute_teardown.enqueue(int(ticket_id))
+    (executor if executor is not None else tasks_mod.execute_teardown).enqueue(int(ticket_id))
     return True
 
 

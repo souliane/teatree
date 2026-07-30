@@ -371,7 +371,11 @@ def _enqueue_ticket_transition_task(
     The enqueue itself goes through ``enqueue_teardown_once``, the shared seam that
     skips a ticket whose teardown is already queued or running. Entering a terminal
     state is the trigger; whether a job is still needed is the seam's call, so this
-    receiver and the operator drain cannot double-queue the same work.
+    receiver and the operator drain cannot double-queue the same work. The executor
+    is bound HERE and handed to the seam, exactly as the name-mapped transition
+    workers above are: the ``on_commit`` callback fires after this frame is gone, so
+    resolving ``tasks_mod.execute_teardown`` inside it would read a different object
+    than the one in scope when the transition ran.
 
     The deferred import of the executor is call-time (mirroring
     ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
@@ -389,7 +393,8 @@ def _enqueue_ticket_transition_task(
     if target in _TERMINAL_TARGET_STATES and source != target:
         from teatree.core import teardown_dispatch  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-        transaction.on_commit(lambda: teardown_dispatch.enqueue_teardown_once(ticket_pk))
+        teardown = tasks_mod.execute_teardown
+        transaction.on_commit(lambda: teardown_dispatch.enqueue_teardown_once(ticket_pk, executor=teardown))
 
 
 def _enqueue_worktree_transition_task(
