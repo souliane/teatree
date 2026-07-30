@@ -335,8 +335,8 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an already-claimed
     issue).
 
-    The master gate is ``issue_implementer_enabled`` (default False), so with the
-    default config no job is emitted for this domain at all.
+    The master gate is ``issue_implementer_enabled``, ON since #3895, so the default
+    config DOES emit this domain's job; flipping it off emits nothing at all.
 
     The builder resolves the CONFIG tier of the trusted-author set
     (:func:`~teatree.config.effective_trusted_issue_authors`) and the admit label
@@ -418,12 +418,12 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
 
 
 def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScanner | None:
-    """Build a per-overlay triage-assessor scanner behind the default-OFF gate.
+    """Build a per-overlay triage-assessor scanner behind its master gate.
 
-    Returns a scanner ONLY when ``triage_assessor_enabled`` is flipped on for this
-    overlay. With the default-OFF config no scanner is built, so neither
+    Returns a scanner ONLY when ``triage_assessor_enabled`` is on for this overlay —
+    ON since #3895. Flipped off, no scanner is built, so neither
     ``build_loop_table_jobs`` nor ``build_default_jobs`` emits anything for this
-    domain — the fan-out stays byte-for-byte unchanged until an overlay opts in.
+    domain and the fan-out is byte-for-byte the pre-#3895 one.
 
     ``None`` also when the overlay has no code host (nothing to list issues on).
     The cadence / per-tick bound / operator identities are threaded from effective

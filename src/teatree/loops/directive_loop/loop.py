@@ -11,8 +11,9 @@ but ``build_jobs`` returns no scanner jobs — the tick logic
 (:func:`teatree.loops.directive_loop.tick.run_tick`) is invoked directly by the tick
 command.
 
-QUADRUPLE-OFF layer 2 + 3: the seeded ``Loop`` row lands DISABLED, and ``off_live_tick``
-keeps it off the live work loop's fan-out entirely.
+TRIPLE-OFF layers 1 + 2: the seeded ``Loop`` row lands DISABLED, and ``off_live_tick``
+keeps it off the live work loop's fan-out entirely. These two are what keep a fresh
+install inert now that the master flag ships ON (#3895); the code guards are layer 3.
 """
 
 from typing import TYPE_CHECKING

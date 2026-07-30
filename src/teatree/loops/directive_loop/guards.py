@@ -1,4 +1,4 @@
-"""The unconditional guard chains — the code half of the QUADRUPLE-OFF (north-star PR-7).
+"""The unconditional guard chains — the code half of the TRIPLE-OFF (north-star PR-7).
 
 Every directive-loop tick runs a guard chain before it touches a directive. Both chains
 are fail-closed and ordered so the first (most fundamental) refusal wins, mirroring

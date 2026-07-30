@@ -4,12 +4,16 @@ import datetime as dt
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import django.test
 import pytest
 
+from teatree.config import Mode, UserSettings
+from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.scanners.base import Scanner, ScanSignal
-from teatree.loop.tick import TickRequest, _repo_freshness, build_default_scanners, run_tick
+from teatree.loop.tick import TickRequest, _repo_freshness, build_default_jobs, build_default_scanners, run_tick
 from tests._git_repo import make_git_repo
 
 
@@ -213,38 +217,6 @@ def test_tick_signal_url_renders_as_osc8_hyperlink(tmp_path: Path) -> None:
     contents = statusline.read_text(encoding="utf-8")
     assert "\033]8;;https://github.com/owner/repo/pull/545\033\\" in contents
     assert "PR #545: feat(loop)" in contents
-
-
-def test_build_default_jobs_tags_per_overlay() -> None:
-    """Each overlay-scoped scanner gets its overlay name attached to ``_run_job``'s label."""
-    from unittest.mock import MagicMock  # noqa: PLC0415
-
-    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-    from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend  # noqa: PLC0415
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-    backends = [
-        OverlayBackends(
-            name="teatree",
-            hosts=(MagicMock(spec=CodeHostBackend),),
-            messaging=None,
-            ready_labels=(),
-        ),
-        OverlayBackends(
-            name="acme",
-            hosts=(MagicMock(spec=CodeHostBackend),),
-            messaging=MagicMock(spec=MessagingBackend),
-            ready_labels=("ready",),
-        ),
-    ]
-    jobs = build_default_jobs(backends=backends)
-    overlays = {job.overlay for job in jobs if job.overlay}
-    assert overlays == {"teatree", "acme"}
-    pending = [j for j in jobs if j.scanner.name == "pending_tasks"]
-    assert len(pending) == 1  # singleton across overlays
-    # The stale-tickets scanner (#563) is wired once per overlay.
-    stale = {j.overlay for j in jobs if j.scanner.name == "stale_tickets"}
-    assert stale == {"teatree", "acme"}
 
 
 def test_user_identity_aliases_falls_back_to_empty_on_config_error(
@@ -932,30 +904,6 @@ def test_tick_captures_persist_agent_dispatches_exception(
     assert "persistence down" in report.errors["dispatch_persist"]
 
 
-def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
-    """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
-    from unittest.mock import MagicMock  # noqa: PLC0415
-
-    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
-
-    fake_host = MagicMock(spec=CodeHostBackend)
-    fake_host.current_user.return_value = "souliane"
-    fake_host.list_my_prs.return_value = [
-        {"iid": 545, "title": "feat(loop)", "html_url": "https://gh/x/y/pull/545", "user_notes_count": 0}
-    ]
-    fake_host.list_review_requested_prs.return_value = []
-    fake_host.list_assigned_issues.return_value = []
-    backends = [OverlayBackends(name="teatree", hosts=(fake_host,), messaging=None, ready_labels=())]
-
-    statusline = tmp_path / "statusline.txt"
-    run_tick(TickRequest(backends=backends), statusline_path=statusline, colorize=False)
-    contents = statusline.read_text(encoding="utf-8")
-    assert "[teatree]" in contents
-    # GitHub PR URL → ``#545`` chip glyph (#1377). GitLab URLs use ``!``.
-    assert "#545" in contents
-
-
 def test_repos_from_toml_extracts_path_and_workspace_repos(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1230,109 +1178,133 @@ def _backend_with_overlay(
     )
 
 
-def test_build_default_jobs_wires_pr_sweep_per_overlay() -> None:
-    """#1257: every overlay with followup repos gets a ``pr_sweep`` job."""
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+class TestBuildDefaultJobsWiring(django.test.TestCase):
+    """The per-overlay fan-out `build_default_jobs` produces, against a real DB.
 
-    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-    jobs = build_default_jobs(backends=[backend])
-    sweep_jobs = [j for j in jobs if j.scanner.name == "pr_sweep"]
-    assert len(sweep_jobs) == 1
-    assert sweep_jobs[0].overlay == "teatree"
-    assert sweep_jobs[0].scanner.repos == ("souliane/teatree",)
+    The intake gates ship ON since #3895, so the fan-out now builds the issue-intake
+    and triage-assessor scanners — whose builders reconcile stale markers and read the
+    in-flight budget. That DB access is the production path these wiring cases
+    exercise, so they run DB-backed rather than pinning the gates off to stay pure.
+    """
 
+    @pytest.fixture(autouse=True)
+    def _tmp_path(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
 
-def test_build_default_jobs_skips_pr_sweep_when_overlay_has_no_repos() -> None:
-    """#1257: an overlay whose ``get_followup_repos`` is empty gets no sweep job."""
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+    def test_build_default_jobs_tags_per_overlay(self) -> None:
+        """Each overlay-scoped scanner gets its overlay name attached to ``_run_job``'s label."""
+        backends = [
+            OverlayBackends(
+                name="teatree",
+                hosts=(MagicMock(spec=CodeHostBackend),),
+                messaging=None,
+                ready_labels=(),
+            ),
+            OverlayBackends(
+                name="acme",
+                hosts=(MagicMock(spec=CodeHostBackend),),
+                messaging=MagicMock(spec=MessagingBackend),
+                ready_labels=("ready",),
+            ),
+        ]
+        jobs = build_default_jobs(backends=backends)
+        overlays = {job.overlay for job in jobs if job.overlay}
+        assert overlays == {"teatree", "acme"}
+        pending = [j for j in jobs if j.scanner.name == "pending_tasks"]
+        assert len(pending) == 1  # singleton across overlays
+        # The stale-tickets scanner (#563) is wired once per overlay.
+        stale = {j.overlay for j in jobs if j.scanner.name == "stale_tickets"}
+        assert stale == {"teatree", "acme"}
 
-    backend = _backend_with_overlay(name="empty", repos=[])
-    jobs = build_default_jobs(backends=[backend])
-    assert not [j for j in jobs if j.scanner.name == "pr_sweep"]
+    def test_tick_multi_overlay_prefixes_summary(self) -> None:
+        """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
+        fake_host = MagicMock(spec=CodeHostBackend)
+        fake_host.current_user.return_value = "souliane"
+        fake_host.list_my_prs.return_value = [
+            {"iid": 545, "title": "feat(loop)", "html_url": "https://gh/x/y/pull/545", "user_notes_count": 0}
+        ]
+        fake_host.list_review_requested_prs.return_value = []
+        fake_host.list_assigned_issues.return_value = []
+        backends = [OverlayBackends(name="teatree", hosts=(fake_host,), messaging=None, ready_labels=())]
 
+        statusline = self.tmp_path / "statusline.txt"
+        run_tick(TickRequest(backends=backends), statusline_path=statusline, colorize=False)
+        contents = statusline.read_text(encoding="utf-8")
+        assert "[teatree]" in contents
+        # GitHub PR URL → ``#545`` chip glyph (#1377). GitLab URLs use ``!``.
+        assert "#545" in contents
 
-def test_build_default_jobs_wires_slack_broadcasts_per_overlay() -> None:
-    """#1255: an overlay with messaging + review channel gets one broadcast job."""
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-    backend = _backend_with_overlay(
-        name="teatree",
-        repos=["souliane/teatree"],
-        review_channel=("the-review-team", "C0DEMOCHAN1"),
-        with_messaging=True,
-    )
-    jobs = build_default_jobs(backends=[backend])
-    broadcasts = [j for j in jobs if j.scanner.name == "slack_broadcasts"]
-    assert len(broadcasts) == 1
-    assert broadcasts[0].overlay == "teatree"
-    assert list(broadcasts[0].scanner.channels) == ["C0DEMOCHAN1"]
-
-
-def test_build_default_jobs_skips_slack_broadcasts_without_review_channel() -> None:
-    """#1255: an overlay without a review channel id gets no broadcast job."""
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"], with_messaging=True)
-    jobs = build_default_jobs(backends=[backend])
-    assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
-
-
-def test_build_default_jobs_skips_slack_broadcasts_without_messaging() -> None:
-    """#1255: an overlay without messaging gets no broadcast job even when channel is set."""
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-    backend = _backend_with_overlay(
-        name="teatree",
-        repos=["souliane/teatree"],
-        review_channel=("the-review-team", "C0DEMOCHAN1"),
-        with_messaging=False,
-    )
-    jobs = build_default_jobs(backends=[backend])
-    assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
-
-
-def test_build_default_jobs_wires_self_pr_review_and_never_codex() -> None:
-    """#3569: the review intake wires the Claude ``self_pr_review`` scanner, never codex."""
-    from unittest.mock import patch  # noqa: PLC0415 — deferred: test-local import (#3569)
-
-    from teatree.config import UserSettings  # noqa: PLC0415 — deferred: test-local import (#3569)
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415 — deferred: test-local import (#3569)
-
-    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
+    def test_build_default_jobs_wires_pr_sweep_per_overlay(self) -> None:
+        """#1257: every overlay with followup repos gets a ``pr_sweep`` job."""
+        backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
         jobs = build_default_jobs(backends=[backend])
-    self_jobs = [j for j in jobs if j.scanner.name == "self_pr_review"]
-    assert len(self_jobs) == 1
-    assert self_jobs[0].overlay == "teatree"
-    assert self_jobs[0].scanner.repos == ("souliane/teatree",)
-    assert not [j for j in jobs if j.scanner.name == "codex_review"]
+        sweep_jobs = [j for j in jobs if j.scanner.name == "pr_sweep"]
+        assert len(sweep_jobs) == 1
+        assert sweep_jobs[0].overlay == "teatree"
+        assert sweep_jobs[0].scanner.repos == ("souliane/teatree",)
 
-
-def test_build_default_jobs_self_pr_review_is_not_fleet_gated() -> None:
-    """#3569: self-PR review runs regardless of mode — it is not fleet-gated like the old codex sweep."""
-    from unittest.mock import patch  # noqa: PLC0415 — deferred: test-local import (#3569)
-
-    from teatree.config import Mode, UserSettings  # noqa: PLC0415 — deferred: test-local import (#3569)
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415 — deferred: test-local import (#3569)
-
-    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-    interactive = UserSettings(mode=Mode.INTERACTIVE)
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive):
+    def test_build_default_jobs_skips_pr_sweep_when_overlay_has_no_repos(self) -> None:
+        """#1257: an overlay whose ``get_followup_repos`` is empty gets no sweep job."""
+        backend = _backend_with_overlay(name="empty", repos=[])
         jobs = build_default_jobs(backends=[backend])
-    assert [j for j in jobs if j.scanner.name == "self_pr_review"]
+        assert not [j for j in jobs if j.scanner.name == "pr_sweep"]
 
-
-def test_build_default_jobs_skips_self_pr_review_when_overlay_has_no_repos() -> None:
-    """#3569: an overlay whose ``get_followup_repos`` is empty gets no self-PR review job."""
-    from unittest.mock import patch  # noqa: PLC0415 — deferred: test-local import (#3569)
-
-    from teatree.config import UserSettings  # noqa: PLC0415 — deferred: test-local import (#3569)
-    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415 — deferred: test-local import (#3569)
-
-    backend = _backend_with_overlay(name="empty", repos=[])
-    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
+    def test_build_default_jobs_wires_slack_broadcasts_per_overlay(self) -> None:
+        """#1255: an overlay with messaging + review channel gets one broadcast job."""
+        backend = _backend_with_overlay(
+            name="teatree",
+            repos=["souliane/teatree"],
+            review_channel=("the-review-team", "C0DEMOCHAN1"),
+            with_messaging=True,
+        )
         jobs = build_default_jobs(backends=[backend])
-    assert not [j for j in jobs if j.scanner.name == "self_pr_review"]
+        broadcasts = [j for j in jobs if j.scanner.name == "slack_broadcasts"]
+        assert len(broadcasts) == 1
+        assert broadcasts[0].overlay == "teatree"
+        assert list(broadcasts[0].scanner.channels) == ["C0DEMOCHAN1"]
+
+    def test_build_default_jobs_skips_slack_broadcasts_without_review_channel(self) -> None:
+        """#1255: an overlay without a review channel id gets no broadcast job."""
+        backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"], with_messaging=True)
+        jobs = build_default_jobs(backends=[backend])
+        assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
+
+    def test_build_default_jobs_skips_slack_broadcasts_without_messaging(self) -> None:
+        """#1255: an overlay without messaging gets no broadcast job even when channel is set."""
+        backend = _backend_with_overlay(
+            name="teatree",
+            repos=["souliane/teatree"],
+            review_channel=("the-review-team", "C0DEMOCHAN1"),
+            with_messaging=False,
+        )
+        jobs = build_default_jobs(backends=[backend])
+        assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
+
+    def test_build_default_jobs_wires_self_pr_review_and_never_codex(self) -> None:
+        """#3569: the review intake wires the Claude ``self_pr_review`` scanner, never codex."""
+        backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
+        with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
+            jobs = build_default_jobs(backends=[backend])
+        self_jobs = [j for j in jobs if j.scanner.name == "self_pr_review"]
+        assert len(self_jobs) == 1
+        assert self_jobs[0].overlay == "teatree"
+        assert self_jobs[0].scanner.repos == ("souliane/teatree",)
+        assert not [j for j in jobs if j.scanner.name == "codex_review"]
+
+    def test_build_default_jobs_self_pr_review_is_not_fleet_gated(self) -> None:
+        """#3569: self-PR review runs regardless of mode — it is not fleet-gated like the old codex sweep."""
+        backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
+        interactive = UserSettings(mode=Mode.INTERACTIVE)
+        with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive):
+            jobs = build_default_jobs(backends=[backend])
+        assert [j for j in jobs if j.scanner.name == "self_pr_review"]
+
+    def test_build_default_jobs_skips_self_pr_review_when_overlay_has_no_repos(self) -> None:
+        """#3569: an overlay whose ``get_followup_repos`` is empty gets no self-PR review job."""
+        backend = _backend_with_overlay(name="empty", repos=[])
+        with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
+            jobs = build_default_jobs(backends=[backend])
+        assert not [j for j in jobs if j.scanner.name == "self_pr_review"]
 
 
 @dataclass(slots=True)

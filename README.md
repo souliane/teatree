@@ -388,7 +388,7 @@ t3 outer status|history         # T4 autoresearch outer loop — guard-chain ver
 t3 outer tick                   # cadence-gated step the worker's off-live-tick driver chain fires (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
 t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
 t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
-t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships quadruple-OFF)
+t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships triple-OFF)
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 

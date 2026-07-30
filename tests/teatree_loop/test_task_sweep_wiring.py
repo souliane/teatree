@@ -157,6 +157,10 @@ class BuilderTests(TestCase):
                 "external_db": None,
                 "stale_threshold_days": 30,
                 "hosts": (),
+                # The real ``OverlayBackends.host`` is the first host or None; the intake
+                # builder reads it now that its gate ships ON (#3895), so the stub carries
+                # the same hostless answer its empty ``hosts`` implies.
+                "host": None,
                 "messaging": None,
                 "identities": (),
             },

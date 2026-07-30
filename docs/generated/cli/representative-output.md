@@ -104,9 +104,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 code guards); a full tick is a no-op at defaults.            │
 │ directive       Directive-driven self-modification — capture → interpret →   │
 │                 human-ratify → implement → configure → verify →              │
-│                 keep-or-revert. Ships QUADRUPLE-OFF (feature flag + disabled │
-│                 loop row + off_live_tick + critic/signal code guards); a     │
-│                 full tick is a no-op at defaults.                            │
+│                 keep-or-revert. Ships TRIPLE-OFF (disabled loop row +        │
+│                 off_live_tick + critic/signal code guards) — the master flag │
+│                 graduated default-ON in #3895, so the disabled loop row is   │
+│                 what keeps a fresh install inert.                            │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

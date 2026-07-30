@@ -121,12 +121,24 @@ def _open_directive_consumer(*, factory_score_enabled: bool = True) -> tuple[Dir
     return settings, seams
 
 
-def _run(*, open_directive_consumer: bool = False, factory_score_enabled: bool = True) -> tuple[bool, str]:
-    settings, seams = (
-        _open_directive_consumer(factory_score_enabled=factory_score_enabled)
-        if open_directive_consumer
-        else (None, None)
-    )
+def _closed_directive_consumer() -> tuple[DirectiveLoopSettings, GuardSeams]:
+    """Settings whose master flag is OFF — the guard chain refuses at G1, no live consumer."""
+    settings, seams = _open_directive_consumer()
+    return SimpleNamespace(**{**vars(settings), "directive_loop_enabled": False}), seams
+
+
+def _run(
+    *,
+    open_directive_consumer: bool = False,
+    closed_directive_consumer: bool = False,
+    factory_score_enabled: bool = True,
+) -> tuple[bool, str]:
+    if closed_directive_consumer:
+        settings, seams = _closed_directive_consumer()
+    elif open_directive_consumer:
+        settings, seams = _open_directive_consumer(factory_score_enabled=factory_score_enabled)
+    else:
+        settings, seams = (None, None)
     buf = io.StringIO()
     with redirect_stdout(buf):
         ok = _check_intent_freshness(settings=settings, seams=seams)
@@ -158,16 +170,27 @@ class TestCheckIntentFreshness(TestCase):
         assert "directive_loop" in out
 
     def test_directive_guard_refusal_is_unconsumed_even_with_an_unmasked_loop(self) -> None:
-        # Unmasking the loop is NOT enough: the fail-closed guard chain (the DARK
-        # `directive_loop_enabled` flag first) still refuses every tick, so the queue
-        # has no live consumer and the remediation must name the flag, not the mask.
+        # Unmasking the loop is NOT enough when the master flag is off: the fail-closed
+        # guard chain still refuses every tick, so the queue has no live consumer and the
+        # remediation must name the FLAG, not the mask. The flag is stated because #3895
+        # ships it ON — inheriting the default would make this the live-consumer case.
         Loop.objects.filter(name="directive_loop").update(enabled=True)
         directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
-        ok, out = _run()
+        ok, out = _run(closed_directive_consumer=True)
         assert ok is False
         assert "FAIL" in out
         assert f"directive #{directive.pk}" in out
         assert "directive_loop_enabled" in out
+
+    def test_the_shipped_flag_makes_an_unmasked_loop_a_live_consumer(self) -> None:
+        # #3895's consequence for this gate: with the loop unmasked, the shipped
+        # default-ON flag means the queue HAS a consumer, so a fresh directive is silent
+        # rather than a hard FAIL.
+        Loop.objects.filter(name="directive_loop").update(enabled=True)
+        Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
+        ok, out = _run()
+        assert ok is True
+        assert "FAIL" not in out
 
     def test_stuck_directive_with_live_consumer_warns_but_does_not_gate(self) -> None:
         Loop.objects.filter(name="directive_loop").update(enabled=True)

@@ -245,11 +245,11 @@ class ReviewDomainUnifiedIntakeTestCase(TestCase):
 class IssueImplementerDomainPartitionTestCase(TestCase):
     """``ISSUE_IMPLEMENTER`` joins the partition without breaking it (#1553).
 
-    The domain is default-OFF: :func:`_issue_intake_scanner_for`
-    returns ``None`` unless an overlay opts in, so the per-overlay sum stays
-    byte-for-byte equal to the legacy builder by default (the parity
-    invariant). When enabled it owns exactly the one scanner the partition
-    seam emits — the single source both fan-out paths consume.
+    :func:`_issue_intake_scanner_for` returns ``None`` when the overlay has the
+    gate off, so the per-overlay sum is then byte-for-byte equal to the legacy
+    builder (the parity invariant). When enabled — the shipped posture since
+    #3895 — it owns exactly the one scanner the partition seam emits, the single
+    source both fan-out paths consume.
     """
 
     @staticmethod
@@ -267,8 +267,10 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
         assert Domain.ISSUE_IMPLEMENTER in PER_OVERLAY_DOMAINS
 
     def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
+        # The gate ships ON since #3895, so "disabled" is stated rather than inherited
+        # from the dataclass default.
         backend = self._backend()
-        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings()):
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(issue_implementer_enabled=False)):
             assert jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend) == []
             partitioned: list[Any] = []
             for domain in PER_OVERLAY_DOMAINS:
@@ -307,10 +309,11 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
 class TriageAssessorDomainPartitionTestCase(TestCase):
     """``TRIAGE_ASSESSOR`` joins the partition without breaking it.
 
-    Default-OFF: :func:`_triage_assessor_scanner_for` returns ``None`` unless an
-    overlay opts in, so the per-overlay sum stays byte-for-byte equal to the legacy
-    builder by default. When enabled it owns exactly the one scanner the partition
-    seam emits — the single source both fan-out paths consume.
+    :func:`_triage_assessor_scanner_for` returns ``None`` when the overlay has the
+    gate off, so the per-overlay sum is then byte-for-byte equal to the legacy
+    builder. When enabled — the shipped posture since #3895 — it owns exactly the
+    one scanner the partition seam emits, the single source both fan-out paths
+    consume.
     """
 
     @staticmethod
@@ -328,8 +331,10 @@ class TriageAssessorDomainPartitionTestCase(TestCase):
         assert Domain.TRIAGE_ASSESSOR in PER_OVERLAY_DOMAINS
 
     def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
+        # The gate ships ON since #3895, so "disabled" is stated rather than inherited
+        # from the dataclass default.
         backend = self._backend()
-        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings()):
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(triage_assessor_enabled=False)):
             assert jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend) == []
             partitioned: list[Any] = []
             for domain in PER_OVERLAY_DOMAINS:
