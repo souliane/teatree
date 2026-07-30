@@ -1375,9 +1375,13 @@ Fields:
   to a bundled `claude` CLI generation (one at/after 2.1.204 emits a markdown chip no
   `tool_call` matcher can see). Advisory scenarios are still run and still reported —
   the lane detail carries an `N advisory failed` count — but their failure never flips
-  a verdict, so Claude Code interactive stays graded without gating headless.
+  a verdict at any of the four aggregation points (the full-suite AI lane, pass@k, the
+  model matrix, and both exits of the default single-trial lane every metered CI leg
+  drives), so Claude Code interactive stays graded without gating headless.
   `t3 eval run --surface <headless|interactive>` (`cli/eval/surface_filter.py`) slices
-  the catalog outright. Absent means `headless`, so advisory status is always an
+  the catalog outright, and the flag is forwarded across the `--docker` re-invocation
+  like `--lane`/`--shard` (dropping it would silently run the FULL catalog
+  in-container). Absent means `headless`, so advisory status is always an
   explicit opt-in. A scenario that cannot pass without an `AskUserQuestion` tool call
   MUST carry the label — `tests/eval_replay/test_question_surface.py` reds otherwise,
   and that gate is what replaced the `claude-agent-sdk` Dependabot quarantine
