@@ -211,7 +211,28 @@ If you do produce a same-PR-worthy fix while shipping (a stale doc, a broken ref
 ### 4. Push
 
 - **Reconcile with the default branch first.** `git fetch origin <default> && git log <branch>..origin/<default> --oneline` — if any commits appear, merge them in (`git merge origin/<default>`) and re-run lint/tests before pushing. Opening a PR that is already BEHIND main forces the user (or you) to do a second round-trip to resolve conflicts; catch them now, while you have the context of your own change open.
-- Push to remote. Cancel stale pipelines first if the branch has an existing PR (see § Rules).
+- Push with `t3 push` (§ 4a). Cancel stale pipelines first if the branch has an existing PR (see § Rules).
+
+### 4a. `t3 push` is the push path from a container (Non-Negotiable)
+
+`t3 push` is the ONE supported way to push from the worker container. It resolves the forge token through the same chain the loop scanners use (`GH_TOKEN` → `TEATREE_GH_TOKEN` → the overlay's `pass` store), hands it to git as env only, disables every interactive credential prompt, and refuses a remote whose URL already embeds a credential. It never passes `--no-verify`, so the pre-push hooks still gate the push.
+
+```bash
+# do X — the supported seam; add --force-with-lease after a rebase:
+t3 push
+t3 push --force-with-lease
+
+# never Y — a bare push from a shell the entrypoint did not export GH_TOKEN into
+# (a `docker exec` inherits TEATREE_GH_TOKEN only) BLOCKS on git's credential
+# prompt until something kills it:
+git push -u origin HEAD                       # FORBIDDEN from a container shell
+
+# never Z — the "fix" agents reach for next writes the token into .git/config,
+# where it outlives the session on a host-bind-mounted worktree:
+git remote set-url origin https://$GH_TOKEN@github.com/<owner>/<repo>.git   # FORBIDDEN privacy-scan:allow (placeholder shell var, not a real credential)
+```
+
+A bare `git push` is fine only in a venue whose credential helper you have already confirmed answers — an interactive host shell. In a container, reach for `t3 push` first; if it refuses, the refusal names the fix.
 
 ### 4b. Review Gate (Non-Negotiable)
 
@@ -417,7 +438,7 @@ When an already-reviewed PR's ONLY new commit is the origin merge that brought i
 
 ```bash
 # The reviewed branch already has the origin merge committed. Push and let CI verify:
-git push
+t3 push
 ```
 
 Then watch CI (§ 6 Monitor Pipeline). Re-reviewing already-reviewed work just because the default branch advanced is the exact waste this rule cuts; the spawn boundary is only earned by NEW logic, not by a clean merge.

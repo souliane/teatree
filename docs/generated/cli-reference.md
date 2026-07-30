@@ -26,6 +26,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 unless local = all).                                         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
+│ push            Push a branch using the forge credential the loop already    │
+│                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
 │                 leak-gated step.                                             │
 │ ui              Browse and run every t3 command in an interactive terminal   │
@@ -260,6 +262,33 @@ Usage: t3 speak-dm [OPTIONS]
 │    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
 │                             Slack creds).                                    │
 │    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 push`
+
+```
+Usage: t3 push [OPTIONS]
+
+ Push a branch using the forge credential the loop already holds.
+
+ Resolves the token from GH_TOKEN, then TEATREE_GH_TOKEN, then the active
+ overlay's pass store, and hands it to git as env only — never on argv and
+ never written into the remote URL. Interactive credential prompts are
+ disabled, so a missing credential fails immediately instead of hanging.
+ The pre-push hooks still run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo                    TEXT  Repository to push (defaults to the current  │
+│                                 directory).                                  │
+│                                 [default: .]                                 │
+│ --remote                  TEXT  Remote to push to. [default: origin]         │
+│ --branch                  TEXT  Branch to push (defaults to the checked-out  │
+│                                 branch).                                     │
+│ --force-with-lease              Overwrite the remote branch only if it is    │
+│                                 where we last saw it.                        │
+│ --json                          Emit the outcome as JSON.                    │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
