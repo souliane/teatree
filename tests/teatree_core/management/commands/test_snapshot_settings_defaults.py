@@ -183,12 +183,14 @@ class TestPinnedKeysCannotMoveThroughThisPath(SnapshotCommandTestCase):
         assert self._shipped()["on_behalf_post_mode"] == "draft_or_ask"
 
     def test_a_live_dark_flag_override_never_reaches_the_file(self) -> None:
-        ConfigSetting.objects.set_value("directive_loop_enabled", value=True)
+        # `outer_loop_enabled` is the still-DARK exemplar; `directive_loop_enabled`
+        # graduated to SETTLING in #3895 and is no longer pinned by this path.
+        ConfigSetting.objects.set_value("outer_loop_enabled", value=True)
         self._run()
-        assert self._shipped()["directive_loop_enabled"] is False
+        assert self._shipped()["outer_loop_enabled"] is False
 
     def test_a_pinned_override_is_reported_as_declined(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "full")
+        ConfigSetting.objects.set_value("autonomy", "babysit")
         assert "safety-posture" in self._run()
 
 

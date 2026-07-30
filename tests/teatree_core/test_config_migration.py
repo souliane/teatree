@@ -224,9 +224,11 @@ class TestImportTomlToDb(TestCase):
     """
 
     def test_round_trip_writes_values_into_the_store(self) -> None:
-        result = import_toml_to_db('[teatree]\nmode = "auto"\nissue_implementer_max_concurrent = 9\n', scan_terms=())
+        result = import_toml_to_db(
+            '[teatree]\nmode = "interactive"\nissue_implementer_max_concurrent = 9\n', scan_terms=()
+        )
         assert result.rejected == ()
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        assert ConfigSetting.objects.get_effective("mode") == "interactive"
         assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 9
 
     def test_unknown_key_rejects_the_whole_import(self) -> None:
@@ -257,33 +259,33 @@ class TestImportTomlToDb(TestCase):
         assert result.rejected[0].reason.startswith("removed")
 
     def test_a_safety_posture_key_is_rejected_unless_the_caller_allows_it(self) -> None:
-        result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=())
+        result = import_toml_to_db('[teatree]\nautonomy = "babysit"\n', scan_terms=())
         assert [(r.key, r.reason) for r in result.rejected] == [("autonomy", "safety-posture")]
         assert ConfigSetting.objects.count() == 0
 
     def test_an_allowed_safety_posture_key_writes_and_is_flagged(self) -> None:
-        result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=(), allow_safety_posture=True)
+        result = import_toml_to_db('[teatree]\nautonomy = "babysit"\n', scan_terms=(), allow_safety_posture=True)
         assert result.rejected == ()
         assert [(r.key, r.is_safety_posture) for r in result.written] == [("autonomy", True)]
-        assert ConfigSetting.objects.get_effective("autonomy") == "full"
+        assert ConfigSetting.objects.get_effective("autonomy") == "babysit"
 
     def test_an_ordinary_key_is_not_flagged_safety_posture(self) -> None:
-        result = import_toml_to_db('[teatree]\nmode = "auto"\n', scan_terms=())
+        result = import_toml_to_db('[teatree]\nmode = "interactive"\n', scan_terms=())
         assert [(r.key, r.is_safety_posture) for r in result.written] == [("mode", False)]
 
     def test_a_safety_posture_value_equal_to_its_default_is_skipped_not_rejected(self) -> None:
         # It writes no row, so there is nothing for the confirm gate to authorize.
-        result = import_toml_to_db('[teatree]\nautonomy = "babysit"\n', scan_terms=())
+        result = import_toml_to_db('[teatree]\nautonomy = "full"\n', scan_terms=())
         assert result.rejected == ()
         assert [r.key for r in result.skipped_default] == ["autonomy"]
 
     def test_retired_alias_folds_onto_its_replacement(self) -> None:
         # `speed` was renamed to `wip`; the stored value migrates onto the live key.
-        result = import_toml_to_db('[teatree]\nspeed = "full"\n', scan_terms=())
+        result = import_toml_to_db('[teatree]\nspeed = "slow"\n', scan_terms=())
         assert result.rejected == ()
         assert ("speed", "wip") in result.folded
         assert [(r.scope, r.key) for r in result.written] == [("", "wip")]
-        assert ConfigSetting.objects.get_effective("wip") == "full"
+        assert ConfigSetting.objects.get_effective("wip") == "slow"
         assert ConfigSetting.objects.get_effective("speed") is None
 
     def test_invalid_value_is_rejected(self) -> None:
@@ -294,9 +296,9 @@ class TestImportTomlToDb(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_value_equal_to_effective_default_writes_no_row(self) -> None:
-        # issue_implementer_enabled's effective (code) default is False, so a row
+        # issue_implementer_enabled's effective default is True (#3895), so a row
         # equal to it is redundant and skipped.
-        result = import_toml_to_db("[teatree]\nissue_implementer_enabled = false\n", scan_terms=())
+        result = import_toml_to_db("[teatree]\nissue_implementer_enabled = true\n", scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
         assert [(r.scope, r.key) for r in result.skipped_default] == [("", "issue_implementer_enabled")]
@@ -330,17 +332,17 @@ class TestImportTomlToDb(TestCase):
         assert resolved == shipped_defaults().provision_ram_ceiling_percent
 
     def test_dry_run_classifies_without_writing(self) -> None:
-        result = import_toml_to_db('[teatree]\nmode = "auto"\n', scan_terms=(), dry_run=True)
+        result = import_toml_to_db('[teatree]\nmode = "interactive"\n', scan_terms=(), dry_run=True)
         assert result.dry_run is True
         assert [(r.scope, r.key) for r in result.written] == [("", "mode")]
         assert ConfigSetting.objects.count() == 0
 
     def test_overlay_scoped_overridable_key_writes_a_scoped_row(self) -> None:
         # An `[overlays.<name>]` table with an OVERRIDABLE key imports as a scope-tagged row.
-        result = import_toml_to_db('[overlays.proj]\nmode = "auto"\n', scan_terms=())
+        result = import_toml_to_db('[overlays.proj]\nmode = "interactive"\n', scan_terms=())
         assert result.rejected == ()
         assert [(r.scope, r.key) for r in result.written] == [("proj", "mode")]
-        assert ConfigSetting.objects.get_effective("mode", scope="proj") == "auto"
+        assert ConfigSetting.objects.get_effective("mode", scope="proj") == "interactive"
 
     def test_a_non_dict_overlays_entry_is_skipped_not_fatal(self) -> None:
         # A malformed `overlays.<name>` scalar (not a sub-table) is defensively skipped.
@@ -352,10 +354,10 @@ class TestImportTomlToDb(TestCase):
     def test_overlay_scope_and_registry_definition_keys_split(self) -> None:
         # An `[overlays.<name>]` table splits: a per-overlay SETTING becomes a scope row,
         # a definition key (class/path) folds back into the `overlays` registry row.
-        toml = '[overlays.myov]\nmode = "auto"\nclass = "pkg.settings"\n'
+        toml = '[overlays.myov]\nmode = "interactive"\nclass = "pkg.settings"\n'
         result = import_toml_to_db(toml, scan_terms=())
         assert result.rejected == ()
-        assert ConfigSetting.objects.get_effective("mode", scope="myov") == "auto"
+        assert ConfigSetting.objects.get_effective("mode", scope="myov") == "interactive"
         assert ConfigSetting.objects.get_effective("overlays") == {"myov": {"class": "pkg.settings"}}
 
 
@@ -370,11 +372,11 @@ class TestExportImportRoundTripIsByteStable(TestCase):
     """
 
     def _seed_representative_store(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 9)
         ConfigSetting.objects.set_value("excluded_skills", ["zzz"])
         ConfigSetting.objects.set_value("workspace_dir", "/tmp/ws")  # Personal — included in a shared export
-        ConfigSetting.objects.set_value("mode", "auto", scope="myov")
+        ConfigSetting.objects.set_value("mode", "interactive", scope="myov")
         ConfigSetting.objects.set_value("boost_concurrency", 5, scope="myov")
         ConfigSetting.objects.set_value("overlays", {"myov": {"class": "pkg.settings"}})
         ConfigSetting.objects.set_value("e2e_repos", {"myrepo": {"branch": "dev", "url": "git@x:r.git"}})

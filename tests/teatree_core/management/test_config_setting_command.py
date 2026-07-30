@@ -495,9 +495,11 @@ class TestConfigSettingImport(TestCase):
         return path
 
     def test_import_from_file_writes_rows(self) -> None:
-        path = self._write_toml('[teatree]\nmode = "auto"\nissue_implementer_max_concurrent = 9\n')
+        # `interactive` is the value that DIVERGES from the shipped `auto` (#3895); a
+        # value equal to the shipped default writes no row by design.
+        path = self._write_toml('[teatree]\nmode = "interactive"\nissue_implementer_max_concurrent = 9\n')
         call_command("config_setting", "import", "--input", str(path), stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        assert ConfigSetting.objects.get_effective("mode") == "interactive"
         assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 9
 
     def test_import_dry_run_writes_nothing(self) -> None:
@@ -516,11 +518,11 @@ class TestConfigSettingImport(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_import_reports_a_folded_alias(self) -> None:
-        path = self._write_toml('[teatree]\nspeed = "full"\n')
+        path = self._write_toml('[teatree]\nspeed = "slow"\n')
         out = StringIO()
         call_command("config_setting", "import", "--input", str(path), stdout=out)
         assert "folded retired alias speed -> wip" in out.getvalue()
-        assert ConfigSetting.objects.get_effective("wip") == "full"
+        assert ConfigSetting.objects.get_effective("wip") == "slow"
 
     def test_import_rejects_invalid_toml_and_writes_nothing(self) -> None:
         path = self._write_toml("[teatree\nmode = broken")  # malformed TOML

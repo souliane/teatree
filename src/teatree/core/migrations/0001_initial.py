@@ -149,7 +149,11 @@ _DEFAULT_LOOPS = (
         1800,
         None,
         None,
-        "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; every 30m, default-off behind a triple gate.",
+        (
+            "Discovers and claims admitted backlog issues to auto-implement, kicking off the maker "
+            "pipeline; every 30m. issue_implementer_enabled ships ON (#3895), so this Loop row is the "
+            "remaining switch."
+        ),
         False,
         False,
     ),
@@ -160,7 +164,8 @@ _DEFAULT_LOOPS = (
         None,
         (
             "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations "
-            "behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval."
+            "behind an ask-gate; triage_assessor_enabled ships ON (#3895), so this Loop row is the "
+            "remaining switch, and it never acts without per-item approval."
         ),
         False,
         False,
@@ -269,8 +274,9 @@ _DEFAULT_LOOPS = (
             "Hourly, off the live tick: interprets captured owner directives up to "
             "directive_intake_per_tick per pass and stops at the human ratify gate, then advances "
             "one ratified directive one step (implement, configure, verify, keep-only-if-verified, "
-            "else human-asked revert); ships disabled behind the directive_loop_enabled flag, and "
-            "the execution arc additionally needs the critic-live guard."
+            "else human-asked revert); directive_loop_enabled ships ON (#3895), so this Loop row is "
+            "the remaining switch, and the execution arc additionally needs the factory-score and "
+            "critic-live guards."
         ),
         False,
         False,
