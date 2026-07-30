@@ -1,6 +1,6 @@
 """Release registered ``Worktree`` rows whose checkout is provably dead — and nothing else.
 
-``t3 doctor check`` FAILs on a registered row whose directory is not a git checkout:
+``t3 doctor check`` FAILs on a registered row whose directory never was a git checkout:
 every git-driven pass over it silently no-ops, so the row is dead weight that also
 skews the concurrency cap and ``workspace relocate``. The remedy it prints is
 ``workspace clean-all``, which does resolve it — as one pass inside a sweep that also
