@@ -15,7 +15,7 @@ from pathlib import Path
 import typer
 
 from teatree.config import get_effective_settings
-from teatree.quality.push_gate import PushGatePlan, pytest_prefix, resolve_plan, run_push_gate
+from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate, sweep_command
 from teatree.utils.django_bootstrap import ensure_django
 
 
@@ -34,10 +34,15 @@ def _resolve_flag() -> bool:
 
 
 def _emit_cmd(plan: PushGatePlan, repo_root: Path) -> str:
-    doctest = " ".join(str(t) for t in plan.doctest_targets) or "(none)"
     scope = "WHOLE-TREE" if plan.astgrep_scope is None else (" ".join(str(p) for p in plan.astgrep_scope) or "(none)")
-    invocation = " ".join(pytest_prefix(repo_root))
-    return f"{invocation} --doctest-modules {doctest}\nast-grep scope: {scope}"
+    # A target-less plan runs no sweep at all. Emitting the bare command would hand
+    # the reader something that DOES run — pytest would fall back to its own testpaths.
+    invocation = (
+        " ".join(sweep_command(repo_root, plan.doctest_targets))
+        if plan.doctest_targets
+        else "doctest sweep: (none — no changed module to sweep)"
+    )
+    return f"{invocation}\nast-grep scope: {scope}"
 
 
 def _plan_as_dict(plan: PushGatePlan) -> dict:

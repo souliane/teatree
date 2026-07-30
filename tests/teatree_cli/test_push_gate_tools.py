@@ -57,6 +57,22 @@ class TestPlanModes:
         assert result.exit_code == 0
         assert "--doctest-modules src/teatree/core/session.py" in result.output
         assert "ast-grep scope:" in result.output
+        # #3808: the printed reproduction must strip the variable the gate's own
+        # child strips, or it reproduces a different run than the one that failed.
+        assert "env -uDJANGO_SETTINGS_MODULE" in result.output
+
+    def test_emit_cmd_refuses_to_print_a_runnable_command_with_no_targets(self) -> None:
+        empty = PushGatePlan(
+            is_full=False, reason="no src module changed", doctest_targets=(), astgrep_scope=(), enabled=True
+        )
+        with (
+            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
+            patch("teatree.cli.push_gate_tools.resolve_plan", return_value=empty),
+        ):
+            result = runner.invoke(app, ["tool", "push-gate", "--emit-cmd"])
+        assert result.exit_code == 0
+        assert "--doctest-modules" not in result.output, "a bare command would fall back to pytest's own testpaths"
+        assert "none" in result.output
 
     def test_flag_off_reports_full(self) -> None:
         with (
