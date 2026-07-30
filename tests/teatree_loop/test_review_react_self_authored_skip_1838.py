@@ -95,7 +95,6 @@ def _seed(*, reacted: bool) -> ReviewRequestPost:
         slack_channel_id=_CHANNEL,
         slack_thread_ts=_THREAD_TS,
         created_at=timezone.now(),
-        last_nag_step=0,
         done_at=timezone.now() if reacted else None,
     )
 
@@ -252,7 +251,6 @@ class TestSelfAuthoredReactSkipMatrix:
             slack_channel_id=_CHANNEL,
             slack_thread_ts="",
             created_at=timezone.now(),
-            last_nag_step=0,
         )
         slack = _RecordingSlack()
         host = _AuthoredHost(open_state=PrOpenState.MERGED, author=_COLLEAGUE_LOGIN)

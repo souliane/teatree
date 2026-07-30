@@ -13,20 +13,22 @@ de-facto namespace, but a convention is not enforcement. This ratchet is the
 enforcement: it pins the exact count of flat leaf modules directly under
 ``src/teatree/core/`` (subpackages and ``__init__.py`` excluded).
 
-Both directions fail on purpose. Growth — a new leaf added at the root instead
-of inside the subpackage that owns its concern — pushes the count above the pin;
-put it in the right subpackage, or raise the pin in the same commit if it is a
-genuine new root concern. Unrecorded shrink — a leaf moved into a subpackage
-(welcome) — drops the count below the pin, so the pin is lowered in the same
-commit, keeping every reduction an explicit reviewed decision rather than silent
-drift that would reopen headroom for a future regrowth.
+The pin is a CEILING, and the gate is one-sided. Growth — a new leaf added at
+the root instead of inside the subpackage that owns its concern — pushes the
+count above the ceiling and fires; put it in the right subpackage, or raise the
+ceiling in the same commit if it is a genuine new root concern. A shrink — a
+leaf moved into a subpackage, or deleted outright — simply passes. Lowering the
+ceiling to match banks the headroom and is welcome, but it is a one-line edit
+nobody is forced to make: an equality here made every deletion red until the
+integer was hand-edited downward, which taxed exactly the direction this ratchet
+wants to encourage. ``tests/quality/test_ratchet_direction.py`` pins both halves.
 """
 
 from pathlib import Path
 
 _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 
-# The post-split flat-leaf count. Raise it ONLY for a genuine new root concern
+# The post-split flat-leaf ceiling. Raise it ONLY for a genuine new root concern
 # (with justification); lower it whenever a leaf legitimately moves into a
 # subpackage. Never bump it to absorb a leaf that belongs in an existing package.
 # 66: +send_proxy.py (#117) — the single outbound chokepoint, a flat sibling of the
@@ -160,18 +162,28 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 PINNED_FLAT_CORE_MODULES = 104
 
 
-def _flat_core_modules() -> list[str]:
-    """Leaf ``.py`` modules directly under ``core/`` (no subpackages, no ``__init__``)."""
-    return sorted(p.name for p in _CORE_DIR.glob("*.py") if p.name != "__init__.py")
+def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
+    """Leaf ``.py`` modules directly under *root* (no subpackages, no ``__init__``)."""
+    return sorted(p.name for p in root.glob("*.py") if p.name != "__init__.py")
 
 
-def test_flat_core_leaf_count_is_pinned() -> None:
-    modules = _flat_core_modules()
-    assert len(modules) == PINNED_FLAT_CORE_MODULES, (
-        f"flat core leaf count is {len(modules)}, pinned at {PINNED_FLAT_CORE_MODULES}. "
-        "A new root leaf: move it into the subpackage that owns its concern "
+def exceeds_ceiling(root: Path = _CORE_DIR, ceiling: int = PINNED_FLAT_CORE_MODULES) -> bool:
+    """True iff *root* carries MORE flat leaves than *ceiling* — the ratchet's whole verdict.
+
+    One-sided on purpose. Growth is the regression this gate exists for; a
+    shrink is the improvement it must never tax, so a count below the ceiling
+    is simply satisfied. ``tests/quality/test_ratchet_direction.py`` drives this
+    predicate over a synthetic tree in both directions.
+    """
+    return len(flat_core_modules(root)) > ceiling
+
+
+def test_flat_core_leaf_count_is_at_or_below_the_ceiling() -> None:
+    modules = flat_core_modules()
+    assert not exceeds_ceiling(), (
+        f"flat core leaf count is {len(modules)}, ceiling {PINNED_FLAT_CORE_MODULES}. "
+        "Move the new leaf into the subpackage that owns its concern "
         "(cleanup/ worktree/ provision/ factory/ intake/ review/ evidence/ merge/), "
-        "or raise the pin with a justification if it is a genuine new root concern. "
-        "A removed/relocated leaf: lower the pin in the same commit.\n"
+        "or raise the ceiling with a justification if it is a genuine new root concern.\n"
         f"current flat leaves:\n" + "\n".join(f"  {m}" for m in modules)
     )

@@ -27,7 +27,7 @@
         Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review).*--approve|glab mr approve)"'
 
 - name: review_loop_clean_spec_passes_terminates
-  scenario: "an e2e-review reviewer that finds the spec clean records a merge_safe verdict so the loop terminates at PASSED, it does NOT re-open another round with a HOLD"
+  scenario: "an e2e-review reviewer that finds the spec clean records a merge_safe verdict so review terminates, it does NOT re-open another round with a HOLD"
   agent_path: skills/e2e-review/SKILL.md
   tier: balanced
   max_turns: 3

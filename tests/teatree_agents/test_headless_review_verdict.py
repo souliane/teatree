@@ -3,8 +3,8 @@
 The verdict is recorded through the RESULT ENVELOPE by maker≠checker design: the
 reviewer RETURNS a typed ``review_verdict`` and the orchestrator
 (``record_result_envelope`` — a DIFFERENT actor) records the ``ReviewVerdict``
-server-side, resolving the per-MR :class:`MRReviewLock` and advancing any open
-review loop. Routing the recording through the orchestrator (never a reviewer-side
+server-side, resolving the per-MR :class:`MRReviewLock`. Routing the recording
+through the orchestrator (never a reviewer-side
 ``t3 review record``) is what keeps the maker (the review sub-agent) from also
 being the checker (the actor that persists the verdict). These tests drive the
 orchestrator path directly with a returned envelope and assert the verdict lands
@@ -16,17 +16,7 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import check_evidence
-from teatree.core.models import (
-    AutoReviewDispatch,
-    MRReviewLock,
-    PullRequest,
-    ReviewLoop,
-    ReviewLoopRound,
-    ReviewVerdict,
-    Session,
-    Task,
-    Ticket,
-)
+from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -109,26 +99,6 @@ class TestHeadlessReviewerRecordsVerdictWithoutBash(TestCase):
         assert "review_verdict" in attempt.error
 
 
-class TestOrchestratorRecordingAdvancesReviewLoop(TestCase):
-    def test_merge_safe_envelope_passes_open_external_loop(self) -> None:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
-        PullRequest.objects.create(ticket=ticket, url=_PR_URL)
-        loop = ReviewLoop.objects.create(
-            ticket=ticket,
-            variant=ReviewLoop.Variant.EXTERNAL,
-            author_phase="e2e",
-            reviewer_phase="e2e_reviewing",
-            state=ReviewLoop.State.REVIEWING,
-        )
-        reviewer_task = _loop_reviewer_task(loop)
-
-        record_result_envelope(reviewer_task, _verdict_envelope(), phase="e2e_reviewing")
-
-        loop.refresh_from_db()
-        assert loop.state == ReviewLoop.State.PASSED
-        assert loop.passed is True
-
-
 class TestReviewingEvidenceAcceptsVerdict(TestCase):
     def test_returned_verdict_satisfies_the_reviewing_evidence_gate(self) -> None:
         envelope = _verdict_envelope()
@@ -148,16 +118,3 @@ class TestReviewingEvidenceAcceptsVerdict(TestCase):
     def test_verdict_outside_the_recorder_vocabulary_fails_evidence(self) -> None:
         envelope = {"review_verdict": {"verdict": "PASS", "reviewer_identity": "cold-reviewer-agent"}}
         assert "missing required evidence" in check_evidence(envelope, "reviewing")
-
-
-def _loop_reviewer_task(loop: ReviewLoop) -> Task:
-    session = Session.objects.create(ticket=loop.ticket, agent_id="review-loop-reviewer")
-    task = Task.objects.create(
-        ticket=loop.ticket,
-        session=session,
-        phase="e2e_reviewing",
-        execution_target=Task.ExecutionTarget.HEADLESS,
-    )
-    task.claim(claimed_by="review-loop-reviewer")
-    ReviewLoopRound.objects.create(review_loop=loop, round=0, leg=ReviewLoop.LEG_REVIEWER, task=task)
-    return task

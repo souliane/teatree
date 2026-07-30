@@ -101,7 +101,6 @@ from teatree.core.models.repro_waiver import ReproWaiver, ReproWaiverError
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
-from teatree.core.models.review_loop import ReviewLoop, ReviewLoopRound
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.review_verdict import (
     Finding,
@@ -284,8 +283,6 @@ __all__ = [
     "ReviewEvidence",
     "ReviewEvidenceError",
     "ReviewIntent",
-    "ReviewLoop",
-    "ReviewLoopRound",
     "ReviewRequestPost",
     "ReviewVerdict",
     "ReviewVerdictError",

@@ -1,26 +1,38 @@
 """Atomic per-MR review-dispatch dedup + merge hold (#1405).
 
-Two independent review-dispatch paths exist: a human/orchestrator manually
-spawning a ``t3:reviewer`` sub-agent via the ``Agent()`` tool, and the loop's
+Five code paths produce a ``Task(phase="reviewing")``, and TWO of them take this
+lock:
+
+*Takes the lock.* The loop's
 :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` scanner
-enqueue. Neither path knew about the other, so a manually-dispatched review
-already in flight for an MR did not stop the loop from enqueuing a second,
-duplicate reviewer for the SAME MR on the very next tick (the observed
-recurrence: five manual dispatches in flight, the next loop tick enqueued
-five duplicates for the same five MRs).
+enqueue, and a human/orchestrator manually spawning a ``t3:reviewer`` sub-agent
+after ``t3 <overlay> review lock-acquire``. Neither path knew about the other, so a
+manually-dispatched review already in flight for an MR did not stop the loop
+from enqueuing a second, duplicate reviewer for the SAME MR on the very next
+tick (the observed recurrence: five manual dispatches in flight, the next loop
+tick enqueued five duplicates for the same five MRs).
+
+*Does NOT take the lock.* The ticket scheduler (``ticket_scheduling.py``), the
+external-review scheduler (``ticket_external_review.py``), and the codex /
+self-PR review claims (``persistence.py``, ``persistence_self_pr_review.py``).
+For those three the #1405 guarantee — "never merge while a review is in flight" —
+does not hold: nothing they dispatch is visible to the merge gate's lock
+consult. What IS enforced is that a verdict from one of them cannot release
+somebody else's lock ONCE IT NAMES ITS OWN LOCK IDENTITY — :meth:`resolve`
+refuses a mismatched holder. Naming one is the caller's choice, not a
+requirement; see :meth:`resolve` for why demanding it would strand locks.
 
 ``MRReviewLock`` is the single per-MR lock both paths acquire before
 dispatching. It carries an explicit state machine:
 
-    idle -> review_dispatched -> verdict_pending -> resolved
+    idle -> review_dispatched -> resolved
 
 A lock is ``idle`` when no row exists yet (or after ``reconcile_stale``
 clears a dead dispatch) and after ``resolve`` clears an old cycle back to a
 fresh acquirable state (``resolved`` is itself acquirable — a later push can
-dispatch a fresh review on the same MR). ``review_dispatched`` and
-``verdict_pending`` are the two "in flight" states: a lock in either state is
-held, and both a competing dispatch attempt and a merge attempt are refused
-while it holds. ``resolve`` (called when a :class:`ReviewVerdict
+dispatch a fresh review on the same MR). ``review_dispatched`` is the sole
+"in flight" state: a lock in it is held, and both a competing dispatch attempt
+and a merge attempt are refused while it holds. ``resolve`` (called when a :class:`ReviewVerdict
 <teatree.core.models.review_verdict.ReviewVerdict>` is recorded — merge_safe
 or hold, either way the review concluded) transitions back to ``resolved``.
 A ``deadline`` set at acquire time bounds how long a dispatch may hold the
@@ -43,6 +55,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.expiring_claim import acquirable_q
 from teatree.utils.url_slug import pr_ref_from_url
 
 DEFAULT_LOCK_TTL = dt.timedelta(hours=2)
@@ -54,10 +67,9 @@ class MRReviewLock(models.Model):
     class State(models.TextChoices):
         IDLE = "idle", "Idle"
         REVIEW_DISPATCHED = "review_dispatched", "Review dispatched"
-        VERDICT_PENDING = "verdict_pending", "Verdict pending"
         RESOLVED = "resolved", "Resolved"
 
-    _ACTIVE_STATES: ClassVar[frozenset[str]] = frozenset({State.REVIEW_DISPATCHED, State.VERDICT_PENDING})
+    _ACTIVE_STATES: ClassVar[frozenset[str]] = frozenset({State.REVIEW_DISPATCHED})
     _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset({State.IDLE, State.RESOLVED})
 
     slug = models.CharField(max_length=255)
@@ -91,8 +103,8 @@ class MRReviewLock(models.Model):
         """Atomically claim the lock for ``(slug, pr_id)`` — get-or-create + CAS on state.
 
         Returns the claimed row on success. Returns ``None`` when a non-stale
-        row is already held (``review_dispatched`` / ``verdict_pending`` with
-        a deadline still in the future) — the caller's no-op-with-a-pointer-
+        row is already held (``review_dispatched`` with a deadline still in
+        the future) — the caller's no-op-with-a-pointer-
         to-the-holder case; read ``MRReviewLock.objects.get(slug=..., pr_id=...)``
         for the holder identity. A row in ``idle``/``resolved``, or a stale
         held row (``deadline`` in the past), is acquirable.
@@ -116,10 +128,15 @@ class MRReviewLock(models.Model):
             )
             if created:
                 return row
-            acquirable = models.Q(state__in=cls._ACQUIRABLE_STATES) | models.Q(deadline__lt=now)
             claimed = (
                 cls.objects.filter(pk=row.pk)
-                .filter(acquirable)
+                .filter(
+                    acquirable_q(
+                        always_acquirable=cls._ACQUIRABLE_STATES,
+                        active=cls._ACTIVE_STATES,
+                        now=now,
+                    )
+                )
                 .update(
                     state=cls.State.REVIEW_DISPATCHED,
                     holder=holder,
@@ -144,35 +161,41 @@ class MRReviewLock(models.Model):
         return cls.acquire(slug=ref.slug, pr_id=ref.pr_id, holder=holder, mr_url=mr_url, ttl=ttl)
 
     @classmethod
-    def mark_verdict_pending(cls, *, slug: str, pr_id: int) -> bool:
-        """Advance ``review_dispatched`` -> ``verdict_pending`` for ``(slug, pr_id)``.
-
-        Returns ``True`` iff a row was transitioned. A no-op (returns
-        ``False``) when no row is held in ``review_dispatched`` — already
-        ``verdict_pending``, resolved, idle, or absent.
-        """
-        updated = cls.objects.filter(slug=slug.strip(), pr_id=pr_id, state=cls.State.REVIEW_DISPATCHED).update(
-            state=cls.State.VERDICT_PENDING
-        )
-        return bool(updated)
-
-    @classmethod
-    def resolve(cls, *, slug: str, pr_id: int) -> bool:
-        """Transition the held lock for ``(slug, pr_id)`` to ``resolved``.
+    def resolve(cls, *, slug: str, pr_id: int, holder: str = "") -> bool:
+        """Release the lock on ``(slug, pr_id)`` — refused only for a MISMATCHED *holder*.
 
         Called when a :class:`~teatree.core.models.review_verdict.ReviewVerdict`
-        is recorded for the PR — merge_safe or hold, either way the review
-        concluded and the MR is no longer "a review is in flight". Returns
-        ``True`` iff a row was transitioned; ``False`` when no row is held
-        (already resolved, idle, or absent — never an error, since resolving
-        an unheld MR is a legitimate no-op).
+        is recorded for the PR — merge_safe or hold, either way THAT review
+        concluded. Returns ``True`` iff a row was transitioned; ``False`` when no
+        row is held (already resolved, idle, absent) or when *holder* names an
+        identity that is not the one holding it — never an error, since resolving
+        an unheld MR is a legitimate no-op.
+
+        *holder* is the releaser's own lock identity, and the check it drives is
+        ANTI-THEFT, not proof-of-ownership. Five code paths produce a
+        ``Task(phase="reviewing")`` and only this lock's two acquirers take the
+        lock, so a verdict recorded by one of the other three used to release a
+        lock held by a DIFFERENT reviewer that was still running: the merge then
+        proceeded on verdict A while reviewer B was mid-flight and about to
+        record a HOLD, precisely the race #1405 exists to prevent. A caller that
+        names an identity is taken at its word and can no longer do that.
+
+        An ABSENT *holder* means "I cannot know who holds this lock", NOT "I hold
+        nothing", and releases it. That asymmetry is deliberate: the recorded
+        ``holder`` is a DISPATCHER identity (``LOOP_SCANNER_HOLDER``, or the
+        ``--holder`` of a manual ``t3 <overlay> review lock-acquire``) while the
+        releaser is the REVIEWER that concluded, and a reviewer shelling ``t3
+        <overlay> review record`` has no way to learn the dispatcher's. Demanding
+        a match there would hold the lock for its whole ``deadline`` on every
+        CLI-recorded verdict, and a stranded lock is exactly what leaves a PR
+        unmergeable and escalating (#3920). A PR with no live reviewing work must
+        never be left holding a lock, so an unidentified releaser releases.
         """
-        updated = (
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id)
-            .filter(state__in=cls._ACTIVE_STATES)
-            .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
-        )
-        return bool(updated)
+        held = cls.objects.filter(slug=slug.strip(), pr_id=pr_id, state__in=cls._ACTIVE_STATES)
+        claimant = holder.strip()
+        if claimant:
+            held = held.filter(holder=claimant)
+        return bool(held.update(state=cls.State.RESOLVED, resolved_at=timezone.now()))
 
     @classmethod
     def reconcile_stale(cls, *, at: "dt.datetime | None" = None) -> int:
@@ -180,7 +203,7 @@ class MRReviewLock(models.Model):
 
         The explicit reconciler sweep: a dispatched reviewer that died
         without ever recording a verdict leaves its lock ``review_dispatched``
-        / ``verdict_pending`` forever unless something resets it. Returns the
+        forever unless something resets it. Returns the
         count of rows reset. Self-healing already makes a stale lock
         acquirable and non-blocking for merges at read time (see
         :meth:`acquire` / :meth:`active_lock_for`); this sweep is the
@@ -204,7 +227,7 @@ class MRReviewLock(models.Model):
 
         Distinct from :meth:`active_lock_for` (which returns ``None`` for an expired
         row, treating it as "no review in flight"): this returns the row when it is
-        in an ACTIVE state (``review_dispatched`` / ``verdict_pending``) yet its
+        in an ACTIVE state (``review_dispatched``) yet its
         deadline is in the past — a reviewer that was dispatched and never recorded a
         verdict (slow or crashed). The merge-time consult uses this to ESCALATE rather
         than silently merge ahead of a slow reviewer's about-to-land HOLD (#1405).

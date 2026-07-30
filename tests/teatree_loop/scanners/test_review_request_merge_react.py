@@ -96,7 +96,6 @@ def _seed() -> ReviewRequestPost:
         slack_channel_id=_CHANNEL,
         slack_thread_ts=_THREAD_TS,
         created_at=timezone.now(),
-        last_nag_step=0,
         done_at=None,
     )
 

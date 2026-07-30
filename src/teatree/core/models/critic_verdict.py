@@ -27,9 +27,10 @@ deterministic prechecks.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.merge_clear import is_non_reviewer_role
 
 if TYPE_CHECKING:
@@ -144,13 +145,20 @@ class CriticVerdict(models.Model):
                 f"ReviewVerdict.record / MergeClear.issue)"
             )
             raise CriticVerdictError(msg)
-        return cls.objects.create(
-            ticket=ticket,
-            transition=transition,
-            head_sha=head_sha.strip().lower(),
-            grader_identity=grader,
-            items=[item.as_dict() for item in items],
-        )
+        normalized_head = head_sha.strip().lower()
+        with transaction.atomic():
+            recorded = cls.objects.create(
+                ticket=ticket,
+                transition=transition,
+                head_sha=normalized_head,
+                grader_identity=grader,
+                items=[item.as_dict() for item in items],
+            )
+            # The claim this verdict concludes, retired in the same transaction:
+            # a verdict covers this exact delivered tree, so the head is spent
+            # and must never be re-armed by the expiry reclaim (#3920).
+            CriticDispatch.mark_resolved(ticket=ticket, transition=transition, head_sha=normalized_head)
+            return recorded
 
     @classmethod
     def record_from_envelope(
