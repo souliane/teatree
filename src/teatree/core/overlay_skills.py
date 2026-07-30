@@ -14,6 +14,12 @@ skills root via ``SkillMetadata['skill_root']``
 (:meth:`teatree.core.overlay_metadata.OverlayMetadata.get_skill_metadata`); the
 resolver falls back to ``<project>/skills`` when it is unset, so every overlay
 that works today keeps working unchanged.
+
+``skill_root`` locates skills and nothing else — it is never a claim to expose
+``t3 <overlay> tool`` commands. That claim is the separate, optional
+``get_tool_commands()`` hook, which :func:`overlay_declares_tool_commands`
+reads so the registrar's missing-manifest warning fires on a real mismatch
+rather than on every invocation of every skill-shipping overlay (#3904, #3915).
 """
 
 import logging
@@ -44,6 +50,27 @@ def overlay_skills_root(skill_metadata: "SkillMetadata", project_path: Path | No
     return None
 
 
+def overlay_declares_tool_commands(overlay_name: str) -> bool:
+    """Whether *overlay_name* claims a ``t3 <overlay> tool`` surface.
+
+    ``skill_root`` says where an overlay's SKILLS live; exposing tool commands is
+    the separate, optional ``get_tool_commands()`` extension point. The tool
+    registrar keys its missing-manifest warning on THIS, so an overlay that ships
+    skills and no tools — the common, correct case — stays silent (#3904, #3915).
+
+    Guarded exactly like :func:`overlay_skill_metadata`: at CLI-BUILD time the
+    overlay is unavailable, and a declaration that cannot be read is not a
+    misconfiguration worth warning about on every invocation.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI/build startup light
+
+    try:
+        return bool(get_overlay(overlay_name or None).metadata.get_tool_commands())
+    except ImproperlyConfigured:
+        logger.debug("tool-command declaration unavailable for overlay %r; assuming none", overlay_name)
+        return False
+
+
 def overlay_skill_metadata(overlay_name: str) -> "SkillMetadata":
     """Best-effort :class:`SkillMetadata` for *overlay_name*; ``{}`` when unavailable.
 
@@ -63,4 +90,4 @@ def overlay_skill_metadata(overlay_name: str) -> "SkillMetadata":
         return {}
 
 
-__all__ = ["overlay_skill_metadata", "overlay_skills_root"]
+__all__ = ["overlay_declares_tool_commands", "overlay_skill_metadata", "overlay_skills_root"]
