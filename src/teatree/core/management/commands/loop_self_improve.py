@@ -17,7 +17,8 @@ import typer
 from django_typer.management import TyperCommand
 
 from teatree.core.machine_output import emit
-from teatree.core.session_identity import loop_registry_dir, session_id_from_env
+from teatree.core.session_identity import session_id_from_env
+from teatree.utils.hook_registry import loop_registry_dir
 
 if TYPE_CHECKING:
     from teatree.loop.self_improve.schedule import TierResult

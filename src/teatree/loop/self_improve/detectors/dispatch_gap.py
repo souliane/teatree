@@ -19,7 +19,7 @@ from teatree.core.models.task import Task
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
-from teatree.loop.session_identity import loop_registry_dir
+from teatree.utils.hook_registry import loop_registry_dir
 
 
 def _consolidation_registry_holders() -> list[str]:

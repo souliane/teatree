@@ -61,6 +61,8 @@ import json
 import os
 from pathlib import Path
 
+from teatree.utils.hook_registry import loop_registry_dir
+
 # The session id lands under whichever name the harness exports it, most-
 # to least-preferred. ``CLAUDE_CODE_SESSION_ID`` is what a live Claude Code
 # session exports (#3554); ``CLAUDE_SESSION_ID`` is the legacy name kept for
@@ -106,25 +108,6 @@ RUNNER_PID_ENV = "T3_LOOP_RUNNER_PID"
 # name, not a credential (same literal lives in ``loop_slack_answer.py``
 # line 51 as a dict-key arg and goes unflagged there).
 _OWNER_KEY = "t3-loop-tick-owner"  # gitleaks:allow
-
-
-def loop_registry_dir() -> Path:
-    """The directory the hook tier writes its loop registries into.
-
-    THE Django-side answer, mirroring ``hook_router._loop_registry_path``'s
-    precedence exactly: ``T3_LOOP_REGISTRY_DIR`` → ``$XDG_DATA_HOME/teatree``
-    → ``~/.local/share/teatree``. Every Django reader of a registry the hook
-    tier owns resolves through here, because the registries are written by a
-    Django-free process and a reader that resolves them differently reads a
-    file nobody writes — silently, since "no such file" and "no holders" are
-    the same empty answer (souliane/teatree#3828, the #3499 shape).
-    """
-    override = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    if override:
-        return Path(override)
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "teatree"
 
 
 def _loop_registry_path() -> Path:

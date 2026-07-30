@@ -305,7 +305,6 @@ graph TD
     teatree.loop.self_improve --> teatree.core.models
     teatree.loop.self_improve --> teatree.utils
     teatree.loop.self_improve --> teatree.loop.scanners
-    teatree.loop.self_improve --> teatree.loop.session_identity
     teatree.loop.self_improve --> teatree.loop.statusline_render
     teatree.loop.rendering_items --> teatree.url_classify
     teatree.loop.rendering_dms --> teatree.loop.dispatch
