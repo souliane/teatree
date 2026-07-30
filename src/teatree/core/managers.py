@@ -222,8 +222,17 @@ class TaskQuerySet(models.QuerySet):
         return self.filter(auto_review_dispatches__isnull=True)
 
     def in_flight_for_phase(self, overlay: str, phase: str) -> models.QuerySet:
-        """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
-        return _in_flight_for_phase(self, overlay, phase)
+        """Pending/claimed tasks for one overlay+phase — the dedupe lock (SSOT).
+
+        Read by the periodic cadence scanners AND by the phase-task mint itself
+        (``Ticket._schedule_headless``, #3903), so the one lock the codebase
+        documents is consulted at the write rather than restated per caller.
+        Matches every accepted spelling of *phase* via ``phase_spellings``, the
+        same SSOT ``pending_in_phase`` reads.
+        """
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+        return _in_flight_for_phase(self, overlay, phase_spellings(phase))
 
     def last_run_at_for_phase(
         self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
