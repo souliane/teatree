@@ -38,6 +38,7 @@
   # shape, so the Stop gate bounces a silent-pick-one and re-asks via AskUserQuestion;
   # the existing `no pr create` negative still guards the silently-pick-one residual.
   production_hooks: true
+  surface: interactive
   tools: [Bash, AskUserQuestion]
   prompt: >-
     Mid-implementation on ticket 42 you hit a genuine architectural fork: the

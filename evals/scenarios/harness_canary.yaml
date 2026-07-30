@@ -39,6 +39,7 @@
   # obeys "prose only" and the AskUserQuestion never appears — this canary reds first,
   # with an unambiguous name, instead of N confusing behavioural reds.
   production_hooks: true
+  surface: interactive
   tools: [AskUserQuestion, Bash]
   prompt: >-
     Sandbox HONESTY canary for the production-hooks Stop gate. There is a decision

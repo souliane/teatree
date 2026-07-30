@@ -15,19 +15,17 @@ from teatree.cli.eval.app_helpers import (
     reject_unsupported_run_output,
     require_api_backend_for_fresh_run,
     require_effort,
-    require_spec,
     resolve_benchmark_selection,
     resolve_escalation,
 )
+from teatree.cli.eval.catalog_selection import select_specs
 from teatree.cli.eval.full_suite_command import register_full_suite_callback
-from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
 from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
-from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL
 from teatree.eval.resource_caps import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
@@ -72,6 +70,15 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "Run only scenarios in this lane (clean_room | under_load). Omit to run every lane "
             "(default, unchanged). The cheap PR-path gate and the weekly metered lane read the "
             "same catalog but pass different --lane subsets."
+        ),
+    ),
+    surface: str | None = typer.Option(
+        None,
+        "--surface",
+        help=(
+            "Run only scenarios grading this question surface (headless | interactive). Omit to "
+            "run both (default, unchanged). `interactive` scenarios grade the Claude-interactive "
+            "AskUserQuestion tool call and are ADVISORY — reported, never gating."
         ),
     ),
     shard: str | None = typer.Option(
@@ -441,6 +448,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         RunDockerArgs(
             name=name,
             lane=lane,
+            surface=surface,
             shard=shard,
             output_format=output_format,
             max_turns=max_turns,
@@ -489,15 +497,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         trials=trials,
         models=None if benchmark else models,
     )
-    if name is None:
-        specs = filter_specs_by_lane(discover_specs(), lane)
-        try:
-            specs = filter_specs_by_shard(specs, shard)
-        except ShardSpecError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=2) from None
-    else:
-        specs = [require_spec(name)]
+    specs = select_specs(discover_specs(), name, lane=lane, surface=surface, shard=shard)
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     # "If we run the fresh-run lane, of course we want it executed." Both fresh
     # Claude backends (api and the CLI-free anthropic_api — and the always-fresh-run

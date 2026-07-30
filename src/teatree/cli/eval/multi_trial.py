@@ -37,6 +37,7 @@ from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
 from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdown
 from teatree.eval.summary_json import write_summary_json
+from teatree.eval.surface import is_advisory
 
 #: The column name ``--presets`` recognises for "no preset" — each scenario's
 #: own tier/phase, the same resolution ``t3 eval run`` uses with no ``--preset``
@@ -224,8 +225,16 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     # Every scenario that failed reds the lane — there is no known-red allowance
     # and no metered ratchet. An under_load behavioural-drift failure is a real
     # failure exactly like any clean_room failure: a red scenario fails the run,
-    # full stop.
-    failed = any(not r.ok for r in results) or regressed or cost_regressed or cost_bounds_failed
+    # full stop. The ONE exception is the interactive surface, whose verdict rides a
+    # bundled claude CLI's AskUserQuestion rendering rather than the question
+    # contract teatree owns — reported, never gating (#3855).
+    advisory = {spec.name for spec in effective_specs if is_advisory(spec)}
+    failed = (
+        any(not r.ok and r.spec_name not in advisory for r in results)
+        or regressed
+        or cost_regressed
+        or cost_bounds_failed
+    )
     if failed and model_override is None:
         sys.exit(1)
     return failed
@@ -306,8 +315,13 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
     # An errored cell is NOT a graded FAIL, but the lane still exits non-zero on
     # it for visibility — a transient blip should be seen, just not counted as a
-    # model failure in the comparison.
-    failed = any(not row.passed and not row.skipped and not row.errored for row in rows)
+    # model failure in the comparison. An interactive-surface cell is rendered in the
+    # matrix but never exits non-zero: its verdict rides a bundled claude CLI's
+    # AskUserQuestion rendering rather than the question contract teatree owns (#3855).
+    advisory = {spec.name for spec in specs if is_advisory(spec)}
+    failed = any(
+        not row.passed and not row.skipped and not row.errored and row.scenario not in advisory for row in rows
+    )
     errored = any(row.errored for row in rows)
     if failed or errored or regressed or cost_regressed or cost_bounds_failed:
         sys.exit(1)

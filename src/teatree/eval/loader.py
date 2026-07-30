@@ -22,9 +22,11 @@ from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
+    HEADLESS_SURFACE,
     MATCHER_KINDS,
     MATCHER_OPERATORS,
     PERMITTED_LANES,
+    PERMITTED_SURFACES,
     AnyOf,
     EvalSpec,
     ExpectItem,
@@ -115,6 +117,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         judge=judge,
         agent_sections=agent_sections,
         lane=_parse_lane(spec_map, name, path),
+        surface=_parse_surface(spec_map, name, path),
         context_preamble=str(spec_map.get("context_preamble") or ""),
         max_budget_usd=_parse_positive_float(spec_map, "max_budget_usd", name, path),
         watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
@@ -240,6 +243,21 @@ def _parse_lane(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
     if not isinstance(raw, str) or raw not in PERMITTED_LANES:
         permitted = ", ".join(sorted(PERMITTED_LANES))
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `lane` must be one of {permitted}, got {raw!r}")
+    return raw
+
+
+def _parse_surface(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse the question-surface label, defaulting to the BLOCKING headless surface.
+
+    Absent means headless, so advisory status is always an explicit opt-in — a
+    scenario can never stop gating by omission.
+    """
+    raw = entry.get("surface")
+    if raw is None:
+        return HEADLESS_SURFACE
+    if not isinstance(raw, str) or raw not in PERMITTED_SURFACES:
+        permitted = ", ".join(sorted(PERMITTED_SURFACES))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `surface` must be one of {permitted}, got {raw!r}")
     return raw
 
 

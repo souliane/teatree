@@ -1007,6 +1007,17 @@ The test is sharp: _can I reach the best outcome by doing the work?_ If yes → 
 
 **Away-mode (24/7 dual question-mode, #58).** When the active mode's posture defers questions (`t3 loop preset show`), the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:mode` for the configuration surface (`t3 loop preset use offline`, `t3 loop preset use engaged`, `t3 loop preset auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
 
+**Headless has no interactive tool surface — record the question durably yourself (do X, never Y).** `AskUserQuestion` is the INTERACTIVE implementation of the contract; the contract itself is that the question **reaches the user and an answer comes back**. In a headless run your prose goes to a transcript no human reads, so narrating a blocker loses the decision exactly as an inline question does on a loop turn. When the interactive tool is unavailable — or its call was denied and nothing reached the owner — put the question on the durable Slack path yourself; do not silently pick an answer.
+
+```bash
+# do X — record it durably so the Slack drain delivers it to the owner:
+t3 <overlay> questions record 'Which region should this deploy to?' --options '<verbatim-options-json>'
+# never Y — narrate the blocker into a transcript, or guess the answer and proceed:
+#   "I could not reach the owner for the region, so I picked eu."   # FORBIDDEN — the decision was theirs
+```
+
+Read the reply back with `t3 <overlay> questions list` and apply it per "Receiving a structured answer" below. Pinned by `evals/scenarios/headless_question_contract.yaml` (the outbound half) and `evals/scenarios/askuserquestion_slack_resolution.yaml` (the inbound half) — the BLOCKING `surface: headless` lane, because a contract graded through the interactive tool call would be pinned to a bundled CLI's rendering instead (`evals/README.md` § `surface`).
+
 ### Receiving a structured answer (apply X — never apply a stale Y)
 
 Asking is half the contract; **applying the right answer** is the other half. A structured answer arrives one of two ways: as `additionalContext` injected this turn ("Your AskUserQuestion (#N) was answered by the user on Slack: `<value>`. Apply it now.") or as the local TTY result of the call. When it arrives:

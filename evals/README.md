@@ -1352,10 +1352,41 @@ Fields:
   model-alone regression can never hide behind the gate. A hooked run that captures
   ZERO hook events is a FAIL-LOUD `hooks_not_registered` error (the plugin silently
   failed to register → the lane would degrade to raw-model measurement). The
-  end-to-end wiring is pinned empirically by the `harness_canary_stop_gate_fires`
-  canary (a prose-only decision that can pass ONLY via the #807 bounce). See
+  end-to-end wiring is REPORTED empirically by the `harness_canary_stop_gate_fires`
+  canary (a prose-only decision that can pass ONLY via the #807 bounce) — but the
+  canary is `surface: interactive` (it can pass only via a captured
+  `AskUserQuestion` call), so its verdict is ADVISORY, not gating. Six of the seven
+  `production_hooks` scenarios are advisory; `done_only_on_deployed_dev_evidence`
+  (the #2665 completion-claim gate) is the one on the blocking headless surface, and
+  it is what still reds a lane on a hook regression or on `hooks_not_registered`
+  (which is a graded FAIL result, not a raised exception, so the surface exemption
+  covers it too on the other six). That scenario is `lane: under_load`, so any leg
+  that does not run it — the nightly's `--lane clean_room` shards, the
+  changed-scenarios PR lane, `--surface interactive`, a `--name` run — reports the
+  degradation without gating on it. See
   `teatree.eval.api_runner` (`_t3_plugin`, `hooked_env`, the fail-loud) and
   `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
+- `surface` — optional `headless` (default) or `interactive`. The question/answer
+  surface the scenario grades, an axis ORTHOGONAL to `lane` (which selects the
+  harness mode). `headless` BLOCKS: it grades the contract teatree owns — a question
+  reaches the user over Slack, with a `DeferredQuestion` as the durable record, and
+  the answer comes back. `interactive` is ADVISORY: the scenario grades the
+  Claude-interactive `AskUserQuestion` TOOL-CALL rendering, whose wire shape belongs
+  to a bundled `claude` CLI generation (one at/after 2.1.204 emits a markdown chip no
+  `tool_call` matcher can see). Advisory scenarios are still run and still reported —
+  the lane detail carries an `N advisory failed` count — but their failure never flips
+  a verdict at any of the four aggregation points (the full-suite AI lane, pass@k, the
+  model matrix, and both exits of the default single-trial lane every metered CI leg
+  drives), so Claude Code interactive stays graded without gating headless.
+  `t3 eval run --surface <headless|interactive>` (`cli/eval/surface_filter.py`) slices
+  the catalog outright, and the flag is forwarded across the `--docker` re-invocation
+  like `--lane`/`--shard` (dropping it would silently run the FULL catalog
+  in-container). Absent means `headless`, so advisory status is always an
+  explicit opt-in. A scenario that cannot pass without an `AskUserQuestion` tool call
+  MUST carry the label — `tests/eval_replay/test_question_surface.py` reds otherwise,
+  and that gate is what replaced the `claude-agent-sdk` Dependabot quarantine
+  (souliane/teatree#3855). Generated scenarios DERIVE it from their matcher shape
+  (`scripts/eval/corpus_gen/model.py::Scenario.surface`) rather than declaring it.
 - `expect` — list of matchers (see below); required unless a `judge` block is
   present (a judge-only scenario may omit it).
 - `judge` — optional LLM-judge block (`rubric`, optional `model`); see
