@@ -14,7 +14,10 @@ an unchanged module's stale docstring is main's/CI's concern, so the changed
 module is the only doctest target and no import graph is needed.
 """
 
+import os
+import shlex
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,11 +28,13 @@ from teatree.quality import push_gate as push_gate_mod
 from teatree.quality.changed_set import ChangedSet, ChangedSetError, ChangeEntry
 from teatree.quality.push_gate import (
     WHOLE_TREE_DOCTEST,
+    DoctestOutcome,
     PushGatePlan,
     _run_doctests,
     plan_push_gate,
     resolve_plan,
     run_push_gate,
+    sweep_command,
 )
 from teatree.quality.regression_scan import AstGrepUnavailableError
 from teatree.utils.django_db.runner import runner_prefix
@@ -37,6 +42,22 @@ from teatree.utils.django_db.runner import runner_prefix
 
 def _changed(*entries: tuple[str, str]) -> ChangedSet:
     return ChangedSet(entries=tuple(ChangeEntry(status=s, path=p) for s, p in entries), base_ref="origin/main")
+
+
+def _swept(returncode: int, output: str = "") -> SimpleNamespace:
+    return SimpleNamespace(returncode=returncode, stdout=output, stderr="")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _sweep_passed(_targets: Sequence[Path], _repo: Path) -> DoctestOutcome:
+    return DoctestOutcome(ok=True, returncode=0, output="")
+
+
+def _sweep_failed(_targets: Sequence[Path], _repo: Path) -> DoctestOutcome:
+    return DoctestOutcome(ok=False, returncode=1, output="1 failed")
 
 
 def _naive_astgrep_scope(changed: ChangedSet) -> list[str]:
@@ -149,7 +170,7 @@ class TestR7Unclassifiable:
         result = run_push_gate(
             plan,
             repo_root=Path.cwd(),
-            doctest_runner=lambda _t, _r: True,
+            doctest_runner=_sweep_passed,
             astgrep_scanner=_raise,
         )
         assert result.astgrep_deferred is True
@@ -177,7 +198,7 @@ class TestFlagGatingAndExecutor:
         result = run_push_gate(
             plan,
             repo_root=Path.cwd(),
-            doctest_runner=lambda _t, _r: True,
+            doctest_runner=_sweep_passed,
             astgrep_scanner=lambda *_a, **_k: [finding],
         )
         assert result.ok is False
@@ -188,7 +209,7 @@ class TestFlagGatingAndExecutor:
         result = run_push_gate(
             plan,
             repo_root=Path.cwd(),
-            doctest_runner=lambda _t, _r: False,
+            doctest_runner=_sweep_failed,
             astgrep_scanner=lambda *_a, **_k: [],
         )
         assert result.ok is False
@@ -219,13 +240,13 @@ class TestResolvePlanAndDoctestRunner:
 
     def test_run_doctests_empty_targets_is_true_without_running(self) -> None:
         with patch.object(push_gate_mod, "run_allowed_to_fail") as run:
-            assert _run_doctests((), Path.cwd()) is True
+            assert _run_doctests((), Path.cwd()).ok is True
         run.assert_not_called()
 
     def test_run_doctests_invokes_pytest_doctest_modules(self) -> None:
-        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=0)) as run:
-            ok = _run_doctests((Path("src/teatree/x.py"),), Path.cwd())
-        assert ok is True
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(0)) as run:
+            outcome = _run_doctests((Path("src/teatree/x.py"),), Path.cwd())
+        assert outcome.ok is True
         cmd = run.call_args.args[0]
         assert "--doctest-modules" in cmd
         assert "src/teatree/x.py" in cmd
@@ -235,7 +256,7 @@ class TestResolvePlanAndDoctestRunner:
         # so the gate exit-1'd on every diff. It must invoke repo_root's own pytest via
         # the runner-prefix chokepoint (#1973), never sys.executable and never a
         # hand-rolled prefix.
-        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=0)) as run:
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(0)) as run:
             _run_doctests((Path("src/teatree/x.py"),), Path.cwd())
         cmd = run.call_args.args[0]
         expected_prefix = [*runner_prefix(Path.cwd()), "-m", "pytest"]
@@ -243,14 +264,122 @@ class TestResolvePlanAndDoctestRunner:
         assert sys.executable not in cmd
 
     def test_run_doctests_reports_failure_on_real_doctest_failure(self) -> None:
-        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=1)):
-            assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()) is False
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(1)):
+            assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()).ok is False
 
     def test_run_doctests_no_doctests_collected_is_ok(self) -> None:
         # pytest exit 5 = "no tests collected": a module with no `>>>` example is
         # not a doctest failure (teatree is near-zero-comments), so the gate passes.
-        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=5)):
-            assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()) is True
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(5)):
+            assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()).ok is True
+
+
+class TestDoctestSweepIsDiagnosableAndUnpoisoned:
+    """#3808: the sweep must resolve pytest's own settings, and say why it failed.
+
+    Two defects with one blast radius. The gate reads its feature flag through the
+    sanctioned ``django.setup()`` entry point, whose ``setdefault`` leaves
+    ``DJANGO_SETTINGS_MODULE`` in this process's environment; handing that
+    environment to the child makes pytest-django rank it ABOVE the ini, so the sweep
+    collects the tree under application settings CI never uses. And ``_run_doctests``
+    reduced the run to a bool, so the resulting failure reached the operator as a
+    bare exit 1 — indistinguishable from an environmental flake, and unactionable.
+    """
+
+    def test_sweep_child_never_inherits_this_process_settings_module(self) -> None:
+        with (
+            patch.dict(os.environ, {"DJANGO_SETTINGS_MODULE": "teatree.settings"}),
+            patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(0)) as run,
+        ):
+            _run_doctests((Path("src/teatree/x.py"),), Path.cwd())
+        env = run.call_args.kwargs["env"]
+        assert "DJANGO_SETTINGS_MODULE" not in env, (
+            "the sweep must let pytest's ini choose the settings module, not this process"
+        )
+
+    def test_emitted_reproduction_is_the_command_the_gate_actually_runs(self) -> None:
+        targets = (Path("src/teatree/x.py"),)
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(0)) as run:
+            _run_doctests(targets, Path.cwd())
+        emitted = sweep_command(Path.cwd(), targets)
+        assert emitted[:2] == ["env", "-uDJANGO_SETTINGS_MODULE"], (
+            "a hand-run reproduction that keeps the variable reproduces a different run"
+        )
+        assert emitted[2:] == run.call_args.args[0], "the emitted command must not drift from the executed argv"
+
+    def test_sweep_child_keeps_the_rest_of_the_environment(self) -> None:
+        with (
+            patch.dict(os.environ, {"DJANGO_SETTINGS_MODULE": "teatree.settings", "PATH": "/probe/bin"}),
+            patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(0)) as run,
+        ):
+            _run_doctests((Path("src/teatree/x.py"),), Path.cwd())
+        assert run.call_args.kwargs["env"]["PATH"] == "/probe/bin"
+
+    def test_failing_sweep_note_carries_exit_code_targets_and_output(self) -> None:
+        plan = plan_push_gate(_changed(("M", "dev/push-gate.sh")), enabled=True)
+        assert plan.is_full, "a FULL escalation is the shape that dies silently"
+        sweep = DoctestOutcome(ok=False, returncode=2, output="ERROR collecting src/teatree/probe.py\nBoomError")
+        result = run_push_gate(
+            plan,
+            repo_root=Path.cwd(),
+            doctest_runner=lambda _t, _r: sweep,
+            astgrep_scanner=lambda *_a, **_k: [],
+        )
+        assert result.ok is False
+        joined = "\n".join(result.notes)
+        assert "BoomError" in joined, "the gate must echo the sweep's own output, not just exit non-zero"
+        assert "src/teatree/probe.py" in joined
+        assert "exited 2" in joined
+        assert str(WHOLE_TREE_DOCTEST) in joined
+
+    def test_passing_sweep_adds_no_note(self) -> None:
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        result = run_push_gate(
+            plan,
+            repo_root=Path.cwd(),
+            doctest_runner=lambda _t, _r: DoctestOutcome(ok=True, returncode=0, output="1 passed"),
+            astgrep_scanner=lambda *_a, **_k: [],
+        )
+        assert result.ok is True
+        assert not any("1 passed" in note for note in result.notes)
+
+    def test_silent_sweep_still_says_something_actionable(self) -> None:
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        result = run_push_gate(
+            plan,
+            repo_root=Path.cwd(),
+            doctest_runner=lambda _t, _r: DoctestOutcome(ok=False, returncode=137, output=""),
+            astgrep_scanner=lambda *_a, **_k: [],
+        )
+        assert result.ok is False
+        assert any("137" in note for note in result.notes)
+
+    @pytest.mark.integration
+    def test_real_sweep_resolves_the_ini_settings_despite_a_poisoned_parent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Spawn the real sweep with the poisoned variable set and read back what the child saw.
+
+        The probe module's doctest asserts the value pytest-django resolved, so a
+        child that inherited the parent's value fails the sweep outright.
+        """
+        probe = tmp_path / "settings_probe.py"
+        probe.write_text(
+            'def resolved() -> str:\n    """\n    >>> import os\n'
+            '    >>> os.environ["DJANGO_SETTINGS_MODULE"]\n'
+            "    'tests.django_settings'\n"
+            '    """\n    return ""\n'
+        )
+        repo_root = _repo_root()
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "teatree.settings")
+        # `-c` pins the repo's own ini for a probe that lives outside the tree; a real
+        # sweep targets `src/` and finds it by rootdir. `-n0` keeps one probe cheap.
+        ini = shlex.quote(str(repo_root / "pyproject.toml"))
+        monkeypatch.setenv("PYTEST_ADDOPTS", f"-c {ini} -p no:randomly -n0")
+
+        outcome = _run_doctests((probe,), repo_root)
+
+        assert outcome.ok is True, outcome.output
 
 
 class TestReportShape:
