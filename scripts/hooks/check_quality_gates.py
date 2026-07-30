@@ -7,12 +7,23 @@ when relaxations are found — there is no bypass. Refactor instead.
 Suppressions that are renamed-in-place (same marker added and removed within
 the same file) net to zero and are not flagged.
 
-See: souliane/teatree#17
+Scope is the operator's OWN work, against a base this hook names rather than
+inherits: :func:`teatree.quality.diff_base.authored_findings`. A bare
+``git diff --cached`` is right for an ordinary commit and wrong mid-merge, where
+the index holds the merged result and every line the incoming side brought in
+reads as an addition by whoever is resolving. That made this gate — which has no
+escape hatch, by design (#525) — refuse any merge of a branch older than the
+most recent relaxation on the incoming side, over code its author never wrote
+(#3899).
+
+See: souliane/teatree#17, souliane/teatree#3899
 """
 
 import re
-import subprocess
 from collections import Counter
+from operator import itemgetter
+
+from teatree.quality import diff_base
 
 # Patterns in pyproject.toml that indicate structural config relaxation.
 _PYPROJECT_KEYWORD_PATTERNS: list[str] = [
@@ -40,12 +51,32 @@ _CODE_RELAXATION_PATTERNS: list[str] = [
 _RULE_CODE_RE = re.compile(r'^\s*"[A-Z]+\d+[A-Z]?\d*"')
 
 
-def _staged_diff(path_filter: str = "") -> str:
-    cmd = ["git", "diff", "--cached", "--diff-filter=ACMR", "-U0"]
-    if path_filter:
-        cmd.extend(["--", path_filter])
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return result.stdout
+# The scan's shape, held in one place so the two bases are compared like for like.
+_DIFF_ARGS: tuple[str, ...] = ("--diff-filter=ACMR", "-U0")
+
+
+def _staged_diff(path_filter: str = "", base: diff_base.DiffBase | None = None) -> str:
+    """The staged diff against *base*, defaulting to the branch tip ("ours").
+
+    The single place this hook talks to git, so both sides of a merge are
+    rendered by the same command and differ only in the base.
+    """
+    path_args = ("--", path_filter) if path_filter else ()
+    return diff_base.staged_diff(base or diff_base.branch_tip(), *_DIFF_ARGS, *path_args)
+
+
+def _authored_added_lines(path_filter: str = "") -> list[tuple[str, int, str]]:
+    """Added lines THIS commit's author wrote, excluding a merge's incoming side.
+
+    Keyed on ``(filename, text)`` rather than the whole tuple: the same authored
+    line lands at different offsets in the two diffs, so the line number cannot
+    take part in the comparison.
+    """
+    return diff_base.authored_findings(
+        _added_lines,
+        lambda base: _staged_diff(path_filter, base),
+        key=itemgetter(0, 2),
+    )
 
 
 def _added_lines(diff: str) -> list[tuple[str, int, str]]:
@@ -119,11 +150,9 @@ def _is_pyproject_relaxation(line: str) -> bool:
 def main() -> int:
     violations: list[str] = []
 
-    pyproject_diff = _staged_diff("pyproject.toml")
-    if pyproject_diff:
-        for filename, line_num, line in _added_lines(pyproject_diff):
-            if _is_pyproject_relaxation(line):
-                violations.append(f"  {filename}:{line_num}: {line.strip()}")
+    for filename, line_num, line in _authored_added_lines("pyproject.toml"):
+        if _is_pyproject_relaxation(line):
+            violations.append(f"  {filename}:{line_num}: {line.strip()}")
 
     code_diff = _staged_diff()
     if code_diff:
@@ -137,7 +166,7 @@ def main() -> int:
                 removed_markers[filename, marker] += 1
 
         skip_prefixes = ("tests/", "scripts/hooks/", "e2e/", "skills/", "docs/")
-        for filename, line_num, line in _added_lines(code_diff):
+        for filename, line_num, line in _authored_added_lines():
             if filename == "pyproject.toml" or filename.startswith(skip_prefixes):
                 continue
             marker = _suppression_marker(line)
