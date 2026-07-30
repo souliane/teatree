@@ -5,12 +5,15 @@ This is the property that let the ``claude-agent-sdk`` Dependabot quarantine go
 interactive scenarios, so no gating verdict depends on the tool-call wire shape.
 
 The exemption has to hold at EVERY verdict point or the quarantine still defends
-something. Covered here: the full-suite AI lane (``_ai_lane_result``), and the two
-exits of the DEFAULT ``trials=1``/no-``--models`` lane every metered CI leg drives —
-``finalize_single_run`` and the ``--escalate-on-fail`` escalation. The pass@k and
-model-matrix verdicts are covered by their own lane tests.
+something. Covered here: the full-suite AI lane (``_ai_lane_result``), the two exits
+of the DEFAULT ``trials=1``/no-``--models`` lane every metered CI leg drives —
+``finalize_single_run`` and the ``--escalate-on-fail`` escalation — and the merged
+``green-proof`` the ``eval-ci-heal`` combine job gates on after the shards finish
+(souliane/teatree#3921). The pass@k and model-matrix verdicts are covered by their
+own lane tests.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,9 +22,12 @@ from teatree.cli.eval.all import _ai_lane_result
 from teatree.cli.eval.escalate import EscalationConfig, escalate_failures
 from teatree.cli.eval.run_modes import finalize_single_run
 from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
+from teatree.eval.green_proof import GreenProof, evaluate_green_proof
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalRun, EvalSpec, Matcher
 from teatree.eval.report import ScenarioResult
+from teatree.eval.summary_json_merge import merge_summary_payloads
 from teatree.eval.surface import INTERACTIVE_QUESTION_TOOL
+from teatree.loop.ci_eval_heal_advance import red_scenario_names
 
 
 def _spec(name: str, *, surface: str) -> EvalSpec:
@@ -161,6 +167,7 @@ def _drive_single_trial(
     monkeypatch: pytest.MonkeyPatch,
     escalation: EscalationConfig | None = None,
     summary_md: Path | None = None,
+    summary_json: Path | None = None,
 ) -> int:
     """Run ``run_single_trial`` end to end against a stubbed runner; return the exit code."""
     runner = _NoToolCallRunner()
@@ -181,6 +188,7 @@ def _drive_single_trial(
             judge=False,
             transcript_html=None,
             summary_md=summary_md,
+            summary_json=summary_json,
             gates=SingleTrialGates(persist=False, baseline=False, gate_regressions=False, gate_cost_regression=False),
             escalation=escalation,
         )
@@ -255,3 +263,73 @@ class TestTheEscalationVerdict:
         body = summary.read_text(encoding="utf-8")
         assert "1 confirmed, 0 flaky" in body
         assert "confirmed (advisory)" in body
+
+
+class TestTheGreenProofVerdict:
+    """The FIFTH verdict point: the combine job the shards feed (souliane/teatree#3921).
+
+    ``eval-ci-heal.yml`` gates TWICE — once per shard on the ``t3 eval run`` exit
+    code, then once more on ``t3 eval green-proof`` over the merged summary JSON.
+    The per-shard exit is surface-aware; without the same exemption on the merged
+    artifact every shard passes and the combine job still reds on the advisory rows,
+    and ``ci_eval_heal_advance`` then dispatches a fixer agent at a bundled-CLI
+    rendering change no repo edit can fix.
+    """
+
+    def _merged_proof(self, specs: list[EvalSpec], *, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> GreenProof:
+        shard = tmp_path / "shard.json"
+        assert _drive_single_trial(specs, monkeypatch=monkeypatch, summary_json=shard) == 0
+        merged = merge_summary_payloads(
+            [json.loads(shard.read_text(encoding="utf-8"))], head_sha="sha", generated_at="t"
+        )
+        return evaluate_green_proof(merged)
+
+    def test_the_shard_exits_zero_yet_the_row_still_carries_a_triage_class(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The row STAYS red-classified and visible — the exemption is about gating,
+        # not about hiding a real interactive regression from triage.
+        shard = tmp_path / "shard.json"
+        specs = [_interactive_tool_call_spec("chip", surface=INTERACTIVE_SURFACE)]
+        assert _drive_single_trial(specs, monkeypatch=monkeypatch, summary_json=shard) == 0
+        row = json.loads(shard.read_text(encoding="utf-8"))["scenarios"][0]
+        assert row["verdict"] == "fail"
+        assert row["triage_class"] == "behavioral"
+
+    def test_a_failing_interactive_scenario_still_leaves_the_merged_run_green(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        specs = [_interactive_tool_call_spec("chip", surface=INTERACTIVE_SURFACE)]
+        proof = self._merged_proof(specs, monkeypatch=monkeypatch, tmp_path=tmp_path)
+        assert proof.is_green
+        assert proof.reds == ()
+
+    def test_the_advisory_row_stays_visible_in_the_proof_summary(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        specs = [_interactive_tool_call_spec("chip", surface=INTERACTIVE_SURFACE)]
+        proof = self._merged_proof(specs, monkeypatch=monkeypatch, tmp_path=tmp_path)
+        assert [a.name for a in proof.advisory] == ["chip"]
+        assert "1 advisory" in proof.summary
+
+    def test_a_failing_headless_scenario_still_reds_the_merged_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Anti-vacuity: the identical run on the gating surface must still red the proof.
+        shard = tmp_path / "shard.json"
+        specs = [_interactive_tool_call_spec("slack", surface=HEADLESS_SURFACE)]
+        assert _drive_single_trial(specs, monkeypatch=monkeypatch, summary_json=shard) == 1
+        merged = merge_summary_payloads(
+            [json.loads(shard.read_text(encoding="utf-8"))], head_sha="sha", generated_at="t"
+        )
+        assert not evaluate_green_proof(merged).is_green
+
+    def test_the_heal_loop_dispatches_no_fixer_for_an_advisory_red(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The reds the heal loop reads are the fixer-dispatch set; an advisory row
+        # must never reach it, or the loop burns an agent on a CLI rendering change.
+        shard = tmp_path / "shard.json"
+        specs = [_interactive_tool_call_spec("chip", surface=INTERACTIVE_SURFACE)]
+        _drive_single_trial(specs, monkeypatch=monkeypatch, summary_json=shard)
+        assert red_scenario_names(json.loads(shard.read_text(encoding="utf-8"))) == []

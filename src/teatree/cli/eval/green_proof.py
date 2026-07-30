@@ -7,6 +7,11 @@ run executed scenarios (``total > 0``) and recorded ZERO reds (no behavioral,
 an empty run, so the merged JSON becomes an enforced CI gate — that JSON is the
 proof. The verdict logic lives in :mod:`teatree.eval.green_proof`; this is a thin
 JSON-read shell.
+
+An ``advisory`` (``surface: interactive``) row is PRINTED under the headline but
+never withholds the proof — it is one of the verdicts named in
+:data:`teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS`, so the CI log still
+shows an interactive regression that this gate deliberately does not fail on.
 """
 
 import json
