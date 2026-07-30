@@ -71,7 +71,8 @@ def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pat
     config = tmp_path / ".teatree-skills.yml"
     config.write_text(_RUFF_CONFIG, encoding="utf-8")
 
-    monkeypatch.setattr(skill_loader_mod, "SKILL_METADATA_CACHE", tmp_path / "no-cache.json")
+    # No metadata cache: point the reader's XDG resolution at an empty dir
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "no-cache-xdg"))
     monkeypatch.setattr(
         skill_loader_mod, "read_overlay_skill_metadata", lambda: {"skill_path": "", "remote_patterns": []}
     )

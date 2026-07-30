@@ -61,6 +61,8 @@ import json
 import os
 from pathlib import Path
 
+from teatree.utils.hook_registry import loop_registry_dir
+
 # The session id lands under whichever name the harness exports it, most-
 # to least-preferred. ``CLAUDE_CODE_SESSION_ID`` is what a live Claude Code
 # session exports (#3554); ``CLAUDE_SESSION_ID`` is the legacy name kept for
@@ -109,17 +111,8 @@ _OWNER_KEY = "t3-loop-tick-owner"  # gitleaks:allow
 
 
 def _loop_registry_path() -> Path:
-    """Resolve ``loop-registry.json`` exactly like ``loop_slack_answer``.
-
-    ``T3_LOOP_REGISTRY_DIR`` env → ``XDG_DATA_HOME/teatree`` →
-    ``~/.local/share/teatree`` (mirrors ``hook_router``'s writer).
-    """
-    base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    if base_env:
-        return Path(base_env) / "loop-registry.json"
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "teatree" / "loop-registry.json"
+    """The tick-owner registry the hook tier writes."""
+    return loop_registry_dir() / "loop-registry.json"
 
 
 def _owner_record_from_loop_registry() -> dict | None:

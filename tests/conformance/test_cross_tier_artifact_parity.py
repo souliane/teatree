@@ -88,17 +88,18 @@ NOT_A_CROSS_TIER_MIRROR: dict[str, str] = {
 PARITY_LANE_ROSTER: dict[str, str] = {
     "loop-registry.json": "tests/test_session_start_bootstrap_hook.py",
     "tick-meta.json": "tests/test_hook_router_cadence_hook.py",
+    "consolidation-registry.json": "tests/test_consolidation_registry_parity.py",
+    "skill-metadata.json": "tests/test_skill_metadata_cache_parity.py",
+    "statusline.txt": "tests/test_statusline_shell_parity.py",
 }
 
 #: Cross-tier artifacts with NO both-tier pin yet — the ratchet ledger.
 #: Every row carries its tracking issue. Rows may only be REMOVED (by adding a
 #: real both-tier test and promoting the artifact into PARITY_LANE_ROSTER); a new
 #: row is a new instance of the #3826 class and must be justified in review.
-UNPINNED_CROSS_TIER_MIRRORS: dict[str, str] = {
-    "consolidation-registry.json": "https://github.com/souliane/teatree/issues/3828",
-    "skill-metadata.json": "https://github.com/souliane/teatree/issues/3829",
-    "statusline.txt": "https://github.com/souliane/teatree/issues/3830",
-}
+#: Empty is the goal state, not a bug: every discovered cross-tier artifact is
+#: either covered above or exempted below.
+UNPINNED_CROSS_TIER_MIRRORS: dict[str, str] = {}
 
 _ISSUE_URL_SHAPE = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/issues/\d+$")
 
