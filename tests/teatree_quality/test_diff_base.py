@@ -20,6 +20,7 @@ import pytest
 
 from scripts.hooks import check_gate_relaxation, check_quality_gates
 from teatree.quality import diff_base
+from teatree.quality.diff_base import EMPTY_TREE, DiffBase, authored_findings, branch_tip, merge_incoming, staged_diff
 from tests._git_repo import git_identity_env, make_git_repo, run_git
 
 _INHERITED_RELAXATION = '  "S999",  # added on main, not by this author'
@@ -75,9 +76,12 @@ def merging_cwd(merging_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 class TestBaseResolution:
     def test_merge_incoming_is_named_only_during_a_merge(self, merging_cwd: Path) -> None:
-        incoming = diff_base.merge_incoming()
-        assert incoming is not None
+        incoming = merge_incoming()
+        assert isinstance(incoming, DiffBase)
         assert incoming.ref == "MERGE_HEAD"
+        # The label is what a gate prints when it explains which changes it read,
+        # so it has to name the side a human would recognise.
+        assert "incoming" in incoming.label
 
     def test_merge_incoming_is_none_on_an_ordinary_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -86,8 +90,8 @@ class TestBaseResolution:
         monkeypatch.chdir(repo)
         for var, value in git_identity_env().items():
             monkeypatch.setenv(var, value)
-        assert diff_base.merge_incoming() is None
-        assert diff_base.branch_tip().ref == "HEAD"
+        assert merge_incoming() is None
+        assert branch_tip().ref == "HEAD"
 
     def test_branch_tip_falls_back_to_the_empty_tree_before_the_first_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -96,15 +100,15 @@ class TestBaseResolution:
         monkeypatch.chdir(repo)
         for var, value in git_identity_env().items():
             monkeypatch.setenv(var, value)
-        assert diff_base.branch_tip().ref == diff_base.EMPTY_TREE
+        assert branch_tip().ref == EMPTY_TREE
 
 
 class TestAuthoredFindings:
     def test_a_line_the_incoming_side_already_had_is_not_this_author_s(self, merging_cwd: Path) -> None:
         """The merge case. A naive one-branch test never reaches this."""
-        found = diff_base.authored_findings(
+        found = authored_findings(
             lambda diff: [line for line in diff.splitlines() if line.startswith("+")],
-            lambda base: diff_base.staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
+            lambda base: staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
         )
         assert not [line for line in found if "S999" in line], (
             "main's own relaxation was attributed to the merging author"
@@ -119,9 +123,9 @@ class TestAuthoredFindings:
         )
         run_git(merging_cwd, "add", "pyproject.toml")
 
-        found = diff_base.authored_findings(
+        found = authored_findings(
             lambda diff: [line for line in diff.splitlines() if line.startswith("+")],
-            lambda base: diff_base.staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
+            lambda base: staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
         )
         assert [line for line in found if "E501" in line], (
             "the author's own relaxation was suppressed along with the inherited one"
@@ -259,8 +263,8 @@ class TestIntersectionCannotSilenceRealFindings:
 
         monkeypatch.setattr(diff_base, "run_allowed_to_fail", fail_on_incoming)
 
-        found = diff_base.authored_findings(
+        found = authored_findings(
             lambda diff: [line for line in diff.splitlines() if line.startswith("+")],
-            lambda base: diff_base.staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
+            lambda base: staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
         )
         assert [line for line in found if "S999" in line], "an unreadable incoming side silently cleared every finding"
