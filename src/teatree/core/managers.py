@@ -33,6 +33,19 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
 
+
+def _phase_spellings(phase: str) -> tuple[str, ...]:
+    """Every stored spelling of *phase* — the one call-time hop to the phase vocabulary.
+
+    ``completed_in_phase`` / ``pending_in_phase`` / ``in_flight_for_phase`` all key on
+    the same spelling set, so the deferred ``modelkit.phases`` import lives here once
+    rather than being restated in each — one intra-core edge, not three.
+    """
+    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+    return phase_spellings(phase)
+
+
 __all__ = [
     "PER_LOOP_OWNER_PREFIX",
     "T3_MASTER_SLOT",
@@ -185,11 +198,9 @@ class TaskQuerySet(models.QuerySet):
         ``reviewing`` one, mirroring the ``normalize_phase`` contract the
         rest of the system honours.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self.filter(phase__in=phase_spellings(phase), status=task_model.Status.COMPLETED)
+        return self.filter(phase__in=_phase_spellings(phase), status=task_model.Status.COMPLETED)
 
     def pending_in_phase(self, phase: str) -> models.QuerySet:
         """Non-terminal tasks whose phase normalizes to ``phase`` (#769).
@@ -201,12 +212,10 @@ class TaskQuerySet(models.QuerySet):
         as a zombie session. Same SSOT (``phase_spellings``), opposite
         status set.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         return self.filter(
-            phase__in=phase_spellings(phase),
+            phase__in=_phase_spellings(phase),
             status__in=task_model.Status.active(),
         )
 
@@ -230,9 +239,7 @@ class TaskQuerySet(models.QuerySet):
         Matches every accepted spelling of *phase* via ``phase_spellings``, the
         same SSOT ``pending_in_phase`` reads.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
-        return _in_flight_for_phase(self, overlay, phase_spellings(phase))
+        return _in_flight_for_phase(self, overlay, _phase_spellings(phase))
 
     def last_run_at_for_phase(
         self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None

@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 
 from teatree.core.models import Ticket
-from teatree.core.teardown_dispatch import enqueue_teardown_for_terminal_tickets
+from teatree.core.tasks import TeardownDispatch
 
 IMMEDIATE_BACKEND = {
     "TASKS": {
@@ -42,7 +42,7 @@ class TestEnqueueTeardownBacklogDrain(TestCase):
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415 - deferred: the module object the seam looks up
 
         with patch.object(tasks_mod, "execute_teardown") as teardown:
-            enqueued = enqueue_teardown_for_terminal_tickets()
+            enqueued = TeardownDispatch.drain_terminal_backlog()
 
         assert sorted(enqueued) == sorted([merged.pk, ignored.pk])
         assert non_terminal.pk not in enqueued
@@ -96,24 +96,22 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
     def _queued_rows(ticket: Ticket) -> int:
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.tasks import execute_teardown as teardown  # noqa: PLC0415 - deferred: local import
-
-        return DBTaskResult.objects.filter(task_path=teardown.module_path, args_kwargs__args=[ticket.pk]).count()
+        return DBTaskResult.objects.filter(task_path=TeardownDispatch.TASK_PATH, args_kwargs__args=[ticket.pk]).count()
 
     @staticmethod
     def _settle(ticket: Ticket, status: str) -> None:
         """Move the ticket's outstanding teardown row to a finished status."""
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.tasks import execute_teardown as teardown  # noqa: PLC0415 - deferred: local import
-
-        DBTaskResult.objects.filter(task_path=teardown.module_path, args_kwargs__args=[ticket.pk]).update(status=status)
+        DBTaskResult.objects.filter(task_path=TeardownDispatch.TASK_PATH, args_kwargs__args=[ticket.pk]).update(
+            status=status
+        )
 
     def test_repeated_drains_over_one_backlog_mint_one_job_per_ticket(self) -> None:
         ticket = self._terminal_ticket_with_worktree()
 
         for _ in range(25):
-            enqueue_teardown_for_terminal_tickets()
+            TeardownDispatch.drain_terminal_backlog()
 
         assert self._queued_rows(ticket) == 1, (
             f"{self._queued_rows(ticket)} teardown jobs queued for one un-reaped worktree — "
@@ -123,8 +121,8 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
     def test_the_drain_reports_only_the_tickets_it_actually_queued(self) -> None:
         ticket = self._terminal_ticket_with_worktree()
 
-        first = enqueue_teardown_for_terminal_tickets()
-        second = enqueue_teardown_for_terminal_tickets()
+        first = TeardownDispatch.drain_terminal_backlog()
+        second = TeardownDispatch.drain_terminal_backlog()
 
         assert first == [ticket.pk]
         assert second == [], "the drain claimed to queue a ticket whose teardown was already outstanding"
@@ -133,10 +131,10 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415 - deferred: local import
 
         ticket = self._terminal_ticket_with_worktree()
-        enqueue_teardown_for_terminal_tickets()
+        TeardownDispatch.drain_terminal_backlog()
         self._settle(ticket, TaskResultStatus.RUNNING)
 
-        enqueue_teardown_for_terminal_tickets()
+        TeardownDispatch.drain_terminal_backlog()
 
         assert self._queued_rows(ticket) == 1
 
@@ -149,18 +147,18 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
 
         for finished in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED):
             ticket = self._terminal_ticket_with_worktree()
-            enqueue_teardown_for_terminal_tickets()
+            TeardownDispatch.drain_terminal_backlog()
             self._settle(ticket, finished)
 
-            assert ticket.pk in enqueue_teardown_for_terminal_tickets(), finished
+            assert ticket.pk in TeardownDispatch.drain_terminal_backlog(), finished
             assert self._queued_rows(ticket) == 2, finished
 
     def test_a_sibling_ticket_is_never_deduped_away(self) -> None:
         mine = self._terminal_ticket_with_worktree()
         theirs = self._terminal_ticket_with_worktree()
 
-        enqueue_teardown_for_terminal_tickets()
-        enqueue_teardown_for_terminal_tickets()
+        TeardownDispatch.drain_terminal_backlog()
+        TeardownDispatch.drain_terminal_backlog()
 
         assert self._queued_rows(mine) == 1
         assert self._queued_rows(theirs) == 1
@@ -180,5 +178,5 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
             ticket.save()
 
         assert self._queued_rows(ticket) == 1
-        assert enqueue_teardown_for_terminal_tickets() == []
+        assert TeardownDispatch.drain_terminal_backlog() == []
         assert self._queued_rows(ticket) == 1
