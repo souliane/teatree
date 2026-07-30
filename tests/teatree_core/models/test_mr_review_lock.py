@@ -5,6 +5,7 @@ import datetime as dt
 import pytest
 from django.utils import timezone
 
+from teatree.core.modelkit.expiring_claim import acquirable_q
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import ReviewVerdict
 
@@ -259,3 +260,51 @@ class TestResolveIsHolderAware:
         )
 
         assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=PR_ID) is not None
+
+
+class TestAcquirablePredicateIsTheOneRule:
+    """`acquirable_q` is now the single acquirability rule for all three claim models.
+
+    Pinned directly rather than only through its callers: three models (#3920 —
+    MRReviewLock, AutoReviewDispatch, CriticDispatch) drive their CAS off this one
+    predicate, so a change here moves all three at once. The three-way split below
+    is the whole contract — always-acquirable, expired-active, terminal — and the
+    NULL-deadline case is the one an expiry-based reclaim is most likely to get
+    wrong, because "no bound" must mean "never stolen", not "infinitely stale".
+    """
+
+    def _matches(self, row: MRReviewLock, *, now: dt.datetime) -> bool:
+        predicate = acquirable_q(
+            always_acquirable=[MRReviewLock.State.IDLE, MRReviewLock.State.RESOLVED],
+            active=[MRReviewLock.State.REVIEW_DISPATCHED, MRReviewLock.State.VERDICT_PENDING],
+            now=now,
+        )
+        return MRReviewLock.objects.filter(predicate, pk=row.pk).exists()
+
+    def test_a_live_active_claim_is_not_acquirable(self) -> None:
+        row = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a", mr_url=URL)
+        assert row is not None
+
+        assert not self._matches(row, now=timezone.now())
+
+    def test_an_active_claim_past_its_deadline_is_acquirable(self) -> None:
+        row = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a", mr_url=URL)
+        assert row is not None
+
+        assert self._matches(row, now=row.deadline + dt.timedelta(seconds=1))
+
+    def test_a_released_claim_is_acquirable_regardless_of_deadline(self) -> None:
+        row = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a", mr_url=URL)
+        assert row is not None
+        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a")
+        row.refresh_from_db()
+
+        assert self._matches(row, now=timezone.now())
+
+    def test_an_active_claim_with_no_deadline_is_never_stolen_by_expiry(self) -> None:
+        """A NULL deadline reads as 'no bound' — released by its holder or not at all."""
+        row = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a", mr_url=URL)
+        assert row is not None
+        MRReviewLock.objects.filter(pk=row.pk).update(deadline=None)
+
+        assert not self._matches(row, now=timezone.now() + dt.timedelta(days=365))
