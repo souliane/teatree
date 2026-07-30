@@ -180,6 +180,17 @@ class TestDowntimeIsAnswerable:
         assert "teatree-worker" in stamped
         assert "teatree-admin" in stamped
 
+    def test_a_recovered_service_is_restamped_so_the_next_outage_measures_from_recovery(self, tmp_path: Path) -> None:
+        """Stamping must follow the POST-restart state, or every later outage inherits this one."""
+        _seed_liveness(tmp_path, service="teatree-worker", minutes_ago=300)
+        recovered = _run_pass(tmp_path, label="1", STUB_PS_BEFORE=_WORKER_DOWN, STUB_PS_AFTER=_ALL_UP)
+        assert "down ~300 min" in recovered
+
+        again = _run_pass(tmp_path, label="2", STUB_PS_BEFORE=_WORKER_DOWN, STUB_PS_AFTER=_ALL_UP)
+
+        assert "down ~0 min" in again
+        assert "down ~300 min" not in again
+
     def test_a_down_service_keeps_its_earlier_stamp_across_passes(self, tmp_path: Path) -> None:
         _seed_liveness(tmp_path, service="teatree-worker", minutes_ago=120)
         _run_pass(tmp_path, label="1", STUB_PS_BEFORE=_WORKER_DOWN, STUB_PS_AFTER=_WORKER_DOWN)

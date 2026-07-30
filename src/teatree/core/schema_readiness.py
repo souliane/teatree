@@ -26,8 +26,8 @@ the hot-pull seam calls :func:`invalidate_schema_readiness` the moment the code 
 disk moves, which is the only event that can turn a ``CURRENT`` verdict stale.
 
 This module never migrates and never notifies; it only answers. Applying the
-migrations is :mod:`teatree.loop.scanners.self_update_schema` (the post-pull reconcile) or
-``t3 <overlay> db migrate``.
+migrations is :mod:`teatree.loop.scanners.self_update_schema` (the post-pull
+reconcile) or ``t3 <overlay> db migrate``.
 """
 
 import enum

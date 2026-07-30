@@ -218,13 +218,12 @@ _downtime_phrase() {
 # STILL DOWN, so the DM never claims a repair that did not land. Skipped while a
 # convergence is in flight: a rolling swap legitimately stops containers.
 announce_repaired_services() {
-  local down="$1" now="$2" still_down body="" svc
+  local down="$1" still_down="$2" now="$3" body="" svc
   [ -n "$down" ] || return 0
   if deploy_in_flight; then
     log "deploy in flight — not paging for the services this pass restarted"
     return 0
   fi
-  still_down="$(down_app_services)"
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
     if printf '%s\n' "$still_down" | grep -qxF "$svc"; then
@@ -476,7 +475,7 @@ _findings_that_page() {
 run_pass() {
   # Sample who is down BEFORE the restart — afterwards the evidence is gone, which is
   # why an outage the watchdog silently healed left no trace anyone could act on.
-  local now down
+  local now down still_down
   now="$(date -u +%s 2>/dev/null || printf 0)"
   down="$(down_app_services)"
 
@@ -488,8 +487,11 @@ run_pass() {
     return 0
   fi
 
-  _record_liveness "$now" "$down"
-  announce_repaired_services "$down" "$now"
+  # Announce BEFORE stamping: the durations come from the pre-restart ledger, and
+  # stamping first would report a just-recovered service as down ~0 min.
+  still_down="$(down_app_services)"
+  announce_repaired_services "$down" "$still_down" "$now"
+  _record_liveness "$now" "$still_down"
 
   # Guard against a temp-scratch leak filling the disk (never fatal — see fn).
   trim_stale_temp
