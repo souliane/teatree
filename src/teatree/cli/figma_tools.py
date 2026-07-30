@@ -1,0 +1,94 @@
+"""Figma tool commands — direct REST API wrapper for large Figma files.
+
+Split out of ``cli/tools.py`` per the module-health function cap (see
+``triage_tools.py``): every command here is a thin front-end over
+``teatree.backends.figma.FigmaClient``. Commands register onto the shared
+``tool_app`` so ``t3 tool figma-screenshot`` and its siblings form a single
+coherent namespace.
+
+Importing this module has the side effect of registering the commands;
+``cli/__init__`` imports it after ``tool_app`` is constructed.
+"""
+
+import dataclasses
+import json
+from pathlib import Path
+
+import typer
+
+from teatree.backends.figma import FigmaClient, FigmaTokenCredential, build_side_by_side_comparison
+from teatree.llm.credentials import CredentialError
+
+
+def _client() -> FigmaClient:
+    try:
+        token = FigmaTokenCredential().resolve()
+    except CredentialError:
+        typer.echo(
+            "No Figma personal access token. Set FIGMA_TOKEN in the environment "
+            "or store one with `pass insert figma/pat`.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    return FigmaClient(token=token)
+
+
+def figma_screenshot(
+    file_key: str = typer.Argument(..., help="Figma file key (from the file URL)."),
+    node_id: str = typer.Argument(..., help="Node/frame ID to render (e.g. `12:34`)."),
+    dest: Path = typer.Option(Path("figma-screenshot.png"), "--dest", "-d", help="Output PNG path."),
+    scale: float = typer.Option(2.0, "--scale", min=0.01, max=4.0, help="Render scale."),
+) -> None:
+    """Fetch a Figma node/frame as a PNG — bypasses the MCP integration's size limits."""
+    result = _client().get_screenshot(file_key, node_id, dest, scale=scale)
+    typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
+
+
+def figma_frames(
+    file_key: str = typer.Argument(..., help="Figma file key."),
+    node_id: str = typer.Argument(..., help="Parent node ID to list children of."),
+) -> None:
+    """List a node's child frames (name + ID) for navigation."""
+    frames = _client().list_frame_children(file_key, node_id)
+    if not frames:
+        typer.echo("No child frames found.")
+        return
+    for frame in frames:
+        typer.echo(f"{frame.node_id}  {frame.node_type:<12}  {frame.name}")
+
+
+def figma_comments(
+    file_key: str = typer.Argument(..., help="Figma file key."),
+    node_id: str = typer.Option("", "--node-id", help="Restrict to comments anchored on this node."),
+) -> None:
+    """Fetch Figma comments (designer annotations, review feedback) for a file or node."""
+    client = _client()
+    comments = client.get_node_comments(file_key, node_id) if node_id else client.get_comments(file_key)
+    typer.echo(json.dumps(comments, indent=2))
+
+
+def figma_components(
+    file_key: str = typer.Argument(..., help="Figma file key."),
+) -> None:
+    """Fetch component descriptions, variant properties, and styles (design tokens)."""
+    metadata = _client().get_component_metadata(file_key)
+    typer.echo(json.dumps(dataclasses.asdict(metadata), indent=2))
+
+
+def figma_compare(
+    design_image: Path = typer.Argument(..., help="Figma mockup PNG (e.g. from `figma-screenshot`)."),
+    actual_screenshot: Path = typer.Argument(..., help="Playwright screenshot PNG to compare against."),
+    dest: Path = typer.Option(Path("figma-comparison.png"), "--dest", "-d", help="Output side-by-side PNG path."),
+) -> None:
+    """Combine a Figma mockup and a Playwright screenshot side by side for MR evidence."""
+    result = build_side_by_side_comparison(design_image, actual_screenshot, dest)
+    typer.echo(f"Saved: {result} ({result.stat().st_size:,} bytes)")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("figma-screenshot")(figma_screenshot)
+    app.command("figma-frames")(figma_frames)
+    app.command("figma-comments")(figma_comments)
+    app.command("figma-components")(figma_components)
+    app.command("figma-compare")(figma_compare)

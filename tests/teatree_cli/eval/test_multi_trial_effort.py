@@ -1,9 +1,9 @@
 """Lane-level ``--effort`` threads into the metered runner the gating lanes build (#2192).
 
 The single-trial path threads the resolved ``--effort`` / ``METERED_DEFAULT_EFFORT``
-into ``make_runner(... effort=...)``; the always-metered pass@k (``--trials k>1``,
+into ``make_runner(..., ApiRunnerParams(effort=...))``; the always-metered pass@k (``--trials k>1``,
 the CI gate) and model-matrix lanes must do the SAME. They now build through that
-same ``make_runner`` chokepoint (so OAuth-token resolution can never be bypassed),
+same ``make_runner`` chokepoint (so API-key resolution can never be bypassed),
 and so must pass the lane effort, or the calibration never reaches the metered gate.
 A scenario's own ``model@effort`` still wins at the runner's per-scenario seam; the
 lane effort is the default for scenarios that declare none.
@@ -11,13 +11,14 @@ lane effort is the default for scenarios that declare none.
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
+from teatree.eval.api_runner import ApiRunnerParams
 from teatree.eval.models import EvalRun, EvalSpec
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
 
 def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
@@ -33,12 +34,12 @@ def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
 
 
 class _RecordingRunner:
-    """Stand-in for ``SdkInProcessRunner`` that records its constructor effort."""
+    """Stand-in for ``ApiInProcessRunner`` that records its constructor effort."""
 
     last_effort: str | None = None
 
-    def __init__(self, **kwargs: Any) -> None:
-        type(self).last_effort = kwargs.get("effort")
+    def __init__(self, params: ApiRunnerParams | None = None) -> None:
+        type(self).last_effort = None if params is None else params.effort
 
     def run(self, spec: EvalSpec) -> EvalRun:
         return EvalRun(
@@ -55,10 +56,14 @@ class _RecordingRunner:
 
 @pytest.fixture
 def recording_runner() -> Iterator[type[_RecordingRunner]]:
+    # Bypass the eval-credential resolver (which reads the settings + DB) to the
+    # default subscription credential, keeping the lane exercised DB-free; the
+    # credential-KIND selection has its own tests.
     _RecordingRunner.last_effort = None
     with (
-        patch("teatree.eval.backends.ensure_oauth_token", return_value="tok"),
-        patch("teatree.eval.backends.SdkInProcessRunner", _RecordingRunner),
+        patch("teatree.credential_config.resolve_eval_credential", lambda **_: AnthropicSubscriptionCredential()),
+        patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
+        patch("teatree.eval.backends.ApiInProcessRunner", _RecordingRunner),
     ):
         yield _RecordingRunner
 

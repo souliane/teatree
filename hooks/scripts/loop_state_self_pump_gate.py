@@ -2,35 +2,32 @@
 
 Extracted from :mod:`hook_router` (it is over the module-health LOC cap and may
 only shrink): the in-session Stop self-pump must honour a durable DB pause of
-the always-on ``dispatch`` loop exactly as it honours ``T3_LOOPS_DISABLED=all``.
-Keeping it in a sibling helper means the Stop hook gains the behaviour without
-growing the god-module.
+the core ``dispatch`` loop. This DB ``LoopState`` tier is the SINGLE control
+plane the self-pump consults (loop control is ``/loops`` + the DB only; there is
+no env kill-switch). Keeping it in a sibling helper means the Stop hook gains the
+behaviour without growing the god-module.
 
-The read is **stdlib-only** (#2559). The harness invokes the Stop hook as a bare
-``python3`` that has NO ``uv`` env — teatree's dependencies (Django et al.) are
-not importable, so ``django.setup()`` cannot run in the hook interpreter. A read
-gated on an in-process ``django.setup()`` therefore failed OPEN (never suppress)
-under the real Stop hook, silently neutering ``t3 loop pause`` / migration 0087.
-This module instead subprocesses the ``t3`` CLI — the editable install carries
-its own venv, so it bootstraps Django in a CHILD process — exactly the way
-``hook_router._consolidated_pending_work`` already reads ``pending-spawn``.
+The read is a DIRECT stdlib ``sqlite3`` read of the PRIMARY teatree DB via the
+Django-free :func:`teatree.config.cold_reader.loop_status` — NO ``t3`` subprocess
+and NO ``django.setup()``. The prior implementation shelled out to ``t3 loop
+loop-state dispatch --json``; the editable install boots Django in that child
+process, so every Stop hook paid a ~3s Django cold-boot on its hot path — half of
+the recurring Stop-hook TIMEOUT this change removes. ``cold_reader`` reads the
+same ``teatree_loop_state`` row the CLI would (resolving the PRIMARY
+``~/.local/share/teatree/db.sqlite3`` even from inside a worktree), so the gate
+DECISION is unchanged — only the Django cold-boot is gone. ``src/`` is put on
+``sys.path`` for the read via the shared :func:`teatree_src_on_path` bootstrap
+(the hook interpreter is a bare ``python3`` that does not carry teatree's venv,
+#1314).
 """
 
-import json
-import shutil
-import subprocess  # noqa: S404 — reads a trusted local ``t3`` binary, fixed argv, never shell
+from hooks.scripts.managed_repo import teatree_src_on_path
 
-# The always-on loop the in-session Stop self-pump exists to drive. The
+# The core loop the in-session Stop self-pump exists to drive. The
 # self-pump re-fires ``t3 loop tick`` + ``claim-next``, which run this loop's
 # dispatch fan-out; a durable DB hold on it IS the restart-surviving
-# 'pause everything' the env ``T3_LOOPS_DISABLED=all`` kill-switch could only do
-# within a process (#1913). Mirrors :data:`teatree.loops.dispatch.loop.MINI_LOOP`'s name.
+# 'pause everything' (#1913). Mirrors :data:`teatree.loops.dispatch.loop.MINI_LOOP`'s name.
 _DISPATCH_LOOP_NAME = "dispatch"
-
-# A short bound — the Stop hook is timeout-capped (8s in hooks.json) and a
-# read-only ``loop loop-state`` query is sub-second. Mirrors
-# ``hook_router._SELF_PUMP_PENDING_TIMEOUT``.
-_LOOP_STATE_READ_TIMEOUT = 5
 
 # The single durable-runnable status (mirrors ``LoopStatus.ENABLED.value``
 # without importing teatree). Any other resolved status — ``paused`` /
@@ -41,59 +38,42 @@ _RUNNABLE_STATUS = "enabled"
 def db_loop_state_suppresses_self_pump() -> bool:
     """True when the durable DB ``LoopState`` pauses/disables the loop (#1913).
 
-    The DB-backed control tier is the restart-surviving counterpart of
-    ``T3_LOOPS_DISABLED=all``: a ``PAUSED`` / ``DISABLED`` row on the always-on
-    ``dispatch`` loop (the loop the self-pump drives) means the operator has
-    durably paused the control plane, so the in-session Stop self-pump must
-    suppress exactly as it does for the env kill-switch.
+    The DB-backed control tier is the SINGLE control plane: a ``PAUSED`` /
+    ``DISABLED`` row on the core ``dispatch`` loop (the loop the self-pump
+    drives) means the operator has durably paused the control plane, so the
+    in-session Stop self-pump must suppress. Loop control is ``/loops`` + the DB
+    only; there is no env kill-switch.
 
-    The read is stdlib-only (#2559): it shells out to ``t3 loop loop-state
-    dispatch --json`` (a read-only probe on the ``loop`` top-level group — no
-    overlay token needed), so the durable status resolves in a CHILD ``t3``
-    process that carries its own venv. The bare-``python3`` Stop hook
-    interpreter never needs a ``django.setup()`` of its own.
+    The read is a DIRECT stdlib ``sqlite3`` read of the ``teatree_loop_state``
+    row via the Django-free :func:`teatree.config.cold_reader.loop_status` — no
+    ``t3`` subprocess, no ``django.setup()`` on the Stop hook's hot path.
 
-    FAIL OPEN — a Stop hook must be crash-proof: an absent ``t3`` binary, a
-    non-zero exit, unparsable output, or any subprocess error resolves to
-    ``False`` (do NOT suppress), so the env / availability / ownership gates
-    still decide and the pump can never crash the session on an unreadable
-    control plane.
+    FAIL OPEN — a Stop hook must be crash-proof: ``cold_reader.loop_status``
+    resolves an absent row OR an unreadable/locked DB to the runnable
+    ``enabled`` default, so this returns ``False`` (do NOT suppress) and the
+    availability / ownership gates still decide — the pump can never crash the
+    session on an unreadable control plane.
     """
-    status = _dispatch_loop_status()
-    # An empty status means "unreadable" — fail OPEN (do not suppress).
-    return bool(status) and status != _RUNNABLE_STATUS
+    return _dispatch_loop_status() != _RUNNABLE_STATUS
 
 
 def _dispatch_loop_status() -> str:
-    """Durable status of the ``dispatch`` loop via ``t3``; ``""`` when unreadable.
+    """Durable status of the ``dispatch`` loop via the Django-free cold reader.
 
-    Reads ``t3 loop loop-state dispatch --json`` in a child process so the
-    bare-``python3`` hook never needs ``django.setup()``. Any failure — absent
-    ``t3``, non-zero exit, unparsable / non-dict output — yields ``""`` so the
-    caller fails OPEN.
+    Reads the ``teatree_loop_state`` row directly from the PRIMARY sqlite DB
+    (``cold_reader.loop_status`` targets the installed ``t3``'s DB even from a
+    worktree). Any failure — ``teatree`` not importable, an unreadable / locked
+    DB — resolves to ``_RUNNABLE_STATUS`` so the caller fails OPEN (do NOT
+    suppress). The ``src/`` bootstrap makes ``teatree`` importable in the bare
+    ``python3`` hook interpreter (#1314).
     """
-    t3_bin = shutil.which("t3")
-    if not t3_bin:
-        return ""
     try:
-        result = subprocess.run(  # noqa: S603 — trusted local binary, fixed argv, no shell
-            [t3_bin, "loop", "loop-state", _DISPATCH_LOOP_NAME, "--json"],
-            capture_output=True,
-            text=True,
-            timeout=_LOOP_STATE_READ_TIMEOUT,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return ""
-    if result.returncode != 0 or not result.stdout.strip():
-        return ""
-    try:
-        parsed = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return ""
-    if not isinstance(parsed, dict):
-        return ""
-    return str(parsed.get("status", "")).strip().lower()
+        with teatree_src_on_path():
+            from teatree.config.cold_reader import loop_status  # noqa: PLC0415 — deferred: cold-hook import
+
+            return loop_status(_DISPATCH_LOOP_NAME, default=_RUNNABLE_STATUS)
+    except Exception:  # noqa: BLE001 — Stop hook crash-proof: unreadable control plane ⇒ fail open (runnable)
+        return _RUNNABLE_STATUS
 
 
 __all__ = ["db_loop_state_suppresses_self_pump"]

@@ -8,7 +8,7 @@ claim, the migration-graph leaf checker) on a constructed must-block input and
 on a must-allow input, and reports a violation when either direction is wrong.
 
 This is a Layer-1 eval per ``README.md`` — deterministic, free, no ``claude``
-run — sibling of :mod:`teatree.eval.trigger_qa`. It exists so the recurring
+run — sibling of :mod:`teatree.eval.coverage`. It exists so the recurring
 safety-gate failure classes of the last development cycle each have one check
 that would go RED on the pre-fix behavior and stays GREEN on the fix, surfaced
 through ``t3 eval pinned-regressions`` and the ``eval-pinned-regressions`` prek
@@ -40,7 +40,7 @@ from teatree.eval.regression_corpus_predicates import (
     _check_forge_resolves_by_host_not_token,
     _check_loop_owner_lease_pid_anchored,
     _check_merge_precondition_maker_is_not_checker,
-    _check_merge_precondition_substrate_full_autonomy,
+    _check_merge_precondition_substrate_full_autonomy_holds,
     _check_merge_precondition_substrate_human_authorize,
     _check_mr_description_first_line_validated,
     _check_private_repo_allowlist_path_segment_match,
@@ -78,7 +78,7 @@ def _check_migration_graph_single_leaf() -> bool:
     :func:`_count_core_leaves` — the same predicate a synthetic forked graph
     drives ``> 1`` in the corpus's anti-vacuous test.
     """
-    from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415
+    from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415 — deferred: Django import at call time
 
     loader = MigrationLoader(None, ignore_no_migrations=True)
     return _count_core_leaves(loader.graph) == 1
@@ -99,10 +99,10 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         needs_db=True,
     ),
     RegressionCheck(
-        failure_class="substrate-merge full-autonomy carve-out",
+        failure_class="substrate-merge full-autonomy ping-and-hold",
         origin="https://github.com/souliane/teatree/issues/1748",
-        invariant="an autonomy=full overlay clears a ticket-less substrate CLEAR without a per-PR human sign-off",
-        predicate=_check_merge_precondition_substrate_full_autonomy,
+        invariant="an autonomy=full overlay HOLDS a substrate CLEAR with no per-PR human authorizer (ping-and-hold)",
+        predicate=_check_merge_precondition_substrate_full_autonomy_holds,
         needs_db=True,
     ),
     RegressionCheck(
@@ -113,7 +113,7 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         needs_db=True,
     ),
     RegressionCheck(
-        failure_class="loop-owner hijack / pid-anchored lease",
+        failure_class="t3-master hijack / pid-anchored lease",
         origin="https://github.com/souliane/teatree/pull/1724",
         invariant="an alive foreign owner past TTL is never hijacked; a dead owner is reclaimable",
         predicate=_check_loop_owner_lease_pid_anchored,
@@ -189,7 +189,7 @@ _CHECKS: tuple[RegressionCheck, ...] = (
 
 def _django_ready() -> bool:
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
     except ImportError:
         return False
     return apps.ready

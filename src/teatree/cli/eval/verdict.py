@@ -15,12 +15,14 @@ import typer
 class LaneResult:
     """One eval lane's outcome in the unified ``t3 eval`` summary.
 
-    ``setup_hint`` distinguishes the two reasons a lane can be skipped. A skip
-    with a hint is *unrunnable for setup reasons* (the AI behavioural lane with
-    no in-session transcripts / no key) — the run did NOT validate it, so the
-    final verdict flags it as not-yet-validated and ``--strict`` fails on it. A
-    skip with no hint is a benign no-applicable-work skip (e.g. transcript-replay
-    when no session transcript is in scope) that does not undermine the verdict.
+    ``setup_hint`` distinguishes a lane that was NOT fully validated for setup
+    reasons from one that ran clean. A hint means the lane could not validate
+    everything it should have — the AI behavioural lane with no in-session
+    transcripts / no key (a full skip), OR a lane that graded SOME scenarios but
+    left others un-graded (partial coverage). Either way ``--strict`` fails on it
+    and the verdict flags it not-yet-validated, so partial coverage can never read
+    a clean green. A skip with no hint is a benign no-applicable-work skip (e.g.
+    transcript-replay when no session transcript is in scope).
 
     ``duration_s`` is the lane's wall-clock, stamped by ``all._timed`` for the
     whole-suite HTML report (the terminal table does not show it).
@@ -36,15 +38,22 @@ class LaneResult:
 
     @property
     def needs_setup(self) -> bool:
-        return self.skipped and self.setup_hint is not None
+        """A setup hint means "not fully validated" — whether fully or partially skipped.
+
+        Decoupled from ``skipped`` so a PARTIALLY-graded lane (some scenarios
+        graded, others skipped for want of a transcript/grader) also surfaces as
+        needs-setup and fails ``--strict``. A fully-skipped setup lane still counts
+        (it is ``skipped`` with a hint); a benign no-work skip carries no hint.
+        """
+        return self.setup_hint is not None
 
     @property
     def status(self) -> str:
-        if self.needs_setup:
-            return "SKIPPED — needs setup"
         if self.skipped:
-            return "SKIP"
-        return "PASS" if self.passed else "FAIL"
+            return "SKIPPED — needs setup" if self.setup_hint is not None else "SKIP"
+        if not self.passed:
+            return "FAIL"
+        return "PASS — partial (needs setup)" if self.setup_hint is not None else "PASS"
 
 
 def build_verdict(lanes: list[LaneResult]) -> str:
@@ -53,10 +62,11 @@ def build_verdict(lanes: list[LaneResult]) -> str:
     Three honest shapes, keyed off the lane outcomes:
 
     - any real FAIL: ``❌ PROBLEMS FOUND`` naming the failing lane(s).
-    - all deterministic checks green but a lane was skipped-for-setup (the AI
-        behavioural lane with no transcripts / no key): ``✅`` for the
-        deterministic part PLUS a ``⚠️`` that the skipped lane was NOT RUN and
-        not-yet-validated, so the reader never reads the run as fully validated.
+    - all deterministic checks green but a lane was not fully validated for setup
+        reasons (the AI behavioural lane with no transcripts / no key, or one that
+        graded only SOME scenarios): ``✅`` for the deterministic part PLUS a ``⚠️``
+        that the lane was not-yet-validated, so the reader never reads the run as
+        fully validated.
     - everything that ran passed and nothing needed setup: ``✅ ALL GOOD``.
     """
     failed = [lane for lane in lanes if not lane.passed and not lane.skipped]
@@ -68,9 +78,12 @@ def build_verdict(lanes: list[LaneResult]) -> str:
     ran = len(lanes) - len(not_validated)
     if not_validated:
         names = ", ".join(lane.name for lane in not_validated)
+        # A fully-skipped setup lane was NOT RUN; a partially-graded one DID grade
+        # some scenarios but not all, so it is NOT FULLY VALIDATED rather than "not run".
+        phrase = "NOT RUN — SKIPPED" if all(lane.skipped for lane in not_validated) else "NOT FULLY VALIDATED"
         return (
             f"✅ Deterministic checks: ALL GOOD ({ran} lanes). "
-            f"⚠️ {names}: NOT RUN — SKIPPED, needs setup: {not_validated[0].setup_hint} "
+            f"⚠️ {names}: {phrase}, needs setup: {not_validated[0].setup_hint} "
             "(not yet validated)."
         )
     return f"✅ ALL GOOD — every check passed ({len(lanes)} lanes)."

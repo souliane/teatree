@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Container-wrapping `t3` entry (#3232). Runs the teatree CLI inside the headless
+# Docker stack so an operator needs no host Python / uv / py3.13 / prek / direnv /
+# ttyd — `t3 <args>` on the host executes transparently in a container that shares
+# the live DB, credential, and session mounts. `t3 setup` installs a shell alias
+# pointing here; `t3 doctor` verifies the wiring.
+#
+# Prefers `exec` into the already-running worker (fast; shares the live state).
+# Falls back to a one-off `run --rm` container (worker role, same mounts) when the
+# stack is down, overriding the role-dispatch entrypoint to run the CLI directly.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "deploy/t3: docker CLI not found on PATH — the containerized t3 workflow needs Docker. See deploy/README.md" >&2
+    exit 127
+fi
+
+compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+
+# A running worker is the cheapest, most consistent runtime — exec into it. `-T`
+# is added when stdin is not a TTY (a script/pipe) so compose does not fail trying
+# to allocate one; an interactive shell keeps the TTY for prompts/pagers.
+if [ -n "$(compose ps --status running --quiet "$SERVICE" 2>/dev/null)" ]; then
+    if [ -t 0 ]; then
+        exec compose exec "$SERVICE" t3 "$@"
+    fi
+    exec compose exec -T "$SERVICE" t3 "$@"
+fi
+
+# Nothing running — one-off container on the shared volumes. `--entrypoint t3`
+# bypasses the TEATREE_ROLE dispatcher so we run the CLI directly, not a server.
+exec compose run --rm --no-deps --entrypoint t3 "$SERVICE" "$@"

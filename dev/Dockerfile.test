@@ -1,12 +1,67 @@
-FROM ubuntu:latest AS base
+# Pin the base by digest, not the floating `latest`/`24.04` tag: an unpinned
+# base moves its digest several times a month, and every move cache-busts every
+# layer below — so all 6 CI test shards do the full apt+node+uv rebuild at once
+# (souliane/teatree CI-speedup). Digest = ubuntu:24.04 as of 2026-07-16. Bump it
+# deliberately (dependabot's docker ecosystem can automate this).
+#
+# The claude CLI is likewise pinned, to the generation `claude-agent-sdk` BUNDLES —
+# the binary the eval runner actually execs, so the two CLIs in one image cannot
+# disagree. The DEPLOYED runtime image pins a newer one on purpose; both tiers are
+# guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS base
 RUN apt-get update -qq && \
-    apt-get install -y -qq ca-certificates curl direnv git jq >/dev/null 2>&1 && \
+    apt-get install -y -qq ca-certificates curl direnv git jq sqlite3 >/dev/null 2>&1 && \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - >/dev/null 2>&1 && \
     apt-get install -y -qq nodejs >/dev/null 2>&1 && \
-    npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 && \
+    npm install -g @anthropic-ai/claude-code@2.1.169 >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -m testuser
 USER testuser
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- -q 2>/dev/null
 ENV PATH="/home/testuser/.local/bin:$PATH"
 WORKDIR /app
+
+# Bake the interpreter + LOCKED third-party dependencies INTO the image so each
+# CI shard no longer resolves + installs the whole dependency set cold from PyPI
+# at `docker run` time — that per-shard cold sync (6x every run) was the bulk of
+# the ~485s test-shard critical path. Only pyproject.toml + uv.lock are needed to
+# resolve the graph; `--no-install-project` bakes third-party deps but NOT the
+# teatree project itself, which is installed editable from the bind-mounted /app
+# at runtime (seconds). CI tags this image `hash(dev/Dockerfile.test, uv.lock)`,
+# so this baked layer and the lockfile can never drift — a lock bump mints a new
+# tag and rebuilds. The baked venv lives OUTSIDE /app so the runtime
+# `-v "$PWD":/app` bind mount does not shadow it. `dev/docker-compose.yml`,
+# `dev/test-matrix.sh`, and src/teatree/cli/eval/docker.py override
+# UV_PROJECT_ENVIRONMENT for their own flows and are unaffected.
+ENV UV_PROJECT_ENVIRONMENT=/home/testuser/venv \
+    UV_PYTHON_INSTALL_DIR=/home/testuser/.local/uv-python
+COPY --chown=testuser:testuser pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project --group shard -p 3.13
+
+# ============================================================
+# `lint` stage — bakes prek's per-hook environments (node/go/python
+# toolchains, one per pinned repo+rev in .pre-commit-config.yaml) into the
+# image so CI's `lint` job pulls a ready image instead of cold-installing every
+# hook env at `prek run` time — that cold install (~74s) was the bulk of the
+# bare-runner lint job's ~161s prek step (souliane/teatree CI-speedup).
+# PREK_HOME lives OUTSIDE /app (same trick as UV_PROJECT_ENVIRONMENT above) so
+# the lint job's `-v "$PWD":/app` bind mount can never shadow the baked envs.
+# `install-hooks` needs a real git repo, so a throwaway one is init'd here and
+# removed after baking — it is never the checkout the lint job actually lints
+# (that comes from the bind mount at runtime). `safe.directory /app` is baked
+# because the lint job bind-mounts the HOST checkout (owned by the runner's
+# uid) into this image's `testuser` (a different uid); without it every hook
+# that shells out to git (banned-terms, blueprint-sync, gate-relaxation, the
+# `no-commit-on-merged-branch` safety hooks, …) hits git's dubious-ownership
+# refusal. This stage is tagged on a WIDER key than the `-test` tag above
+# (`hash(dev/Dockerfile.test, uv.lock, .pre-commit-config.yaml)`) so a hook-rev
+# bump alone mints a fresh tag — baked envs can never silently go stale. A tag
+# MISS just degrades gracefully: prek cold-installs whichever repo changed.
+# ============================================================
+FROM base AS lint
+ENV PREK_HOME=/home/testuser/.prek
+COPY --chown=testuser:testuser .pre-commit-config.yaml ./
+RUN git init -q . && \
+    git config --global --add safe.directory /app && \
+    uv run --no-sync prek install-hooks && \
+    rm -rf .git

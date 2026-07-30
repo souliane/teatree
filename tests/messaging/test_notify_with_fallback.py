@@ -1,6 +1,6 @@
 """Tests for the verified-delivery notify wrapper (#1181).
 
-``notify_with_fallback`` tries the canonical :func:`teatree.notify.notify_user`
+``notify_with_fallback`` tries the canonical :func:`teatree.core.notify.notify_user`
 path first and, when that path does not deliver (the #1173 silent-rc=1
 class), automatically falls back to a direct messaging-backend send, then
 **round-trip verifies** delivery via ``fetch_message`` and records which
@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.messaging.notify_with_fallback import NotifyTransport, notify_with_fallback
 
@@ -46,6 +47,7 @@ class TestPrimaryDelivers:
                 "the body",
                 kind="info",
                 idempotency_key="k-primary-ok",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -67,6 +69,7 @@ class TestFallbackFires:
                 "the body",
                 kind="info",
                 idempotency_key="k-fallback",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -94,6 +97,7 @@ class TestFallbackFires:
                 "the body",
                 kind="info",
                 idempotency_key="k-observe",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -115,13 +119,16 @@ class TestFallbackVerificationGuards:
                 "the body",
                 kind="info",
                 idempotency_key="k-unverified",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
         assert result.delivered is False
         assert result.transport == NotifyTransport.NONE
         row = BotPing.objects.get(idempotency_key="k-unverified")
-        assert row.status == BotPing.Status.FAILED
+        # SENT_UNVERIFIED (not FAILED): the send returned a ts, so the DM almost
+        # certainly landed — a NON-recoverable state that must never re-post.
+        assert row.status == BotPing.Status.SENT_UNVERIFIED
 
     def test_fallback_post_failure_is_a_hard_failure(self) -> None:
         backend = _delivering_backend()
@@ -134,6 +141,7 @@ class TestFallbackVerificationGuards:
                 "the body",
                 kind="info",
                 idempotency_key="k-postfail",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -151,11 +159,67 @@ class TestFallbackVerificationGuards:
                 "the body",
                 kind="info",
                 idempotency_key="k-nobackend",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
         assert result.delivered is False
         assert result.transport == NotifyTransport.NONE
+
+
+class TestFallbackClaimGuardsDoublePost:
+    def test_fresh_sending_claim_blocks_a_second_fallback_post(self) -> None:
+        """A concurrent fallback holding a fresh SENDING claim blocks a duplicate post."""
+        backend = _delivering_backend()
+        BotPing.objects.create(
+            idempotency_key="k-race",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENDING,
+            text="the body",
+        )
+        with (
+            patch(_PRIMARY_TARGET, return_value=False),
+            patch(_FALLBACK_TARGET, return_value=backend),
+            # Force reaching the claim CAS so it — not the recoverable gate — is
+            # the guard under test.
+            patch("teatree.messaging.notify_with_fallback._primary_failure_is_recoverable", return_value=True),
+        ):
+            result = notify_with_fallback(
+                "the body",
+                kind="info",
+                idempotency_key="k-race",
+                audience=NotifyAudience.OWNER_DELIVERY,
+                user_id="U_ME",
+            )
+
+        assert result.delivered is False
+        assert result.transport == NotifyTransport.NONE
+        # The claim CAS stood the second caller down — no duplicate DM.
+        backend.post_message.assert_not_called()
+
+    def test_sent_unverified_row_is_never_reposted(self) -> None:
+        """A SENT_UNVERIFIED row is terminal — a retry never re-posts the sent DM."""
+        backend = _delivering_backend()
+        BotPing.objects.create(
+            idempotency_key="k-uv-retry",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENT_UNVERIFIED,
+            text="the body",
+        )
+        with (
+            patch(_PRIMARY_TARGET, return_value=False),
+            patch(_FALLBACK_TARGET, return_value=backend),
+        ):
+            result = notify_with_fallback(
+                "the body",
+                kind="info",
+                idempotency_key="k-uv-retry",
+                audience=NotifyAudience.OWNER_DELIVERY,
+                user_id="U_ME",
+            )
+
+        assert result.delivered is False
+        backend.post_message.assert_not_called()
 
 
 class TestNoopDoesNotFallBack:
@@ -185,6 +249,7 @@ class TestNoopDoesNotFallBack:
                 "the body",
                 kind="info",
                 idempotency_key="k-noop",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 
@@ -215,6 +280,7 @@ class TestNoopDoesNotFallBack:
                 "the body",
                 kind="info",
                 idempotency_key="k-failed-transport",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
 

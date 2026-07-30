@@ -9,6 +9,8 @@ signal kind routes to; the dispatcher is the *order* the maps are consulted.
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
+
 ActionKind = Literal["statusline", "agent", "webhook", "mechanical"]
 type ActionPayload = dict[str, Any]
 
@@ -27,6 +29,11 @@ AGENT_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "t3:reviewer",
     "reviewer_pr.unreviewed": "t3:reviewer",
     "reviewer_pr.approval_dismissed": "t3:reviewer",
+    # #3569: the Claude self-PR review fallback runs as the SAME ``t3:reviewer``
+    # sub-agent a colleague review uses. The ``ClaudeSelfPrReviewScanner`` payload
+    # carries ``self_pr=True``, which routes ``persistence._handle_reviewer`` to its
+    # self-PR branch (per-SHA ``CodexReviewMarker`` dedup + reviewing Task).
+    "self_pr_review.dispatch": "t3:reviewer",
     # #1295 cap D: a failing MR/PR routes to the debug agent. Mirrored
     # into the statusline (via _DUAL_DISPATCH) so the user sees the red
     # MR even when the agent's dispatch is gated by the
@@ -43,13 +50,12 @@ AGENT_BY_KIND: dict[str, str] = {
     # ``RedCardSignal`` row id so the orchestrator can stamp the filed
     # issue URL back onto the row via ``RedCardSignal.link_issue``.
     "red_card.signal": "t3:orchestrator",
-    # #1554: a newly-claimed auto-implement issue routes to the orchestrator
-    # as a MAKER-side kickoff — it starts the normal maker pipeline for the
-    # claimed issue. It issues no MergeClear and gains no new merge authority
-    # (the §17.4 maker≠checker boundary is untouched). Mirrored into the
-    # statusline below so the user sees the claimed issue without waiting on
-    # the agent.
-    "issue_implementer.claimed": "t3:orchestrator",
+    # #3634: a newly-admitted issue routes to the orchestrator as a MAKER-side
+    # kickoff — it starts the normal maker pipeline. It issues no MergeClear and
+    # gains no new merge authority (the §17.4 maker≠checker boundary is
+    # untouched). Mirrored into the statusline below so the user sees the
+    # admitted issue without waiting on the agent.
+    "issue_intake.admitted": "t3:orchestrator",
 }
 
 STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
@@ -60,10 +66,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.dm": "action_needed",
     "slack.review_intent": "action_needed",
     "red_card.signal": "action_needed",
-    "assigned_issue.ready": "action_needed",
-    # #1554: a claimed auto-implement issue is in-flight maker work the user
-    # should see surfaced while the orchestrator picks it up.
-    "issue_implementer.claimed": "action_needed",
+    # #3634: an admitted issue is in-flight maker work the user should see
+    # surfaced while the orchestrator picks it up.
+    "issue_intake.admitted": "action_needed",
+    # #3841 board janitor. Emitted ONLY per APPLIED transition (a run that changed
+    # nothing is silent), so it is the record of cards teatree moved on its own — a
+    # completed action, not a request, hence in_flight rather than action_needed.
+    "board.reconciled": "in_flight",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
     "ticket.stale": "action_needed",
@@ -81,6 +90,9 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "incoming_event.merge_blocked": "action_needed",
     "incoming_event.merge_escalation": "action_needed",
     "incoming_event.recorded": "in_flight",
+    # A captured inbound DIRECTIVE (north-star PR-7) surfaces for the operator — a new
+    # self-modification directive awaits interpretation + human ratification.
+    "incoming_event.directive_captured": "action_needed",
     # #128 resource-pressure scanner — WARN-band advisories and any
     # cleanup failure surface in action_needed; the freeing itself routes
     # through the mechanical handler below. ``ram_kill_candidate`` is
@@ -89,12 +101,25 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
-    # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
-    # review; the completion path routes through the mechanical handler below.
-    "todo.orphaned": "action_needed",
+    # #129 task-sweep — an orphaned (unverifiable) teatree task surfaces for
+    # operator review; the completion path routes through the mechanical handler below.
+    "task.orphaned": "action_needed",
+    # Directive 32's weekly skim: the question it records asks the owner which memories
+    # to promote and which to drop, so the signal IS a pending owner decision — the
+    # generic in_flight fallback would file it under work-in-progress instead.
+    "memory.skim_promotable": "action_needed",
+    # The recurring question digest exists BECAUSE the first posts (the in_flight
+    # ``deferred_question.mirrored`` above) did not get an answer, so the nag is the
+    # escalation and belongs where the owner looks for what they owe.
+    "deferred_question.resurfaced": "action_needed",
     # Only the CI-green-gate skips reach here (see is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
+    # #3901 The clone pulled new code its control DB cannot serve and the reconcile
+    # could not fix it: the claim path is refusing work until a human acts, so this
+    # must be visible rather than dropped with the rest of the self_update family
+    # (exempted from the prefix drop in ``is_statusline_dropped``, like the CI skip).
+    "self_update.schema_behind": "action_needed",
     # Operator config gap, not per-MR bookkeeping — exempted from the drop below.
     "review_request_merge_react.missing_scope": "action_needed",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
@@ -110,6 +135,20 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "pr_sweep.flag_no_review": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
     "pr_sweep.flag_mergeable": "action_needed",
+    # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
+    # duplicate-scope drift the factory was blind to until a human asked. Each
+    # finding needs an operator decision (salvage/push/dedup), and an errored
+    # sweep (``probe_error``) fails closed to a surfaced finding — both land in
+    # action_needed so orphaned work is never silently green.
+    "workstate.drift": "action_needed",
+    "workstate.probe_error": "action_needed",
+    # #3658 owner-DM hygiene sweep. Emitted ONLY when the pass actually resolved
+    # something (a pass with nothing to do is silent), so it is the record of
+    # threads teatree closed on the owner's behalf — they must see that it
+    # happened rather than find questions silently gone. It reports a COMPLETED
+    # action, never a request, so it renders in ``in_flight`` rather than
+    # crowding ``action_needed``.
+    "dm_sweep.resolved": "in_flight",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -128,9 +167,15 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "outbound.",
     "review_nag.",
     "review_request_merge_react.",
+    # The review-DONE ack is the same shape as its merge-react sibling: the
+    # reaction IS the user-visible outcome, posted on the colleague's broadcast.
+    # Re-rendering it as a statusline row would duplicate a signal the user
+    # already sees in Slack, once per tick until the window closes.
+    "review_done_ack.",
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
+    "triage_assessor.",
     "backlog_sweep.",
     # #2190 the idle reaper + queue drainer route to mechanical handlers; their
     # bookkeeping signals must not flood the statusline (a slow drain emits a
@@ -170,10 +215,9 @@ DUAL_DISPATCH: frozenset[str] = frozenset(
         # #1130: the orchestrator runs AND we mirror the RED CARD into the
         # statusline so the user sees the pending corrective-action workflow.
         "red_card.signal",
-        # #1554: the orchestrator runs (maker-side kickoff) AND we mirror the
-        # claimed issue into the statusline so the user sees the in-flight
-        # auto-implement work.
-        "issue_implementer.claimed",
+        # #3634: the orchestrator runs (maker-side kickoff) AND we mirror the
+        # admitted issue into the statusline so the user sees the in-flight work.
+        "issue_intake.admitted",
         # #1295 cap D: the t3:debug agent runs AND we mirror the failed
         # PR into the statusline so the user sees the red MR even when
         # the ledger idempotency gate suppresses the agent dispatch on
@@ -227,9 +271,9 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #128 resource-pressure CRITICAL → mechanical freeing pass (allow-list
     # cache purge / idle-container stop; flag-gated worktree GC + SIGTERM).
     "resource.cleanup_needed": ("mechanical", "free_resources"),
-    # #129 TODO-sweep — a task whose artifact is terminal → the mechanical
+    # #129 task-sweep — a teatree task whose artifact is terminal → the mechanical
     # handler RE-checks then completes it (never bulk, never on a stale read).
-    "todo.completion_detected": ("mechanical", "todo_completion"),
+    "task.completion_detected": ("mechanical", "task_completion"),
     # #2122 issue-disposition triage — a high-confidence DEAD issue
     # (already-shipped / exact-duplicate / obsolete) → the mechanical handler
     # closes it idempotently with an audit-trail comment. Never an agent: the
@@ -240,4 +284,52 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # are mechanical-only (re-verify live state, never an agent).
     "local_stack.reap_idle": ("mechanical", "reap_idle_stack"),
     "local_stack.queue_acquire": ("mechanical", "drain_stack_queue_item"),
+    # souliane/teatree#2949 snapshot warmer — a stale reference-DB snapshot →
+    # mechanical restore+migrate+snapshot refresh, out-of-band from any
+    # ticket-critical-path provision.
+    "snapshot_warmer.refresh_needed": ("mechanical", "refresh_snapshot"),
+    # Directive #2 daily control-DB backup — a due backup → mechanical
+    # snapshot + keep-last-N-days retention prune, off the tick. Mechanical-only
+    # (the scanner flags cadence; the executor writes the artifact), never an agent.
+    "db_backup.due": ("mechanical", "run_db_backup"),
+    # #3201 PR-3a CI-eval self-healing loop — open heal sessions to advance → the
+    # mechanical observe pass (dispatch a CI eval, poll, GREEN / HALT + escalate).
+    # Mechanical-only (the scanner flags open sessions; the executor advances the
+    # durable FSM), never an agent — the observe loop writes no fix.
+    "ci_eval_heal.advance": ("mechanical", "advance_ci_eval_heal"),
 }
+
+
+def _mechanical_agent_zones() -> frozenset[str]:
+    """The agent zones the mechanical table routes to (e.g. ``t3:e2e``, ``t3:coder``).
+
+    A handful of ``MECHANICAL_BY_KIND`` rows are ``("agent", <zone>)`` — a
+    scanner that mechanically classifies work but hands the *fix* to a phase
+    agent (failed-E2E → ``t3:e2e``, skill-drift → ``t3:coder``). They are agent
+    producers exactly like ``AGENT_BY_KIND``, so :data:`AGENT_ZONES` folds them
+    in structurally rather than re-listing the zones.
+    """
+    return frozenset(zone for kind, zone in MECHANICAL_BY_KIND.values() if kind == "agent")
+
+
+#: Every agent-dispatch *zone* a ``dispatch_*`` path can emit, derived
+#: structurally from its three producers so a new producer widens this set
+#: automatically: the ``AGENT_BY_KIND`` routes, the ``("agent", zone)`` rows of
+#: ``MECHANICAL_BY_KIND``, and every ``SUBAGENT_BY_PHASE`` value (the per-phase
+#: ``pending_task``/answering/codex targets). This is the PRODUCER side of the
+#: persistence executor contract: ``tests/conformance/test_registry_parity.py``
+#: asserts every zone here is either a ``persistence._ZONE_HANDLERS`` consumer or
+#: a ``PERSISTED_AT_SOURCE_ZONES`` no-op, so a new producer with no consumer
+#: fails CI instead of silently dropping the dispatch.
+AGENT_ZONES: frozenset[str] = (
+    frozenset(AGENT_BY_KIND.values()) | _mechanical_agent_zones() | frozenset(SUBAGENT_BY_PHASE.values())
+)
+
+#: Zones that are persisted *by construction* — the ``pending_task`` re-emission
+#: of rows that already exist as ``Task``s. ``dispatch_pending_task`` resolves a
+#: pending row's ``(role, phase)`` to its agent via ``SUBAGENT_BY_PHASE``, so
+#: every such value is a re-emission whose Task is already in the DB. Persisting
+#: it again is a deliberate no-op (keyed off the carried ``task_id``), never a
+#: silent fallthrough — the parity test proves ``AGENT_ZONES`` is exactly the
+#: union of the handler consumers and this set.
+PERSISTED_AT_SOURCE_ZONES: frozenset[str] = frozenset(SUBAGENT_BY_PHASE.values())

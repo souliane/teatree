@@ -4,10 +4,10 @@ Lifted verbatim from the former monolithic ``tests/test_cli_doctor.py``
 (souliane/teatree#443). No behavior change: same assertions and helpers,
 only relocated under a focused package by concern.
 
-Integration-first per the Test-Writing Doctrine: real ``~/.teatree.toml``
-fixtures and real ``~/.claude/plugins`` filesystem layouts; only the
-unstoppable externals (``shutil.which``, ``editable_info``,
-``print_package_info``) stay mocked.
+Integration-first per the Test-Writing Doctrine: real DB-home ``overlays``
+registry seeds (legacy file tier removed) and real ``~/.claude/plugins``
+filesystem layouts; only the unstoppable externals (``shutil.which``,
+``editable_info``, ``print_package_info``) stay mocked.
 """
 
 import json
@@ -15,18 +15,15 @@ from unittest.mock import patch
 
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 
-from ._shared import _stage_home, _write_teatree_toml
+from ._shared import _seed_overlays, _stage_home
 
 
 class TestShowInfo:
     """``DoctorService.show_info`` pretty-prints environment + overlay state."""
 
-    def test_prints_active_overlay_from_toml(self, tmp_path, monkeypatch, capsys):
+    def test_prints_active_overlay_from_registry(self, tmp_path, monkeypatch, capsys):
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            '[overlays.acme]\nclass = "acme.overlay:AcmeOverlay"\n',
-        )
+        _seed_overlays(tmp_path, monkeypatch, {"acme": {"class": "acme.overlay:AcmeOverlay"}})
         monkeypatch.setenv("T3_OVERLAY_NAME", "acme")
 
         with (
@@ -58,10 +55,7 @@ class TestShowInfo:
         project = tmp_path / "my-overlay"
         project.mkdir()
         (project / "manage.py").write_text('os.environ.setdefault("DJANGO_SETTINGS_MODULE", "myproj.settings")\n')
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            f'[overlays.acme]\npath = "{project}"\n',
-        )
+        _seed_overlays(tmp_path, monkeypatch, {"acme": {"path": str(project)}})
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),
@@ -77,10 +71,7 @@ class TestShowInfo:
     def test_omits_project_path_row_when_none(self, tmp_path, monkeypatch, capsys):
         """When an overlay has no ``project_path``, no second indented path row is printed."""
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            '[overlays.acme]\nclass = "acme.overlay:AcmeOverlay"\n',
-        )
+        _seed_overlays(tmp_path, monkeypatch, {"acme": {"class": "acme.overlay:AcmeOverlay"}})
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),

@@ -46,19 +46,22 @@ never DM, to keep the DM channel quiet.
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
+from teatree.core.merge import CodeHostQuery
 from teatree.core.models.merge_clear import MergeClear
+from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_decision import (
-    classify_checks,
+    classify_sweep_ci,
     find_actionable_clear,
     has_independent_cold_review,
-    pr_authored_by_self,
+    own_or_same_repo,
     pr_ticket_under_external_delivery,
     record_mergeable_notified,
-    red_checks_are_all_repo_state,
+    red_required_all_repo_state,
+    untrusted_merge_provenance,
 )
+from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_types import (
     GH_CONFLICT_MERGE_STATE,
     GH_CONFLICT_MERGEABLE,
@@ -67,10 +70,10 @@ from teatree.loop.scanners.pr_sweep_types import (
     REPO_STATE_CHECK_NAMES,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
-    CheckResult,
     MergeAttempt,
     PrSummary,
 )
+from teatree.utils.pr_ref import PrRef
 
 __all__ = [
     "GH_CONFLICT_MERGEABLE",
@@ -80,79 +83,12 @@ __all__ = [
     "REPO_STATE_CHECK_NAMES",
     "REQUIRED_CHECK_NAME",
     "UV_AUDIT_CHECK_NAME",
-    "CheckResult",
     "MergeAttempt",
     "PrSummary",
     "PrSweepScanner",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class PrApiClient(Protocol):
-    """Adapter over ``gh`` used by the scanner — mockable in tests.
-
-    Two methods only: list open PRs on a repo, and fetch the per-PR
-    detail block (head SHA, draft, reviews, checks). The implementation
-    shells out to ``gh`` with an optional ``GH_TOKEN`` override so each
-    overlay can hit its private repos under its own PAT.
-    """
-
-    def list_open_prs(self, *, slug: str) -> list[PrSummary]: ...  # pragma: no branch
-
-    def main_check_failed(self, *, slug: str, check_name: str) -> bool: ...  # pragma: no branch
-
-    def merge_pr_squash_bound(
-        self,
-        *,
-        slug: str,
-        pr_id: int,
-        expected_head_oid: str,
-    ) -> tuple[bool, str]: ...  # pragma: no branch
-
-
-@runtime_checkable
-class MergeKeystone(Protocol):
-    """Adapter over ``call_command('ticket', 'merge', ...)`` — mockable."""
-
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
-        """Return ``(merged, merged_sha, error)`` — ``error`` is the rejection reason."""
-        ...  # pragma: no branch
-
-
-@runtime_checkable
-class ReviewDispatcher(Protocol):
-    """Enqueue ONE claimable reviewing task for a no-review own PR (#68) — mockable.
-
-    The production adapter records an
-    :class:`teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row
-    (deduped per ``(slug, pr_id, head_sha)``) and creates the
-    ``Task(phase=reviewing)`` the loop self-pump dispatches to ``t3:reviewer``.
-    Returns ``True`` when a new task was armed, ``False`` when a task for this
-    head already exists (the dedup no-op).
-    """
-
-    def enqueue(
-        self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str
-    ) -> bool: ...  # pragma: no branch
-
-
-@runtime_checkable
-class MergeNotifier(Protocol):
-    """Post a Slack DM on an actual merge, and on a flag-level signal.
-
-    ``announce`` is the merge acceptance gate (a DM only when a merge
-    lands). ``flag`` is the optional Slack mirror for a flag-level signal
-    the scanner refuses to act on autonomously — a conflicted open PR, or
-    a green solo-overlay PR with no recorded independent cold-review. The
-    statusline always carries the flag; the Slack DM is the optional
-    escalation rung, mirroring the ``forgotten_merge`` detector ladder.
-    """
-
-    def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None: ...  # pragma: no branch
-
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None: ...  # pragma: no branch
 
 
 @dataclass(slots=True)
@@ -222,21 +158,61 @@ class PrSweepScanner:
     #: too, and a colleague's PR must never be auto-scheduled for review. Empty
     #: means no PR is confirmable as ours, so nothing is armed (fail closed).
     self_identities: tuple[str, ...] = ()
+    #: Bot→user DM seam for a HELD substrate merge (ping-and-hold). ``None`` keeps
+    #: the legacy log-only behaviour; ``scanner_factories`` wires the production
+    #: ``notify_with_fallback`` adapter so the owner is pinged ONCE per held
+    #: substrate diff (deduped via the BotPing ledger on the per-diff key).
+    substrate_pinger: "substrate.SubstratePinger | None" = None
+    #: #3413: the owner id the headless sweep re-presents as ``--human-authorized``
+    #: for a ``blast_class=substrate`` CLEAR, sourced from
+    #: ``substrate_auto_merge_authorized_by``. Empty (the default) preserves the
+    #: hold-for-owner behaviour verbatim — a substrate CLEAR is never auto-merged;
+    #: the keystone refuses and the sweep pings-and-holds. When set, the sweep
+    #: presents it and (only if EVERY gate passes and the keystone confirms the id
+    #: still equals the configured value) the substrate PR auto-merges + notifies.
+    #: #3648: the solo-overlay bypass reads the same id through
+    #: ``solo_overlay_substrate_authorized``, so both merge paths honour the
+    #: delegation identically.
+    substrate_standing_authorizer: str = ""
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
+        errors: list[ScannerError] = []
         for slug in self.repos:
-            for pr in self._safe_list(slug):
+            try:
+                prs = self._safe_list(slug)
+            except ScannerError as exc:
+                # F5.8: record-and-continue rather than re-raise mid-pass. A
+                # later repo's auth/rate-limit failure must not discard the
+                # merge signals a preceding repo already produced (those merges
+                # have side effects the tick report must surface).
+                errors.append(exc)
+                continue
+            for pr in prs:
                 try:
                     attempt = self._evaluate(pr)
-                except ScannerError:
-                    raise  # auth/rate-limit escalation (#1287) — surface to the dispatcher
+                except ScannerError as exc:
+                    errors.append(exc)
+                    continue
                 except Exception:
                     logger.exception("pr_sweep failed to evaluate %s#%s", slug, getattr(pr, "number", "?"))
                     continue
                 self._log_attempt(attempt)
                 signals.append(_signal_from_attempt(attempt, overlay=self.overlay))
+        if errors and not signals:
+            # Nothing was produced this pass — surface the first recoverable error
+            # to the dispatcher (#1287) so a sustained auth/rate-limit failure is
+            # recorded and DM'd, exactly as before. When signals DID accumulate we
+            # keep them (F5.8) and log the errors instead of discarding the pass.
+            raise errors[0]
+        if errors:
+            logger.warning(
+                "pr_sweep: %d recoverable error(s) during pass, preserving %d accumulated signal(s): %s",
+                len(errors),
+                len(signals),
+                "; ".join(str(exc) for exc in errors),
+            )
         return signals
 
     def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt | None:
@@ -295,9 +271,9 @@ class PrSweepScanner:
         return self._evaluate_with_clear(pr, clear)
 
     def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
-        ci_skip, fallback = self._ci_gate(pr)
+        ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
-            return self._ci_block(pr, reason=ci_skip)
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
         return self._merge(pr=pr, clear=clear, fallback=fallback)
 
     #: Skip reasons whose only failing checks are repo-state checks a rerun
@@ -307,10 +283,10 @@ class PrSweepScanner:
     #: uv-audit-only red whose fix already landed on main.
     _REPO_STATE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
 
-    def _ci_block(self, pr: PrSummary, *, reason: str) -> MergeAttempt:
+    def _ci_block(self, pr: PrSummary, *, reason: str, failing: set[str]) -> MergeAttempt:
         """Convert a CI-red block into ``needs_branch_update`` when a rerun can't fix it (#2045).
 
-        A block whose only failing checks are repo-state checks (uv-audit,
+        A block whose only failing REQUIRED checks are repo-state checks (uv-audit,
         blueprint-cross-pr, …) on a branch that is BEHIND main is the
         rerun-can't-fix case: those checks diff the head against the base, the
         fix already merged to main, and ``gh run rerun --failed`` re-tests
@@ -320,7 +296,7 @@ class PrSweepScanner:
         skip. Every other red (a genuine test failure, or a repo-state red on
         an already-up-to-date branch a rerun CAN clear) stays a plain skip.
         """
-        if reason in self._REPO_STATE_BLOCK_REASONS and pr.behind_main and red_checks_are_all_repo_state(pr.checks):
+        if reason in self._REPO_STATE_BLOCK_REASONS and pr.behind_main and red_required_all_repo_state(failing):
             return self._flag_needs_branch_update(pr)
         return _skip(pr, reason=reason)
 
@@ -334,22 +310,20 @@ class PrSweepScanner:
             url=pr.url,
         )
 
-    def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool]:
-        """Run the shared CI verdict gate; return ``(skip_reason, is_uv_audit_fallback)``.
+    def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
+        """Delegate to :func:`classify_sweep_ci` over the live branch-protection required set.
 
-        ``skip_reason`` is non-``None`` when the PR must not merge (red /
-        pending checks, or a uv-audit-red PR whose ``main`` is clean). When
-        it is ``None`` the second element says whether the merge proceeds on
-        the documented uv-audit fallback path. Shared by the CLEAR path and
-        the solo-overlay bypass so the two gates cannot drift apart.
+        The core green/pending/failed verdict routes through the SAME
+        :func:`classify_required_rollup` the §17.4.3 keystone uses, scoped to the
+        SAME required set (:meth:`CodeHostQuery.required_context_names`) — so the
+        sweep and the keystone can never re-diverge (#12). Shared by the CLEAR path
+        and the solo-overlay bypass so the two gates cannot drift apart.
         """
-        check_verdict = classify_checks(pr.checks)
-        if check_verdict in {"failed", "pending"}:
-            return ("ci_red" if check_verdict == "failed" else "ci_pending"), False
-        fallback = check_verdict == "green_with_uv_audit_red"
-        if fallback and not self._main_uv_audit_red(slug=pr.slug):
-            return "uv_audit_red_but_clean_on_main", False
-        return None, fallback
+        return classify_sweep_ci(
+            list(pr.rollup),
+            CodeHostQuery.for_ref(PrRef(slug=pr.slug, pr_id=pr.number)).required_context_names(),
+            main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug),
+        )
 
     def _evaluate_solo_overlay(self, pr: PrSummary) -> MergeAttempt:
         """Merge a green+clean+cold-reviewed PR on a solo overlay without a CLEAR (#1309).
@@ -364,17 +338,32 @@ class PrSweepScanner:
         only-identity-on-the-repo maker can never self-merge. Once both the
         CI gate and the cold-review gate pass, calls
         :meth:`PrApiClient.merge_pr_squash_bound` — the bound merge runs the
-        §17.4.3 SHA-bind + not-draft + live-CI re-checks via
-        ``execute_bound_merge`` (the keystone CLEAR path can't be used here
-        because it needs a CLEAR row, but the SHA-bind primitive applies
-        without one, so a force-push in the TOCTOU window can no longer slip an
-        unreviewed head through this bypass — #1985).
+        §17.4.3 SHA-bind AND (since #18) the not-draft + FAILED-live-CI
+        re-checks inside ``execute_bound_merge`` itself, so a force-push OR a
+        green→red / open→draft flip in the TOCTOU window between this snapshot
+        and the PUT can no longer slip an unreviewed / broken head through this
+        bypass (the keystone CLEAR path can't be used here because it needs a
+        CLEAR row, but the SHA-bind + re-check floor applies without one —
+        #1985, #18).
+
+        A substrate diff HOLDS unless a standing owner opt-in authorizes it
+        (#3648) — read through the keystone's own
+        :func:`~teatree.core.merge.authorization.substrate_standing_authorization`,
+        so this path and the CLEAR path reach one policy decision for the same
+        PR. The cold-review gate above is unaffected: substrate is a
+        blast-radius sign-off, never a quality gate.
         """
-        ci_skip, fallback = self._ci_gate(pr)
+        ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
-            return self._ci_block(pr, reason=ci_skip)
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr)
+        if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
+            pr=pr,
+            overlay=self.overlay,
+            presented_authorizer=self.substrate_standing_authorizer,
+        ):
+            return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
         ok, merged_sha = self.api.merge_pr_squash_bound(
             slug=pr.slug,
             pr_id=pr.number,
@@ -415,10 +404,10 @@ class PrSweepScanner:
         review and never merges. Every other case (colleague author, behind
         main, red/pending CI) falls through to the existing skip.
         """
-        ci_skip, _fallback = self._ci_gate(pr)
+        ci_skip, _fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
-            return self._ci_block(pr, reason=ci_skip)
-        if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities) or pr.behind_main:
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
+        if not own_or_same_repo(pr, self_identities=self.self_identities) or pr.behind_main:
             return _skip(pr, reason="no_clear_for_head")
         if not record_mergeable_notified(pr=pr, overlay=self.overlay):
             return _skip(pr, reason="no_clear_for_head")
@@ -475,7 +464,7 @@ class PrSweepScanner:
         """
         if not self.auto_review_dispatch or self.review_dispatcher is None:
             return False
-        if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities):
+        if not own_or_same_repo(pr, self_identities=self.self_identities):
             return False
         if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
             return False
@@ -505,9 +494,34 @@ class PrSweepScanner:
             return False
 
     def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
-        merged, merged_sha, error = self.keystone.merge_clear(clear_id=int(clear.pk))
+        # #3413: for a substrate-labeled CLEAR, re-present the owner's standing
+        # delegation as ``--human-authorized`` (sourced from config, empty by
+        # default). Presented ONLY for substrate so the interactive non-substrate
+        # refusal guard is never tripped; the keystone still runs every gate and
+        # only authorizes when the presented id equals the configured value. A
+        # non-substrate CLEAR (or an empty config) presents nothing — byte-identical
+        # to the prior loop-driven merge.
+        standing_authorizer = (
+            self.substrate_standing_authorizer
+            if self.substrate_standing_authorizer and clear.blast_class == MergeClear.BlastClass.SUBSTRATE
+            else ""
+        )
+        merged, merged_sha, error, escalation_kind, standing_delegation_by = self.keystone.merge_clear(
+            clear_id=int(clear.pk), human_authorized=standing_authorizer
+        )
         if merged:
             self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
+            if standing_delegation_by:
+                # "Informed, not asked": the config-sourced standing delegation
+                # auto-merged a substrate PR — DM the owner (PR #, title, blast_class,
+                # CLEAR id, merge SHA, authorizer) once via the BotPing ledger.
+                substrate.ping_substrate_auto_merged(
+                    self.substrate_pinger,
+                    pr=pr,
+                    clear=clear,
+                    authorizer=standing_delegation_by,
+                    merged_sha=merged_sha,
+                )
             return MergeAttempt(
                 slug=pr.slug,
                 pr_id=pr.number,
@@ -516,7 +530,13 @@ class PrSweepScanner:
                 merged_sha=merged_sha,
                 reason="fallback_uv_audit" if fallback else "all_green",
             )
-        if fallback:
+        # Finding 1 (fail-open): the uv-audit-fallback raw-merge must NOT fire for a
+        # substrate CLEAR. A substrate change that lands on the fallback path (the
+        # only red check is uv-audit, red on main too) would otherwise raw-merge
+        # here BEFORE the substrate-ping check below, silently bypassing the keystone
+        # hold. Gate the escalation on the CLEAR not being substrate; a substrate
+        # CLEAR falls through to ping-and-hold instead.
+        if fallback and not clear.is_substrate():
             ok, fallback_sha = self.api.merge_pr_squash_bound(
                 slug=pr.slug,
                 pr_id=pr.number,
@@ -532,6 +552,8 @@ class PrSweepScanner:
                     merged_sha=fallback_sha,
                     reason="fallback_uv_audit_gh",
                 )
+        if escalation_kind == "substrate" or clear.is_substrate():
+            substrate.ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
@@ -555,6 +577,13 @@ def _precondition_skip_reason(pr: PrSummary) -> str | None:
         return "draft"
     if pr.has_changes_requested:
         return "changes_requested"
+    # #3244: a FORK / cross-repo PR always holds for a human, even from a trusted
+    # author; unreported provenance fails closed to the identity+visibility author
+    # check. This rung fires AHEAD of the CLEAR lookup and the solo-overlay
+    # ``merge_pr_squash_bound`` fallback (which would otherwise auto-merge OUTSIDE
+    # the keystone provenance gate). The keystone refuses this same merge too.
+    if untrusted_merge_provenance(pr):
+        return "fork_requires_human_approval" if pr.same_repo is False else "untrusted_author_public_repo"
     return None
 
 

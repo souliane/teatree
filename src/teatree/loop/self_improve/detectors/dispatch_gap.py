@@ -11,7 +11,6 @@ silently self-heal — picking the right agent is a judgment call).
 """
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import ClassVar
 
 from django.apps import apps
@@ -20,6 +19,7 @@ from teatree.core.models.task import Task
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
+from teatree.utils.hook_registry import loop_registry_dir
 
 
 def _consolidation_registry_holders() -> list[str]:
@@ -27,14 +27,13 @@ def _consolidation_registry_holders() -> list[str]:
 
     Returns the list of holding ``agent_id`` keys (an empty list when
     the file is missing or unreadable — the safe fail-open).  The
-    registry layout mirrors ``hook_router._actor_key``.
+    registry layout mirrors ``hook_router._actor_key``, and the directory
+    resolves through :func:`loop_registry_dir` — the shared answer that
+    keeps this reader on the file the Django-free writer actually wrote.
     """
-    import json  # noqa: PLC0415
-    import os  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"
-    registry_path = base / "consolidation-registry.json"
+    registry_path = loop_registry_dir() / "consolidation-registry.json"
     if not registry_path.is_file():
         return []
     try:

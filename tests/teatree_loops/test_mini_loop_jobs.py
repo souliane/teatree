@@ -36,7 +36,6 @@ def stub_backend() -> Any:
     backend.identities = ("alice",)
     backend.ready_labels = ()
     backend.exclude_labels = ()
-    backend.auto_start_assigned_issues = False
     backend.max_concurrent_auto_starts = 1
     backend.stale_threshold_days = 3
     backend.external_db = None
@@ -58,7 +57,17 @@ class TestDispatchLoopBuildJobs:
     def test_returns_global_jobs(self) -> None:
         jobs = DISPATCH_LOOP.build_jobs()
         names = {j.scanner.name for j in jobs}
-        assert names == {"pending_tasks", "incoming_events", "outbound_audit", "undelivered_notify"}
+        assert names == {
+            "pending_tasks",
+            "incoming_events",
+            "outbound_audit",
+            "pending_pr_drain",
+            "undelivered_notify",
+            "deferred_question_poster",
+            "question_backlog_nag",
+            "waiting_digest",
+            "work_state",
+        }
 
 
 class TestArchReviewLoopBuildJobs:
@@ -155,11 +164,13 @@ class TestInboxLoopBuildJobs:
 
     def test_single_overlay_messaging_path(self, stub_messaging: Any) -> None:
         jobs = INBOX_LOOP.build_jobs(messaging=stub_messaging)
-        # mentions, dms, review_intent, red_card
-        assert len(jobs) == 4
+        # mentions, dms, ask-reply, review_intent, red_card, pr_approvals — the shared #23 SSOT
+        assert len(jobs) == 6
         names = {j.scanner.name for j in jobs}
         assert "slack_mentions" in names
+        assert "askuserquestion_reply" in names
         assert "red_card" in names
+        assert "pr_approvals" in names
 
     def test_with_notion_client_only(self) -> None:
         notion = MagicMock()
@@ -176,14 +187,12 @@ class TestFollowupLoopBuildJobs:
     def test_returns_empty_with_no_inputs(self) -> None:
         assert FOLLOWUP_LOOP.build_jobs() == []
 
-    def test_host_only_path(self) -> None:
-        host = MagicMock()
-        jobs = FOLLOWUP_LOOP.build_jobs(host=host, ready_labels=("ready",))
-        assert len(jobs) == 1
-        assert jobs[0].scanner.name == "assigned_issues"
+    def test_host_only_path_builds_nothing(self) -> None:
+        """Intake moved to the unified ``issue_intake`` scanner (#3634); followup is nag-only."""
+        assert FOLLOWUP_LOOP.build_jobs(host=MagicMock(), ready_labels=("ready",)) == []
 
     def test_backends_path(self, stub_backend: Any) -> None:
-        # No hosts on the stub → no AssignedIssuesScanner jobs.
+        # No hosts on the stub → no per-host scanner jobs.
         # messaging None → no ReviewNagScanner / ReviewRequestMergeReactScanner job.
         jobs = FOLLOWUP_LOOP.build_jobs(backends=[stub_backend])
         assert jobs == []

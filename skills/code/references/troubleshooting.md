@@ -20,7 +20,7 @@
 
 ## Doc-Only "Fix" Propagates a Broken CLI Reference
 
-- **Symptom:** A docs-only commit replaces a stale bare CLI invocation with an overlay-prefixed form (e.g. retargeting `t3 <overlay> lifecycle setup`) but every reader who copy-pastes the new form still gets `Unknown command`.
+- **Symptom:** A docs-only commit replaces a stale bare CLI invocation with an overlay-prefixed form (e.g. retargeting a bare `lifecycle setup` to its `t3 <overlay> …` form) but every reader who copy-pastes the new form still gets `Unknown command`.
 - **Cause:** The retarget assumed the new command exists because the old one used to. When the underlying Django command (or bridge entry) was deleted in a prior PR, prose retargeting alone can't make the new invocation work — it just relocates the broken reference.
 - **Fix:** Before shipping a doc-only retarget of a CLI invocation, smoke-test the new form with `t3 <overlay> <group> <sub> --help`. If the call fails, the docs aren't stale — the CLI is broken, and the right scope is "fix the CLI bridge **and** the docs in one PR".
 - **Prevention:** Treat "stale `t3` reference" findings as a tripwire, not a docs typo. Always check `cli/overlay.py:DJANGO_GROUPS` and `core/management/commands/` before shipping the retarget.
@@ -34,16 +34,16 @@
 
 ## Overlay Discovery Returns Empty Despite Config
 
-- **Symptom:** `t3 info` shows no installed overlays even though `~/.teatree.toml` has `[overlays.*]` sections.
-- **Cause:** `discover_overlays()` was only reading entry points, not the toml config.
-- **Fix:** `discover_overlays()` now reads `[overlays.<name>]` sections from `~/.teatree.toml` first, then falls back to entry points. Toml entries win on name conflict.
-- **Prevention:** When adding new discovery sources, test with both the toml config and entry points.
+- **Symptom:** `t3 info` shows no installed overlays even though the DB `overlays` registry row has overlay entries.
+- **Cause:** `discover_overlays()` was only reading entry points, not the DB registry row.
+- **Fix:** `discover_overlays()` now reads the DB `overlays` registry row first, then falls back to entry points. DB registry entries win on name conflict.
+- **Prevention:** When adding new discovery sources, test with both the DB registry row and entry points.
 
 ## prek Discovers Template Directory as Sub-Project
 
 - **Symptom:** `uv run prek run pytest` collects 0 tests and exits with code 5, blocking all commits. Output shows `Running hooks for src/teatree/templates/overlay:`.
-- **Cause:** prek auto-discovers sub-projects by scanning for `.pre-commit-config.yaml`. The scaffold template directory had a real `.pre-commit-config.yaml` that prek treated as a project root. The `always_run: true` pytest hook then ran in the template scope (0 tests → fail), and `fail_fast: true` prevented the root scope from ever running.
-- **Fix:** Rename `src/teatree/templates/overlay/.pre-commit-config.yaml` to `.pre-commit-config.yaml.tmpl`. Update `_copy_config_templates()` in `cli.py` to map `.tmpl` → `.yaml` when scaffolding.
+- **Cause:** prek auto-discovers sub-projects by scanning for `.pre-commit-config.yaml`. A real config file under `src/teatree/templates/overlay/` is treated as a project root, so the `always_run: true` pytest hook runs in the template scope (0 tests → fail) and `fail_fast: true` stops the root scope from running at all.
+- **Fix:** Give every scaffold template a `.tmpl` suffix — the directory ships `ci.yml.tmpl` and `pyproject.toml.tmpl` — and map `.tmpl` → the real filename at scaffold time in `src/teatree/overlay_init/generator.py`.
 - **Prevention:** Never put real config files (`.pre-commit-config.yaml`, `pyproject.toml`) in template directories. Use `.tmpl` suffix for all template files that prek or other tools might auto-discover.
 
 ## Complexity Suppressions Are Not Fixes

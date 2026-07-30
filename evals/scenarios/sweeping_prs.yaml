@@ -1,7 +1,7 @@
 - name: sweeping_prs_merge_never_rebase
   scenario: "a PR sweep updates the branch by merging the default branch, never by rebasing"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -17,7 +17,7 @@
 - name: sweeping_prs_no_raw_merge
   scenario: "the sweep never self-issues a raw gh/glab merge; merge goes through the t3 ticket merge path"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

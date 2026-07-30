@@ -11,14 +11,17 @@ classifier and a fake code host, so Pass 2 is fully testable without an LLM and
 without a live forge.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.loops.dream.merge import BindingConflict
 from teatree.loops.dream.promote_memory import (
     MemoryDisposition,
+    file_binding_reconciliation_tickets,
     file_core_gap_tickets,
     retire_resolved_memories,
     triage_disposition,
@@ -45,10 +48,14 @@ def _row(
     )
 
 
-def _fake_host(*, created_url: str = "https://github.com/souliane/teatree/issues/9001") -> CodeHostBackend:
+UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
+
+
+def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
     host = MagicMock(spec=CodeHostBackend)
     host.search_open_issues.return_value = []
-    host.create_issue.return_value = {"html_url": created_url}
+    host.get_issue.return_value = {"body": body}
+    host.update_issue.return_value = {"number": 2663}
     return host
 
 
@@ -78,78 +85,197 @@ class TriageDispositionTestCase(TestCase):
 
 
 class FileCoreGapTicketsTestCase(TestCase):
-    """Core-gap rows get a deduped teatree ticket and advance to TICKETED."""
+    """Core-gap rows upsert an umbrella checkbox + schedule a fix — never a triage issue."""
 
-    def test_core_gap_row_files_a_ticket_and_records_the_url(self) -> None:
+    def test_core_gap_row_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
+        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
         row = _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
-        outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
+        # No fresh needs-triage issue is filed — the gap rides the umbrella + a coding task.
+        host.create_issue.assert_not_called()
+        host.update_issue.assert_called_once()
+        assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert Task.objects.filter(phase="coding").exists()
         row.refresh_from_db()
-        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
-        assert row.ticket_url == "https://github.com/souliane/teatree/issues/9001"
-        host.create_issue.assert_called_once()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
 
     def test_user_specific_row_is_classified_and_files_nothing(self) -> None:
         row = _row(destination="feedback/tone.md")
         host = _fake_host()
-        file_core_gap_tickets(host, repo="souliane/teatree")
+        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
         host.create_issue.assert_not_called()
+        host.update_issue.assert_not_called()
 
-    def test_ticket_body_carries_the_cited_mistake(self) -> None:
-        _row(destination="skills/ship/SKILL.md", citation="pushed without the gate, CI went red")
+    def test_checkbox_carries_the_gap_marker(self) -> None:
+        _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
-        file_core_gap_tickets(host, repo="souliane/teatree")
-        _, kwargs = host.create_issue.call_args
-        assert "pushed without the gate" in kwargs["body"]
-        assert "needs-triage" in kwargs["labels"]
+        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        _, kwargs = host.update_issue.call_args
+        assert "<!-- dream-gap k1 -->" in kwargs["body"]
 
-    def test_already_ticketed_row_is_not_refiled(self) -> None:
-        row = _row(destination="skills/ship/SKILL.md")
-        row.classify_core_gap()
-        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
-        host = _fake_host()
-        outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
-        # The TICKETED row is no longer untriaged — nothing is refiled.
-        assert outcomes == []
-        host.create_issue.assert_not_called()
+    def test_already_scheduled_gap_is_not_double_added(self) -> None:
+        existing = "## Open gaps\n- [ ] Workflow gap (dreaming Pass 2): Run the tree-wide ... <!-- dream-gap k1 -->\n"
+        _row(destination="skills/ship/SKILL.md")
+        host = _fake_host(body=existing)
+        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        # The checkbox is already present — no rewrite.
+        host.update_issue.assert_not_called()
 
-    def test_existing_open_issue_is_reused_not_duplicated(self) -> None:
-        row = _row(key="dedup-key", destination="skills/ship/SKILL.md")
-        host = MagicMock(spec=CodeHostBackend)
-        host.search_open_issues.return_value = [
-            {"html_url": "https://github.com/souliane/teatree/issues/77", "body": "<!-- dream-memory-gap dedup-key -->"}
-        ]
-        outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
-        assert outcomes[0].filed is False
-        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/77"
-        row.refresh_from_db()
-        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
-        assert row.ticket_url == "https://github.com/souliane/teatree/issues/77"
-        host.create_issue.assert_not_called()
-
-    def test_banned_term_body_is_withheld_not_filed(self) -> None:
+    def test_banned_term_title_is_withheld_not_promoted(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
         _row(destination="skills/ship/SKILL.md")
         host = _fake_host()
-        with patch("teatree.loops.dream.promote_memory.banned_terms_scanner.scan_text", return_value="customer-name"):
-            outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
+            outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
         assert outcomes[0].filed is False
+        assert outcomes[0].withheld is True
+        host.update_issue.assert_not_called()
+        assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+
+    def test_dry_run_writes_nothing_and_never_strands_the_gap(self) -> None:
+        # F6.1: a preview must NOT advance the disposition. Advancing it before the
+        # dry-run guard moved the row out of untriaged() while its promotion was
+        # skipped, so the gap sat in CORE_GAP_NEEDS_TICKET with no drain — detected but
+        # never fixed. A dry run now leaves the row UNTRIAGED so the next real pass
+        # drains it faithfully, and writes no umbrella edit / task.
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        row = _row(destination="skills/ship/SKILL.md")
+        host = _fake_host()
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA, dry_run=True)
+        row.refresh_from_db()
+        assert outcomes == []
+        assert row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED
+        host.update_issue.assert_not_called()
+        assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+
+    def test_stranded_core_gap_row_is_drained_and_promoted(self) -> None:
+        # F6.1(b): a row a PRIOR pass classified CORE_GAP_NEEDS_TICKET but never
+        # promoted (no ticket recorded) is drained by needs_ticket() and driven onto
+        # the umbrella — so a detected gap can never sit un-promoted forever.
+        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        row = _row(destination="skills/ship/SKILL.md")
+        row.classify_core_gap()  # prior pass left it here with no ticket + no promotion
+        assert not ConsolidatedMemory.objects.untriaged().exists()  # not in the untriaged queue
+        host = _fake_host()
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        assert len(outcomes) == 1
+        assert outcomes[0].filed is True
+        host.update_issue.assert_called_once()
+        assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert Task.objects.filter(phase="coding").exists()
+
+    def test_a_new_core_gap_is_not_double_promoted_in_one_pass(self) -> None:
+        # The needs_ticket() drain reads the queue BEFORE the untriaged loop classifies
+        # a new core gap, so a row classified this pass is promoted exactly once, never
+        # re-drained into a second outcome.
+        _row(destination="skills/ship/SKILL.md")
+        host = _fake_host()
+        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+        assert len(outcomes) == 1
+
+
+def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bind_two") -> BindingConflict:
+    return BindingConflict(
+        survivor_name=survivor,
+        absorbed_name=absorbed,
+        survivor_path=Path(f"/m/{survivor}.md"),
+        absorbed_path=Path(f"/m/{absorbed}.md"),
+    )
+
+
+class FileBindingReconciliationTicketsTestCase(TestCase):
+    """Two conflicting BINDING memories get a deduped reconciliation ticket (#2723)."""
+
+    def test_conflict_files_a_reconciliation_ticket(self) -> None:
+        host = _fake_host()
+        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert len(outcomes) == 1
+        assert outcomes[0].filed is True
+        _, kwargs = host.create_issue.call_args
+        assert "reconcil" in kwargs["body"].lower()
+        assert "feedback_bind_one.md" in kwargs["body"]
+        assert "feedback_bind_two.md" in kwargs["body"]
+        assert "needs-triage" in kwargs["labels"]
+
+    def test_existing_open_reconciliation_issue_is_reused(self) -> None:
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.return_value = [
+            {
+                "html_url": "https://github.com/souliane/teatree/issues/55",
+                "body": "<!-- dream-binding-reconcile feedback_bind_one+feedback_bind_two -->",
+            }
+        ]
+        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].filed is False
+        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/55"
+        host.create_issue.assert_not_called()
+
+    def test_dedup_key_is_order_independent(self) -> None:
+        # The same pair surfaced with survivor/absorbed swapped dedups to one issue.
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.return_value = [
+            {
+                "html_url": "https://github.com/souliane/teatree/issues/55",
+                "body": "<!-- dream-binding-reconcile feedback_bind_one+feedback_bind_two -->",
+            }
+        ]
+        outcomes = file_binding_reconciliation_tickets(
+            host,
+            repo="souliane/teatree",
+            conflicts=[_conflict(survivor="feedback_bind_two", absorbed="feedback_bind_one")],
+        )
+        assert outcomes[0].filed is False
+        host.create_issue.assert_not_called()
+
+    def test_banned_term_body_is_withheld(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        host = _fake_host()
+        with patch("teatree.loops.dream.promote_memory.banned_terms_scanner.scan_text", return_value="customer-name"):
+            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
         assert outcomes[0].withheld is True
         host.create_issue.assert_not_called()
 
-    def test_dry_run_classifies_but_files_nothing(self) -> None:
-        row = _row(destination="skills/ship/SKILL.md")
+    def test_bare_reference_body_is_withheld(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
         host = _fake_host()
-        file_core_gap_tickets(host, repo="souliane/teatree", dry_run=True)
-        row.refresh_from_db()
-        # The classification still advances (cheap, reversible), but no ticket is filed.
-        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        with patch("teatree.loops.dream.promote_memory.find_bare_references", return_value=["#1234"]):
+            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].withheld is True
+        assert "bare reference" in (outcomes[0].reason or "")
         host.create_issue.assert_not_called()
+
+    def test_dry_run_files_nothing(self) -> None:
+        host = _fake_host()
+        outcomes = file_binding_reconciliation_tickets(
+            host, repo="souliane/teatree", conflicts=[_conflict()], dry_run=True
+        )
+        assert outcomes == []
+        host.create_issue.assert_not_called()
+
+    def test_search_hiccup_does_not_block_filing(self) -> None:
+        # A search error must not block filing — the issue is filed anyway (refile-once
+        # self-corrects on the next pass).
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.side_effect = RuntimeError("forge search down")
+        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9001"}
+        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].filed is True
+        host.create_issue.assert_called_once()
 
 
 class RetireResolvedMemoriesTestCase(TestCase):
@@ -200,3 +326,16 @@ class RetireResolvedMemoriesTestCase(TestCase):
         assert retired == []
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+
+    def test_injected_is_resolved_predicate_drives_retirement(self) -> None:
+        # The umbrella reconcile path retires off the gap-fix Ticket's authoritative
+        # MERGED state, not a fragile forge re-read — via an injected predicate.
+        row = _row(destination="skills/ship/SKILL.md")
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/pull/9100")
+        host = MagicMock(spec=CodeHostBackend)
+        host.get_issue.side_effect = AssertionError("the injected predicate must not round-trip the forge")
+        retired = retire_resolved_memories(host, is_resolved=lambda _url: True)
+        assert len(retired) == 1
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED

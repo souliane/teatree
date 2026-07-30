@@ -17,6 +17,7 @@ ac-django hooks) — never leaks into the regression findings.
 
 import json
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 import yaml
@@ -61,7 +62,18 @@ def _declared_rule_ids(config_dir: Path) -> tuple[str, ...]:
     return tuple(ids)
 
 
-def scan_findings(config_dir: Path, root: Path | None = None) -> list[dict]:
+def scan_findings(config_dir: Path, root: Path | None = None, *, paths: Sequence[Path] | None = None) -> list[dict]:
+    """Run the blocking rules over the tree, or only over *paths* when given (#122).
+
+    ``paths=None`` (the default) scans the whole tree under *root* — the CI backstop
+    path, byte-identical to before this kwarg existed. A NON-empty *paths* appends
+    those files as positional args so ast-grep scans ONLY them (the push gate's
+    scoped Engine B). An EMPTY *paths* means "no files in scope" and returns ``[]``
+    WITHOUT invoking ast-grep — an empty positional list would make ast-grep scan
+    the whole tree, the opposite of the intent, so it is short-circuited.
+    """
+    if paths is not None and len(paths) == 0:
+        return []
     base = root or repo_root()
     rule_ids = _declared_rule_ids(config_dir)
     if not rule_ids:
@@ -76,6 +88,7 @@ def scan_findings(config_dir: Path, root: Path | None = None) -> list[dict]:
         "--filter",
         "|".join(rule_ids),
         "--json",
+        *([str(p) for p in paths] if paths is not None else []),
     ]
     result = run_allowed_to_fail(cmd, expected_codes=None, cwd=base, timeout=600)
     stripped = result.stdout.strip()

@@ -1,53 +1,77 @@
-"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, cadence).
+"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, tick, cadence).
 
-Tick-specific tests live in ``teatree_core/test_loop_tick_command.py`` since
-tick is now a Django management command.
+The automated per-loop tick (``t3 loops tick --loop <name>``) lives in
+``teatree_core/test_loops_tick_command.py``. ``t3 loop tick`` here is the restored
+user-manual full-scan diagnostic (autonomous-lane redesign §7) — it delegates to
+the ``loop_tick`` management command, not the master-tick-free ``loops_tick``.
 """
 
+import json
+import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
 from typer.testing import CliRunner
 
-from teatree.cli.loop import _cadence_for_loop_slot, loop_app
-from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
-from teatree.core.models import ConfigSetting
+from teatree.agents import permission_modes
+from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
+from teatree.cli.loop.drain_queue import _drain_cadence_for_loop_slot
+from teatree.cli.loop.intake_loops import intake_loops_command
+from teatree.cli.loop.slack_answer import _slack_answer_cadence_for_loop_slot
+from teatree.config.fleet_policy import OWNER_INTAKE_LOOPS
+from tests._loop_principal_env import pinned_loop_principal
 
 runner = CliRunner()
 
 
+def _seed_config_db(db_path: Path, **rows: object) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestTickCommandDelegation:
-    def test_delegates_to_management_command(self, tmp_path: Path) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick", "--statusline-file", str(tmp_path / "sl.txt")])
+    """``t3 loop tick`` — the restored user-manual full-scan tick (autonomous-lane redesign §7).
 
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loop_tick", statusline_file=str(tmp_path / "sl.txt"))
+    Delegates to the ``loop_tick`` management command (NOT the per-loop
+    ``loops_tick``), so it scans by hand without an owner lease or a ``--loop``.
+    """
 
-    def test_passes_overlay_and_json_flags(self) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick", "--overlay", "myoverlay", "--json"])
-
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loop_tick", overlay="myoverlay", json_output=True)
-
-    def test_no_args_calls_with_empty_kwargs(self) -> None:
+    def test_no_flags_delegates_to_loop_tick(self) -> None:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call_mock,
         ):
             result = runner.invoke(loop_app, ["tick"])
-
         assert result.exit_code == 0
         call_mock.assert_called_once_with("loop_tick")
+
+    def test_flags_forwarded_to_loop_tick(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(
+                loop_app,
+                ["tick", "--overlay", "teatree", "--json", "--statusline-file", "/tmp/sl.txt"],
+            )
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with(
+            "loop_tick", statusline_file="/tmp/sl.txt", overlay="teatree", json_output=True
+        )
 
 
 class TestPendingSpawnCommandDelegation:
@@ -91,7 +115,7 @@ class TestPendingSpawnCommandDelegation:
 
 class TestStatusCommand:
     def test_returns_one_when_no_statusline_file_yet(self, tmp_path: Path) -> None:
-        with patch("teatree.cli.loop.default_path", return_value=tmp_path / "missing.txt"):
+        with patch("teatree.cli.loop.app.default_path", return_value=tmp_path / "missing.txt"):
             result = runner.invoke(loop_app, ["status"])
 
         assert result.exit_code == 1
@@ -100,173 +124,86 @@ class TestStatusCommand:
     def test_emits_file_contents_when_present(self, tmp_path: Path) -> None:
         statusline_file = tmp_path / "sl.txt"
         statusline_file.write_text("running 0.0.1\n→ check 1\n", encoding="utf-8")
-        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
+        with patch("teatree.cli.loop.app.default_path", return_value=statusline_file):
             result = runner.invoke(loop_app, ["status"])
 
         assert result.exit_code == 0
         assert "running 0.0.1" in result.stdout
         assert "check 1" in result.stdout
 
+    def _statusline_with_meta(self, tmp_path: Path, *, rendered_at: float) -> Path:
+        statusline_file = tmp_path / "sl.txt"
+        statusline_file.write_text("t3-teatree 3m · next tick 4m\n", encoding="utf-8")
+        (tmp_path / "tick-meta.json").write_text(
+            f'{{"cadence": 720, "rendered_at": {rendered_at}}}\n', encoding="utf-8"
+        )
+        return statusline_file
 
-class TestCadenceParser:
-    @pytest.mark.parametrize(
-        ("env_value", "expected"),
-        [
-            ("720", "12m"),
-            ("600", "10m"),
-            ("90", "90s"),
-            ("", "12m"),
-            ("garbage", "12m"),
-            ("30", "1m"),  # clamped to 60s minimum, formatted as 1m
-        ],
-    )
-    def test_parses_t3_loop_cadence(self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_LOOP_CADENCE", env_value)
-        assert _cadence_for_loop_slot() == expected
+    def test_prepends_stale_banner_for_frozen_render(self, tmp_path: Path) -> None:
+        statusline_file = self._statusline_with_meta(tmp_path, rendered_at=time.time() - 6 * 3600)
+        with patch("teatree.cli.loop.app.default_path", return_value=statusline_file):
+            result = runner.invoke(loop_app, ["status"])
 
-    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        assert _cadence_for_loop_slot() == "12m"
+        assert result.exit_code == 0
+        assert "statusline STALE" in result.stdout
+        # The frozen content still follows the banner.
+        assert "next tick 4m" in result.stdout
 
+    def test_no_banner_for_fresh_render(self, tmp_path: Path) -> None:
+        statusline_file = self._statusline_with_meta(tmp_path, rendered_at=time.time() - 30)
+        with patch("teatree.cli.loop.app.default_path", return_value=statusline_file):
+            result = runner.invoke(loop_app, ["status"])
 
-class TestCadenceParserDbHome(TestCase):
-    """``loop_cadence_seconds`` is DB-home (#1775): the slot cadence reads the store."""
-
-    @pytest.fixture(autouse=True)
-    def _monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.monkeypatch = monkeypatch
-
-    def test_uses_db_cadence_when_env_unset(self) -> None:
-        # #1036: with no T3_LOOP_CADENCE env, the slot cadence falls back to
-        # the resolved ``loop_cadence_seconds``, not the hardcoded 720 default.
-        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
-        assert _cadence_for_loop_slot() == "1m"
-
-    def test_env_overrides_db_cadence(self) -> None:
-        # #1036: env wins over the resolved DB value (established precedence).
-        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
-        self.monkeypatch.setenv("T3_LOOP_CADENCE", "600")
-        assert _cadence_for_loop_slot() == "10m"
+        assert result.exit_code == 0
+        assert "statusline STALE" not in result.stdout
+        assert "next tick 4m" in result.stdout
 
 
 class TestStartCommand:
-    def test_print_only_emits_slash_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_LOOP_CADENCE", "720")
+    def test_print_only_emits_worker_owned_cadence_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         result = runner.invoke(loop_app, ["start", "--print-only"])
 
         assert result.exit_code == 0
-        # #786 WS3/WS1: the registration prompt drives the tick + atomic
-        # claim-then-spawn flow (claim-next), NOT the retired
-        # pending-spawn/spawn-claim race.
-        assert "/loop 12m " in result.stdout
-        assert "t3 loop tick" in result.stdout
-        assert "t3 loop claim-next" in result.stdout
-        assert "spawn-claim" not in result.stdout
-        assert "T3_LOOP_CADENCE" in result.stdout
+        # PR-28: the worker owns the cadence; the guidance points at the worker status
+        # + per-loop enable/disable, NOT the retired claude-spec cron-mirror path.
+        assert "t3 worker status" in result.stdout
+        assert "t3 loop enable|disable" in result.stdout
+        assert "reactive infra loops" in result.stdout
+        assert "--slot" not in result.stdout
 
     def test_inside_claude_session_falls_back_to_print(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CLAUDECODE", "1")
         result = runner.invoke(loop_app, ["start"])
 
         assert result.exit_code == 0
-        assert "/loop" in result.stdout
+        assert "t3 worker status" in result.stdout
 
-    def test_missing_claude_binary_exits_with_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_claude_binary_exits_with_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
         with (
-            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
-            patch("teatree.cli.loop.shutil.which", return_value=None),
+            patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.app.shutil.which", return_value=None),
         ):
             result = runner.invoke(loop_app, ["start"])
 
         assert result.exit_code == 1
         assert "claude` not found" in result.stdout
-        assert "/loop" in result.stdout
+        assert "t3 worker status" in result.stdout
 
-    def test_spawns_claude_with_register_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_spawns_claude_without_a_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
-        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
         with (
-            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
-            patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.loop.os.execv") as execv_mock,
+            patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.app.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.loop.app.os.execv") as execv_mock,
         ):
             runner.invoke(loop_app, ["start"])
 
         assert execv_mock.call_count == 1
         argv = execv_mock.call_args.args[1]
         assert argv[0] == "/usr/bin/claude"
-        assert argv[1].startswith("/loop 10m ")
-        assert "t3 loop tick" in argv[1]
-        assert "t3 loop claim-next" in argv[1]
-
-
-class TestDedicatedLoopSlots:
-    """`t3 loop start --print-slots` — the dedicated-loop slot generator (#1838).
-
-    Toggle OFF (default) ⇒ the single fat slot (byte-identical to today).
-    Toggle ON ⇒ N dedicated slots, one per dedicated loop, each driving a
-    scoped `t3 loop tick --slot <name>` at the group's cadence.
-    """
-
-    def test_print_slots_off_emits_single_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.loops.dedicated import DEDICATED_LOOPS  # noqa: PLC0415
-
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
-        result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        # Exactly one `/loop` slot line, the fat one.
-        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
-        assert len(slot_lines) == 1
-        assert "t3 loop tick" in slot_lines[0]
-        assert "--slot" not in slot_lines[0]
-        # No dedicated group's scoped tick is emitted in fat mode.
-        for dl in DEDICATED_LOOPS:
-            assert f"--slot {dl.name}" not in result.stdout
-
-    def test_print_slots_on_emits_one_slot_per_dedicated_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.loops.dedicated import DEDICATED_LOOPS  # noqa: PLC0415
-
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "true")
-        result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
-        assert len(slot_lines) == len(DEDICATED_LOOPS)
-        # Every dedicated loop has its own scoped-tick slot.
-        for dl in DEDICATED_LOOPS:
-            assert f"t3 loop tick --slot {dl.name}" in result.stdout
-
-    def test_print_slots_on_uses_each_group_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.loops.dedicated import dedicated_loop_by_name  # noqa: PLC0415
-
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "true")
-        result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        # dispatch=300s → "5m", inbox=60s → "1m", housekeeping=3600s → "1h".
-        assert "/loop 5m Run `t3 loop tick --slot dispatch`" in result.stdout
-        assert "/loop 1m Run `t3 loop tick --slot inbox`" in result.stdout
-        assert "/loop 1h Run `t3 loop tick --slot housekeeping`" in result.stdout
-        # The 600s followup group renders as "10m".
-        followup = dedicated_loop_by_name("followup")
-        assert followup is not None
-        assert followup.cadence_seconds == 600
-        assert "/loop 10m Run `t3 loop tick --slot followup`" in result.stdout
-
-    def test_print_slots_default_off_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
-        with patch("teatree.config.resolution.get_effective_settings") as settings_mock:
-            settings_mock.return_value.dedicated_loops = False
-            settings_mock.return_value.loop_cadence_seconds = 720
-            result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
-        assert len(slot_lines) == 1
-        assert "--slot" not in result.stdout
+        # #2650: no single fat `/loop` slot is passed — the owner hook registers per-loop.
+        assert not any(str(a).startswith("/loop") for a in argv)
 
 
 class TestStartCommandSessionPins:
@@ -277,16 +214,28 @@ class TestStartCommandSessionPins:
     interactive `claude` os.execv argv, NOT into `claude -p` headless.
     """
 
-    def _spawn_argv(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_body: str) -> list[str]:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(config_body, encoding="utf-8")
+    def _spawn_argv(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        session_model: str = "",
+        session_effort: str = "",
+    ) -> list[str]:
+        rows: dict[str, object] = {}
+        if session_model:
+            rows["agent_session_model"] = session_model
+        if session_effort:
+            rows["agent_session_effort"] = session_effort
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, **rows)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.delenv("CLAUDECODE", raising=False)
         monkeypatch.setenv("T3_LOOP_CADENCE", "600")
-        monkeypatch.setattr("teatree.config_agent.CONFIG_PATH", cfg)
         with (
-            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
-            patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.cli.loop.os.execv") as execv_mock,
+            patch("teatree.cli.loop.app._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.app.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.loop.app.os.execv") as execv_mock,
         ):
             runner.invoke(loop_app, ["start"])
         return list(execv_mock.call_args.args[1])
@@ -295,72 +244,84 @@ class TestStartCommandSessionPins:
         argv = self._spawn_argv(
             monkeypatch,
             tmp_path,
-            '[agent]\nsession_model = "fable"\nsession_effort = "xhigh"\n',
+            session_model="opus",
+            session_effort="xhigh",
         )
         assert argv[0] == "/usr/bin/claude"
         assert "--model" in argv
-        assert argv[argv.index("--model") + 1] == "fable"
+        assert argv[argv.index("--model") + 1] == "opus"
         assert "--effort" in argv
         assert argv[argv.index("--effort") + 1] == "xhigh"
-        # The flags precede the /loop register prompt (claude parses flags first).
-        assert argv[-1].startswith("/loop ")
+        # #2650: no fat `/loop` slot — just the binary + pins.
+        assert not any(str(a).startswith("/loop") for a in argv)
 
     def test_only_effort_injected_when_only_effort_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_effort = "max"\n')
+        argv = self._spawn_argv(monkeypatch, tmp_path, session_effort="max")
         assert "--effort" in argv
         assert argv[argv.index("--effort") + 1] == "max"
         assert "--model" not in argv
 
-    def test_only_model_injected_when_only_model_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
+    def test_model_and_default_effort_injected_when_only_model_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # session_effort ships as xhigh, so a model-only config still injects the
+        # default effort alongside the pinned model.
+        argv = self._spawn_argv(monkeypatch, tmp_path, session_model="opus")
         assert "--model" in argv
-        assert argv[argv.index("--model") + 1] == "fable"
-        assert "--effort" not in argv
+        assert argv[argv.index("--model") + 1] == "opus"
+        assert argv[argv.index("--effort") + 1] == "xhigh"
 
-    def test_no_pins_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[teatree]\nmode = "interactive"\n')
+    def test_default_effort_injected_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # No [agent] config → no model pin, but the shipped xhigh effort default
+        # is always injected. The permission mode is pinned regardless.
+        argv = self._spawn_argv(monkeypatch, tmp_path)
         assert "--model" not in argv
-        assert "--effort" not in argv
-        # Byte-for-byte today: just the binary + the register prompt.
-        assert len(argv) == 2
-        assert argv[-1].startswith("/loop ")
+        assert argv[argv.index("--effort") + 1] == "xhigh"
+        # #2650: no fat `/loop` slot — just the binary + pins.
+        assert argv == ["/usr/bin/claude", "--permission-mode", "bypassPermissions", "--effort", "xhigh"]
 
-    def test_fable_session_model_downgrades_to_opus_when_disabled(
+    def test_session_model_passes_through_unchanged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # #2237 removal: no kill-switch downgrade step — session_model is emitted
+        # exactly as configured, whatever value the operator wrote.
+        argv = self._spawn_argv(monkeypatch, tmp_path, session_model="claude-sonnet-5")
+        assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+
+
+class TestStartCommandPinsUnattendedPermissionMode(TestStartCommandSessionPins):
+    """The loop session pins its own permission mode instead of inheriting the operator's.
+
+    `permissions.defaultMode` is a single global key in `~/.claude/settings.json`, and
+    `t3 doctor check` advises setting it to `auto` for the session the operator drives.
+    This session is NOT that session — it runs the autonomous loop, unattended under
+    `autonomous_away`, where a classifier denial has nobody to override it. The pin is
+    what makes the doctor's advice safe to follow, so it must survive every config
+    combination rather than only the configured-`[agent]` path.
+    """
+
+    def test_mode_is_pinned_regardless_of_agent_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        for rows in ({}, {"session_model": "opus"}, {"session_effort": "max"}):
+            argv = self._spawn_argv(monkeypatch, tmp_path, **rows)
+            assert "--permission-mode" in argv, f"unattended session left unpinned for {rows}"
+            assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+    def test_mode_matches_the_headless_lane(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The two unattended lanes must not drift: both read the same constant.
+        argv = self._spawn_argv(monkeypatch, tmp_path)
+        assert argv[argv.index("--permission-mode") + 1] == permission_modes.UNATTENDED
+
+    def test_auto_in_user_settings_cannot_reach_this_session(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # teatree#2237: the kill-switch downgrades the session --model pin too.
-        argv = self._spawn_argv(
-            monkeypatch,
-            tmp_path,
-            '[agent]\nfable_enabled = false\nsession_model = "fable"\n',
+        # The regression this guards: an operator follows the doctor's advice, sets
+        # defaultMode=auto, and silently classifier-gates the autonomous loop.
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(
+            json.dumps({"permissions": {"defaultMode": "auto"}}), encoding="utf-8"
         )
-        assert "--model" in argv
-        assert argv[argv.index("--model") + 1] == "opus"
-
-    def test_fable_full_id_session_model_downgrades_when_disabled(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        argv = self._spawn_argv(
-            monkeypatch,
-            tmp_path,
-            '[agent]\nfable_enabled = false\nsession_model = "claude-fable-5"\n',
-        )
-        assert argv[argv.index("--model") + 1] == "opus"
-
-    def test_fable_session_model_downgrades_to_fallback_override(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        argv = self._spawn_argv(
-            monkeypatch,
-            tmp_path,
-            '[agent]\nfable_enabled = false\nfable_fallback = "sonnet"\nsession_model = "fable"\n',
-        )
-        assert argv[argv.index("--model") + 1] == "sonnet"
-
-    def test_fable_session_model_kept_when_enabled(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # Toggle ON (and absent): the Fable session pin is byte-identical to today.
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
-        assert argv[argv.index("--model") + 1] == "fable"
+        monkeypatch.setenv("HOME", str(home))
+        argv = self._spawn_argv(monkeypatch, tmp_path)
+        assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 class TestStopCommand:
@@ -386,7 +347,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+            pinned_loop_principal("sess-cli"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--json"])
 
@@ -397,7 +358,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+            pinned_loop_principal("sess-cli"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by", "worker-7"])
 
@@ -414,7 +375,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="sess-auto"),
+            pinned_loop_principal("sess-auto"),
         ):
             result = runner.invoke(loop_app, ["claim-next"])
 
@@ -426,7 +387,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value="should-not-be-used"),
+            pinned_loop_principal("should-not-be-used"),
         ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by-session", "sess-explicit"])
 
@@ -438,7 +399,7 @@ class TestClaimNextCommand:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call,
-            patch("teatree.loop.session_identity.current_session_id", return_value=""),
+            pinned_loop_principal(),
         ):
             result = runner.invoke(loop_app, ["claim-next"])
 
@@ -450,10 +411,10 @@ class TestSlackAnswerCadenceParser:
     @pytest.mark.parametrize(
         ("env_value", "expected"),
         [
-            ("20", "20s"),
+            ("20", "20s"),  # a deliberate low override is still honoured
             ("60", "1m"),
-            ("", "20s"),
-            ("garbage", "20s"),
+            ("", "5m"),  # unset → 300s fallback default
+            ("garbage", "5m"),  # invalid → 300s fallback default
             ("5", "15s"),  # clamped to 15s floor
             ("15", "15s"),
         ],
@@ -466,7 +427,7 @@ class TestSlackAnswerCadenceParser:
 
     def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_SLACK_ANSWER_CADENCE", raising=False)
-        assert _slack_answer_cadence_for_loop_slot() == "20s"
+        assert _slack_answer_cadence_for_loop_slot() == "5m"
 
 
 class TestSlackAnswerStartCommand:
@@ -486,6 +447,106 @@ class TestSlackAnswerStartCommand:
         call.assert_called_once_with("loop_slack_answer", json_output=True)
 
 
+class TestDrainQueueCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("30", "30s"),
+            ("60", "1m"),
+            ("", "30s"),
+            ("garbage", "30s"),
+            ("5", "10s"),  # clamped to 10s floor
+            ("10", "10s"),
+        ],
+    )
+    def test_parses_t3_queue_drain_cadence(
+        self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_QUEUE_DRAIN_CADENCE", env_value)
+        assert _drain_cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_QUEUE_DRAIN_CADENCE", raising=False)
+        assert _drain_cadence_for_loop_slot() == "30s"
+
+
+class TestDrainQueueStartCommand:
+    def test_start_emits_the_drain_slot_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_QUEUE_DRAIN_CADENCE", "30")
+        result = runner.invoke(loop_app, ["drain-queue", "start"])
+
+        assert result.exit_code == 0
+        assert "/loop 30s Run `t3 loop drain-queue run`." in result.stdout
+        assert "T3_QUEUE_DRAIN_CADENCE" in result.stdout
+
+    def test_run_delegates_to_management_command(self) -> None:
+        with patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["drain-queue", "run", "--json"])
+
+        assert result.exit_code == 0
+        call.assert_called_once_with("loop_drain_queue", json_output=True)
+
+
+class TestSelfImproveCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("1800", "30m"),
+            ("90", "90s"),
+            ("60", "1m"),
+            ("", "30m"),
+            ("garbage", "30m"),
+            ("5", "1m"),  # clamped to 60s floor
+        ],
+    )
+    def test_parses_t3_self_improve_cadence(
+        self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", env_value)
+        assert _self_improve_cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_SELF_IMPROVE_CHEAP_CADENCE", raising=False)
+        assert _self_improve_cadence_for_loop_slot() == "30m"
+
+
+class TestSelfImproveStartCommand:
+    def test_start_emits_the_self_improve_slot_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800")
+        result = runner.invoke(loop_app, ["self-improve", "start"])
+
+        assert result.exit_code == 0
+        assert "/loop 30m Run `t3 loop self-improve run --tier cheap`." in result.stdout
+        assert "T3_SELF_IMPROVE_CHEAP_CADENCE" in result.stdout
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestSelfImproveUnbuiltTierParity:
+    """Both surfaces must refuse an unbuilt tier identically (no silent no-op)."""
+
+    @pytest.mark.parametrize("tier", ["medium", "expensive", "phase-99-future"])
+    def test_typer_cli_and_management_command_refuse_alike(self, tier: str) -> None:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: non-Django module (docstring)
+
+        from teatree.loop.self_improve import UnimplementedTierError  # noqa: PLC0415 — deferred: pulls in the ORM
+
+        cli = runner.invoke(loop_app, ["self-improve", "run", "--tier", tier])
+        with pytest.raises(SystemExit) as raised:
+            call_command("loop_self_improve", tier=tier)
+
+        assert cli.exit_code == raised.value.code == 2
+        assert str(UnimplementedTierError(tier)) in cli.output
+
+    def test_implemented_tier_still_runs_through_both_surfaces(self) -> None:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: non-Django module (docstring)
+
+        cli = runner.invoke(loop_app, ["self-improve", "run", "--tier", "cheap"])
+        call_command("loop_self_improve", tier="cheap")
+
+        assert cli.exit_code == 0
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestLoopOwnerCli:
@@ -498,82 +559,83 @@ class TestLoopOwnerCli:
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0, result.stdout
-        assert "claimed loop slot" in result.stdout
-        assert LoopLease.objects.get(name="loop-owner").session_id == "cli-session"
+        assert "claimed loop slot" in result.stderr
+        assert LoopLease.objects.get(name="t3-master").session_id == "cli-session"
 
-    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 2
-        assert "refusing to claim loop ownership without a Claude session id" in result.stdout
+        assert "refusing to claim loop ownership without a Claude session id" in result.stderr
 
     def test_owner_reports_live_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="held-by")
+        LoopLease.objects.claim_ownership("t3-master", session_id="held-by")
         result = runner.invoke(loop_app, ["owner"])
 
         assert result.exit_code == 0
-        assert "held-by" in result.stdout
+        assert "held-by" in result.stderr
 
     def test_owner_reports_unclaimed(self) -> None:
         result = runner.invoke(loop_app, ["owner"])
 
         assert result.exit_code == 0
-        assert "unclaimed" in result.stdout
+        assert "unclaimed" in result.stderr
 
     def test_release_only_clears_own_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="other-session")
+        LoopLease.objects.claim_ownership("t3-master", session_id="other-session")
         monkeypatch.setenv("CLAUDE_SESSION_ID", "me")
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
-        assert "nothing released" in result.stdout
-        assert LoopLease.objects.get(name="loop-owner").session_id == "other-session"
+        assert "nothing released" in result.stderr
+        assert LoopLease.objects.get(name="t3-master").session_id == "other-session"
 
     def test_release_clears_when_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         monkeypatch.setenv("CLAUDE_SESSION_ID", "me")
-        LoopLease.objects.claim_ownership("loop-owner", session_id="me")
+        LoopLease.objects.claim_ownership("t3-master", session_id="me")
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
-        assert "released loop slot" in result.stdout
-        assert LoopLease.objects.get(name="loop-owner").session_id == ""
+        assert "released loop slot" in result.stderr
+        assert LoopLease.objects.get(name="t3-master").session_id == ""
 
     def test_take_over_seizes_live_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="hijacker")
+        LoopLease.objects.claim_ownership("t3-master", session_id="hijacker")
         monkeypatch.setenv("CLAUDE_SESSION_ID", "main")
         result = runner.invoke(loop_app, ["claim", "--take-over"])
 
         assert result.exit_code == 0
-        assert "claimed loop slot" in result.stdout
-        assert LoopLease.objects.get(name="loop-owner").session_id == "main"
+        assert "claimed loop slot" in result.stderr
+        assert LoopLease.objects.get(name="t3-master").session_id == "main"
 
     def test_claim_without_take_over_is_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="hijacker")
+        LoopLease.objects.claim_ownership("t3-master", session_id="hijacker")
         monkeypatch.setenv("CLAUDE_SESSION_ID", "main")
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0
-        assert "held by session hijacker" in result.stdout
-        assert LoopLease.objects.get(name="loop-owner").session_id == "hijacker"
+        assert "held by session hijacker" in result.stderr
+        assert LoopLease.objects.get(name="t3-master").session_id == "hijacker"
 
     def test_owner_json_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="json-sess")
+        LoopLease.objects.claim_ownership("t3-master", session_id="json-sess")
         result = runner.invoke(loop_app, ["owner", "--json"])
 
         assert result.exit_code == 0
@@ -590,21 +652,46 @@ class TestLoopOwnerCli:
         assert result.exit_code == 0
         assert LoopLease.objects.get(name="loop-slack-answer-owner").session_id == "answer-sess"
 
+    def test_claim_driver_external_sets_the_driver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The exact shape of the DRIVERLESS remediation `t3 loop claim --slot <slot> --driver external`.
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "ext-session")
+        result = runner.invoke(loop_app, ["claim", "--slot", "loop:dispatch", "--driver", "external"])
+
+        assert result.exit_code == 0, result.stdout
+        assert LoopLease.objects.get(name="loop:dispatch").driver == "external"
+
+    def test_claim_invalid_driver_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "ext-session")
+        result = runner.invoke(loop_app, ["claim", "--driver", "bogus"])
+
+        assert result.exit_code == 2
+        assert "invalid --driver" in result.stderr
+
     def test_claim_json_success_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415
 
         monkeypatch.setenv("CLAUDE_SESSION_ID", "json-claimer")
+        monkeypatch.setattr("teatree.loop.driver_detection.detect_driver", lambda _s: "")
         result = runner.invoke(loop_app, ["claim", "--json"])
 
         assert result.exit_code == 0
         payload = json.loads(result.stdout)
-        assert payload == {"ok": True, "slot": "loop-owner", "owner_session": "json-claimer"}
+        assert payload == {
+            "ok": True,
+            "slot": "t3-master",
+            "owner_session": "json-claimer",
+            "driver": "",
+            "driverless": True,
+        }
 
-    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         import json  # noqa: PLC0415
 
-        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim", "--json"])
 
         assert result.exit_code == 2
@@ -618,8 +705,32 @@ class TestLoopOwnerCli:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         monkeypatch.setenv("CLAUDE_SESSION_ID", "rel-sess")
-        LoopLease.objects.claim_ownership("loop-owner", session_id="rel-sess")
+        LoopLease.objects.claim_ownership("t3-master", session_id="rel-sess")
         result = runner.invoke(loop_app, ["release", "--json"])
 
         assert result.exit_code == 0
-        assert json.loads(result.stdout) == {"ok": True, "slot": "loop-owner"}
+        # `owner_session`/`you`/`forced` are load-bearing (#3810): a NOOP release must
+        # name the holder and the caller, so an operator can see WHY it was a NOOP.
+        assert json.loads(result.stdout) == {
+            "ok": True,
+            "slot": "t3-master",
+            "owner_session": "rel-sess",
+            "you": "rel-sess",
+            "forced": False,
+        }
+
+
+class TestIntakeLoopsCommand:
+    """``t3 loop intake-loops`` prints the owner-intake names the fleet policy reads (#3632)."""
+
+    def test_prints_owner_intake_names_sorted(self) -> None:
+        result = runner.invoke(loop_app, ["intake-loops"])
+
+        assert result.exit_code == 0
+        assert result.stdout.split() == sorted(OWNER_INTAKE_LOOPS)
+        assert "directive_loop" in result.stdout
+
+    def test_command_callable_prints_each_name(self, capsys: pytest.CaptureFixture[str]) -> None:
+        intake_loops_command()
+
+        assert capsys.readouterr().out.split() == sorted(OWNER_INTAKE_LOOPS)

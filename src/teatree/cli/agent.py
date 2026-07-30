@@ -23,7 +23,7 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
         return ""
     try:
         ensure_django()
-        from teatree.core.resolve import resolve_worktree  # noqa: PLC0415
+        from teatree.core.intake.resolve import resolve_worktree  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return str(resolve_worktree().ticket.state)
     except Exception:
@@ -40,9 +40,9 @@ def _launch_claude(
     ask_user_which_skill: bool,
 ) -> None:
     """Shared logic: resolve skills, build prompt, exec into claude."""
-    import shutil  # noqa: PLC0415
+    import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.doctor import IntrospectionHelpers  # noqa: PLC0415
+    from teatree.cli.doctor import IntrospectionHelpers  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     claude_bin = shutil.which("claude")
     if not claude_bin:
@@ -71,23 +71,34 @@ def _launch_claude(
     if task:
         context_lines.extend(("", f"Task: {task}"))
 
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+    settings = get_effective_settings()
     context = "\n".join(context_lines)
     cmd = [claude_bin]
-    if get_effective_settings().claude_chrome:
+    if settings.claude_chrome:
         cmd.append("--chrome")
     cmd.extend(["--append-system-prompt", context])
 
-    if os.environ.get("T3_CONTRIBUTE", "").lower() == "true":
-        from teatree import find_project_root  # noqa: PLC0415
+    if settings.contribute_plugin_dir:
+        from teatree import find_project_root  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         teatree_root = find_project_root()
         if teatree_root:
             cmd.extend(["--plugin-dir", str(teatree_root)])
 
     if task:
-        cmd.extend(["-p", task])
+        # `-p` turns this exec into a headless print-mode run: the operator typed the
+        # command, but nobody is present for the run itself. So this branch — unlike
+        # the interactive one below it — pins the unattended mode and takes the same
+        # base-URL guard as every other seam that spawns a child no human can watch.
+        from teatree.agents import permission_modes  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.llm.credentials import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            reject_ambient_base_url_redirect,
+        )
+
+        reject_ambient_base_url_redirect()
+        cmd.extend(["-p", task, "--permission-mode", permission_modes.UNATTENDED])
 
     typer.echo(f"Launching Claude Code in {project_root}...")
     os.execvp(claude_bin, cmd)  # noqa: S606 — argv list, no shell
@@ -99,10 +110,12 @@ def agent(
     skill: list[str] = AGENT_SKILL_OPTION,
 ) -> None:
     """Launch Claude Code with auto-detected project context."""
-    from teatree.cli import _find_project_root  # noqa: PLC0415
-    from teatree.config import discover_active_overlay  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-    from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
+    ensure_django()
+
+    from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks agent ↔ cli cycle
+    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     project_root = _find_project_root()
     active = discover_active_overlay()
@@ -127,7 +140,6 @@ def agent(
         selection = policy.select_for_agent_launch(
             cwd=Path.cwd(),
             overlay_skill_metadata=overlay_skill_metadata,
-            task=task,
             ticket_status=_detect_agent_ticket_status(project_root) if active else "",
             explicit_phase=phase,
             explicit_skills=skill or [],

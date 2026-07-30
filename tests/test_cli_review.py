@@ -118,11 +118,26 @@ class TestFindAddedLine:
 
 # -- GitLab token resolution --------------------------------------------------
 
+_MOCK_OVERLAY_NO_TOKEN = MagicMock()
+_MOCK_OVERLAY_NO_TOKEN.config.get_gitlab_token.return_value = ""
+
 
 class TestGetGitlabToken:
+    """The fallback chain BELOW the owning overlay (souliane/teatree#3793).
+
+    The overlay that owns the target repo answers first; these cover what happens
+    when it has nothing to say — an explicit env value, then the local ``glab``
+    login, then a genuine empty. The overlay read is pinned empty so each test
+    exercises the tier it names rather than however the host is configured.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _overlay_has_no_token(self, monkeypatch):
+        monkeypatch.setattr("teatree.cli.review.forge_target._owning_overlay", lambda _repo: _MOCK_OVERLAY_NO_TOKEN)
+
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "gl-token-123")
-        assert ReviewService.get_gitlab_token() == "gl-token-123"
+        assert ReviewService.get_gitlab_token("acme/widgets") == "gl-token-123"
 
     def test_from_glab(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
@@ -131,23 +146,28 @@ class TestGetGitlabToken:
                 stderr="  Token: glpat-ABCDEF\n  User: test\n",
                 returncode=0,
             )
-            assert ReviewService.get_gitlab_token() == "glpat-ABCDEF"
+            assert ReviewService.get_gitlab_token("acme/widgets") == "glpat-ABCDEF"
 
     def test_returns_empty_when_not_found(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(stderr="", returncode=1)
-            assert ReviewService.get_gitlab_token() == ""
+            assert ReviewService.get_gitlab_token("acme/widgets") == ""
 
     def test_returns_empty_when_glab_no_token_line(self, monkeypatch):
-        """_get_gitlab_token returns empty when glab output has no Token line."""
+        """The token is empty when glab's output carries no Token line."""
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = MagicMock(
                 stderr="  User: test\n  Scopes: api\n",
                 returncode=0,
             )
-            assert ReviewService.get_gitlab_token() == ""
+            assert ReviewService.get_gitlab_token("acme/widgets") == ""
+
+    def test_an_absent_glab_binary_is_no_login_not_a_crash(self, monkeypatch):
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(utils_run_mod.subprocess, "run", side_effect=FileNotFoundError("glab")):
+            assert ReviewService.get_gitlab_token("acme/widgets") == ""
 
 
 # -- Review service operations -------------------------------------------------
@@ -912,9 +932,7 @@ class TestApprove:
         # The autouse ``_no_on_behalf_gate`` fixture sets the gate to immediate
         # via ``T3_ON_BEHALF_POST_MODE`` (``on_behalf_post_mode`` is DB-home,
         # #1775). This test needs the gate ON, so undo that override and let the
-        # mode resolve to its blocking ``DRAFT_OR_ASK`` default. (The old
-        # ``ask_before_post_on_behalf`` TOML staging is inert — that field is
-        # derived from ``on_behalf_post_mode`` and ignored on read.)
+        # mode resolve to its blocking ``DRAFT_OR_ASK`` default.
         monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"

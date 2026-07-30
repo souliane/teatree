@@ -2,6 +2,7 @@
 
 import datetime as dt
 
+import django.test
 import pytest
 
 from teatree.loop.phases.act import act_phase
@@ -35,7 +36,7 @@ def test_act_phase_runs_mechanical_handler_and_captures_its_error(monkeypatch: p
 
 
 def test_act_phase_captures_persist_failure_instead_of_raising(monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(_actions: object) -> None:
+    def boom(_actions: object, *, errors: object = None) -> None:
         msg = "persistence down"
         raise RuntimeError(msg)
 
@@ -43,3 +44,23 @@ def test_act_phase_captures_persist_failure_instead_of_raising(monkeypatch: pyte
     report = _report([ScanSignal(kind="my_pr.open", summary="x")])
     act_phase(report)
     assert "persistence down" in report.errors["dispatch_persist"]
+
+
+class TestSweepSkipLedgerWiring(django.test.TestCase):
+    """The tick's act phase is where a sweep skip becomes a durable streak."""
+
+    def test_act_phase_folds_sweep_skips_into_the_streak_ledger(self) -> None:
+        from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM needs the app registry
+
+        report = _report(
+            [
+                ScanSignal(
+                    kind="pr_sweep.skip",
+                    summary="o/r#7 skip (ci_pending)",
+                    payload={"slug": "o/r", "pr_id": 7, "decision": "skip", "reason": "ci_pending"},
+                ),
+            ],
+        )
+        act_phase(report)
+
+        assert SweepSkipStreak.objects.get(slug="o/r", pr_id=7).tick_count == 1

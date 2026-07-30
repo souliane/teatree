@@ -1,106 +1,33 @@
 """Build agent prompts from ticket and task context."""
 
-import json
-from pathlib import Path
 from typing import cast
 
-from teatree.config_agent import resolve_agent_config
-from teatree.core.modelkit.phases import resolve_fanout_directive
+from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_directive, _stack_overlay_load_names
+from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
+from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_state_brief_lines
+from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
+from teatree.agents.phase_blocks import intake_survey_json, phase_specific_lines
+from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents, _read_skill_contents_scoped
+from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
 
-_ALWAYS_FULL_SKILLS = frozenset({"rules"})
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
 _REVIEW_PHASE_ALWAYS_FULL = frozenset({"code-review"})
+
 # Symmetric to the reviewer set: a headless BUILDER loses every loaded skill, so
 # the enumerate-and-preserve architecture pass must embed in full, not be demoted.
 _CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
 
 
-def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
-    """Locate SKILL.md for a skill name within the skills directory."""
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    candidate = sd / name / "SKILL.md"
-    return candidate if candidate.is_file() else None
-
-
-def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
-    """Read and concatenate SKILL.md content for each resolved skill."""
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    sections: list[str] = []
-    for name in skills:
-        skill_md = _find_skill_md(name, sd)
-        if skill_md is not None:
-            content = skill_md.read_text(encoding="utf-8")
-            sections.append(f"--- SKILL: {name} ---\n{content}")
-    return "\n\n".join(sections)
-
-
-def _is_primary(name: str, primary_skills: set[str]) -> bool:
-    """Check if a skill name (or path) matches the primary set or always-full list."""
-    if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
-        return True
-    skill_dir_name = Path(name).parent.name if "/" in name else ""
-    return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS
-
-
-def _explicit_load_name(name: str) -> str:
-    """Return the bare ``/skill`` reference for an explicit-load instruction."""
-    return Path(name).parent.name if "/" in name else name
-
-
-def _read_skill_contents_scoped(
-    skills: list[str],
-    *,
-    primary_skills: set[str],
-    explicit_load_skills: set[str] | None = None,
-    suppress_names: set[str] | None = None,
-    skills_dir: Path | None = None,
-) -> str:
-    """Read skills with scoping.
-
-    Primary skills (the lifecycle skill, ``rules``, and — on the reviewing
-    phase — the overlay's primary review skills) get full content. Skills in
-    *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
-    BEFORE reviewing" instruction instead of the generic, easy-to-ignore
-    "available — load if needed" summary. Skills in *suppress_names* are
-    omitted entirely — the caller force-loads them elsewhere (e.g. the coding
-    directive's stack-load block, #1368), so listing them in the ignorable
-    summary would contradict that. Everything else gets the generic summary.
-    """
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    explicit = explicit_load_skills or set()
-    suppress = suppress_names or set()
-    sections: list[str] = []
-    companion_names: list[str] = []
-    explicit_names: list[str] = []
-    for name in skills:
-        if _is_primary(name, primary_skills):
-            skill_md = _find_skill_md(name, sd)
-            if skill_md is not None:
-                content = skill_md.read_text(encoding="utf-8")
-                sections.append(f"--- SKILL: {name} ---\n{content}")
-        elif name in explicit or _explicit_load_name(name) in explicit:
-            explicit_names.append(name)
-        elif name in suppress or _explicit_load_name(name) in suppress:
-            continue
-        else:
-            companion_names.append(name)
-    if explicit_names:
-        block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
-        block += "\n".join(
-            f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
-        )
-        sections.append(block)
-    if companion_names:
-        summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
-        summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
-        sections.append(summary)
-    return "\n\n".join(sections)
-
-
 _MAX_PARENT_SUMMARY_LEN = 2000
+
+# The skills pointer names the on-disk body and NOT the Skill tool: this lane is
+# denied that tool, so pointing at it would name an impossible recovery.
+_SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> workspace landscape`)"
+_SKILLS_POINTER = "that skill's own skills/<skill>/SKILL.md — this lane has no Skill tool to load it by reference"
+_PARENT_POINTER = "the parent task's recorded result"
 
 
 def _parent_result_summary(task: Task) -> str:
@@ -122,108 +49,6 @@ def _parent_result_summary(task: Task) -> str:
     return "\n".join(parts)
 
 
-_VERIFY_GATES_COMMAND = "t3 tool verify-gates"
-
-# The coding directive force-loads these two by name in its first lines, and
-# ``rules`` is always embedded in full — so they are never re-listed in the
-# resolved-stack skill-load block.
-_DIRECTIVE_FORCED_SKILLS = frozenset({"architecture-design", "code"}) | _ALWAYS_FULL_SKILLS
-
-
-def _stack_overlay_load_names(skills: list[str] | None) -> list[str]:
-    """Return the ordered framework-then-overlay skill names to force-load.
-
-    The resolved bundle minus the skills the directive already force-loads by
-    name (``architecture-design`` / ``code``) and ``rules`` (always embedded in
-    full). Framework skills (``ac-*`` / ``fastapi``) lead, then the overlay /
-    remaining coding skills. Single source of truth for both the directive's
-    load block and the system-context summary-suppression set so the two never
-    disagree on which skills are force-loaded (#1368).
-    """
-    extra = [s for s in (skills or []) if _explicit_load_name(s) not in _DIRECTIVE_FORCED_SKILLS]
-    framework = [s for s in extra if _explicit_load_name(s) in FRAMEWORK_SKILL_NAMES]
-    overlay = [s for s in extra if _explicit_load_name(s) not in FRAMEWORK_SKILL_NAMES]
-    ordered: list[str] = []
-    for name in (*framework, *overlay):
-        load_name = _explicit_load_name(name)
-        if load_name not in ordered:
-            ordered.append(load_name)
-    return ordered
-
-
-def _stack_skill_load_lines(skills: list[str] | None) -> list[str]:
-    """Return the explicit "load the stack + overlay skills BEFORE code" block.
-
-    A dispatched builder does not inherit the parent's loaded skills and
-    auto-detect mis-fires when the worktree shape doesn't trip the detector
-    (#1368). The resolved bundle already carries the stack's framework skill
-    (``ac-django`` / ``ac-python`` / ``fastapi``) and the active overlay skill;
-    this turns each into a verbatim "load via the Skill tool" instruction
-    rather than letting it be demoted to the ignorable summary or left to
-    auto-detect. When the stack cannot be determined (empty / unresolved
-    bundle) a conservative default tells the builder to load its stack's
-    coding skill itself, so a code-touching dispatch can never go out with no
-    skill-load directive at all.
-    """
-    ordered = _stack_overlay_load_names(skills)
-    if not ordered:
-        return [
-            "REQUIRED: before writing code, also load your stack's coding skill via the Skill tool",
-            "(/ac-django for a Django repo, /ac-python for a Python repo) and the active overlay skill.",
-            "The stack could not be auto-resolved at dispatch — load them yourself; do NOT skip this.",
-            "",
-        ]
-    lines = ["REQUIRED: before writing code, also call the Skill tool for EACH of these stack/overlay skills:"]
-    lines.extend(f"  - /{name}" for name in ordered)
-    lines.extend(
-        (
-            "These carry the framework conventions and overlay-specific rules a dispatched builder",
-            "does not auto-load — do NOT rely on auto-detect.",
-            "",
-        )
-    )
-    return lines
-
-
-def _coding_phase_directive(skills: list[str] | None = None) -> list[str]:
-    """Return the forced-load + behavior-preservation + verify directive lines.
-
-    Symmetric to ``build_reviewer_dispatch_prompt``: a headless builder loses
-    every loaded skill (rules § Sub-Agent Limitations), so the architecture /
-    code disciplines, the stack + overlay coding skills, and the CI-parity
-    verify step must reach it inline. Shared by ``build_task_prompt`` (the loop
-    builder's work prompt) and the coding branch of ``build_system_context`` so
-    the contract cannot drift between the two builder entry points. *skills* is
-    the resolved bundle for the dispatch — its framework + overlay entries are
-    surfaced as an explicit load block (#1368).
-    """
-    return [
-        "REQUIRED: before writing code, call the Skill tool for /t3:architecture-design and /t3:code.",
-        "Do this FIRST — these carry the design-first and TDD disciplines a dispatched builder",
-        "does not auto-load.",
-        "",
-        *_stack_skill_load_lines(skills),
-        "BEHAVIOR PRESERVATION (non-negotiable): When you rewrite or REPLACE existing code, first",
-        "enumerate every behavior/case the old code handled — especially safety/privacy/leak-gate",
-        "coverage and the regression tests that pin it — and preserve each, or STOP and request input.",
-        "NEVER silently narrow a gate; NEVER invert a must-block test to must-not-block; weakening a",
-        "public-repo privacy gate is a BLOCKER, not a self-approved trade-off.",
-        "",
-        "NO AI SIGNATURE: Never add an AI/Claude signature or footer to commit messages OR to PR/issue",
-        "bodies posted on the user's behalf (no 'Generated with Claude Code', no robot-emoji footer,",
-        "no Co-Authored-By).",
-        "",
-        "OPEN QUESTIONS & ASSUMPTIONS: list every open question (solved or not) and every assumption not",
-        "explicit from the spec in an 'Open questions & assumptions' section in BOTH the commit message",
-        "body AND the PR description (status: decided-by-user / assumed / open). See skills/ship § 5.",
-        "",
-        f"VERIFY (CI-parity): before declaring done, run `{_VERIFY_GATES_COMMAND}`. It runs BOTH the",
-        "commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the push-stage gates",
-        "(comment-density, doc-update, ensure-pr, the public-repo leak gate) that CI",
-        "re-runs. Report its exit code as the green-proof — not a commit-stage-only run.",
-    ]
-
-
 def _task_header_lines(task: Task, extra: dict) -> list[str]:
     """Return the ticket/issue/title/labels/phase/reason header lines."""
     ticket: Ticket = task.ticket
@@ -241,12 +66,14 @@ def _task_header_lines(task: Task, extra: dict) -> list[str]:
     return lines
 
 
-def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
+def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skills: list[str] | None = None) -> str:
     """Build a work prompt for a headless agent.
 
     *skills* is the resolved skill bundle for the dispatch; on the coding phase
     its framework + overlay entries are injected as an explicit skill-load
     block so a code-touching dispatch never relies on auto-detect (#1368).
+    *stage_skills* threads the dispatch's single overlay stage-skill resolution
+    (#3206) so this builder reuses it rather than re-resolving.
     """
     ticket: Ticket = task.ticket
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
@@ -267,11 +94,22 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
             f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
             "   It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the",
             "   push-stage gates CI re-runs. Report its exit code as the green-proof.",
+            final_output_reminder_line(task.phase),
         ),
     )
 
-    if task.phase == "coding":
-        lines.extend(("", "PHASE: coding", *_coding_phase_directive(skills)))
+    if normalize_phase(task.phase) == "coding":
+        present = stage_skills_present(task, skills or [], configured=stage_skills)
+        stage_exclude = frozenset(_explicit_load_name(s) for s in present)
+        lines.extend(
+            (
+                "",
+                "PHASE: coding",
+                *head_state_brief_lines(task),
+                *declared_seams_brief_lines(task),
+                *_coding_phase_directive(skills, stage_exclude=stage_exclude),
+            )
+        )
 
     return "\n".join(lines)
 
@@ -283,13 +121,13 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     overlay's review conventions must reach it inline. The active overlay's
     review-skill set (``[pr_review_companion, *companion_skills]``) is split per
     the token budget: the PRIMARY review skill (first entry) plus ``code-review``
-    embed IN FULL; any additional review companions get a verbatim
+    embed IN FULL; any additional review companion skills get a verbatim
     "Load /<skill> via the Skill tool BEFORE reviewing" instruction rather than
     being demoted to the generic, ignorable "available — load if needed" summary.
     Only the review skills actually present in *skills* are scoped, so a
     companion that failed to resolve is not surfaced as required.
     """
-    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
+    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415 — deferred: call-time import
 
     review_skills = [s for s in active_overlay_review_skills() if s in skills]
     primary: set[str] = set(_REVIEW_PHASE_ALWAYS_FULL)
@@ -301,184 +139,54 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     return primary, explicit
 
 
-_REVIEWER_LIFECYCLE_SKILL = "t3:review"
-
-
-def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: list[str] | None = None) -> str:
-    """Build a review sub-agent's dispatch prompt with the overlay review skills required up front.
-
-    A review sub-agent dispatched through the Agent tool, a dynamic workflow,
-    or a headless reviewer does not auto-load the active overlay's review
-    conventions. ``build_system_context`` embeds them for the headless path,
-    but an orchestrator-built dispatch prompt previously relied on the
-    orchestrator remembering to list the skills. This shared builder prepends a
-    REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
-    review skill plus the active overlay's review skills (deduped, order
-    preserved) — so the overlay conventions reach every reviewer structurally,
-    which is also what ``subagent_skill_gate.required_skills_for_task`` enforces.
-
-    *review_skills* overrides the overlay resolution when supplied (e.g. a
-    caller that already resolved the bundle); otherwise the active overlay's
-    :func:`active_overlay_review_skills` are used.
-    """
-    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
-
-    resolved = review_skills if review_skills is not None else active_overlay_review_skills()
-    ordered: list[str] = []
-    for name in (_REVIEWER_LIFECYCLE_SKILL, *resolved):
-        load_name = _explicit_load_name(name)
-        if load_name not in ordered:
-            ordered.append(load_name)
-
-    lines = ["REQUIRED: Before reviewing anything, call the Skill tool for EACH of these skills:"]
-    lines.extend(f"  - /{name}" for name in ordered)
-    lines.extend(
-        (
-            "Do this FIRST — these carry the project and overlay review conventions.",
-            "Reviewing without them produces false positives and misses overlay-specific rules.",
-            "",
-            review_instruction,
-        )
-    )
-    return "\n".join(lines)
-
-
-def _phase_fanout_directive(task: Task) -> str:
-    """Render the opt-in fan-out directive for *task*'s ``(role, phase)``, or ``""``.
-
-    Headless parity with the interactive composer
-    (``loop_dispatch._task_to_dict``): both routes call the single chokepoint
-    ``core.phases.resolve_fanout_directive`` so flipping
-    ``LOOP_ALLOW_HEADLESS_DISPATCH`` keeps the directive identical. Empty by
-    default — ``resolve_fanout_directive`` renders nothing until the user opts
-    the pair in via ``[agent.phase_fanout]`` — so a headless dispatch is
-    byte-identical to today out of the box.
-    """
-    return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
-
-
-def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
-    """The persisted intake landscape survey block for the planner (#2541).
-
-    The intake FSM step (``execute_provision``) baked the survey into a
-    ``LandscapeArtifact``; the planner CONSUMES the latest here (as compact JSON)
-    instead of re-deriving it. Empty when intake recorded none (forge outage),
-    so the planner falls back to ``t3 <overlay> workspace landscape``.
-    """
-    from teatree.core.models.landscape_artifact import LandscapeArtifact  # noqa: PLC0415
-
-    latest = LandscapeArtifact.latest_for(task.ticket)
-    if latest is None:
-        return ()
-    return (
-        "",
-        "INTAKE LANDSCAPE SURVEY (produced by ticket-intake — CONSUME, do not re-derive):",
-        "Plan AGAINST this: an open PR for the issue → finish+merge it, not fresh; a merged",
-        "PR → surface for close; an in-flight worktree → build on it, never overwrite.",
-        json.dumps(latest.survey, sort_keys=True),
-    )
-
-
-def _planning_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: planning`` block — intake survey (#2541) + opted-in fan-out."""
-    lines = list(_intake_landscape_lines(task))
-    if fanout := _phase_fanout_directive(task):
-        lines.extend(("", "PHASE: planning", fanout))
-    return tuple(lines)
-
-
-def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: reviewing`` block, plus an opted-in fan-out directive."""
-    lines = [
-        "",
-        "PHASE: reviewing",
-        "1. Do a thorough code review of all changes on this ticket's branch.",
-        "2. Run /t3:next when done — it handles retro + structured result + handoff.",
-    ]
-    if fanout := _phase_fanout_directive(task):
-        lines.append(fanout)
-    return tuple(lines)
-
-
-def _shipping_phase_lines() -> tuple[str, ...]:
-    """The headless ``PHASE: shipping`` auto-review-gate block."""
-    reviewer_dispatch = build_reviewer_dispatch_prompt(
-        review_instruction="Review the diff on this ticket's branch and report findings."
-    )
-    return (
-        "",
-        "PHASE: shipping — auto-review gate",
-        "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
-        "If the result shows `reviewing` in the `missing` list:",
-        "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
-        "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
-        reviewer_dispatch,
-        (
-            "2. After the sub-agent completes, mark reviewing as visited:"
-            " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
-        ),
-        "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "If the result shows `retro` in the `missing` list:",
-        "1. Run `/t3:retro` to capture lessons from this session and commit any skill fixes.",
-        "2. Mark retro as visited: `t3 <overlay> lifecycle visit-phase <ticket_id> retro`.",
-        "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-        "Do NOT create a new session for the review — use a sub-agent within this session.",
-    )
-
-
-def _phase_specific_lines(task: Task, skills: list[str]) -> tuple[str, ...]:
-    """The per-phase trailing block for ``build_system_context``, or ``()``.
-
-    Dispatches on the canonical phase token. coding/shipping carry their
-    existing directives; planning/reviewing additionally surface an opted-in
-    fan-out directive (default-OFF). One ``(role, phase)`` pair maps to one
-    block — they are mutually exclusive on ``task.phase``.
-    """
-    if task.phase == "coding":
-        return ("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive(skills))
-    if task.phase == "planning":
-        return _planning_phase_lines(task)
-    if task.phase == "reviewing":
-        return _reviewing_phase_lines(task)
-    if task.phase == "shipping":
-        return _shipping_phase_lines()
-    return ()
-
-
-def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str = "") -> str:
+def build_system_context(
+    task: Task, *, skills: list[str], lifecycle_skill: str = "", stage_skills: list[str] | None = None
+) -> str:
     """Build the system context for headless (SDK) execution.
 
     When *lifecycle_skill* is provided, only the lifecycle skill and rules
     are embedded in full; companion skills get a one-line summary to save
     tokens. On the reviewing phase the active overlay's primary review skill
     and ``code-review`` are additionally embedded in full, and any remaining
-    overlay review companions get a verbatim "load before reviewing"
+    overlay review companion skills get a verbatim "load before reviewing"
     instruction, so a headless reviewer reviews WITH the overlay's conventions.
+    *stage_skills* threads the dispatch's single overlay stage-skill resolution
+    (#3206) so this builder reuses it rather than re-resolving.
+
+    Assembled STABLE-FIRST — the fixed framing and the ~96 KB skill block lead,
+    the per-task identity and prior-task result trail. Prompt caching on this lane
+    is CLI-internal and exposes no ``cache_control`` surface, so prefix stability
+    is the only lever teatree has over the hit rate (see
+    ``_headless_options._build_options``); leading with the task identity diverges
+    the cached prefix at line 2 and re-processes the whole skill block uncached on
+    every dispatch. Mirrors the eval lane, which already leads with the stable
+    ``SKILL_BUNDLE_FRAMING``.
     """
     lines = ["You are a TeaTree headless agent executing a task."]
-    lines.extend((f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 
-    # Context bridge: include parent task result so follow-up tasks
-    # don't need full session resume to understand prior work.
-    parent_summary = _parent_result_summary(task)
-    if parent_summary:
-        lines.extend(("", "# Prior Task Result", "", parent_summary))
+    stage_present = stage_skills_present(task, skills, configured=stage_skills)
+    stage_exclude = frozenset(_explicit_load_name(s) for s in stage_present)
 
+    skill_content = ""
     if skills:
         if lifecycle_skill:
-            primary_skills = {lifecycle_skill}
+            # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
+            # by reference, so they are primary alongside the lifecycle skill.
+            primary_skills = {lifecycle_skill, *stage_present}
             explicit_load_skills: set[str] | None = None
             suppress_names: set[str] | None = None
-            if task.phase == "reviewing":
+            phase = normalize_phase(task.phase)
+            if phase == "reviewing":
                 review_primary, explicit_load_skills = _review_phase_scoping(skills)
                 primary_skills |= review_primary
-            elif task.phase == "coding":
+            elif phase == "coding":
                 # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
                 # not the ignorable "load if needed" summary the builder would skip.
                 primary_skills |= _CODING_PHASE_ALWAYS_FULL
                 # The directive force-loads the stack + overlay skills (#1368);
                 # drop them from the ignorable summary so it cannot contradict it.
-                suppress_names = set(_stack_overlay_load_names(skills))
+                # Stage skills are primary/full-embed, so excluded from the block.
+                suppress_names = set(_stack_overlay_load_names(skills, exclude=stage_exclude))
             skill_content = _read_skill_contents_scoped(
                 skills,
                 primary_skills=primary_skills,
@@ -489,8 +197,8 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             skill_content = _read_skill_contents(skills)
         if skill_content:
             lines.extend(("", "# Loaded Skills", "", skill_content))
-
-    lines.extend(_phase_specific_lines(task, skills))
+            if stage_present:
+                lines.extend(("", stage_precedence_line(stage_present)))
 
     lines.extend(
         (
@@ -500,22 +208,60 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             "- Limit git diff output to 200 lines; use --stat for overview first.",
             "- Summarize test output instead of pasting full logs.",
             "",
-            "When done, run /t3:next to wrap up. It will:",
-            "- Run /t3:retro (captures lessons while context is fresh)",
-            "- Emit the structured JSON result the pipeline needs",
-            "- Display a summary of what happened",
+            "# Authored Output — Be Concise (directive #4)",
+            (
+                "- Everything you write — commit/PR body, review comments, code comments, Slack —"
+                " is bullets, straight to the point, no prose."
+            ),
+            "- Comment only the non-obvious *why*; never narrate the *what* the code already shows.",
+            "- Be RIGHT but concise: trim words, never a load-bearing fact, decision, or caveat.",
             "",
-            "If /t3:next is not available, output a JSON object on the last line:",
-            '  {"summary": "...", "needs_user_input": false, "files_modified": [...], "next_steps": [...]}',
+            "When done, run /t3:next to wrap up (retro + the result envelope + a summary).",
+            "/t3:next is a convenience, not the contract: the envelope below is required either way,",
+            "so emit it yourself whenever /t3:next is unavailable or does not run.",
+            *envelope_contract_lines(task.phase),
             "",
             "IMPORTANT: If you cannot proceed without human input (design decision, access, clarification),",
-            "STOP immediately. Do not guess or work around it. Output:",
+            "STOP immediately. Do not guess or work around it. Emit the envelope with:",
             '  {"summary": "...", "needs_user_input": true, "user_input_reason": "Why you need input"}',
             "The pipeline will automatically create an interactive session for a human to continue your work.",
         ),
     )
 
-    return "\n".join(lines)
+    lines.extend(phase_specific_lines(task, skills, stage_exclude=stage_exclude))
+
+    lines.extend(("", f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
+
+    # Context bridge: include parent task result so follow-up tasks
+    # don't need full session resume to understand prior work.
+    parent_summary = _parent_result_summary(task)
+    if parent_summary:
+        lines.extend(("", "# Prior Task Result", "", parent_summary))
+
+    return _enforce_context_budget("\n".join(lines), task, parent_summary=parent_summary, skill_content=skill_content)
+
+
+def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill_content: str) -> str:
+    """Bound the assembled append under the argv-element byte limit (E2BIG guard).
+
+    The claude-agent-sdk passes the whole append as ONE ``--append-system-prompt``
+    argv element, and Linux caps a single element at 128 KiB — an oversized
+    survey/skills/parent block makes the ``claude`` spawn die with E2BIG. The
+    largest uncapped blocks are truncated with a pointer marker, survey first
+    (re-derivable), then skills, then the parent context last (most load-bearing
+    for continuity). The survey is re-derived only on the over-budget path, so a
+    normal-sized context is one build with no extra query and byte-identical
+    output. The skill bundle always overruns, so it is always section-truncated —
+    see :mod:`teatree.agents.context_budget`.
+    """
+    if len(text.encode()) <= MAX_APPEND_BYTES:
+        return text
+    blocks = (
+        (intake_survey_json(task), _SURVEY_POINTER),
+        (skill_content, _SKILLS_POINTER),
+        (parent_summary, _PARENT_POINTER),
+    )
+    return enforce_budget(text, blocks)
 
 
 type _TicketExtra = dict[str, object]

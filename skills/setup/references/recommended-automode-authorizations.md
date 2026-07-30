@@ -43,6 +43,18 @@ check and this doc derive from the same source). The current sentences are:
   ≠ loop, SHA-bound, live-green required checks, substrate needs a recorded
   human approver). Raw `gh pr merge` / `glab mr merge` is **not** authorized
   by this rule — it stays mechanically prohibited (#863).
+- **docker-exec-provisioning** — Allow `docker exec` into teatree deployment
+  containers and installing the teatree editable package with extras via `uv`
+  (e.g. `uv tool install --editable '<clone>[slack]'`) as part of Slack/deploy
+  setup and runtime provisioning in Docker.
+- **slack-owner-id-lookup** — Allow reading an overlay's own Slack workspace
+  data via its bot token (including `users.list` / `users.lookupByEmail`)
+  **strictly** to resolve or verify the owner's own Slack user id for DM-only
+  provisioning — never bulk member-PII export.
+- **provision-config-writes** — Allow teatree provisioning to write overlay
+  config state in the DB overlays registry (messaging backend, token
+  references, user id, DM channel) via `t3 setup` or
+  `t3 <overlay> config_setting set` during Slack or deploy setup.
 
 ## What is deliberately NOT in this set
 

@@ -4,13 +4,18 @@ Used when teatree is the Django project (the standard case).
 Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
 """
 
+import os
+from pathlib import Path
+
 from teatree.config import default_logging
-from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED, seed_isolated_db
+from teatree.config.db_router import CONFIG_DB_ALIAS, pinned_config_db
+from teatree.config.setting_parsers import _parse_env_bool_default_on
+from teatree.paths import CANONICAL_DB, CODE_REPO_ROOT, DATA_DIR, DATA_DIR_AUTO_ISOLATED, IsolatedEnvDir
 from teatree.timeouts import CORE_DEFAULTS
 
 _DATA_DIR = DATA_DIR
 if DATA_DIR_AUTO_ISOLATED:
-    seed_isolated_db(_DATA_DIR)
+    IsolatedEnvDir(_DATA_DIR).open_for(CODE_REPO_ROOT)
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # The stale-DB notice is an operational nudge surfaced by ``t3 doctor check``
@@ -21,7 +26,7 @@ _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def _discover_overlay_apps() -> list[str]:
     """Scan ``teatree.overlays`` entry points for overlays that declare a Django app."""
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     apps: list[str] = []
     for ep in entry_points(group="teatree.overlays"):
@@ -30,13 +35,28 @@ def _discover_overlay_apps() -> list[str]:
             app_label = getattr(obj, "django_app", None)
             if app_label:
                 apps.append(app_label)
-        except Exception:  # noqa: BLE001, S112
+        except Exception:  # noqa: BLE001, S112 — an app that fails to load is skipped
             continue
     return apps
 
 
 SECRET_KEY = "teatree-dev-insecure"  # noqa: S105 — local-dev CLI, never deployed
-DEBUG = True
+
+
+def _debug_enabled() -> bool:
+    """Whether ``DEBUG`` is on — env-gated so it can differ per service.
+
+    Default on preserves local-dev convenience (rich error pages). Nothing
+    functional depends on it: ``/admin/`` mounts unconditionally and the
+    admin auto-login is gated on the ``admin_autologin_enabled`` setting +
+    loopback, not ``DEBUG``. A long-running Django process with DEBUG on grows
+    ``connection.queries`` unboundedly, so every long-running service (the
+    worker AND the admin) sets ``T3_DEBUG=0`` to run with DEBUG off.
+    """
+    return _parse_env_bool_default_on(os.environ.get("T3_DEBUG", ""))
+
+
+DEBUG = _debug_enabled()
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 INTERNAL_IPS = ["127.0.0.1"]
 
@@ -54,17 +74,27 @@ INSTALLED_APPS = [
     "teatree.core",
     "teatree.agents",
     "teatree.backends",
+    "teatree.dash",
     *_discover_overlay_apps(),
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serve STATIC_ROOT from WSGI so /static/ works under gunicorn with DEBUG off
+    # (Django's staticfiles app serves nothing without runserver). Placed directly
+    # after SecurityMiddleware per WhiteNoise's documented ordering.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-    # Local-only: auto-login the admin dashboard as the superuser when DEBUG is
-    # on, so the single-user 127.0.0.1 admin needs no password. Inert off-DEBUG.
+    # Collapse the repeated config / preset / loop reads one dashboard render issues
+    # into one each. Ahead of the auto-login below so that middleware's own settings
+    # read shares the memo with the view's.
+    "teatree.core.middleware.RequestScopedReadCacheMiddleware",
+    # Auto-login the single-operator admin as the superuser — gated on the
+    # loopback source + the ``admin_autologin_enabled`` setting (never DEBUG),
+    # so a non-loopback request is never auto-logged-in.
     "teatree.core.middleware.LocalAdminAutoLoginMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -72,10 +102,17 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "teatree.urls"
 
+# Project-level templates dir, searched before any app's — where the /admin/
+# re-skin lives (``admin/base_site.html``). A DIRS entry (not an app-dir override)
+# is the robust way to win over ``django.contrib.admin``'s own base_site, which is
+# listed earlier in INSTALLED_APPS. Mirrored in ``tests/django_settings.py`` so the
+# admin snapshot renders identically under pytest and the generator hook.
+_PROJECT_TEMPLATES = Path(__file__).resolve().parent / "templates"
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [str(_PROJECT_TEMPLATES)],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -129,12 +166,32 @@ DATABASES = {
     },
 }
 
+# Config is install-wide operator intent, so it lives in ONE place even when the
+# rest of the control DB is auto-isolated onto a per-worktree copy. From a
+# worktree ``pinned_config_db`` returns the primary ``~/.local/share/teatree``
+# DB — the same file the Django-free cold reader already targets — and
+# ``ConfigSettingRouter`` sends every ConfigSetting read/write there. From a
+# primary clone it returns None, no second connection is registered, and the
+# router is a no-op. See teatree/config/db_router.py.
+_PINNED_CONFIG_DB = pinned_config_db(default_db=CANONICAL_DB)
+if _PINNED_CONFIG_DB is not None:
+    DATABASES[CONFIG_DB_ALIAS] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": str(_PINNED_CONFIG_DB),
+        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+    }
+
+DATABASE_ROUTERS = ["teatree.config.db_router.ConfigSettingRouter"]
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+# collectstatic target — WhiteNoise serves the collected tree from here under
+# gunicorn (DEBUG off). Kept beside the canonical DB so a headless deploy writes
+# to the same operator-owned data dir it already provisions.
+STATIC_ROOT = str(_DATA_DIR / "staticfiles")
 
 LOGGING = default_logging("teatree")
 
@@ -142,22 +199,31 @@ LOGGING = default_logging("teatree")
 # Sourced from the canonical CORE_DEFAULTS registry in teatree.timeouts so the
 # two surfaces cannot drift; tests/test_timeouts.py::TestTimeoutRegistryParity
 # pins the binding. Override per-overlay via OverlayBase.get_timeouts() or
-# per-user via [teatree.timeouts] in ~/.teatree.toml.
+# per-user via the DB-home timeouts setting.
 TEATREE_TIMEOUTS = dict(CORE_DEFAULTS)
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 — fixed agent-controlled path, not user input
 
 TASKS = {
     "default": {
         "BACKEND": "django_tasks_db.DatabaseBackend",
+        # "default" carries every FSM/headless task; "loops" is the dedicated queue
+        # the self-rescheduling loop-timer chains ride (#1796). The worker pins half
+        # its executor threads to "loops" so a reactive timer never blocks behind a
+        # heavy default-queue job. The literal mirrors
+        # teatree.loops.timer_chains.LOOPS_QUEUE (parity-tested).
+        "QUEUES": ["default", "loops"],
     },
 }
 
-# Single auditable kill-switch for the metered detached headless-SDK phase
-# dispatch (``execute_headless_task``). Default OFF: post the 2026-06-15
-# billing change a detached headless-SDK run is metered, so loop-dispatched
-# phase tasks run INTERACTIVE (subscription-covered) via the in-session
-# ``/loop`` slot. When OFF, ``execute_headless_task`` refuses to launch a
-# metered headless-SDK run for any ``(role, phase)`` with a registered phase
-# agent and records a ``routing_error`` instead. Flip to ``True`` only to
-# deliberately re-enable metered headless dispatch for loop-dispatched phases.
-LOOP_ALLOW_HEADLESS_DISPATCH = False
+# Whether a loop-dispatched phase task runs in-session or headless is the
+# ``agent_runtime`` user setting (config/enums.py ``AgentRuntime``), resolved by
+# ``core.headless_dispatch.runs_in_session`` — there is no separate Django
+# kill-switch. ``interactive`` (default) keeps phase work in the in-session
+# ``/loop`` slot; ``headless`` runs it via ``agents/headless.py``, behind the
+# two-layer ``agent_harness`` / ``agent_harness_provider`` pair (#2887).
+
+# Repair-loop per-phase iteration budget (#2009). A ticket-phase may re-queue at
+# most this many attempts before the re-queue chokepoint
+# (``reclaim_orphaned_claims``) refuses with ``MaxIterationsExceeded`` — a
+# visible budget replacing the time-only 24h stale-task expiry. Floored at 1.
+MAX_PHASE_ITERATIONS = 5

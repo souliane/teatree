@@ -10,8 +10,10 @@ stay byte-identical to today.
 
 from pathlib import Path
 
+from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
-from teatree.eval.prompt_framing import SKILL_BUNDLE_FRAMING
+from teatree.eval.prompt_framing import DELEGATION_FRAMING, SKILL_BUNDLE_FRAMING
+from teatree.eval.toolset import DELEGATION_SUBAGENT_NAME, scenario_exposes_subagent_spawn
 from teatree.eval.under_load import (
     SKILLS_DIR,
     build_system_prompt,
@@ -20,8 +22,19 @@ from teatree.eval.under_load import (
     load_skill_bundle,
 )
 
+#: Anti-vacuity floor for the shipped spawn-capable set (28 at the time of writing).
+#: A discovery regression that returned an empty list would otherwise satisfy the
+#: totality assertion by having nothing to check.
+_SPAWN_CAPABLE_FLOOR = 20
 
-def _spec(*, lane: str, prompt: str = "do the thing", context_preamble: str = "") -> EvalSpec:
+
+def _spec(
+    *,
+    lane: str,
+    prompt: str = "do the thing",
+    context_preamble: str = "",
+    tools: tuple[str, ...] = ("Bash",),
+) -> EvalSpec:
     return EvalSpec(
         name="synthetic",
         scenario="synthetic",
@@ -31,6 +44,7 @@ def _spec(*, lane: str, prompt: str = "do the thing", context_preamble: str = ""
         source_path=Path("synthetic.yaml"),
         lane=lane,
         context_preamble=context_preamble,
+        tools=tools,
     )
 
 
@@ -77,14 +91,84 @@ class TestBuildSystemPrompt:
         assert "## skill: beta" in result
 
 
+class TestDelegationFraming:
+    """A spawn-capable scenario is told which sub-agent the runner registered.
+
+    The runner registers ONE bounded ``delegate`` stub so a delegation scenario
+    measures the main agent's dispatch without the delegated unit actually running.
+    Measured against the bundled CLI, that bound is reached only when the spawn
+    NAMES the stub: omitting ``subagent_type`` runs the unbounded built-in
+    ``general-purpose`` agent (10 tool uses, $0.2960 on the probe) while naming
+    ``delegate`` reaches the stub (0 tool uses, $0.0400) — a 7x cost gap that in run
+    30329555602 (under_load 4/5) spent a delegation scenario's whole
+    ``max_budget_usd: 4.0`` on the delegated unit and red the trial
+    ``budget_exceeded`` AFTER the graded dispatch had already been issued.
+
+    So the framing must reach every scenario that can spawn, in BOTH lanes, and must
+    reach no scenario that cannot (a non-delegation prompt stays byte-identical).
+    """
+
+    def test_spawn_scenario_gets_the_framing_in_the_under_load_lane(self, tmp_path: Path) -> None:
+        result = build_system_prompt(
+            _spec(lane="under_load", tools=("Bash", "Agent")),
+            clean_room_prompt="SINGLE SKILL BODY",
+            skills_dir=_bundle_skill_dir(tmp_path),
+        )
+        assert result.endswith(DELEGATION_FRAMING)
+
+    def test_spawn_scenario_gets_the_framing_in_the_clean_room_lane(self, tmp_path: Path) -> None:
+        clean = "SINGLE SKILL BODY + framing"
+        result = build_system_prompt(
+            _spec(lane="clean_room", tools=("Bash", "Task")),
+            clean_room_prompt=clean,
+            skills_dir=_bundle_skill_dir(tmp_path),
+        )
+        assert result == clean + DELEGATION_FRAMING
+
+    def test_non_spawn_scenario_prompt_is_unchanged_in_both_lanes(self, tmp_path: Path) -> None:
+        skills = _bundle_skill_dir(tmp_path)
+        clean_room = build_system_prompt(
+            _spec(lane="clean_room"), clean_room_prompt="SINGLE SKILL BODY", skills_dir=skills
+        )
+        under_load = build_system_prompt(
+            _spec(lane="under_load"), clean_room_prompt="SINGLE SKILL BODY", skills_dir=skills
+        )
+        assert DELEGATION_FRAMING not in clean_room
+        assert DELEGATION_FRAMING not in under_load
+
+    def test_framing_names_the_one_registered_subagent(self) -> None:
+        # The stub is only reachable by name, so the framing must carry that exact
+        # name — a framing that described delegation generically would leave the
+        # spawn on the unbounded built-in and change nothing.
+        assert DELEGATION_SUBAGENT_NAME in DELEGATION_FRAMING
+        assert f'subagent_type: "{DELEGATION_SUBAGENT_NAME}"' in DELEGATION_FRAMING
+
+    def test_every_shipped_spawn_capable_scenario_carries_the_framing(self) -> None:
+        # Totality over the live catalog rather than one pinned name: the scenario
+        # that first paid the cost was retired with the layer it graded (#3844), and
+        # a single-name pin would have gone stale with it while the cost mechanism —
+        # an unnamed spawn falling through to the unbounded built-in — stayed live in
+        # every other spawn-capable scenario.
+        spawn_capable = [spec for spec in discover_specs() if scenario_exposes_subagent_spawn(spec)]
+        assert len(spawn_capable) >= _SPAWN_CAPABLE_FLOOR, (
+            "spawn-capable scenario discovery collapsed — the assertion below would pass vacuously"
+        )
+        unframed = sorted(
+            spec.name
+            for spec in spawn_capable
+            if not build_system_prompt(spec, clean_room_prompt="SINGLE SKILL BODY").endswith(DELEGATION_FRAMING)
+        )
+        assert not unframed, f"spawn-capable scenario(s) reaching the model without the framing: {unframed}"
+
+
 class TestLoadBudgetedSkillBundle:
     def _big_skill_dir(self, tmp_path: Path) -> Path:
         # Six skills, four of them large, so the budget forces a trim.
         skills = tmp_path / "skills"
         bodies = {
             "rules": "# Rules\n\n" + ("rule " * 200),
-            "speed": "# Speed\n\n" + ("speed " * 50),
-            "loops": "# Loops\n\nthe role split source",  # tiny canonical-source skill
+            "wip": "# Wip\n\n" + ("wip " * 50),
+            "health": "# Health\n\nthe role split source",  # tiny canonical-source skill
             "ship": "# Ship\n\n" + ("ship " * 4000),
             "review": "# Review\n\n" + ("review " * 4000),
             "e2e": "# E2E\n\n" + ("e2e " * 4000),
@@ -99,24 +183,24 @@ class TestLoadBudgetedSkillBundle:
         budgeted = load_budgeted_skill_bundle(char_budget=1_000_000, skills_dir=skills)
         assert budgeted == load_skill_bundle(skills_dir=skills)
 
-    def test_over_budget_keeps_agent_path_skill_rules_and_loops(self, tmp_path: Path) -> None:
+    def test_over_budget_keeps_agent_path_skill_rules_and_health(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(keep_skill="speed", char_budget=15_000, skills_dir=skills)
-        assert "## skill: speed" in budgeted, "the agent_path skill (keep_skill) must never be dropped"
+        budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
+        assert "## skill: wip" in budgeted, "the agent_path skill (keep_skill) must never be dropped"
         assert "## skill: rules" in budgeted, "the always-keep cross-cutting rules skill must survive"
-        assert "## skill: loops" in budgeted, "a small canonical-source skill must survive smallest-first"
+        assert "## skill: health" in budgeted, "a small canonical-source skill must survive smallest-first"
 
     def test_over_budget_sheds_the_largest_tail(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(keep_skill="speed", char_budget=15_000, skills_dir=skills)
+        budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
         # Only one of the three large peripheral skills can fit beside the pinned set.
         large_present = sum(f"## skill: {n}" in budgeted for n in ("ship", "review", "e2e"))
         assert large_present < 3, "the budget did not shed any large tail skill"
 
     def test_budgeted_bundle_never_exceeds_the_char_budget(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(keep_skill="speed", char_budget=15_000, skills_dir=skills)
-        # The pinned set (speed+rules+loops) is small here; the cap holds for the fill.
+        budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
+        # The pinned set (wip+rules+health) is small here; the cap holds for the fill.
         assert len(budgeted) <= 15_000
 
     def test_real_catalog_under_load_prompt_fits_the_input_window(self) -> None:
@@ -129,7 +213,7 @@ class TestLoadBudgetedSkillBundle:
             f"budgeted under_load system prompt is {len(framed):,} chars (~{len(framed) // 4:,} tok) — "
             "too large to leave room for the preamble + tool schemas + response"
         )
-        assert "## skill: loops" in bundle, "the role-split canonical source must stay in the real bundle"
+        assert "## skill: health" in bundle, "the role-split canonical source must stay in the real bundle"
         assert "## skill: rules" in bundle, "the cross-cutting rules skill must stay in the real bundle"
 
 

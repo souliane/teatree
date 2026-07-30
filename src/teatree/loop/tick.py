@@ -143,18 +143,20 @@ def run_tick(
     it scans every listed overlay in one tick and prefixes signals with the
     overlay name. *now* and *statusline_path* are test overrides; *colorize*
     defaults to ``True`` unless ``NO_COLOR`` is set. *jobs_builder* is the
-    source of scanner jobs for the no-``scanners`` path: the ``loop_tick``
-    management command injects the DB ``Loop``-table fan-out
-    (:func:`teatree.loops.master.build_loop_table_jobs`) so each enabled,
+    source of scanner jobs for the no-``scanners`` path: the ``loops_tick``
+    per-loop command injects the DB ``Loop``-table fan-out
+    (:func:`teatree.loops.loop_table.build_loop_table_jobs`) so each enabled,
     due ``Loop`` row is the single source of which scanners run a live tick;
     the default falls back to :func:`build_default_jobs`. The seam keeps
     :mod:`teatree.loop` from importing :mod:`teatree.loops` up-stack.
     """
     request = request or TickRequest()
     started_at = now or dt.datetime.now(dt.UTC)
-    _reap_stale_task_claims()
-    jobs = _resolve_jobs(request, started_at, jobs_builder)
     report = TickReport(started_at=started_at)
+    # Recover BEFORE scanners fan out, recording any sweep failure into the report so a
+    # broken recovery surfaces in action_needed instead of freezing the factory silently.
+    _reap_stale_task_claims(report.errors)
+    jobs = _resolve_jobs(request, started_at, jobs_builder)
     if jobs:
         split = sweep_phase(jobs)
         outcome = scan_phase(split.scan_jobs + split.sweep_jobs)
@@ -186,5 +188,4 @@ def _resolve_jobs(
         host=request.host,
         messaging=request.messaging,
         notion_client=request.notion_client,
-        ready_labels=request.ready_labels,
     )

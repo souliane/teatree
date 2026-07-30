@@ -22,7 +22,6 @@ class TestReviewRequestPostModel(TestCase):
             slack_thread_ts="1700000000.000100",
         )
         assert post.pk is not None
-        assert post.last_nag_step == 0
         assert post.done_at is None
         assert post.bot_id == ""
         assert post.created_at is not None
@@ -40,16 +39,14 @@ class TestReviewRequestPostModel(TestCase):
                 slack_thread_ts="1700000002.000300",
             )
 
-    def test_str_representation_carries_url_and_step(self) -> None:
+    def test_str_representation_carries_url(self) -> None:
         post = ReviewRequestPost.objects.create(
             mr_url="https://gitlab.example/x/-/merge_requests/3",
             slack_channel_id="C0DEMOCHAN1",
             slack_thread_ts="1700000003.000400",
-            last_nag_step=2,
         )
         rendered = str(post)
         assert "merge_requests/3" in rendered
-        assert "step=2" in rendered
 
     def test_done_at_can_be_set(self) -> None:
         when = timezone.now()

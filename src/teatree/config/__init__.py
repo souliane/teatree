@@ -1,16 +1,18 @@
-"""TeaTree configuration — overlay discovery from ~/.teatree.toml.
+"""TeaTree configuration — the DB-home config facade + overlay discovery.
 
 The ``teatree.config`` package facade. Config concerns are split by cohesion —
-``enums`` (the four config enums), ``settings`` (dataclasses + override
-registries), ``loader`` (``load_config`` + the toml/dir entry points),
+``enums`` (the config enums), ``settings`` (dataclasses + override
+registries), ``loader`` (``load_config`` + the logging/dir entry points),
 ``discovery`` (overlay discovery), and ``resolution`` (effective-settings +
 the per-setting resolvers) — and re-exported here so every ``teatree.config.<name>``
 import and ``patch`` target keeps resolving against this stable namespace. The
-submodules reach each other's ``load_config`` / ``discover_*`` / ``CONFIG_PATH``
-through this facade at call-time, which both breaks the import cycle and keeps a
-single ``patch("teatree.config.<name>")`` honoured by every internal caller.
+submodules reach each other's ``load_config`` / ``discover_*`` through this facade
+at call-time, which both breaks the import cycle and keeps a single
+``patch("teatree.config.<name>")`` honoured by every internal caller.
 """
 
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime
+from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, ColdHookSetting
 from teatree.config.discovery import (
     _active_overlay_entry,
     _canonical_active_overlay_name,
@@ -21,67 +23,98 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
-from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
-from teatree.config.homes import DERIVED_FIELDS, SETTING_HOMES, SettingHome
+from teatree.config.e2e_repo import E2ERepo
+from teatree.config.enums import (
+    Autonomy,
+    CriticGateMode,
+    MissingIssuePolicy,
+    Mode,
+    OnBehalfPostMode,
+    SendProxyMode,
+    Wip,
+)
+from teatree.config.feature_flags import (
+    DURABLE_GATE_SETTINGS,
+    FEATURE_FLAGS,
+    FeatureFlag,
+    FlagStage,
+    dark_flags,
+    is_feature_flag,
+)
+from teatree.config.homes import BOOTSTRAP_ENV_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.loader import (
-    CONFIG_PATH,
-    _load_toml,
     check_for_updates,
+    clone_root,
     default_logging,
     load_config,
     load_e2e_repos,
-    workspace_dir,
-    worktrees_dir,
+    worktree_root,
 )
+from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
+from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.config.resolution import (
     _active_overlay_overrides,
     _apply_autonomy,
-    _global_pinned_fields,
     _overlay_overrides_by_name,
-    _overlay_speak_override,
     cadence_seconds,
+    effective_default,
     get_effective_settings,
+    worker_is_quiescing,
 )
-from teatree.config.settings import (
-    BOOTSTRAP_FILE_ONLY_SETTINGS,
-    ENV_SETTING_OVERRIDES,
-    OVERLAY_OVERRIDABLE_SETTINGS,
-    TOML_OVERLAY_OVERRIDABLE_SETTINGS,
-    E2ERepo,
-    OverlayEntry,
-    TeaTreeConfig,
-    UserSettings,
+from teatree.config.setting_parsers import (
     _default_handover_mirror_path,
     _parse_disk_cache_allowlist,
     _parse_env_bool,
+    _parse_handover_mirror_path,
     _parse_str_list,
     _parse_user_identity_aliases,
 )
-from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
-from teatree.config_speak import resolve_speak, speak_from_subtable
+from teatree.config.setting_registries import (
+    ENV_SETTING_OVERRIDES,
+    OVERLAY_OVERRIDABLE_SETTINGS,
+    SAFETY_POSTURE_KEYS,
+    TOML_OVERLAY_OVERRIDABLE_SETTINGS,
+)
+from teatree.config.settings import OverlayEntry, TeaTreeConfig, UserSettings
+from teatree.config.speak import resolve_speak, speak_from_subtable
+from teatree.config.trusted_authors import effective_trusted_issue_authors
 from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
-    "BOOTSTRAP_FILE_ONLY_SETTINGS",
-    "CONFIG_PATH",
+    "ALL_KNOWN_CONFIG_SETTINGS",
+    "BOOTSTRAP_ENV_ONLY_SETTINGS",
+    "COLD_HOOK_SETTINGS",
+    "COLD_SETTINGS",
     "DATA_DIR",
     "DERIVED_FIELDS",
+    "DURABLE_GATE_SETTINGS",
     "ENV_SETTING_OVERRIDES",
+    "FEATURE_FLAGS",
     "OVERLAY_OVERRIDABLE_SETTINGS",
+    "REGISTRY_SETTINGS",
+    "SAFETY_POSTURE_KEYS",
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
+    "AgentHarness",
+    "AgentHarnessProvider",
+    "AgentRuntime",
     "Autonomy",
+    "ColdHookSetting",
+    "CriticGateMode",
     "E2ERepo",
+    "FeatureFlag",
+    "FlagStage",
     "MissingIssuePolicy",
     "Mode",
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
+    "SendProxyMode",
     "SettingHome",
-    "Speed",
     "TeaTreeConfig",
-    "TeamsDisplay",
     "UserSettings",
+    "Wip",
     "_active_overlay_entry",
     "_active_overlay_overrides",
     "_apply_autonomy",
@@ -89,29 +122,32 @@ __all__ = [
     "_default_handover_mirror_path",
     "_discover_from_manage_py",
     "_extract_settings_module",
-    "_global_pinned_fields",
-    "_load_toml",
     "_match_canonical_ep",
     "_overlay_overrides_by_name",
-    "_overlay_speak_override",
     "_parse_disk_cache_allowlist",
     "_parse_env_bool",
+    "_parse_handover_mirror_path",
     "_parse_str_list",
     "_parse_user_identity_aliases",
     "_resolve_ep_project_path",
     "cadence_seconds",
     "check_for_updates",
+    "clone_root",
+    "dark_flags",
     "default_logging",
     "discover_active_overlay",
     "discover_overlays",
+    "effective_default",
+    "effective_trusted_issue_authors",
     "get_data_dir",
     "get_effective_settings",
+    "is_feature_flag",
     "load_config",
     "load_e2e_repos",
     "mr_reminder_from_table",
     "resolve_mr_reminder",
     "resolve_speak",
     "speak_from_subtable",
-    "workspace_dir",
-    "worktrees_dir",
+    "worker_is_quiescing",
+    "worktree_root",
 ]

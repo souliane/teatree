@@ -10,38 +10,51 @@ import datetime as _dt
 import logging
 from collections.abc import Callable
 
-from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_factory import OverlayBackends, messaging_from_overlay
+from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify import NotifyKind, resolve_user_id
+from teatree.loop.domain_optional_scanner_jobs import (
+    _arch_review_jobs_for_overlay,
+    _audit_jobs_for_overlay,
+    _housekeeping_jobs_for_overlay,
+    _issue_disposition_jobs_for_overlay,
+    _issue_implementer_jobs_for_overlay,
+    _triage_assessor_jobs_for_overlay,
+)
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
-    _architectural_review_scanner_for,
-    _codex_review_scanner_for,
+    _admit_colleague_prs_to_board,
     _competing_url_prefixes,
-    _issue_disposition_scanner_for,
-    _issue_implementer_scanner_for,
     _pr_sweep_scanner_for,
-    _pull_main_clone_scanner_for,
+    _self_pr_review_scanner_for,
     _slack_broadcasts_scanner_for,
-    _todo_sweep_scanner_for,
+    _task_sweep_scanner_for,
 )
 from teatree.loop.scanner_factory_config import (
     _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
+    stranger_pr_admission,
 )
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
-    AssignedIssuesScanner,
+    DeferredQuestionPosterScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
     MyPrsScanner,
     OutboundAuditScanner,
+    PendingPrDrainScanner,
     PendingTasksScanner,
+    PrApprovalScanner,
+    QuestionBacklogNagScanner,
     RedCardScanner,
+    ReviewDoneAckScanner,
+    ReviewedPrHeadScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     ReviewRequestMergeReactScanner,
-    Scanner,
     ScanSignal,
     SlackDmInboundScanner,
     SlackMentionsScanner,
@@ -50,11 +63,12 @@ from teatree.loop.scanners import (
     TicketCompletionScanner,
     TicketDispositionScanner,
     UndeliveredNotifyScanner,
+    WaitingDigestScanner,
+    WorkStateScanner,
 )
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 from teatree.messaging import notify_with_fallback
-from teatree.notify import NotifyKind
 
 logger = logging.getLogger(__name__)
 
@@ -70,16 +84,44 @@ def default_drift_notifier(alert_text: str, idempotency_key: str) -> None:
     with no ``messaging``/``notify`` (``integration``) up-edge — it is
     injected into :class:`OutboundAuditScanner` at construction.
     """
-    notify_with_fallback(alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
+    notify_with_fallback(
+        alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key, audience=NotifyAudience.OWNER_ESCALATION
+    )
 
 
 def _global_dispatch_jobs() -> list[_ScannerJob]:
-    """The always-on global set ``build_default_jobs`` fans out once per tick."""
+    """The always-on global set ``build_default_jobs`` fans out once per tick.
+
+    The three owner-DM delivery scanners (``UndeliveredNotifyScanner``,
+    ``DeferredQuestionPosterScanner`` and ``QuestionBacklogNagScanner``) are
+    handed an explicit messaging backend +
+    user id resolved from the active overlay — the same source
+    ``_pr_sweep_scanner_for`` uses — so a global tick with no ``T3_OVERLAY_NAME``
+    can still DELIVER the allowed owner-audience DMs instead of no-opping on an
+    unresolved backend (F2). A ``None`` backend (no overlay configured) leaves the
+    scanners on ``notify_user``'s own resolution, unchanged.
+
+    ``PendingPrDrainScanner`` is the undelivered-notify redelivery shape applied
+    to the PR ``ensure-pr`` deferred at push time — git has no client-side
+    post-push hook, so this tick is the only drain that obligation ever gets. It
+    is registered AFTER the head three, whose order is the statusline's FIFO
+    write contract (#1191).
+    """
+    backend = messaging_from_overlay()
+    user_id = resolve_user_id()
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
-        _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
+        _ScannerJob(scanner=PendingPrDrainScanner(), overlay=""),
+        _ScannerJob(scanner=UndeliveredNotifyScanner(backend=backend, user_id=user_id), overlay=""),
+        _ScannerJob(scanner=DeferredQuestionPosterScanner(backend=backend, user_id=user_id), overlay=""),
+        _ScannerJob(scanner=QuestionBacklogNagScanner(backend=backend, user_id=user_id), overlay=""),
+        _ScannerJob(scanner=WaitingDigestScanner(), overlay=""),
+        # SELFCATCH-1: global (walks every ticket across overlays via
+        # ``reconcile_work_state_all``), so it runs once per tick here rather
+        # than redundantly once per overlay in the housekeeping domain.
+        _ScannerJob(scanner=WorkStateScanner(), overlay=""),
     ]
 
 
@@ -88,7 +130,7 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     tag = backend.name
     jobs: list[_ScannerJob] = []
     if backend.external_db is not None:
-        from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
+        from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415 — tick-time import
 
         jobs.append(
             _ScannerJob(
@@ -105,9 +147,9 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         ),
     )
     jobs.extend(_tickets_per_host_jobs(backend, tag))
-    todo_sweep_scanner = _todo_sweep_scanner_for(backend)
-    if todo_sweep_scanner is not None:
-        jobs.append(_ScannerJob(scanner=todo_sweep_scanner, overlay=tag))
+    task_sweep_scanner = _task_sweep_scanner_for(backend)
+    if task_sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=task_sweep_scanner, overlay=tag))
     return jobs
 
 
@@ -153,7 +195,14 @@ def _ship_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Own-author PR scanner + (opt-in) GitLab-approvals poll, per host."""
+    """Own-author PR scanner + the auto-merge PR sweep + (opt-in) GitLab-approvals poll, per host.
+
+    #3244: the ``pr_sweep`` auto-merge engine lives HERE, in the ship domain, not
+    the review domain. The review loop is ``colleague_facing`` and is SKIPPED under
+    ``autonomous_away`` (loop_table gates it on availability), which starved the
+    merge path exactly when the operator was away. Ship is enabled and ticks every
+    5m, and its seed already claims the keystone merge, so the sweep belongs with it.
+    """
     tag = backend.name
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
     jobs: list[_ScannerJob] = []
@@ -182,6 +231,9 @@ def _ship_jobs_for_overlay(
                     overlay=tag,
                 ),
             )
+    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
+    if sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
     return jobs
 
 
@@ -190,65 +242,92 @@ def _review_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Reviewer-PR (per host) + broadcast / codex / PR-sweep companions."""
+    """The single review intake (#3569): self-authored + colleague PRs → one board.
+
+    Both feed the SAME ``reviewing`` → ``t3:reviewer`` (Claude) queue; the review
+    execution is blind to author. The author distinction lives HERE, upstream.
+
+    Self-authored open PRs are ALWAYS admitted — the ``ClaudeSelfPrReviewScanner``
+    sweeps the owner's own open PRs and enqueues one Claude ``reviewing`` task per
+    un-reviewed head SHA (per-SHA dedup = "since last review"); codex is no longer
+    the self-review mechanism. COLLEAGUE / requested-reviewer PRs are admitted only
+    when ``admit_colleague_prs_to_board`` is ON (the sole config knob) — the
+    ``ReviewerPrsScanner`` is built only then, so ``false`` keeps colleague PRs off
+    the board while self-review still runs.
+
+    #3244: the ``pr_sweep`` auto-merge engine lives in the ship domain, not here.
+    """
     tag = backend.name
     jobs: list[_ScannerJob] = []
-    for code_host in backend.hosts:
-        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
-        competing_prefixes = _competing_url_prefixes(
-            this_backend=backend,
-            code_host=code_host,
-            all_backends=all_backends,
-        )
-        jobs.append(
-            _ScannerJob(
-                scanner=ReviewerPrsScanner(
-                    host=code_host,
-                    identities=backend.identities,
-                    overlay_name=tag,
-                    allowed_url_prefixes=url_prefixes,
-                    competing_url_prefixes=competing_prefixes,
-                ),
-                overlay=tag,
-            ),
-        )
-    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
-    if sweep_scanner is not None:
-        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
-    codex_scanner = _codex_review_scanner_for(backend)
-    if codex_scanner is not None:
-        jobs.append(_ScannerJob(scanner=codex_scanner, overlay=tag))
+    self_pr_scanner = _self_pr_review_scanner_for(backend)
+    if self_pr_scanner is not None:
+        jobs.append(_ScannerJob(scanner=self_pr_scanner, overlay=tag))
+    if _admit_colleague_prs_to_board(tag):
+        reviewer_trusted, reviewer_admit_label = stranger_pr_admission(tag)
+        for code_host in backend.hosts:
+            url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
+            competing_prefixes = _competing_url_prefixes(
+                this_backend=backend,
+                code_host=code_host,
+                all_backends=all_backends,
+            )
+            # A colleague MR discovered from a Slack broadcast never gets a forge
+            # reviewer assignment, so ``ReviewerPrsScanner`` (a
+            # ``list_review_requested_prs`` filter) is structurally blind to it
+            # after the first pass. ``ReviewedPrHeadScanner`` watches the LOCAL
+            # reviewer tickets instead, so a discharged review re-opens on a new
+            # head whatever route discovered it.
+            jobs.extend(
+                (
+                    _ScannerJob(
+                        scanner=ReviewerPrsScanner(
+                            host=code_host,
+                            identities=backend.identities,
+                            overlay_name=tag,
+                            allowed_url_prefixes=url_prefixes,
+                            competing_url_prefixes=competing_prefixes,
+                            trusted_authors=reviewer_trusted,
+                            admit_label=reviewer_admit_label,
+                        ),
+                        overlay=tag,
+                    ),
+                    _ScannerJob(
+                        scanner=ReviewedPrHeadScanner(
+                            host=code_host,
+                            overlay_name=tag,
+                            allowed_url_prefixes=url_prefixes,
+                            competing_url_prefixes=competing_prefixes,
+                        ),
+                        overlay=tag,
+                    ),
+                )
+            )
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
+    if backend.messaging is not None:
+        # The colleague-visible review-DONE ack. Binding it to the reviewer
+        # ticket's DELIVERED state (not to an optional ``review record`` CLI
+        # call) is what makes a completed review visible to colleagues at all.
+        jobs.append(
+            _ScannerJob(
+                scanner=ReviewDoneAckScanner(messaging=backend.messaging, overlay_name=tag),
+                overlay=tag,
+            ),
+        )
     return jobs
 
 
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Assigned-issue intake (per host) + the single review-nag (overlay-scoped)."""
+    """The single review-nag (overlay-scoped). Intake is the unified ``issue_intake`` job."""
     tag = backend.name
-    jobs: list[_ScannerJob] = [
-        _ScannerJob(
-            scanner=AssignedIssuesScanner(
-                host=code_host,
-                ready_labels=backend.ready_labels,
-                exclude_labels=backend.exclude_labels,
-                auto_start=backend.auto_start_assigned_issues,
-                max_concurrent=backend.max_concurrent_auto_starts,
-                overlay_name=tag,
-                identities=backend.identities,
-            ),
-            overlay=tag,
-        )
-        for code_host in backend.hosts
-    ]
+    jobs: list[_ScannerJob] = []
     if backend.messaging is not None:
         jobs.extend(
             (
                 _ScannerJob(
                     scanner=ReviewNagScanner(
                         messaging=backend.messaging,
-                        user_slack_id=_user_slack_id_for_overlay(tag),
                         host=backend.host,
                         identities=backend.identities,
                     ),
@@ -272,58 +351,6 @@ def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     if backend.messaging is None:
         return []
     return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
-
-
-def _arch_review_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Periodic architectural-review scanner (core platform cadence)."""
-    scanner = _architectural_review_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _audit_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Failed-E2E Slack-post scanner driven by overlay watchers (#1295 cap E)."""
-    scanner = _failed_e2e_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay pull-main-clone scanner (workspace-repo fast-forward)."""
-    scanner = _pull_main_clone_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay issue-implementer scanner behind the default-OFF triple gate (#1553).
-
-    Empty by default — :func:`_issue_implementer_scanner_for` returns
-    ``None`` unless the overlay opts in and has in-flight budget — so this
-    domain slice contributes nothing to either fan-out path until an overlay
-    enables the loop, keeping the registry/legacy parity green.
-    """
-    scanner = _issue_implementer_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
-
-
-def _issue_disposition_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay issue-disposition scanner behind the default-OFF gate (#2122).
-
-    Empty by default — :func:`_issue_disposition_scanner_for` returns ``None``
-    unless the overlay opts in (``auto_disposition_enabled``) — so this domain
-    slice contributes nothing to either fan-out path until an overlay enables
-    the triage scanner, keeping the registry/legacy parity green.
-    """
-    scanner = _issue_disposition_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
 
 
 def _identity_groups_for_overlay(backend: OverlayBackends) -> tuple[tuple[str, ...], ...]:
@@ -355,6 +382,7 @@ _PER_OVERLAY_DOMAIN_BUILDERS: dict[Domain, _OverlayDomainBuilder] = {
     Domain.HOUSEKEEPING: _housekeeping_jobs_for_overlay,
     Domain.ISSUE_IMPLEMENTER: _issue_implementer_jobs_for_overlay,
     Domain.ISSUE_DISPOSITION: _issue_disposition_jobs_for_overlay,
+    Domain.TRIAGE_ASSESSOR: _triage_assessor_jobs_for_overlay,
 }
 
 
@@ -440,7 +468,7 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
     """DM the user that a scanner is degraded — once per day per class (#1287).
 
     Idempotency key is ``scanner_error:<scanner>:<error_class>:<utc-date>``
-    so :func:`teatree.notify.notify_user`'s ``BotPing`` ledger dedups
+    so :func:`teatree.core.notify.notify_user`'s ``BotPing`` ledger dedups
     repeat ticks of the same failure inside one UTC day. The next day
     re-notifies — if the issue is still there, the user wants the
     reminder; if it cleared, no DM goes out.
@@ -458,16 +486,63 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
     if exc.detail:
         text = f"{text}\n_{exc.detail}_"
     try:
-        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception:
         logger.exception("Scanner-error notify_with_fallback failed for %s", label)
 
 
-def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
-    """Build a per-overlay failed-E2E scanner from overlay watchers (#1295 cap E)."""
-    from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
+    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag.
 
-    return failed_e2e_scanner_for(backend)
+    The single ordered inbound scanner set both the per-overlay
+    :func:`_messaging_jobs_for_backend` and the single-overlay
+    :func:`single_overlay_messaging_jobs` build from, so the two paths cannot
+    re-diverge on the inbound set (#23) — a new inbound scanner is added HERE
+    once and every messaging fan-out picks it up.
+
+    ``SlackMentionsScanner`` owns the JSONL drain and fans reaction events into
+    the backend's reactions queue; ``SlackReviewIntentScanner`` must run after it
+    so the queue is populated for the same tick. ``SlackReviewIntentScanner`` is
+    also the SINGLE owner of the ``slack-reactions.jsonl`` atomic-rename drain, so
+    the 👀-back self-ack (owner reacts to teatree's OWN message → 👀 back) rides
+    INSIDE it — consuming the same drained snapshot rather than racing a second
+    drain (#1047).
+    """
+    return [
+        _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
+        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
+        # #1174 applies each Slack reply to its live DeferredQuestion — the
+        # scanner the two single-overlay builders had silently dropped (#23).
+        _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),
+        # Owns the reactions-JSONL drain; the 👀-back self-ack rides inside it.
+        _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
+        # #1130 RED CARD detection — user's structural "fix it upstream"
+        # signal. Runs alongside the review-intent scanner because both
+        # drain reactions; this one only cares about ``:red_circle:`` /
+        # ``:no_entry_sign:`` plus the literal phrase in DMs.
+        _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
+        # #8: forge-approval poll that revives the M7 merge_authorization
+        # waiting lane — drives REVIEW_REQUESTED PRs to APPROVED so the
+        # waiting-digest DM + the (on-behalf-gated) #961 approval reaction fire.
+        # Resolves its own code host from the overlay; no messaging dependency.
+        _ScannerJob(scanner=PrApprovalScanner(overlay=tag), overlay=tag),
+    ]
+
+
+def single_overlay_messaging_jobs(messaging: MessagingBackend) -> list[_ScannerJob]:
+    """Single-overlay (``overlay=""``) inbound-messaging scanner jobs — the #23 SSOT.
+
+    Both single-overlay callers import THIS builder — the inbox mini-loop's
+    single-overlay branch and ``build_default_jobs``' single-overlay messaging
+    branch — so they can never re-diverge on the inbound scanner set (the #23
+    drift, where both had dropped ``AskUserQuestionReplyScanner``). It is the
+    ``overlay=""`` projection of the same inbound scanners
+    :func:`_messaging_jobs_for_backend` fans out per overlay minus
+    ``ReviewNagScanner``, pinned identical by the coverage parity lane. A later
+    single-overlay inbound scanner registers by extending
+    :func:`_inbound_messaging_jobs`, never by re-forking this builder.
+    """
+    return _inbound_messaging_jobs(messaging, "")
 
 
 def _messaging_jobs_for_backend(
@@ -478,36 +553,21 @@ def _messaging_jobs_for_backend(
 ) -> list[_ScannerJob]:
     """Per-overlay Slack scanners that need a resolved messaging backend.
 
-    ``SlackMentionsScanner`` owns the JSONL drain and fans reaction
-    events into the backend's reactions queue; ``SlackReviewIntentScanner``
-    must run after it so the queue is populated for the same tick.
-    Caller must check ``backend.messaging is not None`` before invoking;
-    a defensive early-return keeps the type narrow without a bare
-    ``assert``.
+    Caller must check ``backend.messaging is not None`` before invoking; a
+    defensive early-return keeps the type narrow without a bare ``assert``.
 
-    ``include_review_nag`` lets a high-cadence caller (the inbox mini-loop)
-    drop ``ReviewNagScanner`` so the nag is emitted by exactly one owner —
-    the followup mini-loop, whose 10-minute cadence matches the legacy
-    single emission. The legacy monolithic fan-out keeps the default.
+    ``include_review_nag`` lets a high-cadence caller (the inbox mini-loop) drop
+    ``ReviewNagScanner`` so the nag is emitted by exactly one owner — the followup
+    mini-loop, whose 10-minute cadence matches the legacy single emission. The
+    legacy monolithic fan-out keeps the default.
     """
     messaging = backend.messaging
     if messaging is None:
         return []
-    jobs = [
-        _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
-        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
-        _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),
-        _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
-        # #1130 RED CARD detection — user's structural "fix it upstream"
-        # signal. Runs alongside the review-intent scanner because both
-        # drain reactions; this one only cares about ``:red_circle:`` /
-        # ``:no_entry_sign:`` plus the literal phrase in DMs.
-        _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
-    ]
+    jobs = _inbound_messaging_jobs(messaging, tag)
     if include_review_nag:
         nag = ReviewNagScanner(
             messaging=messaging,
-            user_slack_id=_user_slack_id_for_overlay(tag),
             host=backend.host,
             identities=backend.identities,
         )

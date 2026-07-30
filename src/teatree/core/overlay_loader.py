@@ -1,11 +1,11 @@
-"""Discover and cache overlay instances from entry points and TOML config.
+"""Discover and cache overlay instances from entry points and the DB overlays registry.
 
 Unifies both discovery mechanisms so that ``get_overlay()`` works regardless
-of whether the overlay was registered via ``pip install`` (entry point) or
-``~/.teatree.toml`` (TOML config).
+of whether the overlay was registered via ``pip install`` (entry point) or the
+DB-home ``overlays`` registry (injected into ``load_config().raw``).
 """
 
-import importlib
+import importlib.metadata
 import logging
 import os
 from collections.abc import Callable
@@ -15,7 +15,10 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.core.overlay_conformance import conforming_or_none, conforming_or_raise
+from teatree.core.overlay_name_resolution import cwd_overlay_name, overlay_name_of, resolve_overlay_name
 from teatree.core.overlay_url import get_overlay_for_url
+from teatree.core.overlays.overlay_code_defaults_provider import build_and_register as _register_overlay_code_defaults
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -29,7 +32,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "OverlayConfigResolver",
     "frontend_repos_for_overlay",
-    "get_all_overlay_names",
     "get_all_overlays",
     "get_overlay",
     "get_overlay_for_repo",
@@ -37,8 +39,10 @@ __all__ = [
     "get_overlay_for_url",
     "get_overlay_for_worktree",
     "infer_overlay_for_url",
+    "overlay_name_of",
     "reset_overlay_cache",
     "resolve_overlay_name",
+    "ticket_repo_is_overlay_own",
 ]
 
 
@@ -47,7 +51,8 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     if not overlays:
         msg = (
             "No teatree overlays found. Install a package that provides a"
-            " 'teatree.overlays' entry point, or add one to ~/.teatree.toml."
+            " 'teatree.overlays' entry point, or add one to the DB overlays registry"
+            " with `t3 <overlay> config_setting set overlays <value>`."
         )
         raise ImproperlyConfigured(msg)
 
@@ -63,6 +68,10 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
 
     if len(overlays) == 1:
         return next(iter(overlays.values()))
+
+    ambient = cwd_overlay_name(overlays)
+    if ambient is not None:
+        return overlays[ambient]
 
     msg = f"Multiple overlays found ({', '.join(sorted(overlays))}). Pass an explicit name to get_overlay()."
     raise ImproperlyConfigured(msg)
@@ -124,7 +133,7 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
     rather than guess wrong. An overlay whose ``get_workspace_repos()``
     raises is skipped so one broken overlay can't poison resolution.
     """
-    from teatree.utils.git import remote_slug  # noqa: PLC0415
+    from teatree.utils.git import remote_slug  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     slug = remote_slug(repo=repo)
     if not slug:
@@ -145,30 +154,11 @@ def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
                 matches.append(overlay)
                 break
 
-    if len(matches) == 1:
-        return matches[0]
-    return None
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_all_overlays() -> "dict[str, OverlayBase]":
     return dict(_discover_overlays())
-
-
-def get_all_overlay_names() -> list[str]:
-    """Return all overlay names, including path-only TOML entries.
-
-    Unlike ``get_all_overlays()``, this includes TOML entries that declare a
-    ``path`` but no ``class`` — they can't be instantiated as OverlayBase but
-    should appear when listing overlays known to teatree (for ticket filtering, etc.).
-    """
-    from teatree.config import load_config  # noqa: PLC0415
-
-    names = set(_discover_overlays())
-    config = load_config()
-    for name, cfg in config.raw.get("overlays", {}).items():
-        if cfg.get("path"):
-            names.add(name)
-    return sorted(names)
 
 
 class OverlayConfigResolver:
@@ -181,8 +171,8 @@ class OverlayConfigResolver:
     reached through the CLI subprocess bridge), so ``get_overlay`` raises
     ``Overlay not found`` for it even though it is a known, registered overlay.
     For that case the field is read straight from the ``[overlays.<name>]``
-    TOML table — the same config surface :func:`get_all_overlay_names` already
-    trusts for path-only entries.
+    TOML table — the same config surface :meth:`all_names` already trusts for
+    path-only entries.
 
     Every field a gate resolves per overlay (frontend repos for the local-E2E
     gate, ``owned_repos`` for the fail-CLOSED scope gate) is registered in
@@ -190,6 +180,24 @@ class OverlayConfigResolver:
     one of those gates reads through ``get_all_overlays()`` alone (where it is
     invisible). The symmetry fitness test pins that registry.
     """
+
+    @classmethod
+    def all_names(cls) -> list[str]:
+        """Return all overlay names, including path-only TOML entries.
+
+        Unlike ``get_all_overlays()``, this includes TOML entries that declare
+        a ``path`` but no ``class`` — they can't be instantiated as
+        OverlayBase but should appear when listing overlays known to teatree
+        (for ticket filtering, etc.).
+        """
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+        names = set(_discover_overlays())
+        config = load_config()
+        for name, cfg in config.raw.get("overlays", {}).items():
+            if cfg.get("path"):
+                names.add(name)
+        return sorted(names)
 
     @classmethod
     def _resolve(cls, name: str | None, attr: str, empty: _FieldT) -> _FieldT:
@@ -202,7 +210,7 @@ class OverlayConfigResolver:
         posture for a genuinely unknown overlay instead of silently inferring
         the empty value.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         resolved = _canonical_overlay_name(name) if name else None
         try:
@@ -249,7 +257,7 @@ class OverlayConfigResolver:
         carry an empty ``owned_repos``, or are instantiable (already covered by
         ``get_all_overlays()``) are excluded.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         instantiable = set(_discover_overlays())
         overlays_cfg = load_config().raw.get("overlays", {})
@@ -277,7 +285,7 @@ class OverlayConfigResolver:
         so inference can attribute a URL to it. Instantiable overlays (already
         covered by ``get_all_overlays()``) are excluded to avoid double-counting.
         """
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         instantiable = set(_discover_overlays())
         overlays_cfg = load_config().raw.get("overlays", {})
@@ -308,32 +316,6 @@ def frontend_repos_for_overlay(name: str | None) -> list[str]:
     kept for the existing local-E2E gate caller (``core.gates.dod_gate``).
     """
     return OverlayConfigResolver.frontend_repos(name)
-
-
-def resolve_overlay_name(name: str) -> str | None:
-    """Return the canonical registered overlay name for *name*, or ``None``.
-
-    The single source of truth for "is this overlay name dispatchable, and
-    under what canonical name". A name that is already a registered overlay
-    returns unchanged; a legacy short alias folds onto its registered
-    entry-point via the same ``_match_canonical_ep`` rule the config loader
-    uses (``teatree`` → ``t3-teatree``). A name that matches nothing — a
-    removed overlay, a synthetic scanner tag, a typo — returns ``None`` so
-    callers can fail it permanently instead of crashing on every retry
-    (souliane/teatree#1959 poison-pill).
-
-    Callers asking only "is this dispatchable?" test ``resolve_overlay_name(x)
-    is not None``; an empty/blank ``name`` is the ambient single-overlay default
-    and is the caller's responsibility to special-case (it returns ``None``).
-    """
-    from teatree.config import _match_canonical_ep  # noqa: PLC0415
-
-    if not name:
-        return None
-    known = set(get_all_overlay_names())
-    if name in known:
-        return name
-    return _match_canonical_ep(name, known)
 
 
 def _url_to_slug(url: str) -> str:
@@ -446,6 +428,57 @@ def infer_overlay_for_url(url: str) -> str:
     return bare_matches[0] if len(bare_matches) == 1 else ""
 
 
+def ticket_repo_is_overlay_own(ticket: "Ticket") -> bool:
+    """True iff *ticket*'s issue lives in its overlay's OWN primary repo(s).
+
+    Distinguishes an overlay's canonical repos (``get_repos()``) from its
+    broader ``get_workspace_repos()`` routing set. An overlay may declare a
+    sibling project's repo(s) in its own ``workspace_repos`` purely so
+    ``infer_overlay_for_url`` / the lifecycle machinery has *some* overlay to
+    dispatch tickets through, when that sibling project's own repo-ownership
+    config does not enumerate its own meta/tooling repo. A ticket reached
+    only through that routing convenience is not "this overlay's own
+    codebase" for a gate that means to scope to it (e.g. the review_skill
+    evidence gate, #1539 / #2895).
+
+    Uses the same two-tier slug matching :func:`infer_overlay_for_url`
+    already uses (:func:`_full_slug_owns` / :func:`_bare_name_owns`), just
+    scoped to ``get_repos()`` instead of ``get_workspace_repos()``.
+
+    Fails OPEN (returns ``True``, i.e. "treat as the overlay's own repo") on
+    every undeterminable case — no ``issue_url``, an unparsable URL, an
+    unresolvable overlay, or a ``get_repos()`` that raises or returns nothing
+    — so a caller that narrows behaviour based on this function never widens
+    the narrowing beyond the specific routed-through case it targets.
+    """
+    if not ticket.issue_url:
+        return True
+    url_slug = _url_to_slug(ticket.issue_url)
+    if not url_slug:
+        return True
+
+    try:
+        overlay = get_overlay_for_ticket(ticket)
+    except ImproperlyConfigured:
+        return True
+
+    try:
+        repos = [r for r in overlay.get_repos() or [] if isinstance(r, str)]
+    except Exception:
+        logger.warning(
+            "Overlay %r get_repos() failed during ticket repo-ownership check",
+            ticket.overlay,
+            exc_info=True,
+        )
+        return True
+
+    return (
+        not repos
+        or any(_full_slug_owns(repo, url_slug) for repo in repos)
+        or any(_bare_name_owns(repo, url_slug) for repo in repos)
+    )
+
+
 def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":
     """``(name, repo_slugs)`` for every overlay that can own a URL.
 
@@ -472,9 +505,13 @@ def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":
 
 @lru_cache(maxsize=1)
 def _discover_overlays() -> "dict[str, OverlayBase]":
-    import importlib.metadata  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+    # ``ep.load()`` eagerly imports overlay modules that define Django models at
+    # module scope; a caller with ``DJANGO_SETTINGS_MODULE`` pre-set but ``setup()``
+    # unrun would otherwise hit ``AppRegistryNotReady`` here (#3567). Idempotent.
+    ensure_django()
 
     result: dict[str, OverlayBase] = {}
 
@@ -486,14 +523,14 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
             msg = f"Entry point {ep.name!r} ({ep.value}) does not subclass OverlayBase"
             raise ImproperlyConfigured(msg)
         overlay = cls()
-        # Apply [overlays.<name>] TOML overrides so entry-point overlays
-        # are configurable from ~/.teatree.toml on the same footing as
-        # TOML-only overlays. Without this, OverlayConfig subclasses
+        # Apply [overlays.<name>] overrides so entry-point overlays are
+        # configurable from the DB overlays registry on the same footing as
+        # registry-only overlays. Without this, OverlayConfig subclasses
         # would have to opt in by passing overlay_name to super().__init__.
         overlay.config.apply_toml_overrides(ep.name)
-        result[ep.name] = overlay
+        result[ep.name] = conforming_or_raise(overlay, ep.name)
 
-    # 2. TOML-configured overlays (not already found via entry points)
+    # 2. Registry-configured overlays (not already found via entry points)
     result.update(_discover_toml_overlays(OverlayBase, set(result)))
 
     return result
@@ -503,8 +540,8 @@ def _discover_toml_overlays(
     base_class: type["OverlayBase"],
     already_found: set[str],
 ) -> "dict[str, OverlayBase]":
-    """Discover overlays from ``~/.teatree.toml`` that aren't already entry-point-registered."""
-    from teatree.config import load_config  # noqa: PLC0415
+    """Discover overlays from the DB overlays registry that aren't already entry-point-registered."""
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result: dict[str, OverlayBase] = {}
     config = load_config()
@@ -523,12 +560,12 @@ def _discover_toml_overlays(
 
         try:
             module_path, class_name = class_path.rsplit(":", 1)
-            mod = importlib.import_module(module_path)
-            cls = getattr(mod, class_name)
+            cls = getattr(importlib.import_module(module_path), class_name)
             if not issubclass(cls, base_class):
                 logger.warning("TOML overlay %r class %s does not subclass OverlayBase", name, class_path)
                 continue
-            result[name] = cls()
+            if instance := conforming_or_none(cls(), name):
+                result[name] = instance
         except (ImportError, AttributeError) as exc:
             logger.warning("TOML overlay %r failed to load class %s: %s", name, class_path, exc)
 
@@ -563,7 +600,15 @@ def reset_overlay_cache() -> None:
     pollution incident this design closes (originally surfaced by
     ``slack_bridge_e2e``, then independently by ``tests/teatree_core``).
     """
-    import sys  # noqa: PLC0415
+    import sys  # noqa: PLC0415 — deferred: loaded only on this code path
 
     _discover_overlays.cache_clear()
     sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)
+
+
+# Register the overlay-code-default provider (#36) at import time, injecting this
+# module's ``get_overlay`` — mirrors ``teatree.cli`` registering the command-catalogue
+# provider. The seam needs ``get_overlay`` to do anything, so registering here makes
+# the provider live exactly when it can be useful; before this module is imported the
+# seam fails safe to the dataclass default.
+_register_overlay_code_defaults(get_overlay)

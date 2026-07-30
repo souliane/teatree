@@ -69,12 +69,13 @@ class TestReconcileReviewed(TestCase):
 
         Pins the contract so a future added state cannot silently re-break
         the gate (the recurring #798/#799/#808 class). Only SHIPPED /
-        MERGED / DELIVERED / IGNORED are terminal.
+        MERGED / DELIVERED / REVIEW_POSTED / IGNORED are terminal.
         """
         terminal = {
             Ticket.State.SHIPPED,
             Ticket.State.MERGED,
             Ticket.State.DELIVERED,
+            Ticket.State.REVIEW_POSTED,
             Ticket.State.IGNORED,
         }
         non_terminal = [s for s in Ticket.State if s not in terminal]
@@ -85,8 +86,13 @@ class TestReconcileReviewed(TestCase):
             assert ticket.state == Ticket.State.REVIEWED, f"{state} did not reconcile"
 
     def test_terminal_states_cannot_reconcile_backwards(self) -> None:
-        """MERGED / DELIVERED / IGNORED stay terminal alongside SHIPPED."""
-        for state in (Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.IGNORED):
+        """MERGED / DELIVERED / REVIEW_POSTED / IGNORED stay terminal alongside SHIPPED."""
+        for state in (
+            Ticket.State.MERGED,
+            Ticket.State.DELIVERED,
+            Ticket.State.REVIEW_POSTED,
+            Ticket.State.IGNORED,
+        ):
             ticket = Ticket.objects.create(overlay="test", state=state)
             with pytest.raises(TransitionNotAllowed):
                 ticket.reconcile_reviewed()

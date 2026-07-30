@@ -8,7 +8,7 @@ targets and ``python -m`` entry points name the defining submodule, never this
 facade.
 """
 
-from teatree.skill_support.deps import resolve_all, resolve_companions, resolve_requires
+from teatree.skill_support.deps import companion_suggestions, resolve_all, resolve_requires
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy, SkillSelectionResult
 from teatree.skill_support.map import load_skill_delegation, parse_skill_delegation_map, render_skill_delegation_map
 from teatree.skill_support.ref_validator import validate_skill_refs
@@ -18,11 +18,11 @@ __all__ = [
     "DEFAULT_SKILLS_DIR",
     "SkillLoadingPolicy",
     "SkillSelectionResult",
+    "companion_suggestions",
     "load_skill_delegation",
     "parse_skill_delegation_map",
     "render_skill_delegation_map",
     "resolve_all",
-    "resolve_companions",
     "resolve_requires",
     "validate_directory",
     "validate_skill_md",

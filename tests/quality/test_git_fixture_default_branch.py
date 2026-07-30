@@ -279,6 +279,9 @@ def scan_tree(root: Path) -> list[GitInitFinding]:
     return findings
 
 
+# Whole-tree AST scan of every tests/**/*.py — headroom over the 60s default
+# pytest-timeout so it never trips under concurrent-coder load in the push hook.
+@pytest.mark.timeout(300)
 class TestLiveTree:
     def test_no_real_git_fixture_assumes_the_default_branch(self) -> None:
         findings = scan_tree(_TESTS_ROOT)

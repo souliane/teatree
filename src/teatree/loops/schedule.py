@@ -9,14 +9,15 @@ own next-tick countdown. The infra ``LoopLease`` rows are read in
 forbids :mod:`teatree.loop` from importing :mod:`teatree.loops`, so this
 module owns the read and is wired into the statusline via the
 :func:`teatree.loop.statusline.set_mini_loop_schedules_reader` injection seam
-(installed by the ``loop_tick`` management command), mirroring the
+(installed by each per-loop ``loops_tick`` command), mirroring the
 ``jobs_builder`` seam :func:`teatree.loop.tick.run_tick` already uses.
 
 The next-fire instant comes from :func:`teatree.loops.live.build_report` — the
-same live snapshot ``t3 loop list`` renders (#1744) — so the statusline
-countdown, ``t3 loop list``, and the orchestrator's own cadence gate
-(:func:`teatree.loops.gating.elapsed_and_enabled`) all read one source of
-truth: a loop reads ``due`` exactly when the gate would fire it.
+same live snapshot ``t3 loop list`` renders (#1744), computed from the ``Loop``
+table's ``last_run_at`` cadence anchor — so the statusline countdown,
+``t3 loop list``, and the loop-table fan-out gate
+(:func:`teatree.loops.loop_table.build_loop_table_jobs` via ``Loop.is_due``) all read
+one source of truth: a loop reads ``due`` exactly when the gate would fire it.
 """
 
 import datetime as dt
@@ -31,11 +32,15 @@ def mini_loop_schedules() -> list[tuple[str, dt.datetime | None, int]]:
     resolved cadence; ``None`` when the loop has never fired (no marker row) —
     the statusline renders that as ``due``. ``cadence_seconds`` is that resolved
     cadence — the denominator the statusline colors each chunk's imminence
-    against. Disabled loops are omitted, and the snapshot already returns
-    mini-loops sorted by name for a deterministic render.
+    against. The filter is the loop tick's OWN effective verdict (``entry.admitted``):
+    NOT held, then the #3159 preset mask over ``Loop.enabled``. So a preset-masked-off
+    loop is omitted (no countdown for a tick that skips it) and a preset-forced-ON
+    base-disabled loop appears (the tick will fire it) — the statusline stays in
+    lockstep with what actually runs. The snapshot already returns mini-loops sorted
+    by name for a deterministic render.
     """
     return [
-        (entry.name, entry.next_fire_at, entry.cadence_seconds) for entry in build_report().mini_loops if entry.enabled
+        (entry.name, entry.next_fire_at, entry.cadence_seconds) for entry in build_report().mini_loops if entry.admitted
     ]
 
 

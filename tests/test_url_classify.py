@@ -44,7 +44,7 @@ class TestPrRefAndRepoAndIid:
         ref = pr_ref(_GITHUB_PR)
         assert ref is not None
         assert ref.slug == "souliane/teatree"
-        assert ref.number == 1573
+        assert ref.pr_id == 1573
         assert ref.host_kind == "github"
 
     def test_repo_and_iid_github(self) -> None:

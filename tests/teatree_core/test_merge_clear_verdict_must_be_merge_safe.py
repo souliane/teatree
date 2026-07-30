@@ -24,9 +24,18 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear
 from tests.factories import _FORTY_HEX, MergeClearFactory, TicketFactory
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these pre-date it and target other concerns, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+
 
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
 _HOLD_VERDICTS = ("pending", "failed")
@@ -46,6 +55,9 @@ def _gh_stub_live_green(argv: list[str]) -> tuple[int, str, str]:
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        # Base branch "main"; an empty required-context gate → the live rollup verdict stands.
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
     return (0, "", "")
@@ -73,7 +85,10 @@ class TestNonGreenVerdictNeverIssuable(TestCase):
                     ),
                 )
                 assert not result["issued"]
-                assert "green" in cast("str", result["error"]).lower()
+                # Split messages (FIX-EXPEDITE): a pending snapshot is refused as
+                # "issuable only via the expedite waiver"; a failed one as "can never
+                # authorize a merge". Both name their verdict class.
+                assert verdict in cast("str", result["error"]).lower()
         assert MergeClear.objects.count() == 0
 
     def test_clear_with_green_verdict_is_issued(self) -> None:
@@ -112,7 +127,9 @@ class TestNonGreenVerdictNeverMerges(TestCase):
                 ticket = clear.ticket
                 with (
                     patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub_live_green),
-                    pytest.raises(MergePreconditionError, match="not green"),
+                    # FIX-EXPEDITE split: pending refuses with "not green" (no waiver
+                    # presented), failed refuses with "FAILED required check".
+                    pytest.raises(MergePreconditionError, match=r"not green|FAILED required check"),
                 ):
                     merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
                 ticket.refresh_from_db()
@@ -124,6 +141,8 @@ class TestNonGreenVerdictNeverMerges(TestCase):
     def test_green_verdict_clear_merges_through_the_keystone(self) -> None:
         clear = MergeClearFactory()
         ticket = clear.ticket
+        # Seed the #2829 sibling verdict the real ``clear`` path records.
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub_live_green):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()

@@ -29,7 +29,7 @@ class LocalStackQueueDrainerScanner:
     name: str = "local_stack_queue_drainer"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.models.local_stack_queue import LocalStackQueueItem  # noqa: PLC0415
+        from teatree.core.models.local_stack_queue import LocalStackQueueItem  # noqa: PLC0415 — lazy ORM import
 
         try:
             due = list(

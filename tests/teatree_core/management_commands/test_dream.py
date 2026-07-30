@@ -8,7 +8,9 @@ engine is a typed seam.
 """
 
 import datetime as dt
+import tempfile
 from io import StringIO
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import patch
 
@@ -18,16 +20,65 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ConsolidatedMemory, DreamRunMarker, LoopLease, MiniLoopMarker
-from teatree.loops.dream.engine import DreamRunResult
+from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
+from teatree.loops.dream.engine import (
+    ConsolidationExtract,
+    DistilledCluster,
+    DreamRunResult,
+    TranscriptMember,
+    WeightedSnippet,
+)
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+
+
+def _enable_dream_loop(*, last_run_at: "dt.datetime | None" = None) -> None:
+    """Seed an ENABLED, interval-cadenced ``dream`` Loop row — the ONE cadence ledger.
+
+    ``last_run_at=None`` ⇒ due immediately; a recent ``last_run_at`` ⇒ not due.
+    """
+    Loop.objects.update_or_create(
+        name=DREAM_LOOP_NAME,
+        defaults={
+            "script": "src/teatree/loops/dream/loop.py",
+            "prompt": None,
+            "delay_seconds": 86400,
+            "daily_at": None,
+            "enabled": True,
+            "last_run_at": last_run_at,
+        },
+    )
+
+
+class _DreamTickEnabledMixin:
+    """Mixin for tests that drive ``dream tick`` to RUN.
+
+    The dream Loop row ships PAUSED (#2513) and the cron gate now routes through the
+    single enable verdict (``Loop.enabled`` + ``LoopState``), so a tick SKIPs until
+    the row is enabled. These tests enable an interval-cadenced, due dream row.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        _enable_dream_loop(last_run_at=None)
+
 
 if TYPE_CHECKING:
     from teatree.loops.dream.gates import DreamQaReport
 
 
 def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
-    return DreamRunResult(clusters_recorded=1, members_replayed=3, dry_run=dry_run)
+    # A real (memory-only, no violation) extract so the compliance-measurement phase
+    # — which now runs on EVERY pass and reuses ``result.extract`` — has something to
+    # measure. No correction turn ⇒ 0 violations ⇒ an empty compliance summary clause.
+    snippet = WeightedSnippet(path=Path("/memory/feedback_x.md"), kind="memory", weight=90, text="a durable lesson")
+    extract = ConsolidationExtract(snippets=(snippet,), truncated=False)
+    return DreamRunResult(
+        clusters_recorded=1,
+        members_replayed=3,
+        dry_run=dry_run,
+        snippets_distilled=len(extract.snippets),
+        extract=extract,
+    )
 
 
 class DreamRunStampsMarkerTestCase(TestCase):
@@ -116,17 +167,34 @@ class DreamProposeEvalsFlagTestCase(TestCase):
             call_command("dream", "run", "--propose-evals", stdout=StringIO())
         assert seen["eval_proposals"] is not None
 
-    def test_env_enables_the_phase_for_the_cadence_tick(self) -> None:
+    def test_db_setting_enables_the_phase_for_the_run_path(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("dream_propose_evals", value=True)
         seen: dict[str, object] = {}
         with (
             patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
-            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "1"}),
+            patch.dict("os.environ", {}, clear=False) as env,
         ):
+            env.pop("T3_DREAM_PROPOSE_EVALS", None)
             call_command("dream", "run", stdout=StringIO())
         assert seen["eval_proposals"] is not None
 
+    def test_db_setting_off_keeps_the_run_path_disabled(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
-class DreamNightlyTickRequestsProposalsTestCase(TestCase):
+        ConfigSetting.objects.set_value("dream_propose_evals", value=False)
+        seen: dict[str, object] = {}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
+            patch.dict("os.environ", {}, clear=False) as env,
+        ):
+            env.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "run", stdout=StringIO())
+        assert seen["eval_proposals"] is None
+
+
+class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase):
     """The cadence-driven ``tick`` now requests eval proposals by default (#2346)."""
 
     @staticmethod
@@ -205,7 +273,7 @@ class DreamNightlyTickRequestsProposalsTestCase(TestCase):
         assert "withheld 1 unvalidated candidate(s)" in out
 
 
-class DreamDeriveEvalsWiringTestCase(TestCase):
+class DreamDeriveEvalsWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """The default-OFF LLM full-scenario derivation only runs when its toggle is on (#2447)."""
 
     def test_derivation_skipped_when_toggle_off(self) -> None:
@@ -256,7 +324,7 @@ class DreamDeriveEvalsWiringTestCase(TestCase):
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
 
-class DreamLiveValidationGateWiringTestCase(TestCase):
+class DreamLiveValidationGateWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """``--validate-live`` (folded into ``--full``) supplies the metered live validator.
 
     Promotion now lands a scenario ONLY when it passes a live pass@k. The nightly
@@ -359,11 +427,13 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
-    #: All four phase toggles cleared to default-ON unless a test overrides one.
+    #: All phase toggles cleared to default-ON unless a test overrides one.
     _PHASE_ENV: ClassVar[dict[str, str]] = {
         "T3_DREAM_PROPOSE_EVALS": "",
         "T3_DREAM_CROSS_LINK": "",
+        "T3_DREAM_MERGE": "",
         "T3_DREAM_REINDEX": "",
         "T3_DREAM_DECAY": "",
     }
@@ -395,6 +465,166 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         assert "[[mem_b]]" not in (self.memdir / "mem_a.md").read_text(encoding="utf-8")
         assert "cross-linked" not in stdout.getvalue()
 
+    def test_merge_phase_collapses_near_duplicates_and_index_shrinks(self) -> None:
+        # Two NEAR-DUPLICATE feedback files (Jaccard >= 0.85, same family) collapse
+        # to one survivor; the index lists one fewer pointer afterwards (#2723).
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        (self.memdir / "feedback_dup_a.md").write_text(
+            f"---\nname: feedback_dup_a\ntype: feedback\n---\n{topic} FIRST distinct detail\n", encoding="utf-8"
+        )
+        (self.memdir / "feedback_dup_b.md").write_text(
+            f"---\nname: feedback_dup_b\ntype: feedback\n---\n{topic} SECOND distinct detail\n", encoding="utf-8"
+        )
+        stdout = StringIO()
+        self._tick(stdout)
+        out = stdout.getvalue()
+        assert "merged" in out
+        survivors = {p.name for p in self.memdir.glob("feedback_dup_*.md")}
+        assert len(survivors) == 1
+        # The merged-away file is archived (moved), never deleted.
+        assert (self.memdir / "archive").is_dir()
+        # The re-index dropped the absorbed pointer: index lists one feedback_dup file.
+        index = (self.memdir / "MEMORY.md").read_text(encoding="utf-8")
+        assert index.count("feedback_dup_") == 1
+
+    def test_merge_disabled_keeps_both_near_duplicates(self) -> None:
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        (self.memdir / "feedback_dup_a.md").write_text(
+            f"---\nname: feedback_dup_a\ntype: feedback\n---\n{topic} FIRST\n", encoding="utf-8"
+        )
+        (self.memdir / "feedback_dup_b.md").write_text(
+            f"---\nname: feedback_dup_b\ntype: feedback\n---\n{topic} SECOND\n", encoding="utf-8"
+        )
+        stdout = StringIO()
+        self._tick(stdout, env={"T3_DREAM_MERGE": "0"})
+        assert "merged" not in stdout.getvalue()
+        assert (self.memdir / "feedback_dup_a.md").exists()
+        assert (self.memdir / "feedback_dup_b.md").exists()
+
+    def _write_binding_conflict(self) -> None:
+        # Isolate: drop the setUp memories so only the binding pair is present.
+        (self.memdir / "mem_a.md").unlink()
+        (self.memdir / "mem_b.md").unlink()
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        (self.memdir / "feedback_bind_one.md").write_text(
+            f"---\nname: feedback_bind_one\ntype: feedback\n---\n{topic} BINDING always push first\n", encoding="utf-8"
+        )
+        (self.memdir / "feedback_bind_two.md").write_text(
+            f"---\nname: feedback_bind_two\ntype: feedback\n---\n{topic} BINDING never push first\n", encoding="utf-8"
+        )
+
+    def test_two_binding_conflicts_file_a_reconciliation_ticket(self) -> None:
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
+
+        self._write_binding_conflict()
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.return_value = []
+        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9100"}
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(host, "souliane/teatree"),
+        ):
+            self._tick(stdout)
+        # The two BINDING files were NOT merged; a reconciliation ticket was filed.
+        assert "merged" not in stdout.getvalue()
+        assert "filed 1 binding-reconciliation ticket" in stdout.getvalue()
+        assert (self.memdir / "feedback_bind_one.md").exists()
+        assert (self.memdir / "feedback_bind_two.md").exists()
+        host.create_issue.assert_called_once()
+
+    def test_binding_conflict_with_no_host_is_warned_not_crashed(self) -> None:
+        self._write_binding_conflict()
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(None, "souliane/teatree"),
+        ):
+            self._tick(stdout)
+        assert "no teatree code host resolved" in stdout.getvalue()
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_merge_phase_failure_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with patch("teatree.loops.dream.merge.merge_memories", side_effect=RuntimeError("merge boom")):
+            self._tick(stdout)
+        out = stdout.getvalue()
+        assert "WARN merge raised for" in out
+        assert "RuntimeError: merge boom" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_budget_tier_archives_duplicates_and_index_drops_under_budget(self) -> None:
+        # #2723 anti-vacuous end-to-end: an over-budget index built from >90d
+        # near-duplicate files -> decay archives >0 AND MEMORY.md falls back under
+        # the gate-(d) load budget in the same pass.
+        import os  # noqa: PLC0415
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        from teatree.loops.dream import gates  # noqa: PLC0415
+
+        (self.memdir / "mem_a.md").unlink()
+        (self.memdir / "mem_b.md").unlink()
+        old = (datetime.now(tz=UTC) - timedelta(days=120)).timestamp()
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        # Many >90d near-duplicate feedback files (pairs of the same lesson) with
+        # long descriptive slugs so even the bare `- name.md` pointer index is
+        # well over the ~24 KB session-load byte budget.
+        slug_tail = "followup-loop-pull-reminder-cadence-nag-interval-threshold"
+        for i in range(180):
+            for half in ("a", "b"):
+                f = self.memdir / f"feedback_dup_{i:03d}_{half}_{slug_tail}.md"
+                f.write_text(
+                    f"---\nname: feedback_dup_{i:03d}_{half}_{slug_tail}\ntype: feedback\n---\n{topic} lesson {i}\n",
+                    encoding="utf-8",
+                )
+                os.utime(f, (old, old))
+        stdout = StringIO()
+        # Isolate the budget tier: cross-link OFF (it would link all near-duplicates
+        # and mark them referenced, which #2723 §2(d) calls out as the deadlock the
+        # tier must not be defeated by) and merge OFF (so the tier, not merge, prunes).
+        self._tick(stdout, env={"T3_DREAM_CROSS_LINK": "0", "T3_DREAM_MERGE": "0"})
+        out = stdout.getvalue()
+        assert "archived" in out
+        # MEMORY.md is now under the gate-(d) load budget.
+        snap = gates.snapshot_memory_dir(self.memdir)
+        assert gates.Gate.index_budget(snap).passed, snap.index_byte_size
+
+    def test_binding_reconciliation_failure_is_warned_not_crashed(self) -> None:
+        self._write_binding_conflict()
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch(
+                "teatree.loops.dream.promote_memory.file_binding_reconciliation_tickets",
+                side_effect=RuntimeError("reconcile boom"),
+            ),
+        ):
+            self._tick(stdout)
+        out = stdout.getvalue()
+        assert "WARN binding reconciliation raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
     def test_reindex_disabled_writes_no_index(self) -> None:
         stdout = StringIO()
         self._tick(stdout, env={"T3_DREAM_REINDEX": "0"})
@@ -422,7 +652,8 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         out = stdout.getvalue()
         # The pass still stamped success; the phase failure is warned, not fatal,
         # and the LATER phases still ran.
-        assert "WARN cross-link raised: RuntimeError" in out
+        assert "WARN cross-link raised for" in out
+        assert "RuntimeError: phase4 boom" in out
         assert "re-indexed" in out
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
@@ -457,13 +688,14 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     def _run(self, stdout: StringIO, *, report: "DreamQaReport") -> None:
         with (
             patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
-            patch("teatree.loops.dream.gates.run_acceptance_pass", return_value=report),
+            patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=report),
             patch.dict(
                 "os.environ",
                 {
@@ -551,6 +783,7 @@ class DreamZeroClusterMaintenanceStampsSucceededTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     def _zero_cluster_tick(self, stdout: StringIO) -> None:
         # members replayed > 0 (transcript was processed) but 0 NEW clusters distilled.
@@ -586,7 +819,149 @@ class DreamZeroClusterMaintenanceStampsSucceededTestCase(TestCase):
         assert DreamRunMarker.objects.is_stale(timezone.now()) is False
 
 
-class DreamMemoryPromotionWiringTestCase(TestCase):
+class DreamPriorArchivedPointerStampsSucceededTestCase(TestCase):
+    """A quiet 0-cluster pass dropping a stale prior-archived pointer stamps success (#2545).
+
+    A memory archived a prior pass lives in ``archive/`` (lesson preserved + recall-able),
+    but the on-disk ``MEMORY.md`` still carried a stale pointer to it. The re-index drops
+    that pointer this pass. The §4 consolidation gate must home the pruned pointer against
+    the durable ``archive/`` cold store — not flag it as a lost prune — so the marker is
+    stamped and the >48h staleness alarm clears. Before the fix the gate homed only THIS
+    pass's archives, so the pruned pointer looked unhomed, gate (c) FAILED, and the marker
+    was starved every quiet night ("acceptance gate(s) FAILED — marker NOT stamped"). The
+    memory dir is a TMP fixture; ``~/.claude`` is never touched.
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        archive = self.memdir / "archive"
+        archive.mkdir()
+        (archive / "feedback_gamma.md").write_text(
+            "ARCHIVED\n---\ndescription: a gamma lesson archived a prior pass\n---\nbody gamma\n",
+            encoding="utf-8",
+        )
+        # The on-disk index still references the prior-archived gamma (a stale pointer).
+        (self.memdir / "MEMORY.md").write_text(
+            "# Auto Memory — Index\n\n"
+            "> Generated by the dream re-index phase. One line per memory; detail lives in the topic file. "
+            "Do not move content into this index.\n\n"
+            "- mem_a.md — a topic\n- mem_b.md — a topic session\n"
+            "- feedback_gamma.md — a gamma lesson archived a prior pass\n",
+            encoding="utf-8",
+        )
+        _enable_dream_loop(last_run_at=None)
+
+    def test_stale_prior_archived_pointer_does_not_starve_the_marker(self) -> None:
+        stdout = StringIO()
+        zero_cluster = DreamRunResult(clusters_recorded=0, members_replayed=976, dry_run=False)
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_cluster),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_MERGE": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            __import__("os").environ.pop("T3_DREAM_REINDEX", None)  # re-index ON: drops the stale pointer
+            call_command("dream", "tick", stdout=stdout)
+        out = stdout.getvalue()
+        assert "re-indexed" in out  # real maintenance happened
+        assert "acceptance gate(s) FAILED" not in out
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is False
+
+
+class DreamConsolidatesRawTranscriptLearningTestCase(TestCase):
+    """A raw transcript learning reaches the distiller, grounds, passes the gates, and stamps (#2986).
+
+    The input-starvation regression, end-to-end through the command with the REAL
+    engine + REAL §4 gates + REAL marker (only the LLM distiller and the member
+    enumeration are faked). A realistic session transcript carries a substantive
+    finding that holds NONE of the literal signal tokens and neither a correction
+    nor an ask cue. Before the fix the keyword gate dropped it, the extract was
+    empty, the distiller was never called, 0 clusters were recorded, the §4
+    consolidation gate FAILED, and the DreamRunMarker was never stamped succeeded
+    (the >48h staleness alarm never cleared). The file-side phases are OFF so the
+    ONLY path to a passing consolidation gate is a genuinely-grounded cluster — the
+    gate stays anti-vacuous. The memory dir + transcript are TMP; ``~/.claude`` is
+    never touched.
+    """
+
+    def setUp(self) -> None:
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        session_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.jsonl = session_dir / "session-xyz.jsonl"
+        chatter = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(30))
+        self.finding = "root caused the empty owner crash to a missing tenant filter in resolve_owner"
+        self.jsonl.write_text(chatter + "\n" + f'{{"type":"assistant","text":"{self.finding}"}}', encoding="utf-8")
+
+    def _run(self, stdout: StringIO) -> None:
+        member = TranscriptMember(path=self.jsonl, kind="main")
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = next(s for s in extract.snippets if s.kind != "memory")
+            return [
+                DistilledCluster(
+                    cluster_key="raw-learning",
+                    rule="Guard resolve_owner against a missing tenant filter.",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation=self.finding,
+                    durable_destination="",
+                )
+            ]
+
+        with (
+            patch("teatree.loops.dream.engine.enumerate_members", return_value=[member]),
+            patch("teatree.loops.dream.sdk_distiller.sdk_distill", side_effect=_distill),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "0",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_MERGE": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", stdout=stdout)
+
+    def test_raw_learning_grounds_a_cluster_passes_gates_and_stamps_marker(self) -> None:
+        stdout = StringIO()
+        self._run(stdout)
+        out = stdout.getvalue()
+        # (1) genuinely consolidated real learnings — one grounded cluster recorded.
+        assert ConsolidatedMemory.objects.filter(cluster_key="raw-learning").count() == 1
+        assert "1 cluster(s) recorded" in out
+        # (2) passed acceptance on real non-empty input (no gate laundering).
+        assert "all acceptance gates passed" in out
+        assert "acceptance gate(s) FAILED" not in out
+        # (3) advanced the cadence marker — the >48h staleness alarm cleared.
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is False
+
+
+class DreamMemoryPromotionWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """Pass-2 memory promotion only runs when its default-OFF toggle is on (#2426)."""
 
     def _tick(self, stdout: StringIO, *, env: dict[str, str]) -> None:
@@ -610,14 +985,14 @@ class DreamMemoryPromotionWiringTestCase(TestCase):
         stdout = StringIO()
         with (
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=filed),
-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
                 return_value=(object(), "souliane/teatree"),
             ),
         ):
             self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
-        assert "ticketed 1 core-gap memory(ies), retired 0" in stdout.getvalue()
+        assert "promoted 1 core-gap fix(es), reconciled 0 merged" in stdout.getvalue()
 
     def test_promotion_failure_is_warned_not_crashed(self) -> None:
         stdout = StringIO()
@@ -644,6 +1019,213 @@ class DreamMemoryPromotionWiringTestCase(TestCase):
         ):
             self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
         assert "no teatree code host resolved" in stdout.getvalue()
+
+
+class DreamAutomationAsksWiringTestCase(_DreamTickEnabledMixin, TestCase):
+    """Phase-3d automatable-ask promotion only runs when its default-OFF toggle is on (#2663)."""
+
+    def _tick(self, stdout: StringIO, *, env: dict[str, str]) -> None:
+        environ = {
+            "T3_DREAM_PROPOSE_EVALS": "0",
+            "T3_DREAM_CROSS_LINK": "0",
+            "T3_DREAM_REINDEX": "0",
+            "T3_DREAM_MEMORY_PROMOTE": "0",
+            "T3_DREAM_COMPLIANCE_MEASURE": "0",
+            **env,
+        }
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", environ, clear=False),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+
+    def test_promotion_skipped_when_toggle_off(self) -> None:
+        with patch("teatree.loops.dream.automation_ask.run_automation_asks_phase") as phase_fn:
+            self._tick(StringIO(), env={"T3_DREAM_AUTOMATION_ASKS": "0"})
+        phase_fn.assert_not_called()
+
+    def test_promotion_runs_and_reports_when_toggle_on(self) -> None:
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.loops.dream.automation_ask.run_automation_asks_phase",
+                return_value="; promoted 2 automatable-ask fix(es)",
+            ) as phase_fn,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_AUTOMATION_ASKS": "1"})
+        phase_fn.assert_called_once()
+        assert "promoted 2 automatable-ask fix(es)" in stdout.getvalue()
+
+    def test_promotion_failure_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.loops.dream.automation_ask.run_automation_asks_phase",
+                side_effect=RuntimeError("ask boom"),
+            ),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_AUTOMATION_ASKS": "1"})
+        out = stdout.getvalue()
+        assert "WARN automatable-ask phase raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_no_code_host_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(None, "souliane/teatree"),
+        ):
+            self._tick(stdout, env={"T3_DREAM_AUTOMATION_ASKS": "1"})
+        assert "automatable-ask promotion skipped — no teatree code host resolved" in stdout.getvalue()
+
+    def test_full_runs_automation_asks_despite_toggle_off(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch("teatree.loops.dream.automation_ask.run_automation_asks_phase", return_value="") as phase_fn,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict(
+                "os.environ",
+                {"T3_DREAM_MEMORY_PROMOTE": "0", "T3_DREAM_DERIVE_EVALS": "0", "T3_DREAM_AUTOMATION_ASKS": "0"},
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        phase_fn.assert_called_once()
+
+
+_COMPLIANCE_MEMORY_BODY = (
+    "name: feedback_askuserquestion_overuse\n"
+    "The AskUserQuestion gate must not fire for routine obstacles — make a reasonable guess and keep working.\n"
+)
+_COMPLIANCE_VIOLATION_TURN = (
+    '{"type": "user", "content": "I told you again — stop firing AskUserQuestion '
+    'for routine obstacles, you do not follow instructions!!"}'
+)
+
+
+def _compliance_result(*, dry_run: bool = False) -> DreamRunResult:
+    """A pass result whose extract carries a memory-backed rule violated again (a recurrence)."""
+    extract = ConsolidationExtract(
+        snippets=(
+            WeightedSnippet(
+                path=Path("/memory/feedback_askuserquestion_overuse.md"),
+                kind="memory",
+                weight=90,
+                text=_COMPLIANCE_MEMORY_BODY,
+            ),
+            WeightedSnippet(
+                path=Path("/sessions/session-a.jsonl"), kind="main", weight=80, text=_COMPLIANCE_VIOLATION_TURN
+            ),
+        ),
+        truncated=False,
+    )
+    return DreamRunResult(
+        clusters_recorded=1, members_replayed=5, dry_run=dry_run, snippets_distilled=2, extract=extract
+    )
+
+
+class DreamComplianceMeasurementWiringTestCase(_DreamTickEnabledMixin, TestCase):
+    """Phase 3c measurement runs on EVERY pass (default ON); escalation is --full + toggle gated (#2663)."""
+
+    def test_measurement_runs_on_a_plain_run_and_records_a_snapshot(self) -> None:
+        # RED before the measure/escalate split: compliance was wired ONLY under
+        # --full + the (default-OFF) compliance toggle, so a plain pass recorded NO
+        # snapshot — the root KPI went unmeasured. Measurement now runs on every pass.
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert InstructionComplianceSnapshot.objects.count() == 1
+
+    def test_tick_also_measures_compliance(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "tick", stdout=StringIO())
+        assert InstructionComplianceSnapshot.objects.count() == 1
+
+    def test_measurement_disabled_by_kill_switch_records_nothing(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0", "T3_DREAM_COMPLIANCE_MEASURE": "0"}, clear=False),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert InstructionComplianceSnapshot.objects.count() == 0
+
+    def _run_full(self, *, escalate: str):
+        esc_patch = patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="")
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+            patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]),
+            patch("teatree.loops.dream.automation_ask.run_automation_asks_phase", return_value=""),
+            esc_patch as esc,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_MEMORY_PROMOTE": "0",
+                    "T3_DREAM_DERIVE_EVALS": "0",
+                    "T3_DREAM_AUTOMATION_ASKS": "0",
+                    "T3_DREAM_COMPLIANCE_ESCALATE": escalate,
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        return esc
+
+    def test_escalation_runs_under_full_and_toggle_on(self) -> None:
+        esc = self._run_full(escalate="1")
+        esc.assert_called_once()
+
+    def test_escalation_skipped_under_full_when_toggle_off(self) -> None:
+        # Green pin: escalation stays gated on --full AND its own default-OFF toggle,
+        # so --full alone (toggle off) measures but never files.
+        esc = self._run_full(escalate="0")
+        esc.assert_not_called()
+
+    def test_run_without_full_never_escalates_even_with_toggle_on(self) -> None:
+        # The AND-gate: the toggle alone (no --full) measures but does not escalate.
+        esc_patch = patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="")
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_compliance_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            esc_patch as esc,
+            patch.dict(
+                "os.environ",
+                {"T3_DREAM_PROPOSE_EVALS": "0", "T3_DREAM_COMPLIANCE_ESCALATE": "1"},
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        esc.assert_not_called()
 
 
 class DreamFullFlagTestCase(TestCase):
@@ -676,7 +1258,7 @@ class DreamFullFlagTestCase(TestCase):
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]) as file_fn,
-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
                 return_value=(object(), "souliane/teatree"),
@@ -692,7 +1274,7 @@ class DreamFullFlagTestCase(TestCase):
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
             patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]) as stage_fn,
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
@@ -779,17 +1361,43 @@ class DreamInFlightLockTestCase(TestCase):
 
 
 class DreamTickCadenceTestCase(TestCase):
-    def test_tick_runs_when_cadence_elapsed(self) -> None:
+    """The dream cron gates on the ONE cadence ledger (LOOP-PR-A).
+
+    The ``dream`` Loop row's ``is_due`` / ``last_run_at`` plus the single enable
+    verdict — never a second cadence-marker ledger.
+    """
+
+    def test_tick_runs_when_due_and_bumps_last_run_at(self) -> None:
+        _enable_dream_loop(last_run_at=None)  # never run ⇒ due
         with patch(
             "teatree.loops.dream.engine.run_consolidation",
             return_value=_ok_result(),
         ) as engine:
             call_command("dream", "tick", stdout=StringIO())
         engine.assert_called_once()
-        assert MiniLoopMarker.objects.filter(name=DREAM_LOOP_NAME).exists()
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is not None
 
-    def test_tick_skips_when_cadence_not_elapsed(self) -> None:
-        MiniLoopMarker.objects.mark_fired(DREAM_LOOP_NAME, timezone.now())
+    def test_tick_skips_when_not_due(self) -> None:
+        _enable_dream_loop(last_run_at=timezone.now())  # just ran ⇒ not due
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation") as engine:
+            call_command("dream", "tick", stdout=stdout)
+        engine.assert_not_called()
+        assert "SKIP" in stdout.getvalue()
+
+    def test_tick_skips_when_loop_disabled(self) -> None:
+        # A disabled Loop row (or no row) is a hard skip via the single verdict.
+        Loop.objects.update_or_create(
+            name=DREAM_LOOP_NAME,
+            defaults={
+                "script": "src/teatree/loops/dream/loop.py",
+                "prompt": None,
+                "delay_seconds": 86400,
+                "daily_at": None,
+                "enabled": False,
+                "last_run_at": None,
+            },
+        )
         stdout = StringIO()
         with patch("teatree.loops.dream.engine.run_consolidation") as engine:
             call_command("dream", "tick", stdout=stdout)
@@ -797,8 +1405,8 @@ class DreamTickCadenceTestCase(TestCase):
         assert "SKIP" in stdout.getvalue()
 
     def test_run_ignores_cadence_gate(self) -> None:
-        # `run` is the manual escape hatch — it runs regardless of cadence.
-        MiniLoopMarker.objects.mark_fired(DREAM_LOOP_NAME, timezone.now())
+        # `run` is the manual escape hatch — it runs regardless of cadence / enable.
+        _enable_dream_loop(last_run_at=timezone.now())  # not due
         with patch(
             "teatree.loops.dream.engine.run_consolidation",
             return_value=_ok_result(),
@@ -807,12 +1415,13 @@ class DreamTickCadenceTestCase(TestCase):
         engine.assert_called_once()
 
     def test_tick_failed_engine_does_not_advance_cadence_ledger(self) -> None:
+        _enable_dream_loop(last_run_at=None)  # due
         with patch(
             "teatree.loops.dream.engine.run_consolidation",
             side_effect=RuntimeError("engine boom"),
         ):
             call_command("dream", "tick", stdout=StringIO())
-        assert not MiniLoopMarker.objects.filter(name=DREAM_LOOP_NAME).exists()
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is None
 
 
 class DreamZeroMembersFailLoudTestCase(TestCase):
@@ -872,6 +1481,7 @@ class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     def _zero_member_tick(self, stdout: StringIO) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)

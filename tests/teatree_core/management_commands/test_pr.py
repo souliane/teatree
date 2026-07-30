@@ -8,6 +8,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.pr as pr_mod
+from teatree.core.backend_protocols import UploadVerification
 from teatree.core.models import Session, Ticket, Worktree
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
@@ -290,9 +291,19 @@ class TestPrPostTestPlan(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_updates_existing_note(self) -> None:
+        """An existing note carrying THIS MR's marker is updated in place (F3.1).
+
+        The match is now the hidden ``t3-e2e-evidence`` marker scoped to the MR
+        target (``my/repo!100``) — not a naive ``"## Test Plan" in body`` scan —
+        so a colleague's unrelated ``## Test Plan`` comment can never be clobbered.
+        """
         mock_host = MagicMock()
         mock_host.list_pr_comments.return_value = [
-            {"id": 999, "body": "## Test Plan\n\nOld content", "system": False},
+            {
+                "id": 999,
+                "body": "## Test Plan\n\nOld content\n\n<!-- t3-e2e-evidence ticket=my/repo!100 -->",
+                "system": False,
+            },
         ]
         mock_host.update_pr_comment.return_value = {"id": 999}
 
@@ -317,9 +328,35 @@ class TestPrPostTestPlan(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_does_not_clobber_a_colleagues_unmarked_test_plan_comment(self) -> None:
+        """A ``## Test Plan`` comment WITHOUT our marker is left alone (F3.1).
+
+        The former naive ``"## Test Plan" in body`` match would have updated a
+        colleague's comment; the marker-scoped match now creates a fresh note.
+        """
+        mock_host = MagicMock()
+        mock_host.list_pr_comments.return_value = [
+            {"id": 999, "body": "## Test Plan\n\nSomeone else's note", "system": False},
+        ]
+        mock_host.post_pr_comment.return_value = {"id": 1000}
+
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "post-test-plan", "100", repo="my/repo", body="Mine"),
+            )
+
+        assert result == {"id": 1000}
+        mock_host.post_pr_comment.assert_called_once()
+        mock_host.update_pr_comment.assert_not_called()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_uploads_files(self) -> None:
+        """Each uploaded file passes the #2156 verify_upload gate before it is embedded (F3.1)."""
         mock_host = MagicMock()
         mock_host.upload_file.return_value = {"markdown": "![screenshot](/uploads/abc/img.png)"}
+        mock_host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/abc/img.png")
         mock_host.list_pr_comments.return_value = []
         mock_host.post_pr_comment.return_value = {"id": 55}
 
@@ -337,26 +374,32 @@ class TestPrPostTestPlan(TestCase):
             )
 
         mock_host.upload_file.assert_called_once_with(repo="my/repo", filepath="/tmp/img.png")
+        mock_host.verify_upload.assert_called_once()
+        # The embed is the VERIFIED relative reference (not the blind upload["markdown"]);
+        # the label is the artifact's filename.
         body = mock_host.post_pr_comment.call_args[1]["body"]
-        assert "![screenshot](/uploads/abc/img.png)" in body
+        assert "![img.png](/uploads/abc/img.png)" in body
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_empty_upload_markdown(self) -> None:
-        """When upload returns no markdown key, the embed is skipped."""
+    def test_unverifiable_upload_refuses_the_post(self) -> None:
+        """A failed verify_upload (#2156) refuses the post — no note references a broken upload (F3.1)."""
         mock_host = MagicMock()
-        mock_host.upload_file.return_value = {}  # no markdown
+        mock_host.upload_file.return_value = {"markdown": "![bad](/uploads/xyz/bad.png)"}
+        mock_host.verify_upload.return_value = UploadVerification(ok=False, embed_url="", detail="HTTP 404")
         mock_host.list_pr_comments.return_value = []
-        mock_host.post_pr_comment.return_value = {"id": 56}
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
-            cast(
+            result = cast(
                 "dict[str, object]",
                 call_command("pr", "post-test-plan", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
             )
 
-        body = mock_host.post_pr_comment.call_args[1]["body"]
-        assert "![" not in body  # no embed added
+        assert "error" in result
+        assert "upload check" in str(result["error"])
+        # No note posted or updated when an embed cannot be verified.
+        mock_host.post_pr_comment.assert_not_called()
+        mock_host.update_pr_comment.assert_not_called()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

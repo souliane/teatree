@@ -37,12 +37,16 @@ DELIVERED, beside ``check_fix_record_dod``. On a block it raises
 loop's outer atomic rolls the advance back and the ticket stays RETROSPECTED —
 merged on the forge, not yet *done*.
 
-TODO (deferred, souliane/teatree#2232): the ``spec_coverage`` manifest is carried
-on the ticket (populated by the agent / a future ``ticket record-spec-coverage``
-CLI), the same shape as ``fix_record`` / ``anti_vacuity_attestation``. Automatic
-AC *extraction* — parsing the GitHub issue body / a linked spec doc into the
-manifest — is NOT built here. This module ships the gate scaffold + the fail-loud
-check + the carry mechanism; the AC-source auto-population is follow-up.
+Producer
+    ``t3 <overlay> ticket record-spec-coverage <id> --ac '<label>=<test>,…'``
+    writes the manifest; ``--override-reason`` writes the escape hatch. The
+    manifest is carried on the ticket, the same shape as ``fix_record`` /
+    ``anti_vacuity_attestation``.
+
+TODO (deferred, souliane/teatree#2232): automatic AC *extraction* — parsing the
+GitHub issue body / a linked spec doc into the manifest — is NOT built here, so
+every AC is entered by hand. That is why the flag stays ``DARK`` in
+``FEATURE_FLAGS``: it is enable-able and satisfiable, not yet ergonomic.
 """
 
 import logging
@@ -51,6 +55,7 @@ from typing import TYPE_CHECKING
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.types import ac_label, spec_coverage_criteria
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -70,30 +75,19 @@ class SpecCoverageDodError(InvalidTransitionError):
     """
 
 
-def spec_coverage_required() -> bool:
-    """Whether the spec-coverage DoD gate is in force (overlay -> global)."""
-    return get_effective_settings().require_spec_coverage
+def spec_coverage_required(overlay: str | None = None) -> bool:
+    """Whether the spec-coverage DoD gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
+    resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_spec_coverage
 
 
 def acceptance_criteria(ticket: "Ticket") -> list["AcceptanceCriterion"]:
-    """The declared acceptance-criteria mappings, or an empty list.
-
-    A missing manifest, a non-mapping manifest, or a non-list
-    ``acceptance_criteria`` all yield ``[]`` — there is no partial parse.
-    Non-mapping entries inside the list are dropped.
-    """
-    manifest = (ticket.extra or {}).get("spec_coverage")
-    if not isinstance(manifest, dict):
-        return []
-    criteria = manifest.get("acceptance_criteria")
-    if not isinstance(criteria, list):
-        return []
-    return [ac for ac in criteria if isinstance(ac, dict)]
-
-
-def _ac_label(ac: "AcceptanceCriterion") -> str:
-    """A human label for an AC: its ``id`` if present, else its ``description``."""
-    return str(ac.get("id") or ac.get("description") or "<unnamed-ac>").strip()
+    """The declared acceptance-criteria mappings, or an empty list."""
+    return spec_coverage_criteria(ticket.extra)
 
 
 def _ac_is_covered(ac: "AcceptanceCriterion") -> bool:
@@ -111,7 +105,7 @@ def uncovered_acs(ticket: "Ticket") -> list[str]:
     declared AC whose ``tests`` is absent, not a list, empty, or all-blank is
     uncovered — there is no partial credit per AC.
     """
-    return [_ac_label(ac) for ac in acceptance_criteria(ticket) if not _ac_is_covered(ac)]
+    return [ac_label(ac) for ac in acceptance_criteria(ticket) if not _ac_is_covered(ac)]
 
 
 def has_full_coverage(ticket: "Ticket") -> bool:
@@ -136,7 +130,7 @@ def check_spec_coverage(ticket: "Ticket") -> None:
     4. No manifest at all → raise (zero ACs proven is the partial subset the gate forecloses).
     5. One or more uncovered ACs → raise, naming them.
     """
-    if not spec_coverage_required():
+    if not spec_coverage_required(ticket.overlay or None):
         return
     reason = override_reason(ticket)
     if reason:

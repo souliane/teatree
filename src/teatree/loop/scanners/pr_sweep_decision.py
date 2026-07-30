@@ -9,20 +9,35 @@ orchestration and under the module-health LOC cap (same split rationale as
 """
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
 
+from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.models.merge_clear import MergeClear
-from teatree.core.review_candidate import author_is_self
+from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
+from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import (
-    REPO_STATE_CHECK_NAMES,
-    REQUIRED_CHECK_NAME,
-    UV_AUDIT_CHECK_NAME,
-    CheckResult,
-    PrSummary,
-)
+from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
+
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+
+def untrusted_merge_provenance(pr: PrSummary) -> bool:
+    """True iff *pr*'s head-branch provenance is not trusted to auto-merge (#3244).
+
+    A FORK / cross-repo head (``same_repo is False``) is untrusted even when the
+    author is a trusted identity — the strict fork-holds model. A same-repo head
+    (``same_repo is True``) is trusted. Unreported provenance (``None``) fails
+    closed to the identity+visibility author check. Delegates to the shared
+    :func:`decide_author_trust` at the ``MERGE`` gate — the ONE autonomy decision
+    issue intake also applies (#3577) — so this rung, the merge keystone and the
+    intake gate cannot drift.
+    """
+    subject = AuthorSubject(slug=pr.slug, author=pr.author, same_repo=pr.same_repo)
+    return decide_author_trust(subject, gate=AutonomyGate.MERGE) is TrustVerdict.HUMAN_REVIEW
 
 
 def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
@@ -33,7 +48,7 @@ def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
     should be auto-scheduled for a cold review; a colleague's PR is theirs to
     review (auto-scheduling it wastes a dispatch and risks an unattended
     review note on their work). Reuses the single self-author signal
-    :func:`teatree.core.review_candidate.author_is_self` — an empty *author*
+    :func:`teatree.core.review.review_candidate.author_is_self` — an empty *author*
     or an empty identity set never matches, so an unconfirmable author fails
     closed (no arm) rather than being treated as ours.
     """
@@ -43,41 +58,64 @@ def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
     return author_is_self(author, current_user=identities[0], self_identities=identities)
 
 
-def classify_checks(checks: tuple[CheckResult, ...]) -> str:
-    """Return ``green`` / ``green_with_uv_audit_red`` / ``pending`` / ``failed``.
+def own_or_same_repo(pr: PrSummary, *, self_identities: tuple[str, ...]) -> bool:
+    """True iff *pr* is the operator's own PR OR on a same-repo head branch (#3244).
 
-    The required check is ``test(3.13)``: if it's not green the PR is not
-    mergeable. If it IS green and the ONLY red check is ``uv-audit``, the
-    PR falls into the documented fallback path that the scanner is
-    authorised to escalate (step 5).
+    A same-repo bot PR (e.g. ``app/github-actions``) is not authored by an operator
+    identity yet IS trusted provenance, so the solo cold-review arm covers it too —
+    otherwise it never gains the ``merge_safe`` verdict the sweep merges on. A fork
+    (``same_repo is False`` / ``None``) is excluded, matching the strict fork-holds rung.
     """
-    required = next((c for c in checks if c.name == REQUIRED_CHECK_NAME), None)
-    if required is None or required.verdict != "green":
-        if any(c.verdict == "pending" for c in checks if c.name == REQUIRED_CHECK_NAME):
-            return "pending"
-        return "failed" if checks else "pending"
-    red = [c for c in checks if c.verdict == "failed"]
-    if not red:
-        if any(c.verdict == "pending" for c in checks):
-            return "pending"
-        return "green"
-    if all(c.name == UV_AUDIT_CHECK_NAME for c in red):
-        return "green_with_uv_audit_red"
-    return "failed"
+    return pr_authored_by_self(author=pr.author, self_identities=self_identities) or pr.same_repo is True
 
 
-def red_checks_are_all_repo_state(checks: tuple[CheckResult, ...]) -> bool:
-    """True iff there is at least one red check and EVERY red check is repo-state (#2045).
+def classify_sweep_ci(
+    rollup: "list[RawAPIDict]",
+    required_names: set[str] | None,
+    *,
+    main_uv_audit_red: Callable[[], bool],
+) -> tuple[str | None, bool, set[str]]:
+    """The sweep's CI decision: ``(skip_reason, is_uv_audit_fallback, failing_required)``.
 
-    Repo-state checks (``REPO_STATE_CHECK_NAMES``) diff the head against the
-    base, so a fix already on ``main`` leaves them red on an un-updated branch
-    and a ``gh run rerun`` re-tests the stale base. When every failing check is
-    one of these, a merge-update is the remedy. A single non-repo-state red
-    (a genuine test failure) makes this ``False`` so the sweep keeps the bare
-    ``ci_red`` skip.
+    Routes the core green/pending/failed verdict through the SAME
+    :func:`teatree.core.merge.classify_required_rollup` the §17.4 keystone uses
+    (#12), scoped to the SAME branch-protection required set — so the sweep and the
+    keystone can never re-diverge on which checks gate a merge. On top of that
+    shared verdict it layers the two sweep-only branches: the uv-audit fallback (the
+    ONLY failing required check is ``uv-audit`` AND ``main`` is red on it too, via
+    *main_uv_audit_red*) and, upstream, the repo-state remedy in ``_ci_block``.
+
+    A ``None`` *required_names* (indeterminate branch-protection lookup) fails CLOSED
+    with the ``required_checks_indeterminate`` skip. ``failing_required`` lets
+    ``_ci_block`` tell a repo-state-only red apart from a genuine test failure.
     """
-    red = [c for c in checks if c.verdict == "failed"]
-    return bool(red) and all(c.name in REPO_STATE_CHECK_NAMES for c in red)
+    if required_names is None:
+        return "required_checks_indeterminate", False, set()
+    verdict = classify_required_rollup(rollup, required_names)
+    failing = failing_required_names(rollup, required_names)
+    if verdict == "pending":
+        return "ci_pending", False, failing
+    if verdict == "failed":
+        if failing == {UV_AUDIT_CHECK_NAME}:
+            if main_uv_audit_red():
+                return None, True, failing
+            return "uv_audit_red_but_clean_on_main", False, failing
+        return "ci_red", False, failing
+    return None, False, failing
+
+
+def red_required_all_repo_state(failing_required: set[str]) -> bool:
+    """True iff there is ≥1 failing REQUIRED check and EVERY one is repo-state (#2045).
+
+    *failing_required* is the branch-protection-required set that is currently
+    failing (:func:`teatree.core.merge.failing_required_names`). Repo-state checks
+    (``REPO_STATE_CHECK_NAMES``) diff the head against the base, so a fix already
+    on ``main`` leaves them red on an un-updated branch and a ``gh run rerun``
+    re-tests the stale base — a merge-update is the remedy. A single non-repo-state
+    failing required check (a genuine test failure) makes this ``False`` so the
+    sweep keeps the bare ``ci_red`` skip.
+    """
+    return bool(failing_required) and failing_required <= REPO_STATE_CHECK_NAMES
 
 
 def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear | None:
@@ -101,7 +139,7 @@ def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear
 
 
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
-    """True iff a recorded INDEPENDENT cold-review vouches for this exact head (#68).
+    """True iff the EFFECTIVE (newest-wins) verdict vouches for this exact head (#68, #2829).
 
     A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
     durable record of a cold review; ``ReviewVerdict.record`` refuses a
@@ -112,11 +150,18 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
     and cannot authorise the merge. A maker who is the only identity on
     the repo therefore cannot self-merge: no independent reviewer means no
     matching row and the auto-merge is refused.
-    """
-    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
 
-    candidates = ReviewVerdict.objects.for_pr(slug, pr_id).filter(verdict=ReviewVerdict.Verdict.MERGE_SAFE)
-    return any(not verdict.is_stale_at(head_sha) for verdict in candidates)
+    #2829: defence-in-depth + better UX — returns ``False`` when the EFFECTIVE
+    (most-recent non-stale) verdict at the head is a HOLD, so the solo sweep
+    FLAGS the PR (``_flag_no_review``) instead of diving into
+    ``execute_bound_merge`` to be refused by :func:`assert_review_verdict_gate`.
+    Shares ``ReviewVerdict.objects.effective_state_at`` with that gate so the
+    newest-wins logic cannot drift between the two.
+    """
+    from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415 — lazy ORM import
+
+    state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    return state is HeadVerdictState.MERGE_SAFE
 
 
 def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:
@@ -131,7 +176,7 @@ def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> 
     has not seen this delivery) is treated as unowned, so the loop arms the
     review as before.
     """
-    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
+    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415 — lazy ORM import
 
     ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     return ticket is not None and under_external_delivery(ticket)
@@ -148,7 +193,7 @@ def record_mergeable_notified(*, pr: PrSummary, overlay: str) -> bool:
     to ``False`` so a DB hiccup never crashes the tick — the caller falls back to
     a quiet skip.
     """
-    from teatree.core.models.mergeable_notified import MergeableNotified  # noqa: PLC0415
+    from teatree.core.models.mergeable_notified import MergeableNotified  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         row = MergeableNotified.record(

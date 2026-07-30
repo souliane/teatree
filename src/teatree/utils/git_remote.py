@@ -15,6 +15,8 @@ import re
 _REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
 _SSH_HOST_RE = re.compile(r"^(?:ssh://)?git@([^:/]+)[:/]")
 _HTTP_HOST_RE = re.compile(r"^(https?)://([^/]+)/")
+#: Any ``<scheme>://[user@]host[:port]/`` form — the host half of every non-ssh URL.
+_SCHEME_HOST_RE = re.compile(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/]+)/", re.IGNORECASE)
 
 
 def slug_from_remote(remote_url: str) -> str:
@@ -27,6 +29,43 @@ def slug_from_remote(remote_url: str) -> str:
     if not remote_url:
         return ""
     return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
+
+
+def host_from_remote(remote_url: str) -> str:
+    """The network host a git remote URL points at, or ``""`` when it names none.
+
+    Pure string helper, the host counterpart of :func:`slug_from_remote` (which
+    deliberately strips the host). Handles ``git@host:slug``, ``ssh://git@host/slug``,
+    ``https://host/slug`` and ``git://host/slug``, lower-cased with any ``:port``
+    stripped so ``ssh://git@GitHub.com:22/…`` and ``https://github.com/…`` compare
+    equal.
+
+    Returns ``""`` for a URL with no network host — a bare filesystem path, a
+    relative path, or a ``file://`` URL. That is *unknown*, NOT "a different host":
+    a caller comparing hosts must treat the empty answer as non-discriminating
+    rather than as a mismatch.
+    """
+    if not remote_url:
+        return ""
+    text = remote_url.strip()
+    if text.startswith("file://"):
+        return ""
+    ssh_match = _SSH_HOST_RE.match(text)
+    if ssh_match:
+        return _normalize_host(ssh_match.group(1))
+    scheme_match = _SCHEME_HOST_RE.match(text)
+    if scheme_match:
+        return _normalize_host(scheme_match.group(1))
+    return ""
+
+
+def _normalize_host(host: str) -> str:
+    """Lower-case, drop a trailing numeric ``:port``, and drop a leading ``www.``."""
+    bare = host.strip()
+    head, separator, tail = bare.rpartition(":")
+    if separator and tail.isdigit():
+        bare = head
+    return bare.lower().removeprefix("www.")
 
 
 def web_base_from_remote(remote_url: str) -> str:

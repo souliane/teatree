@@ -11,6 +11,12 @@ trim_trailing_whitespace = true
 [*.py]
 indent_size = 4
 
+# Embeds a multi-line YAML spec fixture as a Python string, where 2-space YAML
+# nesting is idiomatic and load-bearing; ruff-format still enforces the module's
+# Python indentation, so the [*.py] 4-space rule does not apply to this one file.
+[tests/teatree_eval/test_loader_production_hooks.py]
+indent_size = unset
+
 [*.{md,markdown}]
 trim_trailing_whitespace = false
 indent_size = unset

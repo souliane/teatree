@@ -10,9 +10,11 @@ tools:
   - Glob
   - Bash
   - Agent
+  - Skill
 skills:
   - rules
   - workspace
+  - architecture-design
 maxTurns: 50
 ---
 
@@ -109,16 +111,16 @@ When the loop dispatches an `assigned_issue.ready` signal with `auto_start: true
 in the payload, you skip the intake question (§ 6 step 5) and start the maker
 pipeline — you do NOT execute or chain the phases yourself:
 
-1. Run § 6 steps 1–4 to set up the worktree.
-2. Mark the ticket as auto-started so the scanner counts it against the budget:
-   `t3 <overlay> ticket update <ID> --extra auto_started=true`
-3. Let the FSM drive the pipeline. Each lifecycle phase is dispatched to its OWN
+1. Run § 6 steps 1–4 to set up the worktree. The auto-start budget is computed by
+   the loop itself from `max_concurrent_auto_starts` and the live claim counts
+   (`loop/phases/orchestrate.py`) — you record nothing on the ticket for it.
+2. Let the FSM drive the pipeline. Each lifecycle phase is dispatched to its OWN
    agent by the loop when its phase task is claimed — `coding → @coder`,
    `testing → @tester`, `reviewing → @reviewer`, `shipping → @shipper`. The
    orchestrator never spawns the phase agents in sequence and never runs the
    work of a phase itself (BLUEPRINT §5.2 / §17.8 invariant 10: the orchestrator
    does synthesis and dispatch, not execution).
-4. The PR-merge step is the configured `require_human_approval_to_merge` gate —
+3. The PR-merge step is the configured `require_human_approval_to_merge` gate —
    the loop surfaces the open PR via `MyPrsScanner` and a human approves the
    merge.
 

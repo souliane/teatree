@@ -3,7 +3,7 @@
 A probe is idempotent on ``probe_key`` (sha256 of the question text), and
 ``record_result`` accumulates run/pass counts while recomputing the running
 pass rate. The manager separates the prior-session retention corpus from the
-full current corpus per overlay.
+full current corpus per scope.
 """
 
 import hashlib
@@ -18,7 +18,7 @@ from teatree.core.models import DreamQaProbe
 def _probe(
     question: str = "What gate runs before push?",
     *,
-    overlay: str = "acme",
+    scope: str = "acme",
     prior: bool = False,
 ) -> DreamQaProbe:
     return DreamQaProbe.objects.create(
@@ -26,7 +26,7 @@ def _probe(
         question=question,
         expected_answer="the privacy + lint gate",
         source_memory_path="MEMORY.md",
-        overlay=overlay,
+        scope=scope,
         is_prior_session=prior,
     )
 
@@ -79,19 +79,19 @@ class TestRecordResult(TestCase):
 
 
 class TestManager(TestCase):
-    def test_prior_session_probes_filters_overlay_and_flag(self) -> None:
-        prior = _probe("prior", overlay="acme", prior=True)
-        _probe("current", overlay="acme", prior=False)
-        _probe("other-overlay", overlay="widgets", prior=True)
+    def test_prior_session_probes_filters_scope_and_flag(self) -> None:
+        prior = _probe("prior", scope="acme", prior=True)
+        _probe("current", scope="acme", prior=False)
+        _probe("other-scope", scope="widgets", prior=True)
 
         result = list(DreamQaProbe.objects.prior_session_probes("acme"))
 
         assert result == [prior]
 
-    def test_current_corpus_returns_all_overlay_probes(self) -> None:
-        _probe("a", overlay="acme")
-        _probe("b", overlay="acme", prior=True)
-        _probe("c", overlay="widgets")
+    def test_current_corpus_returns_all_scope_probes(self) -> None:
+        _probe("a", scope="acme")
+        _probe("b", scope="acme", prior=True)
+        _probe("c", scope="widgets")
 
         assert DreamQaProbe.objects.current_corpus("acme").count() == 2
 

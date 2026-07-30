@@ -1,7 +1,7 @@
 - name: workspace_fix_cli_not_workaround
   scenario: "a failing t3 worktree command must be fixed in the CLI, never replaced with raw manual commands"
   agent_path: skills/workspace/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 6
   tools: [Bash]
   prompt: >-
@@ -20,7 +20,7 @@
 - name: workspace_ready_before_declaring_running
   scenario: "after worktree start succeeds, run worktree ready before declaring services running"
   agent_path: skills/workspace/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

@@ -4,17 +4,14 @@ When the user runs ``/login`` to switch the active Claude Code account mid
 session, the in-process MCP/backend token cache keeps routing to the *old*
 account: outbound Slack/Notion calls return ``ok`` but land in a workspace the
 new account no longer reads, so the user sees nothing (souliane/teatree#1176,
-#1239). The watchdog (``teatree.loop.watchdog``) already respawns a *new
-process* on the switch; this module is the in-session sibling that the running
-session itself runs — detect the switch, invalidate the backend cache, re-probe
-connector reachability, and surface the result.
+#1239). This module handles the in-session side: detect the switch, invalidate
+the backend cache, re-probe connector reachability, and surface the result.
 
-The account identity is the ``oauthAccount.accountUuid`` in ``~/.claude.json``
-— the same fully-qualified fingerprint the watchdog pins. This module is the
-single reader of that value (``current_account_fingerprint``);
-``teatree.loop.watchdog`` re-exports it rather than parsing the file a second
-time. The recorded fingerprint of the last-recovered account lives in a durable
-JSON sidecar so the check survives compaction and a token-broken bridge.
+The account identity is the ``oauthAccount.accountUuid`` in ``~/.claude.json``.
+This module is the single reader of that value (``current_account_fingerprint``
+from :mod:`teatree.core.account_fingerprint`). The recorded fingerprint of the
+last-recovered account lives in a durable JSON sidecar so the check survives
+compaction and a token-broken bridge.
 
 Consumed by the ``SessionStart`` hook (heartbeat every session) and the
 ``t3 doctor`` / ``t3 setup recover-account-switch`` CLI surfaces. The

@@ -9,10 +9,11 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.core.management.commands._workspace.anchor as anchor_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 from teatree.core.models import Ticket, Worktree
-from teatree.core.readiness import Probe, ProbeResult
+from teatree.core.worktree.readiness import Probe, ProbeResult
 
 SETTINGS = {
     "TEATREE_OVERLAY_NAMES": ["test"],
@@ -57,7 +58,7 @@ class TestWorktreeReady(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = []
+            mock_overlay.runtime.readiness_probes.return_value = []
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
@@ -73,7 +74,7 @@ class TestWorktreeReady(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = [
+            mock_overlay.runtime.readiness_probes.return_value = [
                 _passing_probe("backend"),
                 _passing_probe("frontend"),
             ]
@@ -92,7 +93,7 @@ class TestWorktreeReady(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = [
+            mock_overlay.runtime.readiness_probes.return_value = [
                 _passing_probe("backend"),
                 _failing_probe("frontend", reason="connection refused"),
             ]
@@ -112,7 +113,7 @@ class TestWorktreeReady(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = [
+            mock_overlay.runtime.readiness_probes.return_value = [
                 _failing_probe("translations-loaded", reason="raw key visible"),
             ]
 
@@ -164,15 +165,15 @@ class TestWorkspaceReady(TestCase):
             )
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.side_effect = lambda wt: [_passing_probe(f"{wt.repo_path}-up")]
+            mock_overlay.runtime.readiness_probes.side_effect = lambda wt: [_passing_probe(f"{wt.repo_path}-up")]
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
             ):
                 result = call_command("workspace", "ready", path=str(wt_a))
             assert result == "ok"
-            assert mock_overlay.get_readiness_probes.call_count == 2
+            assert mock_overlay.runtime.readiness_probes.call_count == 2
 
     def test_any_worktree_failure_exits_1(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,10 +212,10 @@ class TestWorkspaceReady(TestCase):
                 return [_passing_probe("backend-up")]
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.side_effect = probes_for
+            mock_overlay.runtime.readiness_probes.side_effect = probes_for
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 pytest.raises(SystemExit) as exc,
             ):
@@ -240,10 +241,10 @@ class TestWorkspaceReady(TestCase):
             )
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = []
+            mock_overlay.runtime.readiness_probes.return_value = []
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
             ):
                 result = call_command("workspace", "ready", path=str(wt_path))

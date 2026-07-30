@@ -147,6 +147,73 @@ class TestAllowsLegitimateCommands:
         assert capsys.readouterr().out.strip() == ""
 
 
+class TestForgeHeredocBodyIsNotAnInvocation:
+    """A blocked-tool phrase inside a gh/glab/git heredoc BODY is documentation, not a command.
+
+    A ``gh pr create --body-file - <<EOF … EOF`` / ``git commit -F - <<EOF … EOF``
+    heredoc is the PR/commit BODY — pure data the command never executes. Before
+    the fix the denylist scanned the whole command string, so a PR description
+    documenting ``docker compose up`` (or ``manage.py runserver``, etc.) was
+    hard-blocked as if it were the invocation. The fix blanks a forge/git-owned
+    heredoc body before the scan while keeping an INTERPRETER heredoc (``bash
+    <<EOF docker compose up EOF``) fully scanned — so a real bypass piped to a
+    shell still blocks.
+    """
+
+    _DOCKER = "docker compose up"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"gh pr create --title t --body-file - <<'EOF'\nWe fix the {_DOCKER} false-positive.\nEOF",
+            "git commit -F - <<'EOF'\ndocs: note that manage.py runserver is banned\nEOF",
+            "glab mr note 1 --body-file - <<'EOF'\nwe ran createdb by hand once\nEOF",
+            f"cd /repo && gh pr create --title t --body-file - <<'EOF'\n{_DOCKER} in the body\nEOF",
+            f'gh pr create --title t --body "{_DOCKER} inline quoted body"',
+        ],
+    )
+    def test_forge_body_phrase_passes(self, capsys: pytest.CaptureFixture[str], command: str) -> None:
+        result = handle_block_direct_commands(_bash_event(command))
+        assert result is not True
+        assert capsys.readouterr().out.strip() == ""
+
+    @pytest.mark.parametrize(
+        ("command", "expected_fragment"),
+        [
+            (f"{_DOCKER} -d", "worktree start"),
+            (f"cd /app && {_DOCKER}", "worktree start"),
+            (f"bash <<'EOF'\n{_DOCKER}\nEOF", "worktree start"),
+            (f"sh <<'EOF'\n{_DOCKER}\nEOF", "worktree start"),
+            (f"{_DOCKER} <<'EOF'\nx\nEOF", "worktree start"),
+            (f"gh pr create --title t --body-file - <<'EOF'\ndoc\nEOF\n{_DOCKER}", "worktree start"),
+        ],
+    )
+    def test_real_invocation_still_blocks(
+        self, capsys: pytest.CaptureFixture[str], command: str, expected_fragment: str
+    ) -> None:
+        # TEETH: the fix must not weaken the block on an ACTUAL invocation — a real
+        # ``docker compose up``, a heredoc fed to an interpreter, and a real
+        # invocation chained AFTER a forge heredoc all still deny.
+        result = handle_block_direct_commands(_bash_event(command))
+        assert result is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert expected_fragment in deny["permissionDecisionReason"]
+
+    def test_real_bypass_on_the_command_line_with_a_forge_heredoc_still_blocks(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Blanking the heredoc BODY must not hide a real bypass sitting on the
+        # command LINE beside it: a hook-silencer (F3) that also feeds a heredoc
+        # body still blocks because the bypass is outside the blanked span.
+        command = "git -c core.hooksPath=/dev/null commit -F - <<'EOF'\njust a commit body\nEOF"
+        result = handle_block_direct_commands(_bash_event(command))
+        assert result is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "bypasses git hooks" in deny["permissionDecisionReason"]
+
+
 class TestHandlerChainStopsAfterDeny:
     """The router stops running handlers after the first deny."""
 

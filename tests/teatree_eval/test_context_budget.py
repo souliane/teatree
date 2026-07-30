@@ -25,6 +25,31 @@ Never ask inline. Use the structured tool.
 All work happens in a worktree.
 """
 
+_NESTED = """# Agent Rules
+
+Preamble paragraph that frames the rules.
+
+## Publishing Actions Are Mode-Conditional
+
+The resolved mode decides the doctrine.
+
+### Resolve the effective mode
+
+Read the env var first.
+
+#### A deeper aside
+
+Still inside the resolve subsection.
+
+### Interactive mode
+
+Ask before pushing.
+
+## Worktree-First Work
+
+Branch before editing.
+"""
+
 
 class TestExtractSections:
     def test_extracts_a_single_named_section_verbatim(self) -> None:
@@ -66,3 +91,31 @@ class TestExtractSections:
         out = extract_sections(_SKILL, ("Always Use AskUserQuestion for Questions",))
         assert "Never ask inline" in out
         assert "Background anything" not in out
+
+
+class TestNestedHeadingsStayInsideTheirSection:
+    """A section runs to the next SAME-OR-SHALLOWER heading, never the next heading.
+
+    Ending a span at the next heading of ANY depth truncates every section that owns
+    subsections: the rule reaches the grader with its qualifications, carve-outs, and
+    worked examples silently removed, so the scenario is graded against a rule the
+    skill does not actually state.
+    """
+
+    def test_a_level_two_section_carries_its_level_three_subsections(self) -> None:
+        out = extract_sections(_NESTED, ("Publishing Actions Are Mode-Conditional",))
+        assert "Read the env var first" in out
+        assert "Ask before pushing" in out
+
+    def test_a_level_two_section_carries_its_level_four_subsections(self) -> None:
+        out = extract_sections(_NESTED, ("Publishing Actions Are Mode-Conditional",))
+        assert "Still inside the resolve subsection" in out
+
+    def test_a_level_two_section_still_ends_at_the_next_level_two(self) -> None:
+        out = extract_sections(_NESTED, ("Publishing Actions Are Mode-Conditional",))
+        assert "Branch before editing" not in out
+
+    def test_a_level_three_section_ends_at_the_next_level_three(self) -> None:
+        out = extract_sections(_NESTED, ("Resolve the effective mode",))
+        assert "Still inside the resolve subsection" in out
+        assert "Ask before pushing" not in out

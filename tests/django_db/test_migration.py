@@ -8,13 +8,9 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
-from django.db import connection
-from django.db.migrations.executor import MigrationExecutor
-from django.test import TransactionTestCase
-from django.utils import timezone
 
 from teatree.utils import run as run_mod
-from teatree.utils.django_db import _MigrateResult
+from teatree.utils.django_db.migrate import _MigrateResult
 
 from ._shared import _make_importer, _ok_run
 
@@ -244,7 +240,7 @@ class TestMigrateRunnerSelection:
         assert cmd[:5] == ["uv", "--directory", str(tmp_path), "run", "python"], cmd
 
     def test_unreadable_uv_lock_treated_as_pipenv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db import _is_pipenv_repo  # noqa: PLC0415
+        from teatree.utils.django_db.runner import _is_pipenv_repo  # noqa: PLC0415
 
         (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
         (tmp_path / "uv.lock").write_text("[[package]]\n", encoding="utf-8")
@@ -378,7 +374,7 @@ class TestMigrateRenumberReconcile:
     )
 
     def test_reconciles_renumber_then_migrate_succeeds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db_reconcile import RECONCILE_OK  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import RECONCILE_OK  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         calls: list[list[str]] = []
@@ -409,7 +405,7 @@ class TestMigrateRenumberReconcile:
         assert calls[1][-3:-1] == ["shell", "-c"], calls[1]
 
     def test_passes_dependency_to_reconcile_script(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db_reconcile import RECONCILE_OK  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import RECONCILE_OK  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         captured_envs: list[dict[str, str]] = []
@@ -432,7 +428,7 @@ class TestMigrateRenumberReconcile:
         assert reconcile_env["T3_RECONCILE_DEP_NAME"] == "0257_move_participant_authorization_data"
 
     def test_does_not_reconcile_genuine_divergence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.utils.django_db_reconcile import RECONCILE_SKIP  # noqa: PLC0415
+        from teatree.utils.django_db.reconcile import RECONCILE_SKIP  # noqa: PLC0415
 
         (tmp_path / "manage.py").write_text("", encoding="utf-8")
         calls: list[list[str]] = []
@@ -473,88 +469,3 @@ class TestMigrateRenumberReconcile:
         importer = _make_importer(tmp_path)
         assert importer._migrate_reference_db() is _MigrateResult.FAILED
         assert all("shell" not in c for c in calls), f"reconcile must not run on a config error: {calls}"
-
-
-class CanonicalizeTeatreeOverlayMigrationTest(TransactionTestCase):
-    """0027 collapses the legacy ``teatree`` overlay value to ``t3-teatree``.
-
-    souliane/teatree#1108: the bundled overlay's canonical name is the
-    entry-point name ``t3-teatree``. Historical rows written while the
-    overlay mislabelled itself ``teatree`` must be canonicalised across
-    every overlay-carrying model so discovery/statusline/selectors stop
-    treating ``teatree`` and ``t3-teatree`` as distinct overlays. Control
-    rows (already-canonical ``t3-teatree`` and empty ``""``) must be
-    untouched.
-    """
-
-    _BEFORE = ("core", "0026_pending_chat_loop_reply_fields")
-    _AFTER = ("core", "0027_canonicalize_teatree_overlay")
-
-    def _migrate(self, target: tuple[str, str]) -> "object":
-        executor = MigrationExecutor(connection)
-        executor.migrate([target])
-        executor.loader.build_graph()
-        return executor.loader.project_state([target]).apps
-
-    def _seed_rows(self, apps: "object", overlay: str, tag: str) -> list["object"]:
-        """Create one row per overlay-carrying model with *overlay*.
-
-        Returns the created objects so the test can assert how 0027
-        rewrites each. ``tag`` keeps unique fields distinct across the
-        legacy/control/empty triples without per-row named locals.
-        """
-        ticket = apps.get_model("core", "Ticket").objects.create(
-            overlay=overlay, issue_url=f"https://example.com/issues/{tag}"
-        )
-        return [
-            ticket,
-            apps.get_model("core", "Worktree").objects.create(
-                overlay=overlay, ticket=ticket, repo_path="teatree", branch=f"b{tag}", db_name=f"d{tag}"
-            ),
-            apps.get_model("core", "Session").objects.create(overlay=overlay, ticket=ticket),
-            apps.get_model("core", "PullRequest").objects.create(
-                overlay=overlay, ticket=ticket, url=f"https://example.com/pr/{tag}", repo="teatree", iid=tag
-            ),
-            apps.get_model("core", "ReviewAssignment").objects.create(
-                overlay=overlay,
-                mr_url=f"https://example.com/mr/{tag}",
-                user_id=f"u{tag}",
-                channel=f"c{tag}",
-                slack_ts=f"{tag}.1",
-                observed_at=timezone.now(),
-            ),
-            apps.get_model("core", "PendingChatInjection").objects.create(
-                overlay=overlay, channel=f"c{tag}", slack_ts=f"{tag}.10", text=f"t{tag}", received_at=timezone.now()
-            ),
-        ]
-
-    def test_forwards_canonicalizes_only_legacy_teatree(self) -> None:
-        apps = self._migrate(self._BEFORE)
-
-        legacy_rows = self._seed_rows(apps, "teatree", "1")
-        control_rows = self._seed_rows(apps, "t3-teatree", "2")
-        empty_rows = self._seed_rows(apps, "", "3")
-
-        self._migrate(self._AFTER)
-
-        for obj in legacy_rows:
-            obj.refresh_from_db()
-            assert obj.overlay == "t3-teatree", f"{type(obj).__name__} legacy row not canonicalized"
-
-        for obj in control_rows:
-            obj.refresh_from_db()
-            assert obj.overlay == "t3-teatree", f"{type(obj).__name__} control row mutated"
-
-        for obj in empty_rows:
-            obj.refresh_from_db()
-            assert obj.overlay == "", f"{type(obj).__name__} empty-overlay row mutated"
-
-        # Restore the schema to the latest state so TransactionTestCase
-        # teardown's flush targets the real (head) table set and downstream
-        # tests (e.g. ``test_schema_guard``) see a clean ledger. Resolve the
-        # leaf from the live graph so new migrations don't leave 0028+
-        # unrecorded for the rest of the session.
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        core_leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
-        executor.migrate(core_leaves)

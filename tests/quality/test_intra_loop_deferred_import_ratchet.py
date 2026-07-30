@@ -16,11 +16,14 @@ package, PR-4 the ``rendering`` + ``tick`` / ``phases`` top once the
 ``statusline_loops`` deferred up-edges are severed), this ratchet keeps the
 deferred-import count from growing.
 
-It is a SHRINK-only peg: an AST walk counts every ``import``/``from`` whose
-enclosing scope is a function/method (not module-level) and whose target module
-starts with ``teatree.loop``. ``current <= _FROZEN`` blocks growth; on
-``current < _FROZEN`` the message instructs lowering the peg so the gain is
-banked (mirroring ``test_intra_core_deferred_import_ratchet.py``).
+It is a per-file peg ledger (``tests/quality/deferred_import_pegs.toml``
+``[intra_loop]``, counted by the shared ``tests/quality/_deferred_imports.py``
+walker): each source file may carry at most its pegged number of function-scoped
+``teatree.loop`` imports (a file not listed pegs at 0). Over-peg blocks (naming
+the file); a count BELOW its peg simply passes, so severing an edge is free and
+lowering the entry to bank the headroom stays optional. Per-file keying makes the ledger
+set-union mergeable — two disjoint peg bumps never collide, and same-file
+contention surfaces as a git textual conflict, not a post-merge red.
 
 The companion ``TestLoopStatuslineLeaf`` pins the PR-1 carve itself: the
 ``statusline_palette`` / ``statusline_render`` pair is declared as the lowest
@@ -39,86 +42,13 @@ import ast
 import tomllib
 from pathlib import Path
 
+from tests.quality._deferred_imports import diff_pegs, load_pegs, per_file_counts
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOOP_ROOT = _REPO_ROOT / "src" / "teatree" / "loop"
 _TACH = _REPO_ROOT / "tach.toml"
-
-# Measured in-worktree: the count of function-scoped imports under
-# `src/teatree/loop/` whose target starts with `teatree.loop`. The plan's "175"
-# was the repo-wide PLC0415-noqa total (deferred imports to *any* target); this
-# ratchet — mirroring the core one — counts only the *intra-loop* deferred edges
-# that hide a loop-internal cycle from tach. PR-1 (leaf-carve only) measured 42.
-# PR-2 declares `teatree.loop.scanners` (+ the `review_claim_signals` /
-# `url_specificity` / `review_request_tracker` / `dispatch_tables` /
-# `pr_ticket_index` supporting leaves) and converts six deferred edges into
-# declared eager sub-node edges (2x `review_loop_enabled`, 2x
-# `best_url_match_specificity`, `record_review_request_post`,
-# `resolve_author_ticket`), dropping the count 42 -> 36.
-# PR-3 declares the `dispatch` flat-file cluster (`dispatch` / `dispatch_gates` /
-# `dispatch_reducer`) and the `self_improve` package as tach nodes. Both were
-# already eager-clean (every intra-loop edge pointed DOWN, zero deferred
-# up-edges), so the carve converts NO deferred edge — the count stays 36. The
-# win is structural: tach's acyclic guard now applies WITHIN those clusters.
-# PR-4 severs the `statusline_loops` back-edge: the four pure-`os.environ`
-# cadence readers (`_slack_answer_cadence_seconds` / `_self_improve_cadence_seconds`
-# / `_loop_owner_ttl_seconds` / `drain_cadence_seconds`) move DOWN into the new
-# `teatree.loop.loop_cadences` leaf, and `statusline_loops` reaches the cadence
-# readers + `loop_scoping` via eager DOWN edges to declared leaves instead of the
-# five deferred up-edges into the orchestration top (`tick_piggyback` /
-# `queue_drain` / `loop_scoping`). `statusline_loops` / `statusline` /
-# `loop_cadences` / `loop_scoping` / `session_identity` become declared tach
-# nodes, dropping the count 36 -> 31.
-# A further PR-4 slice declares the `rendering` flat-file cluster (`rendering`
-# facade over `rendering_classification` / `rendering_dms` / `rendering_items` /
-# `rendering_permalinks` / `rendering_zones`) as tach nodes. The cluster was
-# eager-clean (every intra-loop edge pointed DOWN to declared leaves), so the
-# carve converts no edge structurally; the one win is hoisting the single
-# redundant deferred edge in `rendering.py` (`live_loops_anchor` from
-# `statusline`, already eagerly imported on the same module header) up to the
-# eager import, dropping the count 31 -> 30.
-# The `slack_answer` slice declares the reactive Slack-answer subpackage
-# (`classifier` / `simple_answer` / `thread_readback` / `cycle`) as a single
-# tach node (mirroring the `scanners` / `self_improve` sibling-package nodes).
-# The subpackage was already eager-clean (ZERO intra-loop deferred imports
-# inside it), so the carve converts no internal edge; the one win is hoisting
-# the single deferred up-edge that TARGETED it — the orchestration-top
-# `tick_piggyback._piggyback_slack_answer` deferred
-# `from teatree.loop.slack_answer.cycle import run_slack_answer_cycle` — to the
-# module header (an eager declared parent->child edge, import-cycle-safe: the
-# slack_answer.cycle transitive eager closure reaches only declared leaves,
-# never the orchestration top), dropping the count 30 -> 29.
-# SHRINK-ONLY: lower this as later carves convert remaining deferred edges into
-# declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 29
-
-
-def _function_scoped_intra_loop_imports(source: Path) -> int:
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    parents: dict[ast.AST, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[child] = node
-
-    def in_function_scope(node: ast.AST) -> bool:
-        cur = parents.get(node)
-        while cur is not None:
-            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef):
-                return True
-            cur = parents.get(cur)
-        return False
-
-    count = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if (node.module or "").startswith("teatree.loop") and in_function_scope(node):
-                count += 1
-        elif isinstance(node, ast.Import):
-            count += sum(1 for alias in node.names if alias.name.startswith("teatree.loop") and in_function_scope(node))
-    return count
-
-
-def _count_all() -> int:
-    return sum(_function_scoped_intra_loop_imports(py) for py in sorted(_LOOP_ROOT.rglob("*.py")))
+_PREFIX = "teatree.loop"
+_PEG_TABLE = "intra_loop"
 
 
 def _module_entry(path: str) -> dict[str, object]:
@@ -133,25 +63,14 @@ def _depends_on(path: str) -> list[str]:
 
 
 class TestIntraLoopDeferredImportRatchet:
-    def test_count_does_not_exceed_frozen(self) -> None:
-        current = _count_all()
-        assert current <= _FROZEN_INTRA_LOOP_DEFERRED, (
-            f"intra-teatree.loop deferred (function-scoped) imports grew to {current}, "
-            f"over the frozen ceiling {_FROZEN_INTRA_LOOP_DEFERRED}. A new function-scoped "
-            f"`from teatree.loop... import` hides an intra-loop edge from tach's acyclic "
-            f"guard. Make the edge a declared tach sub-node edge (#2413) instead of "
-            f"adding another deferred import."
-        )
-
-    def test_count_is_not_below_frozen(self) -> None:
-        # Banks every reduction immediately: when an edge becomes a declared tach
-        # sub-node edge, the count drops and the peg must follow it down so a
-        # future regression cannot silently spend the gain.
-        current = _count_all()
-        assert current >= _FROZEN_INTRA_LOOP_DEFERRED, (
-            f"intra-teatree.loop deferred imports dropped to {current}, below the frozen "
-            f"ceiling {_FROZEN_INTRA_LOOP_DEFERRED}. Lower _FROZEN_INTRA_LOOP_DEFERRED to "
-            f"{current} to bank the reduction."
+    def test_no_file_exceeds_its_peg(self) -> None:
+        drift = diff_pegs(per_file_counts(_LOOP_ROOT, _PREFIX), load_pegs(_PEG_TABLE))
+        assert not drift.over_peg, (
+            "intra-teatree.loop deferred (function-scoped) imports grew over their per-file peg. A new "
+            "function-scoped `from teatree.loop... import` hides an intra-loop edge from tach's acyclic "
+            "guard. Make it a declared tach sub-node edge (#2413), or — if the edge is genuinely "
+            "load-bearing — bump this file's peg in tests/quality/deferred_import_pegs.toml [intra_loop] "
+            "with a rationale in the commit message:\n" + "\n".join(drift.over_lines())
         )
 
 
@@ -356,9 +275,10 @@ class TestLoopStatuslineLoopsNode:
     filter — so ``statusline`` could not be a declared node (any eager edge into
     it would surface the cycle). PR-4 extracts the four pure ``os.environ``
     cadence readers into the ``teatree.loop.loop_cadences`` leaf; ``statusline_loops``
-    now reaches them, ``loop_scoping``, and the ``statusline_palette`` leaf via
-    eager DOWN edges, so the whole ``statusline`` facade is declarable and the
-    back-edge is structurally forbidden, not merely deferred out of sight.
+    now reaches them, ``loop_scoping``, the ``statusline_palette`` leaf, and the
+    ``statusline_loop_chunks`` chunk-formatter leaf via eager DOWN edges, so the whole
+    ``statusline`` facade is declarable and the back-edge is structurally forbidden,
+    not merely deferred out of sight.
     """
 
     def test_loop_cadences_is_a_pure_leaf_node(self) -> None:
@@ -383,12 +303,23 @@ class TestLoopStatuslineLoopsNode:
         # `loop_scoping` never reaches the orchestration-top parent.
         assert "teatree.loop" not in deps
 
+    def test_statusline_loop_chunks_is_a_leaf_over_scoping_and_palette(self) -> None:
+        # The pure chunk-formatter leaf (#3248): `statusline_loops` reaches it for the
+        # per-loop lease / mini-loop chunk rendering. It reaches only the two lower
+        # leaves it formats against and never the orchestration-top parent.
+        entry = _module_entry("teatree.loop.statusline_loop_chunks")
+        assert entry["layer"] == "domain"
+        deps = set(_depends_on("teatree.loop.statusline_loop_chunks"))
+        assert deps == {"teatree.loop.loop_scoping", "teatree.loop.statusline_palette"}
+        assert "teatree.loop" not in deps
+
     def test_statusline_loops_depends_only_on_declared_leaves(self) -> None:
         entry = _module_entry("teatree.loop.statusline_loops")
         assert entry["layer"] == "domain"
         loop_deps = {d for d in _depends_on("teatree.loop.statusline_loops") if d.startswith("teatree.loop")}
         assert loop_deps == {
             "teatree.loop.statusline_palette",
+            "teatree.loop.statusline_loop_chunks",
             "teatree.loop.loop_cadences",
             "teatree.loop.loop_scoping",
         }
@@ -411,6 +342,7 @@ class TestLoopStatuslineLoopsNode:
             "teatree.loop.session_identity",
             "teatree.loop.loop_scoping",
             "teatree.loop.statusline_loops",
+            "teatree.loop.statusline_loop_chunks",
             "teatree.loop.statusline",
         ):
             assert child in deps, child
@@ -560,15 +492,3 @@ class TestLoopSlackAnswerNode:
 
     def test_parent_loop_declares_slack_answer(self) -> None:
         assert "teatree.loop.slack_answer" in _depends_on("teatree.loop")
-
-    def test_tick_piggyback_does_not_defer_import_slack_answer(self) -> None:
-        # The `run_slack_answer_cycle` import is now an eager module-header import
-        # in tick_piggyback; no function-scoped `from teatree.loop.slack_answer`
-        # may remain (the deferred down-edge PR hoists).
-        source = (_LOOP_ROOT / "tick_piggyback.py").read_text(encoding="utf-8")
-        deferred = [
-            line.strip()
-            for line in source.splitlines()
-            if line.lstrip().startswith("from teatree.loop.slack_answer") and line != line.lstrip()
-        ]
-        assert deferred == [], f"tick_piggyback.py still defers a slack_answer import: {deferred}"

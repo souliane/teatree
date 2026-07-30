@@ -8,7 +8,7 @@ fake Slack transport bolted onto the ``httpx`` boundary so the only
 thing mocked is the network. Every other layer — the real
 ``SlackBotBackend``, the real ``SlackDmInboundScanner``, real
 ``PendingChatInjection`` rows in the Django DB, the real hook router,
-the real ``notify_user``, the real ``loop_tick`` management command —
+the real ``notify_user``, the real ``loops_tick`` management command —
 runs unmodified. The split into ``test_inbound`` / ``test_outbound`` /
 ``test_routing`` / ``test_backend_error_paths`` (#1066) mirrors the
 ``tests/teatree_core/management_commands/`` package convention.
@@ -21,11 +21,11 @@ removal would turn it RED. The PR body records that line-to-test
 mapping plus the actual RED runs that confirm the guard.
 
 Justified scaffolding (#1066 nit 2): the per-overlay routing tests
-deliberately patch ``backend_factory._messaging_from_toml`` /
+deliberately patch ``toml_backends._messaging_from_toml`` /
 ``teatree.config.load_config`` / ``backend_factory.get_overlay``
 rather than only ``httpx``. Exercising per-overlay token isolation
 needs multiple synthetic overlay configs that are not expressible via
-a single real ``~/.teatree.toml``, so the config-resolution seam is
+a single real config store, so the config-resolution seam is
 patched to inject them. ``httpx`` (the network) and
 ``teatree.utils.secrets.read_pass`` (the password store) remain the
 only true externals and stay real. This deviation from the epic's
@@ -45,6 +45,7 @@ import pytest
 from teatree.backends.slack import http as slack_http
 from teatree.config.enums import Autonomy as _Autonomy
 from teatree.config.enums import OnBehalfPostMode as _OnBehalfPostMode
+from teatree.types import DEFAULT_MR_TITLE_REGEX as _DEFAULT_MR_TITLE_REGEX
 from teatree.types import SlackVoiceClassifierMode as _VoiceClassifierMode
 from teatree.types import SpeakConfig as _SpeakConfig
 
@@ -193,14 +194,29 @@ class _FakeUserSettings:
     # subset of the real ``UserSettings``.
     slack_voice_classifier_mode: _VoiceClassifierMode = _VoiceClassifierMode.WARN
     # #1775 ``_resolved_identities()`` now routes through
-    # ``get_effective_settings()``, whose autonomy collapse + derived
-    # ``ask_before_post_on_behalf`` + per-overlay speak merge read these
-    # fields. Mirror them with the real ``UserSettings`` defaults so the
-    # fixture stays a structural subset.
+    # ``get_effective_settings()``, whose autonomy collapse + per-overlay
+    # speak merge read these fields. Mirror them with the real
+    # ``UserSettings`` defaults so the fixture stays a structural subset.
     autonomy: _Autonomy = _Autonomy.BABYSIT
     on_behalf_post_mode: _OnBehalfPostMode = _OnBehalfPostMode.DRAFT_OR_ASK
-    ask_before_post_on_behalf: bool = True
     speak: _SpeakConfig = field(default_factory=_SpeakConfig)
+    # #36 / #3115 ``get_effective_settings`` rebuilds settings via
+    # ``dataclasses.replace(base, **layered)`` where ``layered`` carries the
+    # overlay CODE-DEFAULT tier — every key in
+    # ``PROMOTED_OVERLAY_CODE_DEFAULT_KEYS``. ``replace`` re-invokes
+    # ``base.__class__(**changes)``, so each promoted key MUST be a field here or
+    # the rebuild raises ``TypeError`` (surfaces only when the active overlay
+    # resolves and populates the tier — a cwd-basename-dependent path, hence
+    # invisible to CI's ``/app`` checkout; see ``test_fake_config_fidelity``).
+    # Mirror the real ``UserSettings`` defaults so the fixture stays a structural
+    # subset.
+    review_skill: str = ""
+    architectural_review_skill: str = "ac-reviewing-codebase"
+    scanning_news_skill: str = "scanning-news"
+    eval_local_skill: str = "eval"
+    backlog_sweep_skill: str = "sweeping-tickets"
+    dogfood_smoke_skill: str = "dogfood-smoke"
+    mr_title_regex: str = _DEFAULT_MR_TITLE_REGEX
 
 
 @dataclass

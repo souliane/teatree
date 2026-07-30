@@ -5,9 +5,10 @@ stack, language servers, browsers and CI processes; on a memory-
 constrained host (the 2026-05-27 OOM when two stacks ran in parallel)
 one stack at a time is the workable limit.
 
-The gate is opt-in (default ``0`` = unbounded) and per-overlay scoped:
-an overlay can cap to ``1`` while a cheap dogfood overlay stays
-unbounded. ``check_local_stack_limit`` is called from
+The gate defaults to ``1`` (a single in-flight stack, the headless-safe
+cap) and is per-overlay scoped: an overlay can raise or drop the cap, and
+``0`` restores unbounded behaviour for a cheap dogfood overlay.
+``check_local_stack_limit`` is called from
 ``t3 <overlay> worktree start`` and ``workspace start`` before the FSM
 advances into ``SERVICES_UP``; refusal raises
 ``LocalStackLimitExceededError`` naming every blocker so the operator
@@ -36,8 +37,9 @@ from django.db import transaction
 from django_fsm import can_proceed
 
 from teatree.config import get_effective_settings
+from teatree.core.gates.provision_admission_gate import check_provision_admission
 from teatree.core.models import Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -133,9 +135,10 @@ def resolve_max_concurrent_local_stacks() -> int:
     """Resolve the effective limit, applying env + per-overlay + global chain.
 
     Mirrors the other gates that consume ``get_effective_settings`` —
-    a single read-through call so ``T3_OVERLAY_NAME`` and
-    ``[overlays.<name>] max_concurrent_local_stacks`` overrides win
-    over the global ``[teatree]`` value.
+    a single read-through call so ``T3_OVERLAY_NAME`` and the per-overlay
+    ``ConfigSetting`` row for the DB-home ``max_concurrent_local_stacks``
+    setting win over its global-scope row. A ``[teatree]`` /
+    ``[overlays.<name>]`` TOML value is ignored on read.
     """
     return int(get_effective_settings().max_concurrent_local_stacks)
 
@@ -202,7 +205,7 @@ def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None 
     Fail-safe: any uncertainty in ``reapable_worktrees`` keeps the stack
     running.
     """
-    from teatree.core.gates.idle_stack import reapable_worktrees  # noqa: PLC0415
+    from teatree.core.gates.idle_stack import reapable_worktrees  # noqa: PLC0415 — deferred: call-time import
 
     idle_minutes = int(get_effective_settings().idle_stack_idle_minutes)
     reaped = 0
@@ -217,6 +220,24 @@ def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None 
         if write_out is not None:
             write_out(f"  Reaped idle stack {_blocker_label(worktree)} (demoted to provisioned).")
     return reaped
+
+
+def _ram_admission_holds(candidate: Worktree, *, write_out: Callable[[str], object]) -> bool:
+    """Enqueue *candidate* and return ``True`` when host RAM is at/above the ceiling (#2949).
+
+    Reuses the parallel-provision admission gate so the START path and the
+    ``workspace provision`` path share one RAM ceiling. A hold enqueues to the
+    existing durable queue (idempotently) — the drainer re-checks and starts it
+    once RAM frees, so nothing is lost.
+    """
+    verdict = check_provision_admission()
+    if verdict.ok:
+        return False
+    from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    LocalStackQueueItem.objects.enqueue(candidate)
+    write_out(f"  Host RAM over ceiling — queued {_blocker_label(candidate)} for retry ({verdict.reason}).")
+    return True
 
 
 def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str], object]) -> bool:
@@ -237,6 +258,14 @@ def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str],
     """
     if candidate is None:
         return True
+    # #2949 resource-aware admission: on an overlay that has opted into a bounded
+    # local-stack cap (the memory-constrained hosts the gate exists for), also
+    # HOLD a new stack when host RAM is over the ceiling — even when a count slot
+    # is free. The request is not lost: it is enqueued to the SAME durable queue
+    # the count-full path uses, so the loop's drainer starts it once RAM frees.
+    # An unbounded overlay (limit ``0``) is untouched — RAM is not consulted there.
+    if resolve_max_concurrent_local_stacks() > 0 and _ram_admission_holds(candidate, write_out=write_out):
+        return False
     try:
         check_local_stack_limit(candidate)
     except LocalStackLimitExceededError:
@@ -244,11 +273,16 @@ def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str],
     else:
         return True
 
-    reap_idle_stacks(overlay=candidate.overlay, write_out=write_out)
+    # Scope the reap by the TICKET's overlay (falling back to the worktree's own),
+    # matching the cap-count scoping in ``check_local_stack_limit`` (:169): a row
+    # auto-detected via cwd can carry an empty ``Worktree.overlay`` while its ticket
+    # carries the real overlay, so reaping by ``candidate.overlay`` alone would free
+    # nothing and needlessly re-enqueue (#F2.11).
+    reap_idle_stacks(overlay=candidate.ticket.overlay or candidate.overlay, write_out=write_out)
     try:
         check_local_stack_limit(candidate)
     except LocalStackLimitExceededError as exc:
-        from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415
+        from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415 — deferred: ORM/app-registry
 
         LocalStackQueueItem.objects.enqueue(candidate)
         write_out(

@@ -1,54 +1,65 @@
-"""Bot→user Slack notification helper — core implementation (#963).
+"""Bot→user Slack notification helper (#963).
 
-This module owns the actual implementation (BotPing audit + messaging
-backend lookup + Slack post). The top-level :mod:`teatree.notify` is a
-thin re-export of :func:`notify_user` / :class:`NotifyKind` kept as the
-public CLI-facing import; pre-existing callers that already
-``from teatree.notify import notify_user`` keep working without churn.
+The user does not read the Claude CLI: answers, questions, and important
+info the agent surfaces inside a CLI turn are invisible to them. This
+helper is the single, always-on egress for those directions — post as the
+**bot** to the user's DM (the same channel ``DailyDigest`` opens) so the
+message arrives in Slack outside the active session. It owns the whole
+path: BotPing audit + messaging backend lookup + Slack post.
 
-Reason for the split: ``teatree.core`` modules that need to fire a
-bot→user DM — :mod:`teatree.core.on_behalf_gate_recorded` under the
-AUTO_DRAFT verdict (#960) and :mod:`teatree.core.on_behalf_post_receipt`
-for the after-receipt visibility DM (the real default-ON
-``notify_on_post_on_behalf`` ``UserSettings`` field, #949) — cannot
-import a top-level ``teatree.notify`` because the tach module graph
-forbids a ``teatree.core → teatree.notify`` edge (notify itself depends
-on core, which would create a cycle). Moving the implementation into
-core keeps the dependency direction one-way.
+Living in ``teatree.core`` keeps the dependency direction one-way — the
+core modules that fire a bot→user DM (:mod:`teatree.core.on_behalf_gate_recorded`
+under the AUTO_DRAFT verdict #960, and :mod:`teatree.core.on_behalf_post_receipt`
+for the after-receipt visibility DM, the default-ON ``notify_on_post_on_behalf``
+``UserSettings`` field #949) import it as a core sibling with no cycle.
+
+Out of scope of the on-behalf concerns (#960 ``on_behalf_post_mode``,
+#949 ``notify_on_post_on_behalf``): those govern posts the agent makes
+*as the user* to a colleague/customer surface. ``notify_user`` itself is
+the **bot** talking to its own operator — a different concern with a
+different doctrine.
+
+:func:`notify_user_outcome` is the egress; it returns a :class:`NotifyOutcome`
+naming the :class:`NotifyReason` for every non-delivery, because a silent
+notification failure is worse than a loud one — nobody is watching the CLI turn,
+which is the entire premise of this module, so an unexplained ``False`` reaches
+no one. :func:`notify_user` is the boolean face of it for call sites that only
+branch on delivered-or-not. Both are no-op-safe and never raise into the CLI turn.
 """
 
-import enum
-import json
 import logging
 import os
-import re
 
-from django.db import DatabaseError, IntegrityError, transaction
+from django.db import DatabaseError
 
-from teatree.config import get_effective_settings, load_config
-from teatree.core.backend_factory import messaging_from_overlay
+from teatree.config import get_effective_settings
+from teatree.core.backend_factory import OwnerMessagingTransport, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import BotPing, DeferredQuestion, DeliveryClaim, OutboundClaim
-from teatree.core.session_identity import current_session_id
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify_ledger import (
+    already_sent_noop,
+    claim_delivery_slot,
+    finalize_failed,
+    finalize_sent,
+    maybe_stamp_answered,
+    record_noop,
+    record_outbound_claim,
+)
+from teatree.core.notify_targets import resolve_user_channel, resolve_user_id
+from teatree.core.notify_types import (
+    DEFAULT_NOTIFY_OPTIONS,
+    DELIVERED,
+    NotifyKind,
+    NotifyOptions,
+    NotifyOutcome,
+    NotifyReason,
+    blocked,
+)
+from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
+from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
-
-# Idempotency-key convention for replies to a Slack-DM question (#1063):
-# ``answer-<anything>-<slack_ts>``. ``slack_ts`` is the Slack message
-# timestamp (e.g. ``1700000000.0001``) of the question the agent is
-# answering. When notify_user sees a key with this shape it auto-stamps
-# ``answered_at`` on the matching :class:`PendingChatInjection` row, so
-# the Stop hook stops nagging once the reply has been posted.
-_ANSWER_KEY_PATTERN = re.compile(r"^answer-.+-(\d+\.\d+)$")
-
-
-class NotifyKind(enum.StrEnum):
-    """Direction of the bot→user notification."""
-
-    ANSWER = "answer"
-    QUESTION = "question"
-    INFO = "info"
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -57,15 +68,63 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     *,
     kind: NotifyKind | str,
     idempotency_key: str,
+    audience: NotifyAudience,
     backend: MessagingBackend | None = None,
     user_id: str | None = None,
     linkify: bool = True,
     answering_slack_ts: str = "",
+    blocks: list[RawAPIDict] | None = None,
 ) -> bool:
+    """Whether the bot→user DM landed — the boolean face of :func:`notify_user_outcome`.
+
+    Kept for the call sites that only branch on delivered-or-not. A caller that
+    must report, retry, or escalate on a non-delivery calls
+    :func:`notify_user_outcome` instead and reads its :class:`NotifyReason`.
+    """
+    return notify_user_outcome(
+        text,
+        kind=kind,
+        idempotency_key=idempotency_key,
+        audience=audience,
+        options=NotifyOptions(
+            backend=backend,
+            user_id=user_id,
+            linkify=linkify,
+            answering_slack_ts=answering_slack_ts,
+            blocks=blocks,
+        ),
+    ).sent
+
+
+def notify_user_outcome(
+    text: str,
+    *,
+    kind: NotifyKind | str,
+    idempotency_key: str,
+    audience: NotifyAudience,
+    options: NotifyOptions = DEFAULT_NOTIFY_OPTIONS,
+) -> NotifyOutcome:
     """Send a bot→user Slack DM and record an audit row.
 
-    See :mod:`teatree.notify` for the full docstring — this is the
-    canonical implementation; the public module is a re-export.
+    See this module's docstring for the bot→user egress contract.
+
+    ``audience`` (:mod:`teatree.core.modelkit.notify_policy`) is REQUIRED — every call
+    site declares who the DM is for (deny-by-default). An
+    :attr:`~teatree.core.modelkit.notify_policy.NotifyAudience.INTERNAL` notification
+    short-circuits BEFORE any backend resolution: it is logged, a terminal
+    :attr:`BotPing.Status.LOGGED` row is recorded, and a not-sent
+    :class:`NotifyOutcome` is returned — no DM ever leaves the machine. Only the
+    four owner audiences reach Slack.
+
+    Every return names its :class:`NotifyReason`, so a caller that cannot deliver
+    can say WHY instead of propagating a bare ``False`` that nobody can act on.
+
+    ``blocks`` (#1777): opaque Block Kit blocks (e.g. a native ``table`` block
+    from :mod:`teatree.backends.slack.table_format`) posted alongside ``text``.
+    ``text`` remains the notification + degradation fallback, so a caller with
+    tabular data passes the monospace fence as ``text`` and the ``table`` block
+    here. Kept opaque (``list[RawAPIDict]``) so ``teatree.core`` never imports
+    the Slack backend and cycles the module graph.
 
     ``answering_slack_ts`` (#1063): when this DM is the agent's reply to
     a queued user-question (the user DM'd, the question was injected via
@@ -78,36 +137,47 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
-    if not _feature_enabled():
-        logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
-        return False
+    early = _preflight_result(audience, idempotency_key, kind=kind_value, text=text)
+    if early is not None:
+        return early
 
-    already = _already_sent_noop(idempotency_key)
+    already = already_sent_noop(idempotency_key)
     if already is not None:
         return already
 
-    resolved_backend = backend if backend is not None else messaging_from_overlay()
-    resolved_user_id = user_id if user_id is not None else resolve_user_id()
+    resolved_backend, backend_refusal = (
+        (options.backend, NotifyReason.NONE) if options.backend is not None else resolve_owner_dm_backend()
+    )
+    resolved_user_id = options.user_id if options.user_id is not None else resolve_user_id()
 
+    # Split, never conflated: the halves have different fixes, and a joint
+    # message is what let a green "owner id resolves" doctor line coexist with a
+    # dead transport for a full day. The backend half carries its own typed
+    # refusal (none-at-all vs several-pick-one) from :func:`resolve_owner_dm_backend`.
     if resolved_backend is None or not resolved_user_id:
-        _record_noop(
+        reason = backend_refusal if resolved_backend is None else NotifyReason.NO_USER_ID
+        record_noop(
             idempotency_key=idempotency_key,
             kind=kind_value,
             text=text,
-            reason="no messaging backend or user_id configured",
+            audience=audience,
+            reason=reason,
         )
-        return False
+        return blocked(reason)
 
-    gate = _claim_delivery_slot(idempotency_key, kind=kind_value.value, text=text)
+    gate = claim_delivery_slot(idempotency_key, kind=kind_value.value, text=text, audience=audience.value)
     if gate is not None:
         return gate
 
-    payload_text = maybe_linkify(text) if linkify else text
+    _route_through_send_proxy(text, destination=resolved_user_id)
+
+    payload_text = maybe_linkify(text) if options.linkify else text
 
     channel, posted_ts, failure = _deliver_dm(
         resolved_backend,
         user_id=resolved_user_id,
         text=format_notification(payload_text, kind_value),
+        blocks=options.blocks,
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -115,9 +185,15 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         # ``post_message`` ``ok:false``, or an ``ok:true`` with no
         # ``ts`` — is a HARD FAILURE. The claimed SENDING row is stamped
         # FAILED so a later retry under the same key recovers it (#1306).
-        logger.warning("notify_user delivery failed for key=%s: %s", idempotency_key, failure)
-        _finalize_failed(idempotency_key=idempotency_key, error=failure)
-        return False
+        logger.error(
+            "notify_user DID NOT DELIVER — owner NOT notified. key=%s audience=%s reason=%s: %s",
+            idempotency_key,
+            audience.value,
+            NotifyReason.DELIVERY_FAILED.value,
+            failure,
+        )
+        finalize_failed(idempotency_key=idempotency_key, error=failure)
+        return blocked(NotifyReason.DELIVERY_FAILED, error=failure)
     # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
     # only returns no failure when both are set, so no defensive re-check.
     try:
@@ -125,115 +201,99 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
         logger.debug("notify_user permalink lookup failed for key=%s: %s", idempotency_key, exc)
         permalink = ""
-    _finalize_sent(
+    finalize_sent(
         idempotency_key=idempotency_key,
         channel=str(channel),
         posted_ts=posted_ts,
         permalink=permalink,
     )
 
-    _maybe_stamp_answered(
+    maybe_stamp_answered(
         idempotency_key=idempotency_key,
-        answering_slack_ts=answering_slack_ts,
+        answering_slack_ts=options.answering_slack_ts,
     )
-    _record_outbound_claim(
+    record_outbound_claim(
         idempotency_key=f"slack_dm:{idempotency_key}",
         target_url=permalink,
         channel=str(channel),
         posted_ts=posted_ts,
     )
-    return True
+    return DELIVERED
 
 
-def _already_sent_noop(idempotency_key: str) -> bool | None:
-    """Fast SENT-idempotency no-op: ``True`` if already delivered, else ``None``.
+def resolve_owner_dm_backend() -> tuple[MessagingBackend | None, NotifyReason]:
+    """Resolve the transport for a bot→owner DM: active overlay → sole credentialed → named refusal.
 
-    An already-delivered key is a no-op even when the backend is now
-    unconfigured (the prior shape checked SENT before resolving the
-    backend). A read-only lookup; the atomic ``claim_delivery`` is still the
-    authoritative double-DM gate. ``None`` means "not yet SENT — proceed".
-    A ``DatabaseError`` fails closed (``False``) — never escapes the
-    never-raise contract.
+    The owner is a box-global target, so transport resolution mirrors the
+    :func:`resolve_user_id` tier order instead of stopping at the active overlay:
+    an active overlay that declares no transport (``messaging_backend = "noop"``)
+    must not drop an owner DM that a sibling overlay's working credential can
+    deliver. Tier one is the active/ambient :func:`messaging_from_overlay`
+    resolution with its truthy noop backend REJECTED (via the ``is_noop``
+    capability marker — ``core`` cannot import the concrete class, #1922) —
+    handing the noop to the delivery path drops the DM behind a misleading
+    Slack-shaped error ("open_dm returned an empty channel"). Tier two falls
+    back to the sole registered overlay carrying real credentials
+    (:meth:`OwnerMessagingTransport.credentialed_backends` — credentials, not count).
+
+    A refusal names itself so the caller can act on it:
+    :attr:`NotifyReason.NO_MESSAGING_BACKEND` when no overlay has a transport,
+    :attr:`NotifyReason.AMBIGUOUS_OVERLAY` when several do and none is the
+    active one — two different fixes, never conflated. The returned backend is
+    never a noop.
+
+    Resolution rides overlay discovery (``ep.load()`` imports overlay modules),
+    so a broken entry point can raise arbitrary errors here; the egress's
+    never-raise contract turns that into a WARN plus the named
+    no-transport refusal — the DM parks as a recoverable NOOP row instead of
+    the crash killing the CLI turn.
     """
     try:
-        if BotPing.objects.filter(idempotency_key=idempotency_key, status=BotPing.Status.SENT).exists():
-            logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
-            return True
-    except DatabaseError as exc:
-        logger.warning("notify_user idempotency-ledger read failed for key=%s: %s", idempotency_key, exc)
-        return False
+        active = messaging_from_overlay()
+        # The marker is read off the TYPE: it is a ClassVar on the noop backend,
+        # and an instance-level getattr would misread a MagicMock stub's truthy
+        # auto-attribute as "noop" and drop a deliverable DM.
+        if active is not None and not getattr(type(active), "is_noop", False):
+            return active, NotifyReason.NONE
+        credentialed = OwnerMessagingTransport.credentialed_backends()
+    except Exception:
+        logger.warning("owner-DM transport resolution failed — treating as no transport", exc_info=True)
+        return None, NotifyReason.NO_MESSAGING_BACKEND
+    if len(credentialed) == 1:
+        return credentialed[0], NotifyReason.NONE
+    if credentialed:
+        return None, NotifyReason.AMBIGUOUS_OVERLAY
+    return None, NotifyReason.NO_MESSAGING_BACKEND
+
+
+def _preflight_result(
+    audience: NotifyAudience,
+    idempotency_key: str,
+    *,
+    kind: NotifyKind,
+    text: str,
+) -> NotifyOutcome | None:
+    """Resolve the pre-delivery short-circuits — an outcome to stop, ``None`` to proceed.
+
+    An INTERNAL audience is logged and terminally recorded (never DM'd, deny-by-
+    default), and a settings-disabled feature is skipped — both return a named
+    not-sent outcome. ``None`` means the notification is owner-audience and
+    enabled, so delivery proceeds.
+    """
+    from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    if audience == NotifyAudience.INTERNAL:
+        logger.info("notify_user INTERNAL (log-only, not DM'd) key=%s: %s", idempotency_key, text[:120])
+        BotPing.record_logged(idempotency_key, kind=kind.value, text=text, audience=audience.value)
+        return blocked(NotifyReason.INTERNAL_AUDIENCE)
+    if not _feature_enabled():
+        logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
+        return blocked(NotifyReason.FEATURE_DISABLED)
     return None
 
 
-def _claim_delivery_slot(idempotency_key: str, *, kind: str, text: str) -> bool | None:
-    """Atomically claim the right to deliver — the double-DM TOCTOU gate.
-
-    Returns ``None`` when this caller won the claim and must proceed to
-    deliver; otherwise the early-exit result for ``notify_user``: ``True``
-    for an already-SENT idempotent no-op, ``False`` when a concurrent tick
-    already claimed delivery or a ``DatabaseError`` forces a fail-closed.
-
-    ``BotPing.claim_delivery`` mirrors the ``OnBehalfApproval.consume`` /
-    ``LoopLease.acquire`` CAS doctrine: a ``select_for_update`` re-read
-    inside one ``transaction.atomic`` so on the production SQLite backend
-    the second concurrent tick blocks on the IMMEDIATE write lock, then
-    observes the SENDING row and stands down — exactly one tick delivers. A
-    prior FAILED/NOOP row is a recoverable retry (#1306) the winner replaces
-    with a fresh SENDING claim. A ``DatabaseError`` must not escape the
-    never-raise contract.
-    """
-    try:
-        claim = BotPing.claim_delivery(idempotency_key, kind=kind, text=text)
-    except DatabaseError as exc:
-        logger.warning("notify_user delivery-claim access failed for key=%s: %s", idempotency_key, exc)
-        return False
-    if claim == DeliveryClaim.CLAIMED:
-        return None
-    if claim == DeliveryClaim.ALREADY_SENT:
-        logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
-        return True
-    logger.info("notify_user delivery already claimed by a concurrent tick for key=%s", idempotency_key)
-    return False
-
-
-def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> None:
-    """Auto-stamp ``PendingChatInjection.answered_at`` when this DM is a reply (#1063).
-
-    Two trigger forms, both consulted (an explicit kwarg wins over the
-    pattern-match — the kwarg is the canonical, programmatic form). One:
-    ``answering_slack_ts="1700000000.0001"`` — the caller explicitly
-    passes the Slack ts of the question being answered. Two:
-    ``idempotency_key="answer-<anything>-<slack_ts>"`` — the agent used
-    the answer-key convention; the ts is extracted from the suffix.
-
-    The stamp keys on ``slack_ts`` alone — symmetric with the unscoped
-    Stop-hook gate — so a reply sent from one overlay's session clears a
-    question recorded under a *different* overlay (the concurrent multi-
-    overlay case). Scoping by the active ``T3_OVERLAY_NAME`` here was the
-    original defect: it stamped 0 rows whenever the answering session's
-    overlay differed from the recording overlay, leaving the gate nagging.
-    """
-    ts = answering_slack_ts
-    if not ts:
-        match = _ANSWER_KEY_PATTERN.match(idempotency_key)
-        if match is None:
-            return
-        ts = match.group(1)
-    # Deferred import (mirrors ``resolve_user_id`` / ``maybe_linkify``
-    # in this module): the answer-stamp is an opt-in side path; keeping
-    # the model import out of ``teatree.core.notify`` import time avoids
-    # perturbing the module-import graph that the on-behalf gate and
-    # notify suites rely on.
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
-
-    try:
-        PendingChatInjection.agent_answered_question(ts)
-    except Exception as exc:  # noqa: BLE001 — best-effort; never break notify_user
-        logger.debug("notify_user answered_at stamp failed for ts=%s: %s", ts, exc)
-
-
 def _active_dm_thread(channel: str) -> str:
-    from teatree.core.models import IncomingEvent  # noqa: PLC0415
+    from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
         return IncomingEvent.objects.active_dm_thread(channel=channel)
@@ -247,6 +307,7 @@ def _deliver_dm(
     *,
     user_id: str,
     text: str,
+    blocks: list[RawAPIDict] | None = None,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
 
@@ -280,15 +341,20 @@ def _deliver_dm(
     enrichment are independent concerns. A failure on the speak side never
     suppresses the text delivery.
     """
-    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415
+    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
         thread_ts = _active_dm_thread(channel)
-        response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
-        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=thread_ts)
+        # Pass ``blocks`` only when a table is actually present — the common
+        # text-only path stays a 3-arg call, so any backend (or test double)
+        # that predates the ``blocks`` kwarg keeps working unchanged.
+        if blocks is None:
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+        else:
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 
@@ -298,104 +364,50 @@ def _deliver_dm(
         slack_error = str(response.get("error", "")) if isinstance(response, dict) else ""
         detail = f"Slack post failed: {slack_error}" if slack_error else "Slack post returned no message ts"
         return channel, posted_ts, detail
+
+    # Delivery is CONFIRMED (``ok:true`` + a real ``ts``): only NOW run the
+    # speak side-effects, threading the audio under the just-delivered message
+    # (``thread_ts=posted_ts``) with an EMPTY ``initial_comment`` so the text
+    # lands exactly ONCE (F4.4). Firing the sidecar before this check
+    # double-delivered the text — the ``post_message`` body plus the audio DM's
+    # identical ``initial_comment`` — and, on an ``ok:false`` post, attached
+    # audio to a DM that never landed; the FAILED finalize then drove a retry
+    # that re-attached, tripling the audio. The sidecar is best-effort and must
+    # never undo a DM that has already landed.
+    try:
+        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=posted_ts, initial_comment="")
+    except Exception as exc:  # noqa: BLE001 — sidecar is best-effort; a delivered DM must never be undone by it
+        logger.debug("notify_user speak sidecar failed for key on channel=%s: %s", channel, exc)
     return channel, posted_ts, ""
 
 
-def _record_outbound_claim(
-    *,
-    idempotency_key: str,
-    target_url: str,
-    channel: str,
-    posted_ts: str,
-) -> None:
-    """Record an :class:`OutboundClaim` row for the outbound-audit verifier (#1019).
+def _route_through_send_proxy(text: str, *, destination: str) -> None:
+    """Audit this bot→user DM through the #117 send-proxy (self-DM, never gated).
 
-    Best-effort — never breaks the publish path. The audit scanner reads
-    this ledger on the next tick and DMs the user on drift. Inlined here
-    (instead of delegating to :func:`teatree.outbound_claim.record_claim`)
-    because :mod:`teatree.outbound_claim` lives outside ``teatree.core``
-    and adding ``teatree.core → teatree.outbound_claim`` would cycle
-    through ``teatree.outbound_claim → teatree.core``.
-
-    Unlike the sibling :func:`teatree.outbound_claim.record_claim` (which
-    returns ``OutboundClaim | None``), this helper intentionally returns
-    ``None``: there is no consumer of the row here (the publish path
-    ignores it), so adding a return value would be dead code — a future
-    sibling-sync pass should not "fix" this asymmetry.
+    ``notify_user`` is the bot talking to its own operator, so the DM is a
+    self-destination (``is_self_dm=True``): the proxy records a ``SendAudit`` row
+    but never blocks it or redacts it (the never-lockout carve-out — the user
+    must see everything the bot sends them). Best-effort: the route is guarded so
+    a proxy failure can never break the notify path.
     """
-    session_id = current_session_id()
-    overlay_name = os.environ.get("T3_OVERLAY_NAME", "") or ""
     try:
-        with transaction.atomic():
-            OutboundClaim.objects.get_or_create(
-                idempotency_key=idempotency_key,
-                defaults={
-                    "kind": OutboundClaim.Kind.SLACK_DM.value,
-                    "target_url": target_url,
-                    "agent_session_id": session_id,
-                    "extra": {
-                        "channel": channel,
-                        "ts": posted_ts,
-                        "overlay": overlay_name,
-                    },
-                },
-            )
-    except IntegrityError:
-        logger.debug("notify_user outbound-claim race on key=%s", idempotency_key)
-    except DatabaseError as exc:
-        logger.warning("notify_user outbound-claim DB failure for key=%s: %s", idempotency_key, exc)
-    except Exception as exc:  # noqa: BLE001 — claim ledger is best-effort
-        logger.debug("notify_user outbound-claim record failed for key=%s: %s", idempotency_key, exc)
+        route_send(
+            SendRequest(
+                channel=SendChannel.SLACK,
+                destination=destination,
+                payload=text,
+                action="notify_user",
+                is_self_dm=True,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — send-proxy audit is a side path; never break notify.
+        logger.debug("notify_user send-proxy audit failed: %s", exc)
 
 
 def _feature_enabled() -> bool:
     """Read ``notify_user_via_bot`` from the active settings (default ``True``)."""
     settings_ = get_effective_settings()
     return bool(getattr(settings_, "notify_user_via_bot", True))
-
-
-def resolve_user_id() -> str:
-    """Resolve the Slack user id to DM (overlay override → global → empty).
-
-    Mirrors ``backend_factory._messaging_from_toml`` (which reads the
-    same ``slack_user_id`` key off the overlay table) so a single global
-    fallback isn't required — every routing path agrees on the same
-    resolution order.
-    """
-    cfg = load_config().raw
-    overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
-    overlays = cfg.get("overlays") or {}
-    if overlay_name and isinstance(overlays.get(overlay_name), dict):
-        user_id = overlays[overlay_name].get("slack_user_id", "")
-        if user_id:
-            return str(user_id)
-    teatree_cfg = cfg.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_id", ""))
-
-
-def resolve_user_channel() -> str:
-    """Resolve the Slack DM channel id the user reads (overlay override → global → empty).
-
-    The canonical resolver for the ``slack_user_channel`` config key,
-    walking the SAME overlay→global→empty order :func:`resolve_user_id`
-    uses for ``slack_user_id``. Both DM-channel call sites (the bot→user
-    DM path and the live-post-approval CLI verifier) consult this single
-    helper, so a change to the resolution order can never drift between
-    two private copies (the config-trap the #126 redesign closes).
-
-    An empty return means no channel is configured; the caller treats it
-    as "open a DM to the resolved user_id" rather than pinning to a
-    specific ``D...`` channel.
-    """
-    cfg = load_config().raw
-    overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
-    overlays = cfg.get("overlays") or {}
-    if overlay_name and isinstance(overlays.get(overlay_name), dict):
-        channel = overlays[overlay_name].get("slack_user_channel", "")
-        if channel:
-            return str(channel)
-    teatree_cfg = cfg.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_channel", ""))
 
 
 def maybe_linkify(text: str) -> str:
@@ -407,7 +419,7 @@ def maybe_linkify(text: str) -> str:
     ``[label](url)`` to ``<url|label>`` but leaves bare ``!N`` / ``#N``
     tokens as-is.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         overlay = get_overlay()
@@ -430,108 +442,13 @@ def format_notification(text: str, kind: NotifyKind) -> str:
     return f"{prefix}\n{normalize_slack_message(text)}"
 
 
-def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: str) -> None:
-    try:
-        with transaction.atomic():
-            BotPing.objects.create(
-                idempotency_key=idempotency_key,
-                kind=kind.value,
-                status=BotPing.Status.NOOP,
-                text=text,
-                error_message=reason,
-            )
-    except IntegrityError:
-        logger.debug("notify_user noop race on key=%s", idempotency_key)
-    except DatabaseError as exc:
-        logger.warning("notify_user noop audit write failed for key=%s: %s", idempotency_key, exc)
-
-
-def _finalize_sent(*, idempotency_key: str, channel: str, posted_ts: str, permalink: str) -> None:
-    """Stamp the claimed SENDING row terminal-SENT — never raises (the DM has landed)."""
-    try:
-        BotPing.finalize_sent(
-            idempotency_key,
-            channel_ref=channel,
-            posted_ts=posted_ts,
-            permalink=permalink,
-        )
-    except DatabaseError as exc:
-        # The DM has already landed; a locked/failed audit write must never
-        # escape and break the caller's FSM transition (the never-raise
-        # contract). Mirror ``_record_outbound_claim``.
-        logger.warning("notify_user sent-finalize write failed for key=%s: %s", idempotency_key, exc)
-
-
-def _finalize_failed(*, idempotency_key: str, error: str) -> None:
-    """Stamp the claimed SENDING row terminal-FAILED so a later retry recovers it."""
-    try:
-        BotPing.finalize_failed(idempotency_key, error=error)
-    except DatabaseError as exc:
-        logger.warning("notify_user failed-finalize write failed for key=%s: %s", idempotency_key, exc)
-
-
-def _resurface_text(row: DeferredQuestion) -> str:
-    lines = [f"*Pending question #{row.pk}* (deferred while you were away):", row.question]
-    try:
-        options = json.loads(row.options_json) if row.options_json else []
-    except (ValueError, TypeError):
-        options = []
-    for i, opt in enumerate(options, 1):
-        if not isinstance(opt, dict):
-            continue
-        label = opt.get("label", "")
-        desc = opt.get("description", "")
-        lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
-    lines.append(f"\n_Answer with_ `t3 teatree questions answer {row.pk} <text>`")
-    return "\n".join(lines)
-
-
-def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[int, int]:
-    """Re-post the pending :class:`DeferredQuestion` backlog to the user's Slack DM.
-
-    The single canonical away→present drain. Both the manual
-    ``t3 teatree questions resurface`` command and the automatic
-    ``write_override(MODE_PRESENT)`` away→present transition call this —
-    one code path, no duplicated egress logic.
-
-    Idempotent per question (the ``BotPing`` ledger dedupes the
-    per-question ``resurface-deferred-question-<pk>`` key), so re-running
-    on a later tick or after a manual ``resurface`` never double-posts.
-    Fails open: a delivery failure for one question is recorded on its
-    ``BotPing`` row by :func:`notify_user` and never aborts the drain or
-    raises. Returns ``(delivered, total)``.
-    """
-    rows = list(DeferredQuestion.pending())
-    if not rows:
-        return 0, 0
-
-    previous_overlay = os.environ.get("T3_OVERLAY_NAME")
-    if overlay:
-        os.environ["T3_OVERLAY_NAME"] = overlay
-    delivered = 0
-    try:
-        for row in rows:
-            if notify_user(
-                _resurface_text(row),
-                kind=NotifyKind.QUESTION,
-                idempotency_key=f"resurface-deferred-question-{row.pk}",
-                user_id=user_id or None,
-            ):
-                delivered += 1
-    finally:
-        if overlay:
-            if previous_overlay is None:
-                os.environ.pop("T3_OVERLAY_NAME", None)
-            else:
-                os.environ["T3_OVERLAY_NAME"] = previous_overlay
-
-    return delivered, len(rows)
-
-
-def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: int = 50) -> tuple[int, int]:
+def drain_undelivered_notifies(
+    *, user_id: str = "", overlay: str = "", backend: MessagingBackend | None = None, limit: int = 50
+) -> tuple[int, int]:
     """Re-deliver INFO DMs that stranded with no reachable backend.
 
-    The cross-tick re-delivery peer of :func:`drain_deferred_questions`. A
+    The cross-tick re-delivery peer of the
+    :mod:`teatree.core.notify_question_drains` QUESTION drains. A
     bot→user INFO DM fired from a sub-agent shell whose restricted PATH
     cannot read ``pass`` resolves no messaging backend, so :func:`notify_user`
     records a recoverable NOOP :class:`BotPing` row and returns ``False`` — the
@@ -561,6 +478,8 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
     open: one row's delivery failure (re-recorded on its own row) never aborts
     the drain or raises. Returns ``(delivered, total)`` over the rows attempted.
     """
+    from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
     BotPing.expire_stale_info()
 
     rows = list(BotPing.recoverable_info(limit=limit))
@@ -573,10 +492,15 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
     delivered = 0
     try:
         for row in rows:
+            # ``recoverable_info`` only returns owner-audience rows, so the
+            # stored audience is always one the owner reads — redeclare it so
+            # the re-delivery does not fall foul of the deny-by-default gate.
             if notify_user(
                 row.text,
                 kind=NotifyKind.INFO,
                 idempotency_key=row.idempotency_key,
+                audience=NotifyAudience(row.audience),
+                backend=backend,
                 user_id=user_id or None,
             ):
                 delivered += 1
@@ -594,4 +518,15 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
     return delivered, len(rows)
 
 
-__all__ = ["NotifyKind", "drain_deferred_questions", "drain_undelivered_notifies", "notify_user"]
+__all__ = [
+    "NotifyKind",
+    "NotifyOptions",
+    "NotifyOutcome",
+    "NotifyReason",
+    "drain_undelivered_notifies",
+    "notify_user",
+    "notify_user_outcome",
+    "resolve_owner_dm_backend",
+    "resolve_user_channel",
+    "resolve_user_id",
+]

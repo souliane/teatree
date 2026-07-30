@@ -1,58 +1,58 @@
-"""Destination-aware gate skip for the pre-publish gates (publish-surface purpose).
+"""Publish-destination resolution + classification for the pre-publish gates.
 
-The banned-terms (#1415) and bare-reference (#1530) gates exist to stop
-leaks on PUBLIC surfaces. Firing on EVERY publish command -- including
-writes to an INTERNAL/PRIVATE repo or namespace -- over-blocks: a private
-repo's own customer/domain terms and bare cross-references are exactly
-what its issues/PRs are supposed to carry.
+The banned-terms (#1415), quote-scanner (#1213) and bare-reference (#1530)
+gates exist to stop leaks on PUBLIC surfaces. This module RESOLVES a publish
+command's target repo/namespace and CLASSIFIES it; the visibility-scoped SKIP
+decision the leak gates call lives in :mod:`teatree.hooks.public_visibility`.
 
-:func:`resolve_publish_destination` extracts the target repo/namespace
-from the COMMAND ITSELF (the ``--repo``/``-R`` flag, the ``api`` URL path,
-or the cwd git remote) and :func:`is_public_destination` classifies THAT
-resolved target FAIL-CLOSED against an INTERNAL DENYLIST: a destination is
-PUBLIC (gate scans/blocks) UNLESS it is PROVABLY internal -- its namespace
-matches the config-driven ``[teatree] internal_publish_namespaces`` allowlist
-(or the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var), the
-``[teatree] private_repos`` allowlist, or the day-cached ``gh``/``glab``
-live-visibility probe returns a CONFIRMED-PRIVATE verdict. Every OTHER target
--- a genuinely-public non-teatree repo (a user's other public repos), a
-third-party repo, an UNKNOWN-visibility target, or an UNRESOLVABLE target --
-stays PUBLIC and is SCANNED. This is the only safe default: an allowlist of
-"surfaces to scan" would fail OPEN on a public repo nobody remembered to list,
-leaking an internal term unscanned onto a public surface. Resolving the target
-from the command rather than the harness cwd is what lets a post FROM a public
-clone TO a provably-private repo skip the public-leak scan instead of
-over-blocking. With nothing configured and no probe-resolvable private verdict,
-every destination stays PUBLIC, so behaviour is conservative for unconfigured
-users. :func:`gate_skips_destination` is the composed predicate the gates call.
+:func:`resolve_publish_destination` / :func:`_destination_from_words` extract
+the target repo/namespace from the COMMAND ITSELF (the ``--repo``/``-R`` flag,
+the ``gh``/``glab api`` URL path, a forge URL positional, ``GH_REPO``, the
+``t3 review`` project positional, or the cwd git remote).
+
+Two classifiers over that target, with OPPOSITE fail directions for two
+consumers:
+
+- :func:`is_public_destination` -- FAIL-CLOSED. A destination is PUBLIC (the
+    caller scans) UNLESS it is PROVABLY internal (an ``internal_publish_namespaces``
+    / ``private_repos`` allowlist match, or a CONFIRMED-PRIVATE probe verdict).
+    An unknown/unresolvable target stays PUBLIC. This conservative classifier is
+    consumed by the FSM-level :mod:`teatree.core.gates.privacy_gate`.
+- :func:`public_visibility.is_affirmatively_public` + the three-valued
+    :func:`public_visibility._destination_visibility` -- the PreToolUse leak-gate
+    scope. A destination is ``PUBLIC`` ONLY on a CONFIRMED-PUBLIC probe verdict
+    for a non-allowlisted slug, ``NON_PUBLIC`` when PROVABLY internal/private
+    (allowlist / internal-namespace / confirmed-private probe), and ``UNKNOWN``
+    when a RESOLVABLE slug's probe cannot confirm visibility. The leak gates
+    (#1415/#1213) SKIP only a ``NON_PUBLIC`` target and FAIL CLOSED (scan) on
+    ``PUBLIC`` and ``UNKNOWN`` -- a probe error on a resolvable target scans, never
+    skips (#3442), agreeing with the fail-closed bash pre-push mirror.
 
 The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
-reads the internal denylist from ``~/.teatree.toml`` DIRECTLY (the
+reads the internal denylist from the canonical ``ConfigSetting`` DB via the
+Django-free :mod:`teatree.config.cold_reader` (the
 ``internal_publish_namespaces`` / ``private_repos`` readers in
-:mod:`teatree.hooks._repo_visibility` and this module). The canonical public
-teatree repo needs no entry -- it is public, so the fail-closed default already
-scans it.
+:mod:`teatree.hooks._repo_visibility` and this module).
 
 The shared command-parsing helpers (``_extract_repo_flag``, the
 eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
-repo-target resolution (``slug_for_cwd``, ``_config_path``) in
+repo-target resolution (``slug_for_cwd``) in
 :mod:`teatree.hooks._repo_visibility`; this module reuses them so the
-repo-target resolution stays in one place across both the private-repo
-carve-out and the destination skip.
+repo-target resolution stays in one place across the private-repo carve-out,
+the FSM privacy gate, and the affirmative-public leak-gate scope.
 """
 
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
+from teatree.config import cold_reader
 from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
-from teatree.hooks._publish_detection import segment_is_api_read as _segment_is_api_read
-from teatree.hooks._publish_detection import segment_is_api_write as _segment_is_api_write
+from teatree.hooks._gh_glab_hiding import raw_has_live_substitution, token_is_transport_construct
+from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
 from teatree.hooks._repo_visibility import (
-    _config_path,
     forge_qualified_slug,
     slug_for_cwd,
     slug_is_allowlisted_private,
@@ -108,6 +108,16 @@ _GH_API_REPOS_RE: Final[re.Pattern[str]] = re.compile(r"^/?repos/([^/]+/[^/]+)")
 # ``%2F`` decodes back to ``/`` so the slug matches the allowlist shape.
 _GLAB_API_PROJECTS_RE: Final[re.Pattern[str]] = re.compile(r"^/?projects/([^/?]+)")
 
+# A leading ``https?://<host>/`` and an ``api/vN/`` REST-version segment that a
+# full-URL or version-prefixed endpoint carries before the ``repos/`` /
+# ``projects/`` path the slug patterns above match. ``glab``/``gh api`` accept
+# the endpoint as a bare relative path (``projects/...``), a version-prefixed
+# path (``api/v4/projects/...``), or a full URL
+# (``https://gitlab.com/api/v4/projects/...``); stripping this optional prefix
+# normalises all three to the bare relative form. Both groups are optional, so a
+# bare ``[/]repos/...`` / ``[/]projects/...`` endpoint is returned unchanged.
+_API_ENDPOINT_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^(?:https?://[^/]+/)?(?:/?api/v\d+/)?")
+
 # The ``owner/repo`` of a forge URL positional, before the resource segment
 # (GitLab ``/-/`` infix and nested group paths handled; ``.git`` suffix stripped).
 _FORGE_URL_SLUG_RE: Final[re.Pattern[str]] = re.compile(
@@ -118,7 +128,13 @@ _FORGE_URL_SLUG_RE: Final[re.Pattern[str]] = re.compile(
 
 # ``gh``/``glab`` create/comment verbs whose target, when no ``--repo``/``-R``
 # flag is present, is the CURRENT repo (resolved from the git remote).
-_CURRENT_REPO_VERBS: Final[frozenset[tuple[str, str]]] = _GH_ELIGIBLE_VERBS | _GLAB_ELIGIBLE_VERBS
+# ``("pr", "review")`` is included so a flagless ``gh pr review 5 --body …``
+# (an approve/request-changes body that publishes a HIGH verbatim quote) resolves
+# to the current repo and is visibility-classified rather than treated as an
+# unresolved destination the leak gate skipped (#F7.2).
+_CURRENT_REPO_VERBS: Final[frozenset[tuple[str, str]]] = (
+    _GH_ELIGIBLE_VERBS | _GLAB_ELIGIBLE_VERBS | frozenset({("pr", "review")})
+)
 
 # Flags whose VALUE is the next token in a ``gh``/``glab api`` call -- skipped
 # (flag + value) so the bare endpoint URL is found regardless of ordering.
@@ -216,11 +232,24 @@ def _api_url_arg(words: list[str]) -> str | None:
     return None
 
 
+def _normalize_api_endpoint(url: str) -> str:
+    """Strip a leading ``https?://<host>/`` and ``api/vN/`` prefix from an endpoint.
+
+    The ``repos/...`` / ``projects/...`` slug patterns match a RELATIVE endpoint,
+    but ``gh``/``glab api`` also accept a version-prefixed (``api/v4/projects/...``)
+    or full-URL (``https://gitlab.com/api/v4/projects/...``) endpoint. Removing the
+    optional host + ``api/vN/`` prefix collapses all three forms to the bare
+    relative path the patterns expect; a bare endpoint is returned unchanged.
+    """
+    return _API_ENDPOINT_PREFIX_RE.sub("", url, count=1)
+
+
 def _destination_from_api(words: list[str], tool: str) -> Destination | None:
     """Resolve the destination of a ``gh api`` / ``glab api`` raw REST call."""
     url = _api_url_arg(words)
     if url is None:
         return None
+    url = _normalize_api_endpoint(url)
     forge = _forge_for_tool(tool)
     if tool == "gh":
         match = _GH_API_REPOS_RE.match(url)
@@ -269,8 +298,77 @@ def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Dest
     url_dest = _destination_from_forge_url(words, forge)
     if url_dest is not None:
         return url_dest
-    if len(words) >= 3 and (words[1], words[2]) in _CURRENT_REPO_VERBS:  # noqa: PLR2004
+    if len(words) >= 3 and (words[1], words[2]) in _CURRENT_REPO_VERBS:  # noqa: PLR2004 — self-documenting literal in this context
         return _destination_from_current_repo(cwd, forge)
+    return None
+
+
+# ``t3 [overlay] review post-comment`` / ``... post-draft-note`` -- the
+# GitLab-only review-post verbs. The FIRST positional after the verb is the
+# project slug (confirmed at ``cli/review/commands.py`` ``post_comment`` /
+# ``post_draft_note``: ``repo`` is the leading ``typer.Argument``).
+_T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment", "post-draft-note"})
+
+
+def _first_positional(words: list[str]) -> str | None:
+    """Return the first token in ``words`` that is not a flag, or ``None``.
+
+    A flag is any token starting with ``-`` (``--body-file``, ``--live``, ``-m``).
+    Taking the first NON-FLAG token rather than strictly the first one tolerates
+    an interleaved leading flag (``--live <repo>``) before the repo positional.
+    """
+    for word in words:
+        if word.startswith("-"):
+            continue
+        return word
+    return None
+
+
+def _destination_from_t3_review(words: list[str]) -> Destination | None:
+    """Resolve the destination of a ``t3 [overlay] review post-comment/post-draft-note``.
+
+    ``t3 review`` posts a GitLab MR comment / draft note on the user's behalf; its
+    destination is the project-slug positional. The resolver never extracted it
+    (``_destination_from_words`` only knew ``gh``/``glab``), so a ``t3``-led
+    segment resolved to no destination -- and ``t3`` is not a recognised inert
+    leader -- so a post to an allowlisted-private repo fell through to the
+    fail-closed leak scan and over-fired.
+
+    The leader is canonicalised up to the ``t3`` basename so a path-form leader
+    (``./t3``, ``/usr/local/bin/t3``) is recognised the same as a bare ``t3``, and
+    the arbitrary overlay token between ``t3`` and ``review`` is tolerated --
+    mirroring :func:`_command_parser._segment_is_t3_publish`. The forge is pinned
+    to ``gitlab`` because ``t3 review`` is GitLab-only.
+    """
+    if PurePosixPath(words[0]).name != "t3":
+        return None
+    for i in range(1, len(words) - 1):
+        if words[i] == "review" and words[i + 1] in _T3_REVIEW_POST_VERBS:
+            slug = _first_positional(words[i + 2 :])
+            return Destination(slug=slug, via="t3", forge="gitlab") if slug else None
+    return None
+
+
+def _destination_from_python_script(words: list[str]) -> Destination | None:
+    """Resolve the destination of a python REST-publish segment from its URL literal.
+
+    Reuses :func:`_publish_detection.find_python_forge_rest_urls` -- the SAME
+    ``repos/<owner>/<repo>`` (GitHub) / ``api/v<N>/projects/<slug>`` (GitLab)
+    path resolution :func:`_destination_from_api` applies to a ``gh``/``glab
+    api`` URL argument, now applied to a URL LITERAL embedded in the script
+    text. Resolution is orthogonal to read/write (mirrors
+    ``_destination_from_api``, which resolves a ``gh api ... --method GET``
+    target too) -- the write/read gate is
+    :func:`_publish_detection.segment_is_python_rest_publish`, upstream of
+    this resolver. A dynamically-built URL (string concatenation) carries no
+    literal ``https?://`` substring and resolves to ``None`` -- genuinely
+    unresolvable, not private.
+    """
+    if not words or not is_python_leader(words[0]):
+        return None
+    source = " ".join(words[1:])
+    for forge, slug in find_python_forge_rest_urls(source):
+        return Destination(slug=slug, via="api", forge=forge)
     return None
 
 
@@ -278,11 +376,19 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
     """Resolve the publish destination of one command segment's word list.
 
     The visibility-independent half of :func:`resolve_publish_destination`,
-    factored out so :func:`gate_skips_destination` can resolve a destination
-    PER top-level segment (the ALL-SEGMENTS invariant) rather than only from
-    the first segment.
+    factored out so :func:`public_visibility.gate_skips_for_visibility` can
+    resolve a destination PER top-level segment (the ALL-SEGMENTS invariant)
+    rather than only from the first segment.
     """
-    if not words or words[0] not in {"gh", "glab"}:
+    if not words:
+        return None
+    t3_dest = _destination_from_t3_review(words)
+    if t3_dest is not None:
+        return t3_dest
+    python_dest = _destination_from_python_script(words)
+    if python_dest is not None:
+        return python_dest
+    if words[0] not in {"gh", "glab"}:
         return None
     explicit = _extract_repo_flag(words)
     if explicit:
@@ -297,34 +403,56 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
 
     - ``glab ... -R <ns>/<repo>`` / ``gh ... -R <owner>/<repo>`` -- the
         explicit ``--repo``/``-R`` flag (LAST-WINS, mirroring gh/glab).
-    - ``gh api repos/<owner>/<repo>/...`` -- the ``repos/`` path segment.
-    - ``glab api projects/<url-encoded ns%2Frepo>/...`` -- the ``projects/``
-        path segment, ``%2F``-decoded.
+    - ``gh api [https://<host>/][api/vN/]repos/<owner>/<repo>/...`` -- the
+        ``repos/`` path segment, after stripping an optional full-URL host and
+        ``api/vN/`` REST-version prefix.
+    - ``glab api [https://<host>/][api/vN/]projects/<url-encoded ns%2Frepo>/...``
+        -- the ``projects/`` path segment, ``%2F``-decoded, after the same
+        host + ``api/vN/`` prefix strip.
+    - ``t3 [overlay] review post-comment``/``post-draft-note <ns>/<repo> ...``
+        -- the project-slug positional (forge pinned to gitlab; ``t3 review`` is
+        GitLab-only).
     - ``gh``/``glab`` ``pr``/``issue``/``mr`` ``create``/``comment``/``note``
         with no ``--repo`` flag -- the CURRENT repo, via the git remote of
         ``cwd``.
+    - a ``python3``/``python``-led REST-publish script -- the SAME
+        ``repos/``/``projects/`` path shape, resolved from a URL LITERAL in
+        the script text (:func:`_destination_from_python_script`) instead of
+        a CLI flag/positional.
 
-    Resolves only the FIRST command segment; :func:`gate_skips_destination`
-    is the multi-segment predicate. Returns ``None`` when the target cannot
-    be determined (a non-publish command, a ``curl``/Slack surface, a
-    flagless API call, or a flagless create with no resolvable git remote).
-    ``None`` is the caller's signal to treat the destination as PUBLIC and
-    scan (fail-closed).
+    Resolves only the FIRST command segment;
+    :func:`public_visibility.gate_skips_for_visibility` is the multi-segment
+    predicate. Returns ``None`` when the target cannot be determined (a
+    non-publish command, a ``curl``/Slack surface, a flagless API call, or a
+    flagless create with no resolvable git remote). ``None`` is the fail-closed
+    signal for :func:`is_public_destination` (treat as PUBLIC) and the
+    fail-open signal for the affirmative-public scope (treat as NON-public).
     """
     return _destination_from_words(first_segment_words(command), cwd)
 
 
-def _segment_carries_substitution_or_transport(words: list[str]) -> bool:
-    """Return True iff any token is a substitution marker or transport construct.
+def _segment_carries_substitution_or_transport(words: list[str], raws: list[str]) -> bool:
+    """Return True iff any token is a LIVE substitution or a transport construct.
 
-    A ``$(...)`` / backtick / process-substitution token, or a
-    redirection/here-doc/group-opener token, can run a SECOND command (a
-    public post) when the shell expands the line -- so the gate must NOT skip
-    and must scan instead. Mirrors the carve-out's fail-closed posture on
-    these constructs (a quoted flag value carrying ``$(...)`` still trips the
-    substitution check, since a public post can hide inside a body value).
+    A ``$(...)`` / backtick / process-substitution that bash would EXPAND, or a
+    redirection/here-doc/group-opener token, can run a SECOND command (a public
+    post) when the shell processes the line -- so the gate must NOT skip and must
+    scan instead.
+
+    The substitution half reads each token's as-written source span (``raws``,
+    index-aligned with ``words``) via :func:`raw_has_live_substitution` rather than
+    its decoded value: a marker inside a SINGLE-quoted body value is inert literal
+    text bash passes verbatim (``--body 'name the `flag` here'``), so it cannot
+    launch a second command and must NOT force a scan on an otherwise
+    private-target post (#3357). A marker that is unquoted or inside DOUBLE quotes
+    still expands, so it still scans -- the exact live-versus-inert distinction the
+    sibling opaque-transport check already makes. An empty raw span fails closed
+    (treated as live). The transport-construct half stays on the decoded ``words``,
+    where it belongs.
     """
-    return any(token_has_substitution_marker(token) or token_is_transport_construct(token) for token in words)
+    if any(raw_has_live_substitution(raw) for raw in raws):
+        return True
+    return any(token_is_transport_construct(token) for token in words)
 
 
 def _segment_is_skip_inert(words: list[str]) -> bool:
@@ -354,44 +482,34 @@ def _segment_is_skip_inert(words: list[str]) -> bool:
 
 
 def _teatree_list_setting(key: str, env_var: str, config_path: Path | None) -> list[str]:
-    """Return a ``[teatree] <key>`` list unioned with ``<env_var>`` (lower-cased).
+    """Return the DB-home ``<key>`` list unioned with the ``<env_var>`` override (lower-cased).
 
-    The env var (comma- or space-separated) supplements the TOML list, mirroring
+    The env var (comma- or space-separated) SUPPLEMENTS the DB list, mirroring
     the established ``internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
-    shape. Reads the TOML directly (no Django/config import) to stay importable
-    from the hook process.
+    shape. Reads the canonical ``ConfigSetting`` store via the Django-free
+    :mod:`teatree.config.cold_reader`; *config_path* overrides the DB path (else
+    the canonical DB / ``T3_CONFIG_DB``).
     """
     env_raw = os.environ.get(env_var, "")
     env_entries = [e.strip().lower() for e in re.split(r"[,\s]+", env_raw) if e.strip()]
-
-    import tomllib  # noqa: PLC0415
-
-    target = config_path if config_path is not None else _config_path()
-    toml_entries: list[str] = []
-    if target.is_file():
-        try:
-            raw = tomllib.loads(target.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-        teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
-        entries = teatree.get(key, []) if isinstance(teatree, dict) else []
-        if isinstance(entries, list):
-            toml_entries = [str(e).strip().lower() for e in entries if str(e).strip()]
-    return env_entries + toml_entries
+    db_entries = [
+        str(e).strip().lower() for e in cold_reader.list_setting(key, default=[], db_path=config_path) if str(e).strip()
+    ]
+    return env_entries + db_entries
 
 
 def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] internal_publish_namespaces`` denylist (lower-cased).
+    """Return the DB-home ``internal_publish_namespaces`` denylist (lower-cased).
 
     The list of host/namespace prefixes that are PROVABLY internal. Read
     from the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var first (comma- or
     space-separated, for a quick per-session override), then the
-    ``[teatree] internal_publish_namespaces`` key in ``~/.teatree.toml``.
+    ``internal_publish_namespaces`` row in the canonical ``ConfigSetting`` DB.
     DEFAULT is empty -- with nothing configured every destination stays PUBLIC
     (scanned), so behaviour is conservative for unconfigured users.
 
     No real company/customer namespace is hardcoded here; the denylist lives
-    only in the user's private config / env.
+    only in the operator's private DB / env.
     """
     return _teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
 
@@ -403,11 +521,11 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     blocks) UNLESS it is PROVABLY internal. A destination is internal when ANY
     of these resolves its slug to private:
 
-    - the ``[teatree] internal_publish_namespaces`` /
+    - the ``internal_publish_namespaces`` /
         ``T3_INTERNAL_PUBLISH_NAMESPACES`` denylist, as a case-insensitive
         prefix-SEGMENT match (``internalcorp`` matches ``internalcorp/svc``
         and ``host/internalcorp/svc`` but not ``other/internalcorp-public``);
-    - the existing ``[teatree] private_repos`` allowlist that the
+    - the existing ``private_repos`` allowlist that the
         commit / pure-post carve-out already consults
         (:func:`_repo_visibility.slug_is_allowlisted_private`), so a user's
         CURRENT ``private_repos`` config makes their private namespaces skip the
@@ -448,94 +566,3 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     # the GitHub default. A host-qualified slug is unchanged.
     probe_slug = forge_qualified_slug(slug, dest.forge)
     return not slug_is_private(probe_slug)
-
-
-def _api_write_targets_internal_repo(words: list[str], *, config_path: Path | None = None) -> bool:
-    """Return True iff a raw ``api`` WRITE segment provably targets an internal repo.
-
-    A ``gh api`` / ``glab api`` write carries its body only to the endpoint its
-    URL path names. When that path resolves to a repo slug
-    (``repos/<owner>/<repo>`` / ``projects/<ns>%2F<repo>``) that is provably
-    internal, the write cannot leak to a public surface -- updating an MR
-    description on a private customer project is the canonical case. The slug
-    must come from the URL path itself (``via="api"``): an ``-R`` flag does not
-    constrain a raw endpoint. An unresolvable path (a shell variable, a
-    flagless call, an ambiguous unknown flag, a non-repo endpoint) or a
-    public/unknown-visibility slug stays fail-closed.
-    """
-    if not words or words[0] not in {"gh", "glab"}:
-        return False
-    dest = _destination_from_api(words, words[0])
-    if dest is None or dest.via != "api":
-        return False
-    return not is_public_destination(dest, config_path=config_path)
-
-
-def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
-    """Return True iff a publish-surface gate should SKIP scanning ``command``.
-
-    The banned-terms / bare-reference gates scan only PUBLIC targets. The
-    skip is the ALL-SEGMENTS inversion that mirrors
-    :func:`publish_surface.command_is_pure_private_gh_glab_post`: skip ONLY
-    when EVERY top-level segment is provably safe to skip and there is at
-    least one publish segment. A single public, unresolvable, ``api`` WRITE, or
-    substitution/transport-carrying segment makes the WHOLE command scan
-    (fail-closed). Otherwise a chained or substituted public post hides
-    behind a leading internal segment and is never scanned.
-
-    A segment is skip-safe when it is one of:
-
-    - a publish segment whose destination resolves to a provably-INTERNAL
-        repo/namespace, which carries no substitution/transport construct;
-    - a raw ``gh``/``glab api`` WRITE whose URL path itself resolves to a
-        provably-INTERNAL repo (:func:`_api_write_targets_internal_repo`) --
-        the body lands only on that private project's surface, so updating
-        e.g. a private customer MR description is not a public leak. An api
-        WRITE with an unresolvable path (shell variable, non-repo endpoint)
-        or a public/unknown target still fails closed;
-    - a read-only ``gh``/``glab api`` GET (:func:`_segment_is_api_read`) --
-        a read posts NO body, so it can never leak content regardless of the
-        repo its URL names, and is skip-safe without resolving a destination; or
-    - a segment that is PROVABLY a recognised navigation / local-only /
-        git-transport command (:func:`_segment_is_skip_inert` -- its leading
-        executable is in the closed ``_SKIP_INERT_LEADERS`` allowlist, e.g.
-        ``cd``/``echo``/``git push``, with no forge token or
-        substitution/transport construct).
-
-    Every OTHER segment is NOT skip-safe and makes the whole command scan
-    (fail-closed): a raw ``gh api`` / ``glab api`` WRITE whose URL does not
-    prove an internal repo target (it carries a body to an arbitrary
-    endpoint), a
-    ``$(...)`` / process-substitution / redirection construct, a PUBLIC or
-    unresolvable publish destination, and -- the closed inversion -- ANY
-    segment whose leading word is an UNRECOGNISED executable (an interpreter
-    ``sh``/``bash``/``eval``, an ``ssh``/``xargs`` wrapper, a build/script
-    runner ``make``/``npm``/``python``/``./release.sh``, ...). Such a segment
-    resolves to no destination and is not a recognised inert leader, so it
-    could shell out to a hidden public post with no forge token in its own
-    argv; skipping on the strength of a sibling internal segment is exactly the
-    leak this guards. This mirrors the commit chain's prove-pure-or-fail-closed
-    inversion rather than enumerating transports.
-    """
-    segments = command_segments(command)
-    if not segments:
-        return False
-    saw_internal_publish = False
-    for words in segments:
-        if _segment_carries_substitution_or_transport(words):
-            return False
-        if _segment_is_api_write(words):
-            if not _api_write_targets_internal_repo(words, config_path=config_path):
-                return False
-            saw_internal_publish = True
-            continue
-        if _segment_is_api_read(words):
-            continue
-        dest = _destination_from_words(words, cwd)
-        if dest is not None:
-            if is_public_destination(dest, config_path=config_path):
-                return False
-            saw_internal_publish = True
-        elif not _segment_is_skip_inert(words):
-            return False
-    return saw_internal_publish

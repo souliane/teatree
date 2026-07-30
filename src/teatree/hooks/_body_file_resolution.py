@@ -15,138 +15,35 @@ the real body and the private-repo carve-out can downgrade it instead of
 fail-closing on an unread body. A body file that exists nowhere still fails
 closed, and a PUBLIC-repo body file still hard-blocks.
 
-The matching primitives (``FAIL_CLOSED_SENTINEL``, ``_read_file_arg``,
-``_attached_value``) stay in :mod:`_command_parser`; this module imports them
-one-directionally. ``_command_parser`` calls back into here via a lazy import
-(at call time, not module load) so no cycle forms.
+The matching primitives (``FAIL_CLOSED_SENTINEL``, ``read_file_arg``,
+``attached_value``) live in the dependency-free :mod:`_parser_primitives` leaf;
+BOTH this module and :mod:`_command_parser` import DOWN into that leaf, so
+``_command_parser`` can import this resolver at module load (no cycle, no lazy
+call-time imports) instead of the reach-sideways cycle the primitives previously
+forced (#F7.9).
 """
 
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
-from teatree.hooks._command_parser import (
-    FAIL_CLOSED_SENTINEL,
-    UNAVAILABLE_BODY_SOURCE_SENTINEL,
-    attached_value,
-    read_file_arg,
-)
-from teatree.hooks._shell_lexer import Token, TokenKind, raw_substitution_sees_live, split_commands
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, attached_value, read_file_arg
+from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
 _BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset({"--body-file", "--description-file", "--file"})
 
-# A body value that IS exactly a ``$(cat <path>)`` command substitution. Agents
-# pass a body inline as ``--description "$(cat <path>)"`` / ``--body "$(cat
-# <path>)"``; the lexer keeps the whole quoted value as ONE token with the
-# substitution UNEXPANDED, so the gate would scan the literal ``$(cat ...)``
-# string -- rejecting a clean file and missing a banned term inside it. The
-# path is read so the scan runs against the ACTUAL body. Backticks (``$(cat …)``
-# only -- the modern form) and a single optional ``-- `` are tolerated; the path
-# may be quoted.
-_CAT_SUBST_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\$\(\s*cat\s+(?:--\s+)?(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s*\)$",
-)
-
-# A body value that IS exactly a single shell-variable reference (``$VAR`` or
-# ``${VAR}``). Resolved best-effort from the hook subprocess's environment (it
-# inherits the agent's env, the same channel the ``ALLOW_BANNED_TERM`` override
-# reaches the gate through). An absent variable is genuinely unresolvable and
-# fails closed.
-_VAR_REF_RE: Final[re.Pattern[str]] = re.compile(r"^\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?$")
-
-# A whole-value ``$VAR`` / ``${VAR}`` reference anchored INSIDE a double-quote
-# span (``"$VAR"``) -- the live form the env resolver reads. A single-quoted
-# ``'$VAR'`` is inert literal text bash never expands, so it must NOT be env
-# resolved (the ``$VAR`` is the published body itself, e.g. documenting a flag).
-_DOUBLE_QUOTED_VAR_REF_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\"$",
-)
-
-
-def _raw_substitution_is_live(raw: str) -> bool:
-    """Return True iff a ``$(...)`` in ``raw`` sits OUTSIDE a single-quoted span.
-
-    A command substitution is expanded by bash only when it is unquoted or
-    inside DOUBLE quotes; inside SINGLE quotes (``'...$(x)...'``) it is inert
-    literal text bash passes verbatim, so the gate already holds the real body
-    in the decoded value and can scan it. This walks the verbatim source span
-    with a quote-context state machine (:func:`raw_substitution_sees_live`):
-    a ``'`` opens a single-quoted region only when NOT already inside double
-    quotes -- inside a double-quoted span an apostrophe is a LITERAL character,
-    not a delimiter -- and a ``$(`` is reported live the moment it opens while
-    NOT inside a single-quoted region (unquoted OR double-quoted, both of which
-    bash expands). Without this double-quote awareness a body like
-    ``"it's $(cat secret)"`` -- one double-quoted string whose ``'`` is a
-    literal apostrophe -- would mis-toggle into a phantom single-quoted region
-    and report the genuinely LIVE ``$(...)`` as inert, scanning the literal
-    token instead of failing closed (a fail-open leak).
-
-    ``raw`` defaults to empty for in-process callers that do not carry a source
-    span; an empty/absent ``raw`` is treated as live (conservative -- the gate
-    keeps failing closed on an embedded ``$(...)`` it cannot prove inert).
-    """
-    if not raw:
-        return True
-    return raw_substitution_sees_live(raw, ("$(",))
-
-
-def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> str:
-    """Resolve a ``--description``/``--body`` value's indirection to the real body.
-
-    Three forms are resolved so the banned-terms / quote scan runs against the
-    ACTUAL published body rather than an unexpanded shell token:
-
-    - ``$(cat <path>)`` -- the file content (read via :func:`read_file_arg`,
-        ``base``-relative fallback for the cold-hook reset cwd). An unreadable
-        path yields the fail-closed sentinel.
-    - ``$VAR`` / ``${VAR}`` -- the environment variable's value when present in
-        the hook subprocess env; absent yields the UNAVAILABLE-body-source
-        sentinel (the value does not exist before the command runs, so the gate
-        renders the actionable "write the body to an absolute file" message,
-        #2369). Only the DOUBLE-quoted (``"$VAR"``) live form env-resolves -- a
-        single-quoted ``'$VAR'`` is inert literal text bash never expands, so it
-        is the published body and is scanned verbatim.
-    - anything else -- returned verbatim (a normal inline body).
-
-    A value that STILL carries an embedded ``$(...)`` command-substitution
-    marker the single-form matchers above did not fully resolve is fail-closed
-    ONLY when that substitution is LIVE -- i.e. its source span (``raw``) shows
-    the ``$(`` sitting outside any single-quoted region, so bash WOULD expand it
-    and the gate cannot see the real content (a mixed ``"prefix $(cat x)"``). A
-    ``$(...)`` that sits INSIDE a single-quoted span (``'... $(date) ...'``,
-    ``git commit -m 'ran $(date)'``) is inert literal text bash passes verbatim:
-    the body is fully present in ``value`` and is SCANNED, not blocked. Without a
-    source span (``raw`` empty) an embedded ``$(`` stays fail-closed --
-    conservative, since the gate cannot prove it inert. Resolution is never a
-    bypass: a live ``$(...)`` source the gate cannot read always fails closed.
-
-    A backtick is NOT a fail-closed trigger. The extracted value is a literal
-    argv element the gate only SCANS (never re-feeds to a shell), so a markdown
-    inline-code span (a function name / flag / path in backticks, the common
-    case in real PR/issue bodies) is inert data fully present in the value and
-    fully scanned -- blocking on it was a pure false positive that forced
-    ``--body-file``/heredoc workarounds.
-    """
-    cat_match = _CAT_SUBST_RE.match(value)
-    if cat_match is not None and _raw_substitution_is_live(raw):
-        path = cat_match.group("path").strip("'\"")
-        content = read_file_arg(path, base)
-        return content if content is not None else FAIL_CLOSED_SENTINEL
-    var_match = _VAR_REF_RE.match(value)
-    if var_match is not None and (not raw or _DOUBLE_QUOTED_VAR_REF_RE.match(raw)):
-        resolved = os.environ.get(var_match.group("name"))
-        return resolved if resolved is not None else UNAVAILABLE_BODY_SOURCE_SENTINEL
-    if "$(" in value and _raw_substitution_is_live(raw):
-        return FAIL_CLOSED_SENTINEL
-    return value
-
-
+# The terminator is EXACT-LINE anchored: ``\n<delim>`` followed only by optional
+# trailing spaces/tabs then end-of-line or end-of-string. The old ``\n<delim>\b``
+# terminated on a mere word boundary, so a body line that BEGINS with the delim
+# (``EOF and rest: leak``) matched and TRUNCATED the scanned body -- the leak
+# after the delim word published unscanned. A heredoc terminator must sit ALONE
+# on its line, so the exact-line anchor is both correct and closes the bypass
+# (#F7.5).
 _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
-    r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+    r"<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1[ \t]*(?=\n|$)",
     re.DOTALL,
 )
 
@@ -159,7 +56,8 @@ _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
 # with the heredoc delimiter so a later ``-F``/``--body-file <path>`` reference
 # resolves to the body the command is about to write there (#126).
 _HEREDOC_TO_FILE_RE: Final[re.Pattern[str]] = re.compile(
-    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
+    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<-?\s*['\"]?(?P<delim>\w+)['\"]?\s*\n"
+    r"(?P<body>.*?)\n(?P=delim)[ \t]*(?=\n|$)",
     re.DOTALL,
 )
 
@@ -273,22 +171,125 @@ def unredirected_heredoc_bodies(command: str) -> list[str]:
     ]
 
 
+# Stdin spellings of a body-file flag: ``git commit -F -`` and the gh/glab
+# ``--body-file -`` / ``-F -`` / ``--file -`` forms (plus the ``--file=-``
+# equals spelling). ``-`` means "read the body/message from STDIN", so the body
+# lives in whatever feeds the command's stdin (an in-command heredoc or a piped
+# ``printf``/``echo`` writer), NOT in a file named ``-`` on disk.
+STDIN_DASH: Final[str] = "-"
+
+# Leaders whose ``-F -`` / ``--file -`` / ``--body-file -`` reads its
+# body/message from stdin rather than a file named ``-``: git's commit-message
+# flag and gh/glab's body-file short/long forms. The stdin body is resolved from
+# the in-command heredoc / piped writer instead of fail-closing on ``-`` (#1415).
+_STDIN_BODY_LEADERS: Final[frozenset[str]] = frozenset({"git", "gh", "glab"})
+
+
+def _segments_with_leading_separator(tokens: list[Token]) -> list[tuple[str | None, list[str]]]:
+    r"""Split ``tokens`` into ``(preceding-separator, WORD-values)`` pairs.
+
+    Like :func:`_shell_lexer.split_commands` but preserves the command-separator
+    operator (``|``/``;``/``&&``/``\n`` …) that PRECEDES each segment, so a
+    caller can tell a PIPE-fed consumer (its stdin is the previous segment's
+    stdout) from a merely sequenced one. The first segment's separator is
+    ``None``.
+    """
+    out: list[tuple[str | None, list[str]]] = []
+    current: list[Token] = []
+    pending_sep: str | None = None
+    for tok in tokens:
+        if is_command_separator(tok):
+            if current:
+                out.append((pending_sep, [t.value for t in current if t.kind is TokenKind.WORD]))
+                current = []
+            pending_sep = tok.value
+        else:
+            current.append(tok)
+    if current:
+        out.append((pending_sep, [t.value for t in current if t.kind is TokenKind.WORD]))
+    return out
+
+
+def _reads_dash_stdin(words: list[str], flags: frozenset[str]) -> bool:
+    """Return True iff a body-file ``flag`` in ``words`` points at stdin (``-``).
+
+    Covers the space-separated (``--body-file -``), equals (``--file=-``), and
+    git-glued short (``-F-``) spellings.
+    """
+    for i, word in enumerate(words):
+        if word in flags and i + 1 < len(words) and words[i + 1] == STDIN_DASH:
+            return True
+        if any(word == f"{flag}=-" for flag in flags):
+            return True
+        if attached_value(word, "-F") == STDIN_DASH:
+            return True
+    return False
+
+
+def _segment_reads_body_from_stdin(words: list[str]) -> bool:
+    """Return True iff a git-commit / gh / glab segment reads its body from stdin.
+
+    git's commit message comes from stdin on ``-F -`` / ``--file -`` /
+    ``--file=-``; a gh/glab post body on ``--body-file -`` / ``-F -`` / ``--file
+    -``. A bare ``git commit`` opens an editor and ``-F <file>`` / ``-m`` read
+    elsewhere, so neither pairs with a pipe.
+    """
+    if not words:
+        return False
+    leader = PurePosixPath(words[0]).name
+    if leader == "git":
+        return "commit" in words and _reads_dash_stdin(words, frozenset({"-F", "--file"}))
+    if leader in {"gh", "glab"}:
+        return _reads_dash_stdin(words, frozenset({"-F", "--file", "--body-file"}))
+    return False
+
+
+def piped_stdin_writer_body(tokens: list[Token]) -> str | None:
+    """Return the body a ``printf``/``echo`` writer pipes into a stdin body reader.
+
+    For ``printf '%s' 'msg' | git commit -F -`` (or ``… | gh pr create
+    --body-file -``) the writer's operands ARE the body fed to the reader's stdin
+    — at PreToolUse scan time that is the only place the body lives (the command
+    has not run). Returns the joined operands of a ``printf``/``echo`` segment
+    sitting immediately upstream (via a ``|`` pipe) of a git-commit / gh / glab
+    segment reading its body from stdin, else ``None``. The operands are joined
+    verbatim and scanned as a conservative SUPERSET (a banned term / user quote
+    in the real body is a substring of the join), never re-executed.
+    """
+    segments = _segments_with_leading_separator(tokens)
+    for idx in range(1, len(segments)):
+        separator, words = segments[idx]
+        if separator != "|" or not _segment_reads_body_from_stdin(words):
+            continue
+        _, prev_words = segments[idx - 1]
+        if prev_words and PurePosixPath(prev_words[0]).name in _REDIRECT_WRITER_COMMANDS:
+            return " ".join(prev_words[1:])
+    return None
+
+
 @dataclass(frozen=True)
 class BodyFileContext:
     """Resolution context for ``-F``/``--file``/``--body-file`` body files.
 
-    Groups the three settings that flow together through the body-file
-    walkers: the in-command ``heredoc_files`` map (a body written earlier in
-    the SAME command — a ``> path <<EOF`` heredoc or a ``printf``/``echo >
-    path`` redirect — keyed by the redirect-target token), the ``base`` dir a
-    relative body file is retried against (the commit's repo dir), and
-    ``fail_closed_body_file`` (what an UNREADABLE ``gh``/``glab`` body file
-    does — the git ``-F`` commit-message path always fails closed regardless).
+    Groups the settings that flow together through the body-file walkers: the
+    in-command ``heredoc_files`` map (a body written earlier in the SAME command
+    — a ``> path <<EOF`` heredoc or a ``printf``/``echo > path`` redirect — keyed
+    by the redirect-target token), the ``base`` dir a relative body file is
+    retried against (the commit's repo dir), ``fail_closed_body_file`` (what an
+    UNREADABLE ``gh``/``glab`` body file does), and the two STDIN-body inputs that
+    feed a ``git commit -F -`` (#1415): ``stdin_piped_body`` (a ``printf``/``echo
+    | git commit -F -`` writer's body) and ``has_unredirected_heredoc`` (a
+    ``git commit -F - <<EOF`` heredoc, already appended globally by
+    :func:`_command_parser.extract_bash_payload`). When EITHER stdin source is
+    present the commit message is READABLE, so ``git commit -F -`` resolves it
+    instead of fail-closing on an unreadable stdin.
     """
 
     heredoc_files: dict[str, str]
     fail_closed_body_file: bool
     base: Path | None = None
+    stdin_piped_body: str | None = None
+    has_unredirected_heredoc: bool = False
 
 
 def commit_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
@@ -306,7 +307,7 @@ def commit_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
     when the dir is the fail-closed sentinel (a ``-C`` value the gate cannot
     pin down statically).
     """
-    from teatree.hooks import _commit_repo_dir  # noqa: PLC0415
+    from teatree.hooks import _commit_repo_dir  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     # A plain ``git commit`` names no dir; keep the historical ``None`` so the
     # caller's own ``cwd`` fallback governs (anchoring only changes a command
@@ -330,7 +331,7 @@ def command_body_file_base(command: str) -> Path | None:
     actually run in, so resolving the body file against it lets the gate scan the
     real body. ``None`` when the command has no leading ``cd``.
     """
-    from teatree.hooks._commit_repo_dir import leading_cd_dir  # noqa: PLC0415
+    from teatree.hooks._commit_repo_dir import leading_cd_dir  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     cd_dir = leading_cd_dir(command)
     return Path(cd_dir) if cd_dir is not None else None
@@ -406,42 +407,84 @@ def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, 
     while i < n:
         word = words[i]
         if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=fail_closed)
+            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=fail_closed, leader=leader)
             i += 2
             continue
         attached: str | None = None
         for flag in _BODY_FILE_FLAG_NAMES:
             attached = attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads, ctx, fail_closed=fail_closed)
+                _append_file_payload(attached, payloads, ctx, fail_closed=fail_closed, leader=leader)
                 break
         if attached is not None:
             i += 1
             continue
         short = _short_f_body_file(leader, words, i, fail_closed=fail_closed)
         if short is not None:
-            _append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed)
+            _append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed, leader=leader)
             i += short.consumed
             continue
         i += 1
 
 
-def _append_file_payload(path: str, payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool) -> None:
+def _append_stdin_body(payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool) -> None:
+    """Resolve a ``… -F -`` / ``--body-file -`` body read from STDIN (#1415).
+
+    ``-`` is not a file named ``-`` — the body/message comes from stdin, so it
+    lives in whatever feeds the command's stdin at scan time:
+
+    - a piped ``printf``/``echo`` writer (``printf 'msg' | gh pr create
+        --body-file -``) → its operands are appended (``ctx.stdin_piped_body``)
+        and SCANNED, so a real banned term / user quote in the body still blocks;
+    - a heredoc (``gh pr create --body-file - <<EOF … EOF``) → the body is already
+        appended globally by :func:`_command_parser.extract_bash_payload`
+        (``ctx.has_unredirected_heredoc``), so this contributes nothing (no
+        double-count) and emits NO sentinel — the heredoc content is scanned;
+    - genuinely-opaque stdin (``cat file | gh pr create --body-file -``, an
+        interactive editor) → the body is unreadable at scan time, so the generic
+        fail-closed sentinel is emitted when ``fail_closed``. A PUBLIC gh/glab
+        post the gate cannot read hard-blocks; a LOCAL git commit's sentinel is
+        later DOWNGRADED to a warning by the destination-aware carve-out (the
+        pre-push gate re-scans commit messages). ``fail_closed`` False appends
+        nothing (the quote scanner's drafted-but-absent posture).
+
+    Extending this from ``git commit -F -`` to gh/glab ``--body-file -`` is the
+    #1415 fix: a clean heredoc/piped gh/glab body is no longer hard-blocked as an
+    unreadable file named ``-`` (previously only git resolved its stdin body).
+    """
+    if ctx.stdin_piped_body is not None:
+        payloads.append(ctx.stdin_piped_body)
+    elif ctx.has_unredirected_heredoc:
+        return
+    elif fail_closed:
+        payloads.append(FAIL_CLOSED_SENTINEL)
+
+
+def _append_file_payload(
+    path: str, payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool, leader: str = ""
+) -> None:
     """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
 
-    Resolution order: the on-disk file (as-is, then relative to ``ctx.base`` --
-    the commit's repo dir), then an in-command body written to that path — a
-    ``cat > path <<EOF … EOF`` heredoc or a ``printf``/``echo > path`` redirect
-    — then the ``fail_closed`` branch. The in-command fallback closes the #126
-    false positive where a body written to a temp file and posted via
-    ``--body-file``/``-F`` in the same command was unreadable at PreToolUse
-    scan time (the hook runs BEFORE the file is created); the lookup key is the
-    raw ``--body-file`` argument token, so a ``$f`` / ``$(mktemp)`` path matches
-    the textually-identical redirect target even though neither is expanded.
-    The ``ctx.base`` fallback closes the cold-hook false positive where the
-    harness cwd has reset away from the worktree, so a ``git -C <worktree>
-    commit -F <relpath>`` body file is unreadable from the cwd yet readable from
-    the commit's own repo dir.
+    A stdin body reference (``path == "-"`` on a git-commit / gh / glab leader —
+    ``git commit -F -``, ``gh pr create --body-file -``) reads its body/message
+    from STDIN, not a file named ``-``; it is resolved by
+    :func:`_append_stdin_body` (the in-command heredoc / piped writer, else a
+    fail-closed sentinel — always for git's LOCAL commit, else per the
+    destination-aware ``fail_closed`` policy for a gh/glab post).
+
+    For a real path the resolution order is: the on-disk file (as-is, then
+    relative to ``ctx.base`` -- the commit's repo dir), then an in-command body
+    written to that path — a ``cat > path <<EOF … EOF`` heredoc or a
+    ``printf``/``echo > path`` redirect — then the ``fail_closed`` branch. The
+    in-command fallback closes the #126 false positive where a body written to a
+    temp file and posted via ``--body-file``/``-F`` in the same command was
+    unreadable at PreToolUse scan time (the hook runs BEFORE the file is
+    created); the lookup key is the raw ``--body-file`` argument token, so a
+    ``$f`` / ``$(mktemp)`` path matches the textually-identical redirect target
+    even though neither is expanded. The ``ctx.base`` fallback closes the
+    cold-hook false positive where the harness cwd has reset away from the
+    worktree, so a ``git -C <worktree> commit -F <relpath>`` body file is
+    unreadable from the cwd yet readable from the commit's own repo dir.
 
     ``fail_closed`` selects what an unresolvable path does. ``True`` appends
     the fail-closed sentinel: the ``git commit -F <path>`` commit-message path
@@ -453,10 +496,26 @@ def _append_file_payload(path: str, payloads: list[str], ctx: BodyFileContext, *
     scanner keeps a drafted-but-absent ``gh``/``glab`` body file as
     "needs-inline", not a fail-closed HIGH (#126).
     """
-    content = read_file_arg(path, ctx.base)
-    if content is None:
-        content = ctx.heredoc_files.get(path)
-    if content is not None:
-        payloads.append(content)
-    elif fail_closed:
+    if path == STDIN_DASH and leader in _STDIN_BODY_LEADERS:
+        # git's commit-message stdin ALWAYS fails closed on opaque input (#1207);
+        # gh/glab's body-file stdin follows the destination-aware fail_closed policy.
+        _append_stdin_body(payloads, ctx, fail_closed=leader == "git" or fail_closed)
+        return
+    # Consult the in-command heredoc/redirect body FIRST and the on-disk file
+    # SECOND, appending BOTH when both resolve (a conservative SUPERSET scan). A
+    # pre-existing REUSED temp path could otherwise let a STALE clean on-disk file
+    # shadow the real body the command is about to write there via ``> path <<EOF``
+    # -- the gate scanned the stale content and the live body published unscanned
+    # (#F7.6). Scanning both closes that: a banned term / user quote in EITHER the
+    # heredoc body or the on-disk file is a substring of the joined payload.
+    heredoc_body = ctx.heredoc_files.get(path)
+    disk_content = read_file_arg(path, ctx.base)
+    appended = False
+    if heredoc_body is not None:
+        payloads.append(heredoc_body)
+        appended = True
+    if disk_content is not None:
+        payloads.append(disk_content)
+        appended = True
+    if not appended and fail_closed:
         payloads.append(FAIL_CLOSED_SENTINEL)

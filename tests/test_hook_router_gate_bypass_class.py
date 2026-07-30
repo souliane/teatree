@@ -64,7 +64,7 @@ def _isolate_state_dir(tmp_path: Path):
 
 @pytest.fixture(autouse=True)
 def _gate_enabled_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate orchestrator gate from developer's real ~/.teatree.toml."""
+    """Isolate orchestrator gate from the developer's real DB-home config."""
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
@@ -605,6 +605,41 @@ class TestF6ReadonlyPrefixChainBypass:
         result = handle_block_direct_commands(_bash_event(command))
         assert result is not True, f"quoted-arg tool name must not be denied: {command!r}"
         assert capsys.readouterr().out.strip() == ""
+
+
+class TestPerSegmentReadOnlyAllowlist:
+    """Class-W false positive: an UNQUOTED tool name read by a read-only segment (#3562).
+
+    The F6 fix disabled the read-only/t3 leader allowlist for the WHOLE command as
+    soon as any chain operator appeared, so `rg manage.py runserver src && t3 ...`
+    was denied for grepping the phrase. The allowlist now applies per segment, so a
+    read-only segment is exempt while every other segment stays scanned — F6 intact.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rg manage.py runserver src/ && t3 loop status",
+            "git log --oneline | grep pip install",
+            "grep -rn docker compose up deploy/ | head -20",
+            "t3 loop status && grep npm run serve README.md",
+        ],
+    )
+    def test_read_only_segment_mentioning_a_blocked_tool_is_allowed(self, command: str) -> None:
+        assert _deny_match(command) is None, f"read-only segment must not be denied: {command!r}"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep foo bar; pip install requests",
+            "rg manage.py src/ && python manage.py runserver",
+            "echo hi | npm run serve",
+            "echo $(pip install requests)",
+            "grep pat file && echo `pip install requests`",
+        ],
+    )
+    def test_a_real_invocation_beside_a_read_only_segment_is_still_denied(self, command: str) -> None:
+        assert _deny_match(command) is not None, f"chained real invocation must be denied: {command!r}"
 
 
 # ── F7: ls -lRa missed by orchestrator boundary ──────────────────────────

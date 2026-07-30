@@ -120,7 +120,10 @@ class TestAlwaysRunLanesNotGated:
 
 
 class TestExistingTriggersPreserved:
-    def test_banned_terms_tree_stays_push_or_schedule(self) -> None:
+    def test_banned_terms_tree_keeps_push_and_schedule_backstop(self) -> None:
+        # The gate also runs on PRs now (#44, pinned in
+        # test_ci_tree_gates_run_on_prs); the push/schedule backstop must not
+        # be dropped by a diff-scoping edit.
         condition = str(_load_jobs()["banned-terms-tree"].get("if", ""))
         assert "push" in condition
         assert "schedule" in condition

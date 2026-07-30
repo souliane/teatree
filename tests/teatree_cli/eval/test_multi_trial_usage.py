@@ -9,7 +9,7 @@ contract is pinned without metering.
 
 from pathlib import Path
 
-from teatree.cli.eval.multi_trial import collect_matrix_rows
+from teatree.cli.eval.multi_trial import TrialPolicy, collect_matrix_rows
 from teatree.eval.benchmark import _clean_cost_cells
 from teatree.eval.models import EvalRun, EvalSpec, TokenUsage
 
@@ -67,14 +67,14 @@ class TestUsageThreading:
     def test_single_trial_carries_run_usage(self) -> None:
         usage = TokenUsage(input=100, cache_creation=200, cache_read=700, output=50)
         runner = _FixedRunner(usage=usage, billed_model="claude-opus-4-8")
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, policy=TrialPolicy(trials=1))
         (row,) = rows
         assert row.usage == usage
 
     def test_trials_sum_usage_across_trials(self) -> None:
         usage = TokenUsage(input=10, cache_creation=20, cache_read=70, output=5)
         runner = _FixedRunner(usage=usage, billed_model="claude-opus-4-8")
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=3, require="any")
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, policy=TrialPolicy(trials=3))
         (row,) = rows
         assert row.usage == TokenUsage(input=30, cache_creation=60, cache_read=210, output=15)
 
@@ -90,19 +90,23 @@ class TestFellBack:
 
     def test_run_present_signal_is_not_a_fallback(self) -> None:
         runner = _FixedRunner(usage=TokenUsage(input=1), billed_model="claude-haiku-4-5", fell_back=False)
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8@xhigh"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows(
+            [_spec("alpha")], ["claude-opus-4-8@xhigh"], runner=runner, policy=TrialPolicy(trials=1)
+        )
         assert _by_key(rows, "alpha", "claude-opus-4-8@xhigh").fell_back is False
 
     def test_run_absent_signal_is_a_fallback(self) -> None:
         runner = _FixedRunner(usage=TokenUsage(input=1), billed_model="claude-sonnet-4-6", fell_back=True)
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8@xhigh"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows(
+            [_spec("alpha")], ["claude-opus-4-8@xhigh"], runner=runner, policy=TrialPolicy(trials=1)
+        )
         assert _by_key(rows, "alpha", "claude-opus-4-8@xhigh").fell_back is True
 
     def test_unobservable_run_signal_is_not_a_fallback(self) -> None:
         # A subscription/offline run has fell_back=None — never observable as a
         # fallback, so the cell is not marked fell_back.
         runner = _FixedRunner(usage=TokenUsage(), billed_model=None, fell_back=None)
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=1, require="any")
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, policy=TrialPolicy(trials=1))
         assert _by_key(rows, "alpha", "claude-opus-4-8").fell_back is False
 
 
@@ -134,7 +138,7 @@ class _ReasonRunner:
 class TestMultiTrialCapTruncation:
     def test_clean_multi_trial_cell_has_empty_terminal_reason(self) -> None:
         runner = _ReasonRunner(["end_turn", "end_turn", "end_turn"])
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=3, require="any")
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, policy=TrialPolicy(trials=3))
         (row,) = rows
         assert row.terminal_reason == ""
         # A clean multi-trial cell is metered + not fell-back → it feeds the fit.
@@ -147,7 +151,7 @@ class TestMultiTrialCapTruncation:
         # fix the trials>1 branch left terminal_reason="" and the cell leaked into
         # the fit (the exact fabrication this guards against).
         runner = _ReasonRunner(["end_turn", "budget_exceeded", "end_turn"])
-        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=3, require="any")
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, policy=TrialPolicy(trials=3))
         (row,) = rows
         assert row.terminal_reason == "budget_exceeded"
         assert _clean_cost_cells(rows) == []
@@ -162,7 +166,7 @@ class _AlwaysRaisesRunner:
 class TestErroredCellUsage:
     def test_errored_cell_carries_zero_usage_and_no_fallback(self) -> None:
         rows = collect_matrix_rows(
-            [_spec("alpha")], ["claude-opus-4-8"], runner=_AlwaysRaisesRunner(), trials=1, require="any"
+            [_spec("alpha")], ["claude-opus-4-8"], runner=_AlwaysRaisesRunner(), policy=TrialPolicy(trials=1)
         )
         (row,) = rows
         assert row.errored is True

@@ -24,9 +24,13 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree import paths
-from teatree.core import db_anchor
-from teatree.core.db_anchor import WrongWorktreeDBError, _is_worktree_isolated_db, assert_lifecycle_db_is_canonical
 from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.provision import db_anchor
+from teatree.core.provision.db_anchor import (
+    WrongWorktreeDBError,
+    _is_worktree_isolated_db,
+    assert_lifecycle_db_is_canonical,
+)
 from teatree.paths import expected_db_for_repo
 
 

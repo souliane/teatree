@@ -3,7 +3,7 @@
 Two concurrent real git worktrees, each running one real DB-touching test
 (as its own ``pytest`` subprocess that does NOT boot Django) and then
 booting a real Django ``runserver`` on a distinct OS-assigned port, asserted
-reachable via :func:`teatree.core.readiness.run_probes`. No docker — runs in
+reachable via :func:`teatree.core.worktree.readiness.run_probes`. No docker — runs in
 normal CI. The two servers get distinct ports (never hardcode 8000) and are
 asserted alive at the same instant, proving the concurrency is genuine and
 not serialized — a load-free correctness check rather than a wall-clock
@@ -25,7 +25,7 @@ from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.contrib.t3_teatree.overlay import _repo_root as teatree_repo_root
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase
-from teatree.core.readiness import HTTPProbeSpec, Probe, http_probe
+from teatree.core.worktree.readiness import HTTPProbeSpec, Probe, http_probe
 
 from ._base import ProvisionedWorktree, ProvisioningIntegrationBase, free_tcp_port
 

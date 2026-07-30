@@ -1,12 +1,26 @@
 """Scan PRs the active user has open across configured code-host repos."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import cast
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
+
+# The keys any forge populates with a pipeline/CI status. A PR carrying NONE of
+# them was never enriched — its red-pipeline lane is structurally inert, which
+# the scanner surfaces (throttled) instead of silently reading "".
+_PIPELINE_FIELDS = ("head_pipeline", "status_check_rollup", "mergeable_state")
+
+
+def _has_pipeline_field(pr: RawAPIDict) -> bool:
+    return any(name in pr for name in _PIPELINE_FIELDS)
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:
@@ -121,10 +135,16 @@ class MyPrsScanner:
             return []
         prs = self._collect_unique_prs(authors)
         signals: list[ScanSignal] = []
+        unenriched = 0
         for pr in prs:
             url = _str_field(pr, "web_url", "html_url")
             if not self._url_allowed(url):
                 continue
+            if not _has_pipeline_field(pr):
+                # No pipeline field at all — the backend never populated CI state,
+                # so my_pr.failed can't fire for this PR. Count it and warn once
+                # per tick rather than silently classifying it as a benign open PR.
+                unenriched += 1
             title = _str_field(pr, "title")
             iid = _int_field(pr, "iid", "number")
             status = _pipeline_status(pr)
@@ -133,6 +153,10 @@ class MyPrsScanner:
                 "title": title,
                 "iid": iid,
                 "status": status,
+                # Carried on EVERY signal so ``my_pr.failed`` reaches
+                # ``claim_red_mr_fix`` with a real head sha — the RedMrFixAttempt
+                # ledger stayed empty (#7) while this was omitted.
+                "head_sha": head_sha(pr),
                 "raw": pr,
             }
             if _needs_attention(status):
@@ -160,6 +184,15 @@ class MyPrsScanner:
                     summary=f"PR #{iid} {status or 'open'}: {title}",
                     payload=base_payload,
                 )
+            )
+        if unenriched:
+            warn_throttled(
+                logger,
+                f"my_prs-unenriched:{self.name}",
+                "%s: %d open PR(s) carry no pipeline field — the my_pr.failed auto-debug lane is inert for them; "
+                "the code host did not populate CI status",
+                self.name,
+                unenriched,
             )
         return signals
 
@@ -213,7 +246,12 @@ class MyPrsScanner:
         seen_urls: set[str] = set()
         prs: list[RawAPIDict] = []
         for author in authors:
-            for pr in self.host.list_my_prs(author=author):
+            try:
+                fetched = self.host.list_my_prs(author=author)
+            except Exception:
+                logger.warning("list_my_prs failed for %s — skipping", author, exc_info=True)
+                continue
+            for pr in fetched:
                 url = _str_field(pr, "web_url", "html_url")
                 if url and url in seen_urls:
                     continue

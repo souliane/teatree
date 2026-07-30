@@ -1,18 +1,41 @@
+from teatree.core.models.anthropic_active_pick import AnthropicActivePick, AnthropicActivePickManager
+from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, AnthropicTokenUsageManager
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
+from teatree.core.models.attachment_manifest import AttachmentManifest
 from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
+from teatree.core.models.ci_eval_heal_session import CiEvalHealSession, CiEvalHealSessionManager
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.models.compliance_snapshot import (
+    InstructionComplianceRecord,
+    InstructionComplianceSnapshot,
+    RemediationKind,
+    RuleSource,
+)
 from teatree.core.models.config_setting import ConfigSetting, ConfigSettingManager
 from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
+from teatree.core.models.critic_dispatch import CriticDispatch
+from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
+from teatree.core.models.critic_verdict import CriticItemVerdict, CriticVerdict, CriticVerdictError
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.directive import Directive, DirectiveError, DirectiveManager
+from teatree.core.models.directive_candidate import DirectiveCandidate, DirectiveCandidateError
+from teatree.core.models.directive_dispatch import DirectiveDispatch
 from teatree.core.models.dream_qa_probe import DreamQaProbe
 from teatree.core.models.dream_run_marker import DreamRunMarker
 from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError, E2EBypassAudit
 from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
-from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
+from teatree.core.models.errors import (
+    CriticGateError,
+    DirtyWorktreeError,
+    InvalidTransitionError,
+    LeaseLostError,
+    NoPlanArtifactError,
+    QualityGateError,
+)
 from teatree.core.models.eval_run import (
     CostRegression,
     EvalRunRecord,
@@ -23,10 +46,16 @@ from teatree.core.models.eval_run import (
     ScenarioRegression,
     TrajectoryToolCall,
 )
+from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
 from teatree.core.models.honesty_escalation import HonestyEscalation
-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
+from teatree.core.models.implemented_issue_marker import (
+    NEEDS_TRIAGE_LABEL,
+    ImplementedIssueMarker,
+    MarkerReconcileResult,
+)
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
+from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
 from teatree.core.models.landscape_artifact import LandscapeArtifact
 from teatree.core.models.live_post_approval import (
     LIVE_POST_APPROVAL_TTL_MINUTES,
@@ -37,36 +66,63 @@ from teatree.core.models.live_post_approval import (
 from teatree.core.models.local_stack_queue import LocalStackQueueItem
 from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker
 from teatree.core.models.loop import Loop, LoopManager
-from teatree.core.models.loop_lease import LoopLease
+from teatree.core.models.loop_lease import LoopDriver, LoopLease
+from teatree.core.models.loop_preset import PIN_MODES, Mode, ModeManager, ModeOverride, ModeOverrideManager
+from teatree.core.models.loop_schedule import ModeSchedule, ModeScheduleSlot
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
+from teatree.core.models.mechanism_sketch import MechanismSketch, MechanismSketchError
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.mergeable_notified import MergeableNotified
-from teatree.core.models.mini_loop_marker import MiniLoopMarker
+from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
+from teatree.core.models.outer_loop_experiment import (
+    OuterLoopExperiment,
+    OuterLoopExperimentError,
+    OuterLoopExperimentManager,
+    ProposalSpec,
+)
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
 from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_pull_request import PendingPullRequest, PendingPullRequestManager
 from teatree.core.models.pending_reinstall import PendingReinstall
+from teatree.core.models.pending_triage_recommendation import PendingTriageRecommendation
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.project_learning import ProjectLearning, ProjectLearningManager
 from teatree.core.models.prompt import Prompt, PromptManager, PromptVersion, PromptVersionManager
+from teatree.core.models.provenance import Provenance
 from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.reply_dispatch import ReplyDispatch
+from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproEvidenceError, ReproEvidenceManager
+from teatree.core.models.repro_waiver import ReproWaiver, ReproWaiverError
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
-from teatree.core.models.review_loop import ReviewLoop, ReviewLoopRound
+from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
 from teatree.core.models.review_request_post import ReviewRequestPost
-from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
+from teatree.core.models.review_verdict import (
+    Finding,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Severity,
+    normalize_reviewer_identity,
+)
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
+from teatree.core.models.send_audit import SendAudit
 from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
-from teatree.core.models.task import Task, TaskAttempt
+from teatree.core.models.session_todo import SessionTodo, SessionTodoManager
+from teatree.core.models.slack_self_ack import SlackSelfAckReaction
+from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
+from teatree.core.models.sweep_skip_streak import SkipObservation, SweepSkipStreak, SweepSkipStreakManager
+from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (
     E2eRunRef,
@@ -76,18 +132,32 @@ from teatree.core.models.ticket_artifacts import (
     WorktreeArtifact,
 )
 from teatree.core.models.transition import TicketTransition
+from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
+from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
+from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
+    "DEFAULT_LOCK_TTL",
+    "LIMIT_PARKED_PREFIX",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
+    "PIN_MODES",
+    "AnthropicActivePick",
+    "AnthropicActivePickManager",
+    "AnthropicTokenUsage",
+    "AnthropicTokenUsageManager",
     "AssessFinding",
     "AssessSweepRun",
+    "AttachmentManifest",
     "AutoReviewDispatch",
     "BindingFeedbackError",
     "BotPing",
     "BroadcastObservation",
+    "CiEvalHealSession",
+    "CiEvalHealSessionManager",
     "ClearIssuanceError",
     "ClearRequest",
     "CodexReviewMarker",
@@ -95,6 +165,13 @@ __all__ = [
     "ConfigSettingManager",
     "ConsolidatedMemory",
     "CostRegression",
+    "CriticDispatch",
+    "CriticFinding",
+    "CriticFindingSpec",
+    "CriticGateError",
+    "CriticItemVerdict",
+    "CriticVerdict",
+    "CriticVerdictError",
     "DailyDigestMessage",
     "DailyDigestThread",
     "DbApproval",
@@ -104,6 +181,12 @@ __all__ = [
     "DeferredQuestionAudit",
     "DeferredQuestionError",
     "DeliveryClaim",
+    "Directive",
+    "DirectiveCandidate",
+    "DirectiveCandidateError",
+    "DirectiveDispatch",
+    "DirectiveError",
+    "DirectiveManager",
     "DirtyWorktreeError",
     "DreamQaProbe",
     "DreamRunMarker",
@@ -115,73 +198,118 @@ __all__ = [
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",
+    "FactoryScoreSnapshot",
+    "FactoryScoreSnapshotManager",
     "Finding",
+    "HarnessRun",
     "HonestyEscalation",
     "ImplementedIssueMarker",
     "IncomingEvent",
+    "InstructionComplianceRecord",
+    "InstructionComplianceSnapshot",
     "IntentClassification",
     "InvalidTransitionError",
     "InvariantOutcome",
+    "KnownIssue",
+    "KnownIssueManager",
     "LandscapeArtifact",
     "LandscapeArtifactRef",
+    "LeaseLostError",
     "LivePostApproval",
     "LivePostApprovalError",
     "LocalStackQueueItem",
     "LocalStackReaperMarker",
     "Loop",
+    "LoopDriver",
     "LoopLease",
     "LoopManager",
     "LoopState",
     "LoopStateManager",
     "LoopStatus",
+    "MRReviewLock",
+    "MarkerReconcileResult",
     "MatcherDetail",
+    "MechanismSketch",
+    "MechanismSketchError",
     "MergeAudit",
     "MergeClear",
     "MergeableNotified",
-    "MiniLoopMarker",
+    "Mode",
+    "ModeManager",
+    "ModeOverride",
+    "ModeOverrideManager",
+    "ModeSchedule",
+    "ModeScheduleSlot",
     "NoPlanArtifactError",
     "OnBehalfApproval",
     "OnBehalfApprovalError",
     "OnBehalfAudit",
     "OutboundClaim",
+    "OuterLoopExperiment",
+    "OuterLoopExperimentError",
+    "OuterLoopExperimentManager",
     "PendingArticleSuggestion",
     "PendingChatInjection",
+    "PendingPullRequest",
+    "PendingPullRequestManager",
     "PendingReinstall",
+    "PendingTriageRecommendation",
     "PlanArtifact",
     "PlanArtifactRef",
     "Ports",
+    "ProjectLearning",
+    "ProjectLearningManager",
     "Prompt",
     "PromptManager",
     "PromptVersion",
     "PromptVersionManager",
+    "ProposalSpec",
+    "Provenance",
     "PullMainCloneMarker",
     "PullRequest",
     "QualityGateError",
     "RedCardIntent",
     "RedCardSignal",
     "RedMrFixAttempt",
+    "RemediationKind",
     "ReplyDispatch",
+    "ReproEvidence",
+    "ReproEvidenceError",
+    "ReproEvidenceManager",
+    "ReproWaiver",
+    "ReproWaiverError",
     "ResourcePressureMarker",
     "ReviewAssignment",
+    "ReviewEvidence",
+    "ReviewEvidenceError",
     "ReviewIntent",
-    "ReviewLoop",
-    "ReviewLoopRound",
     "ReviewRequestPost",
     "ReviewVerdict",
     "ReviewVerdictError",
     "Rubric",
     "RubricCriterion",
     "RubricError",
+    "RuleSource",
     "ScannedBroadcast",
     "ScannedFailedE2E",
     "ScenarioPassRate",
     "ScenarioRegression",
     "SelfImproveFiring",
     "SelfUpdateMarker",
+    "SendAudit",
     "Session",
     "SessionAuditRecord",
     "SessionHandover",
+    "SessionTodo",
+    "SessionTodoManager",
     "Severity",
+    "SkipObservation",
+    "SlackSelfAckReaction",
+    "StandingGoal",
+    "StandingGoalError",
+    "StandingGoalManager",
+    "SweepSkipStreak",
+    "SweepSkipStreakManager",
     "Task",
     "TaskAttempt",
     "Ticket",
@@ -189,11 +317,20 @@ __all__ = [
     "TicketExtra",
     "TicketTransition",
     "TrajectoryToolCall",
+    "TrustedIdentity",
+    "TrustedIdentityManager",
+    "UnshippedWorkRecord",
+    "UsageWindowState",
+    "UsageWindowStateQuerySet",
+    "WaitingItem",
+    "WaitingItemError",
+    "WaitingItemManager",
     "Worktree",
     "WorktreeArtifact",
     "WorktreeEnvOverride",
     "WorktreeExtra",
     "build_review_contract",
     "canonical_mr_scope",
+    "normalize_reviewer_identity",
     "validated_ticket_extra",
 ]

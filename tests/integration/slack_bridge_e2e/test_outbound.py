@@ -9,12 +9,13 @@ from inline_snapshot import snapshot
 
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core import backend_factory
+from teatree.core import backend_factory, toml_backends
 from teatree.core import notify as core_notify
 from teatree.core import speak as core_speak
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.types import SpeakConfig
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
 
@@ -26,8 +27,8 @@ pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 def _text_only_speak() -> Iterator[None]:
     """Pin the speak config inert so the DM rides the ``chat.postMessage`` path.
 
-    ``deliver_user_dm`` consults ``resolve_speak``: when the developer's real
-    ``~/.teatree.toml`` has ``[teatree.speak] slack = true`` AND ``say`` is on
+    ``deliver_user_dm`` consults ``resolve_speak``: when the developer's DB-home
+    ``speak`` config enables ``slack`` AND ``say`` is on
     the host (macOS), the bot→user DM goes out as a ``files.completeUploadExternal``
     audio attach, NOT ``chat.postMessage`` — so the ``chat.postMessage`` guards
     in this module never fire and ``notify_user`` reports no ``ts``. These tests
@@ -58,6 +59,7 @@ class TestOutboundBridgeEndToEnd:
             "tests green",
             kind=NotifyKind.INFO,
             idempotency_key="sess=1;turn=1",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
         )
@@ -102,13 +104,15 @@ class TestOutboundBridgeEndToEnd:
         }
 
         # Justified scaffolding (#1066 nit 2): patching the config-resolution
-        # seam (``_messaging_from_toml`` / ``teatree.config.load_config`` /
+        # seam (``toml_backends._messaging_from_toml`` / ``teatree.config.load_config`` /
         # ``get_overlay``) is how multiple synthetic per-overlay configs are
         # injected — they are not expressible via a single real
-        # ``~/.teatree.toml``. ``httpx`` stays the only real external. See
+        # config store. ``httpx`` stays the only real external. See
         # the conftest module docstring; do not rewrite this to real-TOML.
+        # ``_messaging_from_toml`` is patched at ``toml_backends`` — the module
+        # that DEFINES it and where ``_messaging_from_toml_overlay`` looks it up.
         with (
-            patch.object(backend_factory, "_messaging_from_toml", side_effect=fake_messaging_from_toml),
+            patch.object(toml_backends, "_messaging_from_toml", side_effect=fake_messaging_from_toml),
             patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
             patch.object(backend_factory, "get_overlay", side_effect=ImproperlyConfigured),
         ):
@@ -174,6 +178,7 @@ class TestOutboundBridgeEndToEnd:
             "first",
             kind=NotifyKind.INFO,
             idempotency_key="dup-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
         )
@@ -182,6 +187,7 @@ class TestOutboundBridgeEndToEnd:
             "second-skip-me",
             kind=NotifyKind.INFO,
             idempotency_key="dup-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_HUMAN",
         )
@@ -192,7 +198,7 @@ class TestOutboundBridgeEndToEnd:
 
 
 class TestNotifyUserThroughOverlayFactory:
-    """``notify_user(backend=None)`` resolves via ``messaging_from_overlay``.
+    """``notify_user(backend=None, audience=NotifyAudience.OWNER_DELIVERY)`` resolves via ``messaging_from_overlay``.
 
     Closes a coverage gap left by ``test_notify.py``, which always
     passes ``backend=<MagicMock>``. This exercises the production
@@ -206,7 +212,7 @@ class TestNotifyUserThroughOverlayFactory:
 
         Guard: removing the ``backend if backend is not None else
         messaging_from_overlay()`` fallback in ``teatree.core.notify``
-        makes ``notify_user(backend=None)`` always NOOP, even with a
+        makes ``notify_user(backend=None, audience=NotifyAudience.OWNER_DELIVERY)`` always NOOP, even with a
         configured overlay.
         """
         real_backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
@@ -222,6 +228,7 @@ class TestNotifyUserThroughOverlayFactory:
                 "fallback path",
                 kind=NotifyKind.INFO,
                 idempotency_key="fallback-1",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=None,
                 user_id="U_HUMAN",
             )

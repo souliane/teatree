@@ -12,10 +12,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.core.cleanup import CleanupResult, cleanup_worktree
-from teatree.core.models import Ticket, Worktree
+from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
+from teatree.core.cleanup.unshipped_work import bundle_path
+from teatree.core.models import Ticket, UnshippedWorkRecord, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _RM, _clean_env, _run_git
 
 
@@ -58,11 +60,10 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
 
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)
 
     def _registered_worktrees(self) -> str:
@@ -132,11 +133,10 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         )
 
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             result = cleanup_worktree(wt, force=True)
 
         assert not self.wt_path.exists()
@@ -150,6 +150,80 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         assert str(self.wt_path) not in registry
         assert result.clean is True
         assert result.errors == []
+
+
+class TestCleanupCapturesUnshippedWorkBeforeDestroying(TestCase):
+    """A forced teardown hard-deletes; the capture is what survives it."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.captures = tmp_path / "captures"
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.origin = tmp_path / "origin.git"
+        self.origin.mkdir()
+        _run_git("init", "-q", "--bare", "-b", "main", cwd=self.origin)
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.origin), cwd=self.repo_main)
+        (self.repo_main / "tracked.py").write_text("value = 1\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "-u", "origin", "main", cwd=self.repo_main)
+        self.branch = "ac-myrepo-706-x"
+        self.wt_path = self.workspace / self.branch / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
+
+    def _cleanup_forced(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/706", state=Ticket.State.IN_REVIEW)
+        wt = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch=self.branch,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        with (
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.unshipped_work.get_data_dir", return_value=self.captures),
+        ):
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            cleanup_worktree(wt, force=True)
+
+    def test_staged_only_worktree_is_captured_before_the_force_delete(self) -> None:
+        (self.wt_path / "tracked.py").write_text("value = 2\n", encoding="utf-8")
+        _run_git("add", "tracked.py", cwd=self.wt_path)
+
+        self._cleanup_forced()
+
+        assert not self.wt_path.exists(), "force teardown must still destroy the checkout"
+        record = UnshippedWorkRecord.objects.get(checkout_path=str(self.wt_path))
+        assert record.branch == self.branch
+        assert record.dirty_paths == ["tracked.py"]
+        patch_text = bundle_path(record.artifact_prefix, ".uncommitted.patch").read_text(encoding="utf-8")
+        assert "value = 2" in patch_text
+
+    def test_synced_worktree_leaves_no_record(self) -> None:
+        self._cleanup_forced()
+
+        assert not UnshippedWorkRecord.objects.exists()
+
+    def test_teardown_survives_a_control_db_the_capture_cannot_write(self) -> None:
+        (self.wt_path / "tracked.py").write_text("value = 2\n", encoding="utf-8")
+        _run_git("add", "tracked.py", cwd=self.wt_path)
+
+        with patch.object(
+            UnshippedWorkRecord.objects,
+            "update_or_create",
+            side_effect=OperationalError("no such table: teatree_unshippedworkrecord"),
+        ):
+            self._cleanup_forced()
+
+        assert not self.wt_path.exists(), "a capture that cannot record must never wedge the teardown"
 
 
 _PREK_HOOK = """#!/bin/sh
@@ -189,11 +263,10 @@ class TestCleanupReapsStalePrekHook(TestCase):
 
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)
 
     def _worktree(self) -> Worktree:

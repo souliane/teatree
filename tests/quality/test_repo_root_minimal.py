@@ -41,7 +41,10 @@ ALLOWED_ROOT = frozenset(
         "tach.toml",
         "mkdocs.yml",
         ".pre-commit-config.yaml",
+        ".pre-commit-hooks.yaml",  # pre-commit hook-provider manifest (#3312)
         ".gitignore",
+        ".gitattributes",  # `generated` merge driver for generated docs (souliane/teatree#3582)
+        ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
         ".gitlab-ci.yml",
         "requirements.audit.ignore",  # per-CVE pip-audit allowlist (CI security gate)
         ".github",
@@ -53,6 +56,7 @@ ALLOWED_ROOT = frozenset(
         ".vscode",
         ".claudeignore",
         ".claude-plugin",
+        ".mcp.json",
         "settings.json",
         "hooks",
         "skills",
@@ -66,6 +70,7 @@ ALLOWED_ROOT = frozenset(
         "docs",
         "scripts",
         "dev",
+        "deploy",  # headless-deploy tooling (deploy/README.md is the SOT)
         "dist",
     }
 )

@@ -21,13 +21,9 @@ import pytest
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.core.models import ScannedBroadcast
-from teatree.loop.scanners.slack_broadcasts import (
-    ConnectChannelBotRestrictedError,
-    GlabGhMrStateClassifier,
-    MrState,
-    SlackBroadcastsScanner,
-)
+from teatree.core.models import ScannedBroadcast, Session, Task, Ticket
+from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
+from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
@@ -35,6 +31,15 @@ from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 @pytest.fixture(autouse=True)
 def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _repo_public_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773: the trusted-set author classification treats the broadcast repos as
+    # PUBLIC so a colleague (non-trusted) author is correctly untrusted — no live
+    # ``glab`` visibility probe in the test path. An own/trusted author is still
+    # excluded via the trusted-set check.
+    monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: False)
 
 
 CHANNEL = "C0DEMOCHAN1"
@@ -275,6 +280,53 @@ class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
         assert backend.react_calls == []
 
 
+class TestTrustedSetAndAdversarial(TestCase):
+    """#1773: own-author exclusion is a trusted-SET check; untrusted public author is adversarial."""
+
+    def test_trusted_set_author_other_than_current_username_skips_eyes(self) -> None:
+        # An MR authored by a seeded trusted identity (not the configured
+        # ``current_gitlab_username``) is still the user's own work → skip eyes.
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="adrien.cossa")}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert backend.react_calls == []
+
+    def test_untrusted_public_author_signal_flags_adversarial(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="evilhacker")}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+        assert signals[0].payload["adversarial"] is True
+        assert signals[0].payload["requires_human_authorization"] is True
+
+
 class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
     """A broadcast already :eyes:-reacted by a colleague must not be dispatched.
 
@@ -377,26 +429,50 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
 
 
 class TestIdempotency(TestCase):
-    def test_idempotent_rescan_is_a_noop(self) -> None:
-        backend = FakeMessaging()
-        history = {CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}
-        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}
-        scanner = SlackBroadcastsScanner(
+    def _pending_scanner(self, backend: FakeMessaging) -> SlackBroadcastsScanner:
+        return SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],
-            fetch_channel_history=_fetcher(history),
-            classify_mrs=_classifier(states),
+            fetch_channel_history=_fetcher({CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}),
+            classify_mrs=_classifier({MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}),
         )
+
+    def test_rescan_reuses_the_single_ledger_row(self) -> None:
+        backend = FakeMessaging()
+        scanner = self._pending_scanner(backend)
+
+        scanner.scan()
+        scanner.scan()
+
+        # No discovery-time claim reaction on either scan (#113/#86).
+        assert backend.react_calls == []
+        assert ScannedBroadcast.objects.filter(channel=CHANNEL, slack_ts=TS_A).count() == 1
+
+    def test_rescan_re_emits_while_no_reviewer_task_covers_the_row(self) -> None:
+        """The ledger is the dedup key, not the emission gate.
+
+        A dispatch lost before a reviewer task existed — dead worker, exhausted
+        budget, a stopped review loop — would otherwise make this review
+        permanently unreachable. Duplicate work is prevented downstream, where
+        ``persist_agent_actions`` reuses the open reviewing Task.
+        """
+        scanner = self._pending_scanner(FakeMessaging())
 
         first = scanner.scan()
         second = scanner.scan()
 
         assert len(first) == 1
-        assert second == []
-        # No discovery-time claim reaction on either scan (#113/#86); the
-        # second scan no-ops on the idempotency row.
-        assert backend.react_calls == []
-        assert ScannedBroadcast.objects.filter(channel=CHANNEL, slack_ts=TS_A).count() == 1
+        assert [signal.payload["mr_url"] for signal in second] == [MR_OPEN]
+
+    def test_rescan_stops_emitting_once_a_reviewer_task_covers_the_row(self) -> None:
+        scanner = self._pending_scanner(FakeMessaging())
+        scanner.scan()
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        ticket = Ticket.objects.create(issue_url=MR_OPEN, role=Ticket.Role.REVIEWER)
+        session = Session.objects.create(ticket=ticket, agent_id="t3:reviewer")
+        row.attach_reviewer_task(str(Task.objects.create(ticket=ticket, session=session, phase="reviewing").pk))
+
+        assert scanner.scan() == []
 
     def test_pending_to_all_merged_reclassifies_and_reacts_green(self) -> None:
         backend = FakeMessaging()
@@ -588,7 +664,7 @@ class TestClassifierReadsAuthorUsername:
 
         assert states[0].author_username == "me"
         # The author field must be in the requested json columns.
-        assert "state,reviewDecision,author" in captured[0]
+        assert "author" in captured[0][captured[0].index("--json") + 1].split(",")
 
 
 class TestScannerSkipsOnMissingMigration(TestCase):

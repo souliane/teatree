@@ -15,10 +15,18 @@ from typing import Any
 
 import yaml
 
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS
+from teatree.eval.git_fixture import KNOWN_FIXTURES
+from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
+    HEADLESS_SURFACE,
+    MATCHER_KINDS,
+    MATCHER_OPERATORS,
     PERMITTED_LANES,
+    PERMITTED_SURFACES,
     AnyOf,
     EvalSpec,
     ExpectItem,
@@ -28,14 +36,22 @@ from teatree.eval.models import (
 )
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+# Scenarios reference models by ABSTRACT TIER, not a concrete id. ``model`` is the
+# escape-hatch concrete-id pin and defaults to unset (``""``); a tier/phase
+# scenario resolves through teatree.agents.model_tiering.TIER_MODELS at run time.
+DEFAULT_MODEL = ""
 # DEFAULT_MAX_TURNS is the single canonical default, reused from
 # teatree.eval.models (the data-layer owner of EvalSpec.max_turns's default).
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
-DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
-DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512
+# The judge rides the conservative mid tier, DERIVED from the tier catalog so a
+# generation bump carries it — a pinned id would leave the judge a generation
+# behind the runs it grades.
+DEFAULT_JUDGE_MODEL = TIER_MODELS[DEFAULT_TIER]
 
-_OP_PATTERN = re.compile(r'^(contains|~)\s+"(.*)"$')
+# Compiled FROM the single-source-of-truth operator set (teatree.eval.models) so the
+# loader, the grader, and the dream synthesizer prompt cannot drift apart on which
+# operators an `op "value"` expression may use.
+_OP_PATTERN = re.compile(rf'^({"|".join(re.escape(op) for op in MATCHER_OPERATORS)})\s+"(.*)"$')
 
 
 class EvalSpecError(ValueError):
@@ -72,12 +88,19 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         raise EvalSpecError(path, None, f"spec {name!r}: `expect` must be a non-empty list")
     else:
         matchers = tuple(_parse_matcher(item, name, path) for item in expect)
-    model = str(spec_map.get("model") or DEFAULT_MODEL)
     max_turns = _parse_max_turns(spec_map, name, path)
     tools = _parse_tools(spec_map, name, path)
     agent_sections = _parse_agent_sections(spec_map, name, path)
-    lane = _parse_lane(spec_map, name, path)
-    context_preamble = str(spec_map.get("context_preamble") or "")
+    available_skills = _parse_available_skills(spec_map, name, path)
+    cli_stubs = _parse_cli_stubs(spec_map, name, path)
+    single_action = _parse_bool(spec_map, "single_action", name, path)
+    if single_action and not any(is_positive_anchor(m) for m in matchers):
+        raise EvalSpecError(
+            path,
+            None,
+            f"spec {name!r}: single_action requires at least one positive matcher "
+            "(tool_call/any_of/final_state) — a negatives-only probe would vacuously pass on a cap",
+        )
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -85,16 +108,86 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         prompt=prompt,
         matchers=matchers,
         source_path=path,
-        model=model,
+        model=str(spec_map.get("model") or DEFAULT_MODEL),
+        tier=_parse_tier(spec_map, name, path),
+        phase=_parse_phase(spec_map, name, path),
         max_turns=max_turns,
         tools=tools,
+        fixture=_parse_fixture(spec_map, name, path),
         judge=judge,
         agent_sections=agent_sections,
-        lane=lane,
-        context_preamble=context_preamble,
+        lane=_parse_lane(spec_map, name, path),
+        surface=_parse_surface(spec_map, name, path),
+        context_preamble=str(spec_map.get("context_preamble") or ""),
         max_budget_usd=_parse_positive_float(spec_map, "max_budget_usd", name, path),
         watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
+        available_skills=available_skills,
+        cli_stubs=cli_stubs,
+        production_hooks=_parse_bool(spec_map, "production_hooks", name, path),
+        single_action=single_action,
     )
+
+
+def _parse_bool(entry: Mapping[str, Any], key: str, spec_name: str, path: Path) -> bool:
+    """Parse an optional boolean flag, defaulting to ``False``.
+
+    Absent means the flag is off (every existing scenario is unaffected); a present
+    non-bool (a ``"true"`` string, a ``1``) is a spec error, not a silent truthy
+    coercion, so an author who typo'd the value learns at load time.
+    """
+    raw = entry.get(key)
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `{key}` must be a boolean (true/false)")
+    return raw
+
+
+def _parse_fixture(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse the optional ``fixture`` name, validated against the known set, or ``""``.
+
+    Absent means "no fixture" (the neutral empty cwd); a present name outside
+    :data:`teatree.eval.git_fixture.KNOWN_FIXTURES` is a spec error — a typo'd
+    ``fixture:`` would otherwise silently yield an empty dir and the scenario would
+    wander, the exact failure this loud check forecloses.
+    """
+    raw = entry.get("fixture")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or raw not in KNOWN_FIXTURES:
+        permitted = ", ".join(sorted(KNOWN_FIXTURES))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `fixture` must be one of {permitted}, got {raw!r}")
+    return raw
+
+
+def _parse_tier(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse an optional ``tier`` (``frontier`` / ``balanced`` / ``cheap``), or ``""``.
+
+    Validated against :data:`teatree.agents.model_tiering.TIER_MODELS` so a typo'd
+    tier fails loud at load time, never silently resolves to the default tier.
+    """
+    raw = entry.get("tier")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or raw not in TIER_MODELS:
+        permitted = ", ".join(sorted(TIER_MODELS))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `tier` must be one of {permitted}, got {raw!r}")
+    return raw
+
+
+def _parse_phase(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse an optional ``phase`` (a teatree FSM phase name), or ``""``.
+
+    A phase resolves to its tier via ``DEFAULT_PHASE_MODELS`` at run time; an
+    unmapped phase legitimately falls back to the default tier, so any non-empty
+    string is accepted (only an empty/blank value is rejected).
+    """
+    raw = entry.get("phase")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `phase` must be a non-empty string")
+    return raw.strip()
 
 
 def _parse_judge(entry: Mapping[str, Any], spec_name: str, path: Path) -> JudgeSpec | None:
@@ -107,14 +200,7 @@ def _parse_judge(entry: Mapping[str, Any], spec_name: str, path: Path) -> JudgeS
     rubric = judge_map.get("rubric")
     if not isinstance(rubric, str) or not rubric.strip():
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge.rubric` must be a non-empty string")
-    raw_tokens = judge_map.get("max_output_tokens", DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
-    if isinstance(raw_tokens, bool) or not isinstance(raw_tokens, int) or raw_tokens <= 0:
-        raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge.max_output_tokens` must be a positive integer")
-    return JudgeSpec(
-        rubric=rubric,
-        model=str(judge_map.get("model") or DEFAULT_JUDGE_MODEL),
-        max_output_tokens=raw_tokens,
-    )
+    return JudgeSpec(rubric=rubric, model=str(judge_map.get("model") or DEFAULT_JUDGE_MODEL))
 
 
 def _parse_max_turns(entry: Mapping[str, Any], spec_name: str, path: Path) -> int:
@@ -160,6 +246,21 @@ def _parse_lane(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
     return raw
 
 
+def _parse_surface(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse the question-surface label, defaulting to the BLOCKING headless surface.
+
+    Absent means headless, so advisory status is always an explicit opt-in — a
+    scenario can never stop gating by omission.
+    """
+    raw = entry.get("surface")
+    if raw is None:
+        return HEADLESS_SURFACE
+    if not isinstance(raw, str) or raw not in PERMITTED_SURFACES:
+        permitted = ", ".join(sorted(PERMITTED_SURFACES))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `surface` must be one of {permitted}, got {raw!r}")
+    return raw
+
+
 def _parse_agent_sections(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
     raw = entry.get("agent_sections")
     if raw is None:
@@ -167,6 +268,46 @@ def _parse_agent_sections(entry: Mapping[str, Any], spec_name: str, path: Path) 
     if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
         raise EvalSpecError(
             path, None, f"spec {spec_name!r}: `agent_sections` must be a non-empty list of section-heading strings"
+        )
+    return tuple(raw)
+
+
+def _parse_available_skills(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
+    """Parse the optional ``available_skills`` catalog-widening list, or ``()``.
+
+    Mirrors :func:`_parse_agent_sections`: absent means "widen nothing" (every
+    existing scenario is unaffected), present must be a non-empty list of
+    non-blank strings — a fat-fingered empty list is a spec error, not a silent
+    no-op, since an author who wrote the key meant to widen the catalog.
+    """
+    raw = entry.get("available_skills")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
+        raise EvalSpecError(
+            path, None, f"spec {spec_name!r}: `available_skills` must be a non-empty list of skill-name strings"
+        )
+    return tuple(raw)
+
+
+def _parse_cli_stubs(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
+    """Parse the optional ``cli_stubs`` list of inert-CLI names, or ``()``.
+
+    Mirrors :func:`_parse_available_skills`: absent means "stub nothing" (every
+    existing scenario keeps an untouched ``PATH``); present must be a non-empty
+    list of names drawn from :data:`teatree.eval.cli_stub_fixture.KNOWN_CLI_STUBS`
+    — an unknown name (a typo, an unimplemented binary) is a spec error, not a
+    silent no-op, since the sandbox would still error on that command.
+    """
+    raw = entry.get("cli_stubs")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `cli_stubs` must be a non-empty list of CLI-name strings")
+    unknown = [s for s in raw if s not in KNOWN_CLI_STUBS]
+    if unknown:
+        raise EvalSpecError(
+            path, None, f"spec {spec_name!r}: unknown cli_stubs {unknown} (known: {sorted(KNOWN_CLI_STUBS)})"
         )
     return tuple(raw)
 
@@ -190,11 +331,8 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
         return _parse_negative(item_map, spec_name, path)
     if "final_state" in item_map:
         return _parse_final_state(item_map, spec_name, path)
-    raise EvalSpecError(
-        path,
-        None,
-        f"spec {spec_name!r}: expect entry must have `tool_call`, `no_tool_call_matching`, `any_of`, or `final_state`",
-    )
+    kinds = ", ".join(f"`{kind}`" for kind in MATCHER_KINDS)
+    raise EvalSpecError(path, None, f"spec {spec_name!r}: expect entry must have one of {kinds}")
 
 
 def _parse_final_state(item: Mapping[str, Any], spec_name: str, path: Path) -> FinalStateMatcher:
@@ -237,7 +375,41 @@ def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matc
         raise EvalSpecError(path, None, f"spec {spec_name!r}: negative key must be `<tool>.<arg>`")
     tool, arg_path = raw_key.split(".", 1)
     operator, value = _parse_op_expr(str(op_expr), spec_name, path)
-    return Matcher(kind="negative", tool=tool, arg_path=arg_path, operator=operator, value=value)
+    guard_tool, guard_arg_path, guard_operator, guard_value = _parse_order_guard(item, spec_name, path)
+    return Matcher(
+        kind="negative",
+        tool=tool,
+        arg_path=arg_path,
+        operator=operator,
+        value=value,
+        guard_tool=guard_tool,
+        guard_arg_path=guard_arg_path,
+        guard_operator=guard_operator,
+        guard_value=guard_value,
+    )
+
+
+def _parse_order_guard(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str, str, str]:
+    """Parse the optional ``before_first`` order guard on a negative matcher.
+
+    Shape: ``before_first: '<tool>.<arg> <op> "value"'`` (e.g.
+    ``'Skill.skill ~ "t3-widget"'``). Present makes the negative order-aware — the
+    forbidden call reds ONLY when it precedes the first guard call. Absent (the
+    default) yields four empty strings, leaving the negative order-agnostic.
+    """
+    raw = item.get("before_first")
+    if raw is None:
+        return "", "", "", ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `before_first` must be a non-empty string")
+    key_part, _, op_part = raw.strip().partition(" ")
+    if "." not in key_part or not op_part.strip():
+        raise EvalSpecError(
+            path, None, f'spec {spec_name!r}: `before_first` must read `<tool>.<arg> op "value"`, got {raw!r}'
+        )
+    guard_tool, guard_arg_path = key_part.split(".", 1)
+    guard_operator, guard_value = _parse_op_expr(op_part, spec_name, path)
+    return guard_tool, guard_arg_path, guard_operator, guard_value
 
 
 def _single_args_entry(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str]:

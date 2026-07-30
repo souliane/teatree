@@ -17,7 +17,7 @@ Two aggregation modes:
 
 The runner is injected (any callable mapping ``EvalSpec -> ScenarioResult``),
 so tests drive it with a deterministic stub and production passes a closure
-over :class:`~teatree.eval.sdk_runner.SdkInProcessRunner` + ``evaluate``.
+over :class:`~teatree.eval.api_runner.ApiInProcessRunner` + ``evaluate``.
 """
 
 import dataclasses
@@ -52,7 +52,7 @@ class PassAtKResult:
     #: when EVERY trial finished cleanly — one capped trial taints the sum. The
     #: benchmark threads this onto ``MatrixRow.terminal_reason`` so a multi-trial
     #: cell with a capped trial is excluded from the warm-equivalent fit exactly
-    #: like the single-trial path.
+    #: like the single-trial path. BILLING identity only — see ``ok`` for the GATE verdict.
     terminal_reason: str = ""
     #: Whether ANY trial substituted the requested main model (a fallback).
     #: ``True`` if any observed trial fell back; ``False`` if every observed trial
@@ -80,21 +80,38 @@ class PassAtKResult:
         return self.passes / self.trials if self.trials else 0.0
 
     @property
+    def _cap_excused(self) -> bool:
+        if not self.trial_results:
+            return False
+        return all(t.passed for t in self.trial_results if t.run.terminal_reason in CAP_TERMINAL_REASONS)
+
+    @property
     def ok(self) -> bool:
         if self.skipped:
             return True
-        # A cap-tainted aggregate (ANY trial hit max_turns/budget/watchdog)
-        # COULDN'T COMPLETE its work, so it can never prop up a green gate —
-        # regardless of ``require`` (any/all). The pass COUNT stays diagnostic
-        # (clean trials still count toward ``passes``/``pass_rate``); only this
-        # gate verdict flips. Without it the REAL CI lane (``--require any``)
-        # goes green on ``[success, max_turns, …]`` because one clean pass
-        # satisfies ``passes >= 1`` while two trials are cap-tainted (#2192).
-        if self.terminal_reason in CAP_TERMINAL_REASONS:
+        # A cap-tainted aggregate never props up a green gate (#2192) unless every capped trial is excused.
+        if self.terminal_reason in CAP_TERMINAL_REASONS and not self._cap_excused:
             return False
         if self.require == "all":
             return self.passes == self.trials
         return self.passes >= 1
+
+
+def validate_pass_at_k_args(*, k: int, require: str) -> None:
+    """Raise ``ValueError`` for a bad ``(k, require)`` pair.
+
+    Split out from :func:`run_pass_at_k` so a caller that wraps it in a
+    retry-on-exception layer (the escalation ladder's per-cell resilience) can
+    validate the policy ONCE, eagerly, before any dispatch — a config mistake
+    like ``k=0`` must fail loud immediately, never be absorbed as a retryable
+    runner error.
+    """
+    if k < 1:
+        msg = f"k must be >= 1, got {k}"
+        raise ValueError(msg)
+    if require not in {"any", "all"}:
+        msg = f"require must be 'any' or 'all', got {require!r}"
+        raise ValueError(msg)
 
 
 def run_pass_at_k(
@@ -104,12 +121,7 @@ def run_pass_at_k(
     k: int,
     require: str = "any",
 ) -> PassAtKResult:
-    if k < 1:
-        msg = f"k must be >= 1, got {k}"
-        raise ValueError(msg)
-    if require not in {"any", "all"}:
-        msg = f"require must be 'any' or 'all', got {require!r}"
-        raise ValueError(msg)
+    validate_pass_at_k_args(k=k, require=require)
     passes = 0
     skipped_all = True
     cost_usd = 0.0

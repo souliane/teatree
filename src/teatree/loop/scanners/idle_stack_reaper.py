@@ -39,7 +39,7 @@ class IdleStackReaperScanner:
     name: str = "idle_stack_reaper"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker  # noqa: PLC0415
+        from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker  # noqa: PLC0415 — lazy ORM
 
         try:
             marker = LocalStackReaperMarker.load()

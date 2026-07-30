@@ -6,11 +6,15 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.config import UserSettings
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, PullRequestSpec
+from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
+from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.overlay_loader import get_overlay
 from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY
@@ -127,6 +131,41 @@ class TestEnsurePr(TestCase):
         assert spec.repo == "souliane/teatree"
         assert spec.title == "feat: cool thing"
 
+    def test_create_url_failing_reread_is_reported_as_error_not_a_url(self) -> None:
+        """#1194: a create URL whose independent re-read 404s is reported failed.
+
+        ``create_pr`` returned a well-formed URL, but a fresh GET reports
+        ``UNKNOWN`` — the create silently no-op'd. ``ensure-pr`` must surface an
+        ``error`` and no ``url`` so the orphan-branch path never hands back a
+        phantom PR.
+        """
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/phantom"}
+        host.current_user.return_value = "souliane"
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-q",
+                    status=BranchStatus.PUSHED_ORPHAN,
+                    ahead_count=5,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "url" not in result
+        assert "verify-by-re-read" in str(result["error"])
+
     def test_defers_when_remote_ref_stale_in_pre_push_race(self) -> None:
         """#792: ensure-pr must defer (not raise) on the pre-push stale-remote race.
 
@@ -173,6 +212,54 @@ class TestEnsurePr(TestCase):
         assert "feat-q" in str(result["hint"])
         host.create_pr.assert_called_once()
 
+    def test_repo_flag_with_forge_slug_rejected_before_touching_classification(self) -> None:
+        """#2937.
+
+        ``--repo owner/repo`` (a forge slug, not a filesystem path) must fail
+        loud with a clear, actionable error — and never reach branch classification,
+        the path that used to silently misreport the branch as SYNCED.
+        """
+        with patch.object(pr_command, "classify_branch") as mock_classify:
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "ensure-pr", repo="owner/repo", branch="feature"),
+            )
+
+        assert "error" in result
+        assert "owner/repo" in str(result["error"])
+        mock_classify.assert_not_called()
+
+    def test_classify_branch_git_failure_surfaces_as_structured_error(self) -> None:
+        """#2937.
+
+        A real git failure during classification must surface as a
+        structured error, never an unhandled exception or a silent SYNCED skip.
+        """
+        host = MagicMock()
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-r"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                side_effect=CommandFailedError(
+                    cmd=["git", "-C", ".", "log", "feat-r", "--not", "origin/main"],
+                    returncode=128,
+                    stdout="",
+                    stderr="fatal: ambiguous argument 'origin/main': unknown revision",
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "error" in result
+        assert "feat-r" in str(result["error"])
+        host.create_pr.assert_not_called()
+
     def test_other_create_pr_failure_still_raises(self) -> None:
         """A non-race create_pr failure must still surface (no silent swallow)."""
         from teatree.utils.run import CommandFailedError  # noqa: PLC0415
@@ -206,16 +293,80 @@ class TestEnsurePr(TestCase):
         ):
             call_command("pr", "ensure-pr")
 
+    def test_refuses_when_ticket_is_at_its_open_pr_budget(self) -> None:
+        """North-star PR-2: the orphan path refuses before creating when at budget."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-q")
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/souliane/teatree/pull/1",
+            repo="souliane/teatree",
+            iid="1",
+            overlay="test",
+        )
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
-class TestCreatePrTitleSourcing(TestCase):
-    """#1534: the PR title/body must come from the branch's OWN commit.
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", "body")),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(repo=".", branch="feat-q", status=BranchStatus.PUSHED_ORPHAN, ahead_count=3),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
 
-    Real git under ``tmp_path`` — only the forge ``create_pr`` is mocked.
+        assert "max_open_prs_per_repo_per_ticket" in str(result["error"])
+        assert "souliane/teatree/pull/1" in str(result["error"])
+        host.create_pr.assert_not_called()
+
+    def test_refuses_when_branch_introduces_net_new_debt(self) -> None:
+        """North-star PR-3: the orphan path refuses before creating on unwaived debt."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-d")
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+        new_noqa = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+risky = frobnicate()  # noqa: F821\n"
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-d"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", "body")),
+            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(repo=".", branch="feat-d", status=BranchStatus.PUSHED_ORPHAN, ahead_count=1),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "debt_delta_gate" in str(result["error"])
+        host.create_pr.assert_not_called()
+
+
+class _RealGitOrphanBranch(TestCase):
+    """Real git under ``tmp_path`` for the orphan-branch create path.
+
     ``origin/main`` carries an unrelated, already-merged commit ``M``; the
-    feature branch carries its own work ``B``. The repo's WORKING TREE is left
-    checked out on the default branch at ``M`` (the main-clone / wrong-ref /
-    slug condition #1534 describes), so the former ``HEAD``-based sourcing
-    would title the PR after ``M``. The opened PR must be titled after ``B``.
+    feature branch carries its own work ``B``, and the working tree is left on
+    the default branch at ``M``. Only the forge ``create_pr`` is mocked.
     """
 
     @pytest.fixture(autouse=True)
@@ -256,6 +407,15 @@ class TestCreatePrTitleSourcing(TestCase):
         host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
         return host
+
+
+class TestCreatePrTitleSourcing(_RealGitOrphanBranch):
+    """#1534: the PR title/body must come from the branch's OWN commit.
+
+    The former ``HEAD``-based sourcing would title the PR after the unrelated
+    already-merged ``M`` (the main-clone / wrong-ref / slug condition #1534
+    describes). The opened PR must be titled after ``B``.
+    """
 
     def test_title_derives_from_branch_commit_not_default_head(self) -> None:
         clone = self._origin_and_feature(["fix(y): the real work"])
@@ -300,6 +460,45 @@ class TestCreatePrTitleSourcing(TestCase):
         (spec,) = host.create_pr.call_args.args
         assert spec.title == "WIP: empty-branch"
         assert "1426" not in spec.title
+
+
+class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
+    """The no-orphan hook's own PR body must pass the repo's PR-description gate.
+
+    The hook filled the body from the commit message alone, which carries no
+    ``## What`` / ``## Why`` header — so every PR it opened was born failing the
+    very ``validate_pr`` the repo enforces on every other PR, and had to be
+    patched by hand afterwards.
+    """
+
+    def _created_spec(self) -> object:
+        clone = self._origin_and_feature(["fix(y): the real work"])
+        host = self._host()
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            create_or_defer_pr(str(clone), "1534-fix-the-real-work")
+        (spec,) = host.create_pr.call_args.args
+        return spec
+
+    def test_generated_body_passes_the_description_gate(self) -> None:
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            validation = get_overlay().metadata.validate_pr(spec.title, spec.description)
+
+        assert validation["errors"] == []
+
+    def test_why_section_asks_the_author_instead_of_inventing_a_rationale(self) -> None:
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        why = spec.description.split("## Why", 1)[1].strip()
+        assert why.startswith("TODO")
+        assert "no-orphan" in why
+
+    def test_what_section_carries_the_branch_commit(self) -> None:
+        spec = cast("PullRequestSpec", self._created_spec())
+
+        what = spec.description.split("## What", 1)[1].split("## Why", 1)[0]
+        assert "fix(y): the real work" in what
 
 
 class TestEnsurePrResolutionError:

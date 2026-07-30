@@ -23,16 +23,29 @@ cloned twice (with no shared object store via ``--no-local``) so the
 import datetime as _dt
 import os
 import subprocess
+import tempfile
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.gates.schema_guard import SelfDbMigrationError
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.self_update_marker import SelfUpdateMarker
+from teatree.core.schema_readiness import invalidate_schema_readiness
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.self_update import SelfUpdateScanner
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
+from teatree.loop.scanners.self_update_schema import SchemaReconcile, SchemaReconcileState
+
+_READINESS_PROBE = "teatree.core.schema_readiness.pending_migrations"
+_GATE_ENABLED = "teatree.core.schema_readiness.schema_readiness_gate_enabled"
+_SELF_DB_MIGRATE = "teatree.loop.scanners.self_update_schema.migrate_self_db"
+_SCHEMA_NOTIFY = "teatree.loop.scanners.self_update_schema.notify_user"
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -452,6 +465,160 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
         assert _head_sha(self.clone) != self.old_sha
 
 
+class SelfUpdatePostPullSchemaTests(TestCase):
+    """#3901: a clone that ADVANCED must sequence the schema before work resumes."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="self_update_schema_"))
+        self.addCleanup(_rmtree_safe, str(self._tmp))
+        self.origin = self._tmp / "origin.git"
+        _seed_origin_with_two_commits(self.origin)
+        self.clone = self._tmp / "teatree"
+        _clone_trailing_by_one_commit(origin=self.origin, clone=self.clone)
+
+    def _scanner(self, clone: Path) -> SelfUpdateScanner:
+        return SelfUpdateScanner(repos=(("teatree", clone),), ci_status=_StubCiStatus(CiVerdict.GREEN))
+
+    def _reconcile(
+        self,
+        *,
+        return_value: object = None,
+        side_effect: BaseException | None = None,
+    ) -> AbstractContextManager[MagicMock]:
+        target = "teatree.loop.scanners.self_update.reconcile_schema_after_pull"
+        return cast(
+            "AbstractContextManager[MagicMock]",
+            patch(target, return_value=return_value, side_effect=side_effect),
+        )
+
+    def test_an_advanced_clone_reconciles_against_its_new_head(self) -> None:
+        with self._reconcile(return_value=SchemaReconcile(state=SchemaReconcileState.CURRENT)) as reconcile:
+            self._scanner(self.clone).scan()
+
+        reconcile.assert_called_once_with(label="teatree", head_sha=_head_sha(self.clone))
+
+    def test_a_clone_that_did_not_move_is_never_reconciled(self) -> None:
+        current = self._tmp / "current"
+        _clone_up_to_date(origin=self.origin, clone=current)
+
+        with self._reconcile() as reconcile:
+            self._scanner(current).scan()
+
+        reconcile.assert_not_called()
+
+    def test_a_failed_reconcile_surfaces_its_own_signal(self) -> None:
+        failed = SchemaReconcile(state=SchemaReconcileState.FAILED, detail="disk full")
+        with self._reconcile(return_value=failed):
+            signals = self._scanner(self.clone).scan()
+
+        kinds = [signal.kind for signal in signals]
+        assert kinds == ["self_update.updated", "self_update.schema_behind"]
+        assert "disk full" in signals[1].summary
+
+    def test_an_applied_migration_is_reported_on_the_signal(self) -> None:
+        migrated = SchemaReconcile(state=SchemaReconcileState.MIGRATED, applied=("core.0042_widget",))
+        with self._reconcile(return_value=migrated):
+            signals = self._scanner(self.clone).scan()
+
+        assert signals[1].kind == "self_update.schema_migrated"
+        assert signals[1].payload["applied"] == ["core.0042_widget"]
+
+    def test_a_current_schema_adds_no_signal(self) -> None:
+        with self._reconcile(return_value=SchemaReconcile(state=SchemaReconcileState.CURRENT)):
+            signals = self._scanner(self.clone).scan()
+
+        assert [signal.kind for signal in signals] == ["self_update.updated"]
+
+    def test_a_crashing_reconcile_never_kills_the_tick(self) -> None:
+        with self._reconcile(side_effect=RuntimeError("orm exploded")):
+            signals = self._scanner(self.clone).scan()
+
+        assert [signal.kind for signal in signals] == ["self_update.updated", "self_update.schema_behind"]
+
+
+class SelfUpdateSchemaRetryTests(TestCase):
+    """#3901: a reconcile that failed once must be retried, not parked until a human acts.
+
+    Only an ``updated`` outcome reconciles, and the pull is never replayed — HEAD has
+    already moved. So a first reconcile that failed (a transient locked SQLite is
+    enough on a box running parallel agents) left every later tick reporting
+    ``up_to_date`` with the claim gate shut and nothing re-attempting it.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="self_update_retry_"))
+        self.addCleanup(_rmtree_safe, str(self._tmp))
+        self.origin = self._tmp / "origin.git"
+        _seed_origin_with_two_commits(self.origin)
+        self.clone = self._tmp / "current"
+        _clone_up_to_date(origin=self.origin, clone=self.clone)
+        invalidate_schema_readiness()
+        self.addCleanup(invalidate_schema_readiness)
+
+    def _scan(self) -> list[ScanSignal]:
+        scanner = SelfUpdateScanner(repos=(("teatree", self.clone),), ci_status=_StubCiStatus(CiVerdict.GREEN))
+        return scanner.scan()
+
+    def test_a_still_behind_control_db_is_retried_when_nothing_advanced(self) -> None:
+        with (
+            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
+            patch(_SELF_DB_MIGRATE, return_value=["core.0042_widget"]) as migrate,
+            patch(_SCHEMA_NOTIFY),
+        ):
+            signals = self._scan()
+
+        migrate.assert_called_once()
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date", "self_update.schema_migrated"]
+
+    def test_a_retry_that_fails_again_re_surfaces_the_outage(self) -> None:
+        with (
+            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
+            patch(_SELF_DB_MIGRATE, side_effect=SelfDbMigrationError("database is locked")),
+            patch(_SCHEMA_NOTIFY),
+        ):
+            signals = self._scan()
+
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date", "self_update.schema_behind"]
+        assert "database is locked" in signals[1].summary
+
+    def test_a_current_control_db_never_pays_for_a_retry(self) -> None:
+        """The retry CONSULTS the verdict, then does nothing with a current schema.
+
+        Asserting only "no migrate, no extra signal" would pass with the retry
+        removed entirely, so it also pins that the gate was actually reached — the
+        scanner has no other reason to walk the migration graph.
+        """
+        with (
+            patch(_READINESS_PROBE, return_value=[]) as probe,
+            patch(_SELF_DB_MIGRATE) as migrate,
+        ):
+            signals = self._scan()
+
+        assert probe.call_count >= 1, "the retry never consulted the admission verdict"
+        migrate.assert_not_called()
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
+
+    def test_the_kill_switch_stands_the_retry_down_with_the_rest_of_the_gate(self) -> None:
+        """``schema_readiness_gate_enabled=false`` must disable this mechanism too.
+
+        The switch exists for a box whose PROBE misfires. If the retry gated on the
+        raw verdict it would keep migrating and keep filing an ``action_needed`` row
+        every tick off that same bad verdict, on exactly the box the operator just
+        stood the gate down on.
+        """
+        with (
+            patch(_GATE_ENABLED, return_value=False),
+            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
+            patch(_SELF_DB_MIGRATE) as migrate,
+            patch(_SCHEMA_NOTIFY) as notify,
+        ):
+            signals = self._scan()
+
+        migrate.assert_not_called()
+        notify.assert_not_called()
+        assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
+
+
 def _rmtree_safe(path: str) -> None:
     import shutil  # noqa: PLC0415
 
@@ -583,3 +750,109 @@ class SelfUpdateScannerWiringTests(TestCase):
             jobs = build_default_jobs()
 
         assert any(j.scanner is fake_scanner and j.overlay == "" for j in jobs)
+
+
+class SelfUpdateScannerStaleNoticeTests(TestCase):
+    """A skipped dirty/detached clone emits a DURABLE user-facing notice (#2836).
+
+    The incident was a SILENT skip — the clone went stale and ``t3`` ran old
+    code. The scanner now routes a dirty / off-default skip through
+    ``notify_stale_clone_skip`` (a BotPing-backed bot→user DM). These tests spy
+    on that helper so they assert the durable-notice CONTRACT hermetically,
+    without resolving a real messaging backend. Anti-vacuity: the up-to-date
+    case proves a healthy clone emits NO notice (revert the ``scan`` wiring and
+    the dirty/feature cases go RED).
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        self._tmp = Path(tempfile.mkdtemp(prefix="self_update_stale_notice_"))
+        self.addCleanup(_rmtree_safe, str(self._tmp))
+        self.origin = self._tmp / "origin.git"
+        _seed_origin_with_two_commits(self.origin)
+
+    def _scanner(self, clone: Path) -> SelfUpdateScanner:
+        return SelfUpdateScanner(
+            repos=(("teatree", clone),),
+            cadence_hours=1,
+            ci_status=_StubCiStatus(CiVerdict.GREEN),
+        )
+
+    def test_dirty_clone_skip_emits_durable_notice(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+
+        clone = self._tmp / "teatree"
+        _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
+        _make_tracked_dirty(clone)
+
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
+            self._scanner(clone).scan()
+
+        spy.assert_called_once()
+        skip = spy.call_args.args[0]
+        assert skip.reason is StaleCloneReason.DIRTY
+        assert skip.repo_path == str(clone)
+        assert skip.label == "teatree"
+
+    def test_feature_branch_skip_emits_off_default_notice(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+
+        clone = self._tmp / "teatree"
+        _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
+        _checkout_feature_branch(clone)
+
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
+            self._scanner(clone).scan()
+
+        spy.assert_called_once()
+        skip = spy.call_args.args[0]
+        assert skip.reason is StaleCloneReason.OFF_DEFAULT
+        assert skip.default_branch == "main"
+
+    def test_healthy_clone_emits_no_notice(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        clone = self._tmp / "teatree"
+        _clone_up_to_date(origin=self.origin, clone=clone)
+
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
+            self._scanner(clone).scan()
+
+        spy.assert_not_called()
+
+
+class OffDefaultReasonRoundTripTests(TestCase):
+    """The off-default skip reason round-trips through one shared format (#2844 #5).
+
+    Construction (``_pre_pull_gate``) and parsing (``_maybe_notify_stale_clone``)
+    must not desync: a format drift on either side that breaks the round-trip
+    turns this red, instead of silently degrading the surfaced default branch to
+    empty.
+    """
+
+    def test_construct_then_parse_recovers_the_default_branch(self) -> None:
+        from teatree.loop.scanners.self_update import _off_default_reason, _parse_off_default_branch  # noqa: PLC0415
+
+        for current, default_branch in [("feature", "main"), ("HEAD", "develop"), ("wip", "trunk")]:
+            reason = _off_default_reason(current, default_branch)
+            assert _parse_off_default_branch(reason) == default_branch, reason
+
+    def test_parse_is_defensive_against_non_matching_reasons(self) -> None:
+        from teatree.loop.scanners.self_update import _parse_off_default_branch  # noqa: PLC0415
+
+        # A reason that is not the off-default shape yields "" — never a crash
+        # or a misparsed branch (the dirty-tracked / CI skip reasons, etc.).
+        for reason in ["dirty_tracked:src/app.py", "ci_red", "no_origin_head", "", "branch=main"]:
+            assert _parse_off_default_branch(reason) == ""
+
+    def test_constructor_is_the_only_off_default_reason_source(self) -> None:
+        # Anti-drift: the gate must build the reason via the shared helper, so a
+        # future edit to the format flows to BOTH sites. Pin the exact shape.
+        from teatree.loop.scanners.self_update import _off_default_reason  # noqa: PLC0415
+
+        assert _off_default_reason("feature", "main") == "branch=feature!=main"

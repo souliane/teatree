@@ -2,8 +2,8 @@
 
 The hook fails when staged changes contain a HIGH-CONFIDENCE trigger
 (new top-level ``t3`` command, new ``SKILL.md``, new ``Ticket.State``
-enum value, new ``LoopLease`` name, new ``MiniLoopMarker`` name)
-without a matching README/BLUEPRINT diff in the same commit.
+enum value, new ``LoopLease`` name) without a matching README/BLUEPRINT
+diff in the same commit.
 
 The hook is silent on a no-trigger diff and never judges soft cases —
 those belong to the skill prose in ``/t3:ship`` § Documentation Discipline.
@@ -14,7 +14,6 @@ import pytest
 from scripts.hooks.check_doc_update import (
     Finding,
     detect_loop_lease_added,
-    detect_mini_loop_marker_added,
     detect_new_skill_md,
     detect_ticket_state_added,
     detect_top_level_command_added,
@@ -68,14 +67,6 @@ diff --git a/src/teatree/loop/tick.py b/src/teatree/loop/tick.py
 +++ b/src/teatree/loop/tick.py
 @@ -85,0 +86 @@ def acquire_other(owner):
 +    LoopLease.objects.acquire("loop-doc-scanner", owner=owner, lease_seconds=60)
-"""
-
-_DIFF_MINI_LOOP_MARKER_ADDED = """\
-diff --git a/src/teatree/loops/mini.py b/src/teatree/loops/mini.py
---- a/src/teatree/loops/mini.py
-+++ b/src/teatree/loops/mini.py
-@@ -10,0 +11 @@
-+    MiniLoopMarker.objects.touch("doc-update-mini")
 """
 
 _DIFF_INTERNAL_REFACTOR = """\
@@ -141,14 +132,6 @@ class TestDetectLoopLeaseAdded:
 
     def test_ignores_test_file_fixtures(self) -> None:
         assert detect_loop_lease_added(_DIFF_LOOP_LEASE_IN_TESTS) is False
-
-
-class TestDetectMiniLoopMarkerAdded:
-    def test_detects_touch_call(self) -> None:
-        assert detect_mini_loop_marker_added(_DIFF_MINI_LOOP_MARKER_ADDED) is True
-
-    def test_no_match_on_unrelated_diff(self) -> None:
-        assert detect_mini_loop_marker_added(_DIFF_INTERNAL_REFACTOR) is False
 
 
 class TestDetectNewSkillMd:
@@ -220,14 +203,6 @@ class TestFindMissingDocs:
             added_files=[],
         )
         assert any(f.required_doc == "BLUEPRINT.md" and "looplease" in f.trigger.lower() for f in findings)
-
-    def test_new_mini_loop_marker_without_blueprint_returns_finding(self) -> None:
-        findings = find_missing_docs(
-            diff=_DIFF_MINI_LOOP_MARKER_ADDED,
-            staged_files=["src/teatree/loops/mini.py"],
-            added_files=[],
-        )
-        assert any(f.required_doc == "BLUEPRINT.md" and "miniloop" in f.trigger.lower() for f in findings)
 
     def test_new_skill_md_without_readme_returns_finding(self) -> None:
         findings = find_missing_docs(

@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.test import TestCase
 from typer.testing import CliRunner
 
 import teatree.agents.skill_bundle as skill_bundle_mod
@@ -18,8 +19,9 @@ import teatree.cli as cli_mod
 import teatree.cli.agent as cli_agent_mod
 import teatree.cli.review.request as cli_review_request_mod
 import teatree.config as config_mod
+import teatree.config.cold_reader as cold_reader_mod
+import teatree.core.intake.resolve as resolve_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.resolve as resolve_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import _ensure_editable_if_contributing, _find_overlay_project, _find_project_root, app
 from teatree.cli import doctor as cli_doctor_mod
@@ -65,8 +67,8 @@ class TestDocsCommand:
 
     def test_runs_mkdocs_serve(self, tmp_path, monkeypatch):
         """Docs command runs mkdocs serve when everything is available."""
-        import sys  # noqa: PLC0415
-        import types  # noqa: PLC0415
+        import sys  # noqa: PLC0415 - deferred: local import
+        import types  # noqa: PLC0415 - deferred: local import
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
@@ -333,7 +335,7 @@ class TestConfigCommands:
             patch.object(config_mod, "discover_active_overlay", return_value=active),
             patch("django.setup"),
             patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
-            patch.object(startup_mod, "_build_trigger_index", return_value=[]),
+            patch.object(startup_mod, "_build_requires_index", return_value=[]),
             patch.object(startup_mod, "resolve_all", return_value={}),
             patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
         ):
@@ -344,7 +346,7 @@ class TestConfigCommands:
             assert cache.is_file()
             data = json.loads(cache.read_text())
             assert data["skill_path"] == "skills/test/SKILL.md"
-            assert data["trigger_index"] == []
+            assert data["skill_index"] == []
             assert "teatree_version" in data
 
     def test_write_skill_cache_no_active_overlay(self, tmp_path, monkeypatch):
@@ -360,7 +362,7 @@ class TestConfigCommands:
             patch.object(config_mod, "discover_active_overlay", return_value=None),
             patch("django.setup"),
             patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
-            patch.object(startup_mod, "_build_trigger_index", return_value=[]),
+            patch.object(startup_mod, "_build_requires_index", return_value=[]),
             patch.object(startup_mod, "resolve_all", return_value={}),
             patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
         ):
@@ -427,7 +429,7 @@ class TestConfigCommands:
         cache.write_text(
             json.dumps(
                 {
-                    "trigger_index": [
+                    "skill_index": [
                         {"skill": "rules", "requires": []},
                         {"skill": "workspace", "requires": ["rules"]},
                         {"skill": "code", "requires": ["workspace"]},
@@ -458,7 +460,7 @@ class TestConfigCommands:
         cache.write_text(
             json.dumps(
                 {
-                    "trigger_index": [
+                    "skill_index": [
                         {"skill": "rules", "requires": []},
                         {"skill": "workspace", "requires": ["rules"]},
                     ],
@@ -468,51 +470,6 @@ class TestConfigCommands:
         result = runner.invoke(app, ["config", "deps", "workspace"])
         assert result.exit_code == 0
         assert "rules → workspace" in result.output
-
-    def test_test_trigger_keyword_match(self, tmp_path, monkeypatch):
-        """Config test-trigger shows matching skill and pattern."""
-        import sys  # noqa: PLC0415
-
-        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(
-            json.dumps(
-                {
-                    "trigger_index": [
-                        {
-                            "skill": "ship",
-                            "priority": 10,
-                            "keywords": [r"\bcommit\b"],
-                            "urls": [],
-                            "exclude": "",
-                            "end_of_session": False,
-                        },
-                    ],
-                },
-            ),
-        )
-        # Add scripts dir to path so skill_loader can be imported inside the CLI command.
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        result = runner.invoke(app, ["config", "test-trigger", "commit and push"])
-        assert result.exit_code == 0
-        assert "ship" in result.output
-        assert "keyword" in result.output
-
-    def test_test_trigger_no_match(self, tmp_path, monkeypatch):
-        """Config test-trigger shows no match for unrelated prompt."""
-        import sys  # noqa: PLC0415
-
-        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"trigger_index": []}))
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        result = runner.invoke(app, ["config", "test-trigger", "hello world"])
-        assert result.exit_code == 0
-        assert "no match" in result.output
 
 
 # ── Review-request discover ──────────────────────────────────────────
@@ -713,6 +670,44 @@ class TestLaunchClaude:
             assert "ask the user which lifecycle skill to load" in context_arg
 
 
+class TestLaunchClaudeContributeDbHome(TestCase):
+    """``--plugin-dir`` is gated on the DB-home ``contribute_plugin_dir`` (#2697)."""
+
+    @pytest.fixture(autouse=True)
+    def _stage(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("T3_CONTRIBUTE", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    def _launch_and_get_cmd(self) -> list[str]:
+        from teatree.cli.agent import _launch_claude  # noqa: PLC0415
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
+        ):
+            _launch_claude(
+                task="",
+                project_root=self.tmp_path,
+                context_lines=["test"],
+                skills=[],
+                ask_user_which_skill=False,
+            )
+            return mock_exec.call_args[0][1]
+
+    def test_plugin_dir_added_when_db_contribute_plugin_dir_on(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("contribute_plugin_dir", value=True)
+        assert "--plugin-dir" in self._launch_and_get_cmd()
+
+    def test_no_plugin_dir_when_contribute_unset(self) -> None:
+        assert "--plugin-dir" not in self._launch_and_get_cmd()
+
+
 # ── _detect_agent_ticket_status ──────────────────────────────────────
 
 
@@ -808,17 +803,31 @@ class TestUpdateNoticeDoesNotPolluteJsonStdout:
 
 
 class TestEnsureEditableIfContributing:
-    # ``contribute`` is DB-home (#1775): ``_ensure_editable_if_contributing``
-    # resolves it via ``get_effective_settings()``, so the patch targets that
-    # tier (not ``load_config``, whose ``.user.contribute`` is now ignored).
+    # ``contribute`` is DB-home (#1775) and read on EVERY invocation, so the gate
+    # uses the single-key Django-free cold reader (``cold_reader.bool_setting``),
+    # NOT the full ``get_effective_settings`` resolution — the patch targets that.
     def test_skips_when_contribute_false(self) -> None:
-        with patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=False)):
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=False),
+            patch.object(IntrospectionHelpers, "editable_info") as mock_info,
+        ):
             _ensure_editable_if_contributing()
-        # Should return early without calling editable_info
+        mock_info.assert_not_called()
+
+    def test_gate_uses_cheap_cold_read_not_full_settings(self) -> None:
+        # The cheap gate must NOT pay the full get_effective_settings resolution
+        # (overlay discovery / TOML layering / autonomy collapse) on every call.
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=False) as mock_cold,
+            patch.object(config_mod, "get_effective_settings") as mock_full,
+        ):
+            _ensure_editable_if_contributing()
+        mock_cold.assert_called_once_with("contribute", default=False)
+        mock_full.assert_not_called()
 
     def test_makes_teatree_editable(self) -> None:
         with (
-            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(DoctorService, "find_teatree_repo", return_value=Path("/fake/teatree")),
             patch.object(DoctorService, "make_editable") as mock_make,
@@ -829,7 +838,7 @@ class TestEnsureEditableIfContributing:
 
     def test_skips_teatree_when_already_editable(self) -> None:
         with (
-            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "/fake")),
             patch.object(DoctorService, "find_teatree_repo") as mock_find,
             patch.object(overlay_loader_mod, "get_all_overlays", return_value={}),
@@ -842,7 +851,7 @@ class TestEnsureEditableIfContributing:
         type(mock_overlay).__module__ = "myoverlay.overlay"
 
         with (
-            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
             patch.object(
                 IntrospectionHelpers,
                 "editable_info",
@@ -856,8 +865,61 @@ class TestEnsureEditableIfContributing:
             _ensure_editable_if_contributing()
         mock_make.assert_called_once_with("myoverlay-dist", Path("/fake/overlay"))
 
-    def test_suppresses_exceptions(self) -> None:
-        with patch.object(config_mod, "get_effective_settings", side_effect=RuntimeError("boom")):
+    def test_skips_overlay_already_editable_from_source_tree(self, tmp_path, monkeypatch) -> None:
+        # An overlay imported from a real checkout (outside site-packages) is
+        # already editable — local edits take effect — so the reinstall must be
+        # SKIPPED even when packages_distributions() has no package->dist reverse
+        # mapping (a bare-.pth editable install). Without the source-tree guard
+        # the fallback dist name is unknown, editable_info reports it
+        # non-editable, and make_editable runs a noisy reinstall on every call.
+        import sys  # noqa: PLC0415 - deferred: local import
+        import types  # noqa: PLC0415 - deferred: local import
+
+        mock_overlay = MagicMock()
+        type(mock_overlay).__module__ = "srcoverlay.overlay"
+        source_module = types.ModuleType("srcoverlay")
+        source_module.__file__ = str(tmp_path / "srcoverlay" / "__init__.py")
+        monkeypatch.setitem(sys.modules, "srcoverlay", source_module)
+
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
+            patch.object(
+                IntrospectionHelpers,
+                "editable_info",
+                side_effect=[(True, "/teatree"), (False, "")],
+            ),
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value={"src": mock_overlay}),
+            patch("importlib.metadata.packages_distributions", return_value={}),
+            patch.object(DoctorService, "find_overlay_repo", return_value=Path("/fake/overlay")),
+            patch.object(DoctorService, "make_editable") as mock_make,
+        ):
+            _ensure_editable_if_contributing()
+        mock_make.assert_not_called()
+
+    def test_packages_distributions_resolved_once_across_overlays(self) -> None:
+        # The dist map is invariant across overlays — it must be resolved ONCE,
+        # not once per overlay (the #3g-4 hoist out of the loop).
+        overlays = {}
+        for name in ("a", "b", "c"):
+            ov = MagicMock()
+            type(ov).__module__ = f"pkg_{name}.overlay"
+            overlays[name] = ov
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "/editable")),
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value=overlays),
+            patch("importlib.metadata.packages_distributions", return_value={}) as mock_dists,
+        ):
+            _ensure_editable_if_contributing()
+        mock_dists.assert_called_once()
+
+    def test_suppresses_repair_exceptions(self) -> None:
+        # A best-effort re-install failure must never break the CLI, but the
+        # swallow is scoped to the repair — the config gate read is outside it.
+        with (
+            patch.object(cold_reader_mod, "bool_setting", return_value=True),
+            patch.object(IntrospectionHelpers, "editable_info", side_effect=RuntimeError("boom")),
+        ):
             _ensure_editable_if_contributing()  # should not raise
 
 

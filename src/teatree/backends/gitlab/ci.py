@@ -121,7 +121,7 @@ class GitLabCIService:
         return None
 
     def _get_job_trace(self, project_id: int, job_id: int) -> str:
-        import httpx  # noqa: PLC0415
+        import httpx  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         if not self._client.token:
             return ""

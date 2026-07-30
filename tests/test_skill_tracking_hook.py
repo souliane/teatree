@@ -1,14 +1,17 @@
-"""Tests for skill tracking and session-end retro in the hook router."""
+"""Tests for skill tracking in the hook router.
 
-import json
-from io import StringIO
+The session-end backstop itself lives in ``tests/test_session_end_work_check.py``,
+mirroring its ``hooks/scripts/session_end_work_check.py`` module.
+"""
+
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_session_end, handle_track_skill_usage
+import hooks.scripts.session_end_work_check as work_check
+from hooks.scripts.hook_router import handle_track_skill_usage
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +27,7 @@ def _isolate_state_dir(tmp_path: Path):
 @pytest.fixture(autouse=True)
 def _no_real_orphan_fetch():
     """Prevent session-end tests from shelling out to the real t3 CLI."""
-    with patch.object(router, "_fetch_orphans", return_value=[]):
+    with patch.object(work_check, "fetch_orphans", return_value=[]):
         yield
 
 
@@ -190,7 +193,7 @@ def _write_skill(skills_dir: Path, name: str, *, requires: list[str] | None = No
 def skill_fixture_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Create a real skill tree and point the closure resolver at it.
 
-    No mocking of the dependency resolver: ``build_trigger_index`` parses
+    No mocking of the dependency resolver: ``build_requires_index`` parses
     these real SKILL.md files and ``resolve_requires`` walks them.
     """
     skills_dir = tmp_path / "skills"
@@ -305,117 +308,3 @@ class TestRequiresClosureTracking:
         # "code"/"workspace"/"review" were never loaded — suggested != loaded.
         assert "t3:code" not in tracked
         assert "t3:review" not in tracked
-
-
-class TestSessionEndRetro:
-    """SessionEnd hook suggests retro when lifecycle skills were loaded."""
-
-    def test_suggests_retro_when_lifecycle_skills_loaded(self) -> None:
-        skills_file = router.STATE_DIR / "sess-end-1.skills"
-        skills_file.write_text("t3:code\nt3:test\n", encoding="utf-8")
-
-        stdout = StringIO()
-        with patch("sys.stdout", stdout):
-            handle_session_end({"session_id": "sess-end-1"})
-
-        output = json.loads(stdout.getvalue())
-        assert "retro" in output["additionalContext"].lower()
-        assert "t3:code" in output["additionalContext"]
-
-    def test_no_output_when_no_lifecycle_skills(self) -> None:
-        skills_file = router.STATE_DIR / "sess-end-2.skills"
-        skills_file.write_text("ac-python\nac-django\n", encoding="utf-8")
-
-        stdout = StringIO()
-        with patch("sys.stdout", stdout):
-            handle_session_end({"session_id": "sess-end-2"})
-
-        assert stdout.getvalue() == ""
-
-    def test_no_output_when_no_skills_file(self) -> None:
-        stdout = StringIO()
-        with patch("sys.stdout", stdout):
-            handle_session_end({"session_id": "sess-end-3"})
-
-        assert stdout.getvalue() == ""
-
-    def test_no_output_when_empty_session_id(self) -> None:
-        stdout = StringIO()
-        with patch("sys.stdout", stdout):
-            handle_session_end({"session_id": ""})
-
-        assert stdout.getvalue() == ""
-
-    def test_includes_only_lifecycle_skills_in_message(self) -> None:
-        skills_file = router.STATE_DIR / "sess-end-5.skills"
-        skills_file.write_text("t3:code\nac-python\nt3:review\n", encoding="utf-8")
-
-        stdout = StringIO()
-        with patch("sys.stdout", stdout):
-            handle_session_end({"session_id": "sess-end-5"})
-
-        output = json.loads(stdout.getvalue())
-        assert "t3:code" in output["additionalContext"]
-        assert "t3:review" in output["additionalContext"]
-        assert "ac-python" not in output["additionalContext"]
-
-
-class TestSessionEndOrphans:
-    """SessionEnd surfaces orphan branches alongside the retro suggestion."""
-
-    def test_orphan_summary_included_when_orphans_exist(self) -> None:
-        skills_file = router.STATE_DIR / "sess-orphan-1.skills"
-        skills_file.write_text("t3:code\n", encoding="utf-8")
-
-        fake_orphans = [
-            {"repo": "/ws/org/backend", "branch": "feat-1", "status": "pushed_orphan", "ahead_count": 3},
-            {"repo": "/ws/org/frontend", "branch": "feat-2", "status": "unpushed_orphan", "ahead_count": 1},
-        ]
-        stdout = StringIO()
-        with (
-            patch.object(router, "_fetch_orphans", return_value=fake_orphans),
-            patch("sys.stdout", stdout),
-        ):
-            handle_session_end({"session_id": "sess-orphan-1"})
-
-        output = json.loads(stdout.getvalue())
-        ctx = output["additionalContext"]
-        assert "ORPHAN BRANCHES DETECTED (2)" in ctx
-        assert "feat-1" in ctx
-        assert "feat-2" in ctx
-        assert "/ws/org/backend" in ctx
-        assert "ensure-pr" in ctx
-
-    def test_orphan_preview_truncates_long_lists(self) -> None:
-        skills_file = router.STATE_DIR / "sess-orphan-2.skills"
-        skills_file.write_text("t3:code\n", encoding="utf-8")
-
-        many = [
-            {"repo": f"/ws/r{i}", "branch": f"br-{i}", "status": "pushed_orphan", "ahead_count": 1} for i in range(8)
-        ]
-        stdout = StringIO()
-        with (
-            patch.object(router, "_fetch_orphans", return_value=many),
-            patch("sys.stdout", stdout),
-        ):
-            handle_session_end({"session_id": "sess-orphan-2"})
-
-        output = json.loads(stdout.getvalue())
-        ctx = output["additionalContext"]
-        assert "ORPHAN BRANCHES DETECTED (8)" in ctx
-        assert "and 3 more" in ctx
-
-    def test_no_orphans_but_lifecycle_skills_still_shows_retro(self) -> None:
-        skills_file = router.STATE_DIR / "sess-orphan-3.skills"
-        skills_file.write_text("t3:code\n", encoding="utf-8")
-
-        stdout = StringIO()
-        with (
-            patch.object(router, "_fetch_orphans", return_value=[]),
-            patch("sys.stdout", stdout),
-        ):
-            handle_session_end({"session_id": "sess-orphan-3"})
-
-        output = json.loads(stdout.getvalue())
-        assert "retro" in output["additionalContext"].lower()
-        assert "ORPHAN" not in output["additionalContext"]

@@ -23,9 +23,11 @@ Those carve-outs are the whole purpose of the ``on_behalf_post_mode``
 setting: it keeps the user in control of their colleague-visible voice
 while letting the agent draft freely and self-document on its own work.
 
-The setting is ``[teatree] on_behalf_post_mode`` (default
+The DB-home ``on_behalf_post_mode`` setting (default
 :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, per-overlay
-overridable, env override via ``T3_ON_BEHALF_POST_MODE``). This module
+overridable, env override via ``T3_ON_BEHALF_POST_MODE``) is set with
+``t3 <overlay> config_setting set on_behalf_post_mode <value>``; a
+``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on read. This module
 is intentionally a thin layer depending only on :mod:`teatree.config`
 — that lets the resolver be imported from anywhere (including
 ``teatree.cli`` and ``teatree.core``) without creating circular
@@ -56,14 +58,8 @@ The resolver returns one of three :class:`OnBehalfVerdict` values:
     :attr:`~teatree.config.OnBehalfPostMode.ASK` and
     :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (drafts are
     exempt under every blocking mode, not just the default).
-
-The legacy boolean helper :func:`ask_before_post_on_behalf_enabled` is
-kept as a deprecated shim returning ``True`` for ASK/DRAFT_OR_ASK and
-``False`` for IMMEDIATE — it emits a :class:`DeprecationWarning` on
-first call. Use :func:`resolve_on_behalf_verdict` instead.
 """
 
-import warnings
 from enum import StrEnum
 
 from teatree.config import OnBehalfPostMode, get_effective_settings
@@ -163,28 +159,21 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     return OnBehalfVerdict.BLOCK
 
 
-_DEPRECATION_EMITTED = False
+def on_behalf_post_will_block(action: str) -> bool:
+    """Whether *action* WILL BLOCK under the effective mode — the proactive pre-check.
 
+    The forward-looking companion to :func:`resolve_on_behalf_verdict`: a caller
+    runs this BEFORE attempting a colleague-visible on-behalf post so it can
+    surface the owner's solution-oriented choice up front — enable the setting
+    durably, or approve just this once (see
+    :func:`teatree.core.on_behalf_gate_recorded.format_on_behalf_block_message`) —
+    instead of blundering into the BLOCK and only then reacting. The gate is an
+    extra safety net, not the primary control (``/t3:rules`` § "Anticipate a
+    Predictable Gate"), so anticipating the predictable block one action ahead is
+    the point: teatree should ideally never hit it.
 
-def ask_before_post_on_behalf_enabled() -> bool:
-    """Deprecated boolean shim — prefer :func:`resolve_on_behalf_verdict`.
-
-    Returns ``True`` when the resolved mode is ASK or DRAFT_OR_ASK (both
-    of which BLOCK colleague-visible posts), ``False`` when IMMEDIATE.
-    Note this boolean is per-mode, not per-action: it cannot express that
-    a draft-form action is exempt and auto-drafts under ASK/DRAFT_OR_ASK.
-    Emits a :class:`DeprecationWarning` on first call — new code should
-    call :func:`resolve_on_behalf_verdict` directly so the per-action
-    distinction (BLOCK for visible posts vs AUTO_DRAFT for drafts under
-    both blocking modes) isn't lost.
+    ``True`` iff the verdict is :attr:`OnBehalfVerdict.BLOCK`; a draft-form action
+    (AUTO_DRAFT) and an :attr:`OnBehalfVerdict.PROCEED` action both return
+    ``False`` — neither needs a pre-ask.
     """
-    global _DEPRECATION_EMITTED  # noqa: PLW0603 — module-level first-call flag
-    if not _DEPRECATION_EMITTED:
-        warnings.warn(
-            "ask_before_post_on_behalf_enabled() is deprecated; "
-            "use teatree.on_behalf_gate.resolve_on_behalf_verdict(action) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        _DEPRECATION_EMITTED = True
-    return get_effective_settings().on_behalf_post_mode is not OnBehalfPostMode.IMMEDIATE
+    return resolve_on_behalf_verdict(action) is OnBehalfVerdict.BLOCK

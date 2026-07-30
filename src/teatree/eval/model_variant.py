@@ -1,7 +1,7 @@
 """``model@effort`` variant parsing for the matrix and benchmark lanes.
 
 A variant is a model plus an optional reasoning-effort level, spelled
-``claude-opus-4-8@xhigh`` (or a plain model name for the default effort). The
+``opus@xhigh`` (or a plain model name for the default effort). The
 rendered :attr:`ModelVariant.tag` is the variant's identity string: it flows
 unchanged through the existing per-model machinery (``MatrixRow.model``, the
 run-store's per-model ledger, pass-rates, regression/cost gates), so comparing

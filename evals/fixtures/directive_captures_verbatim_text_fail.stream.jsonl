@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_captures_verbatim_text-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll capture the gist."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 directive capture \"Require a second confirmation before force-pushing to protected branches.\"", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "captured directive #12 (state=captured)."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

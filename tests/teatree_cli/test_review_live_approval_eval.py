@@ -19,6 +19,8 @@ This matrix asserts the four authorization scenarios as a unit:
 * NO approval of any kind → still blocked (the genuine guard).
 """
 
+import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -28,6 +30,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.config import OnBehalfPostMode
+from teatree.core.models import ConfigSetting
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
 
@@ -37,13 +40,31 @@ pytestmark = pytest.mark.django_db
 _runner = CliRunner()
 
 
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, user_id: str = "U-OPERATOR") -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "{user_id}"\non_behalf_post_mode = "{OnBehalfPostMode.IMMEDIATE.value}"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
+    # config-store sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
+    # is ORM-resolved, staged in the ``ConfigSetting`` store.
+    _seed_cold_slack_user(tmp_path, monkeypatch, user_id)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 
 class TestLivePostApprovalAuthorizationMatrix:
@@ -199,9 +220,7 @@ class TestLivePostApprovalAuthorizationMatrix:
 
     def test_no_user_id_configured_is_refused(self) -> None:
         # A config with no slack_user_id cannot verify any authorization.
-        cfg = self.tmp_path / ".teatree.toml"
-        cfg.write_text(f'[teatree]\non_behalf_post_mode = "{OnBehalfPostMode.IMMEDIATE.value}"\n', encoding="utf-8")
-        self.monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
         self.monkeypatch.setattr("teatree.core.notify.resolve_user_id", lambda: "")
 
         result = _runner.invoke(

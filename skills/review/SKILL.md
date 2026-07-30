@@ -6,7 +6,6 @@ requires:
   - workspace
   - platforms
   - code
-companions:
   - requesting-code-review
 metadata:
   version: 0.0.1
@@ -22,7 +21,7 @@ This skill delegates the generic review doctrine to:
 - `requesting-code-review` — when to request an independent review pass
 - `verification-before-completion` — proof before any “review-ready” claim
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 Both self-review and external review cycles.
 
@@ -30,15 +29,15 @@ Both self-review and external review cycles.
 
 - **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
-- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companions (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
+- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companion skills (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
 
   **Do this — never skip it (imperative, the prose above is the WHY):** reviewing ANY overlay repo, the FIRST actions — before reading the diff, fetching ticket context, or asking for an MR URL — are to derive the declared set (`get_review_companion_skills()` = `[pr_review_companion, *companion_skills]`) and load every skill in it via the `Skill` tool, in order — never proceed to the diff with only the generic `/t3:review`:
 
   1. `/t3-<overlay>` — the overlay's own workspace/review-quality skill (the `pr_review_companion`).
   2. `/t3:review` — this skill (the generic review doctrine).
-  3. the overlay's dev skill(s) — e.g. the backend / frontend skill the overlay declares as companions.
+  3. the overlay's dev skill(s) — e.g. the backend / frontend skill the overlay declares as companion skills.
 
-  Each is a separate `Skill`-tool call; load all of them before the first `t3 review run` / diff read. A review run with only the generic review skill loaded — diving straight into the diff without the overlay's declared set — is a **null review** and does not satisfy the gate. Derive the names yourself from `get_review_companion_skills()`; do not wait for the prompt to enumerate them.
+  Each is a separate `Skill`-tool call; load all of them before the first `t3 review run` / diff read. A review run with only the generic review skill loaded — diving straight into the diff without the overlay's declared set — is a **null review** and does not satisfy the gate. Derive the names by **convention, not runtime introspection**: an overlay repo `<name>-product` (more generally `<name>-*`) is served by the skill `/t3-<name>`, which together with this `/t3:review` and the overlay's dev skill(s) IS the declared set — call the `Skill` tool on each directly, as your first action. Do **not** shell out to a `t3 …` command or grep the source to read `get_review_companion_skills()` at runtime: that name points at WHERE the contract lives in code, it is not a CLI to run, and applying the stable naming convention IS the derivation. Do not wait for the prompt to enumerate the names.
 
 ## Workflows
 
@@ -125,7 +124,7 @@ After verifying repo rules, **check the full file** (not just changed lines) of 
    - Module-level function count and justification
    - God-module detection (unrelated concerns in one file)
    - Complexity rule suppressions in `pyproject.toml` — any `C901`/`PLR09xx` per-file-ignores beyond the project's boilerplate baseline are findings
-3. **When a threshold is crossed**, either refactor to comply or create a ticket for the debt — do not suppress the lint rule.
+3. **When a threshold is crossed**, never suppress the lint rule. On **your own** change, refactor to comply in this same PR — the module is one this diff already touches, so `AGENTS.md` First Principles 8-10 put the fix here, not in a follow-up ticket. When reviewing **someone else's** change, post it as a finding and leave the fix to the author (maker ≠ checker).
 4. **Check `pyproject.toml` per-file-ignores** for the touched files. If any suppress complexity rules that are not in the project's boilerplate baseline, flag them as findings.
 
 This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
@@ -220,7 +219,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 3. **Tests:** full suite green (use `t3 <overlay> run tests` or project equivalent)
 4. **No uncommitted changes:** all fixes staged and committed
 5. **No regressions:** diff review confirms no unintended changes
-6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced — the `~/.teatree-skills.yml` keyword→skill routing config and the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists — must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`); this command additionally covers the personal `~/.teatree-skills.yml`, which lives outside the repo.
+6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced — the `$HOME/.teatree-skills.yml` keyword→skill routing config and the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists — must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`); this command additionally covers the personal `$HOME/.teatree-skills.yml`, which lives outside the repo.
 
 **Iteration limit:** After 3 fix-verify cycles without convergence, **stop and ask the user** — the issue may be systemic rather than incremental.
 
@@ -229,6 +228,15 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 **References:** [Ralph Loop](https://github.com/snarktank/ralph) (external verification over self-assessed completion), [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) (Anthropic, feature-list-driven incremental verification).
 
 ### Giving Code Review
+
+#### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
+
+This chapter's deliverable is one of two things, and the reporting rules are **opposite** between them. Decide which before drafting anything.
+
+- **Colleague-facing post** — a comment, discussion, or approval published on someone else's MR/PR **under the owner's identity**. Noise costs real credibility here, so the suppression rules below are binding on this lane: scale severity to confidence, say nothing on a check that came back clean, don't police formatting, don't block on style.
+- **Verdict envelope** — the headless cold reviewer's `review_verdict` result (`teatree.agents.result_schema.ReviewVerdictEnvelope`), recorded server-side as the durable `ReviewVerdict` the merge gate reads. Nothing is published and `findings` is schema-optional, so suppression here buys nothing and costs only recall.
+
+**In the envelope, record what you actually observed** — every finding, including the uncertain and the low-severity ones, each carrying its severity and your confidence. Coverage is your job; filtering is the merge gate's, downstream. Silence on a check you performed is a **missing record**, not a clean bill of health. `verdict: merge_safe` with an empty `findings` array asserts you looked and found nothing worth saying — emit it only when that is true, and record anything you could not check as a finding rather than leaving the array empty.
 
 #### Fetch-Only vs Comprehensive Review — Pick the Right Entry Command (do X — never Y)
 
@@ -246,6 +254,8 @@ A colleague-authored MR on a **shared product repo** (a repo you do NOT solely o
 
 - **The merge commands are out of scope on a colleague's product-repo MR.** `glab mr merge`, `gh pr merge`, and `t3 <overlay> ticket merge` do not belong on a teammate-authored shared-repo MR — merging a colleague's product-repo MR treats their work as yours to land. The keystone merge (`t3 <overlay> ticket merge <id>`) is reserved for **your OWN** green, cold-review-cleared work (a solo-owned overlay repo you authored), not a colleague's. A repo being private is a visibility axis, not an ownership one — private ≠ yours-to-merge.
 
+- **Provisioning and E2E are out of scope too.** Reviewing a colleague's MR is a **static diff review** plus **trusting their CI** — never a local checkout, `t3 <overlay> workspace ticket` / `worktree provision` / `worktree start` of their branch, nor an E2E/Playwright run of it; their pipeline is the runtime gate, your read of the diff is the review.
+
 The A/B distinction: your own solo-owned overlay repo, green and cleared → merge it via the keystone; a teammate's shared product-repo MR → fetch the diff and review it, hold for the colleague, never auto-merge. (Own-vs-external routing is Step -1 below.)
 
 **Pre-flight gate — complete BEFORE reading any diff:**
@@ -257,11 +267,36 @@ The A/B distinction: your own solo-owned overlay repo, green and cleared → mer
 
 Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
 
-**BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it.
+**BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it. To enumerate the open MRs you are scanning and move to the next unclaimed candidate, list them with `glab mr list` (GitLab) / `gh pr list` (GitHub), then skip past any that already carry a colleague's :eyes: — there is no `t3` command for advancing to the next MR, so do not invent one.
+
+#### The review-DONE Slack signal is `t3 slack react`, with three positional arguments
+
+A finished review emits its verdict on the MR's review-broadcast message as a Slack reaction. There is
+exactly one command for it and it takes **positional** `channel`, `ts`, and `emoji` — no `--emoji` flag,
+and no reaction subcommand under `t3 review` (there is none; do not invent one), and the emoji name
+carries **no colons**:
+
+```bash
+t3 slack react <channel> <ts> <emoji>          # e.g. t3 slack react C_REVIEW 171.5 white_check_mark
+```
+
+The verdict → emoji mapping is the one `teatree.loop.review_done_reactions.emit_review_done_reactions`
+posts, so a hand-issued reaction matches what the loop would have emitted:
+
+| verdict | emoji argument |
+| --- | --- |
+| clean — no blocking findings | `white_check_mark` |
+| has blocking comments | `question` |
+
+The command is idempotent: an emoji already on the message (whether teatree placed it or a colleague did)
+is skipped and still exits `0`. So when a colleague's `:white_check_mark:` is already there and your own
+verdict differs, react with **your** verdict only — one command, the emoji that is actually yours. Never
+re-issue the reaction that is already present, and never substitute a DM to the author for the reaction;
+the substance of a review is its inline MR comments, and the reaction is the only Slack signal it emits.
 
 #### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
 
-What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch (`src/teatree/config.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). Read the resolved tier with `t3 <overlay> autonomy show` and set it with `t3 <overlay> autonomy set <level>` (`--global` for the workspace default) — never hand-edit `~/.teatree.toml`. It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
+What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch (`src/teatree/config/settings.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). Read the resolved tier with `t3 <overlay> autonomy show` and set it with `t3 <overlay> autonomy set <level>` (`--global` for the workspace default) — never hand-edit config. It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
 
 **Autonomous tiers (`autonomy = "full"` or `"notify"`, which collapse `on_behalf_post_mode → immediate`):** once an independent cold-review verdict exists, act directly — no draft-default, no "say the word", no per-MR ask:
 
@@ -288,7 +323,7 @@ When the PR under review belongs to the **user themselves**, do NOT post review 
 Before reading any code, fetch the referenced ticket/issue to understand the *intended* behavior:
 
 1. Extract the ticket URL or number from the PR title/description.
-2. Fetch the issue via the project's issue tracker CLI (e.g., `glab issue view`, `gh issue view`).
+2. Fetch the issue via the `mcp__teatree__github_issue` / `mcp__teatree__gitlab_issue` MCP tool (structured JSON; fall back to the issue tracker CLI — `glab issue view`, `gh issue view` — when the MCP server isn't connected).
 3. **Fetch every attached spec** (PDFs, OpenAPI files, vendor docs) and every linked external requirement. For GitLab attachments, the working path is `glab api projects/<id>/uploads/<secret>/<filename>` — browser-style URLs (`gitlab.com/<group>/<repo>/uploads/...`, `gitlab.com/-/project/<id>/uploads/...`) require session cookies and return login HTML when hit with a PAT. Attachments are the authoritative spec; an author docstring summarising them is not a substitute.
 
    A posted image or screenshot is two layers, and a fetched image is read in two passes. The first pass is the raw capture — what the tool, page, or table actually shows. The second pass is the poster's overlay drawn on top: borders and boxes, arrows, circles, highlights and colour, underlines, callout text, numbering, redaction. Those marks are a deliberate hint pointing at exactly what the poster wants seen; reading only the raw content answers a question the poster did not ask. For each annotation, ask "why did they mark exactly this" and resolve it concretely: a boxed cell is the load-bearing value the argument turns on; an arrow is an A→B link being asserted; bordered individual letters spell an acronym — decode it; a circled token is the disputed item; added callout text is the poster's claim restated. When an annotation's meaning is non-obvious, decoding it is required investigation, not optional — an unresolved mark is an unread part of the spec, treated the same as an attachment that did not download.
@@ -341,9 +376,9 @@ Investigate first by exhausting the sources you **can** reach:
 
 Only after all reachable sources are exhausted can you post a question-style comment — and only when the answer truly requires access you do not have (partner portal behind SSO, vendor-only documentation, product owner's desk knowledge). State what you checked and why the answer isn't reachable, so the author sees you did the work.
 
-**Scale severity to confidence.** A speculative "maybe wrong?" is a nit at best; drop it. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review.
+**Scale severity to confidence — on a colleague-facing post, drop what stays speculative.** A speculative "maybe wrong?" is a nit at best; do not post it under the owner's name. A verified finding ("grepped `foo-producer`, canonical spelling is `X`, branch has `Y` — will fail at runtime") is a blocker and belongs in the review. In the **verdict envelope** the disposal is the opposite: record the uncertain observation with its confidence rather than dropping it.
 
-**When the investigation confirms the code is correct, say nothing.** Silence on a check you performed is the correct outcome — not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR.
+**When the investigation confirms the code is correct, post nothing — on a colleague-facing post.** Silence on a check you performed is the correct outcome there, not a "looks good, but…" comment. Positive comments belong in the summary to the user, not in the PR. In the **verdict envelope** that same clean check is *recorded*, not silenced: name what you checked and that it came back clean.
 
 **Step 0e — Don't Police Other Authors' Title/Description Format (Non-Negotiable):**
 
@@ -419,7 +454,7 @@ When posting on the PR, prefer **inline** (line-anchored) discussions over **gen
 
 **Step 2 — Review Tone & Formatting:**
 
-Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?"
+Follow the [Google Engineering Practices — Code Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html): approve if the CL improves overall code health, even if it isn't perfect. Don't block on style preferences or theoretical improvements. The bar is "does this improve the codebase?" — not "is this how I would have written it?" That governs the **verdict**, not the record: a style preference is not a reason to `hold`, and it is still worth recording as a low-severity finding in the verdict envelope.
 
 Comments are posted under the user's name. They must sound like a **real human colleague** wrote them — not an AI, not a linter, not a manager.
 
@@ -441,7 +476,9 @@ Speculative questions ("is this correct?", "could this cause issues?") without e
 
 **Formatting rules:**
 
+- **Concise, bullet-form, no prose (directive #4).** A review is findings, not an essay. Lead with the finding; skip the preamble and the summary of what the diff does (the author wrote it). One point per bullet, `severity: finding` shape. No "Overall this looks great, however…" wind-up, no restating the PR description. Be RIGHT but concise — trim words, never the evidence that makes a finding actionable. The shape/bloat gates below enforce this structurally on colleague MRs.
 - **Single terse inline finding on a colleague MR.** On a colleague's MR (the MR's author is not your identity), the binding shape for an on-behalf review is **one terse inline comment anchored on the file:line that motivated it, keeping the finding's own severity label** — `HIGH (correctness): ...`, `MED: ...`, `LOW: ...`, and a bare `Nit:` reserved only for a genuinely trivial item (style, naming preference). Never a multi-section Problem/Fix/Verification dump, and **never downgrade a HIGH/MED finding to `Nit:`** to squeeze under the cap (that produces the nonsensical "Nit (MED)" — terseness is about length, not severity). Enforced structurally by the colleague-MR shape gate in `src/teatree/cli/review/shape_gate.py` (souliane/teatree#1114, loosened in #1159): the body is capped at 3 blank-line-separated paragraphs and 200 words; the gate refuses the post with steering text before any GitLab API call. Multi-sentence findings are fine — the cap targets abuse (multi-section dumps), not legitimate ≤3-sentence findings. Own-MR reviews are exempt (long-form self-review summaries are fine).
+- **A review comment is about the diff, not the tracker.** Keep project chatter out of the comment body — no `@handle` stakeholder mentions, no Slack-thread timestamps, no "ping the author / sync with the team / discuss in standup" coordination. State the finding on the code. A *bare* `tracked at #1234` non-blocker pointer is fine (it adds genuine context); it is the chatter directive wrapped around the id that bloats. Enforced structurally by the comment-bloat gate in `src/teatree/cli/review/bloat_gate.py` (souliane/teatree#2663): a chatter-laden body is refused before any GitLab API call. `--allow-bloat` is the per-call escape for a genuinely load-bearing reference. The note-length dimension stays with the shape gate above; this gate is orthogonal.
 - **Prefix nits.** When a comment is nitpicking (style, naming, minor preference), prefix with `Nit:` so the author knows it's non-blocking.
 - **Backticks for code.** Always wrap code symbols, class names, method names, variable names, file paths, and CLI commands in backticks (`` ` ``).
 - **Use suggestion blocks for concrete code changes.** When you have a specific replacement in mind, use the platform's suggestion feature (` ```suggestion ` fenced block on both GitLab and GitHub) so the author can accept with one click. GitLab supports `:-N+M` to expand the range. Combine explanation text **before** the suggestion block.
@@ -455,6 +492,8 @@ A `// TODO`, `# TODO`, `/* TODO */`, `// FIXME`, `# FIXME`, `// XXX`, `# XXX`, `
 `t3 review post-comment` and `post-draft-note` enforce this deterministically via `src/teatree/cli/review/todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
 
 Failure mode this prevents: re-asking a colleague to do work they have explicitly deferred makes the reviewer (and the user, whose identity posts on-behalf) look unable to read code.
+
+**Scope — this is a reviewer rule, not a licence to leave one.** It governs how you treat *another author's* deferral on *their* MR: their scope decision is theirs, and re-litigating it in a blocker is the failure above. It says nothing about the work you author yourself, where `AGENTS.md` First Principle 8 forbids leaving a `TODO`/"follow-up"/"out of scope" marker at all — self-review catches it before the diff leaves your hands. The two never collide, because they never apply to the same author.
 
 **Step 3 — Post Draft Review Comments (babysit tier):**
 
@@ -471,13 +510,13 @@ This step is the **`autonomy = "babysit"`** flow (the conservative default). Und
 
 This prevents noise from multiple review passes or multiple reviewers covering the same ground.
 
-**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
+**Post all *new* findings.** Don't self-censor or hold back comments because they seem minor. A draft note is colleague-invisible until the user submits it, so the user is the filter here exactly as the merge gate is on the verdict envelope — the suppression rules bind on what reaches a colleague, never on what reaches a curator. The user will review every draft note in the platform's UI, edit wording, and delete anything they don't want before submitting. Your job is to surface everything you noticed — the user curates. But "everything" means everything *not already said* — duplicating an existing comment wastes the author's time.
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
 **Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review/service.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `run`, `post-comment`, `authorize`, `approve-live-post`, `delete-draft-note`, `delete-discussion`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`, `approve`, `unapprove`. (`post-draft-note` is deprecated — see below.)
 
-**Read-only review-shape audit — `t3 review run <MR_URL>` (#1206).** Run before manually scanning the diff: the CLI emits a JSON summary (`changes.{files,additions,deletions}`, `complexity`, `existing_review.{open_discussions,draft_notes,approvals}`, `findings_catalog`, `verdict`) so every reviewer sub-agent starts from the same shape instead of improvising. The command never publishes; it just gathers what the reviewer needs to decide what to post via `post-comment` / `post-draft-note`. GitHub PR URLs return `unsupported_forge` (exit 2) deterministically — no masquerading success.
+**Read-only review-shape audit — `t3 review run <MR_URL>` (#1206).** Run before manually scanning the diff: the CLI emits a JSON summary (`changes.{files,additions,deletions}`, `complexity`, `existing_review.{open_discussions,draft_notes,approvals}`, `findings_catalog`, `verdict`) so every reviewer sub-agent starts from the same shape instead of improvising. The command never publishes; it just gathers what the reviewer needs to decide what to post via `post-comment` / `post-draft-note`. GitHub PR URLs and GitLab MR URLs both audit into the same payload shape; a URL naming neither forge exits 2 with `bad_url` — no masquerading success.
 
 **Default-safe `t3 review post-comment` (Mandatory, #1207).** The subcommand creates a DRAFT by default and DMs the user the link — the CLI itself enforces the draft-by-default rule, so no separate prose check is required. To publish live (colleague-visible), authorize the MR in **one step** with `t3 review authorize <repo>!<mr> --approver <user-id>` (records the durable on-behalf authorization AND mints the single-use live-post token), then the agent re-runs with `--live`. Without an authorization `--live` refuses without any GitLab side effect, naming the `authorize` command in the refusal. The earlier two-command dance (`approve-on-behalf` + `approve-live-post --from-on-behalf`) still works and remains for the Slack-ts verification path, but `authorize` is the one-step collapse (#126).
 
@@ -558,7 +597,13 @@ t3 review approve <REPO> <MR_IID>      # approve
 t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 ```
 
-**Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` — default draft, #1207) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
+**Review-first precondition (enforced, not advisory) — never forces a public note (#2716).** `approve` refuses unless the approver has left a *reviewing footprint*, encoding the approve-on-review doctrine in the tool: you cannot record an approval without having reviewed first. The doctrine is an anti-rubber-stamp guarantee, **not** a public comment — so a content-free "APPROVE" prose note is never posted to satisfy it. Any of three footprints clears the gate, none of which is a colleague-visible auto-comment:
+
+- a **published note/discussion** authored by your identity (a genuine inline finding — still fine, never auto-posted just to clear this gate);
+- a **draft note** authored by your identity (a colleague-invisible review — no public comment);
+- the **recorded internal verdict** — an `OnBehalfApproval` for `(<repo>!<mr>, "approve")`, the human-recorded, maker≠checker attribution the on-behalf approve path already requires. On the on-behalf path the `approve-on-behalf` row *is* the footprint, so approving records the verdict + the GitLab `approved_by` (and the ✅ reaction) with **zero** MR notes/discussions posted.
+
+If it refuses, leave a genuine review (a real finding via `t3 review post-comment` — default draft, #1207 — or record the internal verdict), then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
 **On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960). Under an autonomous overlay (`autonomy = "full"` / `"notify"`, which collapse the mode to `"immediate"`) the approval proceeds unattended — that is the "Colleague-MR Autonomy" behavior above, no further step. Under `"babysit"` (mode stays `"ask"` / `"draft_or_ask"`) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or raise the tier with `t3 <overlay> autonomy set full` / `t3 <overlay> autonomy set notify` (preferred — one knob) for the overlay.
 

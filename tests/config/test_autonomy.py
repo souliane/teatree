@@ -3,34 +3,33 @@
 
 One coherent value — three tiers ``full > notify > babysit`` (default
 ``babysit``) — that governs the whole USER-in-the-loop approval surface for an
-overlay. Under ``full`` OR ``notify`` the three scattered approval gates
-(``on_behalf_post_mode``, ``require_human_approval_to_merge``,
-``require_human_approval_to_answer``) collapse to their autonomous value in
-``get_effective_settings`` and ``mode`` is pinned to ``auto``, UNLESS the user
-pinned an explicit per-gate override (explicit always wins — autonomy never
-silently overrides an opinion). ``notify`` additionally derives
+overlay. Under ``full`` OR ``notify`` the collapsed approval gates
+(``on_behalf_post_mode``, ``require_human_approval_to_answer``) take their
+autonomous value in ``get_effective_settings`` and ``mode`` is pinned to ``auto``,
+UNLESS the user pinned an explicit per-gate override (explicit always wins —
+autonomy never silently overrides an opinion). ``notify`` additionally derives
 ``notify_on_behalf = True``; ``full`` and ``babysit`` keep it ``False``.
 
-Under the #1775 DB/TOML partition, ``autonomy`` / ``mode`` / the three gates are
-all DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
+``require_human_approval_to_merge`` is deliberately NOT in that set (#3630): review
+before merge is a separate concern from how far the agent carries work on its own,
+and no tier may remove it as a side effect. Merging without a review gate is its own
+named opt-in — an explicit ``require_human_approval_to_merge = false``.
+
+Under the #1775 DB partition, ``autonomy`` / ``mode`` / the three gates are all
+DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
 overlay-scoped row is the per-overlay opinion (``hard_pinned``); a global-scope
 row is the global opinion (still wins for a gate, harmless for ``mode``).
 
-The safety/quality floor is out of scope by construction. ``privacy`` is
-TOML-home and untouched; ``orchestrator_bash_gate_enabled`` (TOML-home) is the
-never-lockout posture and is never relaxed by the collapse.
+The safety/quality floor is out of scope by construction. ``autoload`` is untouched
+by the collapse; ``orchestrator_bash_gate_enabled`` keeps its never-lockout default
+and is never relaxed.
 """
-
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
-from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings, load_config
+from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings
 from teatree.core.models import ConfigSetting
-
-from ._shared import _write_toml
 
 
 class TestAutonomyParse:
@@ -56,70 +55,68 @@ class TestAutonomyParse:
         assert members == [Autonomy.BABYSIT, Autonomy.NOTIFY, Autonomy.FULL]
 
 
-class TestAutonomyDefault:
-    def test_defaults_to_babysit(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, "[teatree]\n")
-        assert load_config(config_path).user.autonomy is Autonomy.BABYSIT
+class TestAutonomyDefault(TestCase):
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
+            monkeypatch.delenv(env, raising=False)
 
-    def test_babysit_keeps_conservative_gate_values(self, tmp_path: Path) -> None:
-        """Default (babysit) leaves every gate at its conservative default."""
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, "[teatree]\n")
-        user = load_config(config_path).user
-        assert user.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
-        assert user.require_human_approval_to_merge is True
-        assert user.require_human_approval_to_answer is True
+    def test_defaults_to_babysit(self) -> None:
+        assert get_effective_settings().autonomy is Autonomy.BABYSIT
+
+    def test_babysit_keeps_conservative_gate_values(self) -> None:
+        settings = get_effective_settings()
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert settings.require_human_approval_to_merge is True
+        assert settings.require_human_approval_to_answer is True
 
 
 class _AutonomyDbBase(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
             monkeypatch.delenv(env, raising=False)
-        _write_toml(
-            self.config_path,
-            "[teatree]\n\n"
-            '[overlays.trusted]\nclass = "x:Y"\n\n'
-            '[overlays.client]\nclass = "x:Y"\n\n'
-            '[overlays.careful]\nclass = "x:Y"\n\n'
-            '[overlays.t3-teatree]\nclass = "x:Y"\n\n'
-            '[overlays.t3-client]\nclass = "x:Y"\n',
-        )
         self.monkeypatch = monkeypatch
 
 
 class TestAutonomyFullResolution(_AutonomyDbBase):
-    def test_per_overlay_full_flips_all_three_gates(self) -> None:
+    def test_per_overlay_full_flips_the_collapsed_gates(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.FULL
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        assert settings.require_human_approval_to_merge is False
         assert settings.require_human_approval_to_answer is False
 
+    def test_full_never_removes_the_merge_review_gate(self) -> None:
+        """#3630 — the highest tier must not silently disable review before merge."""
+        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert get_effective_settings().require_human_approval_to_merge is True
+
+    def test_merge_without_review_is_its_own_explicit_opt_in(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
+        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=False, scope="trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert get_effective_settings().require_human_approval_to_merge is False
+
     def test_full_leaves_safety_floor_untouched(self) -> None:
-        _write_toml(
-            self.config_path,
-            '[teatree]\nprivacy = "strict"\n\n[overlays.trusted]\nclass = "x:Y"\n',
-        )
+        # ``autoload`` / ``orchestrator_bash_gate_enabled`` are untouched by the
+        # autonomy collapse — the safety floor is never relaxed.
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
-        assert settings.privacy == "strict"
+        assert settings.autoload is True
         assert settings.orchestrator_bash_gate_enabled is True
 
     def test_explicit_per_gate_override_wins_over_full(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
-        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True, scope="trusted")
+        ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True, scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        assert settings.require_human_approval_to_answer is False
-        assert settings.require_human_approval_to_merge is True
+        assert settings.require_human_approval_to_answer is True
 
     def test_babysit_overlay_keeps_gates_blocking(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "babysit", scope="careful")
@@ -135,11 +132,9 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         ConfigSetting.objects.set_value("autonomy", "babysit", scope="careful")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
         careful = get_effective_settings()
-        assert careful.require_human_approval_to_merge is True
         assert careful.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         trusted = get_effective_settings()
-        assert trusted.require_human_approval_to_merge is False
         assert trusted.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
 
     def test_full_keeps_mode_auto_consistent(self) -> None:
@@ -159,15 +154,19 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
 
 
 class TestAutonomyNotifyTier(_AutonomyDbBase):
-    def test_notify_flips_the_same_three_gates_as_full(self) -> None:
+    def test_notify_flips_the_same_gates_as_full(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.NOTIFY
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        assert settings.require_human_approval_to_merge is False
         assert settings.require_human_approval_to_answer is False
         assert settings.mode is Mode.AUTO
+
+    def test_notify_never_removes_the_merge_review_gate(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
+        assert get_effective_settings().require_human_approval_to_merge is True
 
     def test_notify_derives_notify_on_behalf_true(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
@@ -175,14 +174,12 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         assert get_effective_settings().notify_on_behalf is True
 
     def test_notify_leaves_safety_floor_untouched(self) -> None:
-        _write_toml(
-            self.config_path,
-            '[teatree]\nprivacy = "strict"\n\n[overlays.client]\nclass = "x:Y"\n',
-        )
+        # ``autoload`` / ``orchestrator_bash_gate_enabled`` survive the notify collapse.
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         settings = get_effective_settings()
-        assert settings.privacy == "strict"
+        assert settings.autoload is True
         assert settings.orchestrator_bash_gate_enabled is True
 
     def test_notify_isolated_from_full_overlay(self) -> None:
@@ -196,7 +193,6 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         client = get_effective_settings()
         assert client.autonomy is Autonomy.NOTIFY
         assert client.notify_on_behalf is True
-        assert client.require_human_approval_to_merge is False
 
 
 class TestAutonomyReviewRequestPostDisabled(_AutonomyDbBase):
@@ -259,7 +255,6 @@ class TestAutonomyOverPinFix(_AutonomyDbBase):
         settings = get_effective_settings()
         # A global ``mode = interactive`` is a workspace default — the collapse wins.
         assert settings.mode is Mode.AUTO
-        assert settings.require_human_approval_to_merge is False
 
     def test_global_interactive_mode_does_not_defeat_notify_mode_auto(self) -> None:
         ConfigSetting.objects.set_value("mode", "interactive")  # global
@@ -274,10 +269,9 @@ class TestAutonomyOverPinFix(_AutonomyDbBase):
         settings = get_effective_settings()
         # A per-overlay ``mode`` is a deliberate opinion — autonomy must not override it.
         assert settings.mode is Mode.INTERACTIVE
-        assert settings.require_human_approval_to_merge is False
 
     def test_global_explicit_gate_still_wins_over_collapse(self) -> None:
-        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True)  # global
+        ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True)  # global
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-        assert get_effective_settings().require_human_approval_to_merge is True
+        assert get_effective_settings().require_human_approval_to_answer is True

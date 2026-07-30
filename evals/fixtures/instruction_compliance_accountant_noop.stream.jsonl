@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-ica-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Thinking about how to triage the recurring AskUserQuestion failure, no decision written yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -28,6 +28,8 @@ _SPEC.loader.exec_module(_MOD)
 
 _lanes_for = _MOD._lanes_for
 _matrix_for = _MOD._matrix_for
+_efforts_for = _MOD._efforts_for
+_shard_indices_for = _MOD._shard_indices_for
 main = _MOD.main
 
 
@@ -90,6 +92,130 @@ class TestMatrixFor:
             assert len(shard_specs) <= max_scenarios_per_shard(entry["lane"])
 
 
+class TestEffortsFor:
+    def test_empty_efforts_is_the_no_axis_sentinel(self) -> None:
+        # No --efforts → a single None tier, so the matrix keeps the legacy
+        # {lane, shard} shape (no effort axis, no behaviour change).
+        assert _efforts_for("") == [None]
+
+    def test_explicit_three_tier_matrix(self) -> None:
+        assert _efforts_for("low,medium,high") == ["low", "medium", "high"]
+
+    def test_blank_entries_dropped(self) -> None:
+        assert _efforts_for("low,,high") == ["low", "high"]
+
+    def test_unknown_effort_fails_loud(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _efforts_for("low,bogus")
+        assert "bogus" in str(exc.value)
+
+
+class TestMatrixForWithEfforts:
+    def test_no_effort_axis_keeps_the_legacy_lane_shard_shape(self) -> None:
+        for entry in _matrix_for("", efforts=""):
+            assert set(entry) == {"lane", "shard"}
+
+    def test_three_tier_axis_multiplies_each_leg_across_efforts(self) -> None:
+        base = _matrix_for("under_load", efforts="")
+        tiered = _matrix_for("under_load", efforts="low,medium,high")
+        # Each {lane, shard} leg appears once per effort tier.
+        assert len(tiered) == len(base) * 3
+        for entry in tiered:
+            assert set(entry) == {"lane", "shard", "effort"}
+            assert entry["effort"] in {"low", "medium", "high"}
+        # Every (lane, shard) base leg is present at all three tiers.
+        for leg in base:
+            for tier in ("low", "medium", "high"):
+                assert {**leg, "effort": tier} in tiered
+
+    def test_every_tiered_leg_is_budget_safe(self) -> None:
+        specs = discover_specs()
+        for entry in _matrix_for("", efforts="low,medium,high"):
+            lane_specs = [s for s in specs if s.lane == entry["lane"]]
+            shard_specs = filter_specs_by_shard(lane_specs, entry["shard"])
+            assert len(shard_specs) <= max_scenarios_per_shard(entry["lane"])
+
+
+class TestShardIndicesFor:
+    def test_empty_is_no_filter(self) -> None:
+        assert _shard_indices_for("") is None
+
+    def test_whitespace_is_no_filter(self) -> None:
+        assert _shard_indices_for("   ") is None
+
+    def test_comma_list(self) -> None:
+        assert _shard_indices_for("1,3,7") == {1, 3, 7}
+
+    def test_range(self) -> None:
+        assert _shard_indices_for("1-6") == {1, 2, 3, 4, 5, 6}
+
+    def test_range_and_comma_list_combine(self) -> None:
+        assert _shard_indices_for("1-3,7") == {1, 2, 3, 7}
+
+    def test_blank_entries_between_commas_are_dropped(self) -> None:
+        assert _shard_indices_for("1,,3") == {1, 3}
+
+    def test_non_numeric_token_fails_loud(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _shard_indices_for("a")
+        assert "a" in str(exc.value)
+
+    def test_reversed_range_fails_loud(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _shard_indices_for("6-1")
+        assert "6-1" in str(exc.value)
+
+    def test_zero_index_fails_loud(self) -> None:
+        with pytest.raises(SystemExit):
+            _shard_indices_for("0")
+
+    def test_malformed_range_fails_loud(self) -> None:
+        with pytest.raises(SystemExit):
+            _shard_indices_for("1-2-3")
+
+
+class TestMatrixForWithShards:
+    def test_empty_shards_is_unfiltered(self) -> None:
+        assert _matrix_for("", shards="") == _matrix_for("")
+
+    def test_range_filters_indices_within_each_lane(self) -> None:
+        entries = _matrix_for("", shards="1-6")
+        clean = [e for e in entries if e["lane"] == CLEAN_ROOM_LANE]
+        under = [e for e in entries if e["lane"] == UNDER_LOAD_LANE]
+        # under_load has fewer than 6 shards live — every shard of it survives
+        # the filter unchanged, while clean_room (which has more) is truncated.
+        under_all = list(_matrix_for("under_load"))
+        assert under == under_all
+        assert len(clean) == 6
+        for entry in clean:
+            index, _total = entry["shard"].split("/")
+            assert int(index) <= 6
+
+    def test_comma_list_filters_to_exactly_those_indices(self) -> None:
+        entries = _matrix_for("clean_room", shards="1,3")
+        indices = sorted(int(e["shard"].split("/")[0]) for e in entries)
+        assert indices == [1, 3]
+
+    def test_index_beyond_every_lane_shard_count_is_an_explicit_error(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _matrix_for("", shards="99")
+        assert "99" in str(exc.value)
+
+    def test_malformed_non_numeric_shard_fails_loud(self) -> None:
+        with pytest.raises(SystemExit):
+            _matrix_for("", shards="a")
+
+    def test_reversed_shard_range_fails_loud(self) -> None:
+        with pytest.raises(SystemExit):
+            _matrix_for("", shards="6-1")
+
+    def test_shards_and_efforts_compose(self) -> None:
+        entries = _matrix_for("clean_room", efforts="low,medium", shards="1,2")
+        indices = {int(e["shard"].split("/")[0]) for e in entries}
+        assert indices == {1, 2}
+        assert {e["effort"] for e in entries} == {"low", "medium"}
+
+
 class TestMain:
     def test_empty_lane_prints_every_leg_as_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         code = main([])
@@ -104,6 +230,28 @@ class TestMain:
         printed = json.loads(capsys.readouterr().out)
         assert {e["lane"] for e in printed} == {CLEAN_ROOM_LANE}
 
+    def test_efforts_flag_emits_the_effort_axis(self, capsys: pytest.CaptureFixture[str]) -> None:
+        code = main(["--lane", "under_load", "--efforts", "low,medium,high"])
+        assert code == 0
+        printed = json.loads(capsys.readouterr().out)
+        assert all(set(entry) == {"lane", "shard", "effort"} for entry in printed)
+        assert {e["effort"] for e in printed} == {"low", "medium", "high"}
+
     def test_unknown_lane_exits_non_zero(self) -> None:
         with pytest.raises(SystemExit):
             main(["--lane", "bogus"])
+
+    def test_unknown_effort_exits_non_zero(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["--efforts", "low,bogus"])
+
+    def test_shards_flag_filters_the_printed_matrix(self, capsys: pytest.CaptureFixture[str]) -> None:
+        code = main(["--lane", "clean_room", "--shards", "1,2"])
+        assert code == 0
+        printed = json.loads(capsys.readouterr().out)
+        indices = {int(e["shard"].split("/")[0]) for e in printed}
+        assert indices == {1, 2}
+
+    def test_shards_flag_malformed_exits_non_zero(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["--shards", "6-1"])

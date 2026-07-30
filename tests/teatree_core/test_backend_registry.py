@@ -3,14 +3,24 @@
 import pytest
 
 from teatree.core import backend_registry
+from teatree.types import SharePointRemoteSpec
+
+_SHAREPOINT_SPEC = SharePointRemoteSpec(
+    remote="sp:",
+    root="r",
+    config_path="c",
+    password_command="p",
+    site_url="s",
+    library_path="l",
+)
 
 
 class TestBackendProviderRegistry:
     def test_backends_ready_registers_the_real_provider(self) -> None:
         """``BackendsConfig.ready()`` ran at django.setup() — the real provider resolves."""
-        from teatree.backends.backend_provider import SlackBackendProvider  # noqa: PLC0415
+        from teatree.backends.backend_provider import ConcreteBackendProvider  # noqa: PLC0415
 
-        assert isinstance(backend_registry.get_backend_provider(), SlackBackendProvider)
+        assert isinstance(backend_registry.get_backend_provider(), ConcreteBackendProvider)
 
     def test_unconfigured_provider_builds_nothing(self) -> None:
         """Fail-SAFE: with no provider registered, builds degrade to None/empty (no crash)."""
@@ -24,6 +34,9 @@ class TestBackendProviderRegistry:
             assert provider.get_messaging(object()) is None
             assert provider.get_ci_service(gitlab_token="t", gitlab_url="u") is None
             assert provider.build_sync_backends() == []
+            assert provider.build_notion_client(token="t") is None
+            assert provider.build_sentry_client(token="t", org="o", base_url="u") is None
+            assert provider.build_sharepoint_client(_SHAREPOINT_SPEC) is None
             provider.reset_caches()
         finally:
             backend_registry.register_backend_provider(original)
@@ -56,5 +69,25 @@ class TestBackendProviderRegistry:
             read = backend_registry.get_backend_provider().read_recent_review_matches(spec)
             assert read.ok is False
             assert read.matches == []
+        finally:
+            backend_registry.register_backend_provider(original)
+
+    def test_unconfigured_thread_activity_is_not_ok(self) -> None:
+        """Fail-SAFE: an unconfigured thread-activity read reports not-ok, thread absent."""
+        original = backend_registry._provider
+        backend_registry._provider = None
+        try:
+            spec = backend_registry.ThreadActivitySpec(
+                token="t",
+                channel_id="C1",
+                thread_ts="1700000000.000100",
+                timeout=1.0,
+            )
+            read = backend_registry.get_backend_provider().read_thread_activity(spec)
+            assert read.ok is False
+            assert read.exists is False
+            assert read.parent_ts == ""
+            assert read.latest_reply_ts == ""
+            assert read.has_reaction is False
         finally:
             backend_registry.register_backend_provider(original)

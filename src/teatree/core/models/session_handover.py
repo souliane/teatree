@@ -3,7 +3,7 @@
 A :class:`SessionHandover` row carries one session's full durable-state
 snapshot (the same payload the PreCompact hook already builds: active
 tickets, worktree paths/branches, in-flight sub-agents, open PRs,
-approach/decisions, failing tests, loaded skills, loop-owner status) to
+approach/decisions, failing tests, loaded skills, t3-master status) to
 another session — either a named ``to_session`` or, when null, "the next
 session to start". The takeover is zero-copy-paste: the SessionStart hook
 claims an unclaimed handover targeted at the starting session (or at "next

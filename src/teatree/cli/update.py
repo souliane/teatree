@@ -17,8 +17,8 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     because the clone's local commits already landed *squash-merged* upstream
     (the recurring overlay brick — ``[ahead N, behind M]`` with N already-upstream
     duplicates), the clone SELF-HEALS. The subject classifier
-    (``core.branch_classification.classify_branch_commits``) is only a cheap
-    PRE-FILTER — it must NOT authorize the destructive reset (it matches by
+    (``core.branch_classification.prefilter_branch_commits_by_subject``) is only a
+    cheap PRE-FILTER — it must NOT authorize the destructive reset (it matches by
     canonicalized subject alone, with no content check). Before any
     ``git reset --hard origin/<default>`` an AUTHORITATIVE content gate runs:
     the reset proceeds ONLY when ``git cherry origin/<default> HEAD`` reports
@@ -49,11 +49,12 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
 This module is a top-level Typer group reached through the typer runner
 directly (sibling of ``t3 setup`` / ``t3 doctor``), so it raises
 ``typer.Exit(code=N)`` — *not* ``SystemExit`` (which is for ``TyperCommand``
-groups reached via Django ``call_command``; see ``skills/teatree`` § "CLI exit
-codes").  Precedent: ``cli/setup.py`` ``_validate_repo`` → ``raise typer.Exit``.
+groups reached via Django ``call_command``; see ``skills/internals`` § "CLI exit
+codes").  Precedent: ``cli/setup/clone.py`` ``validate_repo`` → ``raise typer.Exit``.
 """
 
 import enum
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,7 +63,10 @@ import typer
 
 from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
 from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ReinstallResult",
@@ -112,6 +116,11 @@ class RepoUpdate:
     new_sha: str = ""
     reason: str = ""
     advanced: int = 0
+    # The silently-stale skip class (``"dirty"`` / ``"off_default"`` / ``""``),
+    # driving the durable user-facing notice in ``_run_update`` (#2836). It is
+    # orthogonal to ``status``: both a primary FAILED and an overlay SKIPPED can
+    # be stale, and a no-origin/no-upstream config skip is NOT.
+    stale_kind: str = ""
 
     @property
     def is_error(self) -> bool:
@@ -236,6 +245,10 @@ def _check_default_branch(name: str, repo: Path, *, is_primary: bool) -> RepoUpd
     if default_branch is None:
         return RepoUpdate(name, UpdateStatus.SKIPPED, reason="no origin/HEAD (no remote / no upstream)")
     current = _current_branch(repo)
+    # A detached HEAD or a feature-branch checkout (the #2836 incident) is the
+    # silently-stale class; a default branch merely missing an upstream is a
+    # config quirk, not stale — only the former carries ``stale_kind``.
+    off_default = "off_default" if current != default_branch else ""
     if not _has_upstream(repo):
         if is_primary:
             _warn_primary_off_default(name, repo, current, default_branch)
@@ -246,8 +259,9 @@ def _check_default_branch(name: str, repo: Path, *, is_primary: bool) -> RepoUpd
                     f"on branch {current!r} with no upstream — running t3 is STALE; "
                     f"`git switch {default_branch} && git pull --ff-only`"
                 ),
+                stale_kind=off_default,
             )
-        return RepoUpdate(name, UpdateStatus.SKIPPED, reason="no upstream tracking branch")
+        return RepoUpdate(name, UpdateStatus.SKIPPED, reason="no upstream tracking branch", stale_kind=off_default)
     if current != default_branch:
         if is_primary:
             _warn_primary_off_default(name, repo, current, default_branch)
@@ -258,11 +272,13 @@ def _check_default_branch(name: str, repo: Path, *, is_primary: bool) -> RepoUpd
                     f"on branch {current!r}, not default {default_branch!r} — running t3 is STALE; "
                     f"`git switch {default_branch} && git pull --ff-only`"
                 ),
+                stale_kind="off_default",
             )
         return RepoUpdate(
             name,
             UpdateStatus.SKIPPED,
             reason=f"on branch {current!r}, not default {default_branch!r}",
+            stale_kind="off_default",
         )
     return None
 
@@ -292,6 +308,7 @@ def _check_clean(name: str, repo: Path, *, is_primary: bool) -> RepoUpdate | Non
         name,
         UpdateStatus.SKIPPED,
         reason=f"uncommitted tracked changes ({listed}) — running t3 may be STALE; resolve and re-run `t3 update`",
+        stale_kind="dirty",
     )
 
 
@@ -332,7 +349,7 @@ def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdat
     subject. Genuine un-upstreamed work blocks the reconcile and is surfaced
     loudly, and a recoverable backup ref is created before any reset.
     """
-    from teatree.cli._update_reconcile import reconcile_squash_merged  # noqa: PLC0415
+    from teatree.cli._update_reconcile import reconcile_squash_merged  # noqa: PLC0415 — deferred: lazy CLI import
 
     blocked = _precondition_block(name, repo, is_primary=is_primary)
     if blocked is not None:
@@ -358,7 +375,7 @@ def _running_clone() -> Path | None:
     configured main clone, which is exactly the silent-isolation case the
     currency gate must catch (#1507).
     """
-    import teatree  # noqa: PLC0415
+    import teatree  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     pkg = teatree.__file__
     if pkg is None:
@@ -379,13 +396,13 @@ def _collect_repos() -> list[tuple[str, Path]]:
     config); each entry's ``project_path`` is walked up to its containing git
     work tree.
     """
-    from teatree.cli.setup import _find_main_clone  # noqa: PLC0415
-    from teatree.config import discover_overlays  # noqa: PLC0415
+    from teatree.cli.setup import find_main_clone  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.config import discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     repos: list[tuple[str, Path]] = []
     seen: set[Path] = set()
 
-    core = _find_main_clone()
+    core = find_main_clone()
     if core is not None:
         resolved = core.resolve()
         repos.append((_CORE_REPO_NAME, resolved))
@@ -486,6 +503,53 @@ def run(ctx: typer.Context) -> None:
     _run_update()
 
 
+def _notify_if_stale(result: RepoUpdate, *, repo: Path) -> None:
+    """Emit a durable bot→user notice when a clone was skipped as stale (#2836).
+
+    The terminal warnings (:func:`_check_clean` / :func:`_warn_primary_off_default`)
+    scroll away; this records a durable, idempotent ``BotPing`` notice naming the
+    repo path + manual remediation so a stale editable clone is never invisible.
+    The safe update never auto-stashes/auto-checkouts to recover — the user does.
+
+    ``t3 update`` is a top-level typer command that never bootstraps Django, yet
+    the notice writes its ``BotPing`` through :mod:`teatree.core.notify` — whose
+    module-scope :mod:`teatree.core.models` import needs a configured Django
+    (#2844 hoisted it to satisfy the intra-core deferred-import ratchet). So
+    :func:`ensure_django` runs first, before the notify import touches the ORM.
+    The whole block is FAIL-SAFE: the durable audit row is best-effort (the loud
+    terminal warning already printed), so a bootstrap/notify failure degrades to
+    a plain warning — ``t3 update`` must never crash just because it could not
+    record the stale-clone notice (mirrors :func:`notify_stale_clone_skip`'s own
+    "never raises" contract, which the import-time failure here sits outside of).
+    """
+    if not result.stale_kind:
+        return
+    try:
+        ensure_django()
+        from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+            StaleCloneReason,
+            StaleCloneSkip,
+            notify_stale_clone_skip,
+        )
+
+        notify_stale_clone_skip(
+            StaleCloneSkip(
+                label=result.name,
+                repo_path=str(repo),
+                reason=StaleCloneReason(result.stale_kind),
+                head_sha=result.old_sha or _short_sha(repo),
+                default_branch=_default_branch(repo) or "",
+                detail=result.reason,
+            )
+        )
+    except Exception:
+        logger.exception("Could not record the durable stale-clone notice for %s (%s)", result.name, repo)
+        typer.echo(
+            f"WARN  Could not record the durable stale-clone notice for {result.name} ({repo}); "
+            "resolve the stale clone, then re-run `t3 update`."
+        )
+
+
 def _run_update() -> None:
     """The actual update flow, factored out so the callback stays a thin shell."""
     repos = _collect_repos()
@@ -496,7 +560,9 @@ def _run_update() -> None:
     results: list[RepoUpdate] = []
     for name, path in repos:
         typer.echo(f"Updating {name} ({path}) ...")
-        results.append(update_repo(name, path, is_primary=name in _PRIMARY_REPO_NAMES))
+        result = update_repo(name, path, is_primary=name in _PRIMARY_REPO_NAMES)
+        results.append(result)
+        _notify_if_stale(result, repo=path)
 
     _reinstall_and_resetup(results)
     # Probe-gated and decoupled from the per-run UPDATED flag (#929): an

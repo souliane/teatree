@@ -5,13 +5,22 @@ The result type :class:`MergePrecheck` and the guard functions
 :mod:`execution` runs before it binds the irreversible merge.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
+from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
+from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
+from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,67 +32,109 @@ class MergePrecheck:
     fired: GitHub reports the PR already MERGED at the exact reviewed tree
     (a lost post-hook), so the irreversible merge must be SKIPPED and the
     post hook run idempotently against the existing merge commit.
+    ``expedited_by`` is non-empty only when the merge proceeded on PENDING
+    live checks via the human-authorized expedite waiver (§17.4.3 / PR-07) —
+    the authoriser stamped onto the ``MergeAudit`` row.
+
+    ``standing_delegation_by`` is non-empty only when a substrate merge was
+    authorized by the config-sourced standing delegation (#3413,
+    ``substrate_auto_merge_authorized_by``) rather than a per-PR recorded human
+    approval — the config authorizer id stamped onto the ``MergeAudit`` row so a
+    standing-delegation merge stays distinguishable from an interactive one.
     """
 
     verified_sha: str
     already_merged_sha: str = ""
+    expedited_by: str = ""
+    standing_delegation_by: str = ""
 
     @property
     def needs_reconcile(self) -> bool:
         return bool(self.already_merged_sha)
 
 
-def _assert_clear_authorized(
-    *,
-    clear: object,
-    executing_loop_identity: str,
-    slug: str,
-    pr_id: int,
-    human_authorized: str,
-) -> "MergeClear":
-    """The §17.4.3 identity/substrate authorization guards (steps 1 + 5).
+@dataclass(frozen=True, slots=True)
+class PresentedApprovals:
+    """The two orthogonal approval ids re-presented at ``ticket merge`` (§17.4.3).
 
-    Split out of :func:`assert_merge_preconditions` so the orchestration
-    there reads as the ordered §17.4.3 sequence (authorize → SHA →
-    reconcile → draft → checks) rather than one deeply-branching block.
-    Raises :class:`MergePreconditionError` on the first failed guard;
-    returns the narrowed :class:`MergeClear` on success.
+    ``human`` unlocks a substrate CLEAR (``--human-authorized``); ``expedite``
+    waives a PENDING (never FAILED) required check on an expedite CLEAR
+    (``--expedite-authorized``). Kept distinct so the substrate hold and the
+    pending waiver can never cross-unlock (one presented token unlocks exactly
+    one relaxation).
     """
-    from teatree.core.models import MergeClear  # noqa: PLC0415
-    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
+
+    human: str = ""
+    expedite: str = ""
+
+
+def _assert_clear_actionable(clear: object, *, slug: str, pr_id: int) -> "MergeClear":
+    """Step 1: a real, fully-populated, unconsumed :class:`MergeClear` row exists.
+
+    Narrows the duck-typed *clear* to a :class:`MergeClear` — the ONE runtime
+    boundary check the deeper guards then rely on (they take the narrowed type).
+    Raises :class:`MergePreconditionError` when no actionable CLEAR backs the PR.
+    """
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if not isinstance(clear, MergeClear):
         msg = f"no MergeClear row for {slug}#{pr_id} — refusing to merge (§17.4.3 step 1)"
         raise MergePreconditionError(msg)
-
-    # 1. CLEAR exists, all fields populated, unconsumed.
     if not clear.is_actionable():
         msg = (
             f"MergeClear for {slug}#{pr_id} is not actionable (missing fields or already "
             f"consumed) — treated as absent (§17.4.2/§17.4.3 step 1)"
         )
         raise MergePreconditionError(msg)
+    return clear
 
-    # The recorded reviewer verdict must be merge-safe. ``MergeClear.issue()``
-    # rejects a non-green verdict at issue time, but a row written directly via
-    # ``.objects.create()`` (fixture / migration / non-factory ORM path) could
-    # smuggle a HOLD (pending/failed) verdict past it. Re-check here so the
-    # live-CI re-check below can never stamp green over the reviewer's recorded
-    # HOLD when CI self-flips green — the green-over-HOLD class (§17.8 clause 3:
-    # the checker's recorded verdict is authoritative, mirroring the
-    # ``is_non_reviewer_role`` issue/merge double-guard above).
-    if clear.gh_verify_result != clear.VerifyResult.GREEN:
+
+def _assert_verdict_not_smuggled(clear: "MergeClear", *, slug: str, pr_id: int, expedite: str) -> None:
+    """The recorded reviewer verdict must be merge-safe (the raw-ORM-smuggle double-guard).
+
+    ``MergeClear.issue()`` rejects a FAILED verdict at issue time and a PENDING
+    one without a bound expedite waiver, but a row written directly via
+    ``.objects.create()`` (fixture / migration / non-factory ORM path) could
+    smuggle either past it. Re-check here so the live-CI re-check downstream can
+    never stamp green over the reviewer's recorded HOLD when CI self-flips green —
+    the green-over-HOLD class (§17.8 clause 3: the checker's recorded verdict is
+    authoritative). FAILED is refused unconditionally; PENDING is accepted ONLY
+    when the row carries a valid bound expedite waiver re-presented at merge time
+    (mirroring ``expedite_pending_waived_by`` at the live-check step).
+    """
+    if clear.gh_verify_result == clear.VerifyResult.FAILED:
+        msg = (
+            f"MergeClear for {slug}#{pr_id} records gh_verify_result=failed — a FAILED required "
+            f"check is a real red verdict; expedite can never waive it, so it can never authorize "
+            f"a merge regardless of the live CI rollup (§17.4.2 / §17.8 clause 3)"
+        )
+        raise MergePreconditionError(msg)
+    if clear.gh_verify_result != clear.VerifyResult.GREEN and not clear.expedite_pending_waived_by(expedite):
         msg = (
             f"MergeClear for {slug}#{pr_id} records gh_verify_result "
-            f"({clear.gh_verify_result!r}), not green — the reviewer recorded a HOLD at the "
-            f"reviewed tree; a non-green verdict can never authorize a merge regardless of the "
-            f"live CI rollup (§17.4.2 / §17.8 clause 3)"
+            f"({clear.gh_verify_result!r}), not green — the reviewer recorded a HOLD at the reviewed "
+            f"tree. A PENDING (queued) verdict authorizes a merge ONLY via a re-presented, "
+            f"tree-bound expedite waiver (`t3 <overlay> ticket merge <id> --expedite-authorized "
+            f"<recorded-id>` on an expedite CLEAR); no valid waiver was presented (§17.4.2 / §17.8 "
+            f"clause 3)"
         )
         raise MergePreconditionError(msg)
 
-    # Independent cold-review CLEAR: the reviewer identity must be distinct
-    # from the executing loop (§17.8 clause 3 — the loop cannot rubber-stamp
-    # its own CLEAR).
+
+def _assert_reviewer_independent(clear: "MergeClear", *, executing_loop_identity: str) -> None:
+    """The reviewer identity must be an independent cold reviewer (§17.8 clause 3).
+
+    Two guards: the reviewer must not BE the executing loop (the loop cannot
+    rubber-stamp its own CLEAR), and the reviewer must not be a maker/coding-
+    agent/loop non-reviewer role. ``MergeClear.issue()`` rejects the latter at
+    issue time via the same shared ``is_non_reviewer_role`` helper, but a row
+    written directly via ``.objects.create()`` (fixture, migration, or the pk-load
+    path in ``ticket.py``) would otherwise smuggle a self-attesting maker through
+    the equality check, so the issue-time and merge-time gates re-check identically
+    and cannot drift apart (codex #1282 finding 1 / #1283).
+    """
+    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415 — deferred: ORM/app-registry
+
     if clear.reviewer_identity.strip() == executing_loop_identity.strip():
         msg = (
             f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) equals the "
@@ -91,16 +142,6 @@ def _assert_clear_authorized(
             f"cold reviewer, not self-issued (§17.8 clause 3)"
         )
         raise MergePreconditionError(msg)
-
-    # The factory ``MergeClear.issue()`` rejects a maker/coding-agent/loop
-    # reviewer_identity at issue time (§17.8 clause 3 — the same shared
-    # ``is_non_reviewer_role`` helper), but a row written directly via
-    # ``.objects.create()`` (fixture, migration, or any non-factory ORM
-    # path — e.g. ``ticket.py`` loads the row by pk without re-validation)
-    # would otherwise smuggle a self-attesting maker through the equality
-    # check above. Re-check the same role classification here so the
-    # issue-time and merge-time gates cannot drift apart (codex #1282
-    # finding 1 / #1283).
     if is_non_reviewer_role(clear.reviewer_identity):
         msg = (
             f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) is a "
@@ -109,11 +150,31 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # The human-substrate escape is substrate-only. Presenting it against a
-    # non-substrate CLEAR is refused outright so the path can never be used to
-    # short-circuit independent loop review of a logic/docs PR (the loop is
-    # the reviewer-of-record for those — invariant 8 / §17.4.1).
-    presented = human_authorized.strip()
+
+def _assert_substrate_authorized(clear: "MergeClear", *, slug: str, pr_id: int, human: str) -> None:
+    """Step 5: substrate is held for the owner unless a per-PR human sign-off unlocks it.
+
+    Two guards. First: the human-substrate escape is substrate-only — presenting
+    ``--human-authorized`` against a non-substrate CLEAR is refused outright so it
+    can never short-circuit independent loop review of a logic/docs PR (invariant 8
+    / §17.4.1). Second: a substrate-class PR is draft-locked and requires a recorded
+    PER-PR human sign-off (invariant 4 / §17.4.3 step 5). By default substrate is
+    NOT covered by the overlay's standing grant — not even at ``autonomy = full``:
+    the owner's directive is that substrate (merge keystone, architecture spec,
+    governance doc) PINGS-and-HOLDS. Two opt-ins lift the hold, neither weakening
+    any gate: the explicit, default-off ``substrate_self_signoff`` setting (#3223,
+    via ``_overlay_grants_standing_substrate_signoff`` on a ``full`` overlay), and
+    the standing config delegation ``substrate_auto_merge_authorized_by`` (#3413,
+    via ``_config_standing_substrate_delegation``) — the owner id the headless
+    ``pr_sweep`` presents as ``--human-authorized`` and this guard accepts ONLY when
+    the presented id still equals the configured value (config-sourced, revocable).
+    When none of the per-CLEAR ``human_authorizer``, the config delegation, nor the
+    ``full``-tier grant is satisfied the held clear raises below, which the loop
+    edge routes to the substrate-hold Slack ping; the AGENT still executes the
+    authorized merge through this same SHA-bound, audited transition. The
+    quality/safety floor is untouched; non-substrate changes self-merge unchanged.
+    """
+    presented = human.strip()
     if presented and not clear.is_substrate():
         msg = (
             f"--human-authorized presented for non-substrate MergeClear "
@@ -123,44 +184,56 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # 5. blast_class respected — substrate-class PRs are draft-locked and
-    #    require a recorded human sign-off (invariant 4 / §17.4.3 step 5). Two
-    #    things satisfy the per-PR sign-off, in this order:
-    #      a. a per-CLEAR ``human_authorizer`` matching the value re-presented
-    #         at merge time (the owner approved this exact diff), OR
-    #      b. the overlay's STANDING autonomy grant resolving to ``full`` — the
-    #         owner recorded once, in config, that this overlay merges
-    #         end-to-end without a per-PR sign-off (invariant 4 carve-out).
-    #    Either way the AGENT executes through this same SHA-bound, audited
-    #    transition (invariant 8) — never raw ``gh``, never a human-performed
-    #    merge. The quality/safety floor (independent cold-review, reviewed-SHA
-    #    bind, CI-green, not-draft, never-lockout, privacy scan) is untouched by
-    #    the carve-out; autonomy=full removes ONLY the per-PR human sign-off.
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
-        and not _overlay_grants_full_substrate_autonomy(clear, resolved_slug=slug)
+        and not _config_standing_substrate_delegation(clear, presented, resolved_slug=slug)
+        and not _overlay_grants_standing_substrate_signoff(clear, resolved_slug=slug)
     ):
         detail = (
-            "no human authoriser recorded on the CLEAR and the overlay autonomy is not full"
+            "no human authoriser recorded on the CLEAR — substrate is held for the owner, never auto-merged"
             if not clear.human_authorizer
             else f"presented authoriser != recorded ({clear.human_authorizer!r})"
             if presented
-            else "no --human-authorized presented at merge time and the overlay autonomy is not full"
+            else "no --human-authorized presented at merge time"
         )
         msg = (
             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
-            f"changes require a recorded human approval and are draft-locked "
-            f"(invariant 4); the loop never auto-merges them (§17.4.3 step 5). "
-            f"{detail.capitalize()}. The sanctioned paths: `t3 <overlay> autonomy "
-            f"set full` (the standing owner grant), or issue `t3 <overlay> ticket "
+            f"changes are held for the owner and are draft-locked (invariant 4); the "
+            f"loop never auto-merges them, not even at autonomy=full (§17.4.3 step 5). "
+            f"{detail.capitalize()}. The sanctioned path: issue `t3 <overlay> ticket "
             f"clear … --blast-class substrate --human-authorize <id>` (a per-PR "
             f"recorded approval), then the agent executes `t3 <overlay> ticket "
-            f"merge <clear_id> [--human-authorized <id>]`"
+            f"merge <clear_id> --human-authorized <id>`"
         )
         raise MergePreconditionError(msg)
 
-    return clear
+
+def _assert_clear_authorized(
+    *,
+    clear: object,
+    executing_loop_identity: str,
+    slug: str,
+    pr_id: int,
+    approvals: PresentedApprovals | None = None,
+) -> "MergeClear":
+    """The §17.4.3 identity/substrate authorization guards (steps 1 + 5), in order.
+
+    Split out of :func:`assert_merge_preconditions` so the orchestration there
+    reads as the ordered §17.4.3 sequence (authorize → SHA → reconcile → draft →
+    checks). This function is itself the ordered composition of the four guard
+    facets — actionable → verdict-not-smuggled → reviewer-independent →
+    substrate-authorized — each raising :class:`MergePreconditionError` on the
+    first failure, so the refusal ORDER is the visible sequence below. Returns the
+    narrowed :class:`MergeClear` on success. ``approvals`` defaults to none
+    presented (a loop-driven merge presents neither key).
+    """
+    approvals = approvals or PresentedApprovals()
+    narrowed = _assert_clear_actionable(clear, slug=slug, pr_id=pr_id)
+    _assert_verdict_not_smuggled(narrowed, slug=slug, pr_id=pr_id, expedite=approvals.expedite)
+    _assert_reviewer_independent(narrowed, executing_loop_identity=executing_loop_identity)
+    _assert_substrate_authorized(narrowed, slug=slug, pr_id=pr_id, human=approvals.human)
+    return narrowed
 
 
 def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "") -> str:
@@ -200,41 +273,85 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
 
     Returns ``""`` when no source resolves an overlay (the fail-closed default).
     """
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
-
-    from_stored = infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
-    if from_stored:
-        return from_stored
-    from_recovered = infer_overlay_for_url(resolved_slug.strip()).strip()
-    if from_recovered:
-        return from_recovered
-    return str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
+    return resolve_overlay_by_repo_identity(
+        str(getattr(clear, "slug", "") or ""),
+        resolved_slug,
+        fallback=str(getattr(getattr(clear, "ticket", None), "overlay", "") or ""),
+    )
 
 
-def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
-    """Whether the CLEAR's overlay stands at ``autonomy = full`` (invariant 4 carve-out).
+def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
+    """Whether the overlay's standing grant covers this per-PR sign-off (invariant 4 carve-out).
 
-    Resolves the effective autonomy for the CLEAR's overlay
-    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings`.
-    ``full`` is the owner's standing, recorded grant that this overlay merges
-    end-to-end without a per-PR human sign-off; it satisfies the substrate
-    sign-off in place of a per-CLEAR ``human_authorizer``. Any other tier
-    (``notify`` / ``babysit``), or an unresolvable overlay, is fail-closed:
-    the per-CLEAR human authoriser stays mandatory. The carve-out touches ONLY
-    the per-PR sign-off — every other substrate-merge floor guard runs unchanged.
+    A SUBSTRATE clear is held for the owner by default (the #2727 posture): even
+    at ``autonomy = full`` the standing grant does not remove its per-PR human
+    sign-off, so the held CLEAR raises the same MergePreconditionError the loop
+    edge routes to the substrate-hold Slack ping. The one config seam that lifts
+    that hold is the explicit, default-off ``substrate_self_signoff`` setting
+    (#3223): on an overlay standing at ``autonomy = full`` (the solo-owned tier)
+    with the setting on, a substrate CLEAR self-authorizes exactly as a
+    non-substrate clear does. This changes only WHO authorizes the sign-off — the
+    quality/safety floor (independent cold review, reviewed-SHA bind, CI-green,
+    not-draft, maker≠checker, anti-vacuity) still runs. The ``full`` tier gate is
+    kept so a below-full overlay never self-merges substrate even with the setting
+    on.
+
+    The remaining resolution (the standing grant for a NON-substrate clear —
+    ``autonomy = full`` OR an explicit ``require_human_approval_to_merge = false``
+    on a non-collaborative tier, the ``notify`` tier excluded, #2666) is retained
+    so the gate stays a single named contract; non-substrate clears do not reach
+    this function from the substrate-only call site, so for them it is moot.
 
     *resolved_slug* is the real ``owner/repo`` the merge keystone recovered for
     this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
-    kwarg). It is the recovery source for a ticket-less CLEAR whose stored
-    ``slug`` is a branch name rather than ``owner/repo`` — see
-    :func:`_resolve_clear_overlay_name`.
+    kwarg) — see :func:`_resolve_clear_overlay_name`.
     """
-    from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
+    from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False
-    return get_effective_settings(overlay_name=overlay_name).autonomy is Autonomy.FULL
+    # Substrate holds for the owner by default (#2727); the config seam is the
+    # only opt-in that lifts it, and only on a solo-owned (``full``) overlay. The
+    # shared policy function is what the solo-overlay sweep reads too (#3648).
+    if clear.is_substrate():
+        return substrate_standing_authorization(overlay_name=overlay_name).self_signoff
+    settings = get_effective_settings(overlay_name=overlay_name)
+    if settings.autonomy is Autonomy.FULL:
+        return True
+    # The collaborative ``notify`` tier collapses the merge-approval gate to
+    # ``false`` too, but merges only after a colleague approval — its ``false``
+    # is a tier side effect, never the owner's self-merge grant.
+    if settings.autonomy is Autonomy.NOTIFY:
+        return False
+    return settings.require_human_approval_to_merge is False
+
+
+def _config_standing_substrate_delegation(clear: "MergeClear", presented: str, *, resolved_slug: str = "") -> str:
+    """The config-sourced standing substrate authorizer, when it authorizes this merge (#3413).
+
+    The owner's standing delegation: ``substrate_auto_merge_authorized_by`` on the
+    CLEAR's OWNING overlay (resolved by REPO IDENTITY via
+    :func:`_resolve_clear_overlay_name`, exactly like the sibling grant). Returns
+    the configured owner id ONLY when every condition holds — the CLEAR is
+    substrate, the setting is non-empty, and *presented* (the ``--human-authorized``
+    the headless ``pr_sweep`` sourced from that same config) still EQUALS the
+    configured value. Otherwise returns ``""``.
+
+    The re-read at merge time is the "config-sourced, not a live flag" safety
+    property: a stray ``--human-authorized`` can never unlock substrate unless the
+    config still names that id, so unsetting the config REVOKES the delegation at
+    the very next merge attempt (invariant 4 stays owner-controlled). This changes
+    only WHO may supply the substrate authorization; every merge gate still runs.
+    An empty setting (the default) returns ``""``, so the held-for-owner posture is
+    preserved verbatim.
+    """
+    if not presented.strip() or not clear.is_substrate():
+        return ""
+    overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
+    if not overlay_name:
+        return ""
+    return substrate_standing_authorization(overlay_name=overlay_name, presented_authorizer=presented).delegated_by
 
 
 def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
@@ -247,7 +364,7 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
     single re-escalation path surfaces it (the loop never self-issues a
     replacement CLEAR).
     """
-    from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415
+    from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
         AntiVacuityAttestationError,
         check_anti_vacuity_attestation,
     )
@@ -273,7 +390,10 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
     just-verified live head SHA so a force-push invalidates the CLEAR, the
     attestation, and the rubric grade together.
     """
-    from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied  # noqa: PLC0415
+    from teatree.core.gates.rubric_gate import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        RubricNotSatisfiedError,
+        check_rubric_satisfied,
+    )
 
     ticket = clear.ticket
     if ticket is None:
@@ -282,3 +402,128 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
         check_rubric_satisfied(ticket, head_sha, transition="merge")
     except RubricNotSatisfiedError as exc:
         raise MergePreconditionError(str(exc)) from exc
+
+
+def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
+    """Refuse the merge unless the effective verdict at the live head is merge_safe (#2829).
+
+    The single chokepoint :func:`teatree.core.merge.execution.execute_bound_merge`
+    runs this at its top, so NEITHER autonomous merge path — the keystone CLEAR
+    path nor the solo-overlay bypass — can reach the forge squash PUT without a
+    recorded INDEPENDENT cold-review (a non-self-attested
+    :class:`~teatree.core.models.review_verdict.ReviewVerdict`, since
+    ``ReviewVerdict.record`` forbids a maker/coding-agent/loop reviewer) that
+    vouches for the EXACT live head. ``ReviewVerdict.reviewed_sha`` +
+    ``is_stale_at`` give the head-SHA bind for free: a force-push moves the head,
+    every prior verdict (PASS and HOLD) goes stale, and the gate fails closed.
+
+    Newest-wins semantic (the user's chosen rule B): a later merge_safe overrides
+    an earlier HOLD, an even-later HOLD re-blocks. The two refusal classes carry
+    distinct messages — requirement (a): no non-stale merge_safe at the head
+    (fail closed on no verdict); requirement (b): the most-recent non-stale
+    verdict is a HOLD not superseded by a later merge_safe.
+    """
+    head = head_sha.strip().lower()
+    state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head)
+    if state is HeadVerdictState.NO_MERGE_SAFE:
+        msg = (
+            f"no recorded merge_safe ReviewVerdict at the live head {head} for {slug}#{pr_id} — "
+            f"refusing to merge (#2829). A merge requires an INDEPENDENT cold-review recorded "
+            f"against the exact reviewed tree (`t3 <overlay> ticket clear …` records it as a "
+            f"by-product, or `t3 <overlay> review record … --verdict merge_safe`). A force-push "
+            f"moves the head and staleness invalidates every prior verdict, so re-record at the "
+            f"new head."
+        )
+        raise MergePreconditionError(msg)
+    if state is HeadVerdictState.HOLD:
+        msg = (
+            f"an independent reviewer recorded a HOLD at this head ({head}) for {slug}#{pr_id} "
+            f"not superseded by a later merge_safe — refusing to merge (#2829). The newest "
+            f"non-stale verdict at the head is a HOLD; record a later merge_safe to override it."
+        )
+        raise MergePreconditionError(msg)
+
+
+def assert_no_active_review_lock(*, slug: str, pr_id: int) -> None:
+    """Refuse the merge while a :class:`MRReviewLock` is actively held for the PR (#1405).
+
+    Sibling of :func:`assert_review_verdict_gate` at the same chokepoint
+    (:func:`teatree.core.merge.execution.execute_bound_merge`): a recorded
+    ``merge_safe`` verdict at the live head is not enough on its own when a
+    review is concurrently in flight (``review_dispatched``, not yet stale)
+    for the SAME MR — that in-flight
+    review could still be about to record a HOLD, and a merge racing ahead of
+    it would land before the hold ever lands. No row, an ``idle``/``resolved``
+    row, or an ``idle``/``resolved`` row mean "no review in flight" and the merge
+    proceeds. An EXPIRED-but-unresolved lock (dispatched, deadline passed, no verdict
+    ever recorded — a slow or crashed reviewer) is NOT silently treated as
+    no-review: it is ESCALATED (a one-cycle refuse + a warning) and reconciled so a
+    subsequent attempt proceeds, giving a slow reviewer's about-to-land HOLD a chance
+    to be recorded (and caught by the verdict gate) rather than landing post-merge.
+    """
+    lock = MRReviewLock.active_lock_for(slug=slug, pr_id=pr_id)
+    if lock is not None:
+        msg = (
+            f"a review is in flight for {slug}#{pr_id} — MRReviewLock state={lock.state!r} "
+            f"holder={lock.holder!r} — refusing to merge until the lock resolves (#1405). "
+            f"The lock clears when the in-flight review records its verdict, or expires on "
+            f"its own once its dispatch deadline passes."
+        )
+        raise MergePreconditionError(msg)
+
+    expired = MRReviewLock.expired_unresolved_lock_for(slug=slug, pr_id=pr_id)
+    if expired is not None:
+        logger.warning(
+            "merge gate: expired-but-unresolved review lock for %s#%s (state=%r holder=%r) — "
+            "escalating: refusing this attempt and reconciling so a slow reviewer's HOLD is not lost",
+            slug,
+            pr_id,
+            expired.state,
+            expired.holder,
+        )
+        # Reconcile now so the refuse is bounded to one cycle (never a permanent
+        # lockout on the safety-critical merge path): the next attempt sees an
+        # ``idle`` row and proceeds if no HOLD was recorded in the meantime.
+        MRReviewLock.reconcile_stale()
+        msg = (
+            f"a dispatched review for {slug}#{pr_id} expired without recording a verdict "
+            f"(state={expired.state!r} holder={expired.holder!r}) — refusing this merge attempt and "
+            f"escalating (#1405). If the reviewer is slow, its HOLD can still land before the next "
+            f"attempt; if it crashed, the lock has been reconciled and the next attempt proceeds."
+        )
+        raise MergePreconditionError(msg)
+
+
+def assert_merge_provenance_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:
+    """Refuse the merge unless the PR head-branch provenance is trusted (#3244).
+
+    The authoritative, load-bearing provenance gate (BLUEPRINT §17.4.3 step 6 /
+    invariant 8): every sanctioned merge funnels through ``merge_ticket_pr`` and
+    the shared ``execute_bound_merge`` chokepoint, so even a future scanner that
+    forgets provenance still cannot auto-merge a fork PR. The overlay merge-guard
+    sits in FRONT of this keystone, so relaxing an overlay over-block can never
+    relax this gate.
+
+    STRICT fork model — a FORK / cross-repo head branch ALWAYS requires human
+    approval, even from a trusted author; a same-repo head is trusted; unreported
+    provenance falls back to the identity+visibility author check (fail-closed on
+    an untrusted / unknown / empty / unfetchable author on a public repo). The
+    same-repo + author reads resolve through :class:`CodeHostQuery`, so GitLab
+    overlay MRs cross this gate identically.
+    """
+    query = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind))
+    subject = AuthorSubject(
+        slug=slug,
+        author=query.pr_author(),
+        host_kind=host_kind,
+        same_repo=query.pr_same_repo(),
+    )
+    if decide_author_trust(subject, gate=AutonomyGate.MERGE) is TrustVerdict.AUTONOMOUS:
+        return
+    msg = (
+        f"{slug}#{pr_id} is not trusted to auto-merge — a fork / cross-repo PR always requires a human, "
+        f"and an untrusted author on a public repo is refused (§17.4.3 provenance gate / #3244). Merge it "
+        f"by hand after an adversarial review, or (same-repo trusted-author fallback) add the handle via "
+        f"`t3 identities add <platform> <handle>` if it is genuinely the user."
+    )
+    raise MergePreconditionError(msg)

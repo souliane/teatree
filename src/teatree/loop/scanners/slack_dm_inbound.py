@@ -9,21 +9,25 @@ the agent's next ``additionalContext`` block — so a Slack DM reaches the
 agent as if the user had typed it in Claude Code chat (BLUEPRINT §17.1
 invariant 2 / §5.6).
 
-The scanner applies the bot's own self-filter at the write side via
-:func:`teatree.loop.scanners.slack_self_filter.filter_self_messages` so
-rows that came from the bot's own outbound DMs never reach the DB. Both
-downstream consumers — the reactive Slack-answer cycle and the
-``UserPromptSubmit`` injection handler — read from
-:class:`PendingChatInjection`, so filtering at the scanner is the lowest
-common helper: a bot-authored message is dropped exactly once, before
-persistence, and both consumers inherit the filter for free (#1346).
+The scanner applies two write-side filters so both downstream consumers
+— the reactive Slack-answer cycle and the ``UserPromptSubmit`` injection
+handler, which both read from :class:`PendingChatInjection` — inherit
+them for free without either consumer re-implementing the check:
 
-Fail-closed: when the bot's own identity cannot be resolved (network
-down at startup, ``auth.test`` returning ``ok:false``, no bot token
-configured), :func:`filter_self_messages` returns ``None`` and the
-scanner refuses to enqueue any row that turn — better silent for one
-tick than spam-spawning ``t3:answerer`` sub-agents against the bot's
-own traffic.
+* :func:`teatree.loop.scanners.slack_self_filter.filter_self_messages`
+    drops rows that came from the bot's OWN outbound DMs, keyed on the
+    bot's resolved identity (#1346).
+* :func:`teatree.loop.scanners.slack_self_filter.drop_on_behalf_messages`
+    drops rows posted via an app/bot token even when they display under
+    the human's OWN identity — an on-behalf post carries the human's
+    own ``user`` id, so the identity filter above cannot catch it (#1941).
+
+Fail-closed (the identity filter only): when the bot's own identity
+cannot be resolved (network down at startup, ``auth.test`` returning
+``ok:false``, no bot token configured), :func:`filter_self_messages`
+returns ``None`` and the scanner refuses to enqueue any row that turn —
+better silent for one tick than spam-spawning ``t3:answerer`` sub-agents
+against the bot's own traffic.
 
 This scanner does NOT post anything back to Slack — recording is its only
 job. The reactive replies (the :eyes: receipt, an ack reaction, a
@@ -45,7 +49,12 @@ from dataclasses import dataclass, field
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.slack_self_filter import OwnSlackIdentity, filter_self_messages, resolve_own_identity
+from teatree.loop.scanners.slack_self_filter import (
+    OwnSlackIdentity,
+    drop_on_behalf_messages,
+    filter_self_messages,
+    resolve_own_identity,
+)
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -106,6 +115,7 @@ class SlackDmInboundScanner:
             # Identity unknown — fail closed for this tick rather than
             # enqueue rows that may include the bot's own outbound DMs.
             return []
+        dms = drop_on_behalf_messages(dms)
         signals: list[ScanSignal] = []
         for event in dms:
             ts = _event_ts(event)

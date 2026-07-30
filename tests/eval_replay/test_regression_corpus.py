@@ -18,10 +18,11 @@ from unittest.mock import patch
 from django.db.migrations.graph import MigrationGraph
 from django.test import TestCase
 
-from teatree.core import branch_currency, mr_metadata
 from teatree.core import merge as merge_execution
 from teatree.core.models import LoopLease
+from teatree.core.review import mr_metadata
 from teatree.core.runners import ship as ship_runner
+from teatree.core.worktree import branch_currency
 from teatree.eval import regression_corpus, regression_corpus_schema
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
 from teatree.hooks import _repo_visibility, banned_terms_scanner
@@ -59,7 +60,7 @@ class TestRegressionCorpusGreen(TestCase):
             "branch-currency",
             "substrate-merge",
             "maker≠checker",
-            "loop-owner hijack",
+            "t3-master hijack",
             "migration-fork",
             "account-switch",
         ):
@@ -108,7 +109,7 @@ class TestRegressionCorpusAntiVacuous(TestCase):
         with patch.object(type(LoopLease.objects), "claim_ownership", _always_win):
             report = run_regression_corpus()
         assert not report.ok
-        assert any("loop-owner hijack" in r.check.failure_class for r in report.failures)
+        assert any("t3-master hijack" in r.check.failure_class for r in report.failures)
 
     def test_leaf_count_predicate_flags_a_synthetic_forked_graph(self) -> None:
         assert _count_core_leaves(_linear_core_graph()) == 1

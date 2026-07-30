@@ -1,4 +1,4 @@
-"""Overlay discovery — from ``~/.teatree.toml`` and installed entry points.
+"""Overlay discovery — from the DB ``overlays`` registry and installed entry points.
 
 ``discover_overlays`` / ``discover_active_overlay`` plus the entry-point /
 manage.py resolution helpers. Split out of the package module for the
@@ -11,33 +11,34 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry
+from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.settings import OverlayEntry
+from teatree.request_cache import cached_per_request
 
 
-def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
-    """Discover overlays from ~/.teatree.toml and installed entry points.
+@cached_per_request
+def discover_overlays() -> list[OverlayEntry]:
+    """Discover overlays from the DB ``overlays`` registry and installed entry points.
 
-    Sources (merged by name, toml wins on conflict):
-    1. ``[overlays.<name>]`` sections in the toml config (``path`` key)
+    Sources (merged by name, the registry wins on conflict):
+    1. the DB ``overlays`` registry (``config.raw["overlays"]``, one ``<name>`` entry
+        each with a ``path`` / ``class`` definition)
     2. ``teatree.overlays`` entry-point group from installed packages
 
-    A bare config-only ``[overlays.<alias>]`` table (no ``path``/``class``)
-    whose name is a legacy short alias of an installed entry-point overlay
-    is folded into that canonical entry-point overlay rather than emitted
-    as a separate one — older ``slack-bot`` runs wrote ``[overlays.teatree]``
-    for the ``t3-teatree`` overlay, which made discovery list both as if
-    they were distinct overlays (souliane/teatree#1108).
+    A bare definition-less registry entry whose name is a legacy short alias of an
+    installed entry-point overlay is folded into that canonical entry-point overlay
+    rather than emitted as a separate one — older ``slack-bot`` runs wrote a
+    ``teatree`` entry for the ``t3-teatree`` overlay, which made discovery list both
+    as if they were distinct overlays (souliane/teatree#1108).
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    if config_path is None:
-        config_path = _facade.CONFIG_PATH
     seen: dict[str, OverlayEntry] = {}
 
     ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
 
-    # 1. Toml config
-    config = _facade.load_config(config_path)
+    # 1. DB overlays registry
+    config = _facade.load_config()
     for name, overlay_cfg in config.raw.get("overlays", {}).items():
         overlay_class = overlay_cfg.get("class", "")
         path_str = overlay_cfg.get("path", "")
@@ -80,11 +81,9 @@ def _match_canonical_ep(alias: str, ep_names: "set[str]") -> str | None:
     """Return the canonical overlay name a short ``alias`` maps to.
 
     Single home for the legacy-alias rule (souliane/teatree#1138): a bare
-    ``[overlays.<alias>]`` table in ``~/.teatree.toml`` (without
-    ``path``/``class``) maps to the installed overlay whose name equals
-    ``alias`` or ends with ``"-<alias>"`` — e.g. a short
-    ``[overlays.teatree]`` table folds into the canonical
-    ``t3-teatree`` entry point.
+    registry entry (without ``path``/``class``) maps to the installed overlay
+    whose name equals ``alias`` or ends with ``"-<alias>"`` — e.g. a short
+    ``teatree`` entry folds into the canonical ``t3-teatree`` entry point.
 
     The dash separator in the suffix match is required: a name that
     happens to end with the alias *without* a dash (e.g. ``t3acme``
@@ -97,6 +96,7 @@ def _match_canonical_ep(alias: str, ep_names: "set[str]") -> str | None:
     return None
 
 
+@cached_per_request
 def discover_active_overlay() -> OverlayEntry | None:
     """Find the overlay to use.
 
@@ -118,31 +118,35 @@ def discover_active_overlay() -> OverlayEntry | None:
 def _discover_from_manage_py() -> OverlayEntry | None:
     """Walk up from cwd to find a manage.py and extract its settings module.
 
-    The directory basename names the overlay, but a clone dir can differ from
-    the registered entry-point name (``teatree`` on disk vs the registered
-    ``t3-teatree``). ``_canonical_active_overlay_name`` folds the basename onto
-    the registered entry point so every consumer — most importantly the scanners
-    that stamp ``ticket.overlay`` — writes the dispatchable name, never a stale
-    alias that the queue then can't resolve (souliane/teatree#1959).
+    The settings module is the authoritative name source, not the directory
+    basename: a clone dir is named freely and drifts from the registered
+    entry-point name (``acme-factory`` on disk against a registered
+    ``t3-acme``), while the settings module names the Django project that IS
+    the overlay (``acme.settings`` → ``acme`` → ``t3-acme``). The basename
+    remains the fallback. ``_canonical_active_overlay_name`` folds whichever
+    resolves onto the registered entry point so every consumer — most
+    importantly the scanners that stamp ``ticket.overlay`` — writes the
+    dispatchable name, never a stale alias the queue then can't resolve
+    (souliane/teatree#1959).
     """
     for directory in [Path.cwd(), *Path.cwd().parents]:
         manage_py = directory / "manage.py"
         if manage_py.is_file():
             settings_module = _extract_settings_module(manage_py)
             if settings_module:
-                name = _canonical_active_overlay_name(directory.name)
+                name = _canonical_active_overlay_name(directory.name, settings_module=settings_module)
                 return OverlayEntry(name=name, overlay_class="", project_path=directory)
     return None
 
 
-def _canonical_active_overlay_name(directory_name: str) -> str:
-    """Fold a clone-directory basename onto its registered entry-point name, if one exists.
+def _canonical_active_overlay_name(directory_name: str, *, settings_module: str = "") -> str:
+    """Fold a clone dir / settings module onto its registered entry-point name, if one exists.
 
     Stays inside the ``platform`` layer (``config``): reads the entry-point
     names directly and reuses the local ``_match_canonical_ep`` alias rule
     rather than calling into the ``core`` overlay loader.
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
 
     try:
         ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
@@ -150,7 +154,22 @@ def _canonical_active_overlay_name(directory_name: str) -> str:
         return directory_name
     if directory_name in ep_names:
         return directory_name
-    return _match_canonical_ep(directory_name, ep_names) or directory_name
+    settings_package = settings_module.split(".", maxsplit=1)[0]
+    for alias in (settings_package, directory_name):
+        canonical = _match_canonical_ep(alias, ep_names) if alias else None
+        if canonical is not None:
+            return canonical
+    # A clone/deploy dir whose basename matches NO registered entry point —
+    # e.g. a ``teatree-deploy`` deploy dir against the sole ``t3-teatree``
+    # entry point — would otherwise leak the raw basename as the overlay
+    # anchor and stamp an undispatchable name onto every scanner ticket
+    # (souliane/teatree deploy-dirname leak). When exactly one overlay is
+    # installed there is no ambiguity: fold onto that single entry point.
+    # More than one installed overlay stays ambiguous, so the basename is
+    # preserved (multi-overlay behaviour intact).
+    if len(ep_names) == 1:
+        return next(iter(ep_names))
+    return directory_name
 
 
 def _resolve_ep_project_path(overlay_class: str) -> Path | None:
@@ -158,8 +177,8 @@ def _resolve_ep_project_path(overlay_class: str) -> Path | None:
 
     ``overlay_class`` is e.g. ``"teatree.contrib.t3_teatree.overlay:TeatreeOverlay"``.
     Parses the module part (before the ``:``) to find the top-level package on disk,
-    then walks up to find a ``manage.py`` — the same marker used by TOML and cwd-based
-    discovery.
+    then walks up to find a ``manage.py`` — the same marker used by the registry and
+    cwd-based discovery.
     """
     module_path = overlay_class.split(":", maxsplit=1)[0]
     top_package = module_path.split(".", maxsplit=1)[0]
@@ -182,7 +201,7 @@ def _extract_settings_module(manage_py: Path) -> str:
 
 
 def _active_overlay_entry() -> OverlayEntry | None:
-    """Find the active overlay's toml entry (carrying any overrides).
+    """Find the active overlay's registry entry (carrying any overrides).
 
     Prefers ``T3_OVERLAY_NAME`` (the same env var ``get_overlay()`` uses)
     to avoid worktree-dir/overlay-name mismatch.
@@ -197,7 +216,7 @@ def _active_overlay_entry() -> OverlayEntry | None:
     fallback = _facade.discover_active_overlay()
     if fallback is not None and fallback.name in by_name:
         # The cwd-based lookup returns a bare OverlayEntry without overrides;
-        # swap in the toml entry so override parsing applies.
+        # swap in the registry entry so override parsing applies.
         return by_name[fallback.name]
 
     if len(overlays) == 1:

@@ -22,10 +22,11 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import get_effective_settings, load_config
+from teatree.config import get_effective_settings
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
 from teatree.core.models import ConfigSetting, Ticket, Worktree
+from teatree.core.worktree.worktree_env import compose_project
 
 
 @pytest.fixture(autouse=True)
@@ -45,11 +46,6 @@ def _stacks_appear_live(request: pytest.FixtureRequest) -> "object":
         return
     with patch.object(gate_mod, "_running_container_count", return_value=1):
         yield
-
-
-def _write_toml(config_path: Path, content: str) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(content, encoding="utf-8")
 
 
 def _make_worktree(
@@ -78,13 +74,12 @@ def _make_worktree(
 
 
 class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
-    """``max_concurrent_local_stacks`` is DB-home (#1775): default 0, set in the store."""
+    """``max_concurrent_local_stacks`` is DB-home (#1775): default 1, set in the store."""
 
-    def test_default_is_zero_unbounded(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            config_path = Path(td) / ".teatree.toml"
-            _write_toml(config_path, "[teatree]\n")
-            assert load_config(config_path).user.max_concurrent_local_stacks == 0
+    def test_default_is_single_stack(self) -> None:
+        # No row in the store -> the dataclass default (1 = single in-flight
+        # stack, the headless-safe cap) resolves.
+        assert get_effective_settings().max_concurrent_local_stacks == 1
 
     def test_global_setting_resolves_from_db_store(self) -> None:
         # DB-home under the partition: a GLOBAL ``ConfigSetting`` row supplies the
@@ -94,7 +89,7 @@ class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
 
 
 class TestLocalStackGateUnbounded(TestCase):
-    """Default (limit=0) lets any number of stacks run."""
+    """Unbounded (limit=0) lets any number of stacks run."""
 
     def test_unbounded_zero_does_not_refuse(self) -> None:
         """With ``limit=0`` even N stacks already up cannot trigger refusal."""
@@ -446,8 +441,10 @@ class TestLocalStackGateDockerReconciliation(TestCase):
             state=Worktree.State.PROVISIONED,
         )
 
+        phantom_project = compose_project(phantom)
+
         def counts(project: str) -> int:
-            return 0 if "wt7040" in project else 1
+            return 0 if project == phantom_project else 1
 
         with (
             patch.object(gate_mod, "_running_container_count", side_effect=counts),

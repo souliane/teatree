@@ -2,9 +2,9 @@
 
 Companion to the ``scanning-news`` skill (#1190): the loop should fire a
 daily ``scanning_news`` task that runs the news-scan / improvement-ideas
-workflow without depending on an external cron. The scanner mirrors the
-shape of :mod:`teatree.loop.scanners.architectural_review` but is
-deliberately simpler:
+workflow without depending on an external cron. The scanner is one of the
+periodic task-queuing family that share
+:class:`teatree.loop.scanners.phase_cadence.PhaseCadence`, deliberately simple:
 
 * **Single trigger.** Only a cadence (``scanning_news_cadence_hours``,
     default 24h). There is no after-merge backstop — news scanning is a
@@ -21,33 +21,19 @@ deliberately simpler:
 * **Same dedup contract.** A pending or claimed ``scanning_news`` task
     acts as the lock — completion (or failure) unlocks the next cadence
     window. No new model fields; the ``Session.started_at`` of the most
-    recent task is the "last run" timestamp (same trick as
-    ``architectural_review``).
+    recent task is the "last run" timestamp.
 """
 
-import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
 
-from django.apps import apps
-from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.news_sources import NEWS_SOURCES, render_source_directive
 from teatree.loop.scanners.base import ScanSignal
-
-if TYPE_CHECKING:
-    from teatree.core.models import Session as _Session
-    from teatree.core.models import Task as _Task
-    from teatree.core.models import Ticket as _Ticket
-
-logger = logging.getLogger(__name__)
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 #: Canonical phase token written to ``Task.phase`` for scanning-news tasks.
 SCANNING_NEWS_PHASE = "scanning_news"
-
-#: States that mean a news task is still in-flight (cannot queue a dupe).
-_IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
 
 
 @dataclass(slots=True)
@@ -86,16 +72,21 @@ class ScanningNewsScanner:
     name: str = "scanning_news"
 
     def scan(self) -> list[ScanSignal]:
-        if self._in_flight_task_exists():
+        cadence = PhaseCadence(self.overlay_name, phase=SCANNING_NEWS_PHASE, cadence_hours=self.cadence_hours)
+        if cadence.in_flight_exists():
             return []
 
-        now = timezone.now()
-        last_run_at = self._last_run_at()
-        trigger = self._evaluate_trigger(now=now, last_run_at=last_run_at)
+        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
             return []
 
-        task = self._queue_task(trigger=trigger)
+        task = cadence.queue_task(
+            placeholder_issue_url=f"scanning-news://{self.overlay_name}",
+            agent_id=f"scanning-news-{self.overlay_name}",
+            execution_reason=self._execution_reason(trigger),
+            subject=f"Scan AI news: {self.overlay_name}",
+            log_label="ScanningNewsScanner",
+        )
         if task is None:
             return []
         return [
@@ -113,87 +104,6 @@ class ScanningNewsScanner:
             ),
         ]
 
-    def _in_flight_task_exists(self) -> bool:
-        """True iff a pending/claimed scanning-news task already exists."""
-        task_model = _task_model()
-        if task_model is None:
-            return False
-        return task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=SCANNING_NEWS_PHASE,
-            status__in=_IN_FLIGHT_TASK_STATES,
-        ).exists()
-
-    def _last_run_at(self) -> object:
-        """Return the most recent task's Session.started_at, or None.
-
-        ``None`` when no prior scanning-news task has been recorded — the
-        bootstrap case where the cadence is trivially elapsed.
-        """
-        task_model = _task_model()
-        if task_model is None:
-            return None
-        aggregate = task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=SCANNING_NEWS_PHASE,
-        ).aggregate(ts=Max("session__started_at"))
-        return aggregate["ts"]
-
-    def _evaluate_trigger(self, *, now: object, last_run_at: object) -> str | None:
-        """Return the trigger name (``bootstrap`` / ``cadence``) or None."""
-        if last_run_at is None:
-            return "bootstrap"
-        # ``now`` and ``last_run_at`` are ``datetime``s in practice;
-        # typed as ``object`` here to stay decoupled from ``Max()``'s
-        # return shape on the type checker. The subtraction is what
-        # matters, not the static type.
-        elapsed_hours = (now - last_run_at).total_seconds() / 3600.0  # type: ignore[operator]
-        if elapsed_hours >= self.cadence_hours:
-            return "cadence"
-        return None
-
-    def _queue_task(self, *, trigger: str) -> "_Task | None":
-        """Create a Task + Session row anchored at the overlay placeholder ticket.
-
-        Wrapped in ``transaction.atomic()`` so a concurrent scanner on a
-        second loop process can't double-queue: the in-flight check and
-        the insert run under one DB transaction. A DB error is logged
-        but never raised — losing one tick's news queue is acceptable;
-        crashing the tick is not.
-        """
-        ticket_model = _ticket_model()
-        task_model = _task_model()
-        session_model = _session_model()
-        if ticket_model is None or task_model is None or session_model is None:
-            return None
-        try:
-            with transaction.atomic():
-                ticket, _created = ticket_model.objects.get_or_create(
-                    issue_url=self._placeholder_issue_url(),
-                    defaults={"overlay": self.overlay_name, "role": "author"},
-                )
-                # Keep the overlay tag in sync even if the placeholder
-                # ticket pre-dates the current wiring (e.g. the legacy
-                # ``"teatree"`` row left over before #1267 / migration 0027).
-                if ticket.overlay != self.overlay_name:
-                    ticket.overlay = self.overlay_name
-                    ticket.save(update_fields=["overlay"])
-                session = session_model.objects.create(
-                    overlay=self.overlay_name,
-                    ticket=ticket,
-                    agent_id=f"scanning-news-{self.overlay_name}",
-                )
-                return task_model.objects.create(
-                    ticket=ticket,
-                    session=session,
-                    phase=SCANNING_NEWS_PHASE,
-                    execution_target=task_model.ExecutionTarget.HEADLESS,
-                    execution_reason=self._execution_reason(trigger),
-                )
-        except Exception:
-            logger.exception("ScanningNewsScanner: failed to queue scanning-news task")
-            return None
-
     def _execution_reason(self, trigger: str) -> str:
         """Build the dispatcher directive, embedding the ask-gate contract (#1391).
 
@@ -203,39 +113,20 @@ class ScanningNewsScanner:
         for user approval — it must NOT auto-create issues. The marker
         substring is load-bearing: it is the channel the dispatched skill
         reads to know the gate is active.
+
+        The MERGED source table (#3669) is appended to every directive, gate or
+        not: the agent runs shell-denied and fetches by URL, so the breadth the
+        press-review aggregator contributed has to reach it as text. The
+        teatree-relevance triage the loop exists for is unchanged — the directive
+        names the sources, the skill still decides what survives.
         """
         base = f"Periodic scanning-news scan ({trigger}) via skill: {self.skill}"
         if self.require_approval:
-            return (
+            base = (
                 f"{base} | ASK-GATE: do NOT auto-create issues — record each candidate as a "
                 f"PendingArticleSuggestion and surface the batch for explicit user approval (#1391)"
             )
-        return base
-
-    def _placeholder_issue_url(self) -> str:
-        """Stable synthetic URL for the overlay-anchored placeholder ticket."""
-        return f"scanning-news://{self.overlay_name}"
-
-
-def _ticket_model() -> "type[_Ticket] | None":
-    try:
-        return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _task_model() -> "type[_Task] | None":
-    try:
-        return cast("type[_Task]", apps.get_model("core", "Task"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _session_model() -> "type[_Session] | None":
-    try:
-        return cast("type[_Session]", apps.get_model("core", "Session"))
-    except Exception:  # noqa: BLE001
-        return None
+        return f"{base}\n{render_source_directive(NEWS_SOURCES)}"
 
 
 __all__ = [

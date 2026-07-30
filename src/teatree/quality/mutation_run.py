@@ -3,7 +3,7 @@
 The cheap gate (diff ∩ registry) lives in :mod:`teatree.quality.mutation`. This
 module is the runner that, when the intersection is non-empty, writes a scoped
 mutmut config and executes mutmut over ONLY the touched safety modules, then
-classifies the result and applies the warn/block ratchet.
+classifies the result and applies the surviving-count ratchet.
 
 Two design choices keep it robust and narrow. Serial (debug) execution:
 mutmut's default forks a child per mutant; on macOS a forked child that has
@@ -26,16 +26,10 @@ import tomllib
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from teatree.quality.mutation import (
-    MutationConfigError,
-    load_high_value_modules,
-    registry_pyproject_path,
-    scope_modules,
-)
+from teatree.quality.mutation import load_high_value_modules, registry_pyproject_path, scope_modules
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
-_MODES = frozenset({"warn", "block"})
 # mutmut result statuses that mean the suite did NOT catch the mutant.
 _SURVIVOR_STATUSES = frozenset({"survived", "no tests"})
 _KILLED_STATUSES = frozenset({"killed", "caught by type check", "skipped"})
@@ -52,7 +46,6 @@ _RESULT_LINE_RE = re.compile(
 
 @dataclasses.dataclass(frozen=True)
 class MutationSettings:
-    mode: str
     timeout_seconds: int
     module_tests: dict[str, tuple[str, ...]]
     baseline_total: int
@@ -107,15 +100,10 @@ class MutationOutcome:
 def load_settings(pyproject_path: Path | None = None) -> MutationSettings:
     path = pyproject_path or registry_pyproject_path()
     section = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("teatree", {}).get("mutation", {})
-    mode = section.get("mode", "warn")
-    if mode not in _MODES:
-        detail = f"mode must be one of {sorted(_MODES)}, got {mode!r}"
-        raise MutationConfigError(detail)
     raw_tests = section.get("module_tests", {})
     module_tests = {module: tuple(dirs) for module, dirs in raw_tests.items()}
     baseline = sum(int(entry.get("count", 0)) for entry in section.get("baseline_surviving", []))
     return MutationSettings(
-        mode=mode,
         timeout_seconds=int(section.get("timeout_seconds", 540)),
         module_tests=module_tests,
         baseline_total=baseline,
@@ -247,9 +235,8 @@ class BaselineRatchet:
     def exceeds_baseline(outcome: MutationOutcome, *, baseline: int) -> bool:
         """True when the run surfaced MORE surviving mutants than the recorded baseline.
 
-        A run above the baseline is a regression that fails CI regardless of
-        ``mode`` — what makes ``mode = "block"`` safe to flip later. A no-op run
-        (no safety module in the diff) surfaces nothing and never exceeds.
+        A no-op run (no safety module in the diff) surfaces nothing and never
+        exceeds.
         """
         if outcome.is_no_op:
             return False
@@ -280,19 +267,13 @@ class BaselineRatchet:
         return new_baseline, loosens
 
     @classmethod
-    def verdict(cls, outcome: MutationOutcome, *, mode: str, baseline: int) -> int:
+    def verdict(cls, outcome: MutationOutcome, *, baseline: int) -> int:
         """Exit code for ``t3 mutation run`` — the surviving-count ratchet.
 
-        A run above the recorded baseline fails (exit 1) in BOTH ``warn`` and
-        ``block`` mode: the surviving count may only ever shrink, so a PR that
-        surfaces more survivors than the baseline is a regression CI must catch.
-        This is the prerequisite that makes flipping ``mode`` to ``"block"`` safe
-        — ``mode`` stays as the lever for that follow-up (where it will gate on
-        survivors existing at all); today both modes coincide on the ratchet.
+        A run above the recorded baseline fails (exit 1): the surviving count may
+        only ever shrink, so a PR that surfaces more survivors than the baseline is
+        a regression CI must catch.
         """
-        if mode not in _MODES:
-            detail = f"mode must be one of {sorted(_MODES)}, got {mode!r}"
-            raise MutationConfigError(detail)
         return 1 if cls.exceeds_baseline(outcome, baseline=baseline) else 0
 
 
@@ -350,7 +331,7 @@ _MUTMUT_CMD = ("uv", "run", "--group", "mutation", "mutmut")
 
 
 def _mutmut_env() -> dict[str, str]:
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only on this code path
 
     env = dict(os.environ)
     # macOS aborts a fork()ed child that touches the Objective-C runtime once a

@@ -48,7 +48,7 @@ class ScenarioCatalogError(RuntimeError):
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so the eval package stays a leaf (the same backwards-edge
-# convention ``trigger_qa`` follows — it must not reach up into
+# convention ``coverage`` follows — it must not reach up into
 # ``teatree.skill_support.loading``, a higher-level module). The per-skill
 # coverage gate (``teatree.eval.coverage``) enumerates skills from here.
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
@@ -90,7 +90,7 @@ def find_spec(name: str) -> EvalSpec | None:
 
 
 def _discover_overlay_specs() -> list[EvalSpec]:
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded per eval run
 
     specs: list[EvalSpec] = []
     try:

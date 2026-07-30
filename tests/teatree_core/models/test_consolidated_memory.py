@@ -273,6 +273,24 @@ class TestDispositionManager(TestCase):
         assert ticketed in result
         assert gap_no_ticket not in result
 
+    def test_needs_ticket_returns_core_gaps_with_no_ticket_yet(self) -> None:
+        # F6.1(b): the promote-pass drain queue — a core gap classified but not yet
+        # promoted (no ticket recorded). Untriaged rows and already-ticketed rows are
+        # excluded, so a re-run drains exactly the stranded gaps.
+        stranded = _record("n1")
+        stranded.classify_core_gap()  # CORE_GAP_NEEDS_TICKET, no ticket
+        ticketed = _record("n2")
+        ticketed.classify_core_gap()
+        ticketed.mark_ticketed("https://github.com/souliane/teatree/issues/2")
+        untriaged = _record("n3")
+        user_specific = _record("n4")
+        user_specific.classify_user_specific()
+        result = list(ConsolidatedMemory.objects.needs_ticket())
+        assert stranded in result
+        assert ticketed not in result
+        assert untriaged not in result
+        assert user_specific not in result
+
     def test_schema_count_counts_overlay_rows(self) -> None:
         _record("a", overlay="acme")
         _record("b", overlay="acme")

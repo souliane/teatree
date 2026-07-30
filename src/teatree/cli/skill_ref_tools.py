@@ -13,16 +13,16 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.tools import tool_app
 
-
-@tool_app.command("validate-skill-refs")
 def validate_skill_refs_cmd(
     *,
     supplementary_config: Path | None = typer.Option(
         None,
         "--config",
-        help="Path to the keyword->skill routing config (default: $T3_SUPPLEMENTARY_SKILLS or ~/.teatree-skills.yml).",
+        help=(
+            "Path to the keyword->skill routing config "
+            "(default: $T3_SUPPLEMENTARY_SKILLS or $HOME/.teatree-skills.yml)."
+        ),
     ),
     agents_dir: Path | None = typer.Option(
         None,
@@ -36,13 +36,13 @@ def validate_skill_refs_cmd(
     Enumerates the canonical skill set from the actual installed/remote skills
     (the same search dirs the skill-loading hook reads — ``~/.claude/skills/*``
     symlinks plus this plugin's ``skills/`` tree), then checks every reference
-    site: the ``~/.teatree-skills.yml`` keyword->skill routing config and the
+    site: the ``$HOME/.teatree-skills.yml`` keyword->skill routing config and the
     ``agents/*.md`` frontmatter ``skills:`` / ``companion_skills:`` lists. A
     dangling name (e.g. the real ``ac-reviewing-skills`` -> ``ac-reviewing-codebase``
     incident) exits non-zero with file:line + the bad name + nearest matches.
     A missing optional config is not a failure (fail-open).
     """
-    from teatree.skill_support.ref_validator import validate_skill_refs  # noqa: PLC0415
+    from teatree.skill_support.ref_validator import validate_skill_refs  # noqa: PLC0415 — deferred: lazy CLI import
 
     findings = validate_skill_refs(supplementary_config=supplementary_config, agents_dir=agents_dir)
     if json_output:
@@ -61,3 +61,8 @@ def validate_skill_refs_cmd(
         raise typer.Exit(code=1)
     if not json_output:
         typer.echo("PASS — all skill references resolve.")
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("validate-skill-refs")(validate_skill_refs_cmd)

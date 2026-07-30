@@ -1,6 +1,8 @@
 import json
 import logging
+import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -9,10 +11,12 @@ import httpx
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
+from pydantic import ValidationError
 
+from teatree.backends.types import Service
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
-from teatree.core.overlay_loader import get_all_overlay_names, get_overlay, reset_overlay_cache
+from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata, ProvisionStep
+from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay, reset_overlay_cache
 from teatree.utils.run import CommandFailedError
 
 
@@ -122,12 +126,12 @@ class TestOverlayBase(TestCase):
         ):
             overlay = get_overlay()
 
-            assert overlay.get_env_extra(worktree) == {}
-            assert overlay.get_run_commands(worktree) == {}
-            assert overlay.get_db_import_strategy(worktree) is None
-            assert overlay.get_post_db_steps(worktree) == []
-            assert overlay.get_symlinks(worktree) == []
-            assert overlay.get_services_config(worktree) == {}
+            assert overlay.provisioning.env_extra(worktree) == {}
+            assert overlay.runtime.run_commands(worktree) == {}
+            assert overlay.provisioning.db_import_strategy(worktree) is None
+            assert overlay.provisioning.post_db_steps(worktree) == []
+            assert overlay.provisioning.symlinks(worktree) == []
+            assert overlay.provisioning.services_config(worktree) == {}
             # #1540/#1367: default gate accepts a conforming title, a
             # conventional-commit description first line, and a What/Why body.
             assert overlay.metadata.validate_pr(
@@ -185,13 +189,13 @@ class TestValidatePrRequiredSections(TestCase):
         assert _ConfigMetadata().validate_pr(title, body) == {"errors": [], "warnings": []}
 
 
-class TestGetAllOverlayNames(TestCase):
+class TestOverlayConfigResolverAllNames(TestCase):
     def test_includes_entry_point_overlays(self) -> None:
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"ep-overlay": DummyOverlay()},
         ):
-            names = get_all_overlay_names()
+            names = OverlayConfigResolver.all_names()
         assert "ep-overlay" in names
 
     def test_includes_path_only_toml_overlays(self) -> None:
@@ -209,10 +213,45 @@ class TestGetAllOverlayNames(TestCase):
                     "toml-config-only": {"github_token_pass_key": "key"},
                 },
             }
-            names = get_all_overlay_names()
+            names = OverlayConfigResolver.all_names()
         assert "ep-overlay" in names
         assert "toml-path-only" in names
         assert "toml-config-only" not in names
+
+
+class TestRequiredThirdPartyServices(TestCase):
+    def test_defaults_to_empty_frozenset(self) -> None:
+        assert OverlayConfig().required_third_party_services == frozenset()
+
+    def test_settings_module_list_coerces_to_service_frozenset(self) -> None:
+        config = OverlayConfig(settings_module="teatree.contrib.t3_teatree.overlay_settings")
+
+        assert config.required_third_party_services == frozenset({Service.GITHUB, Service.SLACK})
+
+    def test_overlays_row_override_coerces_json_list(self) -> None:
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "test-overlay": {"required_third_party_services": ["gitlab", "sentry"]},
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = OverlayConfig(overlay_name="test-overlay")
+
+        assert config.required_third_party_services == frozenset({Service.GITLAB, Service.SENTRY})
+
+    def test_unknown_service_name_fails_loud(self) -> None:
+        config = OverlayConfig()
+
+        with pytest.raises(ValidationError):
+            config.required_third_party_services = ["figma"]  # type: ignore[assignment]
+
+    def test_sentry_token_getter_always_defined(self) -> None:
+        config = OverlayConfig()
+
+        assert config.get_sentry_token() == ""
+        assert config.sentry_org == ""
+        assert config.sentry_url == "https://sentry.io"
 
 
 class TestOverlayConfig(TestCase):
@@ -232,6 +271,13 @@ class TestOverlayConfig(TestCase):
         assert config.custom_setting == "value"
         assert not hasattr(config, "class")  # reserved, skipped
 
+    def test_default_token_getters_always_defined(self) -> None:
+        # scanner_factories calls these getters unguarded (no hasattr fallback),
+        # so a default OverlayConfig MUST expose both returning a string.
+        config = OverlayConfig()
+        assert config.get_gitlab_token() == ""
+        assert config.get_github_token() == ""
+
     def test_toml_pass_key_registers_secret_reader(self) -> None:
         mock_config = MagicMock()
         mock_config.raw = {
@@ -249,10 +295,11 @@ class TestOverlayConfig(TestCase):
 
     def test_entry_point_overlays_receive_toml_overrides(self) -> None:
         # _discover_overlays must call apply_toml_overrides on every
-        # entry-point overlay so [overlays.<name>] in ~/.teatree.toml wins
-        # over the overlay's settings module — same precedence as TOML-only
-        # overlays. Without this, every OverlayConfig subclass would have
-        # to opt in via super().__init__(overlay_name=...).
+        # entry-point overlay so the DB-home overlays registry entry
+        # ([overlays.<name>]) wins over the overlay's settings module — same
+        # precedence as registry-only overlays. Without this, every
+        # OverlayConfig subclass would have to opt in via
+        # super().__init__(overlay_name=...).
         from teatree.core.overlay_loader import _discover_overlays  # noqa: PLC0415
 
         # Use the existing DummyOverlay registered above as the entry-point target.
@@ -283,6 +330,57 @@ class TestOverlayConfig(TestCase):
         assert "dummy-ep" in overlays
         assert overlays["dummy-ep"].config.exclude_labels == ["Process::DEV review"]
 
+    def test_secret_registry_survives_field_assignment(self) -> None:
+        # Pydantic's ``validate_assignment`` rebuilds ``__dict__`` on every plain
+        # field assignment, which used to drop the ``_secret_pass_keys`` registry
+        # (and any other plain instance state). ``_load_settings`` interleaves
+        # plain settings with ``*_PASS_KEY`` registrations, so every credential
+        # registered before the last plain setting silently resolved to ``""``
+        # (a real overlay lost its gitlab token this way).
+        config = OverlayConfig()
+        config._register_secret("gitlab_token", "forge/pat")
+        config.some_plain_setting = "value"  # the validate_assignment path
+
+        assert config._secret_registry() == {"gitlab_token": "forge/pat"}
+        with patch("teatree.utils.secrets.read_pass", return_value="secret-value"):
+            assert config.get_gitlab_token() == "secret-value"
+
+    def test_settings_module_registers_secrets_regardless_of_order(self) -> None:
+        # Regression shape of the real overlay settings module: a *_PASS_KEY
+        # sorts BEFORE plain UPPER settings, so the plain assignments that
+        # follow must not wipe the earlier registration.
+        mod = types.ModuleType("_t3_test_overlay_settings")
+        mod.AAA_TOKEN_PASS_KEY = "store/aaa"
+        mod.ZZZ_PLAIN_SETTING = "plain"
+        sys.modules["_t3_test_overlay_settings"] = mod
+        try:
+            config = OverlayConfig(settings_module="_t3_test_overlay_settings")
+        finally:
+            del sys.modules["_t3_test_overlay_settings"]
+
+        assert config._secret_registry() == {"aaa_token": "store/aaa"}
+        assert config.zzz_plain_setting == "plain"
+
+    def test_callable_assigned_to_declared_field_fails_loud(self) -> None:
+        # A callable assigned to a DECLARED typed field must NOT bypass Pydantic
+        # validation: ``__setattr__`` routes callables past validation only for
+        # non-field names (per-instance method overrides). Assigning a callable to
+        # ``gitlab_url`` (a ``str`` field) has to raise so a settings module that
+        # mistakenly supplies a callable for a typed field fails loud, not silently
+        # corrupt the config.
+        config = OverlayConfig()
+        with pytest.raises(ValidationError):
+            config.gitlab_url = lambda: "https://example.test"  # type: ignore[assignment]
+
+    def test_callable_assigned_to_non_field_shadows_class_method(self) -> None:
+        # The legitimate idiom must still work: a callable assigned to a NON-field
+        # name (a method / helper, not a declared field) lands in the instance
+        # ``__dict__`` and shadows the class attribute exactly as normal Python
+        # attribute resolution does.
+        config = OverlayConfig()
+        config.get_review_channel = lambda: ("chan", "C123")  # type: ignore[method-assign]
+        assert config.get_review_channel() == ("chan", "C123")
+
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
         # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss
         # TOML overrides unless apply_toml_overrides is called explicitly.
@@ -304,6 +402,70 @@ class TestOverlayConfig(TestCase):
             config.apply_toml_overrides("test-overlay")
 
         assert config.exclude_labels == ["Process::DEV review", "Process::QA review"]
+
+
+class _ConfigHoldingMetadata(OverlayMetadata):
+    """Metadata facet that keeps a reference to the config it was built with."""
+
+    def __init__(self, config: OverlayConfig) -> None:
+        self._config = config
+
+
+class _MetadataBoundOverlay(OverlayBase):
+    """Overlay whose metadata facet is constructed from the class-level config."""
+
+    config = OverlayConfig()
+    metadata = _ConfigHoldingMetadata(config)
+
+    def get_repos(self) -> list[str]:
+        return ["r"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+
+class TestOverlayFacetIsolation(TestCase):
+    """Each overlay instance owns its config/facets — no cross-overlay state bleed."""
+
+    def test_two_instances_have_independent_config_objects(self) -> None:
+        first = DummyOverlay()
+        second = DummyOverlay()
+        assert first.config is not second.config
+        first.config.exclude_labels.append("only-first")
+        assert second.config.exclude_labels == []
+
+    def test_config_does_not_bleed_across_overlay_classes(self) -> None:
+        # Two DIFFERENT overlay classes that both inherit the OverlayBase config
+        # default must not share the single class-level OverlayConfig instance.
+        dummy = DummyOverlay()
+        other = SuperCallingOverlay()
+        assert dummy.config is not other.config
+        dummy.config.gitlab_url = "https://only-dummy.test/api"
+        assert other.config.gitlab_url != "https://only-dummy.test/api"
+
+    def test_apply_toml_overrides_does_not_bleed_into_a_sibling(self) -> None:
+        first = DummyOverlay()
+        second = DummyOverlay()
+        mock_config = MagicMock()
+        mock_config.raw = {"overlays": {"first-overlay": {"exclude_labels": ["First::x"]}}}
+        with patch("teatree.config.load_config", return_value=mock_config):
+            first.config.apply_toml_overrides("first-overlay")
+        assert first.config.exclude_labels == ["First::x"]
+        assert second.config.exclude_labels == []
+
+    def test_metadata_facet_is_repointed_at_the_instance_config(self) -> None:
+        # A facet built with the class-level config is re-pointed at the
+        # per-instance copy so the two never diverge across a config mutation.
+        overlay = _MetadataBoundOverlay()
+        assert overlay.metadata._config is overlay.config
+        other = _MetadataBoundOverlay()
+        assert overlay.metadata._config is not other.metadata._config
+
+    def test_facets_are_per_instance(self) -> None:
+        first = DummyOverlay()
+        second = DummyOverlay()
+        assert first.review is not second.review
+        assert first.connectors is not second.connectors
 
 
 class TestBundledOverlayConfigTable(TestCase):
@@ -399,13 +561,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "link", "source": str(source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             names = [c.name for c in checks]
             assert "worktree-exists" in names
             assert "symlink-link" in names
@@ -413,7 +575,7 @@ class TestDefaultHealthChecks(TestCase):
     def test_omits_db_name_check_even_when_db_name_is_set(self) -> None:
         """``db-name-set`` is not a generic invariant — overlays that need a DB opt in.
 
-        Overlays that need a DB declare the check via ``get_health_checks``.
+        Overlays that need a DB declare the check via ``provisioning.health_checks``.
         Single-service overlays (CLI tools, doc generators) without a
         database must not see this check.
         """
@@ -431,7 +593,7 @@ class TestDefaultHealthChecks(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            checks = DummyOverlay().get_health_checks(worktree)
+            checks = DummyOverlay().provisioning.health_checks(worktree)
             assert "db-name-set" not in [c.name for c in checks]
 
     def test_symlink_check_fails_when_source_directory_is_empty(self) -> None:
@@ -463,13 +625,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(empty_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is False
 
@@ -496,13 +658,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(populated_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is True
 
@@ -536,13 +698,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(empty_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is True
 
@@ -570,13 +732,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(populated_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is False
 
@@ -592,7 +754,7 @@ class TestReadinessProbes(TestCase):
             branch="feature",
             db_name="test_db",
         )
-        assert DummyOverlay().get_readiness_probes(worktree) == []
+        assert DummyOverlay().runtime.readiness_probes(worktree) == []
 
 
 class TestGetIssueTitle:

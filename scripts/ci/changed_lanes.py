@@ -33,6 +33,13 @@ import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+# Hoisted into ``teatree.quality.changed_set`` so the push gate (#122) and this
+# CI-lane classifier share ONE definition and never drift (architecture check #8);
+# ``tests/quality/test_changed_set_classifier.py`` pins the two modules agree.
+from teatree.quality.changed_set import CONFIG_EXACT as _CONFIG_EXACT
+from teatree.quality.changed_set import CONFIG_PREFIXES as _CONFIG_PREFIXES
+from teatree.quality.changed_set import CONFIG_SUFFIXES as _CONFIG_SUFFIXES
+
 LANE_TEST = "test"
 LANE_LINT = "lint"
 LANE_TEST_SHAPE = "test-shape"
@@ -57,17 +64,6 @@ SECURITY_LANES: frozenset[str] = frozenset({LANE_REGRESSION_RULES, LANE_SBOM, LA
 _DOCS_SUFFIXES: tuple[str, ...] = (".md", ".markdown")
 _DOCS_PREFIXES: tuple[str, ...] = ("docs/",)
 _PYTHON_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
-_CONFIG_EXACT: frozenset[str] = frozenset(
-    {
-        "pyproject.toml",
-        "uv.lock",
-        "Dockerfile",
-        ".pre-commit-config.yaml",
-        "manage.py",
-    }
-)
-_CONFIG_PREFIXES: tuple[str, ...] = (".github/", ".ast-grep/", "dev/")
-_CONFIG_SUFFIXES: tuple[str, ...] = (".toml", ".lock", ".cfg", ".ini")
 
 
 @dataclass(frozen=True)

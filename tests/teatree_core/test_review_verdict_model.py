@@ -10,7 +10,14 @@ round-trip, and the staleness / safe-to-approve logic the status command reads.
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Finding, MergeClear, ReviewVerdict, ReviewVerdictError
+from teatree.core.models import (
+    Finding,
+    MergeClear,
+    MRReviewLock,
+    ReviewVerdict,
+    ReviewVerdictError,
+    normalize_reviewer_identity,
+)
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -47,8 +54,9 @@ class TestRecordContract(TestCase):
         assert not verdict.is_merge_safe()
         assert verdict.structured_findings[0].location() == "(MR-level)"
 
-    def test_merge_safe_on_non_green_checks_is_refused(self) -> None:
-        with pytest.raises(ReviewVerdictError, match="green"):
+    def test_merge_safe_on_pending_checks_without_expedite_is_refused(self) -> None:
+        # FIX-EXPEDITE split: merge_safe on PENDING checks requires the expedite waiver.
+        with pytest.raises(ReviewVerdictError, match="requires the expedite waiver"):
             ReviewVerdict.record(
                 pr_id=1,
                 slug="souliane/teatree",
@@ -56,6 +64,19 @@ class TestRecordContract(TestCase):
                 verdict="merge_safe",
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="pending",
+            )
+        assert ReviewVerdict.objects.count() == 0
+
+    def test_merge_safe_on_failed_checks_is_refused(self) -> None:
+        # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result — even expedited.
+        with pytest.raises(ReviewVerdictError, match="never carry gh_verify_result=failed"):
+            ReviewVerdict.record(
+                pr_id=2,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="merge_safe",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="failed",
             )
         assert ReviewVerdict.objects.count() == 0
 
@@ -141,6 +162,125 @@ class TestRecordContract(TestCase):
         assert verdict.slug == "souliane/teatree"
         assert verdict.reviewed_sha == _SHA
         assert verdict.verdict == ReviewVerdict.Verdict.MERGE_SAFE
+
+
+class TestCarryForward(TestCase):
+    """The reusable carry-forward primitive (re-record at a new tree, waiver-preserving)."""
+
+    def test_carry_forward_copies_every_snapshot_field_to_the_new_tree(self) -> None:
+        original = ReviewVerdict.record(
+            pr_id=7,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+            findings=[Finding(severity="nit", summary="rename x", file="a.py", line=3)],
+        )
+        carried = original.carry_forward(reviewed_sha=_OTHER_SHA)
+        assert carried.pk != original.pk
+        assert carried.reviewed_sha == _OTHER_SHA
+        assert carried.reviewer_identity == "cold-reviewer"
+        assert carried.blast_class == MergeClear.BlastClass.SUBSTRATE
+        assert carried.gh_verify_result == MergeClear.VerifyResult.GREEN
+        assert carried.structured_findings[0].location() == "a.py:3"
+
+    def test_carry_forward_preserves_the_expedite_waiver(self) -> None:
+        # A PENDING merge_safe verdict carries forward WITHOUT re-tripping the
+        # expedite refusal — the waiver is re-passed from the source snapshot.
+        original = ReviewVerdict.record(
+            pr_id=8,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="pending",
+            expedited=True,
+        )
+        carried = original.carry_forward(reviewed_sha=_OTHER_SHA)
+        assert carried.is_merge_safe()
+        assert carried.gh_verify_result == MergeClear.VerifyResult.PENDING
+
+    def test_carry_forward_surfaces_a_typed_error_on_an_unwaivable_verdict(self) -> None:
+        # A genuinely-unwaivable source (merge_safe on FAILED checks — a shape
+        # record() forbids) surfaces the typed ReviewVerdictError, never a crash,
+        # and writes no row.
+        unwaivable = ReviewVerdict(
+            pr_id=9,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer",
+            blast_class=MergeClear.BlastClass.LOGIC,
+            gh_verify_result=MergeClear.VerifyResult.FAILED,
+        )
+        with pytest.raises(ReviewVerdictError, match="never carry gh_verify_result=failed"):
+            unwaivable.carry_forward(reviewed_sha=_OTHER_SHA)
+        assert not ReviewVerdict.objects.filter(reviewed_sha=_OTHER_SHA).exists()
+
+
+class TestReviewerIdentityIdempotency(TestCase):
+    """The (slug, pr, sha, normalized-identity) idempotency contract (F8)."""
+
+    def test_normalize_collapses_case_and_whitespace_only(self) -> None:
+        assert normalize_reviewer_identity("  Codex  Reviewer ") == normalize_reviewer_identity("codex reviewer")
+        # Genuinely distinct identities stay distinct — no role-prefix stripping.
+        assert normalize_reviewer_identity("t3:reviewer") != normalize_reviewer_identity("reviewer")
+
+    def test_re_review_of_one_head_by_one_identity_is_a_single_row(self) -> None:
+        first = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="Codex",
+            gh_verify_result="failed",
+        )
+        second = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="codex ",  # same identity, different spelling
+        )
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 1
+        assert second.pk == first.pk
+        assert second.is_merge_safe()  # newest verdict wins in the one row
+
+    def test_distinct_identities_at_one_head_coexist(self) -> None:
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="reviewer-a",
+            gh_verify_result="failed",
+        )
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-b",
+        )
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
+
+    def test_a_moved_head_records_a_fresh_row(self) -> None:
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-a",
+        )
+        ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_OTHER_SHA,
+            verdict="merge_safe",
+            reviewer_identity="reviewer-a",
+        )
+        assert ReviewVerdict.objects.for_pr("souliane/teatree", 1).count() == 2
 
 
 class TestQueryHelpers(TestCase):
@@ -250,3 +390,62 @@ class TestFindingRoundTrip(TestCase):
 
     def test_file_level_location_when_no_line(self) -> None:
         assert Finding(severity="major", summary="s", file="a.py").location() == "a.py"
+
+
+class TestRecordResolvesReviewLock(TestCase):
+    """Recording a verdict resolves the PR's MRReviewLock (#1405)."""
+
+    def test_recording_merge_safe_resolves_a_held_lock(self) -> None:
+        MRReviewLock.acquire(slug="souliane/teatree", pr_id=42, holder="t3:reviewer-agent-a")
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+
+        lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
+        assert lock.state == MRReviewLock.State.RESOLVED
+
+    def test_recording_hold_also_resolves_the_lock(self) -> None:
+        MRReviewLock.acquire(slug="souliane/teatree", pr_id=42, holder="t3:reviewer-agent-a")
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="failed",
+        )
+
+        lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
+        assert lock.state == MRReviewLock.State.RESOLVED
+
+    def test_recording_with_a_mismatched_lock_holder_cannot_steal_the_release(self) -> None:
+        MRReviewLock.acquire(slug="souliane/teatree", pr_id=42, holder="t3:reviewer-agent-a")
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            lock_holder="codex-self-review",
+        )
+
+        lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
+        assert lock.state == MRReviewLock.State.REVIEW_DISPATCHED
+
+    def test_recording_with_no_held_lock_is_a_no_op(self) -> None:
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+
+        assert MRReviewLock.objects.count() == 0

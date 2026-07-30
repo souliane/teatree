@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
+from teatree.hooks import _repo_visibility
 from teatree.hooks.quote_scanner import extract_publish_payload, has_quote_ok_override, scan_text
 
 
@@ -48,6 +49,17 @@ class TestQuoteOkEnvReachesWrapper:
         cmd = 'gh pr create --title t --body "the user said: ship it now"'
         assert has_quote_ok_override("Bash", {"command": cmd}) is True
 
+    def test_env_sourced_override_emits_visible_note(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # An inherited-env override silently disables every publish scan — the
+        # NOTE makes that standing disable visible (finding 7).
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("QUOTE_OK", "1")
+        assert has_quote_ok_override("Bash", {"command": "gh pr create --body x"}) is True
+        assert "QUOTE_OK=1 is set in the process environment" in capsys.readouterr().err
+
     def test_process_env_quote_ok_zero_does_not_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("QUOTE_OK", "0")
         cmd = 'gh pr create --title t --body "the user said: ship it now"'
@@ -57,7 +69,7 @@ class TestQuoteOkEnvReachesWrapper:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("QUOTE_OK", "1")
-        data = _bash('gh pr create --title t --body "## User mandate\nfoo"')
+        data = _bash('gh pr create --title t --body "## User ask (verbatim, 2026-05-20)\nfoo"')
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is False
         assert capsys.readouterr().out == ""
@@ -77,8 +89,16 @@ class TestQuoteScannerGenuineGuardsIntact:
         assert handle_quote_scanner_pretool(data) is False
         assert capsys.readouterr().err == ""
 
-    def test_actual_user_quote_without_override_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _bash('gh pr create --title t --body "## User mandate\nplease ship now"')
+    def test_actual_user_quote_without_override_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The leak gate enforces ONLY on an affirmatively-public target (#1213), so
+        # the genuine-violation guard posts to the public teatree repo with the
+        # probe confirming it public.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash(
+            'gh pr create -R souliane/teatree --title t --body "## User ask (verbatim, 2026-05-20)\nplease ship now"'
+        )
         assert handle_quote_scanner_pretool(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
@@ -113,7 +133,7 @@ class TestUnreadableBodyFileIsNotAutoDenied:
         # The carve-out is ONLY for an unreadable file — a readable
         # body-file carrying a verbatim quote still trips the gate.
         body_path = tmp_path / "pr.md"
-        body_path.write_text("## User directive\nbody\n", encoding="utf-8")
+        body_path.write_text("## User ask (verbatim, 2026-05-20)\nbody\n", encoding="utf-8")
         cmd = f"gh pr create --title t --body-file {body_path}"
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None

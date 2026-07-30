@@ -32,6 +32,17 @@ class TestPostTestPlan(TestCase):
 
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
+    @pytest.fixture(autouse=True)
+    def _private_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pin the leak-scan visibility probe to PRIVATE for the delegation tests.
+
+        ``post-test-plan`` now routes the body through the scanned forge-write
+        seam (CC-4/CC-1); these tests exercise the code-host delegation, not the
+        leak gate (its own suite is ``test_post_test_plan_leak_scan.py``), so the
+        probe is stubbed to a clean private pass — no subprocess, deterministic.
+        """
+        monkeypatch.setattr("teatree.core.gates.privacy_gate._target_is_public", lambda *a, **kw: False)
+
     def test_delegates_to_code_host(self) -> None:
         """post-test-plan posts a PR comment via the code host."""
         host = MagicMock()

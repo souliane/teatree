@@ -78,7 +78,7 @@ class MarkdownConverter:
     def _build_markitdown() -> _MarkItDown:
         """Instantiate markitdown with plugins disabled and no LLM client."""
         try:
-            from markitdown import MarkItDown  # noqa: PLC0415
+            from markitdown import MarkItDown  # noqa: PLC0415 — deferred: heavy/optional dep at call site
         except ImportError as exc:
             raise MarkdownConverterUnavailableError(INSTALL_HINT) from exc
         return MarkItDown(enable_plugins=False)

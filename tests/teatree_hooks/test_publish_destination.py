@@ -1,25 +1,58 @@
-"""Tests for the destination-aware gate skip (`teatree.hooks.publish_destination`).
+"""Tests for publish-destination resolution + the affirmative-public gate skip.
 
 ``resolve_publish_destination`` extracts the target repo/namespace of a
 publish command; ``is_public_destination`` classifies it FAIL-CLOSED
-(PUBLIC unless its namespace provably matches the config-driven
-``[teatree] internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
-allowlist); ``gate_skips_destination`` is the composed predicate the
-banned-terms (#1415) and bare-reference (#1530) gates call to scan only
-PUBLIC targets.
+(PUBLIC unless provably internal -- consumed by the FSM privacy gate);
+``public_visibility.gate_skips_for_visibility`` is the composed predicate the
+banned-terms (#1415) / quote-scanner (#1213) gates call: it SKIPS only a PROVABLY
+non-public target (allowlisted-private / internal-namespace / probe-confirmed
+private), and SCANS every target it cannot prove non-public -- an
+affirmatively-public probe verdict AND a resolvable slug whose probe cannot
+confirm visibility (fail closed on a probe error, #3442).
 
 Synthetic namespaces only (``internalcorp``, ``acme-internal``, the
 genuinely-public ``souliane/teatree``); the allowlist lives in the user's
 private config, never in the source or tests.
 """
 
+import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from teatree.hooks import _repo_visibility, publish_destination
+from teatree.hooks import _repo_visibility, public_visibility, publish_destination
+
+
+def _seed_setting(tmp_path: Path, key: str, values: list[str]) -> Path:
+    """Seed a ``teatree_config_setting`` DB with ``key`` = ``values`` at global scope."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+        (key, json.dumps(values)),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+@pytest.fixture(autouse=True)
+def _isolate_visibility_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the on-disk visibility cache so no test hits a real probe verdict.
+
+    Each test drives the probe verdict explicitly for any target that reaches
+    the live probe; an unmocked target resolves ``None`` (unknown, via the
+    unresolvable probe tool) rather than shelling out to a real ``gh``/``glab``.
+    """
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -28,7 +61,19 @@ def _git(cwd: Path, *args: str) -> None:
         cwd=cwd,
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"},
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            # Deterministic identity so ``git commit`` / ``git worktree add``
+            # succeed under an identity-less git: the CI container has no global
+            # user.name/email and auto-detection is disabled, so no inherited
+            # identity can be assumed.
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        },
     )
 
 
@@ -40,10 +85,7 @@ def _repo_with_remote(path: Path, remote_url: str) -> Path:
 
 
 def _config(tmp_path: Path, namespaces: list[str]) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    entries = ", ".join(f'"{n}"' for n in namespaces)
-    cfg.write_text(f"[teatree]\ninternal_publish_namespaces = [{entries}]\n", encoding="utf-8")
-    return cfg
+    return _seed_setting(tmp_path, "internal_publish_namespaces", namespaces)
 
 
 class TestResolvePublishDestination:
@@ -178,7 +220,7 @@ class TestIsPublicDestination:
 
     def test_missing_config_treats_everything_as_public(self, tmp_path: Path) -> None:
         dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
-        assert publish_destination.is_public_destination(dest, config_path=tmp_path / "absent.toml") is True
+        assert publish_destination.is_public_destination(dest, config_path=tmp_path / "absent.sqlite3") is True
 
     def test_allowlisted_namespace_is_internal(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
@@ -237,28 +279,38 @@ class TestIsPublicDestination:
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
 
     def test_malformed_config_treats_everything_as_public(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("this is = not [valid toml", encoding="utf-8")
+        # A corrupt (non-JSON) stored value fails open to an empty allowlist in
+        # the cold reader, so the internal-looking slug stays PUBLIC.
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'internal_publish_namespaces', ?)",
+            ("{ not json",),
+        )
+        conn.commit()
+        conn.close()
         dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
-        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+        assert publish_destination.is_public_destination(dest, config_path=db) is True
 
 
 class TestGateSkipsDestination:
-    """The composed predicate the gates call: SKIP only a provably-internal target."""
+    """The composed predicate the gates call: SKIP unless the target is affirmatively PUBLIC."""
 
     def test_internal_flag_target_is_skipped(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
         assert (
-            publish_destination.gate_skips_destination(
+            public_visibility.gate_skips_for_visibility(
                 "glab mr note 5 -R internalcorp/private-svc --message x", None, config_path=cfg
             )
             is True
         )
 
-    def test_public_flag_target_is_not_skipped(self, tmp_path: Path) -> None:
+    def test_public_flag_target_is_not_skipped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         assert (
-            publish_destination.gate_skips_destination(
+            public_visibility.gate_skips_for_visibility(
                 "gh pr create -R souliane/teatree --title x", None, config_path=cfg
             )
             is False
@@ -267,7 +319,7 @@ class TestGateSkipsDestination:
     def test_unresolvable_destination_is_not_skipped(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
         assert (
-            publish_destination.gate_skips_destination("curl -d x https://example.com", None, config_path=cfg) is False
+            public_visibility.gate_skips_for_visibility("curl -d x https://example.com", None, config_path=cfg) is False
         )
 
     @pytest.mark.parametrize(
@@ -288,7 +340,7 @@ class TestGateSkipsDestination:
         # NOT let it skip the whole command's leak scan (fail-closed).
         cfg = _config(tmp_path, ["internalcorp"])
         cmd = f"gh pr create -R internalcorp/private-svc --body hi && {wrapper}"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
     @pytest.mark.parametrize(
         "tail",
@@ -302,7 +354,7 @@ class TestGateSkipsDestination:
         # local work chained off a legitimate internal publish.
         cfg = _config(tmp_path, ["internalcorp"])
         cmd = f'gh pr create -R internalcorp/private-svc --body "ok" && {tail}'
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
 
     @pytest.mark.parametrize(
         "read",
@@ -321,14 +373,16 @@ class TestGateSkipsDestination:
         # command on the bare ``api`` word (#1530 over-block).
         cfg = _config(tmp_path, ["internalcorp"])
         cmd = f'gh pr create -R internalcorp/private-svc --body "ok" && {read}'
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
 
-    def test_api_write_chain_still_fails_closed(self, tmp_path: Path) -> None:
-        # Leak guard: a chained ``api`` WRITE carries a body to an arbitrary
-        # endpoint, so a leading internal post must NOT let it skip the leak scan.
+    def test_api_write_chain_to_public_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Leak guard: a chained ``api`` WRITE to an affirmatively-PUBLIC repo
+        # carries a body to a public surface, so a leading internal post must NOT
+        # let it skip the leak scan.
         cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         cmd = "gh pr create -R internalcorp/private-svc --body ok && gh api repos/souliane/teatree/issues -f body=x"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
     @pytest.mark.parametrize(
         "write",
@@ -355,50 +409,47 @@ class TestGateSkipsDestination:
         # surface (e.g. updating a customer MR description). It must skip the
         # public-leak scan instead of forcing the override escape hatch.
         cfg = _config(tmp_path, ["internalcorp"])
-        assert publish_destination.gate_skips_destination(write, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(write, None, config_path=cfg) is True
 
     @pytest.mark.parametrize(
         "write",
         [
             'glab api --method PUT "projects/$opp/merge_requests/7562" --input /tmp/body.json',
             "gh api /user -f name=x",
-            "glab api projects/souliane%2Fteatree/issues -f title=x",
             "gh api --jq repos/internalcorp/private-svc user/keys -f key=x",
         ],
-        ids=["unexpanded-variable", "non-repo-endpoint", "public-repo", "unknown-flag-value-misparse"],
+        ids=["unexpanded-variable", "non-repo-endpoint", "unknown-flag-value-misparse"],
     )
-    def test_api_write_without_provable_internal_target_fails_closed(self, tmp_path: Path, write: str) -> None:
-        # The carve-out needs the slug from the URL path itself: a shell
-        # variable, a non-repo endpoint, or a public repo stays fail-closed.
-        # The ``--jq`` row pins the value-misparse hole: a known value-taking
-        # flag's VALUE that merely LOOKS like an internal repo path must not
-        # stand in for the real (public-surface) endpoint positional.
+    def test_api_write_to_unresolvable_target_scans(self, tmp_path: Path, write: str) -> None:
+        # An ``api`` WRITE whose URL path does not resolve to a repo -- a shell
+        # variable (``$opp``, could expand to a PUBLIC repo at run time), a non-repo
+        # endpoint (``/user``), or a value-misparse hole (``--jq``'s value LOOKS like
+        # an internal repo, real endpoint ``user/keys`` is non-repo) -- is an
+        # immediate public egress with no pre-push backstop and an UNRESOLVABLE
+        # target. It must NOT skip: the ALL-SEGMENTS anti-leak contract forces a
+        # SCAN so a one-variable indirection cannot route a public REST POST around
+        # the leak gate (#1415/#1213). Only a slug resolving to an affirmatively
+        # NON-public repo skips (``test_api_write_to_internal_repo_is_skipped``).
         cfg = _config(tmp_path, ["internalcorp"])
-        assert publish_destination.gate_skips_destination(write, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(write, None, config_path=cfg) is False
 
-    def test_unexpanded_variable_slug_unprovable_even_when_probe_answers_private(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The visibility probe is a PROOF source, but an unexpanded ``$var``
-        # slug has an unknowable runtime value -- no probe answer about the
-        # literal ``$opp`` string can prove anything about the repo the
-        # expanded command will actually hit. Even a private-answering probe
-        # must leave it PUBLIC (fail-closed).
+    def test_api_write_to_public_repo_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An ``api`` WRITE whose URL path resolves to an affirmatively-PUBLIC
+        # repo must NOT skip -- the public-surface leak scan must fire.
         cfg = _config(tmp_path, ["internalcorp"])
-        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: True)
-        cmd = 'glab api --method PUT "projects/$opp/merge_requests/7562" --input /tmp/body.json'
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "glab api projects/souliane%2Fteatree/issues -f title=x"
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
 
 class TestInternalDenylistScoping:
-    """#1415 fix: SCAN by default; SKIP only a PROVABLY-internal target (denylist).
+    """#1415/#1213 scope: SKIP only a PROVABLY non-public target (#3442 fail closed).
 
-    The original over-block fired on a publish to a PRIVATE internal remote the
-    user had not declared. The fix is config-driven: with the user's internal
-    namespace in ``internal_publish_namespaces`` (the denylist), that internal
-    target SKIPS, while EVERY non-internal target -- a genuinely-public
-    non-teatree repo, an unknown target, an unresolvable target -- still SCANS.
-    The classifier stays FAIL-CLOSED so no public surface can leak unscanned.
+    A private internal namespace in ``internal_publish_namespaces`` (the
+    denylist) SKIPS; an affirmatively-PUBLIC probe verdict SCANS; and a resolvable
+    target whose probe cannot confirm visibility FAILS CLOSED and SCANS too (#3442
+    -- a probe error is not a licence to skip). A non-repo surface (a Slack
+    ``curl``) is not repo-scoped, so this scope leaves it to the gate's default.
     """
 
     def test_denylisted_internal_target_skips(self, tmp_path: Path) -> None:
@@ -407,39 +458,38 @@ class TestInternalDenylistScoping:
         # provably internal, so the gate skips.
         cfg = _config(tmp_path, ["internal-eng"])
         cmd = 'glab mr note 5 -R internal-eng/internal-product --message "customercorp note"'
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
 
     def test_user_owned_non_teatree_public_repo_is_scanned(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # F3 (the leak path the review caught): a USER-OWNED non-teatree PUBLIC
-        # repo (e.g. a blog repo) is NOT in the denylist and the probe confirms it
-        # PUBLIC, so it must SCAN. A fail-open allowlist would have skipped it and
-        # leaked an internal term onto a public surface.
+        # A USER-OWNED non-teatree PUBLIC repo (e.g. a blog repo) is NOT in the
+        # denylist and the probe confirms it PUBLIC, so it must SCAN -- an
+        # affirmatively-public target is the only surface this gate fires on.
         cfg = _config(tmp_path, ["internal-eng"])
-        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
-        dest = publish_destination.Destination(slug="ourorg/other-public-repo", via="flag")
-        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         cmd = 'gh issue create -R ourorg/other-public-repo --body "customercorp leak"'
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
-    def test_unknown_visibility_non_denylisted_target_is_scanned(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # MUST-FIRE: a target not in the denylist whose visibility the in-hook
-        # probe cannot resolve (the common cold-hook state) stays PUBLIC and is
-        # scanned -- detection failure never opens the gate.
+    def test_probe_error_non_denylisted_target_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #3442 fail closed: a resolvable target NOT in the denylist whose
+        # visibility the in-hook probe cannot confirm (returns None) is NOT
+        # provably non-public, so the gate SCANS (does not skip) -- mirroring the
+        # bash pre-push gate's undetermined-visibility branch. The offline
+        # ``private_repos`` allowlist is the network-free way to keep a genuinely
+        # private repo skip-eligible.
         cfg = _config(tmp_path, ["internal-eng"])
-        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         cmd = 'gh issue create -R someowner/mystery --body "customercorp note"'
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
-    def test_unresolvable_target_is_scanned_failsafe(self, tmp_path: Path) -> None:
-        # FAIL-SAFE: a publish whose target cannot be resolved from the command
-        # at all keeps scanning -- an unparsable target is never a silent bypass.
+    def test_non_repo_surface_is_not_scoped_out(self, tmp_path: Path) -> None:
+        # A publish with no repo-targeted segment (a Slack ``curl``) is not
+        # repo-scoped: this visibility scope does NOT skip it (returns False),
+        # leaving it to the gate's own default.
         cfg = _config(tmp_path, ["internal-eng"])
         cmd = "curl -d x https://example.com"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
 
 
 class TestForgeAwareVisibility:
@@ -487,7 +537,7 @@ class TestForgeAwareVisibility:
         monkeypatch.setattr(_repo_visibility, "_write_visibility_cache", lambda *_a, **_k: None)
 
         cmd = "glab mr create -R internalcorp/private-svc --title x --description y"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
         assert ("glab", "internalcorp/private-svc") in calls
         assert ("gh", "internalcorp/private-svc") not in calls
 
@@ -503,7 +553,7 @@ class TestForgeAwareVisibility:
         monkeypatch.setattr(_repo_visibility, "_write_visibility_cache", lambda *_a, **_k: None)
 
         cmd = "gh pr create -R someowner/private-repo --title x --body y"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
 
     def test_public_github_target_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # MUST-FIRE: a genuinely-public GitHub repo (souliane/teatree itself) the
@@ -516,4 +566,324 @@ class TestForgeAwareVisibility:
         monkeypatch.setattr(_repo_visibility, "_write_visibility_cache", lambda *_a, **_k: None)
 
         cmd = "gh pr create -R souliane/teatree --title x --body y"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
+
+
+class TestT3ReviewDestination:
+    """Fix A: ``t3 [overlay] review post-comment/post-draft-note`` resolves to its repo slug.
+
+    The destination resolver early-returned ``None`` for any non-``gh``/``glab``
+    leader, so a ``t3 review post-comment <repo> ...`` segment resolved to no
+    destination -- and ``t3`` is not a recognised inert leader either, so the
+    whole command fell through to the fail-closed scan. A post to an
+    allowlisted-private repo via ``t3 review`` therefore over-fired the
+    banned-terms gate. The resolver now extracts the repo positional (the first
+    non-flag token after the verb) and classifies it against the internal
+    allowlist; ``t3 review`` is GitLab-only, so the forge is pinned to gitlab.
+    """
+
+    def test_resolve_post_comment_records_slug_via_and_forge(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "t3 review post-comment internalcorp/svc 6378 --body-file /x --live"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "t3"
+        assert dest.forge == "gitlab"
+
+    def test_resolve_post_draft_note_records_slug(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "t3 review post-draft-note internalcorp/svc 6378 --body-file /x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "t3"
+        assert dest.forge == "gitlab"
+
+    def test_resolve_tolerates_interleaved_leading_flag_before_repo(self) -> None:
+        # The repo is the first NON-FLAG positional after the verb, so a leading
+        # boolean flag interleaved before it does not derail resolution.
+        dest = publish_destination.resolve_publish_destination(
+            "t3 review post-comment --live internalcorp/svc 6378 --body-file /x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+
+    def test_non_review_t3_verb_is_none(self) -> None:
+        # A ``t3`` sub-command that is not a review post verb resolves to no
+        # destination via this path (the resolver only knows the review posts).
+        assert publish_destination.resolve_publish_destination("t3 review list internalcorp/svc") is None
+
+    def test_internal_post_comment_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            public_visibility.gate_skips_for_visibility(
+                "t3 review post-comment internalcorp/svc 6378 --body-file /x --live", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_internal_post_draft_note_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            public_visibility.gate_skips_for_visibility(
+                "t3 review post-draft-note internalcorp/svc 6378 --body-file /x", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_overlay_token_between_t3_and_review_is_tolerated(self, tmp_path: Path) -> None:
+        # The arbitrary overlay token between ``t3`` and ``review`` must not
+        # break detection (e.g. ``t3 acme-internal review post-comment ...``).
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            public_visibility.gate_skips_for_visibility(
+                "t3 acme-internal review post-comment internalcorp/svc 6378 --body-file /x --live",
+                None,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_path_form_t3_leader_is_canonicalised(self, tmp_path: Path) -> None:
+        # A path-form leader (``./t3``) canonicalises to the ``t3`` basename, the
+        # same as ``_segment_is_t3_publish`` does.
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            public_visibility.gate_skips_for_visibility(
+                "./t3 review post-comment internalcorp/svc 6378 --body-file /x --live", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_chained_cd_then_post_comment_is_skipped(self, tmp_path: Path) -> None:
+        # A leading ``cd <wt>`` is a recognised inert leader, and the trailing
+        # ``t3 review post-comment`` segment resolves to a provably-internal repo.
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = "cd /wt && t3 review post-comment internalcorp/svc 6378 --body-file /x --live"
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
+
+    def test_public_repo_post_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # MUST-FIRE: a ``t3 review`` post to a NON-allowlisted repo the probe
+        # cannot prove private stays PUBLIC and is scanned -- recognising the
+        # destination must not relax the public-surface default.
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "t3 review post-comment public-org/app 6378 --body-file /x --live"
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
+
+
+class TestApiEndpointNormalization:
+    """Fix B: ``api/vN/`` and full-URL ``gh``/``glab api`` endpoints resolve to a slug.
+
+    ``_destination_from_api`` matched only a RELATIVE ``repos/...`` /
+    ``projects/...`` path, so an ``api/v4/projects/<ns>%2F<repo>/...`` endpoint
+    or a full ``https://gitlab.com/api/v4/projects/...`` URL yielded ``None`` and
+    the gate over-blocked an internal-MR update. The endpoint is now normalised
+    (a leading ``https?://<host>/`` and an ``api/vN/`` segment stripped) before
+    the existing relative patterns -- purely additive, a public endpoint still
+    resolves public and still scans.
+    """
+
+    def test_resolve_versioned_projects_path(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api --method POST api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "api"
+
+    def test_resolve_full_url_projects_path(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api --method POST "
+            "https://gitlab.com/api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "api"
+
+    def test_resolve_gh_full_url_repos_path(self) -> None:
+        # The same normalisation strips the GitHub API host so a full-URL ``gh
+        # api`` endpoint resolves its ``repos/owner/repo`` slug too.
+        dest = publish_destination.resolve_publish_destination(
+            "gh api --method POST https://api.github.com/repos/internalcorp/svc/issues -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "api"
+
+    def test_internal_versioned_write_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = "glab api --method POST api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
+
+    def test_internal_full_url_write_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = (
+            "glab api --method POST "
+            "https://gitlab.com/api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        )
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
+
+    def test_public_versioned_write_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "glab api --method POST api/v4/projects/public-org%2Fapp/merge_requests/6378/notes -f body=x"
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
+
+    def test_public_full_url_write_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = (
+            "glab api --method POST "
+            "https://gitlab.com/api/v4/projects/public-org%2Fapp/merge_requests/6378/notes -f body=x"
+        )
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is False
+
+
+def _private_repos_config(tmp_path: Path, namespaces: list[str]) -> Path:
+    return _seed_setting(tmp_path, "private_repos", namespaces)
+
+
+class TestRestrictedPathCwdResolution:
+    """The cwd-remote slug must resolve OFFLINE inside the restricted hook PATH.
+
+    The PreToolUse hook subprocess inherits a PATH that frequently does not
+    resolve a bare ``git``. Resolving the flagless-create destination by
+    shelling out to ``git remote get-url`` failed there, so the destination
+    resolved to ``None`` and the banned-terms gate OVER-BLOCKED a flagless
+    ``glab mr create`` to the user's OWN private repo (the offline
+    ``private_repos`` allowlist never got a slug to match). The slug is now
+    parsed from ``.git/config`` directly, so it resolves with no ``git`` on
+    PATH -- while a genuinely-PUBLIC cwd still scans (no over-relaxation).
+    """
+
+    def test_flagless_create_to_private_cwd_skips_without_git_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-NOT-FIRE (red on revert): a flagless ``glab mr create`` whose cwd
+        # is an allowlisted-private checkout SKIPS the leak scan even when ``git``
+        # is unresolvable on PATH -- the offline ``.git/config`` parse supplies
+        # the slug the allowlist matches. Before the fix the slug was empty, the
+        # destination None, and the gate over-blocked.
+        repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:internalcorp/svc.git")
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        monkeypatch.setenv("PATH", "")  # mimic the restricted hook subprocess: no git
+        cmd = "glab mr create --source-branch x --target-branch master --fill"
+        assert public_visibility.gate_skips_for_visibility(cmd, repo, config_path=cfg) is True
+
+    def test_flagless_create_from_linked_worktree_skips_without_git_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The real-world shape: the agent's cwd is a LINKED worktree whose
+        # ``.git`` is a FILE pointing at the shared common-dir config. The slug
+        # must still resolve offline so the private post is not over-blocked.
+        repo = _repo_with_remote(tmp_path / "main", "git@gitlab.com:internalcorp/svc.git")
+        _git(repo, "commit", "--allow-empty", "-m", "init")
+        linked = tmp_path / "linked"
+        _git(repo, "worktree", "add", str(linked), "-b", "feat/x")
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        monkeypatch.setenv("PATH", "")
+        cmd = "glab mr create --source-branch x --target-branch master --fill"
+        assert public_visibility.gate_skips_for_visibility(cmd, linked, config_path=cfg) is True
+
+    def test_flagless_create_to_public_cwd_still_scans_without_git_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-FIRE (no over-relaxation): the offline slug resolution must NOT
+        # relax a genuinely-PUBLIC cwd. With the repo not in the allowlist and
+        # the probe confirming PUBLIC, the flagless create still scans.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        monkeypatch.setenv("PATH", "")
+        cmd = "gh pr create --title x --body y"
+        assert public_visibility.gate_skips_for_visibility(cmd, repo, config_path=cfg) is False
+
+
+_GITLAB_PRIVATE_NOTE_URL = "https://gitlab.com/api/v4/projects/internalcorp%2Fprivate-svc/merge_requests/5/notes"
+_GITHUB_PRIVATE_COMMENT_URL = "https://api.github.com/repos/internalcorp/private-svc/issues/5/comments"
+_GITHUB_PUBLIC_COMMENT_URL = "https://api.github.com/repos/souliane/teatree/issues/5/comments"
+
+
+def _python_post_command(url: str) -> str:
+    return (
+        f"python3 -c \"import requests; requests.post('{url}', "
+        "json={'body': 'note'}, headers={'PRIVATE-TOKEN': token})\""
+    )
+
+
+class TestPythonRestScriptDestination:
+    """A python REST-publish script resolves a destination the SAME way a raw ``gh``/``glab api`` URL does.
+
+    Reuses the identical ``repos/<owner>/<repo>`` / ``api/v<N>/projects/<slug>``
+    path resolution (#1415/#1213 gap: a ``python3``/``python`` REST-publish
+    segment was never classified as a publish at all, so the leak scan never
+    even ran against it).
+    """
+
+    def test_resolve_gitlab_projects_path_from_python_script(self) -> None:
+        dest = publish_destination.resolve_publish_destination(_python_post_command(_GITLAB_PRIVATE_NOTE_URL))
+        assert dest is not None
+        assert dest.slug == "internalcorp/private-svc"
+        assert dest.forge == "gitlab"
+
+    def test_resolve_github_repos_path_from_python_script(self) -> None:
+        dest = publish_destination.resolve_publish_destination(_python_post_command(_GITHUB_PRIVATE_COMMENT_URL))
+        assert dest is not None
+        assert dest.slug == "internalcorp/private-svc"
+        assert dest.forge == "github"
+
+    def test_read_only_script_still_resolves_a_destination(self) -> None:
+        # Destination RESOLUTION is orthogonal to read/write -- mirroring
+        # ``_destination_from_api`` (a ``gh api ... --method GET`` resolves a
+        # slug too). The write-vs-read gate is ``segment_is_python_rest_publish``
+        # upstream (the whole leak scan never runs for a read-only script), not
+        # this resolver.
+        command = "python3 -c \"import requests; requests.get('https://api.github.com/repos/o/r')\""
+        dest = publish_destination.resolve_publish_destination(command)
+        assert dest is not None
+        assert dest.slug == "o/r"
+
+    def test_dynamically_built_url_resolves_no_destination(self) -> None:
+        # No literal URL in the segment -- the target is genuinely unresolvable,
+        # not private, so it must fail closed to SCAN (never skip).
+        command = (
+            "python3 -c \"import requests; requests.post(base + '/api/v4/projects/' + str(pid) + '/notes', json={})\""
+        )
+        assert publish_destination.resolve_publish_destination(command) is None
+
+    def test_python_publish_to_private_repo_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        command = _python_post_command(_GITLAB_PRIVATE_NOTE_URL)
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is True
+
+    def test_python_publish_to_public_repo_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        command = _python_post_command(_GITHUB_PUBLIC_COMMENT_URL)
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is False
+
+    def test_python_publish_with_unresolvable_target_still_scans(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        command = (
+            "python3 -c \"import requests; requests.post(base + '/api/v4/projects/' "
+            "+ str(pid) + '/notes', headers={'PRIVATE-TOKEN': token}, json={})\""
+        )
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is False
+
+    def test_self_hosted_gitlab_host_declared_via_private_repos_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "Configured self-hosted GitLab host" -- the SAME mechanism the offline
+        # ``private_repos`` allowlist already uses to declare a host: a
+        # host-qualified entry. The python script's URL targets that declared
+        # host's REST API, and it resolves + skips without any new config knob.
+        # Destination RESOLUTION (unlike classification) reads the default
+        # config path, mirroring every other resolver in this module -- so the
+        # test config is pointed at via the same env var the resolvers read.
+        cfg = _private_repos_config(tmp_path, ["gitlab.example.corp/internalcorp"])
+        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+        url = "https://gitlab.example.corp/api/v4/projects/internalcorp%2Fprivate-svc/merge_requests/5/notes"
+        command = _python_post_command(url)
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is True

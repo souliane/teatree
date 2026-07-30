@@ -1,0 +1,228 @@
+# Per-file deferred (function-scoped) intra-package import pegs -- the ratchet ledger (#2385 / #2413).
+# A function-scoped `from teatree.core... / teatree.loop... import` hides an intra-package edge from
+# tach's acyclic guard. Each key is a repo-relative source file; the value is the exact number of
+# such deferred imports it may carry. Over-peg blocks (name the file); under-peg banks (lower the
+# entry); a file not listed pegs at 0. Two disjoint PRs never collide: git unions independent keys;
+# same-file contention surfaces as a textual conflict. The [intra_core] sum is the tach-invisible
+# core-cycle floor; [intra_loop] the loop floor. Lower an entry as its edge becomes a declared tach
+# sub-node edge; never raise one without the edge being genuinely load-bearing (rationale in the commit).
+
+[intra_core]
+"src/teatree/core/_checking_gather.py" = 5
+# souliane/teatree#3526: the load-time conformance checker resolves `OverlayBase` at
+# call time because `teatree.core.overlay` reaches back into the loader that imports
+# this module — a genuine cycle, not a lazy-import convenience.
+"src/teatree/core/overlay_conformance.py" = 1
+# 1: #3658 resolves a thread's subject against teatree's own `Ticket` rows — an ORM
+# import that must resolve after the app registry is ready, so it stays call-time.
+"src/teatree/core/owner_dm_sweep.py" = 1
+# 1: the token-budget read (`AnthropicTokenUsage`) is an ORM import that must resolve
+# after the app registry is ready, so it stays call-time.
+"src/teatree/core/admission_governor.py" = 1
+"src/teatree/core/apps.py" = 2
+"src/teatree/core/checking.py" = 2
+"src/teatree/core/cleanup/cleanup.py" = 1
+"src/teatree/core/cost.py" = 1
+# Fleet-safety Stage 2 mutex (teatree.core.fleet.claim / .wire). The Django-aware
+# wire layer defers `from teatree.core.models import ImplementedIssueMarker` in its
+# three claim-lifecycle functions (ticket_claim_is_lost / heartbeat_inflight_claims
+# / _heartbeat_one) to keep the sibling claim module Django-free and the wire out
+# of the app-load cycle; the fence call sites below each defer `from
+# teatree.core.fleet import wire` for the same reason (leaf import kept out of the
+# app-load cycle). Nesting the two modules under core/fleet/ does not change these
+# runtime edges, so the deferrals stay and are pegged here.
+"src/teatree/core/fleet/wire.py" = 3
+"src/teatree/core/gates/dod_gate.py" = 2
+"src/teatree/core/gates/e2e_mandatory_gate.py" = 3
+"src/teatree/core/gates/fix_dod_gate.py" = 1
+"src/teatree/core/gates/live_post_gate.py" = 1
+"src/teatree/core/gates/local_stack_gate.py" = 3
+"src/teatree/core/gates/owned_repo_guard.py" = 2
+"src/teatree/core/gates/plan_gate.py" = 2
+"src/teatree/core/gates/review_request_draft_gate.py" = 1
+"src/teatree/core/gates/review_request_guard.py" = 6
+"src/teatree/core/gates/rubric_gate.py" = 2
+# 6: #3551/#3555 made the hand-off derive live state when the snapshot payload is
+# empty — Worktree / Ticket / PullRequest / LoopLease / SessionHandover are all ORM
+# reads that must resolve after the app registry is ready, so each stays call-time.
+"src/teatree/core/handover.py" = 6
+# _reenqueue_provision defers `from teatree.core.tasks import execute_provision`
+# (call-time, kept lazy) — tasks.py pulls the whole task-execution graph
+# (backend_factory / gates / runners / worktree); a top-level import from this
+# command helper would drag that graph in at command load.
+"src/teatree/core/management/commands/_attachment_commands.py" = 1
+"src/teatree/core/management/commands/_clear_preflight.py" = 1
+"src/teatree/core/management/commands/_e2e_discovery.py" = 1
+# 4: the deferral bookkeeping reads `PendingPullRequest` and the `db_retry` seam, both
+# ORM-adjacent imports that must resolve after the app registry is ready — the module is
+# imported from the pre-push hook, which runs before Django is set up.
+"src/teatree/core/management/commands/_ensure_pr.py" = 4
+"src/teatree/core/management/commands/_rubric_commands.py" = 1
+"src/teatree/core/management/commands/_ship/exec.py" = 1
+"src/teatree/core/management/commands/_ship/gates.py" = 2
+"src/teatree/core/management/commands/checking.py" = 3
+"src/teatree/core/management/commands/cost.py" = 2
+"src/teatree/core/management/commands/db.py" = 1
+"src/teatree/core/management/commands/dogfood.py" = 1
+"src/teatree/core/management/commands/dream.py" = 2
+"src/teatree/core/management/commands/e2e.py" = 1
+"src/teatree/core/management/commands/followup.py" = 2
+# 0: #3555 moved the claim/drain logic onto the shared `handover.claim_handovers`
+# seam, so the command no longer defers an intra-core import of its own.
+"src/teatree/core/management/commands/handover.py" = 0
+"src/teatree/core/management/commands/lifecycle.py" = 3
+"src/teatree/core/management/commands/loop_dispatch.py" = 3
+"src/teatree/core/management/commands/loop_drain_queue.py" = 1
+"src/teatree/core/management/commands/loop_owner.py" = 4
+"src/teatree/core/management/commands/loop_self_improve.py" = 1
+"src/teatree/core/management/commands/loop_slack_answer.py" = 1
+# 1: `discharge-pending` resolves `PendingPullRequest` at call time for the same
+# app-registry reason as the rest of this command's ORM reads.
+"src/teatree/core/management/commands/_pending_pr_commands.py" = 1
+"src/teatree/core/management/commands/pr.py" = 1
+"src/teatree/core/management/commands/retro.py" = 1
+"src/teatree/core/management/commands/review.py" = 2
+"src/teatree/core/management/commands/review_request_post.py" = 4
+"src/teatree/core/management/commands/speak.py" = 1
+"src/teatree/core/management/commands/standing_goal.py" = 3
+# 1: both headless_dispatch refusals became a declared top-level edge; the one left
+# is `review.completion_evidence`, which pulls the review graph at command load.
+"src/teatree/core/management/commands/tasks.py" = 1
+# 4: the sweep subcommands split out to _sweep_commands.py in the ticket
+# god-module split, taking one deferred teatree.core import with them; the four
+# left here (DodE2EOverride, E2EBypassApproval, two get_all_overlays) are real.
+"src/teatree/core/management/commands/ticket.py" = 4
+# 1: #3570 moved the runner to `agents/ticket_short_description.py` (registered at
+# app-ready), so the command defers one intra-core import instead of two.
+"src/teatree/core/management/commands/ticket_short_describe.py" = 1
+"src/teatree/core/management/commands/worktree.py" = 1
+"src/teatree/core/managers.py" = 2
+"src/teatree/core/mcp_connectivity.py" = 1
+# messaging_tokens defers `from teatree.core.send_proxy import read_posting_credential`
+# so the single-credential-reader routes through the proxy without dragging the ORM
+# model registry in pre-app-registry (#3334).
+"src/teatree/core/messaging_tokens.py" = 1
+"src/teatree/core/merge/authorization.py" = 4
+"src/teatree/core/merge/execution.py" = 4
+# substrate_standing defers `from teatree.core.overlay_loader import infer_overlay_for_url`
+# so resolving a repo's owning overlay stays a call-time read of the live overlay
+# registry — the edge moved here verbatim from merge/authorization.py (#3648).
+"src/teatree/core/merge/substrate_standing.py" = 1
+"src/teatree/core/model_registries.py" = 5
+"src/teatree/core/models/auto_review_dispatch.py" = 3
+"src/teatree/core/models/implemented_issue_marker.py" = 1
+# 1: `_ticket_carrying_pr` walks `Ticket` rows, and `Ticket` reaches back into this
+# module's package — a genuine model cycle, so the sibling import stays call-time.
+"src/teatree/core/models/pull_request.py" = 1
+"src/teatree/core/models/task.py" = 7
+# FSM disposition helpers (dispose_unshippable_review / escalate_unmatched_phase_
+# transition) split out of task.py; record_stuck_transition_question defers
+# `from teatree.core.models.deferred_question import DeferredQuestion`
+# (ORM/app-registry — model import in a module loaded during model init).
+"src/teatree/core/models/task_phase_disposition.py" = 1
+# artifacts() defers `from teatree.core.models.ticket_artifacts import
+# collect_ticket_artifacts` (a real import cycle: ticket_artifacts imports the
+# ticket models back). The method — and its deferral — moved here from
+# ticket_status.py in the introspection/status facet split; the peg moved with it.
+"src/teatree/core/models/ticket_introspection.py" = 1
+"src/teatree/core/models/ticket_phase_sessions.py" = 1
+"src/teatree/core/models/ticket_scheduling.py" = 7
+# `teatree.settings._discover_overlay_apps()` `ep.load()`s every `teatree.overlays`
+# entry point at SETTINGS-IMPORT time, before Django can be configured — so any
+# overlay module whose import chain reaches `teatree.core.models` is silently dropped
+# from INSTALLED_APPS, taking its models, migrations and management commands with it.
+# Deferring the ORM imports in the modules an overlay's hook surface pulls in (notify,
+# worktree_env, visual_qa) is what keeps that surface import-safe pre-`django.setup()`;
+# those edges are load-bearing and stay.
+"src/teatree/core/notify.py" = 5
+# notify_ledger.py carries the ORM (BotPing/OutboundClaim/PendingChatInjection) call-time
+# imports that moved out of notify.py when the durable-audit helpers were split off to hold
+# notify.py under the 500-LOC module-health cap. Same pre-`django.setup()` import-safety
+# deferral as notify.py above — the app registry must be ready before these ORM imports resolve.
+"src/teatree/core/notify_ledger.py" = 7
+"src/teatree/core/on_behalf_egress.py" = 2
+"src/teatree/core/on_behalf_gate_recorded.py" = 6
+"src/teatree/core/on_behalf_post_receipt.py" = 1
+# preflight() defers `from teatree.core.connector_probes import standard_probes` to
+# build its default probes without an import cycle (connector_probes → overlay) (#3333).
+"src/teatree/core/overlay.py" = 4
+"src/teatree/core/overlay_loader.py" = 1
+# overlay_name_of / resolve_overlay_name defer `from teatree.core.overlay_loader import
+# get_all_overlays / OverlayConfigResolver` — these name resolvers were carved out of
+# overlay_loader.py (module-health cap) and call back into it, so the edge is call-time to
+# avoid the loader import cycle.
+"src/teatree/core/overlay_name_resolution.py" = 2
+"src/teatree/core/overlay_metadata.py" = 1
+# overlay_skill_metadata defers `from teatree.core.overlay_loader import get_overlay`
+# so the CLI-build-time caller resolves it only when Django is up (#3355).
+"src/teatree/core/overlay_skills.py" = 1
+"src/teatree/core/overlay_url.py" = 1
+"src/teatree/core/reference_linkifier.py" = 5
+"src/teatree/core/reply_transport.py" = 1
+# fleet-safety Stage 2: execute_ship re-verifies the fleet-claim fence immediately
+# before BOTH outward writes via a deferred `from teatree.core.fleet import wire`.
+"src/teatree/core/runners/ship.py" = 1
+"src/teatree/core/safe_kill.py" = 1
+"src/teatree/core/intake/scope_cache.py" = 1
+"src/teatree/core/send_proxy.py" = 3
+"src/teatree/core/signals.py" = 6 # +1: F9 headless-admission consult (lazy, avoids app-registry-at-load)
+"src/teatree/core/speak.py" = 1
+"src/teatree/core/provision/step_runner.py" = 1
+# #61 availability+preset merge: the unified operating-mode resolver defers its
+# intra-core edges — Mode / ModeOverride / ConfigSetting (ORM, app-registry) and the
+# deferred-question drain — cycle-safe and app-registry-safe (mode_resolution is
+# imported by early hooks via speak.py before Django apps are ready).
+# 8 -> 5 (#3826): the fast-hook mirror is deleted (three of its deferrals with it) and
+# the presence heartbeat moved to the foundation leaf teatree.live_presence, which
+# needs no deferral at all — it is Django-free.
+"src/teatree/core/mode_resolution.py" = 5
+# #61: stop_snapshot's resume-plan defers `resolve_active_mode` + `ConfigSetting`
+# (ORM/app-registry) to render the mode/schedule lines.
+"src/teatree/core/stop_snapshot.py" = 2
+# _record_attachment_hold_question defers `from teatree.core.models.
+# deferred_question import DeferredQuestion` (ORM/app-registry) to escalate an
+# intake attachment-gate hold instead of silently freezing the ticket.
+"src/teatree/core/tasks.py" = 8 # +2: F4 claim-CAS + F9 headless_admission lazy imports
+"src/teatree/core/headless_admission.py" = 1 # F9: lazy governor import, avoids app-registry-at-load
+"src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
+# PR #3479 module-health split: the path-only-TOML backend construction moved
+# out of backend_factory.py into toml_backends.py, carrying the same three
+# function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`
+# host-credential reads + one `messaging_tokens.resolve_messaging_tokens`), all
+# deferred pre-app-registry. backend_factory.py's peg dropped from 3 to 0 in the
+# same change — the edge relocated, it did not grow.
+"src/teatree/core/toml_backends.py" = 3
+"src/teatree/core/views/_rate_limit.py" = 1
+# #8 M7 revival: the waiting-lane covering-CLEAR match reads the shared SIG-1
+# supersede helper (superseding_context / clear_is_superseded) and the promoted
+# repo resolver — deferred for import-weight (merge/__init__ pulls the whole merge
+# subtree, factory_signal_queries the signal stack) to keep waiting.py light.
+"src/teatree/core/waiting.py" = 3
+# Same pre-`django.setup()` import-safety deferral as notify.py above: worktree_env
+# is on the overlay hook surface, so its ORM imports are call-time.
+"src/teatree/core/worktree/worktree_env.py" = 6
+"src/teatree/core/worktree/worktree_tasks.py" = 1
+
+[intra_loop]
+"src/teatree/loop/domain_jobs.py" = 1
+"src/teatree/loop/domain_optional_scanner_jobs.py" = 1
+"src/teatree/loop/global_scanner_factories.py" = 1
+"src/teatree/loop/loop_scoping.py" = 1
+# #3569: `_handle_reviewer` defers `from teatree.loop.persistence_self_pr_review
+# import handle_self_pr_review`. The sibling module (split out to keep persistence
+# under the module-health LOC cap) imports persistence's shared ticket/task helpers
+# at top level, so persistence can only import it lazily — the load-bearing edge
+# that breaks the persistence<->sibling import cycle.
+"src/teatree/loop/persistence.py" = 1
+"src/teatree/loop/phases/render.py" = 8
+"src/teatree/loop/scanners/failed_e2e_posts.py" = 1
+"src/teatree/loop/scanners/outbound_audit_overlay_verifiers.py" = 5
+"src/teatree/loop/scanners/slack_mentions.py" = 1
+"src/teatree/loop/sweep_on_demand.py" = 2
+"src/teatree/loop/tick_freshness.py" = 2
+# The tick-time transient auto-requeue (`from teatree.loop.transient_requeue import
+# requeue_transient_failed`) is deferred for the same reason as the sibling
+# `run_boot_sweeps` import beside it — loaded at tick time so importing
+# `tick_recovery` never pulls the Django-model-touching sweep into the loop
+# module-load path.
+"src/teatree/loop/tick_recovery.py" = 3

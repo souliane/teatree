@@ -2,7 +2,7 @@
 
 Regression guard for #484: when a worktree has no associated database (the
 common case for frontend-only repos), the runner used to call
-``overlay.db_import()`` anyway and log a misleading
+``overlay.provisioning.db_import()`` anyway and log a misleading
 ``WARNING ... DB import failed for <repo> — continuing``. The runner now
 skips ``_run_db_import`` entirely when ``worktree.db_name`` is empty.
 
@@ -11,6 +11,8 @@ the runner aborts the provision (``ok=False``) before any provision or
 post-db step runs — pytest must never get a worktree with no test DB.
 """
 
+import os
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -19,32 +21,19 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep
+from teatree.core.overlay import DbImportStrategy, OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.runners import WorktreeProvisionRunner
 
 
-class _RecordingOverlay(OverlayBase):
-    """Overlay that records db_import calls and always returns a strategy."""
+class _RecordingOverlayProvisioning(OverlayProvisioning):
+    def __init__(self, overlay: "_RecordingOverlay") -> None:
+        self._overlay = overlay
 
-    def __init__(self, *, db_import_result: bool = True) -> None:
-        super().__init__()
-        self.db_import_calls: int = 0
-        self.provision_steps_calls: int = 0
-        self.post_db_steps_calls: int = 0
-        self._db_import_result = db_import_result
-
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        self.provision_steps_calls += 1
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        self._overlay.post_db_steps_calls += 1
         return []
 
-    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        self.post_db_steps_calls += 1
-        return []
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return {
             "kind": "fallback-chain",
             "source_database": "dev",
@@ -56,8 +45,27 @@ class _RecordingOverlay(OverlayBase):
         }
 
     def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
-        self.db_import_calls += 1
-        return self._db_import_result
+        self._overlay.db_import_calls += 1
+        return self._overlay._db_import_result
+
+
+class _RecordingOverlay(OverlayBase):
+    """Overlay that records db_import calls and always returns a strategy."""
+
+    def __init__(self, *, db_import_result: bool = True) -> None:
+        super().__init__()
+        self.db_import_calls: int = 0
+        self.provision_steps_calls: int = 0
+        self.post_db_steps_calls: int = 0
+        self._db_import_result = db_import_result
+        self.provisioning = _RecordingOverlayProvisioning(self)
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        self.provision_steps_calls += 1
+        return []
 
 
 class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
@@ -78,7 +86,7 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         )
 
     def test_skips_db_import_when_db_name_empty(self) -> None:
-        """Frontend-style worktree (no DB) must not trigger overlay.db_import()."""
+        """Frontend-style worktree (no DB) must not trigger overlay.provisioning.db_import()."""
         worktree = self._make_worktree(db_name="")
         overlay = _RecordingOverlay()
 
@@ -91,7 +99,7 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         assert overlay.db_import_calls == 0
 
     def test_runs_db_import_when_db_name_set(self) -> None:
-        """Backend-style worktree (with DB) still drives overlay.db_import()."""
+        """Backend-style worktree (with DB) still drives overlay.provisioning.db_import()."""
         worktree = self._make_worktree(db_name="wt_484")
         overlay = _RecordingOverlay()
 
@@ -128,3 +136,134 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         assert overlay.db_import_calls == 1
         assert overlay.provision_steps_calls == 0
         assert overlay.post_db_steps_calls == 0
+
+
+_ENV_PROBE = "T3_WT_ENV_BLEED_PROBE"
+
+
+class _EnvCapturingProvisioning(_RecordingOverlayProvisioning):
+    """Records the ``os.environ`` state visible inside ``db_import``."""
+
+    def __init__(self, overlay: "_RecordingOverlay", captured: dict[str, str | None]) -> None:
+        super().__init__(overlay)
+        self._captured = captured
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {_ENV_PROBE: "applied"}
+
+    def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
+        self._overlay.db_import_calls += 1
+        self._captured["probe"] = os.environ.get(_ENV_PROBE)
+        self._captured["virtual_env"] = os.environ.get("VIRTUAL_ENV")
+        return self._overlay._db_import_result
+
+
+class _EnvCapturingOverlay(_RecordingOverlay):
+    def __init__(self) -> None:
+        super().__init__()
+        self.env_inside: dict[str, str | None] = {}
+        self.provisioning = _EnvCapturingProvisioning(self, self.env_inside)
+
+
+class TestRunnerScopesOverlayEnvToDbImport(TestCase):
+    """The overlay env applied for the DB import must not bleed into the loop process.
+
+    ``_run_db_import`` used to ``os.environ.update(env_extra)`` and never restore
+    it (and its ``VIRTUAL_ENV`` drop was a no-op), so one worktree's overlay env
+    leaked into every subsequent provision of the long-lived loop process. The
+    env is now scoped to the import and restored afterward.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.wt_path = tmp_path / "worktree"
+        self.wt_path.mkdir()
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/i/envbleed")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            db_name="wt_envbleed",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+
+    def test_overlay_env_visible_during_import_and_restored_after(self) -> None:
+        worktree = self._make_worktree()
+        overlay = _EnvCapturingOverlay()
+
+        with (
+            patch("teatree.core.runners.worktree_provision._setup_worktree_dir", return_value=None),
+            patch("teatree.utils.db.db_exists", return_value=False),
+            patch.dict(os.environ, {"VIRTUAL_ENV": "/loop/venv"}, clear=False),
+        ):
+            os.environ.pop(_ENV_PROBE, None)
+            result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+
+            # The env WAS applied for the import (behaviour preserved) with the
+            # loop's venv dropped so host pg tools ignore it …
+            assert overlay.env_inside["probe"] == "applied"
+            assert overlay.env_inside["virtual_env"] is None
+            # … and fully restored afterward: no bleed into the process.
+            assert _ENV_PROBE not in os.environ
+            assert os.environ.get("VIRTUAL_ENV") == "/loop/venv"
+
+        assert result.ok is True, result.detail
+
+
+class _BlockingDbImportOverlayProvisioning(_RecordingOverlayProvisioning):
+    def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
+        self._overlay.db_import_calls += 1
+        self._overlay.release.wait(timeout=3)
+        return True
+
+
+class _BlockingDbImportOverlay(_RecordingOverlay):
+    """Overlay whose ``db_import`` blocks (a child stuck on its PIPE) until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = threading.Event()
+        self.provisioning = _BlockingDbImportOverlayProvisioning(self)
+
+
+class TestRunnerDbImportNeverHangs(TestCase):
+    """A blocked DB-import aborts the provision loud, never hangs (#2244).
+
+    A DB-import stuck on a missing DSLR snapshot (no output, blocked on a child
+    PIPE) must abort the provision loud and non-zero instead of hanging silently
+    for 10+ minutes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.wt_path = tmp_path / "worktree"
+        self.wt_path.mkdir()
+
+    def test_blocking_db_import_aborts_loud(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/i/2244")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            db_name="wt_2244",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        overlay = _BlockingDbImportOverlay()
+
+        with (
+            patch("teatree.core.runners.worktree_provision._setup_worktree_dir", return_value=None),
+            patch("teatree.utils.db.db_exists", return_value=False),
+            patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=0.1),
+            patch("teatree.core.provision.provision_timebox.notify_user") as mock_notify,
+        ):
+            result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+            overlay.release.set()
+
+        assert result.ok is False
+        assert overlay.db_import_calls == 1
+        assert overlay.provision_steps_calls == 0
+        assert mock_notify.called

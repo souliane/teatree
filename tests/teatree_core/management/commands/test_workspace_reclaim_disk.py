@@ -13,7 +13,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
+import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 import teatree.core.management.commands.workspace as workspace_mod
 from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep
 
@@ -55,12 +55,12 @@ class ReclaimDiskCommandTests(TestCase):
         with (
             patch.object(workspace_mod, "reclaim_disk", return_value=_stub_report()),
             patch.object(workspace_mod, "WorktreeTeardownRunner") as teardown_runner,
-            patch.object(ws_clean_all_mod, "reap_one_worktree") as reap_worktree,
+            patch.object(ws_clean_all_mod, "reap_done_worktrees") as reap_done,
             patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker") as reap_orphan,
         ):
             call_command("workspace", "reclaim-disk")
         teardown_runner.assert_not_called()
-        reap_worktree.assert_not_called()
+        reap_done.assert_not_called()
         reap_orphan.assert_not_called()
 
     def test_output_reports_each_step_and_the_total(self) -> None:

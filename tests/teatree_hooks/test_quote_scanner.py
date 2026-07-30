@@ -13,6 +13,7 @@ are asserted as a unit.
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -50,14 +51,17 @@ class TestScanTextHighPatterns:
     @pytest.mark.parametrize(
         ("body", "expected_name"),
         [
-            ("## User mandate\n\nplease ship it", "heading-user-mandate"),
-            ("### User feedback (paraphrased): xyz", "heading-user-mandate"),
+            # The two shape-only attribution patterns stay HIGH only with an
+            # adjacent 20+-char double-quoted verbatim span (#3240); a bare shape
+            # downgrades to MEDIUM (see ``TestAttributionShapeQuoteEvidence``).
+            ('## User mandate\n\n"ship the export endpoint to production now"', "heading-user-mandate"),
+            ('### User feedback\n\n"ship the export endpoint to production now"', "heading-user-mandate"),
             ("## User ask (verbatim, 2026-05-20)\nbody", "heading-user-ask-verbatim"),
             ("**User directive (verbatim, today):** body", "bold-user-directive-verbatim"),
             ('> "An imperative sentence the user spoke."', "blockquote-attributed"),
             ('A direct phrase like _"this is a long enough sentence to trip the gate"_.', "italic-quote-long"),
             ('Per user feedback "ship it now"', "per-user-feedback-quoted"),
-            ("Per the user said: ship it now", "the-user-said-colon"),
+            ('the user said: "ship the export endpoint to production now"', "the-user-said-colon"),
         ],
     )
     def test_each_high_pattern_is_flagged(self, body: str, expected_name: str) -> None:
@@ -82,6 +86,54 @@ class TestScanTextMediumPatterns:
         assert any(f.name == expected_name for f in result.medium)
 
 
+class TestAttributionShapeQuoteEvidence:
+    """The two shape-only attribution patterns require adjacent quote evidence (#3240).
+
+    ``heading-user-mandate`` / ``the-user-said-colon`` fire on agent paraphrase as
+    readily as on a verbatim quote, so they stay HIGH only when a 20+-char
+    double-quoted span sits in the adjacent paragraph; a bare shape downgrades to
+    MEDIUM warn-allow. The explicit ``(verbatim`` heading and the real quote
+    shapes keep HIGH unconditionally.
+    """
+
+    @pytest.mark.parametrize(
+        ("body", "name"),
+        [
+            ("## User mandate\n\nplease ship the export endpoint", "heading-user-mandate"),
+            ("### User motivation\n\nwe want faster dashboards", "heading-user-mandate"),
+            ("Per the user said: ship it now", "the-user-said-colon"),
+            # A short (<20 char) quote is not meaningful verbatim evidence.
+            ('the user said: "ship it"', "the-user-said-colon"),
+            # A long quote two paragraphs away is NOT adjacent.
+            ('## User mandate\n\nplease ship\n\n"an unrelated long quoted snippet here"', "heading-user-mandate"),
+        ],
+    )
+    def test_bare_shape_downgrades_to_medium(self, body: str, name: str) -> None:
+        result = scan_text(body)
+        assert not result.has_high, f"bare attribution shape must not be HIGH; findings={result.findings!r}"
+        assert result.has_medium
+        assert any(f.name == name and f.severity == quote_scanner.MEDIUM for f in result.medium)
+
+    @pytest.mark.parametrize(
+        ("body", "name"),
+        [
+            ('## User mandate\n\n"ship the export endpoint to production now"', "heading-user-mandate"),
+            ('the user said: "ship the export endpoint to production now"', "the-user-said-colon"),
+        ],
+    )
+    def test_shape_with_adjacent_long_quote_stays_high(self, body: str, name: str) -> None:
+        result = scan_text(body)
+        assert result.has_high, f"attribution shape WITH an adjacent verbatim quote must stay HIGH; got {result!r}"
+        assert any(f.name == name and f.severity == quote_scanner.HIGH for f in result.high)
+
+    def test_explicit_verbatim_heading_stays_high_without_quote(self) -> None:
+        # ``heading-user-ask-verbatim`` structurally announces word-for-word
+        # content, so it keeps HIGH with no adjacent quote — it is NOT downgraded.
+        result = scan_text("## User ask (verbatim, 2026-05-20)\nbody")
+        assert result.has_high
+        assert any(f.name == "heading-user-ask-verbatim" for f in result.high)
+
+
 class TestBlocklistFile:
     def test_regex_blocklist_compiles_and_matches_case_insensitive(self, tmp_path: Path) -> None:
         blocklist = tmp_path / "blocklist.txt"
@@ -93,11 +145,41 @@ class TestBlocklistFile:
         assert result.has_high
         assert any(f.name.startswith("blocklist:") for f in result.high)
 
-    def test_invalid_regex_raises_clear_error(self, tmp_path: Path) -> None:
+    def test_invalid_regex_is_skipped_not_raised(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # A single malformed line must NOT raise — the sole caller fails OPEN on
+        # any exception, so a raise would silently disable the whole leak gate.
+        # The bad line is skipped with a stderr NOTE; the good line still fires.
+        blocklist = tmp_path / "blocklist.txt"
+        blocklist.write_text("[unterminated\n^Operation\\s+Greenlight\\b\n", encoding="utf-8")
+        result = scan_text("Operation Greenlight begins tomorrow.", blocklist_path=blocklist)
+        assert result.has_high
+        assert any(f.name.startswith("blocklist:") for f in result.high)
+        assert "skipped invalid blocklist regex" in capsys.readouterr().err
+
+    def test_invalid_regex_alone_does_not_disable_builtin_patterns(self, tmp_path: Path) -> None:
+        # A blocklist that is ENTIRELY a bad regex must not fail the gate open —
+        # the built-in verbatim-quote patterns must still fire.
         blocklist = tmp_path / "blocklist.txt"
         blocklist.write_text("[unterminated\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="invalid regex"):
-            scan_text("anything", blocklist_path=blocklist)
+        result = scan_text('_"ship the release right now please"_', blocklist_path=blocklist)
+        assert result.has_high
+
+    def test_blocklist_is_mtime_cached(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An unchanged file compiles once; a rewrite (new mtime/size) recompiles.
+        blocklist = tmp_path / "blocklist.txt"
+        blocklist.write_text("^Operation\\s+Greenlight\\b\n", encoding="utf-8")
+        quote_scanner._BLOCKLIST_CACHE.clear()
+        calls = {"n": 0}
+        real_compile = quote_scanner._compile_blocklist
+
+        def _counting(target: Path) -> list[quote_scanner.Pattern]:
+            calls["n"] += 1
+            return real_compile(target)
+
+        monkeypatch.setattr(quote_scanner, "_compile_blocklist", _counting)
+        quote_scanner._load_blocklist_patterns(blocklist)
+        quote_scanner._load_blocklist_patterns(blocklist)
+        assert calls["n"] == 1
 
 
 class TestExtractPublishPayloadBash:
@@ -143,6 +225,48 @@ class TestExtractPublishPayloadBash:
         # so the JSON ``text`` field is included in the scan payload.
         assert payload is not None
         assert "the user said" in payload
+
+
+class TestBodyFileResolvedAgainstHarnessCwd:
+    """A ``gh pr edit`` RELATIVE body file / ``$(cat rel)`` resolves against cwd.
+
+    Anti-vacuous pair (#1213): the false positive — a relative body the gate could
+    not read from the cold hook's reset cwd, so it fail-closed and forced
+    literal-inline ``--body`` — now RESOLVES and scans the real content; while a
+    real user quote inside that same resolved body STILL blocks, proving the gate
+    did not go blind.
+    """
+
+    def test_relative_cat_body_without_cwd_fails_closed(self, tmp_path: Path) -> None:
+        # The bug shape: no cwd threaded → the relative path is unreadable → the
+        # parser injects the fail-closed sentinel (which the gate would block on).
+
+        (tmp_path / "body.md").write_text("## What\nclean body\n", encoding="utf-8")
+        cmd = 'gh pr edit 5 --body "$(cat body.md)"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert is_fail_closed_sentinel(payload)
+
+    def test_relative_cat_body_with_cwd_is_resolved_and_clean(self, tmp_path: Path) -> None:
+        # The fix: cwd threaded → the relative body resolves and scans clean (no
+        # fail-closed sentinel, no HIGH finding) instead of over-blocking.
+
+        (tmp_path / "body.md").write_text("## What\nclean body, no quotes\n", encoding="utf-8")
+        cmd = 'gh pr edit 5 --body "$(cat body.md)"'
+        payload = extract_publish_payload("Bash", {"command": cmd}, tmp_path)
+        assert payload is not None
+        assert not is_fail_closed_sentinel(payload)
+        assert "clean body" in payload
+        assert not scan_text(payload).has_high
+
+    def test_relative_body_file_with_user_quote_still_blocks(self, tmp_path: Path) -> None:
+        # Anti-vacuous: a REAL verbatim user quote in the cwd-resolved relative
+        # body file is scanned and still flagged HIGH — the gate keeps biting.
+        (tmp_path / "body.md").write_text('## What\n> "A direct quote the user gave me."\n', encoding="utf-8")
+        cmd = "gh pr edit 5 --body-file body.md"
+        payload = extract_publish_payload("Bash", {"command": cmd}, tmp_path)
+        assert payload is not None
+        assert scan_text(payload).has_high
 
 
 class TestT3PublishCommands:
@@ -348,8 +472,17 @@ class TestBypassClosures:
 
 
 class TestHookHandlerEndToEnd:
-    def test_high_match_emits_deny_and_breaks_chain(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _bash('gh pr create --title t --body "## User mandate\nplease ship now"')
+    def test_high_match_emits_deny_and_breaks_chain(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The leak gate scopes to an affirmatively-public target (#1213), so the
+        # deny row posts to the genuinely-public ``souliane/teatree`` with the probe
+        # confirming it public.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash(
+            "gh pr create --repo souliane/teatree --title t "
+            '--body "## User ask (verbatim, 2026-05-20)\nplease ship now"'
+        )
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -414,7 +547,7 @@ class TestHookHandlerEndToEnd:
     def test_slack_mcp_send_message_is_scanned(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "tool_name": "mcp__claude_ai_Slack__slack_send_message",
-            "tool_input": {"text": "## User mandate\nplease ship"},
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nplease ship"},
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
@@ -468,7 +601,12 @@ class TestHookHandlerFailOpenWithoutTeatreeImport:
         assert blocked is False
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert captured.err == ""
+        # The fail-open is NOT silent (#F7.9): a loud stderr NOTE names the gate
+        # + the fail-open so a broken scanner is diagnosable, mirroring the
+        # banned-terms sibling. It never lands on stdout (that would corrupt the
+        # PreToolUse JSON channel).
+        assert "quote-scanner gate" in captured.err
+        assert "failed open" in captured.err
 
     def test_handler_returns_false_on_arbitrary_internal_exception(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -484,7 +622,9 @@ class TestHookHandlerFailOpenWithoutTeatreeImport:
         assert blocked is False
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert captured.err == ""
+        # Fail-open names the error loudly on stderr (#F7.9), never on stdout.
+        assert "quote-scanner gate" in captured.err
+        assert "synthetic" in captured.err
 
     def test_subprocess_invocation_without_teatree_on_path_does_not_traceback(self, tmp_path: Path) -> None:
         # End-to-end reproducer for #1314: invoke the hook script as a
@@ -574,7 +714,7 @@ class TestRound2BypassClosures:
     ) -> None:
         # End-to-end: the gate must DENY when the only override token
         # was smuggled past a literal newline.
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\n--quote-ok'
+        cmd = 'gh issue comment 1 --body "## User ask (verbatim, 2026-05-20)\nbody"\n--quote-ok'
         blocked = handle_quote_scanner_pretool(_bash(cmd))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -745,7 +885,7 @@ class TestRound2BypassClosures:
     def test_slack_schedule_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "tool_name": "mcp__claude_ai_Slack__slack_schedule_message",
-            "tool_input": {"text": "## User mandate\nfoo"},
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nfoo"},
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
@@ -847,9 +987,15 @@ class TestRound3BypassClosures:
         assert has_quote_ok_override("Bash", {"command": cmd}) is False
 
     def test_override_after_unspaced_semicolon_blocks_end_to_end(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody";echo --quote-ok'
+        # Affirmatively-public target so the leak gate fires (#1213); the point is
+        # that the ``--quote-ok`` after the unspaced ``;`` does NOT bypass the deny.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = (
+            'gh issue comment 1 --repo souliane/teatree --body "## User ask (verbatim, 2026-05-20)\nbody"'
+            ";echo --quote-ok"
+        )
         blocked = handle_quote_scanner_pretool(_bash(cmd))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -916,7 +1062,7 @@ class TestRound3BypassClosures:
     def test_slack_edit_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "tool_name": "mcp__claude_ai_Slack__slack_edit_message",
-            "tool_input": {"text": "## User mandate\nfoo"},
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nfoo"},
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
@@ -1061,7 +1207,7 @@ class TestHeredocToFileDashF:
         # heredoc-written commit message still trips the gate.
         cmd = (
             "cat > /tmp/commit-msg-126b.txt <<'EOF'\n"
-            "the user said: ship it now\n"
+            'the user said: "ship it now without any further review"\n'
             "EOF\n"
             "git commit -F /tmp/commit-msg-126b.txt"
         )
@@ -1104,7 +1250,7 @@ class TestHeredocBodyPairing:
     def test_posted_heredoc_path_body_is_scanned(self) -> None:
         cmd = (
             "cat > /tmp/posted-pair-2.txt <<EOF\n"
-            "the user said: ship it now\n"
+            'the user said: "ship it now without any further review"\n'
             "EOF\n"
             "gh pr create --title t --body-file /tmp/posted-pair-2.txt"
         )
@@ -1124,7 +1270,7 @@ class TestHeredocBodyPairing:
         assert payload.count("UNIQUEPAYLOADTOKEN") == 1
 
     def test_stdin_heredoc_body_is_still_scanned(self) -> None:
-        cmd = "gh pr create --title t --body-file - <<EOF\nthe user said: ship it now\nEOF"
+        cmd = 'gh pr create --title t --body-file - <<EOF\nthe user said: "ship it now without review"\nEOF'
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert scan_text(payload).has_high
@@ -1154,9 +1300,21 @@ def _git_init_remote(repo: Path, remote_url: str) -> None:
 
 @pytest.fixture
 def _private_repo_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nprivate_repos = ["acmecorp-engineering"]\n', encoding="utf-8")
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+            (json.dumps(["acmecorp-engineering"]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 @pytest.mark.integration
@@ -1172,7 +1330,7 @@ class TestPrivateRepoCarveOut:
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": 'git commit -m "the user said: ship it now"'},
+            "tool_input": {"command": 'git commit -m "the user said: \\"ship it now without review\\""'},
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
@@ -1182,24 +1340,29 @@ class TestPrivateRepoCarveOut:
         assert "WARNING" in captured.err
         assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
 
-    def test_private_repo_posting_command_with_cwd_target_downgrades(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    def test_private_repo_posting_command_with_cwd_target_skips_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
-        # gh issue create (no --repo) from a private CWD resolves the target
-        # from the CWD origin and applies the carve-out.
+        # gh issue create (no --repo) from a NON-public CWD resolves the target
+        # from the CWD origin; the leak gate scopes to affirmatively-public targets
+        # only (#1213), so a private-repo post is SKIPPED silently -- allowed with
+        # no deny and no warning (bias hard toward not firing).
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": 'gh issue create --title t --body "the user said: ship it now"'},
+            "tool_input": {
+                "command": 'gh issue create --title t --body "the user said: \\"ship it now without review\\""'
+            },
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
-        assert blocked is False  # downgraded, not denied
+        assert blocked is False  # skipped, not denied
         captured = capsys.readouterr()
         assert captured.out == ""  # no deny JSON
-        assert "WARNING" in captured.err
+        assert "WARNING" not in captured.err  # silent skip, no downgrade warning
 
     def test_explicit_public_repo_still_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1212,13 +1375,266 @@ class TestPrivateRepoCarveOut:
         data = {
             "tool_name": "Bash",
             "tool_input": {
-                "command": 'gh pr create --repo souliane/teatree --title t --body "the user said: ship it now"'
+                "command": (
+                    "gh pr create --repo souliane/teatree --title t "
+                    '--body "the user said: \\"ship it now without review\\""'
+                )
             },
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
+    """A readable commit body is resolved+scanned for ALL visibilities; the sentinel is visibility-scoped (#1415/#1213).
+
+    The over-block that stuck multiple coders: a clean ``git commit -F -`` /
+    heredoc to the user's own PUBLIC clone hard-blocked via the fail-closed
+    sentinel (whose text reads "failing closed" — the "fails open/closed"
+    misfire). The fix RESOLVES a readable stdin/heredoc/``printf``-piped body (so
+    a real user quote in it still blocks, and a clean one passes) regardless of
+    visibility.
+
+    The residual case is a GENUINELY-opaque body (``cat | git commit -F -`` /
+    ``-m "$VAR"``) the gate cannot read: the only HIGH finding is the fail-closed
+    sentinel. Unlike the banned-terms gate, the quote-scanner has NO push-time
+    backstop — ``refuse-public-push-with-leak.sh`` runs ``privacy-scan``, which
+    has no verbatim-quote detector — so a verbatim user quote in an opaque body
+    would reach public history un-scanned. The sentinel therefore DENIES on a
+    PUBLIC commit (as base ``main`` did) and only DOWNGRADES on a provably-PRIVATE
+    commit (the #126 carve-out: a private repo cannot leak to the public). Every
+    ``gh``/``glab`` POST still hard-blocks an unreadable public body.
+    """
+
+    def test_public_commit_heredoc_stdin_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK, now PASSES: a clean ``git commit -F - <<EOF`` to a
+        # public repo. The heredoc body is resolved and scanned clean (no sentinel).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix(gate): the gate fails closed only on a genuinely opaque stdin\nEOF"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_heredoc_stdin_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a REAL leaked user quote in the SAME readable heredoc body
+        # still hard-blocks. The body is resolved and scanned, so the verbatim-quote
+        # pattern fires — the fix removes the unreadable-body false-block, never the
+        # real-quote true-block.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\n**User directive (verbatim, today):** ship it now\nEOF"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_minus_m_cat_heredoc_substitution_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The canonical ``git commit -m "$(cat <<'EOF' ... EOF)"`` idiom (the shape
+        # documented as THE way to pass a commit message): the heredoc body is fully
+        # readable in-command, so a clean message must pass rather than fail-close on
+        # the outer double-quoted ``$(...)`` the ``-m`` walker cannot itself resolve.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<'EOF'\nfix: a clean commit message\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_minus_m_cat_heredoc_substitution_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the same in-command-readable heredoc form still blocks a real
+        # leaked user quote — the fix resolves the body for scanning, it never bypasses it.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<'EOF'\n**User directive (verbatim, today):** ship it now\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_minus_m_cat_heredoc_dash_form_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The POSIX tab-stripping ``<<-DELIM`` heredoc form -- ``_CAT_HEREDOC_SUBST_RE``
+        # matches ``<<-?`` and marks this body "resolved elsewhere" by
+        # :func:`unredirected_heredoc_bodies`. A clean message must still pass.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<-'EOF'\n\tfix: a clean commit message\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_minus_m_cat_heredoc_dash_form_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # REGRESSION (cold-review finding on #2927): ``_CAT_HEREDOC_SUBST_RE`` matches
+        # ``<<-?DELIM`` (the tab-stripping ``<<-`` form) and defers scanning to
+        # :func:`unredirected_heredoc_bodies`, but that walker's ``_HEREDOC_RE`` used
+        # to match only plain ``<<DELIM`` -- so a ``<<-'EOF'`` body was marked
+        # "resolved elsewhere" while "elsewhere" silently found nothing, dropping the
+        # body from scanning entirely (not even the fail-closed sentinel fired). A
+        # leaked user quote inside a tab-indented ``<<-'EOF'`` heredoc sailed through
+        # completely undetected. Reproduced RED on pre-fix code (``blocked is False``);
+        # this asserts the real gap is closed through the actual entrypoint.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<-'EOF'\n\t**User directive (verbatim, today):** ship it now\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_unreadable_var_message_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE FIX (un-backstopped quote leak): ``git commit -m "$VAR"`` whose VAR is
+        # not in the hook env is unreadable at scan time, so the only HIGH finding is
+        # the fail-closed sentinel. On a PUBLIC commit it DENIES — the quote-scanner
+        # has no push-time re-scan (privacy-scan carries no verbatim-quote detector),
+        # so a verbatim quote in an opaque body would otherwise reach public history.
+        monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_opaque_cat_pipe_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE OTHER opaque channel: ``cat <file> | git commit -F -``. ``cat`` is not a
+        # resolvable ``printf``/``echo`` writer, so the piped body is genuinely opaque
+        # at scan time → fail-closed sentinel → DENY on a PUBLIC commit.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {"tool_name": "Bash", "tool_input": {"command": "cat draft.txt | git commit -F -"}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_unreadable_var_message_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A NON-public equivalent downgrades: the SAME opaque ``-m "$VAR"`` sentinel on
+        # a provably-PRIVATE commit downgrades to a warn (#126 — a private repo cannot
+        # leak to the public). The coder-unblock for opaque bodies survives where it is
+        # provably safe; only the public case reverts to deny.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False  # downgraded to warn
+        captured = capsys.readouterr()
+        assert captured.out == ""  # no deny JSON
+        assert "WARNING" in captured.err
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
+
+    def test_public_gh_post_unreadable_var_body_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a ``gh`` POST whose ``--body`` is an unreadable ``$VAR`` is the
+        # real public action with no push gate behind it, so it STILL hard-blocks.
+        monkeypatch.delenv("UNSET_BODY", raising=False)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh pr create --repo souliane/teatree --title t --body "$UNSET_BODY"'},
+        }
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestChainedRawRestPostDefeatsPrivateDowngrade:
+    """A private commit chained to a RAW-REST ``gh api`` POST to a PUBLIC repo must DENY (#1213).
+
+    The private-destination downgrade is gated by the chained-segment proof
+    ``_chained_segments_provably_inert``. A ``gh api`` POST carries its target in
+    the URL PATH (no ``--repo``), so the proof's target resolver falls back to the
+    private commit CWD and wrongly accepts the segment as a private post -- a
+    verbatim quote in the ``gh api`` body then reaches a PUBLIC repo with the gate
+    downgraded to warn. The fix rejects any chained raw-REST segment outright
+    (mirroring ``publish_surface._segment_proves_pure_private_post``), so the whole
+    command denies. A chained PRIVATE structured post (``gh pr create --repo
+    <PRIVATE>``, not raw REST) still downgrades -- the fix does not over-block the
+    normal private path.
+    """
+
+    def test_private_commit_chained_public_gh_api_post_with_quote_denies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE CONFIRMED LEAK: a clean private commit chained to a public ``gh api``
+        # POST whose body is a verbatim user quote. The raw-REST segment must defeat
+        # the private downgrade so the quote never reaches the public repo.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = (
+            "git commit -m clean && gh api repos/souliane/teatree/issues -X POST "
+            '-f body="**User directive (verbatim, today):** ship it now"'
+        )
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_sentinel_chained_public_gh_api_post_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The sentinel variant (base ``main`` DENIED this; the private_only delta
+        # regressed it to a downgrade): an unreadable ``-m "$VAR"`` commit body chained
+        # to a public ``gh api`` POST. The raw-REST guard restores the deny.
+        monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = 'git commit -m "$UNSET_COMMIT_BODY" && gh api repos/souliane/teatree/issues -X POST -f body=acknowledged'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_private_gh_pr_create_still_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-OVER-BLOCK: a verbatim quote in a private commit chained to a PRIVATE
+        # structured ``gh pr create --repo <PRIVATE>`` (NOT raw REST) still downgrades.
+        # The raw-REST guard rejects only raw REST, never a normal private post.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = (
+            'git commit -m "**User directive (verbatim, today):** ship it now" '
+            "&& gh pr create --repo acmecorp-engineering/product --title t --body ok"
+        )
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False  # both segments private → downgrade
+        assert capsys.readouterr().out == ""  # no deny JSON
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
 
 
 class TestHookChainRegistration:
@@ -1244,3 +1660,42 @@ class TestFormatHelpers:
         result = ScanResult(findings=[Finding(name="per-user-direction", severity=quote_scanner.MEDIUM, excerpt="x")])
         message = quote_scanner.format_warn_message(result)
         assert "per-user-direction" in message
+
+
+class TestOpaqueTransportFailsClosedOnQuoteGate:
+    """#F7.1: a wrapper-hidden forge post fails closed on the QUOTE gate too.
+
+    The opaque-transport sentinel used to be appended only for the destination-
+    aware banned-terms gate (``fail_closed_body_file=True``); the quote gate
+    (``fail_closed_body_file=False``) saw an empty payload and ALLOWED an
+    unscannable interpreter-hidden publish. The sentinel is now emitted for both
+    gate modes, so an ``sh -c "gh ..."`` / ``eval`` / ``ssh host gh`` publish the
+    quote scanner cannot read hard-blocks.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'sh -c "gh pr create --body some quote"',
+            'bash -lc "gh issue create --body some quote"',
+            'eval "gh pr comment 5 --body some quote"',
+            "ssh host gh pr create --body quote",
+        ],
+    )
+    def test_interpreter_hidden_publish_yields_sentinel_and_high(self, command: str) -> None:
+        payload = extract_publish_payload("Bash", {"command": command})
+        assert payload is not None
+        assert is_fail_closed_sentinel(payload)
+        assert scan_text(payload).has_high is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'grep "gh pr create --body x" notes.md',
+            "rg 'sh -c \"gh\"' src/",
+        ],
+    )
+    def test_read_only_inspection_is_not_a_publish(self, command: str) -> None:
+        # Over-block guard: a read-only inspection that quotes the forge string is
+        # not a publish, so the quote gate returns its pass-through ``None``.
+        assert extract_publish_payload("Bash", {"command": command}) is None

@@ -1,7 +1,10 @@
 """Tests for the ``loop_dispatch`` management command (pending-spawn / spawn-claim)."""
 
 import json
+import os
+import sqlite3
 import tempfile
+import time
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
@@ -12,8 +15,30 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.ticket import schedule_external_review
+from teatree.agents.model_tiering import TIER_MODELS
+from teatree.core.admission_governor import governor_enabled
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models.external_delivery import mark_external_delivery
+from teatree.core.models.ticket_external_review import schedule_external_review
+from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
+from tests._loop_principal_env import pinned_loop_principal
+
+
+def _seed_cold_config(db: Path, key: str, value: object) -> None:
+    """Seed a single DB-home ``ConfigSetting`` row in a config-store sqlite the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class _LoopDispatchTest(TestCase):
@@ -56,6 +81,15 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert payload[0]["task_id"] == task.pk
         assert payload[0]["subagent"] == "t3:coder"
 
+    def test_spawn_payload_carries_type_prefixed_display_name(self) -> None:
+        # PR-12: every spawn is named t3-<type>-<id> so the Agent tool call is
+        # attributable, never an anonymous general-purpose spawn.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        entry = json.loads(stdout.getvalue())[0]
+        assert entry["display_name"] == f"t3-coder-{task.pk}"
+
     def test_skips_claimed_tasks(self) -> None:
         task = self._reviewer_task()
         task.claim(claimed_by="loop-slot")
@@ -65,7 +99,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert json.loads(stdout.getvalue()) == []
 
     def test_skips_tasks_with_no_registered_subagent(self) -> None:
-        # A scoping task on an author ticket → no _SUBAGENT_BY_PHASE entry → skipped.
+        # A scoping task on an author ticket → no SUBAGENT_BY_PHASE entry → skipped.
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/77")
         session = Session.objects.create(ticket=ticket, agent_id="scoping")
         Task.objects.create(ticket=ticket, session=session, phase="scoping")
@@ -75,9 +109,9 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert json.loads(stdout.getvalue()) == []
 
     def test_text_output_when_empty(self) -> None:
-        stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", stdout=stdout)
-        assert "No pending spawn requests." in stdout.getvalue()
+        stderr = StringIO()
+        call_command("loop_dispatch", "pending-spawn", stdout=StringIO(), stderr=stderr)
+        assert "No pending spawn requests." in stderr.getvalue()
 
     def test_payload_carries_model_and_skill_bundle(self) -> None:
         # The model tier + skill bundle are resolved in LOOP scope and threaded
@@ -89,8 +123,7 @@ class TestPendingSpawn(_LoopDispatchTest):
 
         entry = json.loads(stdout.getvalue())[0]
         assert "model" in entry
-        # reviewing is a mechanical phase → sonnet tier by default.
-        assert entry["model"] == "sonnet"
+        assert entry["model"] == TIER_MODELS["frontier"]
         assert isinstance(entry["skill_bundle"], list)
 
     def test_payload_never_carries_an_effort_key(self) -> None:
@@ -105,21 +138,31 @@ class TestPendingSpawn(_LoopDispatchTest):
 
     def test_skill_floor_raises_the_dispatch_model(self) -> None:
         # A per-skill MODEL floor on a skill in the resolved bundle raises the
-        # dispatch payload's model above the phase tier (most-capable-wins).
-        cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
-        cfg.write_text('[agent.skill_models]\ncode-review = "fable"\n', encoding="utf-8")
+        # dispatch payload's model above the phase tier (most-capable-wins). The
+        # reviewer task's phase is already frontier-tier, so the floor value is
+        # an unrecognised id — unrecognised ids rank ABOVE every known tier
+        # (most-capable fallback), making the raise observable.
+        db = Path(tempfile.mkdtemp()) / "config.sqlite3"
+        _seed_cold_config(db, "agent_skill_models", {"code-review": "custom-strong-model"})
 
-        self._reviewer_task()
+        # Empty overlay so the ticket-scoped overlay resolver (PR-12) falls back
+        # to the ambient (T3_OVERLAY_NAME) overlay; a synthetic unregistered
+        # overlay would fail resolution and empty the bundle before the patched
+        # resolve_skill_bundle runs, defeating the model-floor assertion.
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/pr/1",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "x"},
+        )
+        schedule_external_review(ticket)
         stdout = StringIO()
         with (
-            patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
-            patch("teatree.config_agent.CONFIG_PATH", cfg),
+            patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}),
             patch("teatree.agents.skill_bundle.resolve_skill_bundle", return_value=["code-review"]),
         ):
             call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
-        # reviewing's sonnet phase floor raised to fable by the code-review skill.
-        assert entry["model"] == "fable"
+        assert entry["model"] == "custom-strong-model"
         assert entry["skill_bundle"] == ["code-review"]
 
 
@@ -181,6 +224,57 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         )
         assert got == sorted([t_a.pk, t_b.pk])  # both dispatched, no overlap
 
+    def test_claim_next_reclaims_a_dead_sessions_orphaned_unit(self) -> None:
+        """Defect (b): the standalone ``claim-next`` reclaims a dead session's stale lease.
+
+        Session A claims the unit, then dies — its lease lapses. The next
+        healthy session's ``claim-next`` reclaims and dispatches that SAME unit
+        exactly once. Previously only the full loop tick's recovery sweep
+        (``_reap_stale_task_claims``) returned an orphan to PENDING, so on the
+        standalone self-pump / slack-answer path a dead session's unit stalled
+        CLAIMED forever and the loop silently stopped picking it up.
+
+        Anti-vacuity: on the pre-fix command (no reclaim before the claim) the
+        unit is still CLAIMED — not PENDING — so ``claim_next_pending`` returns
+        nothing and the payload is empty. The ``len(payload) == 1`` assertion
+        is RED on the buggy code, GREEN once the reclaim runs first.
+        """
+        task = self._reviewer_task()
+        task.claim(claimed_by="loop-slot")
+        # Session A dies: force its lease into the past (no more heartbeats).
+        task.lease_expires_at = timezone.now() - timedelta(seconds=10)
+        task.save(update_fields=["lease_expires_at"])
+
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert len(payload) == 1
+        assert payload[0]["task_id"] == task.pk
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.lease_expires_at is not None
+        assert task.lease_expires_at > timezone.now()  # a fresh lease for the reclaiming session
+
+    def test_claim_next_does_not_reclaim_a_live_lease(self) -> None:
+        """Live-lease protection at the command level: a FRESH lease is never stolen.
+
+        The reclaim is staleness-gated — a unit whose owner still holds a live
+        lease is left untouched, so ``claim-next`` dispatches nothing and the
+        living owner keeps its claim. Guards the reclaim against turning into a
+        blanket steal of in-flight work.
+        """
+        task = self._reviewer_task()
+        task.claim(claimed_by="loop-slot")  # a fresh 300s lease
+
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        assert json.loads(stdout.getvalue()) == []  # the live owner keeps the unit
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "loop-slot"
+
     def test_claim_next_empty_when_nothing_pending(self) -> None:
         stdout = StringIO()
         call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
@@ -197,10 +291,10 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
     def test_claim_next_text_output_when_claimed(self) -> None:
         """N3: the non-JSON branch — emits a human line for the claimed task."""
         task = self._reviewer_task()
-        stdout = StringIO()
-        call_command("loop_dispatch", "claim-next", stdout=stdout)
+        stderr = StringIO()
+        call_command("loop_dispatch", "claim-next", stdout=StringIO(), stderr=stderr)
 
-        out = stdout.getvalue()
+        out = stderr.getvalue()
         assert f"Claimed task={task.pk}" in out
         assert "subagent=t3:reviewer" in out
         assert "phase=reviewing" in out
@@ -209,15 +303,15 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
 
     def test_claim_next_text_output_when_empty(self) -> None:
         """N3: the non-JSON empty branch."""
-        stdout = StringIO()
-        call_command("loop_dispatch", "claim-next", stdout=stdout)
-        assert "No pending spawn requests." in stdout.getvalue()
+        stderr = StringIO()
+        call_command("loop_dispatch", "claim-next", stdout=StringIO(), stderr=stderr)
+        assert "No pending spawn requests." in stderr.getvalue()
 
     def test_claim_next_session_defaults_to_current_session_id(self) -> None:
         """#1917: an unset ``--claimed-by-session`` resolves to the active session id."""
         task = self._reviewer_task()
         stdout = StringIO()
-        with patch("teatree.core.session_identity.current_session_id", return_value="sess-default"):
+        with pinned_loop_principal("sess-default"):
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
@@ -229,7 +323,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         """#1917: an explicit ``--claimed-by-session`` is threaded through and surfaced."""
         task = self._reviewer_task()
         stdout = StringIO()
-        with patch("teatree.core.session_identity.current_session_id", return_value="should-not-be-used"):
+        with pinned_loop_principal("should-not-be-used"):
             call_command("loop_dispatch", "claim-next", "--json", claimed_by_session="sess-explicit", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
@@ -241,13 +335,43 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         """#1917 inert: when no session resolves, the claim carries an empty session."""
         task = self._reviewer_task()
         stdout = StringIO()
-        with patch("teatree.core.session_identity.current_session_id", return_value=""):
+        with pinned_loop_principal():
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert payload[0]["claimed_by_session"] == ""
         task.refresh_from_db()
         assert task.claimed_by_session == ""
+
+
+class TestClaimNextAdmissionPriority(_LoopDispatchTest):
+    """PR-13: ``claim-next`` claims a queued TODO before a new-ticket auto-start."""
+
+    def _new_ticket_planning(self, *, url: str) -> Task:
+        # An initial-phase (planning) task with no parent = a brand-new-ticket
+        # auto-start; INTERACTIVE so the in-session claim path is eligible.
+        ticket = Ticket.objects.create(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, agent_id=f"plan-{ticket.pk}")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="planning",
+            status=Task.Status.PENDING,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+    def test_claim_next_admits_todo_before_lower_pk_new_ticket(self) -> None:
+        # The new-ticket planning task is created FIRST (lower pk); FIFO alone
+        # would claim it. The coding TODO (higher pk) must win on admission rank.
+        new_ticket = self._new_ticket_planning(url="https://example.com/issues/newticket")
+        todo = self._author_task(url="https://example.com/issues/todo")  # coding, INTERACTIVE
+        assert todo.pk > new_ticket.pk
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        payload = json.loads(stdout.getvalue())
+        assert [e["task_id"] for e in payload] == [todo.pk]
+        new_ticket.refresh_from_db()
+        assert new_ticket.status == Task.Status.PENDING  # left for the next claim
 
 
 class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
@@ -287,7 +411,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         assert len(payload) == 1  # claimed despite no budget key
 
     def test_full_with_budget_admits_exactly_budget_then_refuses(self) -> None:
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -307,7 +431,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     def test_in_flight_at_budget_refuses_the_next_claim(self) -> None:
         # THE anti-vacuous core: B already in flight + budget B → claim ZERO.
         # RED on the pre-fix code (no clamp → it would claim the pending row).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -321,7 +445,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     def test_freeing_one_lease_lets_exactly_one_more_claim(self) -> None:
         # Prove the gate is the ONLY thing holding the row: clear one in-flight
         # lease (reclaim it to PENDING) and the next claim takes exactly one.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -344,10 +468,10 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
 
     def test_stale_budget_past_ttl_is_ignored_unclamped(self) -> None:
         # A budget written long ago (dead loop) is ignored → unclamped drain.
-        import json as _json  # noqa: PLC0415
-        import time as _time  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415 - deferred: local import
+        import time as _time  # noqa: PLC0415 - deferred: local import
 
-        from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY  # noqa: PLC0415
+        from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -384,7 +508,7 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         # Reconciliation invariant: with the gate armed, every CLAIMED row is one
         # the caller will spawn — there is no claimed-but-orphaned surplus. We
         # claim a full budgeted wave and assert claimed == budget exactly.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -395,6 +519,23 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
                 self._run_claim_next(sl)
         assert Task.objects.filter(status=Task.Status.CLAIMED).count() == 3
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 2
+
+
+class TestGovernorGate(_LoopDispatchTest):
+    """The adaptive governor is asked at the admission chokepoint (#3644)."""
+
+    def test_a_governor_denial_refuses_the_marginal_claim(self) -> None:
+        # A DENY verdict (token quota / machine load) short-circuits the admit
+        # gate to "exhausted" regardless of the sidecar budget.
+        from teatree.core.admission_governor import AdmissionDecision  # noqa: PLC0415 - deferred: local import
+        from teatree.core.management.commands import loop_dispatch  # noqa: PLC0415 - deferred: local import
+
+        deny = AdmissionDecision(admit=False, reason="token quota hit", ceiling=None, braked=True)
+        with (
+            patch.object(loop_dispatch, "read_admit_budget", return_value=None),
+            patch.object(loop_dispatch, "governor_verdict", return_value=deny),
+        ):
+            assert loop_dispatch._admit_budget_exhausted() is True
 
 
 class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
@@ -430,7 +571,7 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
         # in flight, one more PENDING → claim-next would refuse → the
         # claimable-only probe must report ZERO so the self-pump stops
         # re-offering the un-advanceable unit.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -448,7 +589,7 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
     def test_under_budget_reports_the_claimable_unit(self) -> None:
         # Control: in-flight 1 < budget 2 → a claim could land → the probe
         # reports the PENDING unit (it did not just blanket-suppress).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -489,7 +630,7 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
         # Without --claimable-only the legacy probe is byte-identical: it
         # reports the un-advanceable unit even at a full budget (the legacy
         # callers must not change behaviour).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
@@ -500,6 +641,113 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
             with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
                 call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
         assert len(json.loads(stdout.getvalue())) == 1
+
+
+class TestExternalDeliveryExclusion(_LoopDispatchTest):
+    """#6/#2217: the live claim/spawn paths honour the external-delivery lease.
+
+    A unit hand-delivered by an external agent (a live #2104 lease) is being
+    implemented directly with no loop-armed sub-agent, so the loop must NOT
+    claim a second coder/reviewer on it. ``orchestrate`` already excluded it,
+    but the live ``claim-next``/``pending-spawn`` in ``loop_dispatch`` did not —
+    the #2218 "fix landed on one side" recurrence. Both must now share the
+    ``Task.dispatchable_q`` SSOT, which carries the exclusion.
+    """
+
+    def _lease(self, task: Task) -> None:
+        mark_external_delivery(task.ticket)
+        task.ticket.refresh_from_db()
+
+    def test_claim_next_skips_a_ticket_under_external_delivery(self) -> None:
+        # RED before the fix: loop_dispatch's filter lacked the exclusion, so
+        # claim-next double-dispatched onto the leased ticket.
+        task = self._author_task()
+        self._lease(task)
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        assert json.loads(stdout.getvalue()) == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING  # left for the delivery owner
+
+    def test_pending_spawn_skips_a_ticket_under_external_delivery(self) -> None:
+        # RED before the fix: pending-spawn filtered on role/phase only (no
+        # exclusion), so the /loop slot would spawn onto the leased ticket.
+        task = self._author_task()
+        self._lease(task)
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        assert json.loads(stdout.getvalue()) == []
+
+    def test_claim_next_claims_a_ticket_not_under_external_delivery(self) -> None:
+        # Anti-vacuity twin: an unleased dispatchable task IS claimed — the
+        # exclusion is not blanket suppression.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        payload = json.loads(stdout.getvalue())
+        assert [e["task_id"] for e in payload] == [task.pk]
+
+    def test_pending_spawn_lists_a_ticket_not_under_external_delivery(self) -> None:
+        # Anti-vacuity twin for the preview path.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        payload = json.loads(stdout.getvalue())
+        assert [e["task_id"] for e in payload] == [task.pk]
+
+
+class TestBudgetCountsHeadlessInFlight(_LoopDispatchTest):
+    """#6: the admit-budget gate counts HEADLESS in-flight claims, not just INTERACTIVE.
+
+    ``orchestrate`` computes the target and its ``in_flight`` subtraction over
+    the dispatchable filter WITHOUT any execution_target narrowing, so a
+    headless worker in flight consumes budget. The live claimer must count with
+    the SAME set; the pre-fix gate counted only INTERACTIVE in-flight, so with N
+    headless workers already running it saw zero and overshot the boost budget.
+    """
+
+    def _headless_in_flight(self, n: int) -> list[Task]:
+        """Seed *n* dispatchable HEADLESS CLAIMED tasks with a live lease."""
+        claimed: list[Task] = []
+        for i in range(n):
+            task = self._author_task(url=f"https://example.com/issues/headless/{i}")
+            # A raw UPDATE forces HEADLESS without the save() re-route back to
+            # INTERACTIVE (a loop-dispatched phase under the default runtime).
+            Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS)
+            task.refresh_from_db()
+            task.claim(claimed_by="headless-worker")
+            claimed.append(task)
+        return claimed
+
+    def _run_claim_next(self, sl: Path) -> list[dict]:
+        stdout = StringIO()
+        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        return json.loads(stdout.getvalue())
+
+    def test_headless_in_flight_at_budget_refuses_the_next_claim(self) -> None:
+        # RED before the fix: budget 2, 2 HEADLESS dispatchable claims in flight,
+        # one INTERACTIVE pending. The pre-fix gate counted only INTERACTIVE
+        # in-flight (0) and claimed the pending row, overshooting N to 3.
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._headless_in_flight(2)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_claim_next(sl)
+        assert payload == []
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
+
+    def test_headless_in_flight_below_budget_still_admits(self) -> None:
+        # Anti-vacuity twin: 1 headless in-flight < budget 2 → the INTERACTIVE
+        # pending claim lands (the gate is the only thing holding the row).
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._headless_in_flight(1)
+            pending = self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_claim_next(sl)
+        assert [e["task_id"] for e in payload] == [pending.pk]
 
 
 class TestSpawnClaim(_LoopDispatchTest):
@@ -522,3 +770,57 @@ class TestSpawnClaim(_LoopDispatchTest):
         call_command("loop_dispatch", "spawn-claim", str(task.pk), claimed_by="custom-worker")
         task.refresh_from_db()
         assert task.claimed_by == "custom-worker"
+
+
+class TestAdmissionGovernorKillSwitchIsATrueRevert(_LoopDispatchTest):
+    """#3644: `admission_governor_enabled = false` restores the pre-governor behaviour.
+
+    The kill-switch is the rollback lever for the riskiest behavioural change in the
+    change, so "a true revert" has to be a pinned property rather than a claim:
+    with the flag off, the static-budget contract at this chokepoint must hold exactly
+    as it did before the governor existed.
+    """
+
+    def _disable_governor(self) -> None:
+        ConfigSetting.objects.set_value("admission_governor_enabled", value=False)
+        # Control: without this the flag might never have taken effect and the
+        # assertions below would pass on the governor's own behaviour instead.
+        assert governor_enabled() is False
+
+    def _claim_in_flight(self, n: int) -> list[Task]:
+        claimed: list[Task] = []
+        for i in range(n):
+            task = self._author_task(url=f"https://example.com/issues/killswitch/{i}")
+            task.claim(claimed_by="other-worker")
+            claimed.append(task)
+        return claimed
+
+    def _run_claim_next(self, sl: Path) -> list[dict]:
+        stdout = StringIO()
+        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        return json.loads(stdout.getvalue())
+
+    def test_stale_budget_stays_unclamped_with_the_governor_off(self) -> None:
+        self._disable_governor()
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            stale_at = time.time() - (2 * 720 + 600)
+            sl.with_name("tick-meta.json").write_text(
+                json.dumps({BUDGET_KEY: 0, WRITTEN_AT_KEY: stale_at}) + "\n", encoding="utf-8"
+            )
+            self._claim_in_flight(1)
+            self._author_task(url="https://example.com/issues/pending-killswitch")
+            payload = self._run_claim_next(sl)
+        assert len(payload) == 1
+
+    def test_a_live_static_budget_still_clamps_with_the_governor_off(self) -> None:
+        # The revert restores the STATIC contract, not "no gate at all".
+        self._disable_governor()
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            write_admit_budget(1, statusline_path=sl)
+            self._claim_in_flight(1)
+            self._author_task(url="https://example.com/issues/over-budget-killswitch")
+            payload = self._run_claim_next(sl)
+        assert payload == []

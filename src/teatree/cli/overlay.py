@@ -5,21 +5,26 @@ import json as _json
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.agents.skill_injection import build_subagent_skill_preamble, harness_skills_dirs
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
-from teatree.cli.speed import register_speed_commands
+from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
+from teatree.cli.wip import register_wip_commands
 from teatree.utils.django_db import runner_prefix
-from teatree.utils.run import run_streamed, spawn
-from teatree.utils.singleton import AlreadyRunningError, singleton
+from teatree.utils.run import CommandFailedError, run_streamed, spawn
+from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton
 
 if TYPE_CHECKING:
     from teatree.config import OverlayEntry
+    from teatree.types import SkillMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,28 @@ CLI reference generator to swap the proxy's stub help for the underlying
 reassigned per-leaf (``_run_{group}_{sub}``); object identity is not stable
 across Typer's ``get_command`` conversion.
 """
+
+
+def _split_skill_args(values: list[str]) -> list[str]:
+    """Flatten repeated and comma-separated ``--skills`` values, order-preserving."""
+    names: list[str] = []
+    for value in values:
+        names.extend(part.strip() for part in value.split(",") if part.strip())
+    return names
+
+
+def _overlay_skills_dir(project_path: Path | None, skill_metadata: "SkillMetadata") -> Path | None:
+    """The active overlay's own skills directory, when it ships one.
+
+    Resolves through the ``skill_root`` seam (#3355): an overlay-declared root, or
+    the ``<project>/skills`` layout ``overlay_init.generator`` scaffolds. Returns
+    ``None`` when neither resolves to a real directory (e.g. a path-less
+    invocation), in which case only the framework skills dir is searched.
+    """
+    from teatree.core.overlay_skills import overlay_skills_root  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    root = overlay_skills_root(skill_metadata, project_path)
+    return root if root is not None and root.is_dir() else None
 
 
 def _base_env() -> dict[str, str]:
@@ -92,6 +119,25 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
             p.wait(timeout=5)
 
 
+@contextmanager
+def _faithful_child_exit() -> Iterator[None]:
+    """Propagate a bridged child's exit code faithfully, without a traceback (PR-30).
+
+    The overlay bridge shells the real subcommand out via ``run_streamed(check=True)``,
+    which raises :class:`CommandFailedError` on any non-zero child. Click only catches
+    ``ClickException``/``Abort``, so an uncaught ``CommandFailedError`` dumps a full
+    ``run_streamed`` traceback to stderr — burying the child's real error line — and
+    collapses every failure to exit 1, losing the child's specific exit code. A machine
+    front-end cannot branch on that. Re-raising as ``SystemExit(returncode)`` gives the
+    exact child code with no traceback; the child's stderr was already teed live by
+    ``run_streamed``, so nothing is lost.
+    """
+    try:
+        yield
+    except CommandFailedError as exc:
+        raise SystemExit(exc.returncode) from None
+
+
 def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> None:
     """Run a Django management command for an overlay.
 
@@ -107,12 +153,13 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
 
-    if project_path and (project_path / "manage.py").is_file():
-        cmd = _managepy_cmd(project_path, "manage.py", *args)
-        run_streamed(cmd, cwd=project_path, env=env)
-    else:
-        env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+    with _faithful_child_exit():
+        if project_path and (project_path / "manage.py").is_file():
+            cmd = _managepy_cmd(project_path, "manage.py", *args)
+            run_streamed(cmd, cwd=project_path, env=env)
+        else:
+            env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+            run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
@@ -126,9 +173,9 @@ def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
     ``overlay_class`` (no ``:``) or a blank one is not a locatable package, so it
     does not assert same-env on its own — the entry-point check decides.
     """
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.config import OverlayEntry  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     canonical = OverlayEntry.canonical_overlay_name(entry.name)
     ep_canon = {OverlayEntry.canonical_overlay_name(ep.name) for ep in entry_points(group="teatree.overlays")}
@@ -165,7 +212,7 @@ def _overlay_project_env(overlay_name: str) -> Path | None:
     """
     if not overlay_name:
         return None
-    from teatree.config import OverlayEntry, discover_overlays  # noqa: PLC0415
+    from teatree.config import OverlayEntry, discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     canonical = OverlayEntry.canonical_overlay_name(overlay_name)
     for entry in discover_overlays():
@@ -204,10 +251,11 @@ def managepy_core(*args: str, overlay_name: str = "") -> None:
         env["T3_OVERLAY_NAME"] = overlay_name
     env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     project_path = _overlay_project_env(overlay_name)
-    if project_path is not None:
-        run_streamed([*runner_prefix(project_path), "-m", "teatree", *args], cwd=project_path, env=env)
-    else:
-        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+    with _faithful_child_exit():
+        if project_path is not None:
+            run_streamed([*runner_prefix(project_path), "-m", "teatree", *args], cwd=project_path, env=env)
+        else:
+            run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 class OverlayAppBuilder:
@@ -231,11 +279,17 @@ class OverlayAppBuilder:
         self._register_resetdb_command()
         self._register_worker_command()
         self._register_shortcut_commands()
+        self._register_skill_preamble_command()
         self._register_config_commands()
         register_gate_commands(self.overlay_app)
-        register_speed_commands(self.overlay_app)
+        register_wip_commands(self.overlay_app)
         register_autonomy_commands(self.overlay_app)
 
+        # An overlay ships its own Django app in its own settings module's
+        # INSTALLED_APPS; the base ``teatree.settings`` (or the empty default)
+        # means there is nothing extra to load, so overlay-settings subcommands
+        # (``db migrate``) stay on the in-process core path there (#126).
+        ships_own_overlay_settings = bool(self.settings_module) and self.settings_module != "teatree.settings"
         for group_name, dj_group in DJANGO_GROUPS.items():
             group = typer.Typer(no_args_is_help=True, help=dj_group.help_text)
             for sub_name, sub_help in dj_group.subcommands:
@@ -244,7 +298,9 @@ class OverlayAppBuilder:
                     group_name,
                     sub_name,
                     sub_help,
-                    core_dispatch=dj_group.dispatches_to_core(sub_name),
+                    core_dispatch=dj_group.resolve_core_dispatch(
+                        sub_name, ships_own_overlay_settings=ships_own_overlay_settings
+                    ),
                 )
             self.overlay_app.add_typer(group, name=group_name)
 
@@ -260,7 +316,7 @@ class OverlayAppBuilder:
         @overlay_app.command()
         def resetdb() -> None:
             """Drop the SQLite database and re-run all migrations."""
-            from teatree.paths import CANONICAL_DB  # noqa: PLC0415
+            from teatree.paths import CANONICAL_DB  # noqa: PLC0415 — deferred: keeps CLI startup light
 
             if CANONICAL_DB.exists():
                 CANONICAL_DB.unlink()
@@ -289,7 +345,7 @@ class OverlayAppBuilder:
                 raise typer.Exit(code=1)
 
             try:
-                with singleton("teatree-worker"):
+                with singleton(WORKER_SINGLETON):
                     _run_workers(project_path, overlay_name, count, interval)
             except AlreadyRunningError as exc:
                 typer.echo(f"WARN  {exc}. Stop it before starting another.")
@@ -327,22 +383,7 @@ class OverlayAppBuilder:
             # Same as ``full-status``: ``followup`` is core-only (#1318).
             managepy_core("followup", "sync", overlay_name=overlay_name)
 
-        @overlay_app.command(
-            name="safe-kill",
-            context_settings={
-                "allow_extra_args": True,
-                "allow_interspersed_args": False,
-                "ignore_unknown_options": True,
-            },
-            add_help_option=False,
-        )
-        def safe_kill(ctx: typer.Context) -> None:
-            """Signal a pid only if it maps to a dead target AND is confirmed non-live (#2225)."""
-            # ``safe_kill`` is a teatree-CORE management command — dispatch via
-            # ``python -m teatree`` so an overlay clone with its own ``manage.py``
-            # does not crash with ``Unknown command`` (#1318). The pid argument
-            # and ``--hang-cause`` are forwarded verbatim.
-            managepy_core("safe_kill", *ctx.args, overlay_name=overlay_name)
+        register_core_passthrough_leaves(overlay_app, overlay_name)
 
         self._register_agent_command()
 
@@ -362,10 +403,10 @@ class OverlayAppBuilder:
             ),
         ) -> None:
             """Launch Claude Code with overlay context and auto-detected skills."""
-            from teatree.cli import _find_project_root  # noqa: PLC0415
-            from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-            from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
+            from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks overlay ↔ cli cycle
+            from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415 — lazy CLI import
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+            from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415 — deferred: lazy CLI import
 
             overlay_root = project_path or _find_project_root()
             if phase and skill:
@@ -377,7 +418,6 @@ class OverlayAppBuilder:
             selection = SkillLoadingPolicy().select_for_agent_launch(
                 cwd=Path.cwd(),
                 overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
-                task=task,
                 ticket_status=_detect_agent_ticket_status(overlay_root),
                 explicit_phase=phase,
                 explicit_skills=skill or [],
@@ -390,6 +430,55 @@ class OverlayAppBuilder:
                 skills=selection.skills,
                 ask_user_which_skill=selection.ask_user,
             )
+
+    def _register_skill_preamble_command(self) -> None:
+        """Register ``t3 <overlay> skill-preamble`` — the sub-agent dispatch preamble.
+
+        A sub-agent spawned through the raw harness Agent tool inherits none of
+        the orchestrator's loaded skills, so the orchestrator must prepend the
+        skill bodies to the brief. This command emits the concatenated framework
+        + overlay ``SKILL.md`` preamble for a requested skill set, resolving
+        overlay skills from the active overlay's own ``skills/`` directory.
+        """
+        project_path = self.project_path
+        overlay_name = self.overlay_name
+        overlay_app = self.overlay_app
+
+        @overlay_app.command(name="skill-preamble")
+        def skill_preamble(
+            skills: list[str] = typer.Option(
+                None,
+                "--skills",
+                "--skill",
+                help="Skills to embed, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
+            ),
+        ) -> None:
+            """Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry."""
+            names = _split_skill_args(skills or [])
+            if not names:
+                typer.echo("No skills given. Pass --skills t3:rules,t3:e2e[,<overlay-skill>].", err=True)
+                raise typer.Exit(code=1)
+
+            # Framework dir + the harness user skills dir (~/.claude/skills, where
+            # team skills installed via `npx skills add` resolve) + the overlay's
+            # own skills/ dir — so a stage skill body embeds for a fan-out brief
+            # exactly as an overlay-local one does.
+            from teatree.core.overlay_skills import overlay_skill_metadata  # noqa: PLC0415 — deferred: lazy CLI import
+
+            skills_dirs = list(harness_skills_dirs())
+            overlay_dir = _overlay_skills_dir(project_path, overlay_skill_metadata(overlay_name))
+            if overlay_dir is not None and overlay_dir not in skills_dirs:
+                skills_dirs.append(overlay_dir)
+
+            preamble = build_subagent_skill_preamble(names, skills_dirs=skills_dirs)
+            if preamble.missing:
+                searched = ", ".join(str(d) for d in skills_dirs)
+                typer.echo(
+                    f"Could not resolve skill(s): {', '.join(preamble.missing)} (searched: {searched}).",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            typer.echo(preamble.text)
 
     def _register_config_commands(self) -> None:
         """Register the empty ``config`` subgroup so overlay commands hang off it."""
@@ -415,7 +504,8 @@ class OverlayAppBuilder:
         :func:`managepy_core` (teatree-native ``python -m teatree``) instead
         of :func:`managepy` — required for groups whose commands live in
         teatree core only and would crash if routed through an overlay's
-        own ``manage.py`` (#1312, #1318).
+        own ``manage.py`` (#1312, #1318). The per-subcommand ``db migrate``
+        overlay-settings routing is resolved by :meth:`_dispatches_to_core`.
         """
         project_path = self.project_path
         overlay_name = self.overlay_name
@@ -440,30 +530,40 @@ class OverlayAppBuilder:
         OVERLAY_PROXY_COMMANDS[_run.__name__] = (group_name, sub_name)
 
     def _register_overlay_tools(self) -> None:
-        """Register tool commands from ``skills/*/hook-config/tool-commands.json`` files.
+        """Register tool commands from ``<skills-root>/*/hook-config/tool-commands.json``.
 
-        Bounded to the documented per-overlay layout (one skill dir per package),
-        which is fast and side-steps an unbounded ``rglob`` over the entire
-        project tree (``.venv/``, ``__pycache__/``, ``node_modules/``, etc.).
+        The skills root resolves through the ``skill_root`` seam (#3355), falling
+        back to ``<project>/skills`` — the documented per-overlay layout (one skill
+        dir per package), which is fast and side-steps an unbounded ``rglob`` over
+        the whole project tree (``.venv/``, ``__pycache__/``, ``node_modules/``).
+
+        The manifest REGISTERS the group; ``get_tool_commands()`` DECLARES the
+        surface. The two disagreeing is the warned condition (#3904, #3915) —
+        never the mere presence of a skills root.
         """
-        project_path = self.project_path
-        if project_path is None:
+        from teatree.core import overlay_skills  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        metadata = overlay_skills.overlay_skill_metadata(self.overlay_name)
+        skills_root = overlay_skills.overlay_skills_root(metadata, self.project_path)
+        if skills_root is None:
             return
 
-        tool_commands: list[dict[str, str]] = []
-        for candidate in project_path.glob("skills/*/hook-config/tool-commands.json"):
-            try:
-                data = _json.loads(candidate.read_text(encoding="utf-8"))
-                if isinstance(data, list):  # pragma: no branch
-                    tool_commands.extend(data)
-            except _json.JSONDecodeError:
-                logger.warning("Invalid JSON in %s", candidate)
-                continue
-            except OSError as exc:
-                logger.warning("Cannot read %s: %s", candidate, exc)
-                continue
-
+        tool_commands = self._read_tool_commands(skills_root)
         if not tool_commands:
+            # A DECLARED tool surface that yields no manifest is the real
+            # misconfiguration — the operator has documented commands that would
+            # silently not exist. Name the searched path instead of returning
+            # silently (#3355). Keying this on ``skill_root`` instead fired on
+            # every invocation of every overlay that merely ships skills (#3904,
+            # #3915) — the same judgement the ``<project>/skills`` fallback got.
+            if overlay_skills.overlay_declares_tool_commands(self.overlay_name):
+                logger.warning(
+                    "overlay %r declares tool commands but no */hook-config/tool-commands.json "
+                    "was found under %s — the `t3 %s tool` command group is not registered.",
+                    self.overlay_name,
+                    skills_root,
+                    self.overlay_name,
+                )
             return
 
         tool_group = typer.Typer(no_args_is_help=True, help="Overlay-specific utilities.")
@@ -475,6 +575,23 @@ class OverlayAppBuilder:
                 continue
             self._bridge_tool_command(tool_group, name, help_text, mgmt_cmd)
         self.overlay_app.add_typer(tool_group, name="tool")
+
+    @staticmethod
+    def _read_tool_commands(skills_root: Path) -> list[dict[str, str]]:
+        """Collect tool-command specs from ``<skills_root>/*/hook-config/tool-commands.json``."""
+        tool_commands: list[dict[str, str]] = []
+        for candidate in skills_root.glob("*/hook-config/tool-commands.json"):
+            try:
+                data = _json.loads(candidate.read_text(encoding="utf-8"))
+            except _json.JSONDecodeError:
+                logger.warning("Invalid JSON in %s", candidate)
+                continue
+            except OSError as exc:
+                logger.warning("Cannot read %s: %s", candidate, exc)
+                continue
+            if isinstance(data, list):  # pragma: no branch
+                tool_commands.extend(data)
+        return tool_commands
 
     def _bridge_tool_command(
         self,

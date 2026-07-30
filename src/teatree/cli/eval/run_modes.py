@@ -21,12 +21,15 @@ from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    EmptyFreshRunError,
+    UnmeteredApiRunError,
     UnmeteredJudgeError,
-    UnmeteredSdkRunError,
+    assert_api_run_was_metered,
     assert_executed_when_required,
     assert_judge_was_metered,
-    assert_sdk_run_was_metered,
+    assert_pydantic_ai_run_produced_output,
 )
+from teatree.eval.surface import is_advisory
 
 if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord
@@ -36,7 +39,7 @@ class RunGuards:
     """Translate the no-coverage :mod:`teatree.eval.skip_guard` assertions into a CLI exit.
 
     Both guards turn a vacuous-green run RED at the ``t3 eval run`` boundary: an
-    all-skipped required run, and an sdk run that executed scenarios but metered $0.
+    all-skipped required run, and an api run that executed scenarios but metered $0.
     """
 
     @staticmethod
@@ -48,10 +51,26 @@ class RunGuards:
             raise typer.Exit(code=1) from None
 
     @staticmethod
-    def sdk_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
-        RunGuards.sdk_metered_total(
+    def api_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        RunGuards.api_metered_total(
             backend=backend, executed=executed, total_cost_usd=sum(r.run.cost_usd for r in results)
         )
+        RunGuards.fresh_run_produced_output(backend=backend, executed=executed, results=results)
+
+    @staticmethod
+    def fresh_run_produced_output(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        """Fail-loud when a ``pydantic_ai`` fresh run executed but every trajectory was empty.
+
+        The $0-cost guard cannot see a BYOK ``pydantic_ai`` run (it meters no
+        ``cost_usd``), so the backend-appropriate vacuous-green check there is an
+        empty trajectory — see :func:`assert_pydantic_ai_run_produced_output`.
+        """
+        produced = sum(1 for r in results if not r.skipped and (r.run.tool_calls or r.run.text_blocks))
+        try:
+            assert_pydantic_ai_run_produced_output(backend=backend, executed=executed, produced=produced)
+        except EmptyFreshRunError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
 
     @staticmethod
     def judge_metered(*, judge_requested: bool, results: list[ScenarioResult]) -> None:
@@ -71,17 +90,17 @@ class RunGuards:
             raise typer.Exit(code=1) from None
 
     @staticmethod
-    def sdk_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:
+    def api_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:
         """Fail-loud the unmetered-$0 guard from a precomputed cost total.
 
         The single-run lane sums ``ScenarioResult.run.cost_usd``; the benchmark /
         matrix lane works in ``MatrixRow`` and sums ``cost_usd`` itself. Both share
-        this one ``UnmeteredSdkRunError`` → ``typer.Exit`` translation so a
+        this one ``UnmeteredApiRunError`` → ``typer.Exit`` translation so a
         fake-green $0 metered run turns RED identically wherever it is detected.
         """
         try:
-            assert_sdk_run_was_metered(backend=backend, executed=executed, total_cost_usd=total_cost_usd)
-        except UnmeteredSdkRunError as exc:
+            assert_api_run_was_metered(backend=backend, executed=executed, total_cost_usd=total_cost_usd)
+        except UnmeteredApiRunError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
 
@@ -115,7 +134,7 @@ def persist_single(
     max_turns: int | None,
     baseline: bool,
 ) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_run  # noqa: PLC0415
+    from teatree.eval.persistence import persist_run  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record = persist_run(results, model=run_model_label(specs), max_turns_override=max_turns)
     if baseline:
@@ -130,7 +149,7 @@ def persist_pass_at_k_run(
     max_turns: int | None,
     baseline: bool,
 ) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_pass_at_k  # noqa: PLC0415
+    from teatree.eval.persistence import persist_pass_at_k  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record = persist_pass_at_k(results, model=model, max_turns_override=max_turns)
     if baseline:
@@ -145,7 +164,7 @@ def persist_matrix_run(
     max_turns: int | None,
     baseline: bool,
 ) -> "EvalRunRecord":
-    from teatree.eval.persistence import persist_matrix  # noqa: PLC0415
+    from teatree.eval.persistence import persist_matrix  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     record = persist_matrix(rows, models=models, max_turns_override=max_turns)
     if baseline:
@@ -199,7 +218,7 @@ class RegressionGates:
         """Diff *record* against each model's baseline; print drops; True if any regressed."""
         if not enabled:
             return False
-        from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         any_regressed = False
         any_baseline = False
@@ -230,14 +249,14 @@ class RegressionGates:
 
         Returns ``True`` (caller exits non-zero) when any scenario's cost rose by
         more than *tolerance* (relative drift) versus the baseline run. A scenario
-        whose baseline cost is ``0.0`` (subscription/free baseline — no metered
+        whose baseline cost is ``0.0`` (subscription baseline — no metered
         reference) has an undefined relative drift, so it is skipped, never flagged
         and never a divide-by-zero. When no model has a baseline at all, the gate
         reports "no cost baseline" and passes.
         """
         if not enabled:
             return False
-        from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         any_regressed = False
         any_baseline = False
@@ -277,7 +296,7 @@ class CostBoundsGate:
         """Check *record*'s per-scenario cost against the ceilings; print violations; True if any."""
         if not enabled:
             return False
-        from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415
+        from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415 — lazy CLI import
 
         config = load_cost_bounds()
         if not config.bounds:
@@ -304,11 +323,17 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
 ) -> bool:
     """Persist a single-trial run and run the score + cost baseline + cost-bounds gates.
 
-    Returns ``True`` when the process should exit non-zero: any scenario
+    Returns ``True`` when the process should exit non-zero: any BLOCKING scenario
     failed, OR a score regression, OR a cost regression beyond tolerance, OR a
     declarative cost-bounds violation (over ceiling / configured-but-uncosted).
     With ``--no-persist`` durable-history gates are rejected before this point:
     silently skipping them would turn a requested gate into a no-op.
+
+    ``trials=1`` with no ``--models`` is the DEFAULT ``t3 eval run`` shape and the
+    one every metered CI leg drives, so the interactive-surface exemption has to hold
+    here too (#3855). This is ONE of the verdict points named in
+    :data:`teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS` — the canonical list,
+    enumerated by name rather than counted, because counting it went stale twice.
     """
     require_persist_for_history_gates(
         persist=persist,
@@ -327,7 +352,11 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
         cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
-    return any(not r.passed for r in results) or regressed or cost_regressed or cost_bounds_failed
+    # Every failing scenario reds the run. The ONE exception is the interactive
+    # surface, whose verdict rides a bundled claude CLI's AskUserQuestion rendering
+    # rather than the question contract teatree owns — reported, never gating (#3855).
+    failed = any(not r.passed and not is_advisory(r.spec) for r in results)
+    return failed or regressed or cost_regressed or cost_bounds_failed
 
 
 def build_transcript_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:

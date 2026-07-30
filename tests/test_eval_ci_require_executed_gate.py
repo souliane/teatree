@@ -9,25 +9,27 @@ the guard only when a credential was set, i.e. gated on the exact condition it
 exists to catch) and installs + asserts the Claude CLI so a missing binary FAILS
 the job.
 
-Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` OAuth token (``claude setup-token``) —
-the everywhere-portable, June-15-safe path that authenticates ``claude -p`` on a
-clean runner with no ``sk-ant-api03`` API key.
+Auth is ``agent_harness_provider``'s call — the eval lane
+DEFAULTS to the subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (both secrets wired so the
+metered ``ANTHROPIC_API_KEY`` stays selectable via the knob).
 
 These are the recurrence-proof fitness tests: they parse the workflow YAML and
-assert the metered eval invocation always carries ``--require-executed`` and is
-NOT key-conditional, that auth is wired via the OAuth token (not the api03 key),
-and that ``ci.yml`` no longer carries a metered eval job on the PR path. They go
-RED if ``--require-executed`` is removed or auth regresses to the api key.
+assert the eval invocation always carries ``--require-executed`` and is NOT
+key-conditional, that the default wires the subscription OAuth token (with the
+metered key still selectable), and that ``ci.yml`` no longer carries an eval job on
+the PR path. They go RED if ``--require-executed`` is removed.
 """
 
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
+_GH_EVAL_WEEKLY_REUSABLE = _REPO_ROOT / ".github" / "workflows" / "eval-weekly-reusable.yml"
 _GITLAB_CI = _REPO_ROOT / ".gitlab-ci.yml"
 
 _FLAG = "--require-executed"
@@ -80,12 +82,12 @@ class TestGitHubRequireExecutedUnconditional:
             "${{ steps.*.outputs.require_executed }} interpolation."
         )
         # The flag must not sit behind any credential conditional anywhere in the
-        # eval workflow (no `if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]` arming step).
+        # eval workflow (no `if [ -n "$ANTHROPIC_API_KEY" ]` arming step).
         text = _gh_eval_workflow_text()
-        assert 'if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]' not in text, (
-            "The eval workflow must not gate --require-executed on the OAuth token."
-        )
         assert 'if [ -n "$ANTHROPIC_API_KEY" ]' not in text, (
+            "The eval workflow must not gate --require-executed on the API key."
+        )
+        assert 'if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]' not in text, (
             "The eval workflow must not gate --require-executed on a credential."
         )
 
@@ -105,15 +107,30 @@ class TestGitHubRequireExecutedUnconditional:
         assert "--docker" in command, "The CI metered eval must run IN the container (--docker)."
         assert "--local" not in command, "The CI metered eval must never use --local (a host run)."
 
-    def test_oauth_token_secret_is_wired_not_the_api_key(self) -> None:
+    def test_default_wires_the_oauth_token_and_keeps_the_metered_key_selectable(self) -> None:
+        # #2707 is REVERSED: the eval lane DEFAULTS to the subscription OAuth token. The
+        # "Select the freshest eval OAuth account" step OWNS the credential decision — it
+        # wires the fallback CLAUDE_CODE_OAUTH_TOKEN secret + the EVAL_OAUTH_TOKENS pool
+        # and resolves the `credential` knob (EVAL_CREDENTIAL), exporting the chosen
+        # CLAUDE_CODE_OAUTH_TOKEN + T3_AGENT_HARNESS_PROVIDER into $GITHUB_ENV (so they
+        # are NOT pinned on the eval step, where a step-level `env:` would shadow the
+        # dynamic value). The aggregated job env therefore still carries both secrets.
         env = _gh_eval_step_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (
-            "The eval step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the "
-            "everywhere-portable OAuth-token auth that works once the secret is set."
+            "The select step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the eval "
+            "lane defaults to the subscription OAuth token (#2707 reversal), passed through "
+            "unchanged when the EVAL_OAUTH_TOKENS pool is unset."
         )
-        assert "ANTHROPIC_API_KEY" not in env, (
-            "No eval step env may set ANTHROPIC_API_KEY — auth is the OAuth token, the "
-            "June-15-safe path that does not depend on an sk-ant-api03 key."
+        assert env.get("EVAL_OAUTH_TOKENS") == "${{ secrets.EVAL_OAUTH_TOKENS }}", (
+            "The select step must wire the EVAL_OAUTH_TOKENS pool so the freshest OAuth "
+            "account is picked before the eval spends its usage window."
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}", (
+            "The metered ANTHROPIC_API_KEY must stay wired so `api_key` is selectable "
+            "via the credential knob without editing the workflow."
+        )
+        assert env.get("EVAL_CREDENTIAL") == "${{ inputs.credential || 'subscription_oauth' }}", (
+            "The select step must resolve the credential knob (default subscription_oauth)."
         )
 
 
@@ -290,4 +307,109 @@ class TestGitLabRequireExecutedUnconditional:
         manual_rules = cast("list[dict[str, Any]]", config["eval-manual"]["rules"])
         assert not any("RUN_EVAL" in rule.get("if", "") for rule in manual_rules), (
             "eval-manual must be unguarded (the manual run always runs, no-PR guard bypassed)."
+        )
+
+
+def _workflow_triggers(config: dict[str, Any]) -> dict[str, Any]:
+    # PyYAML parses the unquoted `on:` workflow key as the boolean True (YAML 1.1).
+    return cast("dict[str, Any]", config.get("on", config.get(True)))
+
+
+def _efforts_input_default(path: Path) -> str | None:
+    config = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8")))
+    triggers = _workflow_triggers(config)
+    for trigger in ("workflow_dispatch", "workflow_call"):
+        inputs = cast("dict[str, Any]", triggers.get(trigger, {})).get("inputs", {})
+        if "efforts" in inputs:
+            return cast("str | None", inputs["efforts"].get("default"))
+    msg = f"{path.name} declares no efforts input."
+    raise AssertionError(msg)
+
+
+def _gh_eval_matrix_step(path: Path) -> dict[str, Any]:
+    jobs = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"])
+    for step in cast("list[dict[str, Any]]", jobs["prepare"]["steps"]):
+        if step.get("id") == "matrix":
+            return step
+    msg = f"{path.name} prepare job has no matrix step."
+    raise AssertionError(msg)
+
+
+_EFFORTS_WORKFLOWS = [_GH_EVAL, _GH_EVAL_WEEKLY_REUSABLE]
+
+
+class TestWeeklyIsBaselineNotThreeTierFan:
+    """The WEEKLY scheduled eval is the BASELINE — not the 3-tier benchmark fan.
+
+    Owner directive: the eval that runs weekly runs each scenario ONCE at its
+    baseline-pinned cheapest-passing tier (`--preset baseline`), single trial, with
+    NO low/medium/high effort fan. The 3-tier fan drains the shared OAuth usage
+    window mid-run (run 28515055436 — every remaining leg then force-fails $0.00),
+    so it stays ONLY in the MANUAL benchmark (`eval-benchmark.yml` →
+    `eval-weekly-reusable.yml`, `--benchmark`). `eval.yml` is the weekly cron;
+    `eval-weekly-reusable.yml` is the manual benchmark (workflow_call, no scheduled
+    caller). These go RED if the weekly cron regresses to fanning three tiers or
+    drops the baseline preset / single trial.
+    """
+
+    @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)
+    def test_efforts_input_default_is_a_single_tier(self, path: Path) -> None:
+        default = _efforts_input_default(path)
+        assert default is not None, f"{path.name}: the efforts input must declare a default."
+        assert "," not in default, (
+            f"{path.name}: the efforts input default must be a single tier (or empty), so a "
+            f"blank manual dispatch field is a single-tier run — not a 3x-cost fan. Got: {default!r}."
+        )
+
+    @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)
+    def test_no_scheduled_leg_fans_three_tiers(self, path: Path) -> None:
+        # Both money-burning shapes are banned: the blanket `inputs.efforts ||
+        # 'low,medium,high'` (fans EVERY blank run) AND the schedule-keyed
+        # `github.event_name == 'schedule' && 'low,medium,high'` fan (the weekly cron
+        # must be the cheap baseline, never the benchmark). A bare `'low,medium,high'`
+        # in an input DESCRIPTION (an example) is fine — only these two expressions burn.
+        text = path.read_text(encoding="utf-8")
+        assert "inputs.efforts || 'low,medium,high'" not in text, (
+            f"{path.name}: efforts must not be blanket-coerced to all three tiers."
+        )
+        assert "'schedule' && 'low,medium,high'" not in text, (
+            f"{path.name}: the weekly/scheduled run must NOT fan low,medium,high — the 3-tier "
+            "benchmark fan lives only in the manual eval-benchmark.yml."
+        )
+
+    def test_weekly_schedule_computes_an_empty_effort_axis(self) -> None:
+        # eval.yml is the weekly cron. Its matrix step computes an EMPTY effort axis
+        # on the schedule event (one leg per scenario-shard, no tier multiplication),
+        # in SHELL — a GitHub-Actions `x && '' || y` ternary can never yield '' (`||`
+        # is empty-falsy), so the schedule=baseline decision is a shell `if`.
+        run = cast("str", _gh_eval_matrix_step(_GH_EVAL).get("run", ""))
+        assert 'EVENT_NAME" = "schedule" ]' in run, (
+            f"{_GH_EVAL.name}: the matrix step must branch on the schedule event."
+        )
+        assert 'EVAL_EFFORTS=""' in run, (
+            f"{_GH_EVAL.name}: the scheduled weekly run must compute an EMPTY effort axis "
+            "(no low/medium/high fan) — that is what makes it a per-scenario baseline leg."
+        )
+
+    def test_weekly_schedule_runs_the_baseline_preset_single_trial(self) -> None:
+        # The load-bearing edit: the scheduled weekly leg runs `--preset baseline`
+        # (evals/presets/baseline.yaml pins), single trial. Both are keyed on the
+        # schedule event so a manual run keeps its per-scenario tier / trial inputs.
+        env = _gh_eval_step_env()
+        assert env.get("EVAL_PRESET") == "${{ github.event_name == 'schedule' && 'baseline' || '' }}", (
+            "the weekly cron must run --preset baseline (empty on a manual run)."
+        )
+        assert "$EVAL_PRESET" in _gh_eval_run_command(), "the eval command must forward EVAL_PRESET as --preset."
+        assert "github.event_name == 'schedule' && '1'" in env.get("EVAL_TRIALS", ""), (
+            "the scheduled weekly run must use a SINGLE trial (baseline verification is one leg per scenario)."
+        )
+
+    def test_reusable_benchmark_effort_axis_is_caller_driven(self) -> None:
+        # eval-weekly-reusable.yml is the MANUAL benchmark (workflow_call, no scheduled
+        # caller): its effort axis is exactly what the caller passes, never a
+        # schedule-keyed fan.
+        step = _gh_eval_matrix_step(_GH_EVAL_WEEKLY_REUSABLE)
+        assert step["env"]["EVAL_EFFORTS"] == "${{ inputs.efforts }}", (
+            f"{_GH_EVAL_WEEKLY_REUSABLE.name}: the benchmark effort axis must be caller-driven "
+            "(inputs.efforts), not a schedule-keyed low,medium,high fan."
         )

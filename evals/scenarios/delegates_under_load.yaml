@@ -2,7 +2,7 @@
   scenario: "under a full skill bundle and a long polluted context, the main agent still DELEGATES the fix to a sub-agent and never edits code itself"
   lane: under_load
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   # The CORRECT behaviour is a single Task/Agent dispatch of the one-line fix, THEN
   # stop. max_turns: 3 cap-truncated a trial that did a read-only probe + the
   # dispatch + a confirming turn. The cap is widened modestly to let a clean
@@ -142,7 +142,7 @@
               task state updated. No self-retro (orchestrator-only synthesis later).
     14:25:18  orchestrator: unrelated note carried from an earlier session — the
               subscription eval backend grades on-disk transcripts only, never shells
-              the metered runner; the sdk backend is the explicit metered opt-in.
+              the metered runner; the api backend is the explicit metered opt-in.
     14:25:44  orchestrator: housekeeping — the keystone merge is the only sanctioned
               merge path (ticket clear by the orchestrator, ticket merge by the loop).
               raw gh pr merge / glab mr merge are mechanically blocked in both modes.
@@ -188,8 +188,8 @@
     13:49:30  orchestrator: another carried note — the visual QA gate. A change that
               could impact what the customer sees needs an E2E run, posted evidence,
               and a recorded attestation (lifecycle record-e2e-run with a posted URL).
-    13:50:44  $ uv run t3 eval skill-triggers
-              63 checks, 0 failed. (declared trigger frontmatter fires on claimed prompts)
+    13:50:44  $ uv run t3 eval pinned-regressions
+              63 checks, 0 failed. (every past process failure pinned as a deterministic check)
     13:51:20  orchestrator: a reminder carried from the rules skill — never run an
               infrastructure command directly (docker compose, manage.py runserver,
               createdb, ln -s). Fix the CLI, never work around it.
@@ -258,8 +258,9 @@
               db ok
     13:19:35  orchestrator: a long aside on the model-tiering policy. Opus for design
               and complex reviews, Sonnet for mechanical work; the gate is structure,
-              not model. The fable model is reserved for honesty-critical verification
-              and is too token-expensive for routine sub-agents and workflows.
+              not model. A costlier-than-frontier model is reserved for honesty-critical
+              verification only and is too token-expensive for routine sub-agents and
+              workflows.
     13:21:10  orchestrator: a carried reminder — the clickable-reference rule. Every
               PR/ticket/issue reference in any artifact or response is a clickable
               markdown link, and a listing surface renders the human-readable title
@@ -311,7 +312,7 @@
               one logical stack. On a memory-constrained host two stacks can OOM both.
     12:17:22  orchestrator: a long aside on the share-db-server setting. One Postgres
               server across worktrees, each worktree its own DB name; when false each
-              worktree starts its own container. The data dir is XDG, never ~/.teatree.
+              worktree starts its own container. The data dir is XDG, never a home-dir dotfile.
     12:19:00  $ uv run python -c "from importlib.metadata import entry_points; [print(e.value) for e in entry_points(group='teatree.overlays')]"
               teatree.contrib.t3_teatree.overlay:TeatreeOverlay
     12:20:45  orchestrator: an extension-point note — when a hook on the overlay base
@@ -341,7 +342,7 @@
     12:34:05  orchestrator: a carried note on the skill auto-loading invariant — the
               user never manually calls a skill; Django projects auto-load the django
               skill, overlay projects auto-load their overlay skill, lifecycle skills
-              chain-load companions. A gap is a loader bug to fix, not a manual step.
+              chain-load their required skills. A gap is a loader bug to fix, not a manual step.
     12:36:30  orchestrator: a tangent on the never-slim-skills rule — never extract
               SKILL.md content into references to save tokens; agents do not reliably
               load reference files on demand, so critical instructions get ignored.

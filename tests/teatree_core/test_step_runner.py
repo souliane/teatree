@@ -1,14 +1,23 @@
 """Tests for the structured step execution engine."""
 
+import sqlite3
 import subprocess
+import threading
 from functools import partial
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db.backends.sqlite3.base import DatabaseWrapper
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
-from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
+from teatree.core.provision.provision_report import ProvisionReport, StepResult
+from teatree.core.provision.step_runner import run_callable_step, run_provision_steps, run_step
+from tests.teatree_core._provision_timebox_stub import (
+    BROKEN_DEPENDENCY_NAME,
+    provision_timebox_internally_broken,
+    provision_timebox_unimportable,
+)
 
 
 class TestStepResult(TestCase):
@@ -72,19 +81,27 @@ class TestRunStep(TestCase):
         assert result.duration > 0
 
     @patch("teatree.utils.run.subprocess")
-    def test_failure_with_check(self, mock_sp: MagicMock) -> None:
+    def test_failure_reports_success_false(self, mock_sp: MagicMock) -> None:
         mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="bad thing")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
-        result = run_step("fail-step", ["false"], check=True)
+        result = run_step("fail-step", ["false"])
         assert result.success is False
         assert "bad thing" in result.error
 
     @patch("teatree.utils.run.subprocess")
-    def test_failure_without_check(self, mock_sp: MagicMock) -> None:
-        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="ignored")
+    def test_nonzero_exit_is_never_rewritten_to_success(self, mock_sp: MagicMock) -> None:
+        """A non-zero exit is always ``success=False`` — never fabricated as OK.
+
+        The pre-fix ``check=False`` contract rewrote a genuine failure to
+        ``success=True``, so a report printed OK for a step that actually failed.
+        ``run_step`` now faithfully reflects the exit code; a caller that treats
+        the failure as non-fatal inspects ``result.success`` itself.
+        """
+        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="real failure")
         mock_sp.TimeoutExpired = subprocess.TimeoutExpired
-        result = run_step("soft-fail", ["false"], check=False)
-        assert result.success is True  # check=False means non-zero is OK
+        result = run_step("soft-fail", ["false"])
+        assert result.success is False
+        assert "real failure" in result.error
 
     @patch("teatree.utils.run.subprocess")
     def test_timeout(self, mock_sp: MagicMock) -> None:
@@ -99,6 +116,79 @@ class TestRunStep(TestCase):
         result = run_step("missing", ["nonexistent_binary_xyz123"])
         assert result.success is False
         assert "command not found" in result.error
+
+
+class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
+    """souliane/teatree#2664 — ``run_step`` degrades when ``provision_timebox`` is absent.
+
+    Teardown runs the WORKTREE's own checkout (``uv --directory <worktree>
+    run``). A worktree whose base predates ``provision_timebox`` (#2220) cannot
+    import it, so the lazy ``from teatree.core.provision.provision_timebox import
+    run_timeboxed_step`` in ``run_step`` raised ``ModuleNotFoundError`` and
+    aborted the whole teardown runner mid-stream — skipping every step ordered
+    after the abort (DB drop, ``Worktree`` row delete, docker down). The
+    optional time-box enhancement must degrade to a plain subprocess run, never
+    abort the caller.
+    """
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_does_not_raise_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="hooks\n", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("git-hooks-path", ["git", "rev-parse", "--git-path", "hooks"])
+
+        assert result.success is True
+        assert result.name == "git-hooks-path"
+        assert "hooks" in result.stdout
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_nonzero_exit_reports_failure_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="real failure")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("soft-fail", ["false"])
+
+        assert result.success is False
+        assert "real failure" in result.error
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_command_not_found_surfaced_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.side_effect = FileNotFoundError("no such file: nope")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("missing", ["nope"])
+
+        assert result.success is False
+        assert "command not found" in result.error
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_timeout_surfaced_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.side_effect = subprocess.TimeoutExpired(cmd=["slow"], timeout=1)
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("slow", ["sleep", "999"], timeout=1)
+
+        assert result.success is False
+        assert "timed out" in result.error
+
+    def test_run_step_propagates_when_module_present_but_internally_broken(self) -> None:
+        """A present ``provision_timebox`` failing on its OWN broken import must NOT be swallowed.
+
+        The catch is narrowed to the module's own absence (``ModuleNotFoundError.name`` ==
+        ``teatree.core.provision.provision_timebox``). A present-but-internally-broken module raises a
+        ``ModuleNotFoundError`` whose ``.name`` is the missing DEPENDENCY, so ``run_step`` must
+        re-raise it rather than silently degrading to a plain run — which would disable the
+        timeout/heartbeat/alert for every healthy install and mask the real bug.
+        """
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_step("probe", ["true"])
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
 class TestRunCallableStep(TestCase):
@@ -220,3 +310,495 @@ class TestRunProvisionSteps(TestCase):
     def test_failed_required_step_none_when_all_pass(self) -> None:
         report = ProvisionReport(steps=[StepResult(name="ok", success=True)])
         assert report.failed_required_step is None
+
+
+class TestSubprocessOnlyStepIsTimeBoxed(TestCase):
+    """An ORM-free subprocess provision step that blocks on its PIPE aborts loud (#2244 — the HOLD).
+
+    A ``subprocess_only`` step (``uv sync`` / ``uv pip install -e`` — the ONLY
+    provision steps the teatree dogfood overlay runs, since it declares no
+    ``db_import`` strategy) shells out via ``run_checked(..., capture_output=True)``
+    with no wall-clock bound. A child blocked forever on its PIPE — a network
+    stall — would hang the whole provision silently with no ceiling, heartbeat,
+    or alert. The step must be time-boxed on a worker thread (safe — it touches
+    no ORM): on the ceiling it fails LOUD / non-zero and fires the actionable
+    alert, never returns ``ok`` and never hangs.
+
+    ANTI-VACUITY: revert the ``run_provision_steps`` guard (route every callable
+    back through the in-process ``run_callable_step``) and this goes RED — the
+    blocking callable runs unbounded in-process, returns, and the step is
+    recorded SUCCESS with no alert.
+    """
+
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=0.1)
+    def test_blocking_subprocess_step_aborts_loud_and_alerts(
+        self, mock_ceiling: MagicMock, mock_notify: MagicMock
+    ) -> None:
+        _ = mock_ceiling
+        release = threading.Event()
+
+        def uv_sync_blocked_on_pipe() -> None:
+            # Models ``run_checked(["uv", "sync"], capture_output=True)`` with the
+            # child blocked forever on its PIPE — never returns until released.
+            release.wait(timeout=3)
+
+        steps = [
+            ProvisionStep(
+                name="sync-dependencies",
+                callable=uv_sync_blocked_on_pipe,
+                required=True,
+                subprocess_only=True,
+            ),
+            ProvisionStep(name="after", callable=lambda: None, required=True),
+        ]
+        report = run_provision_steps(steps)
+        release.set()
+
+        assert report.success is False
+        assert report.failed_step == "sync-dependencies"
+        assert "timed out" in report.steps[0].error
+        assert len(report.steps) == 1  # halted on the timed-out required step; "after" never ran
+        assert mock_notify.called
+        assert "sync-dependencies" in mock_notify.call_args.args[0]
+
+
+class TestOrmStepRunsInProcess(TestCase):
+    """A default (non-``subprocess_only``) step runs on the CALLING thread, never a worker (#2244).
+
+    ORM-touching callables mutate the ``Worktree`` row, and Django DB
+    connections are per-thread — so they must NOT run on a worker thread (the
+    "database table is locked" abort the #2244 narrowing fixed). The default
+    ``subprocess_only=False`` keeps them in-process.
+    """
+
+    def test_default_step_runs_on_the_calling_thread(self) -> None:
+        ran_on: dict[str, int] = {}
+        steps = [
+            ProvisionStep(name="orm-step", callable=lambda: ran_on.__setitem__("tid", threading.get_ident())),
+        ]
+        run_provision_steps(steps)
+        assert ran_on["tid"] == threading.get_ident()
+
+
+class TestSubprocessOnlyStepSurvivesMissingProvisionTimebox(TestCase):
+    """The subprocess_only path degrades to a plain run when the time-box is absent (#2664).
+
+    A worktree torn down from a stale base cannot import ``provision_timebox``;
+    the subprocess_only callable path must degrade to a plain in-process run,
+    never abort the caller. A PRESENT-but-internally-broken module re-raises.
+    """
+
+    def test_subprocess_step_runs_when_module_absent(self) -> None:
+        ran: list[str] = []
+        steps = [
+            ProvisionStep(name="noop", callable=partial(ran.append, "noop"), required=True, subprocess_only=True),
+        ]
+
+        with provision_timebox_unimportable():
+            report = run_provision_steps(steps)
+
+        assert ran == ["noop"]
+        assert report.success is True
+
+    def test_subprocess_step_propagates_when_module_present_but_internally_broken(self) -> None:
+        steps = [
+            ProvisionStep(name="noop", callable=lambda: None, required=True, subprocess_only=True),
+        ]
+
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_provision_steps(steps)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
+
+
+class TestConcurrentWaveSurvivesMissingProvisionTimebox(TestCase):
+    """A concurrent wave degrades / propagates the same as the serial path (#2664).
+
+    The parallel path pre-resolves each member's ceiling on the caller thread
+    (``_resolve_step_timeout``) so the pool workers touch no ORM. That resolution
+    must degrade to a plain run when ``provision_timebox`` is absent, and must
+    propagate a genuinely broken (present-but-broken-dependency) module.
+    """
+
+    def test_group_runs_when_module_absent(self) -> None:
+        ran: list[str] = []
+        steps = [
+            ProvisionStep(name="a", callable=partial(ran.append, "a"), subprocess_only=True),
+            ProvisionStep(name="b", callable=partial(ran.append, "b"), subprocess_only=True),
+        ]
+
+        with provision_timebox_unimportable():
+            report = run_provision_steps(steps)
+
+        assert sorted(ran) == ["a", "b"]
+        assert report.success is True
+
+    def test_group_propagates_when_module_present_but_internally_broken(self) -> None:
+        steps = [
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True),
+        ]
+
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_provision_steps(steps)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
+
+
+class TestConcurrentWaveWorkersAreOrmFree(TestCase):
+    """A pool worker must open NO DB connection — the regression guard for the leak.
+
+    A Django connection opened on a ``ThreadPoolExecutor`` worker is never closed
+    under a Django ``TestCase`` (its atomic wrapping vetoes ``close()``), so it
+    leaks a ``sqlite3`` ``ResourceWarning`` at GC time that surfaces as an
+    unraisable-exception error in an unrelated later test. The time-box ceiling is
+    resolved on the caller thread so the workers stay ORM-free; this test fails if
+    any pool worker opens a connection again.
+    """
+
+    def test_pool_workers_open_no_db_connection(self) -> None:
+        opened_on: list[str] = []
+        real_get_new_connection = DatabaseWrapper.get_new_connection
+
+        def _record(self, conn_params):
+            opened_on.append(threading.current_thread().name)
+            return real_get_new_connection(self, conn_params)
+
+        steps = [
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True),
+        ]
+        with patch.object(DatabaseWrapper, "get_new_connection", _record):
+            report = run_provision_steps(steps)
+
+        assert report.success is True
+        pool_opens = [name for name in opened_on if name.startswith("ThreadPoolExecutor")]
+        assert pool_opens == [], f"a pool worker opened a DB connection (leaks under TestCase): {pool_opens}"
+
+
+class TestStepResultSkipped(TestCase):
+    def test_summary_shows_skip_for_skipped_step(self) -> None:
+        result = StepResult(name="test-step", success=True, duration=0.0, skipped=True)
+        assert "[SKIP]" in result.summary()
+
+    def test_to_dict_round_trip_fields(self) -> None:
+        result = StepResult(name="a", success=False, duration=1.5, error="boom", required=False, skipped=True)
+        data = result.to_dict()
+        assert data == {
+            "name": "a",
+            "success": False,
+            "duration": 1.5,
+            "error": "boom",
+            "required": False,
+            "skipped": True,
+        }
+
+
+class TestProvisionReportSerialization(TestCase):
+    def test_total_duration_sums_steps(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="a", success=True, duration=1.0),
+                StepResult(name="b", success=True, duration=2.5),
+            ]
+        )
+        assert report.total_duration == pytest.approx(3.5)
+
+    def test_slowest_step_returns_the_longest(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="a", success=True, duration=1.0),
+                StepResult(name="b", success=True, duration=9.0),
+                StepResult(name="c", success=True, duration=2.0),
+            ]
+        )
+        assert report.slowest_step is not None
+        assert report.slowest_step.name == "b"
+
+    def test_slowest_step_none_when_empty(self) -> None:
+        assert ProvisionReport().slowest_step is None
+
+    def test_to_dict_from_dict_round_trip(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="a", success=True, duration=1.0),
+                StepResult(name="b", success=False, duration=2.0, error="x", required=True),
+                StepResult(name="c", success=True, duration=0.0, skipped=True),
+            ]
+        )
+        data = report.to_dict()
+        assert data["total_duration"] == pytest.approx(3.0)
+        assert data["success"] is False
+        restored = ProvisionReport.from_dict(data)
+        assert len(restored.steps) == 3
+        assert restored.steps[2].skipped is True
+        assert restored.total_duration == report.total_duration
+        assert restored.success == report.success
+
+    def test_from_dict_tolerates_missing_keys(self) -> None:
+        restored = ProvisionReport.from_dict({"steps": [{"name": "a"}]})  # type: ignore[typeddict-item]
+        assert len(restored.steps) == 1
+        assert restored.steps[0].success is False
+        assert restored.steps[0].required is True
+
+
+class TestSkipProbe(TestCase):
+    def test_skip_probe_true_skips_the_callable(self) -> None:
+        calls: list[str] = []
+        steps = [
+            ProvisionStep(
+                name="skippable",
+                callable=partial(calls.append, "ran"),
+                skip_probe=lambda: True,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert calls == []
+        assert report.steps[0].skipped is True
+        assert report.steps[0].success is True
+        assert report.steps[0].duration == pytest.approx(0.0)
+
+    def test_skip_probe_false_runs_the_callable(self) -> None:
+        calls: list[str] = []
+        steps = [
+            ProvisionStep(
+                name="not-skippable",
+                callable=partial(calls.append, "ran"),
+                skip_probe=lambda: False,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert calls == ["ran"]
+        assert report.steps[0].skipped is False
+        assert report.steps[0].success is True
+
+    def test_raising_skip_probe_does_not_skip_or_crash(self) -> None:
+        calls: list[str] = []
+
+        def broken_probe() -> bool:
+            msg = "probe exploded"
+            raise RuntimeError(msg)
+
+        steps = [
+            ProvisionStep(
+                name="probe-broken",
+                callable=partial(calls.append, "ran"),
+                skip_probe=broken_probe,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert calls == ["ran"]
+        assert report.steps[0].skipped is False
+        assert report.steps[0].success is True
+
+    def test_no_skip_probe_runs_normally(self) -> None:
+        calls: list[str] = []
+        steps = [ProvisionStep(name="plain", callable=partial(calls.append, "ran"))]
+        report = run_provision_steps(steps)
+        assert calls == ["ran"]
+        assert report.steps[0].skipped is False
+
+
+class TestDagConcurrency(TestCase):
+    """Independent ``subprocess_only`` steps run concurrently in one wave (PR-27).
+
+    ANTI-VACUITY: with the wave-concurrency guard reverted (every step run
+    sequentially) this test goes RED — the two barrier-gated steps deadlock
+    since each waits for the other to have started before either can finish,
+    and a serial runner never lets the second one start before the first
+    returns.
+    """
+
+    def test_independent_subprocess_steps_run_concurrently(self) -> None:
+        barrier = threading.Barrier(2, timeout=5)
+        order: list[str] = []
+
+        def step_a() -> None:
+            barrier.wait()
+            order.append("a")
+
+        def step_b() -> None:
+            barrier.wait()
+            order.append("b")
+
+        steps = [
+            ProvisionStep(name="a", callable=step_a, subprocess_only=True),
+            ProvisionStep(name="b", callable=step_b, subprocess_only=True),
+        ]
+        report = run_provision_steps(steps)
+        assert report.success is True
+        assert {s.name for s in report.steps} == {"a", "b"}
+        assert sorted(order) == ["a", "b"]
+
+    def test_orm_step_runs_serially_in_process(self) -> None:
+        ran_on: dict[str, int] = {}
+        steps = [
+            ProvisionStep(
+                name="orm-step",
+                callable=lambda: ran_on.__setitem__("tid", threading.get_ident()),
+                subprocess_only=False,
+            ),
+        ]
+        run_provision_steps(steps)
+        assert ran_on["tid"] == threading.get_ident()
+
+    def test_required_failure_halts_downstream_steps(self) -> None:
+        def fail() -> None:
+            msg = "wave-fail"
+            raise RuntimeError(msg)
+
+        after_ran: list[str] = []
+        steps = [
+            ProvisionStep(name="ok", callable=lambda: None, subprocess_only=True, produces=frozenset({"deps"})),
+            ProvisionStep(
+                name="fail", callable=fail, subprocess_only=True, produces=frozenset({"deps"}), required=True
+            ),
+            # ``after`` requires the failing wave's resource, so it is scheduled
+            # into a LATER wave that never starts once the first wave halts.
+            ProvisionStep(
+                name="after", callable=partial(after_ran.append, "after"), required=True, requires=frozenset({"deps"})
+            ),
+        ]
+        report = run_provision_steps(steps, stop_on_required_failure=True)
+        assert after_ran == []
+        assert report.success is False
+        names = {s.name for s in report.steps}
+        assert names == {"ok", "fail"}
+
+    def test_dependent_steps_run_in_declared_order(self) -> None:
+        order: list[str] = []
+        steps = [
+            ProvisionStep(name="second", callable=partial(order.append, "second"), requires=frozenset({"db"})),
+            ProvisionStep(name="first", callable=partial(order.append, "first"), produces=frozenset({"db"})),
+        ]
+        run_provision_steps(steps)
+        assert order == ["first", "second"]
+
+    def test_requires_unproduced_token_fails_closed(self) -> None:
+        steps = [ProvisionStep(name="a", callable=lambda: None, requires=frozenset({"nowhere"}))]
+        with pytest.raises(ValueError, match="requires 'nowhere' which no step produces"):
+            run_provision_steps(steps)
+
+    def test_independent_steps_run_serially_when_not_subprocess(self) -> None:
+        order: list[str] = []
+        steps = [
+            ProvisionStep(name="a", callable=partial(order.append, "a")),
+            ProvisionStep(name="b", callable=partial(order.append, "b")),
+        ]
+        run_provision_steps(steps)
+        assert order == ["a", "b"]
+
+
+class TestPostCondition(TestCase):
+    """A step's ``post_condition`` is folded into its success (PR-27)."""
+
+    def test_unmet_post_condition_marks_step_failed(self) -> None:
+        ran: list[str] = []
+        steps = [
+            ProvisionStep(
+                name="import-db",
+                callable=partial(ran.append, "import-db"),
+                required=True,
+                post_condition=lambda: False,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert ran == ["import-db"]  # the callable DID run
+        assert report.success is False
+        assert report.steps[0].success is False
+        assert "post-condition" in report.steps[0].error
+
+    def test_met_post_condition_keeps_step_successful(self) -> None:
+        steps = [ProvisionStep(name="ok", callable=lambda: None, post_condition=lambda: True)]
+        report = run_provision_steps(steps)
+        assert report.success is True
+
+    def test_raising_post_condition_marks_step_failed_not_crash(self) -> None:
+        def boom() -> bool:
+            msg = "probe blew up"
+            raise RuntimeError(msg)
+
+        steps = [ProvisionStep(name="x", callable=lambda: None, post_condition=boom)]
+        report = run_provision_steps(steps)
+        assert report.success is False
+        assert "post-condition raised" in report.steps[0].error
+
+    def test_post_condition_not_checked_when_callable_failed(self) -> None:
+        def fail() -> None:
+            msg = "callable failed"
+            raise RuntimeError(msg)
+
+        checked: list[str] = []
+
+        def probe() -> bool:
+            checked.append("probed")
+            return True
+
+        steps = [ProvisionStep(name="x", callable=fail, post_condition=probe, required=False)]
+        report = run_provision_steps(steps)
+        assert report.steps[0].success is False
+        assert checked == []  # a failed callable's post-condition is never consulted
+
+
+class TestHeavyFlagPropagation(TestCase):
+    """``ProvisionStep.heavy`` selects the time-box ceiling (souliane/teatree#2949)."""
+
+    @patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=999)
+    def test_heavy_subprocess_step_requests_heavy_ceiling(self, mock_resolve: MagicMock) -> None:
+        steps = [ProvisionStep(name="heavy-step", callable=lambda: None, subprocess_only=True, heavy=True)]
+        run_provision_steps(steps)
+        mock_resolve.assert_called_once_with(heavy=True)
+
+    @patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=999)
+    def test_fast_subprocess_step_requests_fast_ceiling(self, mock_resolve: MagicMock) -> None:
+        steps = [ProvisionStep(name="fast-step", callable=lambda: None, subprocess_only=True, heavy=False)]
+        run_provision_steps(steps)
+        mock_resolve.assert_called_once_with(heavy=False)
+
+    # A wall-clock "concurrent group finishes faster than serial" timing proof
+    # was tried here and dropped: under a loaded full test-suite run (xdist
+    # worker CPU contention), the concurrent measurement is not reliably
+    # faster in absolute or even self-relative terms — the flakiness is
+    # environmental thread-scheduling noise, not a defect. The deterministic
+    # anti-vacuity proof is TestDagConcurrency.test_independent_subprocess_steps_run_concurrently
+    # above, which uses a threading.Barrier(2) so a serialized (non-concurrent)
+    # run deadlocks and fails outright — no wall clock involved.
+
+
+class TestConcurrentWaveWorkerClosesItsDbHandle(TestCase):
+    """A pool worker that DOES touch the ORM must not strand its raw handle.
+
+    ``TestConcurrentWaveWorkersAreOrmFree`` above pins the happy path (the
+    time-box ceiling is resolved on the caller thread). It cannot cover the
+    failure paths: a step's own ``skip_probe`` and the time-box's loud
+    ``alert_provision_user`` DM both run ON the pool worker and write to the DB.
+    So the worker closes its raw DB-API handle in a ``finally`` — ``close()``
+    alone is a documented no-op on the in-memory test database, and a stranded
+    handle is finalized at a later GC as a ``ResourceWarning: unclosed database``
+    charged to an unrelated test.
+    """
+
+    def test_a_worker_that_touched_the_orm_leaves_no_open_handle(self) -> None:
+        raws: list[sqlite3.Connection] = []
+        lock = threading.Lock()
+
+        def _orm_touching_probe() -> bool:
+            from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
+
+            connection.ensure_connection()
+            with lock:
+                raws.append(connection.connection)
+            return False
+
+        steps = [
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, skip_probe=_orm_touching_probe),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, skip_probe=_orm_touching_probe),
+        ]
+        report = run_provision_steps(steps)
+
+        assert report.success is True
+        assert len(raws) == 2, f"the probes never ran on the pool: {raws}"
+        for raw in raws:
+            with pytest.raises(sqlite3.ProgrammingError):
+                raw.execute("SELECT 1")

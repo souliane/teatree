@@ -4,6 +4,9 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
+from teatree.core.headless_dispatch import runs_in_session
+from teatree.core.issue_title import fetch_issue_title
+from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -18,12 +21,12 @@ logger = logging.getLogger(__name__)
 # body (#2385: the body's intra-core up-edge into ``teatree.core.tasks`` is
 # severed; the enqueue is keyed here, looked up + enqueued after commit by the
 # post_transition receiver so the state change and the queued work still land
-# atomically). ``reconcile_merged`` mirrors ``mark_merged`` — both tear down.
+# atomically). Teardown is NOT keyed here — it is keyed on the TARGET STATE
+# (``_TERMINAL_TARGET_STATES``) so EVERY terminal transition purges, not just the
+# two merge names.
 _TICKET_TRANSITION_TASKS: dict[str, str] = {
     "start": "execute_provision",
     "ship": "execute_ship",
-    "mark_merged": "execute_teardown",
-    "reconcile_merged": "execute_teardown",
     "retrospect": "execute_retrospect",
 }
 
@@ -32,18 +35,43 @@ _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
     "start_services": "execute_worktree_start",
     "verify": "execute_worktree_verify",
     "stop_services": "execute_worktree_stop",
+    # teardown keeps db_name/extra on the row (they are the recovery pointers the
+    # worker reads), so it enqueues through the shared receiver like every other
+    # worktree transition — no pre-blank snapshot to carry.
+    "teardown": "execute_worktree_teardown",
 }
+
+# The terminal target states that trigger completion-time side effects: freeing
+# the issue-implementer marker AND purging the ticket's worktrees. Sourced from
+# ``Ticket.marker_release_states()`` so the on-transition signals and the
+# retroactive reconciler (#3275) can never diverge on which states are terminal;
+# mirrors ``worktree_done._DONE_TICKET_STATES`` — SHIPPED is excluded (its PR is
+# still open, so the work is not finished), i.e. ``Ticket`` terminal states minus SHIPPED.
+_TERMINAL_TARGET_STATES: frozenset[str] = Ticket.marker_release_states()
 
 
 def _log_ticket_transition(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
     name: str,
     source: str,
     target: str,
     **_kwargs: object,
 ) -> None:
-    from teatree.core.models.transition import TicketTransition  # noqa: PLC0415
+    from teatree.core.models.transition import TicketTransition  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    if source == target:
+        # A state-preserving transition is not an audit event. Several transitions
+        # list their own target in ``source`` so a re-run is safe (``mark_reviewed_externally``
+        # re-stamps a moved head SHA and stays at REVIEW_POSTED), which makes them
+        # idempotent in STATE but not in side effects — every re-run still fired this
+        # receiver. A caller re-running one per pass therefore wrote one row per ticket
+        # per pass forever: 3,240,987 of 3,241,397 rows on the live box were
+        # ``review_posted → review_posted``, 99.99% of the table, still growing at
+        # ~410/min. What such a re-run actually changed lives in ``extra`` and is
+        # recorded there; the state edge is the only thing this table holds, and it
+        # has none.
+        return
 
     try:
         session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
@@ -61,6 +89,8 @@ def _log_ticket_transition(
 def _add_slack_reactions_on_transition(
     instance: Ticket,
     name: str,
+    source: str,
+    target: str,
     **_kwargs: object,
 ) -> None:
     """Post a Slack emoji reaction on the PR review message for this transition.
@@ -71,11 +101,20 @@ def _add_slack_reactions_on_transition(
     to ``(ticket.url, "transition_reaction:<name>")`` → reaction posts;
     gate ON + no approval → skip without posting; gate OFF → post. The
     FSM transition itself is never blocked.
+
+    An emoji announces ENTERING a state, so a state-preserving transition posts
+    nothing: the emoji is already on the message, and re-firing spends the
+    single-use :class:`OnBehalfApproval`, re-DMs the user a receipt, and re-runs
+    the post + verify-by-reread round trip for a reaction that is already there.
+    ``mark_merged``/``retrospect`` re-fire from their own target as the documented
+    operator retry, and an overlay may map a self-looping reviewer transition too.
     """
-    target = f"ticket:{instance.pk}"
+    if source == target:
+        return
+    gate_target = f"ticket:{instance.pk}"
     try:
         reacted = require_on_behalf_approval(
-            target=target,
+            target=gate_target,
             action=f"transition_reaction:{name}",
             publish=lambda: get_reaction_publisher().add_reactions_for_transition(instance, name),
         )
@@ -89,10 +128,10 @@ def _add_slack_reactions_on_transition(
         return
     if reacted:
         notify_user_on_behalf_post(
-            target=target,
+            target=gate_target,
             action=f"transition_reaction:{name}",
             destination=f"ticket:{instance.pk} review message",
-            artifact_url=instance.issue_url or target,
+            artifact_url=instance.issue_url or gate_target,
             summary=f"{name} transition reaction on ticket {instance.pk}",
         )
 
@@ -155,58 +194,118 @@ def _add_approval_reaction_on_transition(
     # reaction → review → approve cycle. Best-effort: a missing row or DB
     # outage must never block the FSM transition.
     try:
-        from teatree.core.models import ReviewAssignment  # noqa: PLC0415
+        from teatree.core.models import ReviewAssignment  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ReviewAssignment.approve_for_mr(mr_url=instance.url, overlay=instance.overlay)
     except Exception:
         logger.exception("Failed to mark ReviewAssignment approved for PR %s", instance.pk)
 
 
-def _is_loop_dispatched(instance: Task) -> bool:
-    """True when the loop is the SOLE dispatcher for this task's ``(role, phase)``.
+def _runs_in_session(instance: Task) -> bool:
+    """True when the in-session ``/loop`` is the SOLE dispatcher for this task.
 
-    A task whose ``(ticket.role, phase)`` has a registered phase agent is
-    dispatched per-phase by the in-session ``/loop`` slot (``loop_dispatch``
-    ``claim-next`` → the phase sub-agent via the ``Agent`` tool). Such a task
-    now defaults to INTERACTIVE at creation (``Task.save`` chokepoint), so the
-    ``execution_target`` guard below already skips it; this remains as
-    defense-in-depth for a row that reaches HEADLESS some other way, so a
-    queue drainer never launches a metered detached headless-SDK run for loop
-    phase work. A
-    pair with NO registered agent is free-form headless and still rides the
-    ``execute_headless_task`` path — never zero dispatch.
+    Delegates to ``headless_dispatch.runs_in_session``: a ``(ticket.role, phase)``
+    with a registered phase agent runs in-session ONLY under
+    ``agent_runtime=interactive`` (the default), where it defaults to INTERACTIVE
+    at creation (``Task.save`` chokepoint) and the ``execution_target`` guard below
+    already skips it — this remains as defense-in-depth for a row that reaches
+    HEADLESS some other way. Under a headless ``agent_runtime`` the same pair runs
+    headless, so this returns ``False`` and the auto-enqueue ships it to
+    ``execute_headless_task``. A pair with NO registered agent is free-form
+    headless and is never in-session — never zero dispatch.
     """
-    return Task.loop_dispatched(role=instance.ticket.role, phase=instance.phase)
+    return runs_in_session(role=instance.ticket.role, phase=instance.phase)
+
+
+def _stamp_issue_title_on_create(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Ticket,
+    *,
+    created: bool,
+    **_kwargs: object,
+) -> None:
+    """Seed a new forge ticket's dashboard label from its issue title (#3205).
+
+    The loop creates a ticket with a blank ``short_description``, so its card
+    shows only a number. The reference stamped the title from the scanner's
+    already-fetched payload inside ``_handle_orchestrator``; this hook does the
+    equivalent without touching that ticket-creation seam — on create it defers
+    a best-effort forge fetch to after commit (off the create path, and inert in
+    ``TestCase`` where ``on_commit`` never fires). Guarded so it only runs for a
+    titleless http(s) ticket; a forge failure logs and drops silently — the card
+    just keeps showing the number, exactly as before.
+    """
+    if not created:
+        return
+    if not instance.issue_url.startswith(("http://", "https://")):
+        return
+    extra = instance.extra if isinstance(instance.extra, dict) else {}
+    if extra.get("issue_title"):
+        return
+    ticket_pk = int(instance.pk)
+    transaction.on_commit(lambda: _fetch_and_stamp_issue_title(ticket_pk))
+
+
+def _fetch_and_stamp_issue_title(ticket_pk: int) -> None:
+    try:
+        ticket = Ticket.objects.get(pk=ticket_pk)
+        title = fetch_issue_title(ticket)
+    except Exception:
+        logger.exception("Failed to stamp issue title for ticket %s", ticket_pk)
+        return
+    if title:
+        ticket.stamp_issue_title(title)
 
 
 def _auto_enqueue_headless_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Task,
     **_kwargs: object,
 ) -> None:
     """Auto-enqueue HEADLESS tasks for execution when created or re-routed.
 
-    Loop-dispatched phase tasks (those with a registered phase agent) default
-    to INTERACTIVE at creation and so fail the ``execution_target`` guard;
-    ``_is_loop_dispatched`` stays as a belt-and-braces skip for any HEADLESS
-    row of such a pair, so a ``db_worker`` draining the queue never
-    double-runs (or meters) loop phase work.
+    Under ``agent_runtime=interactive`` (default), loop-dispatched phase tasks
+    default to INTERACTIVE at creation and so fail the ``execution_target`` guard;
+    ``_runs_in_session`` stays as a belt-and-braces skip for any HEADLESS row of
+    such a pair, so a ``db_worker`` draining the queue never double-runs loop phase
+    work the in-session ``/loop`` owns. Under a headless ``agent_runtime`` the same
+    phase tasks ARE headless and ``_runs_in_session`` is ``False``, so they are
+    enqueued here like any other headless work.
 
     A task whose ticket names a non-empty unknown overlay is never enqueued
     (souliane/teatree#1959): dispatching it would crash ``execute_headless_task``
     — the drain safety-net fails such rows permanently instead. A blank overlay
     is the ambient single-overlay default and stays dispatchable.
+
+    A usage-window-parked task (PENDING with a future ``not_before``, Directive #3) is
+    never enqueued either. ``Task.park`` leaves the task PENDING, so this receiver fired
+    on the park's own save and re-armed the dispatch the park had just refused — the
+    self-feeding edge behind the measured 47,172 park rows on a single task in eight
+    hours. The drain and the claim CAS honour the same gate; the lane now stays quiesced
+    until ``usage_window_recovery`` releases the task at the window's re-arm instant.
     """
     if instance.execution_target != Task.ExecutionTarget.HEADLESS:
         return
     if instance.status != Task.Status.PENDING:
         return
-    if _is_loop_dispatched(instance):
+    if instance.is_window_parked():
+        logger.debug("Task %s is window-parked until %s — not re-enqueuing", instance.pk, instance.not_before)
+        return
+    if _runs_in_session(instance):
         return
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
-    from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+    from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred: call-time
+
+    denied = headless_admission_denied_reason()
+    if denied is not None:
+        # The governor brakes the headless lane at its admission chokepoint (F9).
+        # The task stays PENDING; the (also-gated) drain re-admits it once the
+        # governor clears. Never silent — a refusal is always logged.
+        logger.warning("Governor DENIED auto-enqueue of headless task %s: %s (staying PENDING)", instance.pk, denied)
+        return
+    from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         execute_headless_task.enqueue(int(instance.pk), instance.phase)
@@ -215,13 +314,59 @@ def _auto_enqueue_headless_task(
         logger.exception("Failed to auto-enqueue headless task %s", instance.pk)
 
 
+def _close_session_on_terminal_task(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Task,
+    **_kwargs: object,
+) -> None:
+    """End a Session once the work it was minted for terminates.
+
+    The single chokepoint for writing ``Session.ended_at``: every production
+    session-minting site creates one Session per dispatched Task, so a task
+    reaching COMPLETED/FAILED is its session's terminal point. Riding ``post_save``
+    covers ``complete()``, ``fail()``, ``complete_surfacing_advance_failure()`` and
+    ``complete_with_attempt()`` at once, instead of sprinkling a close into each.
+
+    ``close_if_idle`` keeps the session open while a sibling/child task on it is
+    still active. Best-effort: a task write must never fail because its session
+    could not be stamped — the ``session_stale_after_hours`` bound is the backstop.
+    """
+    if instance.status not in Task.Status.terminal():
+        return
+    try:
+        instance.session.close_if_idle()
+    except Exception:
+        logger.exception("Failed to close the session of terminal task %s", instance.pk)
+
+
 def _enqueue_ticket_transition_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Ticket,
     name: str,
+    source: str,
+    target: str,
     **_kwargs: object,
 ) -> None:
     """Enqueue the ``@task`` worker a ticket FSM transition body used to enqueue.
+
+    Two keying strategies compose. The NAME map (``_TICKET_TRANSITION_TASKS``)
+    covers transition-specific workers (``start``→provision, ``ship``→ship,
+    ``retrospect``→retrospect). Teardown is keyed on the TARGET STATE instead
+    (#808 derive-don't-enumerate): every transition landing in a terminal state
+    purges the ticket's worktrees the instant it is done — ``ignore``→IGNORED,
+    ``mark_delivered``→DELIVERED,
+    ``mark_review_no_action``/``mark_reviewed_externally``→REVIEW_POSTED,
+    and the ``mark_merged``/``reconcile_merged``→MERGED merge paths — so a
+    frozen/closed ticket's worktrees are reaped rather than piling up. The reaper's
+    own analyze-before-wipe (#706) keeps any unsynced work regardless.
+
+    Teardown is the side effect of ENTERING a terminal state, so a state-preserving
+    transition does not fire it (#3879, the sibling of the audit-row suppression in
+    ``_log_ticket_transition``): the ticket was already terminal and its worktrees
+    were already reaped, so a re-run would mint a duplicate job for work that no
+    longer exists. Re-running teardown for a terminal ticket that still holds
+    worktrees is ``enqueue_teardown_for_terminal_tickets``'s job — an explicit
+    operator drain, not a side effect of an FSM no-op.
 
     The deferred import of the executor is call-time (mirroring
     ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
@@ -229,60 +374,75 @@ def _enqueue_ticket_transition_task(
     "state change + queued work land atomically" guarantee — the worker fires
     only after the transition's save commits.
     """
-    executor_name = _TICKET_TRANSITION_TASKS.get(name)
-    if executor_name is None:
-        return
-    from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+    from teatree.core import tasks as tasks_mod  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    executor = getattr(tasks_mod, executor_name)
     ticket_pk = int(instance.pk)
-    transaction.on_commit(lambda: executor.enqueue(ticket_pk))
+    executor_name = _TICKET_TRANSITION_TASKS.get(name)
+    if executor_name is not None:
+        executor = getattr(tasks_mod, executor_name)
+        transaction.on_commit(lambda: executor.enqueue(ticket_pk))
+    if target in _TERMINAL_TARGET_STATES and source != target:
+        teardown = tasks_mod.execute_teardown
+        transaction.on_commit(lambda: teardown.enqueue(ticket_pk))
 
 
 def _enqueue_worktree_transition_task(
-    sender: type,  # noqa: ARG001
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Worktree,
     name: str,
     **_kwargs: object,
 ) -> None:
     """Enqueue the per-worktree ``@task`` worker a worktree FSM body used to enqueue.
 
-    ``teardown`` is handled separately (``_enqueue_worktree_teardown_task``)
-    because its body BLANKS ``db_name`` / ``extra`` before this receiver fires,
-    so the worker needs the pre-blank snapshot, not the live (now-empty) row.
+    ``teardown`` rides this shared path too: it keeps ``db_name`` / ``extra`` on
+    the row (the recovery pointers the worker reads), so there is no pre-blank
+    snapshot to carry — the worker reads the live row.
     """
+    # self-loop-safe: keyed on the transition NAME, not on entering a state, and every
+    # ``Worktree`` self-loop is an operator re-invocation of that exact action — re-provision
+    # a provisioned tree, restart a running one, re-verify a ready one, and the ``*``-sourced
+    # teardown ``clean-all`` fires on a CREATED row. Suppressing it breaks each recovery path.
     executor_name = _WORKTREE_TRANSITION_TASKS.get(name)
     if executor_name is None:
         return
-    from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415 — deferred: call-time import
 
     executor = getattr(worktree_tasks_mod, executor_name)
     worktree_pk = int(instance.pk)
     transaction.on_commit(lambda: executor.enqueue(worktree_pk))
 
 
-def _enqueue_worktree_teardown_task(
-    sender: type,  # noqa: ARG001
-    instance: Worktree,
-    name: str,
+def _release_issue_markers_on_completion(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Ticket,
+    source: str,
+    target: str,
     **_kwargs: object,
 ) -> None:
-    """Enqueue ``execute_worktree_teardown`` with the PRE-BLANK snapshot (#2385 trap).
+    """Free the issue-implementer marker(s) when the ticket completes.
 
-    ``Worktree.teardown()`` blanks ``db_name`` / ``extra`` on the row in its
-    body, so reading them here would enqueue a teardown that never drops the
-    database. The body stashes the pre-blank ``(db_name, extra)`` on the
-    transient ``teardown_snapshot`` attribute; this receiver reads it and passes
-    the non-blank values to the worker.
+    Keyed on the ticket REACHING a terminal-done state (MERGED / DELIVERED /
+    REVIEW_POSTED / IGNORED): a DISPATCHED/TICKET_CREATED marker held its budget slot for its
+    whole life, so without this the first claim locked the single-ticket budget
+    permanently. ABANDONED (give-up / fleet-claim-steal) is left untouched — it
+    is already terminal and carries distinct semantics. Best-effort: the FSM
+    transition must never block on the marker update.
+
+    Reaching it is an ENTRY, so a state-preserving transition frees nothing: the
+    markers went COMPLETED on the first entry, and re-firing rewrites that same
+    value under a write lock once per ticket per replay pass. A marker still held
+    against an already-terminal ticket is
+    :meth:`ImplementedIssueMarker.objects.reconcile_stale`'s to release — the
+    retroactive drain, not a side effect of an FSM no-op.
     """
-    if name != "teardown":
+    if source == target or target not in _TERMINAL_TARGET_STATES or not instance.issue_url:
         return
-    from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
-
-    worktree_pk = int(instance.pk)
-    snapshot_db_name, snapshot_extra = instance.teardown_snapshot
-    executor = worktree_tasks_mod.execute_worktree_teardown
-    transaction.on_commit(lambda: executor.enqueue(worktree_pk, snapshot_db_name, snapshot_extra))
+    try:
+        ImplementedIssueMarker.objects.filter(issue_url=instance.issue_url).exclude(
+            state=ImplementedIssueMarker.State.ABANDONED
+        ).update(state=ImplementedIssueMarker.State.COMPLETED)
+    except Exception:
+        logger.exception("Failed to release issue markers for ticket %s (%s)", instance.pk, instance.issue_url)
 
 
 def register_signals() -> None:
@@ -298,11 +458,6 @@ def register_signals() -> None:
         dispatch_uid="worktree_transition_task_enqueue",
     )
     post_transition.connect(
-        _enqueue_worktree_teardown_task,
-        sender=Worktree,
-        dispatch_uid="worktree_teardown_task_enqueue",
-    )
-    post_transition.connect(
         _add_slack_reactions_on_transition,
         sender=Ticket,
         dispatch_uid="ticket_transition_slack_reactions",
@@ -312,4 +467,11 @@ def register_signals() -> None:
         sender=PullRequest,
         dispatch_uid="pull_request_approval_reaction",
     )
+    post_transition.connect(
+        _release_issue_markers_on_completion,
+        sender=Ticket,
+        dispatch_uid="ticket_completion_release_issue_markers",
+    )
     post_save.connect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+    post_save.connect(_close_session_on_terminal_task, sender=Task, dispatch_uid="close_session_on_terminal_task")
+    post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")

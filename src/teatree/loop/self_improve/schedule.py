@@ -4,9 +4,11 @@ A schedule cycle runs the budget gate first; on green it iterates the
 configured detectors for the requested tier and applies the action
 ladder to each emitted ``DetectorReport``.
 
-Phase 1 only ships the cheap-tier dispatcher.  Medium/expensive tiers
-are accepted by the CLI surface so the env-knob contract stays stable,
-but they currently resolve to an empty detector list.
+Only the cheap tier has detectors (BLUEPRINT § 5.7).  The medium and
+expensive sets sketched in the § 5.7 plan were never built, so both —
+and any unknown tier name — are REFUSED with ``UnimplementedTierError``
+rather than resolving to an empty detector list: a cycle that scans
+nothing and reports success is a worse contract than a loud refusal.
 """
 
 from collections.abc import Callable
@@ -35,36 +37,48 @@ class Tier:
     ALL = "all"
 
 
+IMPLEMENTED_TIERS: tuple[str, ...] = (Tier.CHEAP, Tier.ALL)
+UNBUILT_TIERS: tuple[str, ...] = (Tier.MEDIUM, Tier.EXPENSIVE)
+
+
 def _cheap_detectors() -> list[SelfImproveDetector]:
     return [DispatchGapDetector(), ForgottenMergeDetector(), StaleStatuslineEntryDetector()]
 
 
-def _medium_detectors() -> list[SelfImproveDetector]:
-    # Phase 2 lives here; intentionally empty in Phase 1.
-    return []
+def _refusal_message(tier: str) -> str:
+    shipped = ", ".join(d.name for d in _cheap_detectors())
+    if tier in UNBUILT_TIERS:
+        return (
+            f"self-improve tier {tier!r} has no detectors — the medium/expensive sets sketched in "
+            f"the § 5.7 plan (souliane/teatree#979) were never built. Shipped detectors "
+            f"({Tier.CHEAP} tier): {shipped}. Run --tier {Tier.CHEAP} or --tier {Tier.ALL}."
+        )
+    return (
+        f"unknown self-improve tier {tier!r}. Implemented tiers: {', '.join(IMPLEMENTED_TIERS)} "
+        f"({', '.join(UNBUILT_TIERS)} have no detectors and are refused)."
+    )
 
 
-def _expensive_detectors() -> list[SelfImproveDetector]:
-    # Phase 3 lives here; intentionally empty in Phase 1.
-    return []
+class UnimplementedTierError(ValueError):
+    def __init__(self, tier: str) -> None:
+        super().__init__(_refusal_message(tier))
+        self.tier = tier
+
+
+def require_implemented_tier(tier: str) -> None:
+    """Raise unless ``tier`` has detectors — the CLI surfaces' shared refusal seam."""
+    if tier not in IMPLEMENTED_TIERS:
+        raise UnimplementedTierError(tier)
 
 
 def detectors_for_tier(tier: str) -> list[SelfImproveDetector]:
     """Return the detector list for the requested tier.
 
-    Unknown tier ⇒ empty list (the schedule cycle becomes a no-op
-    rather than raising — the CLI surface stays stable when callers pass
-    a typo or a future-tier name the running version does not know yet).
+    A tier with no detectors raises rather than returning an empty list —
+    see the module docstring.
     """
-    if tier == Tier.CHEAP:
-        return _cheap_detectors()
-    if tier == Tier.MEDIUM:
-        return _medium_detectors()
-    if tier == Tier.EXPENSIVE:
-        return _expensive_detectors()
-    if tier == Tier.ALL:
-        return [*_cheap_detectors(), *_medium_detectors(), *_expensive_detectors()]
-    return []
+    require_implemented_tier(tier)
+    return _cheap_detectors()
 
 
 @dataclass(slots=True)
@@ -94,21 +108,47 @@ def run_tier(
     Tests inject an explicit ``budget`` verdict (deterministic) and a
     detector list (no real DB scan needed); production callers leave
     both ``None`` so ``precheck_budget`` and ``detectors_for_tier`` run.
+
+    The tier resolves before the budget gate so an unbuilt tier is
+    refused even on a red budget — a skip verdict must never mask the
+    refusal behind a benign "skipped" result.
     """
+    detector_list = detectors if detectors is not None else detectors_for_tier(tier)
     verdict = budget if budget is not None else precheck_budget()
     if not verdict.ok:
         return TierResult(tier=tier, budget=verdict)
-    detector_list = detectors if detectors is not None else detectors_for_tier(tier)
     reports: list[DetectorReport] = []
     actions: list[ActionResult] = []
     for detector in detector_list:
+        fix = auto_fix_callable if auto_fix_callable is not None else _detector_auto_fix(detector)
         for report in detector.detect():
             reports.append(report)
             result = run_action_ladder(
                 report,
                 messaging=messaging,
-                auto_fix_callable=auto_fix_callable,
+                auto_fix_callable=fix,
             )
             if result is not None:
                 actions.append(result)
     return TierResult(tier=tier, budget=verdict, reports=reports, actions=actions)
+
+
+def _detector_auto_fix(detector: SelfImproveDetector) -> Callable[[DetectorReport], None] | None:
+    """Adapt a detector's own ``rerender`` self-heal into the ladder callable (#2625).
+
+    Only the whitelisted ``auto_fix=True`` detectors carry a ``rerender``; the
+    action ladder still refuses to execute it unless the report opted in
+    (``report.auto_fix``). A detector without ``rerender`` contributes no
+    callable, so the ladder's auto-fix rung is a no-op for it. This is the
+    fallback for a directly-constructed detector with no injected global seam:
+    the live orchestration entry point — the dedicated ``loop_self_improve``
+    slot — injects the real
+    ``teatree.loop.phases.render.self_improve_rerender`` seam as the global
+    ``auto_fix_callable`` instead, because a directly-constructed
+    ``StaleStatuslineEntryDetector`` cannot supply it (its default ``rerender``
+    is the no-op sentinel that would heal nothing).
+    """
+    rerender = getattr(detector, "rerender", None)
+    if rerender is None:
+        return None
+    return lambda _report: rerender()

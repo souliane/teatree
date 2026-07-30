@@ -1,6 +1,6 @@
 """The core eval harness must run ``claude`` in a virgin environment.
 
-Both entry points that drive the Agent SDK — ``SdkInProcessRunner`` (produces a
+Both entry points that drive the Agent SDK — ``ApiInProcessRunner`` (produces a
 run) and ``ClaudeJudge`` (grades one) — must isolate the child process from the
 developer's personal context: ``~/.claude/CLAUDE.md``, auto-memory, and the
 project ``CLAUDE.md`` discovered from the parent cwd. A leak biases every real
@@ -26,12 +26,14 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import ResultMessage
+from django.test import TestCase
 
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
-from teatree.eval.sdk_runner import SdkInProcessRunner
 from teatree.eval.system_prompt_file import resolve_system_prompt
+from teatree.llm.credentials import AnthropicSubscriptionCredential, CredentialError
 
 
 def _runner_spec(tmp_path: Path) -> EvalSpec:
@@ -126,6 +128,24 @@ class TestIsolatedClaudeEnv:
                 assert env.get(var) == os.environ.get(var)
             assert env["ANTHROPIC_API_KEY"] == "sk-test-sentinel"
 
+    def test_metered_child_env_carries_the_api_key(self) -> None:
+        # The metered child authenticates via ANTHROPIC_API_KEY; the env-building
+        # function must carry it through to the SDK/bundled CLI child.
+        sentinel = {"ANTHROPIC_API_KEY": "sk-metered", "PATH": os.environ.get("PATH", "/usr/bin")}
+        with patch.dict(os.environ, sentinel, clear=False), isolated_claude_env() as (env, _cwd):
+            assert env["ANTHROPIC_API_KEY"] == "sk-metered"
+
+    def test_metered_child_env_strips_the_subscription_oauth_token(self) -> None:
+        # The bundled CLI prefers ANTHROPIC_API_KEY only when the OAuth token is
+        # NOT also present, so the metered child env must NOT carry
+        # CLAUDE_CODE_OAUTH_TOKEN — otherwise the SDK bills the subscription.
+        sentinel = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-sub-token", "ANTHROPIC_API_KEY": "sk-metered"}
+        with patch.dict(os.environ, sentinel, clear=False), isolated_claude_env() as (env, _cwd):
+            assert "CLAUDE_CODE_OAUTH_TOKEN" not in env, (
+                "the metered child env must strip the subscription OAuth token so the SDK can't bill it"
+            )
+            assert env["ANTHROPIC_API_KEY"] == "sk-metered"
+
     def test_does_not_inherit_parent_home(self) -> None:
         with patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False), isolated_claude_env() as (env, _cwd):
             assert env["HOME"] != "/parent/home"
@@ -147,10 +167,10 @@ class TestRunnerIsolation:
     def _run(self, spec: EvalSpec, tmp_path: Path) -> dict[str, Any]:
         query, captured = _capturing_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
         return captured
 
     def test_options_carry_empty_setting_sources(self, tmp_path: Path) -> None:
@@ -184,12 +204,16 @@ class TestRunnerIsolation:
         assert captured["options"].env["ANTHROPIC_API_KEY"] == "sk-runner"
 
 
-class TestJudgeIsolation:
+class TestJudgeIsolation(TestCase):
     def _grade(self) -> dict[str, Any]:
         query, captured = _capturing_query([_result(structured_output={"verdict": "PASS", "reason": "ok"})])
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", query),
+            # The judge call routes through the eval-credential chokepoint (default
+            # subscription OAuth); stub the export so the isolation assertions (not
+            # auth) are what is tested, and no real `pass` lookup hangs the run.
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         ):
             ClaudeJudge().grade(_judge_spec(), _judge_run())
         return captured
@@ -207,10 +231,15 @@ class TestJudgeIsolation:
         assert not (Path(options.env["HOME"]) / ".claude").exists()
         assert Path(options.cwd) != Path.cwd()
 
-    def test_options_preserve_api_key_in_env(self) -> None:
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-judge"}, clear=False):
+    def test_options_preserve_the_oauth_token_and_strip_the_api_key(self) -> None:
+        # The default judge lane rides the subscription OAuth token (reverses #2707),
+        # so its isolated child env keeps CLAUDE_CODE_OAUTH_TOKEN and strips the
+        # conflicting ANTHROPIC_API_KEY.
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-judge", "ANTHROPIC_API_KEY": "sk-judge"}):
             captured = self._grade()
-        assert captured["options"].env["ANTHROPIC_API_KEY"] == "sk-judge"
+        env = captured["options"].env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-judge"
+        assert "ANTHROPIC_API_KEY" not in env
 
 
 CANARY = "T3-CANARY-DO-NOT-LEAK-7f3a2b"
@@ -252,10 +281,10 @@ class TestCanaryNeverReachesChild:
         spec = _runner_spec(tmp_path)
         query, captured = _capturing_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=project).run(spec)
+            ApiInProcessRunner(ApiRunnerParams(workspace=project)).run(spec)
 
         options = captured["options"]
         assert options.setting_sources == []
@@ -297,6 +326,37 @@ class TestCanaryNeverReachesChild:
             max_turns=1,
             tools=(),
         )
-        result = SdkInProcessRunner(workspace=project).run(spec)
+        result = ApiInProcessRunner(ApiRunnerParams(workspace=project)).run(spec)
         assert CANARY not in result.raw_stdout
         assert CANARY not in result.raw_stderr
+
+
+class TestForbiddenVarRefusesTheIsolatedEvalEnv:
+    """The in-process eval env is a COPY of the parent's, so a redirect would ride along.
+
+    ``isolated_claude_env`` redirects the personal-context roots but otherwise inherits
+    ``os.environ``. An ambient ``ANTHROPIC_BASE_URL`` would therefore point a
+    subscription-authenticated eval child at a third-party endpoint. The subscription
+    credential's ``forbidden_vars`` refuses it, matching the dispatch lane's behaviour.
+    """
+
+    def test_subscription_eval_lane_refuses_a_base_url_redirect(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
+        spec = AnthropicSubscriptionCredential().spec
+        with (
+            pytest.raises(CredentialError) as excinfo,
+            isolated_claude_env(spec.conflicting_vars, spec.forbidden_vars),
+        ):
+            pass  # pragma: no cover - the context must never open
+        assert "ANTHROPIC_BASE_URL" in str(excinfo.value)
+
+    def test_metered_eval_lane_still_runs_against_a_gateway(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.invalid/v1")
+        with isolated_claude_env(("CLAUDE_CODE_OAUTH_TOKEN",), ()) as (env, _cwd):
+            assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.invalid/v1"
+
+    def test_an_empty_redirect_value_expresses_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "  ")
+        spec = AnthropicSubscriptionCredential().spec
+        with isolated_claude_env(spec.conflicting_vars, spec.forbidden_vars) as (env, _cwd):
+            assert env is not None

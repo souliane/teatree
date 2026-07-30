@@ -25,6 +25,7 @@ from hooks.scripts.hook_router import (
     handle_pre_compact,
     handle_session_start_bootstrap,
 )
+from tests._unreadable_file import skip_if_root
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +44,7 @@ def _isolate_filesystem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # these cover the post-compaction snapshot-recovery mechanism, not the
     # opt-in gates.
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
     yield
     router.STATE_DIR = original_state
     router._TMP_DIR = original_tmp
@@ -76,6 +77,7 @@ class TestRecoverSnapshotContext:
     def test_no_files_returns_none(self) -> None:
         assert _recover_snapshot_context("no-such-session") is None
 
+    @skip_if_root
     def test_unreadable_file_is_skipped(self) -> None:
         session_id = "perm-denied"
         f = router.STATE_DIR / f"{_T3_TEMP_PREFIX}{session_id}-20260403-1200.md"
@@ -120,7 +122,7 @@ class TestSessionStartCompactRecoversSnapshot:
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
         assert "/repo/work" in ctx
         # The tick-dispatch directive is preserved in the same payload.
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
 
     def test_recovers_arbitrary_snapshot_content(self, capsys: pytest.CaptureFixture[str]) -> None:
         session_id = "sess-456"

@@ -7,7 +7,7 @@ merge-count (``architectural_review_after_merge_count`` ticket merges
 since the last queued review). The architectural review is a teatree-CORE
 platform behaviour — it always applies uniformly to every overlay; the
 only opt-out is the ``architectural_review_disabled`` escape hatch in
-teatree-core config (``[teatree]`` in ``~/.teatree.toml``, per-overlay
+teatree-core config (a DB-home ``ConfigSetting`` row, per-overlay
 overridable). The on/off decision lives at the wiring layer; the scanner
 itself always scans when invoked.
 
@@ -28,20 +28,45 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.loop.scanners.architectural_review import ARCHITECTURAL_REVIEW_PHASE, ArchitecturalReviewScanner
+from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
 
 OVERLAY = "acme"
+
+
+class TestDefaultSkillResolvesToARealSkill:
+    """Regression for #3353: the default review skill must actually exist.
+
+    ``ArchitecturalReviewScanner.skill`` and ``UserSettings.architectural_review_skill``
+    both default to a skill name that every queued review task's ``execution_reason``
+    names as the guidance to load. Neither ``t3 tool validate-skill-refs`` nor the
+    antipattern-catalog ``consumers:`` field ever checked that this particular
+    reference site resolves, so the name drifted to a directory that was never
+    created — every periodic review ran with zero skill guidance. This asserts the
+    default resolves against the same canonical skill set the skill-loading hook
+    itself uses, so a future rename/typo here fails loudly instead of silently.
+    """
+
+    def test_scanner_default_skill_is_canonical(self) -> None:
+        default_skill = ArchitecturalReviewScanner(overlay_name=OVERLAY).skill
+        assert default_skill in canonical_skill_names(default_search_dirs())
+
+    def test_settings_default_skill_is_canonical(self) -> None:
+        default_skill = UserSettings().architectural_review_skill
+        assert default_skill in canonical_skill_names(default_search_dirs())
 
 
 def _scanner(
     *,
     skill: str = "ac-reviewing-codebase",
     cadence_hours: int = 168,
+    retry_backoff_hours: int = 12,
     after_merge_count: int = 25,
 ) -> ArchitecturalReviewScanner:
     return ArchitecturalReviewScanner(
         overlay_name=OVERLAY,
         skill=skill,
         cadence_hours=cadence_hours,
+        retry_backoff_hours=retry_backoff_hours,
         after_merge_count=after_merge_count,
     )
 
@@ -60,9 +85,10 @@ def _last_review_task(overlay: str = OVERLAY) -> Task | None:
 def _backdate_task(task: Task, *, hours: int) -> None:
     """Move a Task's bookkeeping into the past so the cadence math triggers.
 
-    ``Task`` has no ``created_at`` column, so the scanner derives the
-    last-review timestamp from its ``Session.started_at`` (auto_now_add),
-    which we can backdate via ``update()``.
+    ``Task`` now has a ``created_at`` (migration 0004), but the scanner
+    intentionally keys on ``Session.started_at`` (auto_now_add) as the queue
+    time, so we derive the last-review timestamp from there and backdate the
+    Session row via ``update()``.
     """
     Session.objects.filter(pk=task.session_id).update(
         started_at=timezone.now() - timedelta(hours=hours),
@@ -90,6 +116,22 @@ def _make_merge_after(overlay: str, *, after_hours: int) -> Ticket:
         created_at=timezone.now() - timedelta(hours=after_hours),
     )
     return ticket
+
+
+def _seed_terminal_review(status: Task.Status, *, hours_ago: float, overlay: str = OVERLAY) -> Task:
+    """Seed a terminal review task on the overlay's placeholder ticket, aged ``hours_ago``."""
+    ticket, _ = Ticket.objects.get_or_create(
+        issue_url=f"architectural-review://{overlay}",
+        defaults={"overlay": overlay, "role": "author"},
+    )
+    session = Session.objects.create(overlay=overlay, ticket=ticket, agent_id="arch")
+    Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(hours=hours_ago))
+    return Task.objects.create(
+        ticket=ticket,
+        session=session,
+        phase=ARCHITECTURAL_REVIEW_PHASE,
+        status=status,
+    )
 
 
 class ArchitecturalReviewScannerTests(TestCase):
@@ -149,8 +191,9 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        # 1 hour ago — far inside the 168-hour window.
-        _backdate_task(prior, hours=1)
+        # 13h ago — past the 12h backoff (so backoff isn't the reason) but far
+        # inside the 168-hour success window, which is what suppresses here.
+        _backdate_task(prior, hours=13)
 
         second = _scanner(cadence_hours=168).scan()
 
@@ -196,8 +239,9 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        # 1 hour ago — cadence will not fire.
-        _backdate_task(prior, hours=1)
+        # 13h ago — past the 12h backoff (so the backstop is free to fire) and
+        # far inside the 999h cadence window (so cadence will not fire).
+        _backdate_task(prior, hours=13)
 
         # Three merges after the prior review (transition timestamps "now").
         for _ in range(3):
@@ -216,13 +260,53 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate_task(prior, hours=1)
+        # 13h ago — past the 12h backoff, so the threshold (not the backoff) is
+        # what suppresses this one-merge case.
+        _backdate_task(prior, hours=13)
 
         _make_merge_after(OVERLAY, after_hours=0)
 
         second = _scanner(cadence_hours=999, after_merge_count=2).scan()
 
         assert second == []
+
+    def test_recent_failure_suppresses_via_backoff(self) -> None:
+        """A FAILED review inside the retry_backoff window blocks a bootstrap re-fire."""
+        _seed_terminal_review(Task.Status.FAILED, hours_ago=1)
+
+        assert _scanner(retry_backoff_hours=12).scan() == []
+
+    def test_merge_count_backstop_gated_behind_backoff(self) -> None:
+        """A failing review can't storm the merge-count backstop while inside the backoff.
+
+        The last COMPLETED review is 13h old (cadence not elapsed at 999h), three
+        merges land after it (merge-count trigger armed), but a FAILED attempt 1h
+        ago sits inside the 12h backoff → suppressed. Without the backoff gate the
+        merge-count trigger would re-fire the expensive review every tick.
+        """
+        completed = _seed_terminal_review(Task.Status.COMPLETED, hours_ago=13)
+        assert completed is not None
+        for _ in range(3):
+            _make_merge_after(OVERLAY, after_hours=0)
+        _seed_terminal_review(Task.Status.FAILED, hours_ago=1)
+
+        assert _scanner(cadence_hours=999, retry_backoff_hours=12, after_merge_count=2).scan() == []
+
+    def test_merge_count_backstop_fires_once_backoff_elapsed(self) -> None:
+        """Past the backoff, the merge-count backstop still fires (anti-vacuous pair).
+
+        Same shape as above but with no fresher failed attempt — the newest
+        terminal attempt is the COMPLETED review 13h ago, past the 12h backoff, so
+        the merge-count backstop is free to fire.
+        """
+        _seed_terminal_review(Task.Status.COMPLETED, hours_ago=13)
+        for _ in range(3):
+            _make_merge_after(OVERLAY, after_hours=0)
+
+        signals = _scanner(cadence_hours=999, retry_backoff_hours=12, after_merge_count=2).scan()
+
+        assert len(signals) == 1
+        assert signals[0].payload["trigger"] == "after_merge_count"
 
     def test_merge_count_ignores_merges_before_last_review(self) -> None:
         """Merges that happened *before* the last review don't count."""
@@ -235,7 +319,9 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate_task(prior, hours=1)
+        # 13h ago — past the 12h backoff, so only the "merges predate the review"
+        # rule suppresses here.
+        _backdate_task(prior, hours=13)
 
         # Old merge predates the review — should not count.
         second = _scanner(cadence_hours=999, after_merge_count=2).scan()
@@ -249,7 +335,8 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate_task(prior, hours=1)
+        # 13h ago — past the 12h backoff, so only overlay-isolation suppresses.
+        _backdate_task(prior, hours=13)
 
         # Three merges on a *different* overlay — must not count.
         for _ in range(3):
@@ -310,6 +397,7 @@ class ArchitecturalReviewWiringTests(TestCase):
         assert scanner.overlay_name == "acme"
         assert scanner.skill == "ac-reviewing-codebase"
         assert scanner.cadence_hours == 168
+        assert scanner.retry_backoff_hours == 12
         assert scanner.after_merge_count == 25
 
     def test_disabled_in_core_config_skips_wiring(self) -> None:
@@ -336,6 +424,7 @@ class ArchitecturalReviewWiringTests(TestCase):
             return_value=self._patched_settings(
                 architectural_review_skill="ac-custom",
                 architectural_review_cadence_hours=72,
+                architectural_review_retry_backoff_hours=6,
                 architectural_review_after_merge_count=10,
             ),
         ):
@@ -344,6 +433,7 @@ class ArchitecturalReviewWiringTests(TestCase):
         assert scanner.overlay_name == "acme"
         assert scanner.skill == "ac-custom"
         assert scanner.cadence_hours == 72
+        assert scanner.retry_backoff_hours == 6
         assert scanner.after_merge_count == 10
 
     def test_overlay_without_python_class_still_wires(self) -> None:

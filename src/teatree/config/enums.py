@@ -1,4 +1,4 @@
-"""TeaTree config enums — operating mode, throughput dial, autonomy, on-behalf gate."""
+"""TeaTree config enums — operating mode, throughput dial, autonomy, on-behalf gate, send proxy."""
 
 from enum import StrEnum
 
@@ -11,8 +11,10 @@ class Mode(StrEnum):
     stop and ask. ``auto`` grants full autonomy: the agent ships end-to-end
     without confirmation, falling back to interactive only for the non-
     negotiable always-gated list (force-push to default branches, destructive
-    shared-state ops). Opt in via ``[teatree] mode = "auto"`` in
-    ``~/.teatree.toml`` or the ``T3_MODE`` environment variable.
+    shared-state ops). ``mode`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set mode auto`` (per-overlay overridable with ``--overlay
+    <name>``) or the ``T3_MODE`` environment variable — a ``[teatree] mode`` TOML
+    value is ignored on read.
     """
 
     INTERACTIVE = "interactive"
@@ -35,22 +37,22 @@ class Mode(StrEnum):
             raise ValueError(msg) from exc
 
 
-# Friendly aliases accepted by ``Speed.parse`` and normalised to a canonical
+# Friendly aliases accepted by ``Wip.parse`` and normalised to a canonical
 # tier. Module-level (not a class attribute) so ``StrEnum`` does not try to
 # treat the mapping as an enum member.
-_SPEED_ALIASES: dict[str, str] = {
+_WIP_ALIASES: dict[str, str] = {
     "low": "slow",
     "normal": "medium",
     "high": "full",
 }
 
 
-class Speed(StrEnum):
-    """How much parallel work the orchestrator drives at once.
+class Wip(StrEnum):
+    """How much new work a loop tick admits at once — the bounded-WIP dial.
 
     A single dial spanning sequential to burst throughput. Orthogonal to
     :class:`Mode` and :class:`Autonomy` (which govern *whether* a publishing
-    action may proceed); ``speed`` governs *how many* threads of work run
+    action may proceed); ``wip`` governs *how many* threads of work run
     concurrently — it never relaxes a safety gate.
 
     Tiers (``SLOW`` < ``MEDIUM`` < ``FULL`` < ``BOOST``, default ``MEDIUM``):
@@ -61,15 +63,18 @@ class Speed(StrEnum):
     *   :attr:`MEDIUM` — the conservative baseline: NO orchestrator fan-out.
         Throughput comes only from the intrinsic loop, the PR sweep, and the
         per-overlay ``max_concurrent_auto_starts`` auto-start cap.
-    *   :attr:`FULL` — arm ``/loop /t3:speed boost`` so each wave re-classifies
+    *   :attr:`FULL` — arm ``/loop /t3:wip boost`` so each wave re-classifies
         the backlog and fans out a burst, sustained across waves.
-    *   :attr:`BOOST` — one parallel-backlog-blast wave (the former
-        ``/t3:full-speed`` behaviour), clamped to ``max_concurrent_auto_starts``.
+    *   :attr:`BOOST` — a pool-refill burst that keeps ``boost_concurrency
+        = N`` live workers in flight, refilling the shortfall each tick;
+        clamped to ``max_concurrent_auto_starts``.
 
-    A no-arg ``/t3:speed`` invocation means "go full" regardless of the
+    A no-arg ``/t3:wip`` invocation means "go full" regardless of the
     persisted baseline; the persisted value is the resting dial the loop
-    reads. Opt in via ``[teatree] speed = "full"`` in ``~/.teatree.toml``,
-    the ``T3_SPEED`` environment variable, or ``t3 teatree speed set <level>``.
+    reads. ``wip`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set wip full`` (the ``t3 <overlay> wip set <level>``
+    wrapper does this), or the ``T3_WIP`` environment variable — a
+    ``[teatree] wip`` TOML value is ignored on read.
     """
 
     SLOW = "slow"
@@ -78,8 +83,8 @@ class Speed(StrEnum):
     BOOST = "boost"
 
     @classmethod
-    def parse(cls, value: str) -> "Speed":
-        """Parse a speed string, accepting friendly aliases; typos raise ``ValueError``.
+    def parse(cls, value: str) -> "Wip":
+        """Parse a wip string, accepting friendly aliases; typos raise ``ValueError``.
 
         Mirrors :meth:`Mode.parse`: the conservative default (:attr:`MEDIUM`)
         is applied by the caller when the setting is absent, so this validates
@@ -87,13 +92,13 @@ class Speed(StrEnum):
         ``low``/``normal``/``high`` map onto ``slow``/``medium``/``full``.
         """
         normalised = value.strip().lower()
-        normalised = _SPEED_ALIASES.get(normalised, normalised)
+        normalised = _WIP_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
-            aliases = ", ".join(sorted(_SPEED_ALIASES))
-            msg = f"Invalid speed {value!r}; valid values: {valid} (aliases: {aliases})"
+            aliases = ", ".join(sorted(_WIP_ALIASES))
+            msg = f"Invalid wip {value!r}; valid values: {valid} (aliases: {aliases})"
             raise ValueError(msg) from exc
 
 
@@ -148,55 +153,6 @@ class Autonomy(StrEnum):
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid autonomy {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-
-class TeamsDisplay(StrEnum):
-    """How a Track-B maker pane is DISPLAYED — presentation-only (WI-5, #1838).
-
-    A maker pane's SDK session always runs in-process (the source of truth); this
-    setting governs only whether that same session is ALSO rendered in a visible
-    terminal pane. The mechanism is tmux control mode (``tmux -CC``): under it
-    iTerm2 renders ``tmux split-window`` panes as native split panes in one tab;
-    elsewhere it degrades to plain tmux panes. The naming mirrors Claude Code's
-    own ``teammateMode`` (``tmux`` / ``in-process``, with ``auto`` probing).
-
-    Tiers (default :attr:`NONE`, ships dark):
-
-    *   :attr:`NONE` (default) — no display layer. The in-process SDK path is
-        unchanged; behaviour is byte-identical to today. The conservative default.
-    *   :attr:`AUTO` — display via tmux WHEN a multiplexer is detected (``$TMUX``
-        set, a ``tmux`` binary, a TTY), else fall back to the in-process path. The
-        always-degrades-gracefully tier.
-    *   :attr:`TMUX` — prefer the tmux display; still falls back to in-process when
-        no tmux / no TTY / a spawn failure (the display never replaces the SDK run).
-
-    Read from ``[teams] display`` (the feature namespace, alongside ``enabled``);
-    per-overlay overridable via ``[overlays.<name>].teams_display``;
-    ``T3_TEAMS_DISPLAY`` env wins. A typo / bad value fails SAFE to :attr:`NONE`
-    — the presentation layer can never escalate itself on by a mistyped value.
-    """
-
-    NONE = "none"
-    AUTO = "auto"
-    TMUX = "tmux"
-
-    @classmethod
-    def parse(cls, value: str) -> "TeamsDisplay":
-        """Parse a teams-display string; invalid values raise ``ValueError``.
-
-        Mirrors :meth:`Mode.parse`: the conservative default (:attr:`NONE`) is
-        applied by the caller when the setting is absent, so this validates only
-        explicit values and a typo in a TOML/DB tier is rejected LOUD. The env
-        tier instead fails SAFE to :attr:`NONE` (see ``_parse_env_teams_display``)
-        so a mistyped env var never crashes the resolver.
-        """
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid teams display {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
 
 
@@ -259,6 +215,90 @@ class OnBehalfPostMode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class CriticGateMode(StrEnum):
+    """Tri-state enforcement posture for the user-proxy critic gate (SELFCATCH-5).
+
+    Re-typed from the former boolean enforcement flag (#104), which coupled
+    "arm the expensive async LLM critic" with "block on a finding", leaving no
+    way to accumulate ``CriticVerdict`` evidence without also blocking. The three
+    points on the ramp:
+
+    *   :attr:`OFF` (default) — dark: the cheap deterministic findings are still
+        recorded (advisory evidence), but the EXPENSIVE async LLM critic is never
+        armed and no finding blocks — a customer overlay that never opts in
+        creates no ``Session``/``Task``/``CriticDispatch``.
+    *   :attr:`ADVISORY` — armed: the async critic dispatches and records
+        ``CriticVerdict``/``CriticFinding`` rows, but a blocking finding never
+        raises. The mode that accumulates critic-liveness evidence pre-enablement.
+    *   :attr:`BLOCKING` — armed and enforcing: a blocking deterministic finding
+        refuses the delivery (``CriticGateError``), the ticket stays RETROSPECTED.
+    """
+
+    OFF = "off"
+    ADVISORY = "advisory"
+    BLOCKING = "blocking"
+
+    @classmethod
+    def parse(cls, value: str) -> "CriticGateMode":
+        """Parse a critic-gate-mode string; invalid values raise ``ValueError``.
+
+        The conservative default (:attr:`OFF`) is applied by the caller when the
+        setting is absent, so a typo never silently arms or un-blocks the critic.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid critic_gate_mode {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
+class SendProxyMode(StrEnum):
+    """Enforcement posture for the outbound send-proxy destination allowlist (#117).
+
+    Every outbound artifact (Slack post/DM/react, forge PR/MR/issue comment)
+    routes through :mod:`teatree.core.send_proxy`, which redaction-scans the
+    payload and checks the destination against the per-overlay allowlist. This
+    mode decides what the proxy DOES with a non-allowlisted destination or a
+    redaction hit:
+
+    *   :attr:`WARN` (default) — audit-only: every send is recorded in a
+        :class:`~teatree.core.models.send_audit.SendAudit` row with the
+        would-be allowlist verdict and redaction matches, but the send is
+        NEVER blocked and the live payload is NEVER mutated. This is the safe
+        ship posture: it accumulates the destination soak an operator seeds the
+        allowlist from before ever flipping to :attr:`ENFORCE`.
+    *   :attr:`ENFORCE` — deterministic block: a destination absent from the
+        per-overlay allowlist is refused and the payload is redacted before the
+        wire call. Only turned on after the allowlist is seeded from a WARN-mode
+        soak (else it would over-block legitimate posts).
+
+    The user's own DM destination is always allowed under BOTH modes (the
+    never-lockout carve-out) so the bot→user notify path can never be gated by
+    a mis-seeded allowlist.
+    """
+
+    WARN = "warn"
+    ENFORCE = "enforce"
+
+    @classmethod
+    def parse(cls, value: str) -> "SendProxyMode":
+        """Parse a send-proxy-mode string; invalid values raise ``ValueError``.
+
+        The conservative default (:attr:`WARN`, audit-only) is applied by the
+        caller when the setting is absent, so a typo never silently arms
+        enforcement.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid send_proxy_mode {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class MissingIssuePolicy(StrEnum):
     """What to do when a commit/MR needs an issue reference and none is in hand.
 
@@ -298,9 +338,12 @@ class MissingIssuePolicy(StrEnum):
 
     ``create`` and ``dummy`` are opt-in only; the default is OFF for
     colleague-facing repos (it never auto-creates and never uses a dummy there).
-    Read from ``[teatree] missing_issue_ref_policy``; per-overlay overridable
-    via ``[overlays.<name>].missing_issue_ref_policy``; the
-    ``T3_MISSING_ISSUE_POLICY`` env var wins over both. Resolved by
+    ``missing_issue_ref_policy`` is a DB-home setting: read from the
+    ``ConfigSetting`` store (``t3 <overlay> config_setting set
+    missing_issue_ref_policy <value>``), per-overlay overridable with
+    ``--overlay <name>``; the ``T3_MISSING_ISSUE_POLICY`` env var wins over
+    both. A ``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on
+    read. Resolved by
     :func:`teatree.missing_issue_policy.resolve_missing_issue_verdict`, and the
     agent-facing prose lives in ``skills/ship/SKILL.md`` § "Missing Issue
     Reference Policy".

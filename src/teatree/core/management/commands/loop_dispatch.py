@@ -7,9 +7,9 @@ The DB is the dispatch queue: when ``run_tick`` produces a
 each via ``spawn-claim`` so the next tick doesn't see them as pending.
 """
 
-import json
+import contextlib
 import logging
-from typing import Annotated, Any
+from typing import IO, Annotated, Any, cast
 
 import typer
 from django.core.exceptions import ObjectDoesNotExist
@@ -17,25 +17,16 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.config import cadence_seconds
-from teatree.core.modelkit.phases import (
-    SUBAGENT_BY_PHASE,
-    phase_spellings,
-    resolve_fanout_directive,
-    subagent_for_phase,
-)
+from teatree.core.machine_output import emit
+from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
+from teatree.loop.dispatch_gates import spawn_display_name
 from teatree.loop.statusline import default_path
 
 logger = logging.getLogger(__name__)
-
-# The phase → sub-agent authority is the single canonical map in
-# ``teatree.core.modelkit.phases``. Each author phase dispatches to its OWN agent
-# (coding → t3:coder, testing → t3:tester, reviewing → t3:reviewer,
-# shipping → t3:shipper); the reviewer-role reviewing entry stays. The
-# loop is the per-phase dispatcher, never a single orchestrator that
-# chains the phases inline (BLUEPRINT §5.2 / §17.8 invariant 10).
-_SUBAGENT_BY_PHASE = SUBAGENT_BY_PHASE
 
 
 def _subagent_for(task: Task) -> str:
@@ -43,18 +34,34 @@ def _subagent_for(task: Task) -> str:
 
 
 def _dispatchable_q() -> Q:
-    """DB-side mirror of ``_subagent_for`` for the atomic claim filter.
+    """The in-session claim filter — the ``dispatchable_q`` SSOT narrowed to INTERACTIVE (#6).
 
-    ``Q`` matching the (ticket.role, task.phase) pairs that have a
-    registered subagent, so the atomic claim restricts to dispatchable
-    tasks (one source of truth). Phase is matched across every accepted
-    spelling (``phase_spellings``) so a short-verb ``code``/``review`` task
-    resolves the same as the canonical token ``_subagent_for`` normalizes.
+    ``Task.dispatchable_q()`` is the single source of truth (role/phase pairs
+    with a registered sub-agent AND not under a live #2104 external-delivery
+    lease, #2217). Sharing it means ``claim-next`` and ``pending-spawn`` honour
+    the external-delivery exclusion the same as the ``orchestrate`` planner — the
+    #2218 "fix landed on one side" recurrence dies.
+
+    The in-session ``/loop`` claims only INTERACTIVE tasks: under a headless
+    ``agent_runtime`` a loop-dispatched phase task is HEADLESS and owned by the
+    headless lane (``execute_headless_task``), so AND-ing ``execution_target ==
+    INTERACTIVE`` keeps the two lanes disjoint — the same task is never claimed
+    in-session AND run headless. The admit-budget count deliberately does NOT
+    apply this narrowing (``_admit_budget_exhausted``), so a headless claim in
+    flight still consumes the boost budget.
+
+    ``execution_target`` alone is not sufficient, because it is written at
+    INSERT time: a phase task created before the runtime was flipped to
+    ``headless`` keeps ``INTERACTIVE`` and would stay claimable in-session. So
+    the LIVE ``agent_runtime`` decides first — under a headless runtime the
+    headless factory owns EVERY loop-dispatched phase, and the in-session
+    claimer matches nothing at all.
     """
-    q = Q(pk__in=[])  # matches nothing; OR-folded below
-    for role, phase in _SUBAGENT_BY_PHASE:
-        q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-    return q
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+
+    if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
+        return Q(pk__in=[])
+    return Task.dispatchable_q() & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
 
 def _admit_budget_exhausted() -> bool:
@@ -70,24 +77,48 @@ def _admit_budget_exhausted() -> bool:
     **Fail open to UNCLAMPED** (returns ``False``) when the budget is absent
     (medium / toggle-off — today's throughput), stale (> TTL, a dead loop wrote
     it), or any read error — a dead loop must never wrongly clamp live dispatch.
+
+    #3644: this is the admission chokepoint, so it is where the adaptive governor is
+    ASKED (event-driven, at the decision point). The governor's verdict either denies
+    outright — token quota first, machine load second, both logged — or supplies a live
+    ceiling; the sidecar budget becomes the operator's upper BOUND on it. A ``None``
+    verdict (kill-switch off, or a failed probe) leaves the pre-governor behaviour
+    byte-for-byte intact.
+
+    #6: the in-flight count runs over ``Task.dispatchable_q()`` WITHOUT the
+    ``execution_target == INTERACTIVE`` narrowing — the SAME filter set the
+    ``orchestrate`` planner used to compute the target. A HEADLESS loop-dispatched
+    phase task in flight (under a headless ``agent_runtime``) therefore consumes
+    the boost budget too; the pre-fix gate counted only INTERACTIVE in-flight and
+    overshot ``N`` whenever headless workers were running.
     """
     try:
         budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a budget-read failure degrades to no-budget
         return False
+    governed = governor_verdict(statusline_path=default_path(), static_ceiling=budget)
+    if governed is not None:
+        if not governed.admit:
+            return True
+        budget = governed.ceiling
     if budget is None:
         return False
-    return Task.objects.in_flight_claimed_count(_dispatchable_q()) >= budget
+    return Task.objects.in_flight_claimed_count(Task.dispatchable_q()) >= budget
 
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
     ticket = task.ticket
     model, skill_bundle = _resolve_model_and_bundle(task)
+    subagent = _subagent_for(task)
     return {
         "task_id": int(task.pk),
         "ticket_id": int(ticket.pk),
         "phase": task.phase,
-        "subagent": _subagent_for(task),
+        "subagent": subagent,
+        # PR-12: the type-prefixed display name (``t3-<type>-<id>``) the /loop
+        # slot passes to its Agent tool, so every spawn is attributable at a
+        # glance and never an anonymous general-purpose one.
+        "display_name": spawn_display_name(subagent, int(task.pk)),
         "execution_reason": task.execution_reason,
         "issue_url": ticket.issue_url,
         "ticket_role": ticket.role,
@@ -116,8 +147,8 @@ def _resolve_fanout_directive(task: Task) -> str:
     """Resolve the fan-out directive for a dispatch, loop-side; empty by default.
 
     The ``[agent]`` config is read here (the local import keeps ``teatree.core``
-    free of a top-level ``teatree.config_agent`` dependency edge — core is the
-    lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
+    free of a top-level ``teatree.config.agent_spawn`` dependency edge — core is
+    the lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
     ``resolve_agent_config`` itself fails-to-defaults on a missing/malformed
     file (returning ``AgentConfig()`` with an empty ``phase_fanout``), so a
     config read problem degrades to ``""`` without blocking the dispatch. The
@@ -126,7 +157,7 @@ def _resolve_fanout_directive(task: Task) -> str:
     explicitly out-of-range ``N`` raises ``ValueError`` (fail-loud), surfacing
     the misconfiguration rather than silently dropping it.
     """
-    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+    from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: keep core import-light
 
     return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
 
@@ -151,10 +182,10 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     verification spawn to the most-honest model. Both default to absent on a
     session-less task → byte-identical to today when no escalation is active.
     """
-    from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
-    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
+    from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: keeps command import light
 
-    skill_bundle = _resolve_skill_bundle(task.phase)
+    skill_bundle = _resolve_skill_bundle(task)
     session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
     model = resolve_spawn_model(
         normalize_phase(task.phase),
@@ -165,20 +196,27 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     return model, skill_bundle
 
 
-def _resolve_skill_bundle(phase: str) -> list[str]:
-    """Resolve the loaded skill bundle for *phase*; empty on any discovery failure.
+def _resolve_skill_bundle(task: Task) -> list[str]:
+    """Resolve the loaded skill bundle for *task*; empty on any discovery failure.
 
-    Imports ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a
-    top-level ``teatree.agents`` dependency edge (core is the lower layer).
+    Resolves the overlay and the framework/detection cwd from the TASK's ticket
+    (its overlay + its worktree, PR-12) — never the orchestrator's ambient cwd,
+    which is the loop's clone rather than the ticket's checkout. Imports
+    ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a top-level
+    ``teatree.agents`` dependency edge (core is the lower layer).
     """
-    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415
+    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415 — deferred: keeps command import light
 
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: lazy command import
 
-        overlay_skill_metadata = get_overlay().metadata.get_skill_metadata()
-        return resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
-    except Exception:  # noqa: BLE001
+        overlay_skill_metadata = get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata()
+        return resolve_skill_bundle(
+            phase=task.phase,
+            overlay_skill_metadata=overlay_skill_metadata,
+            worktree_path=dispatch_worktree_path(task.ticket),
+        )
+    except Exception:  # noqa: BLE001 — a failure degrades to no candidates
         return []
 
 
@@ -201,10 +239,16 @@ class Command(TyperCommand):
     ) -> None:
         """List pending Tasks the ``/loop`` slot should spawn in-session.
 
-        Tasks are returned in FIFO order (oldest pending first). The
-        ``subagent`` field tells the slot which subagent_type to pass
-        to its ``Agent`` tool; an empty string means the role+phase pair
-        has no registered subagent (operator triage).
+        Tasks are returned in FIFO order (oldest pending first), filtered through
+        the SAME ``_dispatchable_q()`` the atomic ``claim-next`` uses (#6) — the
+        ``Task.dispatchable_q`` SSOT narrowed to INTERACTIVE — so the
+        in-session preview cannot drift from the claim: a non-dispatchable pair,
+        a HEADLESS task owned by the headless lane, and a ticket under a live
+        #2104 external-delivery lease are all excluded here exactly as they are
+        at claim time. The ``subagent`` field tells the slot which subagent_type
+        to pass to its ``Agent`` tool; the ``display_name`` field
+        (``t3-<type>-<id>``, PR-12) is the Agent tool ``description`` the slot
+        passes, so every spawn is attributable and type-prefixed.
 
         ``--claimable-only`` (TODO #100) applies the SAME admit-budget gate
         ``claim-next`` applies, so the probe answers "is there a unit a claim
@@ -219,19 +263,28 @@ class Command(TyperCommand):
         if claimable_only and _admit_budget_exhausted():
             payload: list[dict[str, Any]] = []
         else:
-            pending = Task.objects.filter(status=Task.Status.PENDING).select_related("ticket").order_by("pk")
-            payload = [_task_to_dict(task) for task in pending if _subagent_for(task)]
-        if json_output:
-            self.stdout.write(json.dumps(payload, indent=2))
-            return
-        if not payload:
-            self.stdout.write("No pending spawn requests.")
-            return
-        for entry in payload:
-            self.stdout.write(
-                f"task={entry['task_id']:<5} subagent={entry['subagent']:<18} "
-                f"phase={entry['phase']:<10} url={entry['issue_url']}",
+            pending = (
+                Task.objects.filter(status=Task.Status.PENDING)
+                .filter(_dispatchable_q())
+                .select_related("ticket")
+                .order_by("pk")
             )
+            payload = [_task_to_dict(task) for task in pending]
+        if not payload:
+            human: str | None = "No pending spawn requests."
+        else:
+            human = "\n".join(
+                f"task={entry['task_id']:<5} subagent={entry['subagent']:<18} "
+                f"phase={entry['phase']:<10} url={entry['issue_url']}"
+                for entry in payload
+            )
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     @command(name="claim-next")
     def claim_next(
@@ -279,29 +332,49 @@ class Command(TyperCommand):
         orphans a claim. Absence / staleness of the budget is UNCLAMPED — the
         default ``medium`` / toggle-off throughput is byte-identical.
         """
-        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
+        from teatree.core.session_identity import current_session_id  # noqa: PLC0415 — deferred: lazy command import
+
+        # Reclaim a dead session's orphan BEFORE claiming (#652): a unit whose
+        # owner stopped heartbeating (its lease lapsed) is returned to PENDING so
+        # THIS healthy session's claim picks it up. The full loop tick already
+        # runs this via ``_reap_stale_task_claims``; the standalone ``claim-next``
+        # entry (Stop-hook self-pump / slack-answer cycle) did not, so a dead
+        # session's unit stalled CLAIMED until some other session happened to run
+        # a full tick. ``reclaim_orphaned_claims`` is the budget-aware (#2009)
+        # CAS — a no-op when nothing is stale, and it leaves a still-live lease
+        # untouched (the WHERE re-asserts ``lease_expires_at < now``). Best-effort
+        # so a DB-blocked harness still claims (parity with the tick sweep).
+        with contextlib.suppress(RuntimeError):
+            Task.objects.reclaim_orphaned_claims()
 
         session = current_session_id() if claimed_by_session is None else claimed_by_session
         if _admit_budget_exhausted():
             task = None
         else:
+            from teatree.loop.queue_drain import admission_claim_order  # noqa: PLC0415 — deferred: lazy command import
+
             task = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,
                 claimed_by_session=session,
                 extra_filter=_dispatchable_q(),
+                ordering=admission_claim_order(),
             )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
 
-        if json_output:
-            self.stdout.write(json.dumps(payload, indent=2))
-            return
         if not payload:
-            self.stdout.write("No pending spawn requests.")
-            return
-        entry = payload[0]
-        self.stdout.write(
-            f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
-            f"phase={entry['phase']} url={entry['issue_url']}",
+            human: str | None = "No pending spawn requests."
+        else:
+            entry = payload[0]
+            human = (
+                f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
+                f"phase={entry['phase']} url={entry['issue_url']}"
+            )
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
         )
 
     @command(name="spawn-claim")
@@ -328,7 +401,7 @@ class Command(TyperCommand):
             raise SystemExit(1) from None
         try:
             task.claim(claimed_by=claimed_by)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a claim failure surfaces as a clean SystemExit, never a traceback
             self.stderr.write(f"Cannot claim task {task_id}: {exc}")
             raise SystemExit(1) from None
         self.stdout.write(f"Claimed task {task_id} for {claimed_by}.")

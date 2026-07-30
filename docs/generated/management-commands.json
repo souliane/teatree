@@ -1,23 +1,19 @@
 {
   "commands": [
     {
-      "help": "``t3 teatree availability`` group root.",
-      "name": "availability",
+      "help": "",
+      "name": "approval_dial",
       "subcommands": [
         {
-          "help": "Force away-mode (deferred questions) until *until* \u2014 or forever",
-          "name": "away"
+          "help": "Set *action_class*'s trust to *trust* in *overlay*'s dial table (merging)",
+          "name": "set"
         },
         {
-          "help": "Force present-mode (interactive questions) until *until* \u2014 or forever",
-          "name": "present"
+          "help": "Remove *action_class* from *overlay*'s dial table (it falls back to ASK)",
+          "name": "clear"
         },
         {
-          "help": "Clear the manual override; the cron schedule decides again",
-          "name": "auto"
-        },
-        {
-          "help": "Print the current resolved mode and which layer decided it",
+          "help": "Render every class's configured trust, never-fades floor, breach, and verdict",
           "name": "show"
         }
       ]
@@ -41,19 +37,31 @@
           "name": "set"
         },
         {
+          "help": "Provenance-aware DEPLOY seed of *key* \u2192 *value* (#3435)",
+          "name": "seed"
+        },
+        {
           "help": "Delete the DB override row for *key* in *overlay*'s scope (or global)",
           "name": "clear"
         },
         {
-          "help": "Print the resolved value for *key* and name its source (DB vs file/env)",
+          "help": "The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry",
+          "name": "flags"
+        },
+        {
+          "help": "Print the resolved value for *key* and name its source (DB vs env/default)",
           "name": "get"
         },
         {
-          "help": "List every DB config override row, naming each row's scope (read-only)",
+          "help": "Dump the ``ConfigSetting`` store to TOML \u2014 the inverse of ``import``",
+          "name": "export"
+        },
+        {
+          "help": "List every DB config override row under its group, naming each row's scope",
           "name": "list"
         },
         {
-          "help": "Seed the DB store from the operational toml keys (one-time migration)",
+          "help": "Load a ``config_setting export`` TOML dump into the store \u2014 the inverse of ``export``",
           "name": "import"
         }
       ]
@@ -98,6 +106,46 @@
       ]
     },
     {
+      "help": "Back up teatree's control DB and prune past the keep-last-N-days retention (directive #2).",
+      "name": "db_backup",
+      "subcommands": []
+    },
+    {
+      "help": "Capture, drive, and inspect plain-language directives about teatree's own behavior.",
+      "name": "directive",
+      "subcommands": [
+        {
+          "help": "Record a plain-language directive verbatim as a CAPTURED row",
+          "name": "capture"
+        },
+        {
+          "help": "Print one directive's state, sketch, and ratification (read-only)",
+          "name": "status"
+        },
+        {
+          "help": "Advance the directive loop one step IF the cadence elapsed (cron entry)",
+          "name": "tick"
+        },
+        {
+          "help": "Print the recent directive ledger with decisions (read-only)",
+          "name": "history"
+        },
+        {
+          "help": "Print the recent directive ledger (read-only)",
+          "name": "list"
+        },
+        {
+          "help": "Close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)",
+          "name": "resolve-revert"
+        }
+      ]
+    },
+    {
+      "help": "Walk a ticket through the lifecycle, each phase's existing gate enforced.",
+      "name": "do",
+      "subcommands": []
+    },
+    {
       "help": "Dogfood overlay smokes \u2014 exercise CLI paths so bugs surface in the loop, not in E2E.",
       "name": "dogfood",
       "subcommands": [
@@ -118,11 +166,15 @@
         {
           "help": "Run one consolidation pass IF the dream cadence has elapsed (cron entry)",
           "name": "tick"
+        },
+        {
+          "help": "Print the latest instruction-compliance snapshot \u2014 read-only (#2663)",
+          "name": "compliance"
         }
       ]
     },
     {
-      "help": "",
+      "help": "Run E2E specs and post their evidence \u2014 the overlay-agnostic e2e verbs.",
       "name": "e2e",
       "subcommands": [
         {
@@ -138,12 +190,20 @@
           "name": "project"
         },
         {
+          "help": "Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329)",
+          "name": "lanes"
+        },
+        {
           "help": "Trigger E2E tests on a remote CI pipeline",
           "name": "trigger-ci"
         },
         {
           "help": "Post (or update) the ticket's single test-plan note from a manifest",
           "name": "post-test-plan"
+        },
+        {
+          "help": "Print a manifest's authored half (run provenance stripped) for a private test repo to commit",
+          "name": "tracked-manifest"
         },
         {
           "help": "Withdraw the ticket's single test-plan note",
@@ -251,6 +311,24 @@
       ]
     },
     {
+      "help": "``t3 <overlay> health`` group root.",
+      "name": "health",
+      "subcommands": [
+        {
+          "help": "Reconcile and print the global-health verdict + open KnownIssue rows",
+          "name": "show"
+        },
+        {
+          "help": "Record a manual operational-health issue the deterministic signals miss",
+          "name": "add"
+        },
+        {
+          "help": "Acknowledge and close an open issue by id",
+          "name": "dismiss"
+        }
+      ]
+    },
+    {
       "help": "``t3 <overlay> honesty`` group root.",
       "name": "honesty",
       "subcommands": [
@@ -261,12 +339,52 @@
       ]
     },
     {
+      "help": "",
+      "name": "identities",
+      "subcommands": [
+        {
+          "help": "Consolidate the configured ``user_identity_aliases`` into the DB (idempotent)",
+          "name": "seed"
+        },
+        {
+          "help": "Add a trusted identity (idempotent on ``(platform, handle)``)",
+          "name": "add"
+        },
+        {
+          "help": "Remove a trusted identity by ``(platform, handle)``",
+          "name": "remove"
+        },
+        {
+          "help": "List all trusted identities",
+          "name": "list"
+        }
+      ]
+    },
+    {
       "help": "``t3 info`` group root.",
       "name": "info",
       "subcommands": [
         {
           "help": "Locate every artifact for a ticket: stack, ports, plans, run artifacts, E2E evidence",
           "name": "artifacts"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> learnings`` group root.",
+      "name": "learnings",
+      "subcommands": [
+        {
+          "help": "Print the repo's durable learnings store",
+          "name": "show"
+        },
+        {
+          "help": "Append a timestamped entry to the repo's durable learnings store",
+          "name": "add"
+        },
+        {
+          "help": "Open the repo's full learnings store in ``$EDITOR`` and replace it",
+          "name": "edit"
         }
       ]
     },
@@ -319,20 +437,25 @@
       ]
     },
     {
+      "help": "Run one reactive DB-queue drain cycle (expire stale READY jobs, then drain a bounded batch).",
+      "name": "loop_drain_queue",
+      "subcommands": []
+    },
+    {
       "help": "Print LIVE loop status computed from the DB (read-only; #1744).",
       "name": "loop_list",
       "subcommands": []
     },
     {
-      "help": "Claim, inspect, or release the session-scoped loop-owner slot (#1073).",
+      "help": "Claim, inspect, or release the session-scoped t3-master slot (#1073).",
       "name": "loop_owner",
       "subcommands": [
         {
-          "help": "Claim the loop-owner slot for this session",
+          "help": "Claim the t3-master slot for this session",
           "name": "claim"
         },
         {
-          "help": "Show which session owns the loop-owner slot",
+          "help": "Show which session owns the t3-master slot",
           "name": "owner"
         },
         {
@@ -340,8 +463,68 @@
           "name": "whoami"
         },
         {
-          "help": "Release this session's loop-owner claim (CAS \u2014 non-owner is a no-op)",
+          "help": "Release this session's t3-master claim (CAS \u2014 non-owner is a no-op unless --force)",
           "name": "release"
+        }
+      ]
+    },
+    {
+      "help": "List/show/use/auto/create/edit/delete loop presets (#3159).",
+      "name": "loop_preset",
+      "subcommands": [
+        {
+          "help": "Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table",
+          "name": "show"
+        },
+        {
+          "help": "Activate *name* as the L3 manual override (default: until the next scheduled boundary)",
+          "name": "use"
+        },
+        {
+          "help": "Clear the manual override so the active schedule / default mode decides again",
+          "name": "auto"
+        },
+        {
+          "help": "Create a new preset from ``--set`` entries, optional pin and overlay scope",
+          "name": "create"
+        },
+        {
+          "help": "Edit a preset's entries / description / pin / scope in place",
+          "name": "edit"
+        },
+        {
+          "help": "Delete a preset (a slot/override still pointing at it fails open to base config)",
+          "name": "delete"
+        },
+        {
+          "help": "List every preset with its pin, scope, entry count, and the ACTIVE marker",
+          "name": "list"
+        }
+      ]
+    },
+    {
+      "help": "List/show/set-active/clear-active loop schedules (#3159).",
+      "name": "loop_schedule",
+      "subcommands": [
+        {
+          "help": "Show a schedule's ordered slots (weekdays at a start time, then the preset)",
+          "name": "show"
+        },
+        {
+          "help": "List every schedule with its timezone, slot count, and the ACTIVE marker",
+          "name": "list"
+        },
+        {
+          "help": "Activate *name* \u2014 the single ``active_loop_schedule`` write that switches calendars",
+          "name": "set-active"
+        },
+        {
+          "help": "Set *name*'s slot timezone \u2014 the lever that makes its wall-clock slots fire locally",
+          "name": "set-timezone"
+        },
+        {
+          "help": "Clear the active schedule so no L2 layer applies (presets only via override)",
+          "name": "clear-active"
         }
       ]
     },
@@ -376,13 +559,17 @@
           "name": "enable"
         },
         {
-          "help": "Report *name*'s durable state (ENABLED when no row exists)",
+          "help": "Set the emergency FORCED plane for *name* \u2014 on/off beats a preset, clear returns to neutral",
+          "name": "override"
+        },
+        {
+          "help": "Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it",
           "name": "status"
         }
       ]
     },
     {
-      "help": "Run one tick: scan all overlays, dispatch, render statusline.",
+      "help": "Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline.",
       "name": "loop_tick",
       "subcommands": []
     },
@@ -392,9 +579,19 @@
       "subcommands": []
     },
     {
-      "help": "Run one master tick: run every enabled, due loop (DB-configured); render statusline.",
+      "help": "Run ONE enabled, due DB Loop by name (--loop) \u2014 the per-loop primitive each native Claude `/loop` fires.",
       "name": "loops_tick",
       "subcommands": []
+    },
+    {
+      "help": "``t3 <overlay> memory`` group root.",
+      "name": "memory",
+      "subcommands": [
+        {
+          "help": "Print the cold-tier memory rules most relevant to *query* (top *limit*)",
+          "name": "recall"
+        }
+      ]
     },
     {
       "help": "",
@@ -425,6 +622,36 @@
         {
           "help": "React on a destination, token chosen by it: self-DM\u2192bot, colleague/channel\u2192xoxp (exit 0 on ``ok``)",
           "name": "react"
+        }
+      ]
+    },
+    {
+      "help": "Drive the T4 autoresearch outer loop (propose\u2192ratify\u2192implement\u2192measure\u2192keep-only-if-better).",
+      "name": "outer",
+      "subcommands": [
+        {
+          "help": "Advance the outer loop one step IF the cadence elapsed (cron entry)",
+          "name": "tick"
+        },
+        {
+          "help": "Print the guard-chain verdict and the active experiment (read-only)",
+          "name": "status"
+        },
+        {
+          "help": "Record an operator hypothesis as a PROPOSED experiment (refused while off)",
+          "name": "propose"
+        },
+        {
+          "help": "Print the recent experiment ledger (read-only)",
+          "name": "history"
+        },
+        {
+          "help": "Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot",
+          "name": "resolve-revert"
+        },
+        {
+          "help": "Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot",
+          "name": "resolve-keep"
         }
       ]
     },
@@ -477,6 +704,10 @@
           "name": "sweep"
         },
         {
+          "help": "Drop a deferred-PR obligation the drain can never discharge",
+          "name": "discharge-pending"
+        },
+        {
           "help": "Create a PR for an orphan branch (idempotent, no-op when a PR already exists)",
           "name": "ensure-pr"
         },
@@ -521,7 +752,7 @@
           "name": "record"
         },
         {
-          "help": "Resolve a pending question with a user answer",
+          "help": "Resolve a pending question with a user answer (resumes a parked headless task)",
           "name": "answer"
         },
         {
@@ -553,9 +784,55 @@
       ]
     },
     {
+      "help": "Score the factory against the committed recipe, and pin an approved recipe sha.",
+      "name": "recipe",
+      "subcommands": [
+        {
+          "help": "Compute the recipe-weighted factory score over the trailing window",
+          "name": "score"
+        },
+        {
+          "help": "Pin the committed recipe's sha into ``approved_recipe_sha`` (the human EVOLVE gate)",
+          "name": "approve"
+        }
+      ]
+    },
+    {
       "help": "Report (and optionally recover) work stranded by an outage.",
       "name": "recover",
       "subcommands": []
+    },
+    {
+      "help": "Group root \u2014 forces sub-commands to be addressed by name.",
+      "name": "repro",
+      "subcommands": [
+        {
+          "help": "Record a HUMAN-authorized waiver of the forced-repro gate (#118)",
+          "name": "waive"
+        },
+        {
+          "help": "Show the recorded RED/GREEN/provenance/waiver state for a ticket (audit)",
+          "name": "status"
+        },
+        {
+          "help": "Record the harness-run FAILING RED reproduction for a FIX ticket (#118)",
+          "name": "record-red"
+        },
+        {
+          "help": "Record the harness-run PASSING GREEN and freeze the provenance verdict (#118)",
+          "name": "record-green"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> retention`` group root.",
+      "name": "retention",
+      "subcommands": [
+        {
+          "help": "Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply)",
+          "name": "prune"
+        }
+      ]
     },
     {
       "help": "``t3 <overlay> retro`` group root.",
@@ -582,6 +859,22 @@
         {
           "help": "Report whether *mr_url* is safe to approve at its CURRENT head (read-only)",
           "name": "status"
+        },
+        {
+          "help": "Record a PR-08 review-evidence artifact for a ticket",
+          "name": "record-evidence"
+        },
+        {
+          "help": "Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405)",
+          "name": "lock-acquire"
+        },
+        {
+          "help": "Report the current :class:`MRReviewLock` state for *mr_url* (read-only)",
+          "name": "lock-status"
+        },
+        {
+          "help": "Re-bind a CLEAR to a conflict-only merge commit \u2014 no re-review (PR-07)",
+          "name": "rebind-clearance"
         }
       ]
     },
@@ -631,14 +924,69 @@
       "subcommands": []
     },
     {
-      "help": "Idempotently seed the default loops + prompts (#2513).",
+      "help": "Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).",
       "name": "seed_loops",
+      "subcommands": []
+    },
+    {
+      "help": "Session-lifecycle operations.",
+      "name": "session",
+      "subcommands": [
+        {
+          "help": "Refresh the durable recovery artifacts (idempotent, safe to re-run)",
+          "name": "prepare-stop"
+        },
+        {
+          "help": "Append an item to this session's durable working list",
+          "name": "todo-add"
+        },
+        {
+          "help": "List this session's working items, in working order",
+          "name": "todo-list"
+        },
+        {
+          "help": "Move one working item to *status*",
+          "name": "todo-set"
+        }
+      ]
+    },
+    {
+      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "name": "signals",
+      "subcommands": []
+    },
+    {
+      "help": "Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).",
+      "name": "snapshot_settings_defaults",
       "subcommands": []
     },
     {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
       "subcommands": []
+    },
+    {
+      "help": "Attach spoken audio to the DM at ``channel`` per [teatree.speak] (no-op unless slack/local on).",
+      "name": "speak_dm",
+      "subcommands": []
+    },
+    {
+      "help": "Register, clear, or list standing verified-green goals (PR-25).",
+      "name": "standing_goal",
+      "subcommands": [
+        {
+          "help": "Delete one named standing goal, or every goal when no name is given",
+          "name": "clear"
+        },
+        {
+          "help": "Register (or re-arm) a standing verified-green goal",
+          "name": "set"
+        },
+        {
+          "help": "List every registered standing goal and its active state",
+          "name": "list"
+        }
+      ]
     },
     {
       "help": "",
@@ -687,8 +1035,12 @@
           "name": "list"
         },
         {
+          "help": "Emit the in-session harness-TODO reconciliation checklist (read-only)",
+          "name": "reconcile-checklist"
+        },
+        {
           "help": "",
-          "name": "work-next-sdk"
+          "name": "work-next-headless"
         }
       ]
     },
@@ -697,28 +1049,80 @@
       "name": "ticket",
       "subcommands": [
         {
-          "help": "Transition a ticket to a new state",
-          "name": "transition"
+          "help": "Execute the missing IN_REVIEW \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
+          "name": "merge"
+        },
+        {
+          "help": "Print (and with ``--fetch`` download) a ticket's referenced attachments",
+          "name": "attachments"
+        },
+        {
+          "help": "Durable per-ticket knowledge store (#627, repo-namespaced key #2293)",
+          "name": "context"
+        },
+        {
+          "help": "Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009)",
+          "name": "show"
+        },
+        {
+          "help": "Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07)",
+          "name": "expedite"
         },
         {
           "help": "Record a PlanArtifact and advance the ticket STARTED \u2192 PLANNED",
           "name": "plan"
         },
         {
-          "help": "Durable per-ticket knowledge store (#627)",
-          "name": "context"
+          "help": "Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore",
+          "name": "transition"
         },
         {
           "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",
           "name": "clear"
         },
         {
-          "help": "Execute the missing IN_REVIEW \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
-          "name": "merge"
-        },
-        {
           "help": "Post a comment to an issue or work item by its URL",
           "name": "comment"
+        },
+        {
+          "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",
+          "name": "backfill-clears"
+        },
+        {
+          "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",
+          "name": "record-spec-coverage"
+        },
+        {
+          "help": "Reconcile the ticket board against forge truth and advance what has landed",
+          "name": "sync-completions"
+        },
+        {
+          "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
+          "name": "reconcile-overlay"
+        },
+        {
+          "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
+          "name": "bulk-close"
+        },
+        {
+          "help": "Record the audited escape hatch for the cross-repo integration-review gate (PR-08)",
+          "name": "integration-review-override"
+        },
+        {
+          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
+          "name": "plan-bypass"
+        },
+        {
+          "help": "Mark a trivial ticket to skip planning and advance STARTED \u2192 PLANNED",
+          "name": "skip-planning"
+        },
+        {
+          "help": "Retroactively advance STARTED tickets to PLANNED after the gate was added",
+          "name": "plan-reconcile-inflight"
+        },
+        {
+          "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
+          "name": "plan-reaffirm"
         },
         {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
@@ -737,38 +1141,28 @@
           "name": "e2e-bypass"
         },
         {
-          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
-          "name": "plan-bypass"
-        },
-        {
-          "help": "Mark a trivial ticket to skip planning and advance STARTED \u2192 PLANNED",
-          "name": "skip-planning"
-        },
-        {
-          "help": "Retroactively advance STARTED tickets to PLANNED after the gate was added",
-          "name": "plan-reconcile-inflight"
-        },
-        {
           "help": "Create a child work item nested under a parent issue/work item",
           "name": "create-sub"
         },
         {
           "help": "List tickets, optionally filtered by state and/or overlay",
           "name": "list"
-        },
-        {
-          "help": "Check post-ship tickets against upstream issues and advance completed ones",
-          "name": "sync-completions"
-        },
-        {
-          "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
-          "name": "reconcile-overlay"
         }
       ]
     },
     {
+      "help": "Backfill Ticket.extra['issue_title'] from the forge for existing tickets.",
+      "name": "ticket_backfill_titles",
+      "subcommands": []
+    },
+    {
       "help": "Generate Ticket.short_description (#1156).",
       "name": "ticket_short_describe",
+      "subcommands": []
+    },
+    {
+      "help": "Show per-account Anthropic 5h / weekly token utilization + status.",
+      "name": "tokens",
       "subcommands": []
     },
     {
@@ -786,6 +1180,29 @@
       ]
     },
     {
+      "help": "``t3 teatree waiting`` group root.",
+      "name": "waiting",
+      "subcommands": [
+        {
+          "help": "List everything currently waiting on the user",
+          "name": "list"
+        },
+        {
+          "help": "Record a manual waiting item the live sources cannot see",
+          "name": "add"
+        },
+        {
+          "help": "Resolve a manual waiting item by id",
+          "name": "resolve"
+        }
+      ]
+    },
+    {
+      "help": "Run the singleton loop-timer worker (#1796) \u2014 K pinned executors, no OS scheduler.",
+      "name": "worker",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "workspace",
       "subcommands": [
@@ -794,7 +1211,7 @@
           "name": "ticket"
         },
         {
-          "help": "Provision every worktree in the current ticket workspace",
+          "help": "Provision every worktree in the current ticket workspace, in parallel",
           "name": "provision"
         },
         {
@@ -822,11 +1239,23 @@
           "name": "landscape"
         },
         {
-          "help": "Tear down every worktree whose ticket is already MERGED",
+          "help": "Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup)",
+          "name": "relocate"
+        },
+        {
+          "help": "Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763)",
+          "name": "emit"
+        },
+        {
+          "help": "Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763)",
+          "name": "salvage"
+        },
+        {
+          "help": "Tear down every done worktree (analyze-then-wipe) on demand",
           "name": "clean-merged"
         },
         {
-          "help": "Stamp the scoped noreply git identity onto an existing souliane clone (#762)",
+          "help": "Stamp the scoped noreply git identity onto an existing public GitHub clone (#762)",
           "name": "stamp-identity"
         },
         {
@@ -842,8 +1271,16 @@
           "name": "reclaim-disk"
         },
         {
-          "help": "Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots",
+          "help": "Record which checkout owns each auto-isolated env dir THIS venue can see (#3872)",
+          "name": "stamp-owners"
+        },
+        {
+          "help": "Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR",
           "name": "clean-all"
+        },
+        {
+          "help": "Release registered rows whose checkout is provably dead \u2014 ROWS ONLY (dry run unless --apply)",
+          "name": "release-dead-rows"
         }
       ]
     },
@@ -872,7 +1309,7 @@
           "name": "teardown"
         },
         {
-          "help": "Report FSM state, branch, and allocated host ports for one worktree",
+          "help": "Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27)",
           "name": "status"
         },
         {

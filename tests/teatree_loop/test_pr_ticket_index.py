@@ -5,36 +5,7 @@ from django.test import TestCase
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.loop.dispatch import DispatchAction
-from teatree.loop.pr_ticket_index import _parse_closes_ticket, build_ticket_index, resolve_author_ticket
-
-
-class TestParseClosesTicket:
-    def test_matches_closes_hash_n(self) -> None:
-        assert _parse_closes_ticket("Closes #855") == "855"
-
-    def test_matches_fixes_hash_n(self) -> None:
-        assert _parse_closes_ticket("Fixes #856 — broken thing") == "856"
-
-    def test_matches_resolves_hash_n(self) -> None:
-        assert _parse_closes_ticket("This MR resolves #99") == "99"
-
-    def test_matches_case_insensitive(self) -> None:
-        assert _parse_closes_ticket("CLOSES #1") == "1"
-
-    def test_matches_with_colon(self) -> None:
-        assert _parse_closes_ticket("Closes: #42") == "42"
-
-    def test_returns_empty_when_no_keyword(self) -> None:
-        assert _parse_closes_ticket("Related to #99") == ""
-
-    def test_returns_empty_when_no_hash(self) -> None:
-        assert _parse_closes_ticket("Closes nothing in particular") == ""
-
-    def test_returns_first_match_only(self) -> None:
-        assert _parse_closes_ticket("Closes #1\nFixes #2") == "1"
-
-    def test_returns_empty_on_empty_description(self) -> None:
-        assert _parse_closes_ticket("") == ""
+from teatree.loop.pr_ticket_index import build_ticket_index, resolve_author_ticket
 
 
 class TestBuildTicketIndexFromFooter:
@@ -453,13 +424,23 @@ class TestResolveAuthorTicket(TestCase):
         resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL)
         assert resolved is None
 
-    def test_no_fk_and_blank_pr_url_skips_extra_prs_fallback(self) -> None:
-        # No PullRequest FK and an empty pr_url: the extra["prs"] fallback needs
-        # a url key to match, so the resolver returns None without walking.
-        Ticket.objects.create(
+    def test_no_fk_and_blank_pr_url_still_finds_the_ticket_carrying_the_pr(self) -> None:
+        # The extra["prs"] keys ARE PR urls, so (slug, pr_id) identifies the owner
+        # with no url handed in — the shape the merge keystone and the CLEAR
+        # backfill resolve on, since a MergeClear carries no PR url.
+        ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url=f"https://github.com/{self.SLUG}/issues/2104",
             extra={"prs": {self.PR_URL: {"draft": False}}},
+        )
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url="")
+        assert resolved == ticket
+
+    def test_a_ticket_carrying_a_different_pr_on_the_same_repo_is_not_the_owner(self) -> None:
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=f"https://github.com/{self.SLUG}/issues/2104",
+            extra={"prs": {f"https://github.com/{self.SLUG}/pull/999": {"draft": False}}},
         )
         resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url="")
         assert resolved is None

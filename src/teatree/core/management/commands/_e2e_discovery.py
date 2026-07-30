@@ -9,18 +9,43 @@ compose project, which env cache, which on-disk worktree path), and the
 
 import socket
 
+from teatree.core.intake.resolve import _find_env_cache, _parse_env_file
 from teatree.core.models import Ticket, Worktree
-from teatree.core.resolve import _find_env_cache, _parse_env_file
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.ports import get_service_port
+
+# Both loopback literals, IPv4 first (the common case). Literals rather than
+# resolving ``localhost``: a host whose ``/etc/hosts`` maps the name to one
+# family only would hide a listener on the other — the very failure below.
+_LOOPBACK_ADDRESSES: tuple[tuple[int, str], ...] = (
+    (socket.AF_INET, "127.0.0.1"),
+    (socket.AF_INET6, "::1"),
+)
+# Per-address connect timeout. ``discover_frontend_port`` scans 11 ports, so
+# the worst case is 11 x len(_LOOPBACK_ADDRESSES) x this — halving the old
+# single-family 0.3s keeps that ceiling exactly where it was.
+_LOOPBACK_CONNECT_TIMEOUT = 0.15
 
 
 def detect_local_port(port: int) -> int | None:
-    """Return *port* if something is listening on localhost, else None."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.3)
-        if s.connect_ex(("127.0.0.1", port)) == 0:
-            return port
+    """Return *port* if something is listening on localhost, else None.
+
+    Probes both loopback families rather than IPv4 alone. Node dev servers
+    (``nx serve`` and friends) bind ``::1`` only on a host that prefers IPv6,
+    and an ``AF_INET``-only probe cannot see them: ``curl`` against
+    ``[::1]:4200`` answers 200 while ``127.0.0.1:4200`` is refused. That made
+    :func:`discover_frontend_port` report no frontend and aborted
+    ``e2e external --target local`` with "Frontend not running" on a host
+    whose frontend was up and serving.
+    """
+    for family, address in _LOOPBACK_ADDRESSES:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(_LOOPBACK_CONNECT_TIMEOUT)
+                if probe.connect_ex((address, port)) == 0:
+                    return port
+        except OSError:
+            continue  # family unavailable on this host (e.g. IPv6 disabled)
     return None
 
 
@@ -54,12 +79,12 @@ def ticket_frontend_projects(worktree: Worktree, *, linked_ticket: Ticket | None
     ticket's siblings.
     """
     if linked_ticket is not None:
-        candidates: list[Worktree] = [worktree, *Worktree.objects.filter(ticket=linked_ticket).order_by("pk")]
+        candidates: list[Worktree] = [worktree, *Worktree.objects.for_ticket(linked_ticket).order_by("pk")]
     else:
         ticket = worktree.ticket
         candidates = [worktree]
         if ticket is not None:
-            candidates += [wt for wt in Worktree.objects.filter(ticket=ticket) if wt.pk != worktree.pk]
+            candidates += [wt for wt in Worktree.objects.for_ticket(ticket) if wt.pk != worktree.pk]
     seen: set[str] = set()
     projects: list[str] = []
     for wt in candidates:
@@ -101,10 +126,10 @@ def _runs_backend_stack(worktree: Worktree) -> bool:
     returns ``""``). ``docker compose exec web`` and the exported
     ``COMPOSE_PROJECT_NAME`` must target *that* worktree.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps command import light
 
     try:
-        return bool(get_overlay().get_compose_file(worktree))
+        return bool(get_overlay().provisioning.compose_file(worktree))
     except Exception:  # noqa: BLE001 — a misbehaving overlay hook must not break routing
         return False
 
@@ -112,7 +137,7 @@ def _runs_backend_stack(worktree: Worktree) -> bool:
 def resolve_linked_worktree(linked_ticket: Ticket) -> Worktree | None:
     """Pick the worktree that owns the backend stack for ``linked_ticket``.
 
-    The env cache that feeds ``get_e2e_env_extras`` and the
+    The env cache that feeds ``e2e.env_extras`` and the
     ``COMPOSE_PROJECT_NAME`` exported for ``docker compose`` calls both live
     on this worktree. A multi-repo ticket has several siblings, and the first
     by pk is often the *frontend* worktree — exporting its compose project as
@@ -122,7 +147,7 @@ def resolve_linked_worktree(linked_ticket: Ticket) -> Worktree | None:
     first stored-path worktree, then any sibling so a freshly-provisioned
     ticket with no recorded ``worktree_path`` still routes.
     """
-    siblings = list(Worktree.objects.filter(ticket=linked_ticket).order_by("pk"))
+    siblings = list(Worktree.objects.for_ticket(linked_ticket).order_by("pk"))
     stored = [wt for wt in siblings if (wt.extra or {}).get("worktree_path")]
     for wt in stored:
         if _runs_backend_stack(wt):

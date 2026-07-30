@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-harness_canary_stop_gate_fires-fail", "model": "claude-haiku-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Which branch should this ship to \u2014 main or develop? Let me know and I will proceed."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

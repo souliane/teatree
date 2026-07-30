@@ -14,7 +14,7 @@ from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -24,7 +24,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
-from teatree.core.overlay import OverlayBase, OverlayMetadata
+from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -54,7 +54,16 @@ class _MinimalMeta(OverlayMetadata):
         return []
 
 
+class _AcmeOverlayRuntime(OverlayRuntime):
+    def run_commands(self, worktree):
+        return {}
+
+    def test_command(self, worktree):
+        return []
+
+
 class _AcmeOverlay(OverlayBase):
+    runtime = _AcmeOverlayRuntime()
     metadata = _MinimalMeta()
 
     def get_repos(self) -> list[str]:
@@ -63,26 +72,23 @@ class _AcmeOverlay(OverlayBase):
     def get_provision_steps(self, worktree):
         return []
 
-    def get_run_commands(self, worktree):
+
+class _BetaOverlayRuntime(OverlayRuntime):
+    def run_commands(self, worktree):
         return {}
 
-    def get_test_command(self, worktree):
+    def test_command(self, worktree):
         return []
 
 
 class _BetaOverlay(OverlayBase):
+    runtime = _BetaOverlayRuntime()
     metadata = _MinimalMeta()
 
     def get_repos(self) -> list[str]:
         return ["beta/core"]
 
     def get_provision_steps(self, worktree):
-        return []
-
-    def get_run_commands(self, worktree):
-        return {}
-
-    def get_test_command(self, worktree):
         return []
 
 
@@ -99,8 +105,15 @@ def _two_overlay_patch() -> AbstractContextManager[Any]:
 
 
 def _call(*args: str) -> str:
+    """Both channels merged: these are CONTENT tests, not channel tests.
+
+    Converted verbs route their human view to stderr through the machine-output
+    seam while unconverted siblings still return it for stdout, so a content
+    assertion must read both. The channel split itself is asserted by the
+    dedicated tests below and by ``tests/quality/test_machine_output_seam.py``.
+    """
     buf = StringIO()
-    call_command(*args, stdout=buf)
+    call_command(*args, stdout=buf, stderr=buf)
     return buf.getvalue()
 
 
@@ -248,6 +261,55 @@ class TestCheckingShow:
         assert load_checkpoint(checkpoint_file) == future_marker
 
 
+def _notify_backend() -> MagicMock:
+    b = MagicMock()
+    b.open_dm.return_value = "D-USER"
+    b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
+    b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
+    return b
+
+
+class TestCheckingNotify:
+    """``--notify`` DMs the recap as a native Block Kit table + fence fallback (#2966)."""
+
+    def test_notify_emits_table_block_through_the_real_notify_path(self, checkpoint_file: Path) -> None:
+        # Anti-vacuity: the DM must be produced by the real ``notify_user`` egress
+        # (mocked Slack backend), not a direct formatter call — the ``table`` block
+        # and the monospace fence must both reach ``post_message``.
+        _merged_ticket()
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            _call("checking", "show", "--this-overlay", "--notify")
+        backend.post_message.assert_called_once()
+        call_kwargs = backend.post_message.call_args.kwargs
+        assert "table" in [block["type"] for block in call_kwargs["blocks"]]
+        assert "```" in call_kwargs["text"]
+        assert "acme/widgets#7" in call_kwargs["text"]
+
+    def test_notify_skipped_when_nothing_to_report(self, checkpoint_file: Path) -> None:
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            _call("checking", "show", "--this-overlay", "--notify")
+        backend.post_message.assert_not_called()
+
+    def test_unchanged_recap_deduped_to_one_dm(self, checkpoint_file: Path) -> None:
+        _merged_ticket()
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+            _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+        backend.post_message.assert_called_once()
+
+
 class TestCheckingShowAllOverlays:
     """``checking show`` default = all overlays; ``--this-overlay`` = current overlay only."""
 
@@ -346,3 +408,23 @@ class TestCheckingShowAllOverlays:
         payload = json.loads(out)
         assert "all_overlays" in payload
         assert "merged" in payload
+
+
+class TestMachineOutputChannel:
+    """``checking show`` is a seam verb: stdout carries JSON or nothing at all."""
+
+    @staticmethod
+    def _channels(*args: str) -> tuple[str, str]:
+        out, err = StringIO(), StringIO()
+        call_command("checking", "show", *args, stdout=out, stderr=err)
+        return out.getvalue(), err.getvalue()
+
+    def test_human_mode_leaves_stdout_empty(self, checkpoint_file: Path) -> None:
+        out, err = self._channels("--this-overlay")
+        assert out == ""
+        assert "Nothing since " in err
+
+    def test_json_mode_puts_only_json_on_stdout(self, checkpoint_file: Path) -> None:
+        out, err = self._channels("--this-overlay", "--json")
+        assert "since" in json.loads(out)
+        assert err == ""

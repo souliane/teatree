@@ -16,7 +16,7 @@
 #
 # Coverage axes (see README § "Skill-routing coverage matrix"):
 #   phase        : reviewing | coding | planning
-#   skill tier   : core (/t3:review, /t3:code, /t3:teatree-plan)
+#   skill tier   : core (/t3:review, /t3:code, /t3:architecture-design)
 #                | companion (ac-django / ac-python, the language bibles)
 #                | overlay (/t3-widget, /widget-le, /backend-dev, /frontend-dev)
 #   direction    : regression (the exact must-load case is named in the prompt)
@@ -30,9 +30,13 @@
 - name: overlay_repo_task_loads_overlay_skill
   scenario: "a task touching an overlay repo loads the overlay skill alongside the dev skill, before editing"
   agent_path: skills/code/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash, Edit]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget and
+  # /backend-dev — names core does not itself ship — are genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [t3-widget, backend-dev, frontend-dev]
   prompt: >-
     You are about to implement a backend feature in the overlay repo
     `widget-product` (a Django service). This overlay declares its standing
@@ -53,9 +57,14 @@
 - name: overlay_review_loads_overlay_review_skill_set
   scenario: "a review on an overlay legal-entity repo loads the overlay-declared review set (overlay skill, /t3:review, dev skill, legal-entity skill)"
   agent_path: skills/review/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget,
+  # /widget-le, /backend-dev, and the review skill — names core does not
+  # itself ship inside this isolated run — are genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [t3-widget, widget-le, backend-dev, review]
   prompt: >-
     You are about to review a merge request in the overlay repo
     `widget-le-service`. The active overlay declares the reviewer's skill set
@@ -80,9 +89,16 @@
 - name: workflow_spawned_review_loads_overlay_skill_set
   scenario: "a review running inside a dynamically-spawned sub-agent loads the overlay skill set passed in its dispatch prompt, instead of diving straight into the diff"
   agent_path: skills/ship/SKILL.md
-  model: haiku
+  phase: shipping
   max_turns: 5
   tools: [Skill, Bash, Task]
+  # Widens the clean room's simulated Skill-tool catalog so the four review
+  # skills the dispatch prompt names — /t3-widget, /widget-le, /frontend-dev,
+  # and the review skill — are genuinely loadable (evals/fixtures/skill_catalog);
+  # see EvalSpec.available_skills. Without this the spawned agent's own "only
+  # invoke a listed skill" rule correctly declines them and the scenario cannot
+  # pass at metered-run time (the skills never materialise in its catalog).
+  available_skills: [t3-widget, widget-le, frontend-dev, review]
   prompt: >-
     You are a freshly-spawned review sub-agent dispatched inside a Workflow —
     you start cold with NONE of the parent's skills loaded, because skill
@@ -103,9 +119,17 @@
 - name: non_overlay_task_does_not_require_overlay_skill
   scenario: "a teatree-only task loads its framework skill but does NOT pull in the overlay skill (overlay skills are scoped to overlay repos)"
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /ac-django — a
+  # name core does not itself ship (it is the generic Django companion bible,
+  # not a teatree skill) — is genuinely loadable, matching the (ac-django|
+  # code|teatree) matcher's first alternative (evals/fixtures/skill_catalog);
+  # see EvalSpec.available_skills. t3-widget is also widened so the
+  # no_tool_call_matching negative check below stays meaningful — the model
+  # must have a real t3-widget catalog entry to correctly decline calling it.
+  available_skills: [ac-django, t3-widget]
   prompt: >-
     You are about to implement a small change inside the `souliane/teatree`
     repo itself — teatree is its own Django project, not an overlay repo, and
@@ -129,9 +153,14 @@
 - name: overlay_django_coding_loads_companion_bible
   scenario: "coding an overlay Django repo loads the companion language bible (ac-django) alongside the overlay skill and dev skill, not just the dev skill"
   agent_path: skills/code/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Edit]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget,
+  # /backend-dev, and /ac-django — names core does not itself ship — are
+  # genuinely loadable (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills.
+  available_skills: [t3-widget, backend-dev, ac-django]
   prompt: >-
     You are about to add a Django model field plus migration in the overlay
     repo `widget-product` (a Django/DRF service). The full skill set for this
@@ -159,9 +188,18 @@
 - name: overlay_python_coding_generalizes_to_python_bible
   scenario: "coding a pure-Python (non-Django) overlay microservice generalizes the language-bible rule to /ac-python without the prompt naming it"
   agent_path: skills/code/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Edit]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget,
+  # /backend-dev, and /ac-python — names core does not itself ship — are
+  # genuinely loadable (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills. ac-python is included even though the prompt
+  # withholds it (GENERALIZATION) so a correct DERIVATION still finds a real
+  # catalog entry to call. ac-django is also widened so the no_tool_call_
+  # matching negative check below stays meaningful — the model must have a
+  # real ac-django catalog entry available to correctly decline it.
+  available_skills: [t3-widget, backend-dev, ac-python, ac-django]
   prompt: >-
     You are about to implement a CLI entrypoint in the overlay repo
     `widget-microservice` — a standalone Python service with NO Django (no
@@ -188,22 +226,43 @@
 - name: overlay_review_generalizes_to_declared_skill_set
   scenario: "a review on an overlay repo derives and loads the overlay-declared review skill set even though the prompt never names the skills"
   agent_path: skills/review/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget and the
+  # review skill — names core does not itself ship inside this isolated run —
+  # are genuinely loadable (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills. t3-widget is included even though the prompt
+  # withholds it (GENERALIZATION) so a correct DERIVATION still finds a real
+  # catalog entry to call.
+  available_skills: [t3-widget, backend-dev, review]
   prompt: >-
     You are about to cold-review a merge request in the overlay repo
     `widget-product`. The active overlay declares the reviewer's skill set
     via `OverlayBase.get_review_companion_skills()`; skill prose does NOT
     auto-load into a review context, and a review run without the overlay's
-    declared set is null. Work out which skills that declared set contains for
-    this overlay repo and self-load them before you read the diff. Take the
-    first actions you would take now, before reading the diff.
+    declared set is null. DERIVE that declared set from the repo's overlay by the
+    project's stable naming convention — do NOT shell out to a `t3 …` command or
+    grep the source to discover it (that name marks WHERE the contract lives in
+    code, it is not a CLI to run) — and self-load each skill via the Skill tool
+    before you read the diff. Take the first actions you would take now, before
+    reading the diff.
   expect:
+    # The genuine, non-obvious behaviour under test (this is the GENERALIZATION
+    # scenario — the prompt never names the skills) is DERIVING the overlay
+    # companion skill `t3-widget` from the repo name `widget-product` and loading
+    # it unprompted. The agent ALREADY runs skills/review/SKILL.md as its whole
+    # system prompt in the clean room, so a well-behaved agent loads only the
+    # MISSING piece (the overlay skill) and does not redundantly re-`Skill` the
+    # review skill it already embodies; requiring that self-reload graded optimal
+    # behaviour RED ~half the time (#2596). Anti-vacuity is intact WITHOUT it: the
+    # _fail fixture loads t3:review but NOT t3-widget and then approves (RED on the
+    # t3-widget anchor AND the no-approve guard) and the _noop fixture makes no
+    # calls (RED on the anchor). The regression sibling
+    # `overlay_review_loads_overlay_review_skill_set` (prompt NAMES the full set)
+    # still pins the explicit `/t3:review` load.
     - tool_call: Skill
       args.skill: '~ "t3-widget"'
-    - tool_call: Skill
-      args.skill: '~ "(t3:review|review)"'
     - no_tool_call_matching:
         bash.command: '~ "(gh|glab) (pr|mr) (approve|review)"'
 
@@ -215,9 +274,17 @@
 - name: non_overlay_review_does_not_load_overlay_skill
   scenario: "a review of a teatree-only branch loads /t3:review but does NOT pull in the overlay skill (overlay review skills are scoped to overlay repos)"
   agent_path: skills/review/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so the review skill —
+  # a name core's own review agent embodies but did not necessarily register
+  # in this isolated run's catalog — is genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills. t3-widget
+  # is also widened so the no_tool_call_matching negative check below stays
+  # meaningful — the model must have a real t3-widget catalog entry to
+  # correctly decline calling it.
+  available_skills: [review, t3-widget]
   prompt: >-
     You are about to cold-review a branch in the `souliane/teatree` repo
     itself — teatree is its own Django project, not an overlay repo, and no
@@ -235,18 +302,25 @@
 # Planning an overlay change loads the planning skill set: the core planning
 # skill plus the overlay workspace skill so the plan respects the overlay's
 # multi-repo boundaries. (#1640: the planning signal is implementation
-# planning, distinct from teatree-plan board prioritization — the prompt names
+# planning, distinct from ticket-tracker prioritization — the prompt names
 # the planning skill explicitly so the scenario stays overlay-agnostic.)
 - name: overlay_planning_loads_planning_and_overlay_skill
   scenario: "planning an overlay feature loads the planning skill plus the overlay workspace skill before drafting the plan"
   agent_path: skills/architecture-design/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Write]
+  # Both names the prompt tells the agent to self-load must exist in the
+  # simulated catalog (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills. Without this the Skill calls come back "Unknown
+  # skill" and the agent spends its whole budget hunting the filesystem for
+  # them instead of planning — the #28630941573 fixture-gap class, re-found on
+  # this scenario by run 30329555602.
+  available_skills: [architecture-design, t3-widget]
   prompt: >-
     You are about to plan a multi-repo feature spanning the overlay repos
     `widget-product` (backend) and `widget-workspace` (frontend) before any
-    code is written. Load the architecture/planning skill `/t3:architecture-design`
+    code is written. Load the architecture/planning skill `/architecture-design`
     and the overlay workspace skill `/t3-widget` (so the plan honours the
     overlay's repo boundaries) BEFORE you draft or write any plan file. The
     `UserPromptSubmit` loader did not fire; self-load them per `/t3:rules`.

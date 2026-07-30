@@ -60,12 +60,21 @@ def _expected_clone_capable_files(min_lines: int) -> set[Path]:
     return {p.resolve() for p in _SRC.rglob("*.py") if "migrations" not in p.parts and _line_count(p) >= min_lines}
 
 
+# Whole-tree jscpd scan is ~60s standalone and stretches further under
+# concurrent-coder load; the 60s default pytest-timeout deterministically
+# tripped and blocked every push through the ci-critical-parity hook. It is
+# deselected at push (`-m "not push_heavy"`) and runs in CI instead.
+@pytest.mark.push_heavy
+@pytest.mark.timeout(300)
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("npx") is None, reason="npx (node) not on PATH")
 class TestScanCoverage:
     @pytest.fixture(scope="class")
     def analyzed(self, tmp_path_factory: pytest.TempPathFactory) -> set[Path]:
         out = tmp_path_factory.mktemp("jscpd")
+        # jscpd's ``gitignore`` filter silently scans zero files when the source
+        # is an ABSOLUTE path; a path relative to ``cwd`` is required. Report
+        # ``sources`` then come back relative to ``cwd`` too, so resolve against it.
         subprocess.run(
             [
                 _NPX,
@@ -78,7 +87,7 @@ class TestScanCoverage:
                 "--output",
                 str(out),
                 "--silent",
-                str(_SRC),
+                str(_SRC.relative_to(_REPO_ROOT)),
             ],
             cwd=_REPO_ROOT,
             check=False,
@@ -87,7 +96,7 @@ class TestScanCoverage:
             timeout=300,
         )
         report = json.loads((out / "jscpd-report.json").read_text(encoding="utf-8"))
-        return {Path(p).resolve() for p in report["statistics"]["formats"]["python"]["sources"]}
+        return {(_REPO_ROOT / p).resolve() for p in report["statistics"]["formats"]["python"]["sources"]}
 
     def test_no_clone_capable_file_escapes(self, analyzed: set[Path], config: dict) -> None:
         expected = _expected_clone_capable_files(int(config["minLines"]))
@@ -95,8 +104,10 @@ class TestScanCoverage:
         assert not escaped, f"source files not scanned by jscpd: {escaped}"
 
     def test_tree_has_no_duplication(self, tmp_path: Path) -> None:
+        # Its own ``--output`` dir so two concurrent jscpd runs (this and the
+        # ``analyzed`` fixture, under ``-n auto``) never share an artifact dir.
         result = subprocess.run(
-            [_NPX, "--yes", "jscpd@4", "--config", str(_CONFIG), "--silent", str(_SRC)],
+            [_NPX, "--yes", "jscpd@4", "--config", str(_CONFIG), "--output", str(tmp_path), "--silent", str(_SRC)],
             cwd=_REPO_ROOT,
             check=False,
             capture_output=True,

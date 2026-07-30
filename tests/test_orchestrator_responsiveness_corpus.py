@@ -24,6 +24,7 @@ coding through; this file fails on either.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -37,16 +38,34 @@ from hooks.scripts.hook_router import (
 )
 
 
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed a DB-home ``teatree_config_setting`` store with JSON-encoded rows."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
+
+
 @pytest.fixture(autouse=True)
 def clean_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Pin ``Path.home`` at a clean tmp dir so every gate runs at its default.
+    """Point the config DB at a clean, empty path so every gate runs at its default.
 
-    The dev's real ``~/.teatree.toml`` may disable the bash gate (the #115
-    failsafe) or set a non-default turn budget; isolate from it so the corpus
-    exercises the protective defaults.
+    The dev's real DB-home config store may disable the bash gate (the #115
+    failsafe) or set a non-default turn budget; isolate from it via a fresh
+    ``T3_CONFIG_DB`` so the corpus exercises the protective defaults. The
+    kill-switch tests seed that DB to flip a gate.
     """
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
     return home
 
 
@@ -64,15 +83,6 @@ def _main_bash(command: str, *, run_in_background: bool | None = None) -> dict:
     if run_in_background is not None:
         tool_input["run_in_background"] = run_in_background
     return {"tool_name": "Bash", "tool_input": tool_input, "session_id": "s-corpus"}
-
-
-def _subagent_bash(command: str) -> dict:
-    return {
-        "tool_name": "Bash",
-        "tool_input": {"command": command},
-        "session_id": "s-corpus",
-        "agent_id": "a4ad83956ff699aaa",
-    }
 
 
 def _main_tool(tool_name: str, **tool_input: object) -> dict:
@@ -117,6 +127,12 @@ _MUST_ALLOW_BASH = [
     "git diff",
     "git show HEAD",
     "git fetch origin",
+    # #3253 — a bounded ``git push`` (small branch, seconds) is a fast op,
+    # not the full-suite wedge #1825 assumed; never gate it.
+    "git push",
+    "git push origin HEAD",
+    "git push -u origin feature",
+    "git push --force-with-lease origin feature",
     "cat src/teatree/config.py",
     "grep -rn TODO src/",
     "rg pattern src/",
@@ -172,12 +188,6 @@ _MUST_DENY_FOREGROUND_BASH = [
     "sleep 600",
     "find . -name '*.py' -exec grep -l TODO {} ;",
     "ls -laR /Users/adrien/workspace",
-    # #1825 — a foreground ``git push`` runs the full pre-push suite and
-    # wedges the loop owner's session (the motivating incident).
-    "git push",
-    "git push origin HEAD",
-    "git push -u origin feature",
-    "git push --force-with-lease origin feature",
 ]
 
 
@@ -191,14 +201,16 @@ class TestMustDenyForegroundHeavyWork:
         assert handle_enforce_orchestrator_boundary(_main_bash(command, run_in_background=True)) is False
 
 
-# #1825 — git push is the gate's motivating incident (its pre-push suite
-# wedges the session); read-only git must never be gated.
-_GIT_PUSH_DENY = [
+# #3253 — a bounded ``git push`` is a fast op, not a full-suite wedge; it
+# must NOT be gated. Read-only git is likewise never gated.
+_GIT_PUSH_ALLOW = [
     "git push",
     "git push origin HEAD",
     "git push -u origin feature",
     "git push --force-with-lease origin feature",
     "git push --force",
+    "git push --help",
+    "git push -h",
 ]
 _READONLY_GIT_ALLOW = [
     "git status",
@@ -206,6 +218,7 @@ _READONLY_GIT_ALLOW = [
     "git diff",
     "git show HEAD",
     "git fetch origin",
+    "git fetch --all --prune",
     "git commit -m 'push the button'",
     "git branch push-fix",
     "git checkout -b fix-push",
@@ -236,45 +249,28 @@ _WHOLE_SUITE_PYTEST_DENY = [
 
 
 class TestGitPushBoundary:
-    """#1825 — a foreground ``git push`` is gated; read-only git is not.
+    """#3253 — a bounded ``git push`` is a fast op the orchestrator may run inline.
 
-    ``git push`` is the gate's motivating incident (its full pre-push
-    suite blocks the loop and the user's queued input). It must deny in
-    the foreground main agent while honouring every never-lockout
-    off-ramp, and read-only git must never be gated.
+    A small-branch push is seconds, not a full test suite; the gate targets
+    genuinely long/unbounded work, not bounded network/discovery ops. Both
+    ``git push`` (and its ``--force*``/``--help`` variants) and read-only git
+    pass in the foreground main agent, and the heavy denylist no longer matches
+    the push verb.
     """
 
-    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
-    def test_foreground_git_push_denied(self, command: str) -> None:
-        assert handle_enforce_orchestrator_boundary(_main_bash(command)) is True
-
-    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
-    def test_git_push_allowed_in_background(self, command: str) -> None:
-        assert handle_enforce_orchestrator_boundary(_main_bash(command, run_in_background=True)) is False
-
-    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
-    def test_git_push_allowed_from_subagent(self, command: str) -> None:
-        assert handle_enforce_orchestrator_boundary(_subagent_bash(command)) is False
-
-    def test_git_push_allowed_with_fg_ok_marker(self) -> None:
-        assert handle_enforce_orchestrator_boundary(_main_bash("git push [fg-ok: release cut]")) is False
-
-    def test_git_push_allowed_when_kill_switch_set(self, clean_home: Path) -> None:
-        (clean_home / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_bash_gate_enabled = false\n", encoding="utf-8"
-        )
-        assert handle_enforce_orchestrator_boundary(_main_bash("git push")) is False
+    @pytest.mark.parametrize("command", _GIT_PUSH_ALLOW)
+    def test_foreground_git_push_allowed(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash(command)) is False
 
     @pytest.mark.parametrize("command", _READONLY_GIT_ALLOW)
     def test_readonly_git_never_gated(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_bash(command)) is False
 
-    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
-    def test_anti_vacuous_regex_matches_git_push(self, command: str) -> None:
-        # The pre-fix denylist carried no git verb — this row would have
-        # gone GREEN (allowed) before the fix. Pinning the regex match
-        # proves the new arm is what gates it, not an unrelated pattern.
-        assert _ORCHESTRATOR_HEAVY_BASH_RE.search(command) is not None
+    @pytest.mark.parametrize("command", _GIT_PUSH_ALLOW)
+    def test_heavy_regex_no_longer_matches_git_push(self, command: str) -> None:
+        # #1825's push arm is retired: the heavy denylist must not match a
+        # bare ``git push`` command any more (#3253).
+        assert _ORCHESTRATOR_HEAVY_BASH_RE.search(command) is None
 
 
 class TestTargetedPytestAllowed:
@@ -317,9 +313,7 @@ class TestForegroundAgentBoundary:
         assert handle_enforce_orchestrator_boundary(data) is False
 
     def test_foreground_agent_dispatch_allowed_when_kill_switch_set(self, clean_home: Path) -> None:
-        (clean_home / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
-        )
+        _seed_config_db(clean_home / "config.sqlite3", {"orchestrator_boundary_agent_gate_enabled": False})
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is False
 
@@ -381,13 +375,13 @@ class TestTurnBudgetNudge:
         assert capsys.readouterr().out.strip() == ""
 
     def test_budget_zero_disables_nudge(self, clean_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        (clean_home / ".teatree.toml").write_text("[teatree]\norchestrator_turn_budget = 0\n", encoding="utf-8")
+        _seed_config_db(clean_home / "config.sqlite3", {"orchestrator_turn_budget": 0})
         for _ in range(200):
             handle_orchestrator_turn_budget_nudge(_main_tool("Read", file_path="x.py"))
         assert capsys.readouterr().out.strip() == ""
 
     def test_custom_budget_respected(self, clean_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        (clean_home / ".teatree.toml").write_text("[teatree]\norchestrator_turn_budget = 5\n", encoding="utf-8")
+        _seed_config_db(clean_home / "config.sqlite3", {"orchestrator_turn_budget": 5})
         for _ in range(4):
             handle_orchestrator_turn_budget_nudge(_main_tool("Read", file_path="x.py"))
         assert capsys.readouterr().out.strip() == ""

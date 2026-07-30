@@ -1,10 +1,9 @@
 # test-path: cross-cutting
 """Every ``UserSettings`` field has exactly one home — DB or TOML (#1775).
 
-The hard partition: a setting that CAN live in the DB MUST be DB-home; only the
-irreducible carve-out (pre-Django readers, path/infra bootstrap, nested
-structured tables, dead fields) stays TOML-home. Two fields are DERIVED — the
-resolver computes them, so they have no home and are excluded from the partition.
+The hard partition: a setting that CAN live in the DB MUST be DB-home. The
+TOML-home carve-out is EMPTY — every field is DB-home. One field is DERIVED (the
+resolver computes it), so it has no home and is excluded from the partition.
 
 The fitness functions below make the partition machine-checked: they go RED the
 moment a new ``UserSettings`` field is added without classifying it, or a field
@@ -15,20 +14,7 @@ import dataclasses
 
 from teatree.config import DERIVED_FIELDS, SETTING_HOMES, SettingHome, UserSettings
 
-_TOML_CARVE_OUT = frozenset(
-    {
-        "orchestrator_bash_gate_enabled",
-        "speak",
-        "mr_reminder",
-        "handover_mirror_path",
-        "check_updates",
-        "statusline_chain",
-        "workspace_dir",
-        "worktrees_dir",
-        "timezone",
-        "privacy",
-    }
-)
+_TOML_CARVE_OUT: frozenset[str] = frozenset()
 
 
 def _all_field_names() -> set[str]:
@@ -36,7 +22,6 @@ def _all_field_names() -> set[str]:
 
 
 def test_every_user_settings_field_has_exactly_one_classification() -> None:
-    # Coverage over all 104 fields: each is in SETTING_HOMES xor DERIVED_FIELDS.
     fields = _all_field_names()
     classified = set(SETTING_HOMES) | DERIVED_FIELDS
     missing = sorted(fields - classified)
@@ -51,27 +36,74 @@ def test_no_field_is_both_homed_and_derived() -> None:
 
 
 def test_db_home_and_toml_home_are_disjoint() -> None:
-    # The ticket's required assertion: a field cannot have two homes.
     db_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.DB}
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert db_home & toml_home == set(), "DB-home and TOML-home must be disjoint"
-    # And the two homes partition SETTING_HOMES exhaustively.
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_eleven_fields() -> None:
-    # The irreducible carve-out — non-Django / pre-Django readers, infra
-    # bootstrap, nested structured tables — is exactly these eleven and no more.
+def test_toml_carve_out_is_empty() -> None:
+    # The carve-out is empty — every ``UserSettings`` field is DB-home.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
-    assert toml_home == _TOML_CARVE_OUT
+    assert toml_home == frozenset()
+    moved_to_db = (
+        "workspace_dir",
+        "check_updates",
+        "timezone",
+        "handover_mirror_path",
+        "statusline_chain",
+        "autoload",
+        "speak",
+        "mr_reminder",
+    )
+    for moved in moved_to_db:
+        assert moved not in toml_home
+        assert SETTING_HOMES[moved] is SettingHome.DB
 
 
-def test_derived_fields_are_exactly_the_two_computed_values() -> None:
-    assert frozenset({"notify_on_behalf", "ask_before_post_on_behalf"}) == DERIVED_FIELDS
+def test_falsely_bootstrap_fields_are_db_home() -> None:
+    # ``timezone`` was tagged "needed to open the DB", but Django ``settings.py``
+    # hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES`` without reading
+    # it — so it is DB-home, not bootstrap. (Its former sibling ``worktrees_dir``
+    # was removed as redundant — see ``test_removed_dead_settings.py``.)
+    assert SETTING_HOMES["timezone"] is SettingHome.DB
+
+
+def test_per_overlay_fields_are_db_home() -> None:
+    # A per-overlay override lives in a ``ConfigSetting`` overlay row, not a file.
+    assert SETTING_HOMES["orchestrator_bash_gate_enabled"] is SettingHome.DB
+    assert SETTING_HOMES["privacy"] is SettingHome.DB
+
+
+def test_handover_mirror_path_is_db_home() -> None:
+    assert SETTING_HOMES["handover_mirror_path"] is SettingHome.DB
+
+
+def test_statusline_chain_is_db_home() -> None:
+    assert SETTING_HOMES["statusline_chain"] is SettingHome.DB
+
+
+def test_autoload_is_db_home() -> None:
+    assert SETTING_HOMES["autoload"] is SettingHome.DB
+
+
+def test_speak_is_db_home() -> None:
+    assert SETTING_HOMES["speak"] is SettingHome.DB
+
+
+def test_mr_reminder_is_db_home() -> None:
+    assert SETTING_HOMES["mr_reminder"] is SettingHome.DB
+
+
+def test_check_updates_is_db_home() -> None:
+    assert SETTING_HOMES["check_updates"] is SettingHome.DB
+
+
+def test_derived_fields_are_exactly_the_one_computed_value() -> None:
+    assert frozenset({"notify_on_behalf"}) == DERIVED_FIELDS
 
 
 def test_db_home_covers_every_non_carve_out_non_derived_field() -> None:
-    # The A1 invariant: every field that is neither carve-out nor derived is DB-home.
     db_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.DB}
     expected = _all_field_names() - _TOML_CARVE_OUT - DERIVED_FIELDS
     assert db_home == expected

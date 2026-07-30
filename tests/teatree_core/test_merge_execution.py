@@ -8,12 +8,15 @@ teatree model / FSM / DB write is real.
 """
 
 import json
+import shutil
+import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.db import OperationalError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.core.merge import (
@@ -25,18 +28,53 @@ from teatree.core.merge import (
     assert_merge_preconditions,
     ci_rollup,
     execute_bound_merge,
-    execution,
+    merge_response,
     merge_ticket_pr,
     record_merge_and_advance,
 )
-from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket
+from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket, Worktree
+from teatree.utils.pr_ref import PrRef
+from tests.teatree_core.conftest import CommandOverlay
+
+_GIT = shutil.which("git") or "git"
+
+_IMMEDIATE_BACKEND = {
+    "TASKS": {
+        "default": {
+            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+        },
+    },
+}
+
+_MOCK_OVERLAY = {"t3-teatree": CommandOverlay()}
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #1773 public-repo author gate is exercised by
+    # ``test_merge_execution_author_gate``; these §17.4.3 mechanics tests
+    # pre-date it and assert other failure modes, so the gate is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+
+
 _SHA = "a" * 40
 _MOVED = "b" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
+
+
+def _branch_protection_probe(joined: str, *, required: list[str]) -> tuple[int, str, str] | None:
+    """Answer the §17.4.3 base-branch + branch-protection required-context probes.
+
+    Returns ``None`` when *joined* is neither probe so the caller falls through.
+    """
+    if "baseRefName" in joined:
+        return (0, "main", "")
+    if "required_status_checks" in joined:
+        return (0, json.dumps({"contexts": required}), "")
+    return None
 
 
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
@@ -50,22 +88,89 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
         "blast_class": MergeClear.BlastClass.DOCS,
     }
     defaults.update(overrides)
-    return MergeClear.objects.create(**defaults)
+    clear = MergeClear.objects.create(**defaults)
+    _seed_sibling_verdict(clear)
+    return clear
+
+
+def _seed_sibling_verdict(clear: MergeClear) -> None:
+    """Record the MERGE_SAFE ``ReviewVerdict`` the real ``ticket clear`` keystone records (#2829).
+
+    These tests build the CLEAR via ``.objects.create()`` (bypassing the
+    ``ticket clear`` command that records the sibling verdict), so they must
+    seed it themselves or the #2829 review-verdict gate in
+    ``execute_bound_merge`` fails closed. Seeding the verdict is NOT a weakening
+    — it reproduces exactly what the production ``clear`` path records (a
+    non-author ``merge_safe`` at the reviewed SHA). Skipped when the CLEAR's
+    reviewer is a non-reviewer role or its checks are non-green: those CLEARs
+    are refused at the authorization step BEFORE the gate, and
+    ``ReviewVerdict.record`` would itself reject them.
+    """
+    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
+
+    if (
+        not clear.reviewer_identity.strip()
+        or is_non_reviewer_role(clear.reviewer_identity)
+        or clear.gh_verify_result != MergeClear.VerifyResult.GREEN
+    ):
+        return
+    ReviewVerdict.record(
+        pr_id=clear.pr_id,
+        slug=clear.slug,
+        reviewed_sha=clear.reviewed_sha,
+        verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        reviewer_identity=clear.reviewer_identity,
+        blast_class=clear.blast_class,
+        gh_verify_result=clear.gh_verify_result,
+        ticket=clear.ticket,
+    )
+
+
+def _record_merge_safe_verdict(*, pr_id: int, sha: str, slug: str = "souliane/teatree") -> None:
+    """Record a non-author MERGE_SAFE verdict at *sha* for a direct ``execute_bound_merge`` call (#2829)."""
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
+
+    ReviewVerdict.record(
+        pr_id=pr_id,
+        slug=slug,
+        reviewed_sha=sha,
+        verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        reviewer_identity="cold-reviewer",
+    )
 
 
 class _GhStub:
-    """Records argv and returns scripted ``gh`` responses keyed by subcommand."""
+    """Records argv and returns scripted ``gh`` responses keyed by subcommand.
 
-    def __init__(self, *, head: str = _SHA, draft: str = "false", checks: str = _GREEN, merge_rc: int = 0) -> None:
+    ``required`` is the branch-protection ``required_status_checks`` context set
+    the repo reports (§17.4.3 step 3). It defaults to ``[]`` (no required-context
+    gate), so a default green ``checks`` rollup yields a green verdict and the
+    merge proceeds — the required-set filtering itself is pinned in
+    ``test_ci_rollup.py``.
+    """
+
+    def __init__(
+        self,
+        *,
+        head: str = _SHA,
+        draft: str = "false",
+        checks: str = _GREEN,
+        merge_rc: int = 0,
+        required: list[str] | None = None,
+    ) -> None:
         self.head = head
         self.draft = draft
         self.checks = checks
         self.merge_rc = merge_rc
+        self.required = required or []
         self.calls: list[list[str]] = []
 
     def __call__(self, argv: list[str]) -> tuple[int, str, str]:
         self.calls.append(argv)
         joined = " ".join(argv)
+        if (meta := _branch_protection_probe(joined, required=self.required)) is not None:
+            return meta
         if "headRefOid" in joined:
             return (0, self.head, "")
         if "isDraft" in joined:
@@ -73,9 +178,8 @@ class _GhStub:
         if "statusCheckRollup" in joined:
             return (0, self.checks, "")
         if "pulls" in joined and "merge" in joined:
-            if self.merge_rc != 0:
-                return (1, "", "Head branch was modified. Review and try the merge again. (409)")
-            return (0, '{"sha": "merged0deadbeef"}', "")
+            moved = "Head branch was modified. Review and try the merge again. (409)"
+            return (1, "", moved) if self.merge_rc != 0 else (0, '{"sha": "merged0deadbeef"}', "")
         return (0, "", "")
 
 
@@ -191,18 +295,47 @@ class TestMergeKeystonePreconditions(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
+    def test_sha_bind_precondition_runs_the_named_registry_gate(self) -> None:
+        # The named ``sha_bind`` gate (``merge.sha_bind.verify_sha_bound``) IS the
+        # enforcing code in the precondition path — not a dead registry entry beside
+        # an inline ``!=`` twin. Force the gate to report "not bound" while the live
+        # head equals the reviewed SHA: the merge is refused, so the gate's verdict —
+        # not a parallel copy — drives the SHA-bind check.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        with (
+            patch("teatree.core.merge.execution.verify_sha_bound", return_value=False) as gate,
+            pytest.raises(MergePreconditionError, match="head moved"),
+        ):
+            _run(clear, _GhStub())  # head == reviewed_sha — the inline twin would PASS
+        gate.assert_called_once_with(cleared_sha=_SHA, live_sha=_SHA)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_expedite_flag_does_not_bypass_sha_bind(self) -> None:
+        # PR-07: the expedite/release-blocker flag relaxes only the pre-CI push
+        # posture — it grants NO merge bypass. An expedited ticket whose head
+        # moved off the reviewed SHA is refused exactly like a non-expedited one.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=True)
+        clear = _clear(ticket)
+        with pytest.raises(MergePreconditionError, match="head moved"):
+            _run(clear, _GhStub(head=_MOVED))
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
     def test_draft_pr_is_refused(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="draft"):
             _run(clear, _GhStub(draft="true"))
 
-    def test_non_green_checks_refused(self) -> None:
+    def test_non_green_required_check_refused(self) -> None:
+        # A branch-protection-REQUIRED context that concluded FAILURE refuses the merge.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        failing = '[{"status": "COMPLETED", "conclusion": "FAILURE"}]'
+        failing = '[{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
-            _run(clear, _GhStub(checks=failing))
+            _run(clear, _GhStub(checks=failing, required=["lint"]))
 
     def test_consumed_clear_not_actionable(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -265,12 +398,8 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         def _merge_500(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 return (1, "", "500 Internal Server Error")
             return (0, "", "")
@@ -293,19 +422,20 @@ class TestMergeExecutionEdgeCases(TestCase):
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks='{"a": 1}'))
 
-    def test_pending_check_is_not_green(self) -> None:
+    def test_pending_required_check_is_not_green(self) -> None:
+        # A branch-protection-REQUIRED context still running refuses the merge.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        pending = '[{"status": "IN_PROGRESS"}]'
+        pending = '[{"name": "lint", "status": "IN_PROGRESS"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
-            _run(clear, _GhStub(checks=pending))
+            _run(clear, _GhStub(checks=pending, required=["lint"]))
 
     def test_legacy_status_context_pending_state_is_not_green(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        legacy_pending = '[{"state": "PENDING"}]'
+        legacy_pending = '[{"context": "legacy-ci", "state": "PENDING"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
-            _run(clear, _GhStub(checks=legacy_pending))
+            _run(clear, _GhStub(checks=legacy_pending, required=["legacy-ci"]))
 
     def test_non_dict_rollup_entry_is_ignored(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -320,8 +450,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             assert_merge_preconditions(
                 clear=object(),
                 executing_loop_identity="merge-loop",
-                slug="souliane/teatree",
-                pr_id=1,
+                ref=PrRef(slug="souliane/teatree", pr_id=1),
             )
 
     def test_gh_runner_resolves_binary_and_forwards_argv(self) -> None:
@@ -446,12 +575,8 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         def _bad_merge_json(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 return (0, "not-json-at-all", "")
             return (0, "", "")
@@ -472,6 +597,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.DOCS,
         )
+        _seed_sibling_verdict(clear)
         outcome = _run(clear, _GhStub())
         assert outcome.ticket_state == ""
         clear.refresh_from_db()
@@ -514,13 +640,10 @@ class _LostPostHookGhStub:
     def __call__(self, argv: list[str]) -> tuple[int, str, str]:
         self.calls.append(argv)
         joined = " ".join(argv)
-        if "headRefOid" in joined:
-            # GitHub keeps reporting the squashed tip as headRefOid.
-            return (0, self.reviewed_sha, "")
-        if "isDraft" in joined:
-            return (0, "false", "")
-        if "statusCheckRollup" in joined:
-            return (0, _GREEN, "")
+        # GitHub keeps reporting the squashed tip as headRefOid; the branch-
+        # protection probes answer empty (no required-context gate → green).
+        if (probe := _green_probe_response(joined, head=self.reviewed_sha)) is not None:
+            return probe
         if "state,mergeCommit" in joined:
             return (0, self._merge_state_payload(), "")
         if "pulls" in joined and "merge" in joined:
@@ -617,12 +740,8 @@ class TestLostPostHookRecoverable(TestCase):
 
         def _merged_no_commit(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "MERGED", "mergeCommit": null}', "")
             return (0, "", "")
@@ -696,14 +815,14 @@ class TestLostPostHookRecoverable(TestCase):
 
 
 class TestFetchPrMergeState(TestCase):
-    """`fetch_pr_merge_state` fails closed so reconciliation never fires on bad data."""
+    """`CodeHostQuery.pr_merge_state` fails closed so reconciliation never fires on bad data."""
 
     def test_gh_error_returns_empty_state(self) -> None:
         with patch(
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (1, "", "api error"),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.state == ""
         assert state.is_merged is False
 
@@ -712,7 +831,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, "{not json", ""),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.state == ""
 
     def test_non_dict_json_returns_empty_state(self) -> None:
@@ -720,7 +839,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, "[1, 2, 3]", ""),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.state == ""
 
     def test_merged_without_merge_commit_object(self) -> None:
@@ -728,7 +847,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, '{"state": "MERGED", "mergeCommit": null}', ""),
         ):
-            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.CodeHostQuery.for_ref(PrRef(slug="souliane/teatree", pr_id=1)).pr_merge_state()
         assert state.is_merged is True
         assert state.merge_commit_oid == ""
 
@@ -778,6 +897,77 @@ class TestConcurrentConsumptionReplayDefence(TestCase):
         with pytest.raises(MergePreconditionError):
             _run(clear, _GhStub())
         assert MergeAudit.objects.filter(clear=clear).count() == 1
+
+
+class TestSiblingClearSupersedeAndRepoSlugStamp(TestCase):
+    """§15 sibling-CLEAR supersede + #19 ``MergeAudit.repo_slug`` stamp in the post hook."""
+
+    def test_post_hook_stamps_the_reconciled_repo_slug_on_the_audit(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        record_merge_and_advance(
+            clear=clear,
+            merged_sha="landeddeadbeef",
+            required_checks_status="green",
+            repo_slug="downstream-org/downstream-repo",
+        )
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.repo_slug == "downstream-org/downstream-repo"
+
+    def test_merge_supersedes_only_same_pr_sibling_unconsumed_clears(self) -> None:
+        # #15: consuming ONE CLEAR by a merge supersedes every sibling unconsumed
+        # CLEAR for the SAME (slug, pr_id) — a head-move re-review's orphaned older
+        # CLEAR is consumed in the same atomic block, so it can no longer ratchet
+        # S4 stale-RED. A different PR's CLEAR is untouched.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        older = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=555,
+            slug="555-feat",
+            reviewed_sha="a" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        merged = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=555,
+            slug="555-feat",
+            reviewed_sha="b" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        unrelated = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=999,
+            slug="999-other",
+            reviewed_sha="c" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        record_merge_and_advance(
+            clear=merged,
+            merged_sha="landeddeadbeef",
+            required_checks_status="green",
+            repo_slug="souliane/teatree",
+        )
+        older.refresh_from_db()
+        merged.refresh_from_db()
+        unrelated.refresh_from_db()
+        assert merged.consumed_at is not None, "the merged CLEAR is consumed"
+        assert older.consumed_at is not None, "the sibling for the same PR is superseded"
+        assert unrelated.consumed_at is None, "a different PR's CLEAR must NOT be superseded"
+        # Only the merged CLEAR gets an audit — superseding writes no extra audit.
+        assert MergeAudit.objects.count() == 1
+
+    def test_full_keystone_stamps_the_repo_slug_it_merged_against(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        _run(clear, _GhStub())
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.repo_slug == "souliane/teatree"
 
 
 _LOCKED = "database is locked"
@@ -868,34 +1058,36 @@ class TestIsTransientMergeResponse(TestCase):
     """The pure classifier separating a transient forge response from a refusal."""
 
     def test_zero_rc_is_never_transient(self) -> None:
-        assert execution._is_transient_merge_response(0, '{"sha": "x"}', "") is False
+        assert merge_response._is_transient_merge_response(0, '{"sha": "x"}', "") is False
 
     def test_empty_body_failure_is_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "") is True
+        assert merge_response._is_transient_merge_response(1, "", "") is True
 
     def test_truncated_json_marker_is_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
+        assert merge_response._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
 
     def test_5xx_marker_is_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "503 Service Unavailable") is True
+        assert merge_response._is_transient_merge_response(1, "", "503 Service Unavailable") is True
 
     def test_policy_refusal_is_not_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
+        assert merge_response._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
 
     def test_policy_marker_wins_over_a_transient_token(self) -> None:
         # A refusal mentioning a transient-looking token is still a refusal.
-        assert execution._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
+        assert merge_response._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
 
     def test_explicit_non_transient_message_is_not_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
+        assert merge_response._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
 
 
 def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, str] | None:
-    """The constant §17.4.3 GET-probe responses (head / draft / checks all healthy).
+    """The constant §17.4.3 GET-probe responses (head / draft / checks / branch-protection).
 
-    Returns ``None`` when *joined* is not one of the three read-only probes, so
-    a stub can fall through to its own merge / merge-state branches without
-    repeating these three identical conditionals.
+    Returns ``None`` when *joined* is not one of the read-only probes, so a stub
+    can fall through to its own merge / merge-state branches without repeating
+    these identical conditionals. The branch-protection ``required_status_checks``
+    set is reported EMPTY (no required-context gate) so a green rollup stays green
+    — the required-set filtering itself is pinned in ``test_ci_rollup.py``.
     """
     if "headRefOid" in joined:
         return (0, head, "")
@@ -903,7 +1095,7 @@ def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, s
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
-    return None
+    return _branch_protection_probe(joined, required=[])
 
 
 class _TransientThenSuccessGhStub:
@@ -1001,12 +1193,8 @@ class TestTransientMergeRetry(TestCase):
 
         def _policy_refusal(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Pull Request is not mergeable (405)")
@@ -1032,12 +1220,8 @@ class TestTransientMergeRetry(TestCase):
 
         def _head_moved(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Head branch was modified. Review and try the merge again. (409)")
@@ -1092,10 +1276,21 @@ class TestTransientMergeRetry(TestCase):
     def test_execute_bound_merge_classifies_empty_output_as_transient(self) -> None:
         # A bare empty response (rc != 0, no stderr marker) on the merge call
         # is transient — the truncated/empty-JSON class the #1804 window hit.
+        # Seed the #2829 verdict the gate at the top of execute_bound_merge
+        # requires (this calls the primitive directly, with no CLEAR/keystone).
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
         attempts = {"merge": 0}
 
         def _empty_then_fail(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
+            # #18: the not-draft + FAILED-live-CI floor at the top of
+            # execute_bound_merge must pass before the merge is attempted.
+            if (meta := _branch_protection_probe(joined, required=[])) is not None:
+                return meta
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "OPEN", "mergeCommit": null}', "")
             if "pulls" in joined and "merge" in joined:
@@ -1108,6 +1303,198 @@ class TestTransientMergeRetry(TestCase):
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_empty_then_fail),
             pytest.raises(MergeTransientError, match="transient"),
         ):
-            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
 
         assert attempts["merge"] >= 3, "an empty/truncated merge response was not retried"
+
+
+_RED_REQUIRED_ROLLUP = json.dumps(
+    [
+        {
+            "__typename": "CheckRun",
+            "name": "test (3.13)",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-06-19T10:00:00Z",
+            "completedAt": "2026-06-19T10:05:00Z",
+        },
+    ],
+)
+
+
+class TestExecuteBoundMergeLiveFloor(TestCase):
+    """#18: the not-draft + FAILED-live-CI floor at the ``execute_bound_merge`` chokepoint.
+
+    The solo-overlay bypass (``merge_pr_squash_bound`` → ``execute_bound_merge``)
+    runs NO ``assert_merge_preconditions``, so before #18 a green→red / open→draft
+    flip in the TOCTOU window between the sweep's snapshot and the PUT merged
+    anyway. These call the primitive directly (no CLEAR/keystone) with a green
+    verdict seeded for the #2829 gate, so the ONLY thing standing between the call
+    and the merge is the new floor.
+    """
+
+    def _merge_calls(self, stub: _GhStub) -> list[list[str]]:
+        return [c for c in stub.calls if "pulls" in " ".join(c) and "merge" in " ".join(c)]
+
+    def test_draft_flip_between_snapshot_and_put_is_refused(self) -> None:
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        stub = _GhStub(draft="true")
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+            pytest.raises(MergePreconditionError, match="draft"),
+        ):
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
+        assert self._merge_calls(stub) == [], "a draft PR must be refused BEFORE the bound-merge PUT"
+
+    def test_ci_flip_to_failed_between_snapshot_and_put_is_refused(self) -> None:
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        stub = _GhStub(checks=_RED_REQUIRED_ROLLUP, required=["test (3.13)"])
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+            pytest.raises(MergePreconditionError, match="failed"),
+        ):
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
+        assert self._merge_calls(stub) == [], "a FAILED required check must be refused BEFORE the PUT"
+
+    def test_not_draft_and_ci_green_proceeds(self) -> None:
+        # Anti-vacuity twin: the floor refuses ONLY on draft / FAILED. A
+        # not-draft PR whose required checks are green still merges — the floor
+        # is not a blanket block.
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        stub = _GhStub()  # draft=false, green rollup, empty required set → green
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+            merged_sha = execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
+        assert merged_sha
+        assert self._merge_calls(stub), "a green, not-draft head must reach the bound-merge PUT"
+
+
+def _run_git(*args: str, cwd: Path) -> None:
+    subprocess.run([_GIT, "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+class TestMergeKeystoneTearsDownWorktree(TestCase):
+    """A successful ``ticket merge`` automatically tears down the ticket's worktree(s).
+
+    Post-merge teardown must never be a manual step: when the §17.4 keystone
+    advances the Ticket FSM to MERGED, the ``post_transition`` receiver enqueues
+    ``execute_teardown`` which removes the git worktree, deletes the branch,
+    drops the per-worktree DB, and reaps the Worktree row.
+
+    The shape modelled here is the real post-squash-merge state: the branch's
+    work is landed on origin/main as a new squash SHA (the forge squash-merge),
+    while the source ref is never pushed. The analyze-before-wipe step proves the
+    branch redundant by patch-id against origin/main and tears it down — no force
+    bypass (CORRECTION 1): teardown wipes only because redundancy is PROVEN, never
+    because a transition demanded it. Best-effort: a teardown that errors must
+    never fail or roll back the already-successful merge.
+
+    Only the ``gh`` merge subprocess is stubbed; the git worktree, the FSM, the
+    signal wiring, and the teardown worker are all real.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        # Bare repo acts as the shared remote (origin).
+        self.remote = tmp_path / "remote.git"
+        self.remote.mkdir()
+        _run_git("init", "-q", "--bare", "-b", "main", cwd=self.remote)
+
+        # Mirror the real layout: the source clone lives at
+        # ``$T3_WORKSPACE_DIR/souliane/teatree`` (matching the ``repo_path``).
+        self.repo_main = self.workspace / "souliane" / "teatree"
+        self.repo_main.mkdir(parents=True)
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        self.branch = "ac-teatree-859-merge"
+        self.wt_path = self.workspace / self.branch / "teatree"
+        _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
+        # The post-squash-merge shape: a commit on the branch that exists on NO
+        # remote (the source ref was deleted by the forge after the squash-merge).
+        (self.wt_path / "file.txt").write_text("merged work", encoding="utf-8")
+        _run_git("add", "file.txt", cwd=self.wt_path)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "merged work", cwd=self.wt_path)
+        # Land the same content on origin/main as a distinct squash SHA (the forge
+        # squash-merge), then leave the source ref unpushed: the branch's commit is
+        # on NO remote, yet patch-id-equivalent to origin/main, so analyze-before-wipe
+        # proves it redundant and the keystone tears it down without any force bypass.
+        _run_git("checkout", "-q", "main", cwd=self.repo_main)
+        _run_git("merge", "-q", "--squash", self.branch, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: merged work (#859)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+    def _merged_ticket_with_worktree(self) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/859",
+            state=Ticket.State.IN_REVIEW,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch=self.branch,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        return ticket
+
+    def _merge(self, clear: MergeClear) -> MergeOutcome:
+        # ``execute_teardown`` is enqueued via ``transaction.on_commit`` in the
+        # post_transition receiver, so under ``TestCase``'s outer transaction the
+        # callback only fires inside ``captureOnCommitCallbacks(execute=True)``.
+        with (
+            override_settings(**_IMMEDIATE_BACKEND),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.teardown.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as cleanup_overlay,
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            cleanup_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            cleanup_overlay.return_value.config.teardown_removes_pass_entries = False
+            return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+    def test_successful_merge_tears_down_the_worktree(self) -> None:
+        ticket = self._merged_ticket_with_worktree()
+        clear = _clear(ticket, slug="souliane/teatree")
+
+        outcome = self._merge(clear)
+
+        ticket.refresh_from_db()
+        assert outcome.ticket_state == Ticket.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        # The git worktree is gone from disk and the Worktree row is reaped.
+        assert not self.wt_path.exists(), "the merged ticket's git worktree was not torn down"
+        assert not Worktree.objects.filter(branch=self.branch).exists()
+
+    def test_teardown_error_does_not_fail_the_merge(self) -> None:
+        # Best-effort: a teardown step that errors (a DB drop timeout, an overlay
+        # cleanup hook failure) must NEVER fail or roll back the already-successful
+        # merge — the ticket stays MERGED and the merge outcome stands.
+        ticket = self._merged_ticket_with_worktree()
+        clear = _clear(ticket, slug="souliane/teatree")
+
+        with patch(
+            "teatree.core.cleanup.cleanup._drop_worktree_db",
+            side_effect=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("dropdb timed out")),
+        ):
+            outcome = self._merge(clear)
+
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        # The merge succeeded and stands despite the teardown step error.
+        assert outcome.ticket_state == Ticket.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        assert MergeAudit.objects.filter(clear=clear).exists()

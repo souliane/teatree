@@ -1,4 +1,4 @@
-"""Protocol-coverage fitness for the 5 merge-RPC methods (PR 4 / #1985).
+"""Protocol-coverage fitness for the merge-RPC methods (PR 4 / #1985).
 
 ``runtime_checkable`` only checks method NAMES; these tests additionally pin the
 exact keyword-only signature so a drifted parameter (or a removed method on one
@@ -34,6 +34,14 @@ _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
     ],
+    "fetch_required_status_check_contexts": [
+        ("slug", inspect.Parameter.KEYWORD_ONLY),
+        ("pr_id", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "fetch_pr_changed_paths": [
+        ("slug", inspect.Parameter.KEYWORD_ONLY),
+        ("pr_id", inspect.Parameter.KEYWORD_ONLY),
+    ],
     "merge_pr_squash_bound": [
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
@@ -60,6 +68,108 @@ def test_github_code_host_implements_every_merge_rpc_method() -> None:
 
 def test_gitlab_code_host_implements_every_merge_rpc_method() -> None:
     _assert_host_implements_merge_rpc(GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4"))
+
+
+_WAVE2_READ_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
+    "list_prs": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+        ("state", inspect.Parameter.KEYWORD_ONLY),
+        ("author", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "get_pr_diff": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+        ("pr_iid", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "list_pr_commits": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+        ("pr_iid", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "get_repo": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+    ],
+}
+
+
+def _assert_host_implements_wave2_reads(host: object) -> None:
+    for name, expected in _WAVE2_READ_SIGNATURES.items():
+        method = getattr(host, name, None)
+        assert method is not None, f"{type(host).__name__} is missing {name}"
+        assert _params(method) == expected, f"{type(host).__name__}.{name} signature drifted"
+
+
+def test_github_code_host_implements_every_wave2_read() -> None:
+    _assert_host_implements_wave2_reads(GitHubCodeHost(token="x"))
+
+
+def test_gitlab_code_host_implements_every_wave2_read() -> None:
+    _assert_host_implements_wave2_reads(GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4"))
+
+
+_WAVE2_WRITE_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
+    "create_issue": [
+        ("repo", inspect.Parameter.KEYWORD_ONLY),
+        ("title", inspect.Parameter.KEYWORD_ONLY),
+        ("body", inspect.Parameter.KEYWORD_ONLY),
+        ("labels", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "post_issue_comment": [
+        ("issue_url", inspect.Parameter.KEYWORD_ONLY),
+        ("body", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "close_issue": [
+        ("issue_url", inspect.Parameter.KEYWORD_ONLY),
+        ("comment", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "update_issue": [
+        ("issue_url", inspect.Parameter.KEYWORD_ONLY),
+        ("body", inspect.Parameter.KEYWORD_ONLY),
+    ],
+}
+
+
+def _assert_host_implements_issue_writes(host: object) -> None:
+    for name, expected in _WAVE2_WRITE_SIGNATURES.items():
+        method = getattr(host, name, None)
+        assert method is not None, f"{type(host).__name__} is missing {name}"
+        assert _params(method) == expected, f"{type(host).__name__}.{name} signature drifted"
+
+
+def test_github_code_host_implements_every_issue_write() -> None:
+    _assert_host_implements_issue_writes(GitHubCodeHost(token="x"))
+
+
+def test_gitlab_code_host_implements_every_issue_write() -> None:
+    _assert_host_implements_issue_writes(GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4"))
+
+
+_ISSUE_SCOPED_READ_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
+    # #3235 — the author-scoped issue query the issue-implementer's trusted-author
+    # intake selects candidates with. Both hosts MUST carry it: a host that only
+    # answers the assignee-scoped query cannot express "issues the trusted human
+    # FILED", which is the whole intake predicate.
+    "list_assigned_issues": [
+        ("assignee", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "list_authored_issues": [
+        ("author", inspect.Parameter.KEYWORD_ONLY),
+        ("repo_slugs", inspect.Parameter.KEYWORD_ONLY),
+    ],
+}
+
+
+def _assert_host_implements_issue_scoped_reads(host: object) -> None:
+    for name, expected in _ISSUE_SCOPED_READ_SIGNATURES.items():
+        method = getattr(host, name, None)
+        assert method is not None, f"{type(host).__name__} is missing {name}"
+        assert _params(method) == expected, f"{type(host).__name__}.{name} signature drifted"
+
+
+def test_github_code_host_implements_every_issue_scoped_read() -> None:
+    _assert_host_implements_issue_scoped_reads(GitHubCodeHost(token="x"))
+
+
+def test_gitlab_code_host_implements_every_issue_scoped_read() -> None:
+    _assert_host_implements_issue_scoped_reads(GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4"))
 
 
 def test_both_hosts_are_runtime_code_host_backends() -> None:

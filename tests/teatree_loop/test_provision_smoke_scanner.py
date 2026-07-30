@@ -177,23 +177,27 @@ class ScannerProtocolTests(TestCase):
 
 
 class DefensiveModelLookupTests(TestCase):
-    """Cover the model-lookup helpers when Django returns no app (#1308)."""
+    """Cover the shared PhaseCadence model-lookup helpers when Django returns no app (#1308).
+
+    The dedupe / last-run / queue-task machinery now lives on
+    :class:`teatree.loop.scanners.phase_cadence.PhaseCadence`; these tests pin
+    the provision-smoke scanner's behaviour through that seam.
+    """
 
     def test_queue_task_returns_none_when_ticket_model_is_missing(self) -> None:
-        with patch("teatree.loop.scanners.provision_smoke._ticket_model", return_value=None):
+        with patch("teatree.loop.scanners.phase_cadence._ticket_model", return_value=None):
             assert _scanner().scan() == []
 
     def test_queue_task_returns_none_when_session_model_is_missing(self) -> None:
-        with patch("teatree.loop.scanners.provision_smoke._session_model", return_value=None):
+        with patch("teatree.loop.scanners.phase_cadence._session_model", return_value=None):
             assert _scanner().scan() == []
 
-    def test_in_flight_check_returns_false_when_task_model_is_missing(self) -> None:
+    def test_short_circuits_cleanly_when_task_model_is_missing(self) -> None:
         scanner = _scanner()
-        with patch("teatree.loop.scanners.provision_smoke._task_model", return_value=None):
-            assert scanner._in_flight_task_exists() is False
-            assert scanner._last_run_at() is None
+        with patch("teatree.loop.scanners.phase_cadence._task_model", return_value=None):
             # The scanner short-circuits cleanly: no signal, no task queued.
             assert scanner.scan() == []
+        assert _last_smoke_task() is None
 
     def test_queue_task_swallows_exceptions_and_returns_none(self) -> None:
         """If creating the task row raises, the scanner emits no signal."""
@@ -204,10 +208,14 @@ class DefensiveModelLookupTests(TestCase):
         # Nothing was committed by the failing transaction.
         assert _last_smoke_task() is None
 
-    def test_ticket_model_returns_none_on_lookup_error(self) -> None:
+    def test_model_probes_return_none_on_lookup_error(self) -> None:
         from django.apps import apps as django_apps  # noqa: PLC0415
 
-        from teatree.loop.scanners.provision_smoke import _session_model, _task_model, _ticket_model  # noqa: PLC0415
+        from teatree.loop.scanners.phase_cadence import (  # noqa: PLC0415 — test-local
+            _session_model,
+            _task_model,
+            _ticket_model,
+        )
 
         with patch.object(django_apps, "get_model", side_effect=LookupError):
             assert _ticket_model() is None

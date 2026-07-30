@@ -1,4 +1,4 @@
-"""Tests for teatree.core.resolve — worktree resolution from CWD."""
+"""Tests for teatree.core.intake.resolve — worktree resolution from CWD."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -6,20 +6,28 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import resolve as resolve_module
-from teatree.core.models import Ticket, Worktree
-from teatree.core.resolve import (
+from teatree.core.intake import resolve as resolve_module
+from teatree.core.intake.resolve import (
+    TicketIdentityCollisionError,
+    WorkspaceOwnerCollisionError,
     WorktreeNotFoundError,
+    WorktreePathConflictError,
     _auto_register_from_git,
     _find_env_cache,
     _parse_env_file,
+    _refresh_reused_row,
+    _ticket_by_number,
     _ticket_number_from_branch,
     _ticket_owning_branch,
     _warn_cwd_mismatch,
     _workspace_owner_ticket,
     match_worktree_by_path,
     resolve_worktree,
+    tickets_owning_workspace_dir,
+    workspace_owner_ticket,
 )
+from teatree.core.models import Ticket, Worktree
+from tests._git_repo import make_git_repo, run_git
 
 
 class TestParseEnvFile:
@@ -65,24 +73,41 @@ class TestParseEnvFile:
         assert result == {"URL": "http://host?a=b"}
 
 
+def _write_cache(ticket_dir: Path, repo: str = "backend") -> Path:
+    cache = ticket_dir / ".t3-cache" / repo / ".t3-env.cache"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
+    return cache
+
+
 class TestFindEnvCache:
-    def test_found_in_cwd(self, tmp_path: Path) -> None:
-        envfile = tmp_path / ".t3-env.cache"
-        envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
+    def test_found_in_worktree_sibling_from_cwd(self, tmp_path: Path) -> None:
+        cache = _write_cache(tmp_path, "backend")
+        worktree = tmp_path / "backend"
+        worktree.mkdir()
 
-        result = _find_env_cache(str(tmp_path))
+        result = _find_env_cache(str(worktree))
 
-        assert result == envfile
+        assert result == cache
 
-    def test_found_in_parent(self, tmp_path: Path) -> None:
-        envfile = tmp_path / ".t3-env.cache"
-        envfile.write_text("TICKET_DIR=/some/path\n", encoding="utf-8")
-        child = tmp_path / "sub" / "deep"
+    def test_found_walking_up_from_subdir(self, tmp_path: Path) -> None:
+        cache = _write_cache(tmp_path, "backend")
+        child = tmp_path / "backend" / "sub" / "deep"
         child.mkdir(parents=True)
 
         result = _find_env_cache(str(child))
 
-        assert result == envfile
+        assert result == cache
+
+    def test_sibling_repo_cache_is_not_returned(self, tmp_path: Path) -> None:
+        """From inside one repo, the sibling repo's cache is never returned."""
+        _write_cache(tmp_path, "frontend")
+        backend = tmp_path / "backend"
+        backend.mkdir()
+
+        result = _find_env_cache(str(backend))
+
+        assert result is None
 
     def test_not_found(self, tmp_path: Path) -> None:
         child = tmp_path / "a" / "b"
@@ -93,16 +118,18 @@ class TestFindEnvCache:
         assert result is None
 
     def test_broken_symlink_is_ignored(self, tmp_path: Path) -> None:
-        """Broken symlinks are not returned.
+        """A broken symlink at the canonical path is not returned.
 
-        Under a Docker mount that does not include the ticket dir, the
-        worktree's ``.t3-env.cache`` symlink stays present but its target
-        disappears; returning it would crash downstream ``read_text``.
+        ``is_file()`` is False for a dangling link, so a downstream
+        ``read_text`` can never be handed a broken target.
         """
-        link = tmp_path / ".t3-env.cache"
-        link.symlink_to(tmp_path / "does-not-exist" / ".t3-env.cache")
+        cache_dir = tmp_path / ".t3-cache" / "backend"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / ".t3-env.cache").symlink_to(tmp_path / "does-not-exist" / ".t3-env.cache")
+        worktree = tmp_path / "backend"
+        worktree.mkdir()
 
-        result = _find_env_cache(str(tmp_path))
+        result = _find_env_cache(str(worktree))
 
         assert result is None
 
@@ -165,17 +192,42 @@ class TestResolveWorktree(TestCase):
         self._tmp_path = tmp_path
 
     def test_from_env_worktree_file(self) -> None:
+        wt_dir = self._tmp_path / "backend"
         ticket = Ticket.objects.create()
         wt = Worktree.objects.create(
             ticket=ticket,
             repo_path="backend",
             branch="feature",
-            extra={"worktree_path": str(self._tmp_path / "ticket-dir")},
+            extra={"worktree_path": str(wt_dir)},
         )
 
-        envfile = self._tmp_path / ".t3-env.cache"
-        envfile.write_text(f"TICKET_DIR={self._tmp_path / 'ticket-dir'}\n", encoding="utf-8")
-        self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
+        envfile = self._tmp_path / ".t3-cache" / "backend" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
+        envfile.write_text(f"TICKET_DIR={wt_dir}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
+
+        result = resolve_worktree()
+
+        assert result.pk == wt.pk
+
+    def test_stale_env_ticket_dir_falls_through_to_cwd_match(self) -> None:
+        # 3e#3 nit (dropped `# pragma: no branch`): a stale env cache can name a
+        # TICKET_DIR whose worktree row is gone. That miss must fall through to the
+        # CWD-direct match (step 2), not treat the cache as truth or crash.
+        cwd_dir = self._tmp_path / "backend"
+        ticket = Ticket.objects.create()
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(cwd_dir)},
+        )
+
+        envfile = self._tmp_path / ".t3-cache" / "backend" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
+        # TICKET_DIR points at a path with NO matching Worktree row.
+        envfile.write_text(f"TICKET_DIR={self._tmp_path / 'removed-worktree'}\n", encoding="utf-8")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd_dir))
 
         result = resolve_worktree()
 
@@ -203,12 +255,28 @@ class TestResolveWorktree(TestCase):
         (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = resolve_worktree()
 
         assert result.branch == "feat/branch"
         assert result.repo_path == "my-repo"
         assert result.extra["worktree_path"] == str(wt_dir)
+
+    def _auto_register_branch(self, branch: str) -> Ticket:
+        wt_dir = self._tmp_path / "my-repo"
+        wt_dir.mkdir()
+        (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value=branch):
+            resolve_worktree()
+        return Ticket.objects.get(issue_url=f"auto:{branch}")
+
+    def test_auto_registered_fix_branch_ticket_is_fix(self) -> None:
+        # #17: the auto-register intake site classifies from the branch name.
+        assert self._auto_register_branch("fix/login-crash").kind == Ticket.Kind.FIX
+
+    def test_auto_registered_feature_branch_ticket_is_feature(self) -> None:
+        assert self._auto_register_branch("feat/dark-mode").kind == Ticket.Kind.FEATURE
 
     def test_raises_when_nothing_found(self) -> None:
         self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
@@ -234,9 +302,11 @@ class TestResolveWorktree(TestCase):
 
     def test_env_file_without_ticket_dir(self) -> None:
         """When .t3-env.cache exists but has no TICKET_DIR, fall through to CWD match."""
-        envfile = self._tmp_path / ".t3-env.cache"
+        cwd = self._tmp_path / "backend"
+        envfile = self._tmp_path / ".t3-cache" / "backend" / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text("SOME_OTHER_KEY=value\n", encoding="utf-8")
-        self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd))
 
         with pytest.raises(WorktreeNotFoundError):
             resolve_worktree()
@@ -283,7 +353,8 @@ class TestResolveWorktreeRejectsMainClone(TestCase):
         # main clone (the stale/mis-recorded condition the guard catches).
         cwd = self._tmp_path / "elsewhere"
         cwd.mkdir()
-        envfile = cwd / ".t3-env.cache"
+        envfile = cwd.parent / ".t3-cache" / cwd.name / ".t3-env.cache"
+        envfile.parent.mkdir(parents=True, exist_ok=True)
         envfile.write_text(f"TICKET_DIR={main_clone}\n", encoding="utf-8")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(cwd))
 
@@ -321,7 +392,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend/src")
 
         assert not self._caplog.records
@@ -336,7 +407,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend")
 
         assert not self._caplog.records
@@ -351,7 +422,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/totally/different/path")
 
         assert len(self._caplog.records) == 1
@@ -367,7 +438,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/workspace/ticket-42")
 
         assert not self._caplog.records
@@ -382,7 +453,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/some/path")
 
         assert not self._caplog.records
@@ -395,7 +466,7 @@ class TestAutoRegisterFromGit:
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value=""):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None
 
     def test_returns_none_when_branch_empty(self, tmp_path: Path) -> None:
@@ -404,7 +475,7 @@ class TestAutoRegisterFromGit:
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value=""):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None
 
 
@@ -439,7 +510,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -464,7 +535,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -490,7 +561,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/new-branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/new-branch"):
             result = _auto_register_from_git(str(wt_dir), ticket_hint=ticket)
 
         assert result is not None
@@ -504,7 +575,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """First-time auto-register still creates a fresh ``auto:<branch>`` ticket."""
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/new"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/new"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -527,7 +598,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir), ticket_hint=ticket)
 
         assert result is not None
@@ -545,7 +616,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -570,7 +641,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         repo_b = self._make_git_worktree("repo-b")  # sibling under the same tmp_path
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/other"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/other"):
             result = _auto_register_from_git(str(repo_b))
 
         assert result is not None
@@ -584,7 +655,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """Owner is found even when the stored path is the unresolved (symlinked) form.
 
         Provision records ``worktree_path`` verbatim from
-        ``config.workspace_dir()`` (no ``.resolve()``), while resolution
+        ``config.worktree_root()`` (no ``.resolve()``), while resolution
         ``.resolve()``-s cwd. On a symlinked workspace root (macOS
         ``/tmp`` → ``/private/tmp``) the two forms differ; the match must
         still succeed via ``_candidate_paths``.
@@ -602,7 +673,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         repo_b = self._make_git_worktree("repo-b")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/other"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/other"):
             result = _auto_register_from_git(str(repo_b))
 
         assert result is not None
@@ -613,7 +684,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """When no sibling worktree shares the workspace dir, the auto: path stands."""
         wt_dir = self._make_git_worktree("lonely-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/solo"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/solo"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -708,7 +779,7 @@ class TestAutoRegisterAttributesManualWorktreeToBranchTicket(TestCase):
         real_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1180")
         manual = self._make_git_worktree("manual-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="1180-fix-the-thing"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="1180-fix-the-thing"):
             result = _auto_register_from_git(str(manual))
 
         assert result is not None
@@ -719,11 +790,40 @@ class TestAutoRegisterAttributesManualWorktreeToBranchTicket(TestCase):
     def test_falls_back_to_auto_ticket_when_no_branch_ticket_and_no_owner(self) -> None:
         manual = self._make_git_worktree("manual-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="1180-fix-the-thing"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="1180-fix-the-thing"):
             result = _auto_register_from_git(str(manual))
 
         assert result is not None
         assert result.ticket.issue_url == "auto:1180-fix-the-thing"
+
+    def test_ad_hoc_worktree_reaches_auto_fallback_under_multi_owner_parent(self) -> None:
+        """A shared parent already owning >1 ticket must not abort auto-register (#3379).
+
+        The workspace-owner hint keys on the parent dir; for an ad-hoc worktree
+        added straight into a shared parent that already holds two unrelated
+        tickets' worktrees, that hint used to RAISE
+        ``WorkspaceOwnerCollisionError`` and kill the single CLI entry point.
+        The branch here names no ticket in this DB, so the branch signal
+        declines too — resolution must fall through to the ``auto:<branch>``
+        fork, not raise. Red before the demotion (the raise escaped).
+        """
+        # Two unrelated tickets' worktrees already live under the shared parent.
+        for idx, name in enumerate(("owner-a", "owner-b"), start=1):
+            owner = Ticket.objects.create(issue_url=f"https://github.com/org/repo/issues/{idx}")
+            sibling = self._make_git_worktree(name)
+            Worktree.objects.create(
+                ticket=owner,
+                repo_path=name,
+                branch=f"{idx}-existing",
+                extra={"worktree_path": str(sibling)},
+            )
+        manual = self._make_git_worktree("adhoc-repo")
+
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/no-ticket-number"):
+            result = _auto_register_from_git(str(manual))
+
+        assert result is not None
+        assert result.ticket.issue_url == "auto:feat/no-ticket-number"
 
 
 class TestResolveWorktreeTicketHint(TestCase):
@@ -788,27 +888,21 @@ class TestResolveWorktreeTicketHint(TestCase):
         assert result.ticket_id == real_ticket.pk
 
 
-class TestWorkspaceOwnerTicketIsDeterministic(TestCase):
+class TestWorkspaceOwnerFailsLoudOnCollision(TestCase):
+    """Multi-owner workspace dir fails loud, never picks an arbitrary ticket (#WT-PR-D finding 11)."""
+
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
-    def test_lowest_pk_wins_when_multiple_siblings_share_workspace(self) -> None:
-        """Resolution stays deterministic if the invariant is violated.
-
-        The one-ticket-per-workspace invariant being violated, the
-        lowest-``pk`` worktree's ticket wins. Without ``.order_by("pk")``
-        the "first match wins" comment is a lie — the unordered queryset's
-        iteration order is backend-dependent.
-        """
+    def _seed_two_owners(self) -> tuple[Ticket, Ticket]:
         repo_a = self._tmp_path / "repo-a"
         repo_b = self._tmp_path / "repo-b"
         repo_a.mkdir()
         repo_b.mkdir()
-
         first_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/1")
         second_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/2")
-        first_wt = Worktree.objects.create(
+        Worktree.objects.create(
             ticket=first_ticket,
             repo_path="repo-a",
             branch="ac/first",
@@ -820,24 +914,170 @@ class TestWorkspaceOwnerTicketIsDeterministic(TestCase):
             branch="ac/second",
             extra={"worktree_path": str(repo_b)},
         )
+        return first_ticket, second_ticket
 
-        # Resolving a third sibling under the same workspace dir: cwd's
-        # parent is tmp_path, matching both stored worktree_path parents.
+    def test_public_workspace_owner_ticket_raises_on_multiple_owners(self) -> None:
+        """The PUBLIC resolver fails loud — an operator named the dir, so an arbitrary pick is wrong.
+
+        The pre-fix code returned the lowest-pk owner silently; that
+        arbitrary selection is exactly what mis-attributes a sibling worktree.
+        The raise stays on the public :func:`workspace_owner_ticket` (the
+        ``workspace`` command resolver's call site); the private wrapper now
+        demotes it (see the demotion test below), so the pin moved here (#3379).
+        """
+        self._seed_two_owners()
+
+        with pytest.raises(WorkspaceOwnerCollisionError):
+            workspace_owner_ticket(self._tmp_path.resolve())
+
+    def test_private_hint_declines_on_multiple_owners(self) -> None:
+        """The best-effort attribution hint returns ``None`` on an ambiguous parent (#3379).
+
+        A hint whose empty answer the chain already handles must decline, not
+        abort its caller — declining is not an arbitrary pick, so the
+        mis-attribution the loud raise guards against stays foreclosed.
+        """
+        self._seed_two_owners()
+
+        assert _workspace_owner_ticket((self._tmp_path / "repo-c").resolve()) is None
+
+    def test_tickets_owning_workspace_dir_lists_all_owners(self) -> None:
+        first_ticket, second_ticket = self._seed_two_owners()
+
+        owners = tickets_owning_workspace_dir(self._tmp_path.resolve())
+
+        assert {t.pk for t in owners} == {first_ticket.pk, second_ticket.pk}
+
+    def test_single_owner_resolves_without_raising(self) -> None:
+        repo_a = self._tmp_path / "repo-a"
+        repo_a.mkdir()
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/1")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="repo-a",
+            branch="ac/first",
+            extra={"worktree_path": str(repo_a)},
+        )
+
         owner = _workspace_owner_ticket((self._tmp_path / "repo-c").resolve())
 
         assert owner is not None
-        assert owner.pk == first_ticket.pk
-        assert owner.pk == first_wt.ticket.pk
+        assert owner.pk == ticket.pk
 
 
-class TestResolveModuleDocstringMatchesCopyShape:
-    """Guard against re-introducing the pre-#1316 "symlink" wording.
+class TestTicketByNumberFailsLoudOnCollision(TestCase):
+    """A non-unique ``ticket_number`` fails loud, never resolves an arbitrary ticket (#WT-PR-D finding 9)."""
 
-    The in-worktree env cache is a regular file copy (since #1316), not a
-    symlink. The module-level docstring, the ``_find_env_cache`` docstring,
-    and the inline comment in ``resolve_worktree`` must describe it that
-    way — otherwise readers chasing a Docker bind-mount failure will be
-    led back to the pre-fix mental model.
+    def test_raises_when_two_tickets_share_number(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")
+
+        with pytest.raises(TicketIdentityCollisionError):
+            _ticket_by_number("5")
+
+    def test_returns_single_match(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+
+        assert _ticket_by_number("5") == ticket
+
+    def test_returns_none_when_no_match(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/42")
+
+        assert _ticket_by_number("5") is None
+
+    def test_overlay_scope_disambiguates_cross_overlay_collision(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="ov-a")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/5", overlay="ov-b")
+
+        assert _ticket_by_number("5", overlay="ov-b") == ticket_b
+
+    def test_resolved_overlay_with_only_foreign_match_returns_none(self) -> None:
+        """A resolved overlay with no same-overlay ticket must NOT cross-attach a foreign one.
+
+        Only ``ov-a`` has ticket number 5; resolving under ``ov-b`` must return
+        None rather than silently binding the worktree to ``ov-a``'s ticket.
+        """
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="ov-a")
+
+        assert _ticket_by_number("5", overlay="ov-b") is None
+
+    def test_blank_overlay_ticket_still_matches_under_resolved_overlay(self) -> None:
+        """A blank-overlay (ambient single-overlay default) ticket resolves under any named overlay."""
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="")
+
+        assert _ticket_by_number("5", overlay="ov-b") == ticket
+
+    def test_branch_lookup_raises_on_collision(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")
+
+        with pytest.raises(TicketIdentityCollisionError):
+            _ticket_owning_branch("5-fix-the-thing")
+
+    def test_blank_number_returns_none_never_fans_out_to_pk_fallback_rows(self) -> None:
+        # A blank hint's empty ``issue_number`` filter would otherwise match EVERY
+        # pk-fallback ticket (issue_url with no trailing number → blank
+        # ``issue_number``) and then fail loud as a false collision.
+        Ticket.objects.create(issue_url="https://a.example.com/x/notes")
+        Ticket.objects.create(issue_url="https://b.example.com/y/wiki")
+
+        assert _ticket_by_number("") is None
+
+
+class TestRefreshReusedRowRefusesPathSteal(TestCase):
+    """A reused row must never be repointed onto a path another row owns (#WT-PR-D finding 8)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_raises_when_target_path_owned_by_another_row(self) -> None:
+        owned_path = str(self._tmp_path / "shared-dir")
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/2")
+        Worktree.objects.create(
+            ticket=ticket_a,
+            repo_path="repo",
+            branch="1-x",
+            extra={"worktree_path": owned_path},
+        )
+        row_b = Worktree.objects.create(
+            ticket=ticket_b,
+            repo_path="repo",
+            branch="2-x",
+            extra={"worktree_path": str(self._tmp_path / "b-dir")},
+        )
+
+        with pytest.raises(WorktreePathConflictError):
+            _refresh_reused_row(row_b, "2-x", Path(owned_path))
+
+    def test_refreshes_freely_when_target_path_unowned(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        row = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="repo",
+            branch="1-old",
+            extra={"worktree_path": str(self._tmp_path / "old-dir"), "keep": "me"},
+        )
+        new_dir = self._tmp_path / "new-dir"
+
+        _refresh_reused_row(row, "1-new", new_dir)
+
+        row.refresh_from_db()
+        assert row.branch == "1-new"
+        assert row.extra["worktree_path"] == str(new_dir)
+        assert row.extra["keep"] == "me"
+
+
+class TestResolveModuleDocstringMatchesCacheLocation:
+    """Guard the env-cache resolution docs against a stale mental model.
+
+    The env cache is the out-of-repo ``.t3-cache/`` sibling of the worktree,
+    never copied into a repo tree (#3097) and never a symlink. The module
+    docstring, the ``_find_env_cache`` docstring, and the inline comment in
+    ``resolve_worktree`` must describe it that way — otherwise a reader
+    chasing an untracked-file or bind-mount failure is led back to the
+    pre-fix mental model.
 
     Anti-vacuous: revert any of these sites to the word "symlink" and the
     relevant assertion goes red.
@@ -850,28 +1090,94 @@ class TestResolveModuleDocstringMatchesCopyShape:
         docstring = resolve_module.__doc__ or ""
         assert "symlink" not in docstring.lower(), (
             "module docstring still describes the env cache as a symlink; "
-            "since #1316 the in-worktree cache is a regular file copy"
+            "since #3097 it is the out-of-repo .t3-cache/ sibling"
         )
         assert "env cache" in docstring, (
             "module docstring must still mention the env cache as the first resolution anchor"
         )
 
-    def test_find_env_cache_docstring_describes_copy_not_symlink(self) -> None:
+    def test_find_env_cache_docstring_does_not_mention_symlink(self) -> None:
         docstring = _find_env_cache.__doc__ or ""
-        assert "worktree symlinks" not in docstring, (
-            "_find_env_cache docstring still claims the in-worktree cache "
-            "is a symlink; since #1316 it is a regular file copy"
+        assert "symlink" not in docstring.lower(), (
+            "_find_env_cache docstring still describes the env cache as a "
+            "symlink; since #3097 it is the out-of-repo .t3-cache/ sibling"
         )
 
     def test_resolve_worktree_step1_comment_does_not_mention_symlink(self) -> None:
         source = self._resolve_source()
-        # Locate the step-1 walk-up block inside resolve_worktree.
-        marker = "# 1. Walk up from CWD to find the env cache"
+        marker = "# 1. Walk up from CWD to the .t3-cache/ sibling"
         assert marker in source, "step-1 walk-up comment moved or was removed"
         start = source.index(marker)
         block = source[start : start + 200]
         assert "symlink" not in block.lower(), (
             f"step-1 inline comment in resolve_worktree still mentions "
-            f"'symlink'; since #1316 the in-worktree env cache is a "
-            f"regular file copy. Offending block:\n{block}"
+            f"'symlink'; since #3097 the env cache is the out-of-repo "
+            f".t3-cache/ sibling. Offending block:\n{block}"
         )
+
+
+class TestProvisionResolveAttributionRoundTrip(TestCase):
+    """Real git worktrees under a symlinked workspace root resolve to the right ticket.
+
+    The headline integration net for the cross-attach bug class (#WT-PR-D): a
+    REAL ``git worktree add`` under a workspace root reached via a symlink
+    (mimicking macOS ``/tmp`` → ``/private/tmp``) must attribute to the ticket
+    its branch encodes — never to a FOREIGN merged ticket whose lingering row
+    merely shares the branch + repo basename. A second sibling worktree under
+    the same ticket dir must attach to that same ticket through the symlink,
+    not fork a fresh ``auto:<branch>`` ticket.
+
+    RED before the fix: the auto-register reuse arm ran BEFORE attribution, so
+    both worktrees bound to the foreign merged ticket #999.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def test_real_worktrees_attribute_to_provisioned_ticket_not_foreign_merged(self) -> None:
+        real_root = self._tmp_path / "real"
+        real_root.mkdir()
+        repo_a_clone = make_git_repo(real_root / "repo-a")
+        repo_b_clone = make_git_repo(real_root / "repo-b")
+
+        # Workspace root reached through a symlink (macOS /tmp → /private/tmp).
+        link_root = self._tmp_path / "wslink"
+        link_root.symlink_to(real_root)
+
+        provisioned = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/123")
+        foreign_merged = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/999")
+        # The lingering merged-ticket row that shares the branch + repo basename
+        # — the cross-attach source. Its stored path is unrelated/stale.
+        foreign_row = Worktree.objects.create(
+            ticket=foreign_merged,
+            repo_path="repo-a",
+            branch="123-feature",
+            extra={"worktree_path": "/stale/merged/repo-a"},
+        )
+
+        ticket_dir = link_root / "123-feature"
+        ticket_dir.mkdir()
+        run_git(repo_a_clone, "worktree", "add", "-b", "123-feature", str(ticket_dir / "repo-a"))
+        run_git(repo_b_clone, "worktree", "add", "-b", "feat/sibling", str(ticket_dir / "repo-b"))
+
+        resolved_cwd_a = str((ticket_dir / "repo-a").resolve())
+        self._monkeypatch.setenv("T3_ORIG_CWD", resolved_cwd_a)
+        wt_a = resolve_worktree()
+
+        # Branch-encoded number 123 wins over the foreign #999 row.
+        assert wt_a.ticket_id == provisioned.pk
+        # The foreign merged row is never stolen / repointed.
+        foreign_row.refresh_from_db()
+        assert foreign_row.extra["worktree_path"] == "/stale/merged/repo-a"
+
+        resolved_cwd_b = str((ticket_dir / "repo-b").resolve())
+        self._monkeypatch.setenv("T3_ORIG_CWD", resolved_cwd_b)
+        wt_b = resolve_worktree()
+
+        # The non-numbered sibling attaches to the SAME ticket via the
+        # symlink-tolerant workspace-owner resolver, not a fresh auto: ticket.
+        assert wt_b.ticket_id == provisioned.pk
+        assert wt_b.repo_path == "repo-b"
+        assert not Ticket.objects.filter(issue_url="auto:feat/sibling").exists()

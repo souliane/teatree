@@ -26,6 +26,10 @@ Scripts that need Bash 5+ features (associative arrays) include a version guard 
 - `uv` (used only to auto-install `dslr` when missing)
 - `jq` (required only by agent platform integration scripts, e.g., statusline hooks)
 - `md5sum` or `md5` (dirty-state hashing in statusline; auto-detected per platform)
+- `ttyd` (the dashboard's loopback "Debug session" terminal — `apt install ttyd` /
+  `brew install ttyd`). Required to run `e2e/dash/test_terminal.py`'s launch spec,
+  which skips visibly without it. CI (`.github/workflows/ci.yml`) and the deploy
+  image (`deploy/Dockerfile`) both install it, so the authoritative lanes never skip.
 - Agent platform hook support (e.g., Claude Code hooks in `hooks/scripts/`)
 
 ## Shell Script Portability Checklist
@@ -51,7 +55,7 @@ When writing or modifying shell scripts, verify:
 
 ## User Configuration
 
-Configuration is stored in `~/.teatree` (a sourceable shell file). See `t3:setup` for the interactive setup wizard.
+Configuration lives in the DB `ConfigSetting` store; bootstrap paths (`T3_REPO`, `T3_WORKSPACE_DIR`) are environment variables. See `t3:setup` for the interactive setup wizard.
 
 Environment variables with auto-detected defaults:
 

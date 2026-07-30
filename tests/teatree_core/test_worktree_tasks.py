@@ -4,11 +4,12 @@ from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerResult
-from teatree.core.worktree_tasks import (
+from teatree.core.worktree.worktree_tasks import (
     execute_worktree_provision,
     execute_worktree_start,
     execute_worktree_stop,
@@ -68,21 +69,21 @@ class _WorktreeTaskTest(TestCase):
 class TestExecuteWorktreeProvision(_WorktreeTaskTest):
     def test_skips_when_state_is_not_provisioned(self) -> None:
         wt = self._worktree(state=Worktree.State.CREATED)
-        with patch("teatree.core.worktree_tasks.WorktreeProvisionRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeProvisionRunner") as runner:
             result = execute_worktree_provision.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "skipped": True, "state": "created"}
         runner.assert_not_called()
 
     def test_returns_ok_when_runner_succeeds(self) -> None:
         wt = self._worktree(state=Worktree.State.PROVISIONED)
-        with patch("teatree.core.worktree_tasks.WorktreeProvisionRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeProvisionRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=True, detail="done")
             result = execute_worktree_provision.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": True, "detail": "done"}
 
     def test_returns_failure_when_runner_fails(self) -> None:
         wt = self._worktree(state=Worktree.State.PROVISIONED)
-        with patch("teatree.core.worktree_tasks.WorktreeProvisionRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeProvisionRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="boom")
             result = execute_worktree_provision.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "boom"}
@@ -91,21 +92,21 @@ class TestExecuteWorktreeProvision(_WorktreeTaskTest):
 class TestExecuteWorktreeStart(_WorktreeTaskTest):
     def test_skips_when_state_is_not_services_up(self) -> None:
         wt = self._worktree(state=Worktree.State.PROVISIONED)
-        with patch("teatree.core.worktree_tasks.WorktreeStartRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeStartRunner") as runner:
             result = execute_worktree_start.call(wt.pk)
         assert result["skipped"] is True
         runner.assert_not_called()
 
     def test_returns_ok_when_runner_succeeds(self) -> None:
         wt = self._worktree(state=Worktree.State.SERVICES_UP)
-        with patch("teatree.core.worktree_tasks.WorktreeStartRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeStartRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=True, detail="up")
             result = execute_worktree_start.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": True, "detail": "up"}
 
     def test_returns_failure_when_runner_fails(self) -> None:
         wt = self._worktree(state=Worktree.State.SERVICES_UP)
-        with patch("teatree.core.worktree_tasks.WorktreeStartRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeStartRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="docker-error")
             result = execute_worktree_start.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "docker-error"}
@@ -132,21 +133,21 @@ class TestExecuteWorktreeStart(_WorktreeTaskTest):
 class TestExecuteWorktreeVerify(_WorktreeTaskTest):
     def test_skips_when_state_is_not_ready(self) -> None:
         wt = self._worktree(state=Worktree.State.SERVICES_UP)
-        with patch("teatree.core.worktree_tasks.WorktreeVerifyRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeVerifyRunner") as runner:
             result = execute_worktree_verify.call(wt.pk)
         assert result["skipped"] is True
         runner.assert_not_called()
 
     def test_returns_ok_when_runner_succeeds(self) -> None:
         wt = self._worktree(state=Worktree.State.READY)
-        with patch("teatree.core.worktree_tasks.WorktreeVerifyRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeVerifyRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=True, detail="healthy")
             result = execute_worktree_verify.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": True, "detail": "healthy"}
 
     def test_returns_failure_when_runner_reports_problems(self) -> None:
         wt = self._worktree(state=Worktree.State.READY)
-        with patch("teatree.core.worktree_tasks.WorktreeVerifyRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeVerifyRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="sick")
             result = execute_worktree_verify.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "sick"}
@@ -171,23 +172,23 @@ class TestExecuteWorktreeVerify(_WorktreeTaskTest):
 
 class TestExecuteWorktreeTeardown(_WorktreeTaskTest):
     def test_no_ops_when_worktree_row_already_gone(self) -> None:
-        with patch("teatree.core.worktree_tasks.WorktreeTeardownRunner") as runner:
-            result = execute_worktree_teardown.call(999_999, snapshot_db_name="db", snapshot_extra={})
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeTeardownRunner") as runner:
+            result = execute_worktree_teardown.call(999_999)
         assert result == {"worktree_id": 999_999, "skipped": True}
         runner.assert_not_called()
 
     def test_returns_ok_when_teardown_runner_succeeds(self) -> None:
         wt = self._worktree(state=Worktree.State.CREATED)
-        with patch("teatree.core.worktree_tasks.WorktreeTeardownRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeTeardownRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=True, detail="cleaned")
-            result = execute_worktree_teardown.call(wt.pk, snapshot_db_name="db_old", snapshot_extra={})
+            result = execute_worktree_teardown.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": True, "detail": "cleaned"}
 
     def test_returns_failure_when_teardown_runner_fails(self) -> None:
         wt = self._worktree(state=Worktree.State.CREATED)
-        with patch("teatree.core.worktree_tasks.WorktreeTeardownRunner") as runner:
+        with patch("teatree.core.worktree.worktree_tasks.WorktreeTeardownRunner") as runner:
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="docker stuck")
-            result = execute_worktree_teardown.call(wt.pk, snapshot_db_name="db_old", snapshot_extra={})
+            result = execute_worktree_teardown.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "docker stuck"}
 
 
@@ -197,17 +198,17 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
     def test_skips_when_state_is_not_provisioned(self) -> None:
         """The transition demotes to PROVISIONED first; a non-PROVISIONED row is a stale read."""
         wt = self._worktree(state=Worktree.State.SERVICES_UP)
-        with patch("teatree.core.worktree_tasks.docker_compose_down") as down:
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down:
             result = execute_worktree_stop.call(wt.pk)
         assert result["skipped"] is True
         down.assert_not_called()
 
     def test_brings_the_whole_compose_project_down(self) -> None:
-        from teatree.core.worktree_env import compose_project  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import compose_project  # noqa: PLC0415
 
         wt = self._worktree(state=Worktree.State.PROVISIONED)
         expected_project = compose_project(wt)
-        with patch("teatree.core.worktree_tasks.docker_compose_down") as down:
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down:
             result = execute_worktree_stop.call(wt.pk)
         assert result["worktree_id"] == wt.pk
         assert result["ok"] is True
@@ -216,7 +217,7 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
         assert down.call_args.args[0] == expected_project
 
     def test_no_ops_when_worktree_row_already_gone(self) -> None:
-        with patch("teatree.core.worktree_tasks.docker_compose_down") as down:
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down:
             result = execute_worktree_stop.call(999_999)
         assert result == {"worktree_id": 999_999, "skipped": True}
         down.assert_not_called()
@@ -226,7 +227,76 @@ class TestExecuteWorktreeStop(_WorktreeTaskTest):
         wt = self._worktree(state=Worktree.State.PROVISIONED)
         wt.db_name = "wt_keepme"
         wt.save(update_fields=["db_name"])
-        with patch("teatree.core.worktree_tasks.docker_compose_down"):
+        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down"):
             execute_worktree_stop.call(wt.pk)
         wt.refresh_from_db()
         assert wt.db_name == "wt_keepme"
+
+
+class TestWorkerRunsRunnerOutsideClaimLock(TransactionTestCase):
+    """The heavy runner runs OUTSIDE the short claim transaction (SQLite lock fix).
+
+    The FSM workers used to wrap the minutes-long runner (``uv sync`` / DB import
+    / ``docker compose up`` / health checks) inside ``atomic() +
+    select_for_update``. On the SQLite control DB that held the connection-level
+    write lock for the whole duration, freezing every other worker ("database is
+    locked"). The claim now holds a SHORT lock (state re-check) and releases it
+    before the runner runs — proven here by the runner observing that it is NOT
+    inside an open transaction (``TransactionTestCase`` so there is no outer
+    atomic wrapper to confound the probe).
+    """
+
+    def _worktree(self, *, state: Worktree.State) -> Worktree:
+        # Blank overlay = ambient single-overlay default, dispatchable with no
+        # overlay registration (skips the unknown-overlay poison guard).
+        ticket = Ticket.objects.create(overlay="", issue_url="https://example.com/lock")
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay="",
+            repo_path="repo",
+            branch="feat-lock",
+            state=state,
+            extra={"worktree_path": "/tmp/wt"},
+        )
+
+    def _spy_runner(self, seen: dict[str, bool]) -> type:
+        class _Spy:
+            def __init__(self, worktree: Worktree) -> None:
+                self.worktree = worktree
+
+            def run(self) -> RunnerResult:
+                seen["in_atomic"] = connection.in_atomic_block
+                return RunnerResult(ok=True, detail="done")
+
+        return _Spy
+
+    def test_provision_runner_runs_outside_transaction(self) -> None:
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        seen: dict[str, bool] = {}
+        with patch(
+            "teatree.core.worktree.worktree_tasks.WorktreeProvisionRunner",
+            self._spy_runner(seen),
+        ):
+            result = execute_worktree_provision.call(wt.pk)
+        assert result == {"worktree_id": wt.pk, "ok": True, "detail": "done"}
+        assert seen["in_atomic"] is False
+
+    def test_start_runner_runs_outside_transaction(self) -> None:
+        wt = self._worktree(state=Worktree.State.SERVICES_UP)
+        seen: dict[str, bool] = {}
+        with patch(
+            "teatree.core.worktree.worktree_tasks.WorktreeStartRunner",
+            self._spy_runner(seen),
+        ):
+            execute_worktree_start.call(wt.pk)
+        assert seen["in_atomic"] is False
+
+    def test_verify_runner_runs_outside_transaction(self) -> None:
+        wt = self._worktree(state=Worktree.State.READY)
+        seen: dict[str, bool] = {}
+        with patch(
+            "teatree.core.worktree.worktree_tasks.WorktreeVerifyRunner",
+            self._spy_runner(seen),
+        ):
+            execute_worktree_verify.call(wt.pk)
+        assert seen["in_atomic"] is False

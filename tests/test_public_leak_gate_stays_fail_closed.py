@@ -8,36 +8,51 @@ PUBLIC surface and the ``publish_surface`` carve-out. Relaxing a public
 leak block is a privacy regression, not a lockout rescue.
 
 These regression tests assert that with ``danger_gate_fail_open = true``
-recorded in ``~/.teatree.toml``, a public-surface quote/banned match STILL
-denies — proving the leak path never consults the master switch.
+recorded as a DB-home ``ConfigSetting`` row, a public-surface quote/banned
+match STILL denies — proving the leak path never consults the master switch.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool, handle_quote_scanner_pretool
+from teatree.hooks import _repo_visibility
+
+
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
 
 
 @pytest.fixture
 def fail_open_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Record ``danger_gate_fail_open = true`` in a temp ``~/.teatree.toml``.
+    """Record ``danger_gate_fail_open = true`` as a DB-home ``ConfigSetting`` row.
 
     Also pins the quote-scanner ledger root under ``tmp_path`` so the gate
-    decision does not touch real state.
+    decision does not touch real state, and CONFIRMS the genuinely-public
+    ``souliane/teatree`` target public so the leak gate (which scopes to an
+    affirmatively-public destination, #1415/#1213) actually reaches its deny.
     """
-    home = tmp_path / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
-    (home / ".teatree.toml").write_text(
-        '[teatree]\ndanger_gate_fail_open = true\nbanned_terms = ["acmecorp"]\n',
-        encoding="utf-8",
-    )
-    return home
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    config_db = tmp_path / "config.sqlite3"
+    _seed_config_db(config_db, {"danger_gate_fail_open": True, "banned_terms": ["acmecorp"]})
+    monkeypatch.setenv("T3_CONFIG_DB", str(config_db))
+    return tmp_path
 
 
 def _bash(command: str) -> dict[str, object]:
@@ -51,7 +66,7 @@ class TestQuoteScannerLeakGateIgnoresFailOpen:
         # A PUBLIC posting surface (gh pr create) carrying a verbatim
         # user-quote pattern. Even with the master fail-open switch ON, the
         # leak gate must DENY.
-        data = _bash('gh pr create --title t --body "## User mandate\nplease ship now"')
+        data = _bash('gh pr create --repo souliane/teatree --title t --body "## User ask (verbatim)\nplease ship now"')
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True, "PUBLIC quote leak must stay fail-closed even with danger_gate_fail_open=true"
         decision = json.loads(capsys.readouterr().out)
@@ -65,7 +80,7 @@ class TestBannedTermsLeakGateIgnoresFailOpen:
     ) -> None:
         # A PUBLIC posting surface (gh issue create) carrying a banned
         # overlay/customer term. The leak gate must DENY despite fail-open.
-        data = _bash('gh issue create --title t --body "rolling out acmecorp integration"')
+        data = _bash('gh issue create --repo souliane/teatree --title t --body "rolling out acmecorp integration"')
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True, "PUBLIC banned-term leak must stay fail-closed even with danger_gate_fail_open=true"
         decision = json.loads(capsys.readouterr().out)
@@ -93,7 +108,9 @@ class TestLeakGateNeverReadsFailOpen:
             return real()
 
         monkeypatch.setattr(router, "_danger_gate_fail_open_enabled", _spy)
-        handle_quote_scanner_pretool(_bash('gh pr create --title t --body "## User mandate\nship"'))
+        handle_quote_scanner_pretool(
+            _bash('gh pr create --repo souliane/teatree --title t --body "## User ask (verbatim)\nship"')
+        )
         capsys.readouterr()
         assert calls == [], "the PUBLIC leak gate must NEVER read danger_gate_fail_open"
 
@@ -108,6 +125,8 @@ class TestLeakGateNeverReadsFailOpen:
             return real()
 
         monkeypatch.setattr(router, "_danger_gate_fail_open_enabled", _spy)
-        handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship acmecorp now"'))
+        handle_banned_terms_pretool(
+            _bash('gh issue create --repo souliane/teatree --title t --body "ship acmecorp now"')
+        )
         capsys.readouterr()
         assert calls == [], "the PUBLIC leak gate must NEVER read danger_gate_fail_open"

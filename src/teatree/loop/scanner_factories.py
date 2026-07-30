@@ -9,188 +9,45 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import Autonomy, Mode, UserSettings, get_effective_settings, workspace_dir
+from teatree.config import Autonomy, UserSettings, clone_root, effective_trusted_issue_authors, get_effective_settings
 from teatree.core.backend_factory import OverlayBackends
-from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.clone_paths import find_clone_path
+from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
-from teatree.loop.job_identity import _TUPLE_PAIR, _ScannerJob
-from teatree.loop.scanner_factory_config import _gitlab_approvals_enabled, _user_identity_aliases_for_overlay
+from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.loop.job_identity import _TUPLE_PAIR
+from teatree.loop.scanner_host_fanout import _competing_url_prefixes, _jobs_for_backend_hosts
 from teatree.loop.scanners import (
     ArchitecturalReviewScanner,
-    AssignedIssuesScanner,
     AutoReviewTaskDispatcher,
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
-    CodexReviewScanner,
+    ClaudeSelfPrReviewScanner,
     GhCodexPrApi,
     GhPrApiClient,
-    GitLabApprovalsScanner,
     GlabGhMrStateClassifier,
     IssueDispositionScanner,
-    IssueImplementerScanner,
-    MyPrsScanner,
+    IssueIntakeScanner,
     NullMergeNotifier,
     PrSweepScanner,
     PullMainCloneScanner,
-    ReviewerPrsScanner,
     SlackBroadcastsScanner,
     SlackMergeNotifier,
-    TicketCompletionScanner,
-    TicketDispositionScanner,
-    TodoSweepScanner,
+    TaskSweepScanner,
+    TriageAssessorScanner,
 )
-from teatree.loop.tick_resolvers import (
-    _allowed_url_prefixes_for_host,
-    _identity_alias_groups_for_overlay,
-    _web_origin_for_host,
-)
+from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from teatree.core.overlay import OverlayBase
+
 logger = logging.getLogger(__name__)
 
-
-def _jobs_for_backend_hosts(
-    backend: OverlayBackends,
-    tag: str,
-    *,
-    all_backends: tuple[OverlayBackends, ...] = (),
-) -> list[_ScannerJob]:
-    """Build one scanner-job fan-out per host on *backend* (#976).
-
-    Pre-fix the caller assumed one ``backend.host``; with multi-host the
-    same fan-out must run for each platform that resolved a credential.
-    ``TicketCompletionScanner`` is overlay-scoped (reads local Ticket
-    rows), so it's emitted exactly once even when two hosts are present.
-
-    *all_backends* (when provided) lets each scanner know the URL claims
-    of sibling overlays so a less-specific claim here yields to a more
-    specific claim there — see :func:`_competing_url_prefixes` (#1324).
-    """
-    jobs: list[_ScannerJob] = []
-    ticket_completion_emitted = False
-    gitlab_approvals_enabled = _gitlab_approvals_enabled()
-    identity_groups = _identity_alias_groups_for_overlay(tag, backend)
-    # #1113 Defect 1: the trusted operator identity set (``backend.identities``,
-    # #976) is an implicit self-group when no explicit ``identity_aliases``
-    # config overrides it. Without this union, ``user_identity_aliases`` and
-    # ``identity_alias_groups`` both resolve to empty in the user's deployment
-    # → ``_is_self_handoff`` short-circuits to False → same-human reassigns
-    # between ``backend.identities`` members (the multi-identity operator set)
-    # render as ``reassigned`` churn. Explicit groups still take precedence.
-    if not identity_groups and len(backend.identities) > 1:
-        identity_groups = (tuple(backend.identities),)
-    for code_host in backend.hosts:
-        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
-        competing_prefixes = _competing_url_prefixes(
-            this_backend=backend,
-            code_host=code_host,
-            all_backends=all_backends,
-        )
-        jobs.extend(
-            [
-                _ScannerJob(
-                    scanner=MyPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=ReviewerPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        overlay_name=tag,
-                        allowed_url_prefixes=url_prefixes,
-                        competing_url_prefixes=competing_prefixes,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=AssignedIssuesScanner(
-                        host=code_host,
-                        ready_labels=backend.ready_labels,
-                        exclude_labels=backend.exclude_labels,
-                        auto_start=backend.auto_start_assigned_issues,
-                        max_concurrent=backend.max_concurrent_auto_starts,
-                        overlay_name=tag,
-                        identities=backend.identities,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=TicketDispositionScanner(
-                        host=code_host,
-                        overlay=backend.overlay,
-                        ready_labels=backend.ready_labels,
-                        overlay_name=tag,
-                        user_identity_aliases=_user_identity_aliases_for_overlay(tag),
-                        identity_alias_groups=identity_groups,
-                    ),
-                    overlay=tag,
-                ),
-            ],
-        )
-        if backend.overlay is not None and not ticket_completion_emitted:
-            jobs.append(
-                _ScannerJob(
-                    scanner=TicketCompletionScanner(
-                        overlay=backend.overlay,
-                        overlay_name=tag,
-                    ),
-                    overlay=tag,
-                ),
-            )
-            ticket_completion_emitted = True
-        if gitlab_approvals_enabled:
-            # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path
-            # (#936). Off by default — opt-in via the env flag so deployments
-            # that already wire the GitLab webhook do not double-emit.
-            jobs.append(
-                _ScannerJob(
-                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
-                    overlay=tag,
-                ),
-            )
-    return jobs
-
-
-def _competing_url_prefixes(
-    *,
-    this_backend: OverlayBackends,
-    code_host: CodeHostBackend,
-    all_backends: tuple[OverlayBackends, ...],
-) -> tuple[str, ...]:
-    """Collect URL claims from every overlay OTHER than *this_backend* (#1324).
-
-    Lets a scanner reject a URL it claims less specifically than a sibling
-    overlay claims — the most-specific overlay attribution wins, so a
-    dogfooding overlay that lists a sibling's repo path under
-    ``workspace_repos`` no longer steals the sibling's PRs from its zone.
-
-    Only sibling backends with a code-host that resolves to the same web
-    origin contribute claims; a GitLab-only sibling can't compete for a
-    GitHub URL.
-    """
-    if not all_backends:
-        return ()
-    own_origin = _web_origin_for_host(code_host)
-    if not own_origin:
-        return ()
-    prefixes: list[str] = []
-    for sibling in all_backends:
-        if sibling is this_backend or sibling.name == this_backend.name:
-            continue
-        for sibling_host in sibling.hosts:
-            if _web_origin_for_host(sibling_host) != own_origin:
-                continue
-            prefixes.extend(_allowed_url_prefixes_for_host(sibling, sibling_host))
-    return tuple(prefixes)
+# Re-exported for ``tick`` / ``domain_jobs`` / the builder tests, which import the
+# host fan-out from this module; its body lives in ``scanner_host_fanout`` (#3235).
+__all__ = ["_competing_url_prefixes", "_jobs_for_backend_hosts"]
 
 
 def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
@@ -252,8 +109,8 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     channel_ids = [cid for _name, cid in channels_pairs if cid]
     if not channel_ids:
         return None
-    glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
-    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    glab_token = overlay.config.get_gitlab_token()
+    github_token = overlay.config.get_github_token()
     current_gitlab_username = _own_author_identity(backend)
     return SlackBroadcastsScanner(
         backend=backend.messaging,
@@ -286,7 +143,7 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    github_token = overlay.config.get_github_token()
     notifier: SlackMergeNotifier | NullMergeNotifier
     if backend.messaging is not None and slack_user_id:
         notifier = SlackMergeNotifier(backend=backend.messaging, user_id=slack_user_id)
@@ -312,6 +169,14 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         # #2210: scope the review-arm to the operator's own PRs — a colleague's
         # open PR in a watched repo must never be auto-scheduled for review.
         self_identities=backend.identities,
+        # Ping-and-hold: a held SUBSTRATE merge DMs the owner once (deduped per
+        # diff via the BotPing ledger) so substrate is never auto-merged silently.
+        substrate_pinger=NotifyWithFallbackSubstratePinger(),
+        # #3413: the owner's standing substrate delegation, sourced from config.
+        # Empty (the default) keeps substrate held-for-owner; a configured owner id
+        # lets the sweep auto-merge a substrate PR that passes EVERY gate and DM the
+        # owner "informed, not asked".
+        substrate_standing_authorizer=settings.substrate_auto_merge_authorized_by,
     )
 
 
@@ -319,8 +184,9 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     """Build a per-overlay pull-main-clone scanner from the overlay's workspace repos.
 
     Repo list comes from ``overlay.get_workspace_repos()``; each name is
-    resolved to its on-disk main clone under ``$T3_WORKSPACE_DIR`` via
-    :func:`teatree.core.clone_paths.find_clone_path` (the same namespace-
+    resolved to its on-disk main clone under the CLONE root
+    (``config.clone_root()``, ``~/workspace``) via
+    :func:`teatree.core.worktree.clone_paths.find_clone_path` (the same namespace-
     aware resolver provisioning/cleanup use). A repo with no clone on disk
     is dropped — there is nothing to pull. The marker/signal label is
     namespaced ``"<overlay>:<repo>"`` so two overlays that share a repo
@@ -336,7 +202,7 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     settings = _effective_settings_for_overlay(backend.name)
     if settings.pull_main_clone_disabled:
         return None
-    workspace = workspace_dir()
+    workspace = clone_root()
     repos: list[tuple[str, Path]] = []
     for repo_name in overlay.get_workspace_repos():
         clone = find_clone_path(workspace, repo_name)
@@ -351,20 +217,28 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     )
 
 
-def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | None:
-    """Build a per-overlay codex-review scanner from the overlay's followup repos (#1254).
+def _admit_colleague_prs_to_board(overlay_name: str) -> bool:
+    """#3569: whether COLLEAGUE / requested-reviewer PRs are admitted to the review board.
 
-    The fleet-of-agents doctrine ("auto-codex-on-every-push") only
-    applies when the user has opted the overlay into end-to-end
-    autonomy: ``mode = "auto"`` AND ``require_human_approval_to_merge =
-    false``. On every other overlay the scanner is silent — the user is
-    keeping a human-in-the-loop training wheel and explicit codex
-    invocation stays manual.
+    Self-authored PRs are always admitted; colleague PRs only when this is ON (the
+    default). The review intake builds :class:`ReviewerPrsScanner` only when true.
+    """
+    settings = _effective_settings_for_overlay(overlay_name)
+    return settings.admit_colleague_prs_to_board
 
-    Repo list comes from ``overlay.metadata.get_followup_repos()``
-    (same source as :class:`PrSweepScanner`). Returns ``None`` when the
-    overlay has no Python class, no repos, or has not opted into the
-    fleet doctrine.
+
+def _self_pr_review_scanner_for(backend: OverlayBackends) -> ClaudeSelfPrReviewScanner | None:
+    """Build the per-overlay SELF-authored-PR review scanner (#1254, #3569).
+
+    Self-authored open PRs are ALWAYS admitted to the review board: this sweeps
+    the owner's own open PRs and enqueues one Claude ``reviewing`` → ``t3:reviewer``
+    task per un-reviewed head SHA (per-SHA dedup = "since last review"). It is the
+    SAME quality gate colleague PRs get — the review execution is blind to author.
+    Codex is no longer the self-review mechanism (retired #3569); the ``t3:reviewer``
+    Claude reviewer is the sole gate. Repo list comes from
+    ``overlay.metadata.get_followup_repos()`` (same source as
+    :class:`PrSweepScanner`). Returns ``None`` when the overlay has no Python class
+    or no followup repos.
     """
     overlay = backend.overlay
     if overlay is None:
@@ -372,37 +246,33 @@ def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | 
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    settings = _effective_settings_for_overlay(backend.name)
-    if settings.mode != Mode.AUTO or settings.require_human_approval_to_merge:
-        return None
-    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
-    return CodexReviewScanner(
+    return ClaudeSelfPrReviewScanner(
         repos=repos,
-        api=GhCodexPrApi(token=github_token),
+        api=GhCodexPrApi(token=overlay.config.get_github_token()),
         overlay=backend.name,
     )
 
 
-def _todo_sweep_scanner_for(backend: OverlayBackends) -> TodoSweepScanner | None:
-    """Build a per-overlay TODO-sweep scanner (#129).
+def _task_sweep_scanner_for(backend: OverlayBackends) -> TaskSweepScanner | None:
+    """Build a per-overlay task-sweep scanner (#129).
 
-    Verifies open Task rows against their artifact's terminal state via the
-    overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has no
-    Python class (the scanner needs the overlay object as its terminal-state
-    oracle) or when ``todo_sweep_disabled = true`` (the escape hatch). The
+    Verifies open teatree Task rows against their artifact's terminal state via
+    the overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has
+    no Python class (the scanner needs the overlay object as its terminal-state
+    oracle) or when ``task_sweep_disabled = true`` (the escape hatch). The
     per-task recheck/idempotency window comes from
-    ``todo_sweep_recheck_interval_hours``.
+    ``task_sweep_recheck_interval_hours``.
     """
     overlay = backend.overlay
     if overlay is None:
         return None
     settings = _effective_settings_for_overlay(backend.name)
-    if settings.todo_sweep_disabled:
+    if settings.task_sweep_disabled:
         return None
-    return TodoSweepScanner(
+    return TaskSweepScanner(
         overlay=overlay,
         overlay_name=backend.name,
-        recheck_interval_hours=settings.todo_sweep_recheck_interval_hours,
+        recheck_interval_hours=settings.task_sweep_recheck_interval_hours,
     )
 
 
@@ -412,8 +282,8 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
     #1136 / #1152 re-architecture: the architectural-review cadence is a
     teatree-core platform behaviour that applies uniformly to every
     overlay's worktrees, NOT a per-overlay opt-in. The settings live on
-    :class:`teatree.config.UserSettings` (the ``[teatree]`` table in
-    ``~/.teatree.toml``, with optional per-overlay overrides via the
+    :class:`teatree.config.UserSettings` (DB-home in the ``ConfigSetting``
+    store, with optional per-overlay overrides via the
     standard ``[overlays.<name>]`` shape — see
     ``OVERLAY_OVERRIDABLE_SETTINGS``). The scanner is instantiated once
     per registered overlay so each overlay's task queue gets its own
@@ -433,58 +303,77 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
         overlay_name=backend.name,
         skill=settings.architectural_review_skill,
         cadence_hours=settings.architectural_review_cadence_hours,
+        retry_backoff_hours=settings.architectural_review_retry_backoff_hours,
         after_merge_count=settings.architectural_review_after_merge_count,
     )
 
 
-def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementerScanner | None:
-    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553).
+def _owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
+    """The ``owner/name`` slugs of the repos this overlay works in — the intake scope.
 
-    Returns a scanner ONLY when the always-on issue-implementer loop is
-    opted in for this overlay AND the in-flight budget has room. Two of the
-    triple gate's three checks live here; the third lives in the scanner.
-
-    The master gate is ``issue_implementer_enabled`` (default False) — the
-    loop is a hard no-op until an overlay flips it on. The concurrency gate
-    is ``ImplementedIssueMarker.in_flight_count(overlay) <
-    issue_implementer_max_concurrent`` — a full budget emits no scanner, so
-    no further issue is picked up this tick.
-
-    The third gate — per-issue claim idempotency — lives inside the scanner
-    itself (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an
-    already-claimed issue, which the scanner skips).
-
-    Returns ``None`` (no job emitted) whenever either gate is shut, so with
-    the default-OFF config neither ``build_loop_table_jobs`` nor
-    ``build_default_jobs`` emits anything for this domain — the live
-    fan-out stays byte-for-byte unchanged until an overlay opts in.
-
-    A loop that is enabled with an empty ``issue_implementer_label`` is a
-    safe but silent no-op (the scanner short-circuits on a blank label so no
-    issue is ever claimed). That fails closed by design, but an operator who
-    flipped the master gate without setting a label sees nothing dispatch and
-    no reason why — so we emit one WARNING naming the missing label (#1554).
+    Unions the overlay's followup repos (where the factory files and picks up issues)
+    with its declared merge-candidate working repos (e.g. an ``e2e`` companion), each
+    normalized up to ``owner/repo``. An overlay with no repo declarations (or none at
+    all) yields ``()`` — the scanner then keeps the pre-scope global author search.
     """
+    if overlay is None:
+        return ()
+    slugs: list[str] = []
+    for value in (*overlay.review.merge_candidate_repo_slugs(), *overlay.metadata.get_followup_repos()):
+        slug = normalize_repo_slug(value)
+        if slug and slug not in slugs:
+            slugs.append(slug)
+    return tuple(slugs)
+
+
+def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | None:
+    """Build the per-overlay unified intake scanner behind the triple gate (#3634).
+
+    Returns a scanner ONLY when the intake loop is opted in for this overlay AND
+    the in-flight budget has room. Two of the triple gate's three checks live
+    here; the third — per-issue claim idempotency — lives in the scanner
+    (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an already-claimed
+    issue).
+
+    The master gate is ``issue_implementer_enabled`` (default False), so with the
+    default config no job is emitted for this domain at all.
+
+    The builder resolves the CONFIG tier of the trusted-author set
+    (:func:`~teatree.config.effective_trusted_issue_authors`) and the admit label
+    (``issue_implementer_label``, falling back to the shipped
+    :data:`~teatree.core.intake.factory_admission.DEFAULT_ADMIT_LABEL`); the scanner
+    unions in the DB ``TrustedIdentity`` rows and applies the top-down decision table.
+
+    Fleet-safety Stage 2: when ``fleet_claim_enabled`` is on the scanner is emitted
+    even at a full budget — with ``can_claim=False`` it claims nothing new but STILL
+    runs the per-tick heartbeat sweep, so an in-flight claim can never expire and be
+    stolen mid-dispatch.
+    """
+    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of module load
+    from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — leaf import
+
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
-        return None
-    if not settings.issue_implementer_label:
-        logger.warning(
-            "issue-implementer loop enabled for overlay %r but issue_implementer_label is empty — "
-            "nothing will be dispatched until a label is set",
-            backend.name,
-        )
         return None
     code_host = backend.host
     if code_host is None:
         return None
-    if ImplementedIssueMarker.objects.in_flight_count(backend.name) >= settings.issue_implementer_max_concurrent:
+    # #3275: self-heal the in-flight budget BEFORE reading it. A marker orphaned
+    # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
+    # so it strands its slot and the budget gate reads false forever.
+    ImplementedIssueMarker.objects.reconcile_stale(backend.name)
+    can_claim = ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
+    if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
-    return IssueImplementerScanner(
+    return IssueIntakeScanner(
         host=code_host,
-        label=settings.issue_implementer_label,
+        admit_label=settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,
         overlay_name=backend.name,
+        trusted_authors=tuple(sorted(effective_trusted_issue_authors(settings))),
         identities=backend.identities,
+        repo_slugs=_owned_repo_slugs(backend.overlay),
+        can_claim=can_claim,
+        max_concurrent=settings.issue_implementer_max_concurrent,
     )
 
 
@@ -528,6 +417,34 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
     )
 
 
+def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScanner | None:
+    """Build a per-overlay triage-assessor scanner behind the default-OFF gate.
+
+    Returns a scanner ONLY when ``triage_assessor_enabled`` is flipped on for this
+    overlay. With the default-OFF config no scanner is built, so neither
+    ``build_loop_table_jobs`` nor ``build_default_jobs`` emits anything for this
+    domain — the fan-out stays byte-for-byte unchanged until an overlay opts in.
+
+    ``None`` also when the overlay has no code host (nothing to list issues on).
+    The cadence / per-tick bound / operator identities are threaded from effective
+    settings; the scanner never writes to the host — it only queues an assessment
+    task behind the ask-gate.
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.triage_assessor_enabled:
+        return None
+    code_host = backend.host
+    if code_host is None:
+        return None
+    return TriageAssessorScanner(
+        host=code_host,
+        overlay_name=backend.name,
+        identities=backend.identities,
+        cadence_hours=settings.triage_assessor_cadence_hours,
+        max_issues_per_tick=settings.triage_assessor_max_issues_per_tick,
+    )
+
+
 def _clone_relative_path_exists(workspace_repos: list[str]) -> "Callable[[str], bool] | None":
     """Resolve the obsolescence oracle: does *path* still exist under any clone?
 
@@ -536,7 +453,7 @@ def _clone_relative_path_exists(workspace_repos: list[str]) -> "Callable[[str], 
     guess. Otherwise returns a predicate that is True when the relative *path*
     exists under at least one resolved clone.
     """
-    workspace = workspace_dir()
+    workspace = clone_root()
     clones = [clone for name in workspace_repos if (clone := find_clone_path(workspace, name)) is not None]
     if not clones:
         return None

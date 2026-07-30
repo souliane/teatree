@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core import branch_currency as branch_currency_module
-from teatree.core.branch_currency import (
+from teatree.core.worktree import branch_currency as branch_currency_module
+from teatree.core.worktree.branch_currency import (
     BranchStaleness,
     MergeConflict,
     MergeOutcome,

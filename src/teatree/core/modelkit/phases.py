@@ -26,14 +26,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     # Annotation-only: ``resolve_fanout_directive`` receives a resolved
     # ``AgentConfig`` from the caller (loop-side), so ``core`` keeps NO runtime
-    # import of the ``config_agent`` platform module. (The layered tach config
-    # would actually permit a domain→platform edge; the decoupling is upheld by
-    # convention + the import-isolation guard
+    # import of the ``config.agent_spawn`` platform module. (The layered tach
+    # config would actually permit a domain→platform edge; the decoupling is
+    # upheld by convention + the import-isolation guard
     # ``test_core_phases_has_no_runtime_config_agent_import``, not by tach.) The
     # TYPE_CHECKING import is invisible to tach, mirroring the sibling
     # ``core.management.commands.loop_self_improve`` type-only import of
     # ``teatree.loop``.
-    from teatree.config_agent import AgentConfig
+    from teatree.config.agent_spawn import AgentConfig
 
 # Canonical token -> every accepted alias (including the canonical itself).
 _PHASE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -86,11 +86,85 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "testing"): "t3:tester",
     ("author", "reviewing"): "t3:reviewer",
     ("author", "shipping"): "t3:shipper",
+    ("author", "requesting_review"): "t3:review-request",
     ("author", "answering"): "t3:answerer",
     ("author", "scanning_news"): "t3:scanning-news",
+    # Orthogonal reactive phase (like ``scanning_news``): no FSM transition, so not
+    # in ``_PHASE_ALIASES``/``CANONICAL_PHASES``. The shell-denied triage assessor
+    # judges each OPEN needs-triage issue and RETURNS a typed
+    # ``triage_recommendations`` envelope the recorder persists behind the ask-gate;
+    # it never acts. Enters ``AGENT_ZONES`` via ``SUBAGENT_BY_PHASE.values()`` and is
+    # therefore auto in ``PERSISTED_AT_SOURCE_ZONES`` — there is no autonomous act path.
+    ("author", "triage_assessing"): "t3:triage-assessor",
     ("author", "e2e"): "t3:e2e",
     ("reviewer", "e2e_reviewing"): "t3:e2e-review",
+    # Orthogonal reactive phase (like ``answering``/``scanning_news``): no FSM
+    # transition, so not in ``_PHASE_ALIASES``/``CANONICAL_PHASES``. Registered
+    # here so it is dispatchable and carries the find-then-verify fan-out below.
+    ("author", "bughunt"): "t3:bughunter",
+    # Red-MR auto-fix (#1295 cap D): the loop persistence handler for a failing
+    # ``my_pr.failed`` PR creates an author ``debugging`` task the /loop slot
+    # dispatches to the ``debugger`` sub-agent. ``debug`` is the AGENT_BY_KIND
+    # dispatch *zone*; ``debugging`` is the phase this row runs under.
+    ("author", "debugging"): "t3:debugger",
+    # Codex auto-review (#1254): the codex_review.dispatch persistence handler
+    # creates a reviewer task whose PHASE encodes the review variant, so the
+    # /loop slot resolves the matching ``/codex:*`` slash-command agent directly
+    # (no per-task variant override needed). These are slash-command agents, not
+    # ``agents/*.md`` sub-agents — the conformance guard exempts the ``codex:``
+    # namespace from the ``t3:``-agent-file checks.
+    ("reviewer", "codex_reviewing"): "codex:review",
+    ("reviewer", "codex_adversarial_reviewing"): "codex:adversarial-review",
+    # SELFCATCH-5 critic: the async user-proxy critic runs as its OWN phase so its
+    # result (which returns ONLY ``critic_verdict``) is measured against the critic
+    # evidence contract, not the reviewing one — a critic result would otherwise fail
+    # ``check_evidence("reviewing")`` (which wants ``decisions``/``review_verdict``)
+    # before ``record_returned_critic_verdict`` is reached. Reuses the ``t3:reviewer``
+    # read-only+web sub-agent; the per-task critic contract drives the ``critic_verdict``
+    # it returns. The dispatch runs on the delivered (author-role) ticket.
+    ("author", "critic_reviewing"): "t3:reviewer",
+    # North-star PR-6 directive interpreter: a headless read-only pass that turns a
+    # plain-language directive into a typed ``MechanismSketch``, running as its OWN
+    # phase so its result (which returns ONLY ``directive_interpretation``) is measured
+    # against the interpret evidence contract, not the planning one. Reuses the
+    # ``t3:planner`` read-only+codebase-search sub-agent — the interpreter must find
+    # the REAL core seam every overlay flows through. The per-task interpreter contract
+    # (the mechanism-design doctrine + the PR-2 exemplar) drives the sketch it returns.
+    ("author", "directive_interpreting"): "t3:planner",
 }
+
+#: Phases a loop SCANNER writes DIRECTLY to ``Task.phase`` (``execution_target=
+#: HEADLESS``), bypassing the ``SUBAGENT_BY_PHASE`` ``(role, phase)`` dispatch map.
+#: They are still dispatchable headless ``Task`` rows, so the phase-tools totality
+#: lane (``tests/conformance/test_registry_parity.py``) must treat them as producers
+#: that REQUIRE an explicit ``_TOOLS_BY_PHASE`` least-privilege entry — the read-only
+#: fallback must never be the silent resolution for one (#3386). Owned HERE, in the
+#: canonical phase vocabulary, so a scanner and the totality lane read ONE source of
+#: truth rather than two literals that can drift; each scanner module re-exports its
+#: own token from this set.
+ARCHITECTURAL_REVIEW_PHASE: str = "architectural_review"
+DOGFOOD_SMOKE_PHASE: str = "dogfood_smoke"
+EVAL_LOCAL_PHASE: str = "eval_local"
+BACKLOG_SWEEP_PHASE: str = "backlog_sweep"
+SHORT_DESCRIBE_PHASE: str = "short_describe"
+SCANNER_DISPATCHED_PHASES: frozenset[str] = frozenset(
+    {
+        ARCHITECTURAL_REVIEW_PHASE,
+        DOGFOOD_SMOKE_PHASE,
+        EVAL_LOCAL_PHASE,
+        BACKLOG_SWEEP_PHASE,
+        SHORT_DESCRIBE_PHASE,
+    }
+)
+
+#: Every canonical FSM phase plus every reactive/dispatch-only phase registered
+#: in ``SUBAGENT_BY_PHASE`` (``debugging``/``bughunt``/``answering``/…) and every
+#: scanner-dispatched phase (``SCANNER_DISPATCHED_PHASES``). The full set a per-stage
+#: config key (``OverlayConfig.stage_skills``) may name — a key that does not
+#: normalize into this set is a typo the field validator rejects.
+KNOWN_PHASES: frozenset[str] = (
+    CANONICAL_PHASES | frozenset(phase for _role, phase in SUBAGENT_BY_PHASE) | SCANNER_DISPATCHED_PHASES
+)
 
 #: The chaining orchestrator must never be the target of an author phase
 #: dispatch — that is the shadowing the per-phase restoration removes. A
@@ -149,8 +223,8 @@ class PhaseFanout:
 #: → judge-panel (N independent plans + a synthesis pass, default 3). Both the
 #: author-role and reviewer-role reviewing phases carry the adversarial-verify
 #: directive (a self-authored review and an assigned cold review both benefit).
-#: ``bughunt`` is deferred until a bughunt phase is registered in
-#: ``SUBAGENT_BY_PHASE`` (the conformance test forbids an undispatched key).
+#: bughunt → find-then-verify (N independent bug-finding passes, then a
+#: verification pass that reproduces each candidate before it is reported).
 FANOUT_BY_PHASE: dict[tuple[str, str], PhaseFanout] = {
     ("reviewer", "reviewing"): PhaseFanout(
         pattern="adversarial-verify",
@@ -190,6 +264,20 @@ FANOUT_BY_PHASE: dict[tuple[str, str], PhaseFanout] = {
             "the {n} candidates and the synthesis inline and sequentially."
         ),
     ),
+    ("author", "bughunt"): PhaseFanout(
+        pattern="find-then-verify",
+        fanout_n=3,
+        directive_template=(
+            "FAN-OUT (find-then-verify, N={n}): run {n} independent bug-finding "
+            "passes over the target, each hunting a distinct class of defect "
+            "(logic errors, unhandled edge cases, races, stale assumptions). "
+            "Then run a verification pass that reproduces each candidate before "
+            "reporting it, so a false positive is caught by the verify pass "
+            "rather than shipped. If a parallel workflow runtime is available "
+            "use it; otherwise perform the {n} find passes and the verification "
+            "inline and sequentially."
+        ),
+    ),
 }
 
 
@@ -209,8 +297,8 @@ def resolve_fanout_directive(role: str, phase: str, cfg: "AgentConfig") -> str:
 
     The SINGLE chokepoint both the interactive (``loop_dispatch._task_to_dict``)
     and headless (``agents.prompt.build_system_context``) routes call. ``cfg`` is
-    a resolved :class:`~teatree.config_agent.AgentConfig` passed by the
-    loop-side caller, so ``core`` never imports UP into ``config_agent`` (tach).
+    a resolved :class:`~teatree.config.agent_spawn.AgentConfig` passed by the
+    loop-side caller, so ``core`` never imports UP into ``config.agent_spawn`` (tach).
 
     Default-OFF guarantee (the anti-vacuous spine): a pair with no
     ``[agent.phase_fanout]`` opt-in — the absent-key / ``False`` case — renders
@@ -239,8 +327,8 @@ def _phase_fanout_opt_in(phase_fanout: "dict[str, bool | int]", *, role: str, ph
     canonical gerund (``"reviewer:reviewing"``) — mirroring
     :func:`fanout_for_phase`'s normalization on the registry side. Keys are
     normalized here (in ``core``, where :func:`normalize_phase` lives) rather
-    than at parse time, so the platform-layer ``config_agent`` need not import UP
-    into ``core``. The canonical key wins when both spellings are present.
+    than at parse time, so the platform-layer ``config.agent_spawn`` need not
+    import UP into ``core``. The canonical key wins when both spellings are present.
     """
     canonical_key = f"{role}:{normalize_phase(phase)}"
     direct = phase_fanout.get(canonical_key)
@@ -295,6 +383,24 @@ def phase_spellings(phase: str) -> tuple[str, ...]:
     """
     canonical = normalize_phase(phase)
     return _PHASE_ALIASES.get(canonical, (canonical,))
+
+
+def canonicalize_stage_skill_keys(value: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Canonicalize a per-stage skills map's keys, rejecting an unknown phase.
+
+    Each key normalizes to its canonical phase (so a stored alias ``review`` and
+    a lookup gerund ``reviewing`` resolve to one entry); a key that does not
+    normalize into :data:`KNOWN_PHASES` is a typo and raises (fail loud at config
+    load). Empty skill names are dropped.
+    """
+    canonical: dict[str, list[str]] = {}
+    for phase, skills in value.items():
+        key = normalize_phase(phase)
+        if key not in KNOWN_PHASES:
+            msg = f"stage_skills key {phase!r} is not a known phase (normalized {key!r})"
+            raise ValueError(msg)
+        canonical[key] = [s for s in skills if isinstance(s, str) and s]
+    return canonical
 
 
 def phase_transition(phase: str) -> str | None:

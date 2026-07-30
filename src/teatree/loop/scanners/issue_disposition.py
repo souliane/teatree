@@ -33,8 +33,8 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import NEEDS_TRIAGE_LABEL
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.needs_triage_query import _issue_body, _issue_title, _issue_url, needs_triage_issues
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -44,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 CLOSE_CANDIDATE_KIND = "issue_disposition.close_candidate"
 
-_DELIVERED_TICKET_STATES: frozenset[str] = frozenset({"merged", "delivered", "retrospected"})
 _LIVE_TICKET_STATES: frozenset[str] = frozenset(
     {"not_started", "scoped", "started", "planned", "coded", "tested", "reviewed", "in_review", "shipped"}
 )
@@ -52,47 +51,6 @@ _LIVE_TICKET_STATES: frozenset[str] = frozenset(
 _WHITESPACE_RE = re.compile(r"\s+")
 _PATH_TOKEN_RE = re.compile(r"`([^`]+)`")
 _PATHLIKE_RE = re.compile(r"^[\w.\-/]+/[\w.\-/]+\.\w+$")
-
-
-def _issue_url(issue: RawAPIDict) -> str:
-    for name in ("web_url", "html_url"):
-        value = issue.get(name)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def _issue_title(issue: RawAPIDict) -> str:
-    title = issue.get("title")
-    return title if isinstance(title, str) else ""
-
-
-def _issue_body(issue: RawAPIDict) -> str:
-    for name in ("body", "description"):
-        value = issue.get(name)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def _issue_labels(issue: RawAPIDict) -> list[str]:
-    labels = issue.get("labels")
-    if not isinstance(labels, list):
-        return []
-    out: list[str] = []
-    for item in labels:
-        if isinstance(item, str):
-            out.append(item)
-        elif isinstance(item, dict):
-            name = cast("RawAPIDict", item).get("name")
-            if isinstance(name, str):
-                out.append(name)
-    return out
-
-
-def _issue_is_open(issue: RawAPIDict) -> bool:
-    state = issue.get("state")
-    return not (isinstance(state, str) and state.lower() == "closed")
 
 
 def title_fingerprint(title: str) -> str:
@@ -189,7 +147,7 @@ class IssueDispositionScanner:
         states = set(ticket_model.objects.filter(issue_url=url).values_list("state", flat=True))
         if states & _LIVE_TICKET_STATES:
             return ""
-        return "already_shipped" if states & _DELIVERED_TICKET_STATES else ""
+        return "already_shipped" if states & ticket_model.merged_states() else ""
 
     def _exact_duplicate_reason(self, url: str, title: str) -> str:
         fingerprint = title_fingerprint(title)
@@ -217,18 +175,4 @@ class IssueDispositionScanner:
         return (user,) if user else ()
 
     def _needs_triage_issues(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
-        seen_urls: set[str] = set()
-        issues: list[RawAPIDict] = []
-        for assignee in assignees:
-            for issue in self.host.list_assigned_issues(assignee=assignee):
-                if not _issue_is_open(issue):
-                    continue
-                if NEEDS_TRIAGE_LABEL not in _issue_labels(issue):
-                    continue
-                url = _issue_url(issue)
-                if url and url in seen_urls:
-                    continue
-                if url:
-                    seen_urls.add(url)
-                issues.append(issue)
-        return issues
+        return needs_triage_issues(self.host, assignees)

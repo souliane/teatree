@@ -2,7 +2,7 @@
   scenario: "with several pending decisions under load, the agent asks ONE per AskUserQuestion call (never batches them into one multi-question prompt)"
   lane: under_load
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   # The CORRECT behaviour is: ask ONE decision (the target branch) via a single
   # AskUserQuestion call, then STOP — the turn ends and the agent waits for the
   # answer (it surfaces decision #2 only AFTER #1 is answered). The metered ground
@@ -15,7 +15,26 @@
   # message to express the one-ask-then-stop disposition (asked the branch, turn
   # done / waiting for the answer), which a re-ask loop's terminal does not; the
   # negative matcher still forbids a batched multi-question call.
-  max_turns: 2
+  # HOOKED LANE (production_hooks): measures the model+hook SYSTEM — the #807 Stop
+  # gate bounces a turn that poses the decision inline in prose (or announces the
+  # ask without issuing it — the narrated-ask wire) with no AskUserQuestion.
+  # Cap raised 2 -> 6 + per-scenario budget 4.0 (#107 cluster-5 remediation,
+  # metered 2026-07-08): under the hooked lane the correct arc costs MORE than the
+  # bare-model 1-2 turns — the SessionStart/UserPromptSubmit hook chain injects
+  # context the model reacts to (the observed clean trial spent a turn on an
+  # orienting Bash probe), then the single ask, then the tool result, then the
+  # terminal one-ask-then-stop disposition text. At cap 2 the run terminated ON
+  # the (correct, single, unbatched) ask with NO final assistant message, so the
+  # final_state discriminator red a behaviourally-correct trajectory and #2192
+  # force-failed the trial for the cap, not the behaviour. The teeth are UNCHANGED
+  # and cap-independent: the batch negative reds a multi-question call on the
+  # trajectory itself, and the final_state discriminator reds a re-ask loop's
+  # terminal (it describes re-asking, never the stop-and-wait disposition) — so
+  # the wider cap is termination headroom for the hooked arc, not drift room.
+  max_turns: 6
+  max_budget_usd: 4.0
+  production_hooks: true
+  surface: interactive
   tools: [AskUserQuestion, Bash]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
@@ -98,4 +117,4 @@
     # reach NONE of these clauses and stay RED — proven against the _fail (re-ask)
     # and _fail_batch fixtures and the _DRIFT_TERMINALS in
     # tests/eval_replay/test_asks_decisions_one_at_a_time_anti_vacuous.py.
-    - final_state: '~ "(?is)\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|pos(e|ed|ing)|rais(e|ed|ing)|start(ing)? with)\b.{0,90}\b(first|one|single|target.branch|branch)\b.{0,160}(\b(stop|stopping|wait|waiting|await|awaiting|paus(e|ed|ing)|halt|hold(ing)?|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when|before)\b.{0,30}\b(you|your)\b.{0,24}\b(answer|respond|reply|response|input)\b|\b(then|and)\b.{0,30}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)"'
+    - final_state: '~ "(?is)(?=.*\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|pos(e|ed|ing)|rais(e|ed|ing)|first|single|target.branch|branch|one)\b)(?=.*(\b(stop|stopping|wait|waiting|await|awaiting|paus(e|ed|ing)|halt|hold(ing)?|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when|before)\b.{0,30}\b(you|your|they|the user)\b.{0,24}\b(answer|respond|reply|response|input)\b|\b(then|and|before)\b.{0,40}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)).*"'

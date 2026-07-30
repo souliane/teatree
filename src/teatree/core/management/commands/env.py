@@ -8,18 +8,16 @@ config), never the cache file.
 import json
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import typer
 from django.core.management import execute_from_command_line
 from django_typer.management import TyperCommand, command
 
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.models import Worktree, WorktreeEnvOverride
-from teatree.core.resolve import resolve_worktree
-from teatree.core.worktree_env import (
-    CACHE_DIRNAME,
-    CACHE_FILENAME,
+from teatree.core.worktree.worktree_env import (
     detect_drift,
+    env_cache_path,
     load_overrides,
     render_env_cache,
     set_override,
@@ -175,7 +173,7 @@ class Command(TyperCommand):
         return 0 if failures == 0 else 1
 
     def _migrate_single_worktree(self, worktree: Worktree) -> "_MigrationOutcome":
-        cache_path = _cache_path_for(worktree)
+        cache_path = env_cache_path(worktree)
         if cache_path is None:
             return _MigrationOutcome(ok=True, message="not provisioned — skipped")
 
@@ -183,14 +181,15 @@ class Command(TyperCommand):
         ticket = worktree.ticket
         if ticket is None:
             return _MigrationOutcome(ok=False, message="no ticket attached — cannot derive pass key")
-        ticket_number = ticket.ticket_number
 
         if not literal:
             write_env_cache(worktree)
             return _MigrationOutcome(ok=True, message="already migrated (no literal in cache)")
 
         try:
-            pass_key = ensure_postgres_pass_entry(ticket_number, literal)
+            # Keyed on the ticket pk (the canonical, unique key), matching
+            # ``Worktree.pass_key`` the env render writes into the cache.
+            pass_key = ensure_postgres_pass_entry(ticket.pk, literal)
         except PostgresPasswordUnavailableError as exc:
             return _MigrationOutcome(ok=False, message=str(exc))
 
@@ -198,13 +197,6 @@ class Command(TyperCommand):
         # symbolic reference.  The render layer already drops POSTGRES_PASSWORD.
         write_env_cache(worktree)
         return _MigrationOutcome(ok=True, message=f"migrated to pass key {pass_key}")
-
-
-def _cache_path_for(worktree: Worktree) -> Path | None:
-    wt_path = (worktree.extra or {}).get("worktree_path", "")
-    if not wt_path:
-        return None
-    return Path(wt_path).parent / CACHE_DIRNAME / CACHE_FILENAME
 
 
 @dataclass(frozen=True, slots=True)

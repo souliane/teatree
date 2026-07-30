@@ -96,7 +96,7 @@ class AssessSweepRun(models.Model):
     @classmethod
     def is_due(cls, overlay: str, interval_hours: float) -> bool:
         """Return True if no recent run or the latest run is older than the interval."""
-        from datetime import timedelta  # noqa: PLC0415
+        from datetime import timedelta  # noqa: PLC0415 — deferred: loaded only on this code path
 
         try:
             row = cls.objects.get(overlay=overlay)

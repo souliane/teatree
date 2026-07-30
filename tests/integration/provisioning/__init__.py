@@ -4,7 +4,7 @@ Where ``tests/teatree_core/test_provisioning_contract.py`` pins the
 orchestration *logic* with docker/subprocess seams mocked, this package
 provisions a *real* worktree, runs a *real* DB-touching test inside it,
 starts the *real* server(s), and asserts they actually serve over HTTP
-via :func:`teatree.core.readiness.run_probes`.
+via :func:`teatree.core.worktree.readiness.run_probes`.
 
 ``_base.py`` holds the overlay-agnostic machinery as an ``abc.ABC``; each
 ``test_<target>.py`` subclasses it and fills in the per-target hooks. The

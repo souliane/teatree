@@ -47,6 +47,7 @@ class TestUndeliveredNotifyScanner(TestCase):
             kind=BotPing.Kind.INFO,
             status=BotPing.Status.NOOP,
             text="sub-agent finished",
+            audience="owner_delivery",  # only owner-audience rows re-deliver
         )
 
         class _FakeBackend:

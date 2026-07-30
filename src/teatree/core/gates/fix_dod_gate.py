@@ -74,7 +74,7 @@ class FixRecordDodError(InvalidTransitionError):
 
 def is_fix(ticket: "Ticket") -> bool:
     """Return True iff the ticket is classified as a fix (the governed kind)."""
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+    from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     return ticket.kind == Ticket.Kind.FIX
 

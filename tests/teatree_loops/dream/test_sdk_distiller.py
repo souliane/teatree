@@ -1,0 +1,513 @@
+"""Tests for the real LLM distiller seam — extract → clusters, no live LLM (#2723)."""
+
+import json
+import os
+import sqlite3
+import tempfile
+import threading
+from collections.abc import Callable
+from pathlib import Path
+from typing import Self
+from unittest.mock import patch
+
+import claude_agent_sdk
+import pytest
+from django.test import SimpleTestCase, TestCase
+
+from teatree.agents.model_tiering import resolve_tier
+from teatree.core.models import ConfigSetting
+from teatree.llm.credentials import CredentialError
+from teatree.loops.dream import sdk_distiller
+from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
+from teatree.loops.dream.sdk_distiller import deterministic_cluster_key, sdk_distill
+from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
+
+
+def _recording_client(reply: str) -> Callable[..., FakeHarnessSession]:
+    """A fake ``ClaudeSDKClient`` that records the ``options`` it was opened with."""
+
+    def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
+        FakeHarnessSession.last_options = options
+        return FakeHarnessSession([assistant_text(reply)])
+
+    return _make_client
+
+
+def _seed_config_setting(db_path: Path, key: str, raw_value: str) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, raw_value))
+    conn.commit()
+    conn.close()
+
+
+def _extract_with_one_snippet() -> ConsolidationExtract:
+    return ConsolidationExtract(
+        snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
+        truncated=False,
+    )
+
+
+def _no_credentials() -> dict[str, str] | None:
+    """#3512: the SimpleTestCase turns inject the credential resolver, never read the DB."""
+    return None
+
+
+class SdkDistillerParseTestCase(SimpleTestCase):
+    def test_parses_clusters_from_json(self) -> None:
+        payload = (
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"the mistake","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        # #2723: the cluster_key is a deterministic sha256 over the member set, NOT
+        # the LLM-supplied "k1" slug.
+        assert clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
+        assert clusters[0].cluster_key != "k1"
+        assert clusters[0].is_binding is True
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_parses_json_embedded_in_prose(self) -> None:
+        payload = (
+            "Here is the result:\n"
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/f.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]\n'
+            "Done."
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+
+    def test_parses_json_with_bracketed_prose_around_the_array(self) -> None:
+        # #2847 RED: the model wraps its array in bracket-heavy prose (a markdown-ish
+        # ref and a trailing marker). The greedy first-"[" .. last-"]" span captured the
+        # prose brackets, json.loads raised, and the batch silently yielded 0. The
+        # balanced-bracket scan must skip the prose "[...]" spans and return the real array.
+        payload = (
+            "Here are the clusters [per your guidance #2663]: "
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"x","durable_destination":"d.md"}]'
+            " — done [end]"
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_parses_json_from_a_fenced_code_block(self) -> None:
+        # The model wraps its array in a ```json fence; the direct decode fails on the
+        # backticks, so the fenced-block tier must extract and decode the inner array.
+        payload = (
+            "```json\n"
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"x","durable_destination":""}]\n'
+            "```"
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+
+    def test_balanced_scan_skips_string_brackets_and_a_bad_prose_span(self) -> None:
+        # A leading prose "[noise]" span must be skipped, and a JSON string value carrying
+        # an escaped quote and bracket characters must NOT skew the bracket depth.
+        payload = (
+            "prose [noise] "
+            '[{"cluster_key":"k1","rule":"match \\"x\\" in [a-z]+",'
+            '"source_files":["/feedback_x.md"],"is_binding":false,'
+            '"verified_citation":"q","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_prose_scalar_array_before_the_real_cluster_array_does_not_win(self) -> None:
+        # #2861 RED: a syntactically-valid scalar array in prose BEFORE the real cluster
+        # array made the balanced scan return [1,2,3], which classified ALL_ENTRIES_DROPPED
+        # instead of distilling the clusters. The object-bearing preference must pick the
+        # real array.
+        payload = (
+            "Considering rules [1, 2, 3] I produce: "
+            '[{"rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"x","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert len(result.clusters) == 1
+        assert result.empty_reason is None
+        assert result.clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_prose_empty_array_before_the_real_cluster_array_does_not_win(self) -> None:
+        # #2861 RED: an empty array in prose BEFORE the real cluster array made the scan
+        # return [] and mis-classify NOTHING_TO_CONSOLIDATE (broken-as-healthy). The
+        # object-bearing preference must skip the empty array and distil the real one.
+        payload = (
+            "There is nothing here [] but actually: "
+            '[{"rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"x","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert len(result.clusters) == 1
+        assert result.empty_reason is None
+
+    def test_fenced_non_array_falls_through_to_the_balanced_scan(self) -> None:
+        # A ```json fence wrapping a JSON object (not an array) is not the result; the
+        # scan must fall through to the real array that follows in prose.
+        payload = (
+            '```json\n{"not": "an array"}\n```\n'
+            '[{"rule":"r","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_json_object_not_array_yields_no_clusters(self) -> None:
+        # A decodable JSON object (not a list) is not an array — it yields no clusters.
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value='{"not": "an array"}'):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert clusters == []
+
+    def test_malformed_json_yields_no_clusters(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="not json at all"):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert clusters == []
+
+    def test_skips_entries_missing_required_keys(self) -> None:
+        # cluster_key is NO LONGER required from the LLM (it is derived). A missing
+        # rule/source_files still drops the entry; a complete one is kept.
+        payload = (
+            '[{"is_binding":false},'
+            '{"rule":"r","source_files":["/f.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/f.md"]
+
+    def test_cluster_key_is_deterministic_over_member_set(self) -> None:
+        # #2723: two payloads with the SAME member set but DIFFERENT LLM slugs derive
+        # the SAME cluster_key (and member order does not matter).
+        def _payload(slug: str, files: str) -> str:
+            return (
+                f'[{{"cluster_key":"{slug}","rule":"r","source_files":{files},'
+                '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+            )
+
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=_payload("slug-one", '["/b.md","/a.md"]')):
+            ca = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=_payload("slug-two", '["/a.md","/b.md"]')):
+            cb = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert ca[0].cluster_key == cb[0].cluster_key
+        # And it is a sha256 hex digest, matching the model docstring.
+        assert len(ca[0].cluster_key) == 64
+
+    def test_blank_and_whitespace_paths_are_dropped_before_hashing(self) -> None:
+        # The normalization that anchors idempotency: blanks dropped, dupes collapsed,
+        # order ignored — so "  /a.md ", "/a.md", "" hash to the same key as ["/a.md"].
+        key_noisy = deterministic_cluster_key(["  /a.md ", "/a.md", "", "   "])
+        key_clean = deterministic_cluster_key(["/a.md"])
+        assert key_noisy == key_clean
+
+    def test_malformed_json_array_decode_error_yields_no_clusters(self) -> None:
+        # A bracketed-but-INVALID payload reaches json.loads and raises JSONDecodeError;
+        # the parse swallows it to [] rather than crashing the pass.
+        payload = '[{"rule": "r", not valid json]'
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert clusters == []
+
+    def test_non_object_and_bad_source_files_entries_are_dropped(self) -> None:
+        # A non-Mapping element and a complete element whose source_files is not a list
+        # are both dropped; only the well-formed element survives.
+        payload = (
+            '["a bare string, not an object",'
+            '{"rule":"r","source_files":"not-a-list",'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""},'
+            '{"rule":"r","source_files":["/f.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/f.md"]
+
+    def test_missing_claude_binary_raises(self) -> None:
+        # The guard: with no claude on PATH the real turn raises rather than faking a
+        # success, so the pass is marked attempted-not-succeeded.
+        with (
+            patch("shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="claude is not installed"),
+        ):
+            sdk_distiller._run_distiller_turn(_extract_with_one_snippet(), child_env=_no_credentials)
+
+    def test_live_turn_renders_snippets_and_parses_the_sdk_reply(self) -> None:
+        # The real _run_distiller_turn -> _collect_turn path with the SDK client faked:
+        # the prompt carries the rendered snippet, and the assistant's JSON reply is
+        # parsed into a cluster (deterministic key over the cited member).
+        reply = json.dumps(
+            [
+                {
+                    "cluster_key": "ignored-slug",
+                    "rule": "do x",
+                    "source_files": ["/feedback_x.md"],
+                    "is_binding": True,
+                    "verified_citation": "x",
+                    "durable_destination": "d.md",
+                }
+            ]
+        )
+
+        def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
+            return FakeHarnessSession([assistant_text(reply)])
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _make_client),
+        ):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet(), child_env=_no_credentials)
+        assert len(clusters) == 1
+        assert clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
+        assert "BINDING: x" in FakeHarnessSession.last_prompt
+
+    def test_sdk_turn_failure_raises(self) -> None:
+        with (
+            patch.object(sdk_distiller, "_run_distiller_turn", side_effect=RuntimeError("sdk boom")),
+            pytest.raises(RuntimeError),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+    def test_empty_extract_short_circuits_without_sdk_call(self) -> None:
+        empty = ConsolidationExtract(snippets=(), truncated=False)
+        with patch.object(sdk_distiller, "_run_distiller_turn") as turn:
+            clusters = sdk_distiller.sdk_distiller(empty)
+        turn.assert_not_called()
+        assert clusters == []
+
+
+class DistillOptionsTierResolutionTestCase(SimpleTestCase):
+    """The distiller turn is tier-resolved with a plain-string prompt, not a hardcoded id (§3a #1)."""
+
+    def test_model_defaults_to_the_cheap_tier(self) -> None:
+        options = sdk_distiller._distill_options()
+        assert options.model == resolve_tier("cheap")
+
+    def test_model_follows_the_cheap_tier_db_override(self) -> None:
+        # RED before the fix: the model was the hardcoded ``_DISTILL_MODEL``, so an
+        # ``agent_tier_models`` DB override for the cheap tier was silently ignored and
+        # the aux distiller call could never follow an off-Claude tier.
+        db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
+        _seed_config_setting(db, "agent_tier_models", json.dumps({"cheap": "vendor/custom-cheap"}))
+        with patch.dict("os.environ", {"T3_CONFIG_DB": str(db)}):
+            options = sdk_distiller._distill_options()
+        assert options.model == "vendor/custom-cheap"
+
+    def test_system_prompt_is_a_plain_string(self) -> None:
+        # A plain-string system prompt (not the ``claude_code`` preset) keeps the turn
+        # model-agnostic so an off-Claude tier resolves cleanly.
+        options = sdk_distiller._distill_options()
+        assert isinstance(options.system_prompt, str)
+        assert "consolidate" in options.system_prompt.lower()
+
+
+class SdkDistillerCredentialEnvTestCase(TestCase):
+    """The distiller authenticates its ``claude`` subprocess via the configured provider.
+
+    Regression pin for the dream-consolidation outage: the distiller spawned ``claude``
+    with no credential env, so on a worker whose ambient env carries no token the
+    subprocess could not authenticate and its login-error text parsed as ``UNPARSABLE``
+    — 0 clusters, forever, masquerading as "nothing to consolidate". DB access: reads
+    ``agent_harness_provider`` + the credential routing list.
+    """
+
+    def test_options_env_pins_subscription_token(self) -> None:
+        # RED before the fix: _distill_options set no env, so options.env == {} and the
+        # spawned claude rode the (token-less) ambient env.
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        with (
+            patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "GIT_DIR": "/outer/.git"}),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+        options = FakeHarnessSession.last_options
+        assert options is not None
+        assert options.env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
+        assert "ANTHROPIC_API_KEY" not in options.env
+        # The git_env_without_overrides() base strips an outer git hook's GIT_DIR so
+        # options.env can never re-inject it into the child.
+        assert "GIT_DIR" not in options.env
+
+    def test_options_env_stays_ambient_with_no_provider(self) -> None:
+        # No provider pin → system_child_env() returns None → options.env keeps the SDK
+        # default empty mapping (ambient inherited), exactly as before the pinning.
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+        assert FakeHarnessSession.last_options.env == {}
+
+    def test_unresolvable_credential_fails_loud_before_any_turn(self) -> None:
+        # An auth gap must RAISE (CredentialError) before the turn spawns, so it can
+        # never be laundered into an UNPARSABLE 0-cluster result. The client is never
+        # constructed.
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+
+        def _never(*_a: object, **_k: object) -> FakeHarnessSession:
+            msg = "the claude turn must not start when the credential is unresolvable"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "teatree.agents._headless_env.resolve_subscription_credential",
+                side_effect=CredentialError("no subscription token resolvable"),
+            ),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _never),
+            pytest.raises(CredentialError),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+    def test_pydantic_ai_provider_falls_back_to_ambient(self) -> None:
+        # A pydantic_ai-only provider warns and uses ambient auth rather than breaking a
+        # valid deployment: the turn still runs and options.env stays the SDK default.
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+        assert FakeHarnessSession.last_options.env == {}
+
+
+class SdkDistillReasonTestCase(SimpleTestCase):
+    """The 0-cluster path is diagnosable: sdk_distill signals WHY it produced 0 (#2847)."""
+
+    def test_empty_raw_is_classified(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="   "):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.EMPTY_RAW
+
+    def test_unparsable_raw_is_classified(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="not json at all"):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.UNPARSABLE
+
+    def test_genuine_empty_array_is_healthy(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="[]"):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.NOTHING_TO_CONSOLIDATE
+
+    def test_array_with_all_entries_dropped_is_classified(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value='[{"is_binding":false}]'):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.ALL_ENTRIES_DROPPED
+
+    def test_productive_result_carries_no_reason(self) -> None:
+        payload = (
+            '[{"rule":"r","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert len(result.clusters) == 1
+        assert result.empty_reason is None
+
+    def test_sdk_distill_derives_the_deterministic_cluster_key(self) -> None:
+        # The public seam anchors idempotency: the returned cluster keys off the member
+        # set (sha256), never the LLM-supplied slug.
+        payload = (
+            '[{"cluster_key":"llm-slug","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"x","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distill(_extract_with_one_snippet())
+        assert result.empty_reason is None
+        assert result.clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
+        assert result.clusters[0].cluster_key != "llm-slug"
+
+    def test_empty_extract_is_nothing_to_consolidate_without_sdk_call(self) -> None:
+        empty = ConsolidationExtract(snippets=(), truncated=False)
+        with patch.object(sdk_distiller, "_run_distiller_turn") as turn:
+            result = sdk_distiller.sdk_distill(empty)
+        turn.assert_not_called()
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.NOTHING_TO_CONSOLIDATE
+
+
+class _HangOnConnectClient:
+    """A ``ClaudeSDKClient`` stand-in whose connect (``__aenter__``) never returns.
+
+    Models a ``claude`` subprocess that stalls during spawn/handshake — the region
+    the prior watchdog (which wrapped only the response drain) did NOT cover, so a
+    real stall there hung the dream pass forever.
+    """
+
+    def __init__(self, *, options: object = None, **_: object) -> None:
+        self._options = options
+
+    async def __aenter__(self) -> Self:
+        import asyncio  # noqa: PLC0415
+
+        await asyncio.sleep(30)  # connect stalls; only the turn watchdog can bound it
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def query(self, prompt: str) -> None:  # pragma: no cover - connect hangs first
+        return None
+
+    async def receive_response(self) -> object:  # pragma: no cover - connect hangs first
+        return
+        yield  # unreachable
+
+
+class SdkDistillerWatchdogTestCase(SimpleTestCase):
+    def test_turn_is_time_bounded_when_sdk_connect_hangs(self) -> None:
+        # Anti-vacuous regression pin for the silent-hang bug: a stalled ``claude``
+        # CONNECT must raise TimeoutError within the watchdog, never hang the dream
+        # pass forever. RED on the pre-fix code whose watchdog wrapped only the
+        # response drain (leaving connect/query unbounded); GREEN once the watchdog
+        # bounds the WHOLE turn. Run on a thread so a regression hangs the THREAD,
+        # not the suite, and is observed as a still-alive thread.
+        captured: dict[str, BaseException | None] = {}
+
+        def _run() -> None:
+            try:
+                sdk_distiller._run_distiller_turn(_extract_with_one_snippet(), child_env=_no_credentials)
+                captured["exc"] = None
+            except BaseException as exc:  # noqa: BLE001 - record whatever the turn raised
+                captured["exc"] = exc
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(sdk_distiller, "_DISTILL_WATCHDOG_SECONDS", 0.5),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _HangOnConnectClient),
+        ):
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            thread.join(timeout=8)
+
+        assert not thread.is_alive(), (
+            "distiller SDK turn was NOT time-bounded: a stalled claude connect hangs the dream pass forever"
+        )
+        assert isinstance(captured.get("exc"), TimeoutError), (
+            f"expected the watchdog to raise TimeoutError on a stalled turn, got {captured.get('exc')!r}"
+        )

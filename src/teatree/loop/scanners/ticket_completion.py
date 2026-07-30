@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
-from teatree.backends.loader import get_code_host_for_url
+from teatree.backends.loader import issue_is_done
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
 
@@ -30,16 +30,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _has_draft_mrs(ticket: "Ticket") -> bool:
-    """Return True if any MR in the ticket's extra is still a draft."""
+def _has_draft_prs(ticket: "Ticket") -> bool:
+    """Return True if any PR in the ticket's extra is still a draft."""
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    mrs = extra.get("mrs", {})
-    if not isinstance(mrs, dict):
+    prs = extra.get("prs", {})
+    if not isinstance(prs, dict):
         return False
-    return any(isinstance(mr, dict) and mr.get("draft") for mr in mrs.values())
-
-
-_COMPLETABLE_STATES: frozenset[str] = frozenset({"shipped", "in_review", "merged"})
+    return any(isinstance(pr, dict) and pr.get("draft") for pr in prs.values())
 
 
 @dataclass(slots=True)
@@ -54,11 +51,11 @@ class TicketCompletionScanner:
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
             try:
-                if _has_draft_mrs(ticket):
+                if _has_draft_prs(ticket):
                     signals.append(
                         ScanSignal(
                             kind="ticket.reopen_needed",
-                            summary=f"Ticket {ticket.ticket_number} — draft MRs exist, reopening",
+                            summary=f"Ticket {ticket.ticket_number} — draft PRs exist, reopening",
                             payload={
                                 "ticket_id": ticket.pk,
                                 "ticket_state": ticket.state,
@@ -68,17 +65,7 @@ class TicketCompletionScanner:
                     )
                     continue
 
-                host = get_code_host_for_url(self.overlay, ticket.issue_url)
-                if host is None:
-                    continue
-                try:
-                    issue_data = host.get_issue(ticket.issue_url)
-                except Exception:  # noqa: BLE001
-                    logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
-                    continue
-                if not isinstance(issue_data, dict) or "error" in issue_data:
-                    continue
-                if self.overlay.is_issue_done(issue_data):
+                if issue_is_done(self.overlay, ticket.issue_url):
                     signals.append(
                         ScanSignal(
                             kind="ticket.completion_detected",
@@ -97,7 +84,7 @@ class TicketCompletionScanner:
 
     def _candidate_tickets(self) -> Iterable["Ticket"]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-        qs = ticket_model.objects.filter(state__in=_COMPLETABLE_STATES).exclude(issue_url="")
+        qs = ticket_model.objects.filter(state__in=ticket_model.completable_states()).exclude(issue_url="")
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
         return qs.only("id", "issue_url", "state", "overlay")

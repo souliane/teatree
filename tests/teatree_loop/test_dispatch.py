@@ -5,7 +5,7 @@
 behind two ambient gates inside ``dispatch`` — ``review_loop_enabled()`` (#79)
 and ``review_target_is_dead()`` (#2081, a live ``get_pr_open_state`` lookup
 through the per-URL code host). Both are read from process-global state (the
-real ``~/.teatree.toml`` loop config and the cached/credentialed code-host
+DB-home loop config and the cached/credentialed code-host
 backend), so a sibling test that leaves a code host resolving the test URL to
 MERGED/CLOSED — or that disables the review loop — would make this module's
 routing tests silently drop the reviewer dispatch and raise ``StopIteration``
@@ -65,8 +65,15 @@ class MyPrFailedDispatchTests(TestCase):
         assert ("agent", "t3:debug") in kinds_zones
         assert ("statusline", "action_needed") in kinds_zones
 
-    def test_my_pr_failed_idempotent_on_same_head_sha(self) -> None:
-        """Re-dispatching on the same ``(pr_url, head_sha)`` yields no second agent action (#1295 cap D)."""
+    def test_dispatch_always_emits_agent_action_dedup_is_persist_time(self) -> None:
+        """Dispatch emits the ``t3:debug`` agent action on EVERY tick (#1 blocker).
+
+        The RedMrFixAttempt idempotency claim moved from dispatch time to PERSIST
+        time (``persistence._handle_debug``), so a dropped/failed persist can no
+        longer burn the marker before the fix runs. Dispatch is therefore
+        unconditional; the per-SHA dedup is proven at persist time in
+        ``tests/teatree_loop/test_persistence_zone_handlers.py``.
+        """
         signal = ScanSignal(
             kind="my_pr.failed",
             summary="PR #1 failed",
@@ -74,12 +81,9 @@ class MyPrFailedDispatchTests(TestCase):
         )
         first = dispatch([signal])
         second = dispatch([signal])
-        first_agents = [a for a in first if a.kind == "agent"]
-        second_agents = [a for a in second if a.kind == "agent"]
-        assert len(first_agents) == 1
-        assert second_agents == []
-        # Statusline mirror still fires on every tick — user sees the
-        # red PR even though the agent does not re-run.
+        assert [a for a in first if a.kind == "agent"]
+        assert [a for a in second if a.kind == "agent"]
+        # Statusline mirror still fires on every tick — user always sees the red PR.
         assert any(a.kind == "statusline" for a in second)
 
 
@@ -95,12 +99,12 @@ def test_reviewer_pr_new_sha_dispatches_to_reviewer_agent() -> None:
     assert actions[0].zone == "t3:reviewer"
 
 
-def test_issue_implementer_claimed_dispatches_to_orchestrator_and_statusline() -> None:
-    """A claimed auto-implement issue is a maker-side kickoff to ``t3:orchestrator`` (#1554)."""
+def test_issue_intake_admitted_dispatches_to_orchestrator_and_statusline() -> None:
+    """An admitted issue is a maker-side kickoff to ``t3:orchestrator`` (#3634)."""
     actions = dispatch(
         [
             ScanSignal(
-                kind="issue_implementer.claimed",
+                kind="issue_intake.admitted",
                 summary="Claimed for auto-implement: do it",
                 payload={"url": "https://github.com/souliane/teatree/issues/100"},
             ),
@@ -325,6 +329,23 @@ class SelfUpdateStatuslineTests(TestCase):
     def test_failed_is_dropped(self) -> None:
         assert self._zone("self_update.failed", "fetch:boom") is None
 
+    def test_schema_behind_survives_dispatch_into_action_needed(self) -> None:
+        """#3901: the schema-behind outage must reach the statusline, not be dropped.
+
+        The clone advanced onto code its control DB cannot serve and the post-pull
+        reconcile could not fix it, so the claim gate is refusing work until a human
+        acts. Asserting only that the scanner EMITS the kind is not enough — the
+        ``self_update.`` drop prefix runs BEFORE the zone table in ``_dispatch_one``,
+        so without an explicit exemption the announcement is dead code.
+        """
+        signal = ScanSignal(
+            kind="self_update.schema_behind",
+            summary="self-update teatree: control DB BEHIND the pulled code (migrate failed)",
+            payload={"repo": "teatree", "detail": "migrate failed"},
+        )
+        actions = dispatch([signal])
+        assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
+
 
 class PrSweepFlagStatuslineTests(TestCase):
     """#68/#78: pr_sweep flag-level signals surface; the rest of the family is dropped."""
@@ -428,24 +449,6 @@ def test_slack_signal_with_non_string_text_emits_only_statusline() -> None:
     payload: dict[str, object] = {"event": {"text": 42}}
     actions = dispatch([ScanSignal(kind="slack.dm", summary="x", payload=payload)])
     assert [a.kind for a in actions] == ["statusline"]
-
-
-def test_assigned_issue_ready_with_auto_start_dispatches_to_orchestrator() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5", payload={"auto_start": True})])
-    assert actions[0].kind == "agent"
-    assert actions[0].zone == "t3:orchestrator"
-
-
-def test_assigned_issue_ready_without_auto_start_goes_to_statusline() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5", payload={"auto_start": False})])
-    assert actions[0].kind == "statusline"
-    assert actions[0].zone == "action_needed"
-
-
-def test_assigned_issue_ready_default_payload_goes_to_statusline() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5")])
-    assert actions[0].kind == "statusline"
-    assert actions[0].zone == "action_needed"
 
 
 def _answering_signal(extra: dict[str, object] | None = None) -> ScanSignal:

@@ -2,10 +2,16 @@
 
 Single source of truth: commits on PUBLIC ``souliane/*`` repos use a
 GitHub ``users.noreply.github.com`` author identity rather than the
-machine's inherited git identity. Strictly scoped by remote slug —
-non-souliane / private remotes are excluded so their own configured
-identity is left as-is. Reused by the worktree provisioner and the
-merge author-verification helper.
+machine's inherited git identity. Strictly scoped by remote host AND
+visibility — non-github (e.g. GitLab) and private remotes are excluded
+so their own configured identity is left as-is. Reused by the worktree
+provisioner and the fast-push commit-identity leak gate
+(:meth:`teatree.core.fast_push.LeakGateScan._author_identity`).
+
+The gate is HOST-AWARE (#2655): callers pass the full remote URL (host
+intact), never the host-stripped slug — a bare ``owner/repo`` from a
+GitLab remote would otherwise be resolved against github.com and a
+GitLab clone could be stamped with the github identity.
 """
 
 import re
@@ -44,10 +50,6 @@ _CANONICAL_NAME = "souliane"
 _CANONICAL_EMAIL = "21343492+souliane@users.noreply.github.com"
 
 
-class MergeAuthorMismatchError(RuntimeError):
-    """A squash-merge author did not match the required noreply pattern."""
-
-
 def is_noreply_email(email: str) -> bool:
     return bool(NOREPLY_RE.match(email.strip())) if email else False
 
@@ -60,6 +62,40 @@ def _slug_from(remote: str) -> str:
     elif "@" in cleaned and ":" in cleaned:
         cleaned = cleaned.split(":", 1)[1]
     return cleaned
+
+
+def _host_from(remote: str) -> str:
+    """Extract the bare host of a git remote URL (no user/port).
+
+    Handles the three shapes git remotes take. A
+    ``scheme://[user@]host[:port]/owner/repo`` URL and a scp-like
+    ``user@host:owner/repo`` URL both yield ``host``; a bare
+    ``owner/repo`` slug (no host) yields ``""``. A ``user@`` prefix and a
+    ``:port`` suffix are dropped so only the hostname remains.
+    """
+    cleaned = remote.strip()
+    if "://" in cleaned:
+        authority = cleaned.split("://", 1)[1].split("/", 1)[0]
+    elif "@" in cleaned and ":" in cleaned:
+        authority = cleaned.split("@", 1)[1].split(":", 1)[0]
+    else:
+        return ""
+    authority = authority.split("@")[-1]  # drop any user@ that slipped through
+    return authority.split(":", 1)[0]  # drop :port
+
+
+def is_github_host(remote: str) -> bool:
+    """True iff ``remote``'s host is github.com (incl. an ssh-alias host).
+
+    A GitHub ssh alias such as ``git@github.com-work:owner/repo``
+    (configured in ``~/.ssh/config`` to disambiguate accounts) resolves
+    to github.com, so a ``github.com-<alias>`` host counts as github too.
+    A non-github host (``gitlab.com``, ``bitbucket.org``, a self-hosted
+    GitLab) is NOT github — its bare ``owner/repo`` slug must never be
+    resolved against github.com (the host-blind-slug footgun, #2655).
+    """
+    host = _host_from(remote)
+    return host == "github.com" or host.startswith("github.com-")
 
 
 def is_public_github_remote(remote: str) -> bool:
@@ -80,8 +116,21 @@ def is_public_github_remote(remote: str) -> bool:
     proactive setter then leaves the inherited identity untouched. That
     matches the reactive hook's "unknown ⇒ pass" stance (it does not
     block on unknown either), so no hard-fail asymmetry is introduced.
+
+    Host-aware (#2655): the slug parser strips the host, so a GitLab
+    remote (``git@gitlab.com:acme-eng/widget.git``) collapses to a bare
+    ``acme-eng/widget`` that ``gh repo view`` would then resolve against
+    **github.com**. If a public github.com repo happened to exist at that
+    owner/repo, a GitLab clone would be stamped with the public GitHub
+    noreply identity rather than its inherited identity. The host guard
+    short-circuits any non-github host to ``False`` BEFORE the ``gh``
+    call, so a gitlab/bitbucket remote is never queried — nor stamped —
+    as github. Callers must therefore pass the full remote URL (host
+    intact), never the host-stripped slug.
     """
     if not remote:
+        return False
+    if not is_github_host(remote):
         return False
     slug = _slug_from(remote)
     parts = slug.split("/")

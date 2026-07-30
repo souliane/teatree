@@ -74,7 +74,7 @@ class TestBuildReviewPostPermalinksDjangoErrors:
 def test_enrich_pr_refs_with_permalinks_is_noop_for_empty_map() -> None:
     """Empty permalinks must leave the classified ref lists untouched."""
     c = _ClassifiedActions()
-    ref = _PRRef(iid=1, url="https://x/mr/1", annotation="")
+    ref = _PRRef(iid=1, url="https://x/mr/1")
     c.action_prs["t3"] = [ref]
     c.inflight_prs["t3"] = [ref]
     enrich_pr_refs_with_permalinks(c, {})
@@ -84,8 +84,8 @@ def test_enrich_pr_refs_with_permalinks_is_noop_for_empty_map() -> None:
 
 def test_enrich_pr_refs_with_permalinks_replaces_only_matching_urls() -> None:
     c = _ClassifiedActions()
-    matched = _PRRef(iid=1, url="https://x/mr/1", annotation="")
-    other = _PRRef(iid=2, url="https://x/mr/2", annotation="")
+    matched = _PRRef(iid=1, url="https://x/mr/1")
+    other = _PRRef(iid=2, url="https://x/mr/2")
     c.inflight_prs["t3"] = [matched, other]
     enrich_pr_refs_with_permalinks(c, {"https://x/mr/1": "https://slack.com/archives/C9/p1"})
     refs = c.inflight_prs["t3"]

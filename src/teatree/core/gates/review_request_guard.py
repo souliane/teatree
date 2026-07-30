@@ -8,24 +8,32 @@ The guard runs in the SAME turn as the post and is the single authority
 on whether a review-request message may go out.
 
 Live read, not just the DB. It reads the target channel's recent
-``conversations.history`` (recency-bounded via ``oldest``) with the
-*same* token the post will use — read-token == post-token, so a
-Slack-Connect channel the bot token cannot read is read with the user's
-``xoxp`` exactly when the post would use it. ANY in-window message
-containing the canonical MR URL suppresses the post, regardless of
-author — a user's manual post must suppress the agent.
+``conversations.history`` bounded to ``review_request_dedup_window_days``
+(default 30, config-driven — no more hard-coded 24h) with the *same*
+token the post will use — read-token == post-token, so a Slack-Connect
+channel the bot token cannot read is read with the user's ``xoxp``
+exactly when the post would use it. ANY in-window message containing the
+canonical MR URL suppresses the post, regardless of author — a user's
+manual post must suppress the agent.
+
+Live is the source of truth, never a bare DB row. A posted
+``ReviewRequestPost`` row (``slack_thread_ts`` set) is NOT trusted on its
+own beyond the window (:func:`_posted_row_terminal`): its exact thread is
+live-read via ``conversations.replies`` (routed token) — still there ⇒
+SUPPRESS + refresh; gone (deleted) ⇒ reclaim → POST. Both ``post`` and
+``check`` (peek) share this verification so they agree beyond the window.
 
 Atomic DB claim (post path only). A clean "nothing found" read is not
 sufficient on its own (two callers could both read empty concurrently).
-Before returning POST :func:`should_post_review_request` takes the
-``ReviewRequestPost`` ``get_or_create`` claim on ``mr_url``;
-``created=False`` SUPPRESSES — but ONLY for a genuine *recent*
-concurrent claim. A stale unposted orphan (older than
-:data:`_CLAIM_RACE_WINDOW`) is reclaimed → POST, because the live scan
-is the authority that nothing was posted (#1103). The decision-only
-:func:`peek_should_post_review_request` (used by
-``review_request_check``) takes NO claim at all, so it can never leave
-an orphan that wedges a later real post.
+When no posted row survives verification, :func:`should_post_review_request`
+takes the ``ReviewRequestPost`` ``get_or_create`` claim on ``mr_url``;
+``created=False`` SUPPRESSES — but ONLY for a genuine *recent* concurrent
+unposted claim. A stale unposted orphan (older than
+:data:`_CLAIM_RACE_WINDOW`) is reclaimed → POST, because the live scan is
+the authority that nothing was posted (#1103). The decision-only
+:func:`peek_should_post_review_request` (used by ``review_request_check``)
+takes NO claim at all, so it can never leave an orphan that wedges a later
+real post.
 
 Fail safe. The httpx read is bounded (hard timeout + bounded pages). On
 timeout / HTTP error / API not-ok the guard SUPPRESSES with
@@ -45,6 +53,7 @@ independent review).
 
 import datetime as dt
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -53,6 +62,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.models import PullRequest, ReviewRequestPost
+from teatree.core.overlay_loader import infer_overlay_for_url
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import MessagingBackend
@@ -60,9 +70,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RECENCY_WINDOW = dt.timedelta(hours=24)
 _DEFAULT_READ_TIMEOUT = 8.0
+# Static fallback page cap; the live default is config-driven — see
+# :func:`_default_options` (``review_request_dedup_max_pages``, default 5).
 _MAX_PAGES = 5
+# Static fallback only; the live default window is config-driven — see
+# :func:`_default_options` (``review_request_dedup_window_days``, default 30).
+_FALLBACK_RECENCY_WINDOW = dt.timedelta(days=30)
 
 # A durable claim is the concurrent check→post race backstop only. An
 # unposted claim older than this window is a stale orphan (e.g. the
@@ -132,9 +146,28 @@ def _reconcile(mr_url: str, permalink: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class GuardOptions:
-    recency_window: dt.timedelta = _DEFAULT_RECENCY_WINDOW
+    recency_window: dt.timedelta = _FALLBACK_RECENCY_WINDOW
     read_timeout: float = _DEFAULT_READ_TIMEOUT
     now: dt.datetime | None = None
+    max_pages: int = _MAX_PAGES
+
+
+def _default_options() -> GuardOptions:
+    """Build guard options with the config-driven live-Slack dedup window (#1084 follow-up).
+
+    ``review_request_dedup_window_days`` (default 30) replaces the old
+    hard-coded 24h — so live Slack, not the DB row's age, decides.
+    ``review_request_dedup_max_pages`` (default 5) makes the channel-scan page
+    cap configurable so a ~30-day window is actually reachable on a busy
+    channel (#3292 part 4).
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: Django settings at call time
+
+    settings = get_effective_settings()
+    return GuardOptions(
+        recency_window=dt.timedelta(days=settings.review_request_dedup_window_days),
+        max_pages=settings.review_request_dedup_max_pages,
+    )
 
 
 def _live_matches(
@@ -147,7 +180,7 @@ def _live_matches(
     ``ok`` is False on any failed/timed-out/not-ok read so the caller
     fails safe to suppression.
     """
-    from teatree.core.backend_registry import ReviewSearchSpec, get_backend_provider  # noqa: PLC0415
+    from teatree.core.backend_registry import ReviewSearchSpec, get_backend_provider  # noqa: PLC0415 — lazy import
 
     right_now = opts.now or timezone.now()
     oldest = right_now - opts.recency_window
@@ -156,7 +189,7 @@ def _live_matches(
         channel_id=target.channel_id,
         channel_name=target.channel_name,
         pr_urls=[canonical],
-        max_pages=_MAX_PAGES,
+        max_pages=opts.max_pages,
         oldest_ts=f"{oldest.timestamp():.6f}",
         timeout=opts.read_timeout,
     )
@@ -202,22 +235,94 @@ def _live_decision(
     return None
 
 
+def _read_thread_activity(target: GuardTarget, thread_ts: str, opts: GuardOptions, *, channel_id: str = ""):  # noqa: ANN202 — provider-owned ThreadActivityReadLike; a return annotation would force a core→backends type import
+    """Routed-token ``conversations.replies`` read for one thread; ``None`` on transport failure.
+
+    Reads in *channel_id* when supplied — the channel the post was RECORDED
+    under (#3292 part 3) — so a review-channel change since the post does not
+    read the wrong channel and mis-decide; falls back to the target channel.
+    """
+    from teatree.core.backend_registry import ThreadActivitySpec, get_backend_provider  # noqa: PLC0415 — lazy import
+
+    spec = ThreadActivitySpec(
+        token=target.token,
+        channel_id=channel_id or target.channel_id,
+        thread_ts=thread_ts,
+        timeout=opts.read_timeout,
+    )
+    try:
+        return get_backend_provider().read_thread_activity(spec)
+    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+        logger.warning("review_request_guard: thread read failed for %s/%s: %s", target.channel_id, thread_ts, exc)
+        return None
+
+
+def _posted_row_terminal(
+    canonical: str,
+    target: GuardTarget,
+    opts: GuardOptions,
+    *,
+    mutate: bool,
+) -> GuardDecision | None:
+    """Live-verify a POSTED ``ReviewRequestPost`` row before trusting it (#1084 follow-up).
+
+    Kills the "24h DB-decides" behaviour: a row with a ``slack_thread_ts``
+    is NOT trusted on its own. The exact thread is live-read with the
+    routed post-token — still there ⇒ SUPPRESS (and, when ``mutate``,
+    refresh via :func:`_reconcile` so the nag stops); gone ⇒ POST (and,
+    when ``mutate``, atomically reclaim the row so a concurrent caller
+    can't double-post). Fail-safe: ANY read failure ⇒ SUPPRESS. Returns
+    ``None`` when there is no posted row — the caller's claim/POST path
+    then runs. ``mutate=False`` is the ``check`` (peek) path: same verdict,
+    no DB write.
+    """
+    post = ReviewRequestPost.objects.filter(mr_url=canonical).first()
+    if post is None or not post.slack_thread_ts:
+        return None
+    read = _read_thread_activity(target, post.slack_thread_ts, opts, channel_id=post.slack_channel_id)
+    if read is None or not read.ok:
+        return GuardDecision(action="suppress", reason="read_failed_failsafe")
+    if read.exists:
+        if mutate:
+            _reconcile(canonical, "")
+        return GuardDecision(action="suppress", reason="already_claimed")
+    if not mutate:
+        return GuardDecision(action="post", reason="thread_gone")
+    if _reclaim_posted_row(canonical, post.slack_thread_ts, target.channel_id):
+        return GuardDecision(action="post", reason="thread_gone")
+    return GuardDecision(action="suppress", reason="already_claimed")
+
+
+def _reclaim_posted_row(canonical: str, observed_ts: str, channel_id: str) -> bool:
+    """Atomically reset a posted-but-gone row to a fresh unposted claim.
+
+    The conditional ``UPDATE`` (guarded on the exact ``slack_thread_ts``
+    this caller observed as gone) is the race backstop: the single winner
+    gets ``updated == 1`` and POSTs; a concurrent caller that already reset
+    the row gets ``0`` and suppresses — so a deleted-message reclaim can
+    never double-post.
+    """
+    updated = ReviewRequestPost.objects.filter(mr_url=canonical, slack_thread_ts=observed_ts).update(
+        slack_thread_ts="",
+        slack_channel_id=channel_id,
+        created_at=timezone.now(),
+        done_at=None,
+    )
+    return updated == 1
+
+
 def _claim_or_reclaim(canonical: str, target: GuardTarget, *, using: str | None = None) -> GuardDecision:
-    """Take the durable race-backstop claim, reclaiming a stale orphan.
+    """Take the durable race-backstop claim, reclaiming a stale unposted orphan.
 
-    A fresh ``get_or_create`` is POST. An existing row is SUPPRESS
-    (``already_claimed``) ONLY when it is a genuine *recent* concurrent
-    claim. An unposted orphan (``done_at`` unset, no ``slack_thread_ts``)
-    older than :data:`_CLAIM_RACE_WINDOW` is stale — the live scan above
-    is authoritative that nothing was posted, so it is reclaimed → POST
-    (#1103). ``select_for_update`` is a documented SQLite no-op / real
-    Postgres lock — kept, matching ``OnBehalfApproval.consume`` (#1098).
-
-    ``using`` selects an alternate Django database alias for the whole
-    claim transaction — used by the concurrent regression test to point
-    the claim at a file-backed SQLite registered with prod's
-    ``transaction_mode=IMMEDIATE`` ``OPTIONS``. Production callers pass no
-    ``using`` and run against the default connection.
+    Reached only after the live channel scan found nothing AND no posted
+    row survived live verification (:func:`_posted_row_terminal`). A fresh
+    ``get_or_create`` is POST. An existing row here is an *unposted* claim
+    (no ``slack_thread_ts``): older than :data:`_CLAIM_RACE_WINDOW` it is a
+    stale orphan the live scan proves nothing was posted for → reclaim →
+    POST (#1103); recent it is a genuine concurrent claim → SUPPRESS.
+    ``select_for_update`` is a documented SQLite no-op / real Postgres lock
+    (matching ``OnBehalfApproval.consume``). ``using`` selects an alternate
+    DB alias for the concurrent regression test; production passes none.
     """
     manager = ReviewRequestPost.objects.using(using) if using else ReviewRequestPost.objects
     with transaction.atomic(using=using):
@@ -227,9 +332,8 @@ def _claim_or_reclaim(canonical: str, target: GuardTarget, *, using: str | None 
         )
         if created:
             return GuardDecision(action="post")
-        is_unposted_orphan = post.done_at is None and not post.slack_thread_ts
         is_stale = timezone.now() - post.created_at > _CLAIM_RACE_WINDOW
-        if is_unposted_orphan and is_stale:
+        if not post.slack_thread_ts and is_stale:
             post.created_at = timezone.now()
             post.slack_channel_id = target.channel_id
             post.save(update_fields=["created_at", "slack_channel_id"])
@@ -252,11 +356,14 @@ def should_post_review_request(
     NOT post (the decision-only ``review_request_check``) must use
     :func:`peek_should_post_review_request` instead (#1103).
     """
-    opts = options or GuardOptions()
+    opts = options or _default_options()
     canonical = _canonical(mr_url)
     terminal = _live_decision(canonical, target, opts)
     if terminal is not None:
         return terminal
+    posted = _posted_row_terminal(canonical, target, opts, mutate=True)
+    if posted is not None:
+        return posted
     return _claim_or_reclaim(canonical, target)
 
 
@@ -276,10 +383,13 @@ def peek_should_post_review_request(
     :func:`should_post_review_request` (terminal live-scan decision, or
     ``post`` when the channel is clean) without touching the DB.
     """
-    opts = options or GuardOptions()
+    opts = options or _default_options()
     canonical = _canonical(mr_url)
     terminal = _live_decision(canonical, target, opts)
-    return terminal if terminal is not None else GuardDecision(action="post")
+    if terminal is not None:
+        return terminal
+    posted = _posted_row_terminal(canonical, target, opts, mutate=False)
+    return posted if posted is not None else GuardDecision(action="post")
 
 
 def reconcile_out_of_band(
@@ -295,7 +405,7 @@ def reconcile_out_of_band(
     nag train stops), else ``""``. A failed/timed-out read returns ``""``
     — the nag still fires; it must never wedge on a slow Slack read.
     """
-    opts = options or GuardOptions()
+    opts = options or _default_options()
     canonical = _canonical(mr_url)
     ok, in_window = _live_matches(canonical, target, opts)
     if not ok or not in_window:
@@ -312,7 +422,24 @@ def _ts_epoch(ts: str) -> float:
         return 0.0
 
 
-def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardTarget | None:
+def overlay_for_mr_url(mr_url: str) -> str:
+    """The overlay owning *mr_url*, or ``""`` to defer to the ambient default.
+
+    The single precedence rule every review-request surface shares (#1310): an
+    explicit ``T3_OVERLAY_NAME`` — what the ``t3 <overlay>`` CLI bridge sets —
+    wins and is consumed by :func:`get_overlay`; otherwise the URL's owning
+    overlay is inferred from repo ownership. Without it the in-process MCP
+    surface (which sets no env var and registers EVERY overlay) resolves no
+    overlay at all, and the guard's swallowed ``Multiple overlays found``
+    becomes a bogus ``no_review_channel_or_token`` on a perfectly postable
+    channel.
+    """
+    if os.environ.get("T3_OVERLAY_NAME"):
+        return ""
+    return infer_overlay_for_url(mr_url)
+
+
+def resolve_guard_target(channel_id: str = "", channel_name: str = "", overlay_name: str = "") -> GuardTarget | None:
     """Resolve the review channel and the post-token for the active overlay.
 
     The token is the one an outbound post to the review channel would use:
@@ -322,14 +449,22 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     is not a bot-backed Slack instance. Returns ``None`` when no review
     channel / token is configured (the caller treats that as "cannot
     dedup live → fall back to the DB-only behaviour").
-    """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    *overlay_name* selects the overlay explicitly, for callers that do not
+    run under the CLI's ``T3_OVERLAY_NAME`` bridge — notably the in-process
+    MCP server, where every installed overlay is registered and a no-arg
+    :func:`get_overlay` raises ``Multiple overlays found``. That raise was
+    swallowed into a ``None`` here, degrading into a bogus
+    ``no_review_channel_or_token`` (the same mis-routing class as #147).
+    Threading the name keeps the MCP and CLI surfaces on one answer.
+    """
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
-        overlay = get_overlay()
+        overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
         return None
     if not channel_id or not channel_name:
@@ -337,7 +472,7 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     if not channel_id:
         return None
 
-    token = _channel_token(messaging_from_overlay(), channel_id, overlay)
+    token = _channel_token(messaging_from_overlay(overlay_name or None), channel_id, overlay)
     if not token:
         return None
     return GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token)
@@ -352,10 +487,10 @@ def resolve_guard_targets() -> list[GuardTarget]:
     list when no channels resolve to a usable target — callers fall back
     to the legacy single-channel behaviour.
     """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
         overlay = get_overlay()

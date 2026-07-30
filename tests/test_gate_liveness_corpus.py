@@ -36,6 +36,7 @@ silently gaining phantom status without a deliberate update FAILS the build.
 
 import json
 import re
+import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -45,7 +46,9 @@ from typing import Final
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.pretooluse_verdict import Verdict
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.hooks import _repo_visibility
 
 # ── environment & invocation context ────────────────────────────────────
 
@@ -63,9 +66,25 @@ class GateContext:
     state_dir: Path
     session_id: str = "sess-liveness"
 
-    def write_teatree_toml(self, body: str) -> None:
-        self.home.mkdir(parents=True, exist_ok=True)
-        (self.home / ".teatree.toml").write_text(body, encoding="utf-8")
+    def seed_setting(self, key: str, value: object, *, scope: str = "") -> None:
+        db = self.tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+                "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+                (scope, key, json.dumps(value)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+    def seed_overlays(self, overlays: dict[str, dict[str, object]]) -> None:
+        self.seed_setting("overlays", overlays)
 
     def patch_t3_subprocess(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
         """Pin ``shutil.which('t3')`` and the gate's shelled validator result.
@@ -92,7 +111,7 @@ class GateRow:
     """One deny/enforcement gate. Adding a gate is exactly one of these rows."""
 
     gate_id: str
-    handler: Callable[[dict], bool | None]
+    handler: Callable[[dict], bool | Verdict | None]
     event: str
     matched: str
     deny_input: PayloadBuilder
@@ -161,7 +180,7 @@ def _gate_is_reachable(row: GateRow) -> bool:
 # ── deny detection ───────────────────────────────────────────────────────
 
 
-def _denied(handler: Callable[[dict], bool | None], event_input: dict) -> bool:
+def _denied(handler: Callable[[dict], bool | Verdict | None], event_input: dict) -> bool:
     """Run *handler*; True iff it denied (returned ``True``).
 
     Every deny gate in scope signals a deny via a ``True`` return — the
@@ -178,8 +197,7 @@ def _denied(handler: Callable[[dict], bool | None], event_input: dict) -> bool:
 # ``attacker-org/acme-product`` / ``overlay-a:``. Never a real
 # tenant/overlay/colleague.
 
-_HIGH_QUOTE = "Here is what the user said: ship it now."  # the-user-said-colon HIGH
-_BANNED_TERM_TOML = '[teatree]\nbanned_terms = ["acme"]\n'
+_HIGH_QUOTE = "**User directive (verbatim, today):** ship it now"  # bold-user-directive-verbatim HIGH
 _BANNED_BODY = "Rolling out the acme integration."
 _AI_SIG_TRAILER = "fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
 
@@ -207,13 +225,13 @@ def _agent(prompt: str, *, run_in_background: bool = False) -> dict:
 
 def _arrange_skill_loading(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", "teatree-plan\n")
+    ctx.write_state("pending", "code\n")
     ctx.write_state("skills", "")
 
 
 def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", "teatree-plan\n")
+    ctx.write_state("pending", "code\n")
     ctx.write_state("skills", "")
 
 
@@ -252,6 +270,36 @@ def _block_edit_before_planned_allow(ctx: GateContext) -> dict:
         "tool_name": "Edit",
         "cwd": str(ctx.tmp_path),
         "tool_input": {"file_path": str(ctx.tmp_path / "module.py"), "old_string": "a", "new_string": "b"},
+    }
+
+
+# block-config-overwrite (PreToolUse Write/Edit/Bash): a Write that overwrites an
+# existing config/dotfile NOT read this session must block; recording the path in
+# <session>.reads first clears it.
+
+
+def _config_overwrite_cfg(ctx: GateContext) -> Path:
+    cfg = ctx.tmp_path / "config.toml"
+    cfg.write_text("old = true\n", encoding="utf-8")
+    return cfg
+
+
+def _block_config_overwrite_deny(ctx: GateContext) -> dict:
+    cfg = _config_overwrite_cfg(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(cfg), "content": "new = true\n"},
+    }
+
+
+def _block_config_overwrite_allow(ctx: GateContext) -> dict:
+    cfg = _config_overwrite_cfg(ctx)
+    ctx.write_state("reads", f"0.0\t{cfg}\n")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(cfg), "content": "new = true\n"},
     }
 
 
@@ -295,7 +343,7 @@ def _init_repo(repo: Path, branch: str, remote_slug: str) -> None:
 
 
 def _managed_repo(ctx: GateContext, branch: str) -> Path:
-    ctx.write_teatree_toml('[overlays.acme]\nworkspace_repos = ["attacker-org/acme-product"]\n')
+    ctx.seed_overlays({"acme": {"workspace_repos": ["attacker-org/acme-product"]}})
     repo = ctx.tmp_path / "acme-product"
     _init_repo(repo, branch, "attacker-org/acme-product")
     return repo
@@ -309,6 +357,31 @@ def _protect_branch_deny(ctx: GateContext) -> dict:
 def _protect_branch_allow(ctx: GateContext) -> dict:
     repo = _managed_repo(ctx, "1-feat-acme")
     return {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "module.py")}}
+
+
+# block-main-clone-mutation (PreToolUse Bash): a `git checkout <feature>` run in
+# a teatree-managed MAIN CLONE (a `.git`-*dir* primary clone) is denied; a
+# read-only `git status` in the same clone passes through (#2836).
+
+
+def _main_clone_bash_deny(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "git checkout feature"},
+        "cwd": str(repo),
+    }
+
+
+def _main_clone_bash_allow(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status"},
+        "cwd": str(repo),
+    }
 
 
 # validate-mr-metadata Bash arm (PreToolUse Bash): glab mr create routes to the
@@ -381,12 +454,20 @@ def _ai_sig_allow(ctx: GateContext) -> dict:
 # verbatim user quote denies; a clean body allows.
 
 
+# The leak gates (#1415/#1213) enforce ONLY on an affirmatively-PUBLIC target, so
+# the must-DENY rows post to the genuinely-public ``souliane/teatree`` with the
+# probe pinned public (and a cold visibility cache) for a deterministic fire.
+def _pin_public_probe(ctx: GateContext) -> None:
+    ctx.monkeypatch.setenv("T3_DATA_DIR", str(ctx.tmp_path / "viscache"))
+    ctx.monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+
+
 def _quote_bash_deny(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --title t --body "{_HIGH_QUOTE}"')
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "{_HIGH_QUOTE}"')
 
 
 def _quote_bash_allow(ctx: GateContext) -> dict:
-    return _bash('gh issue create --title t --body "Routine status update."')
+    return _bash('gh issue create --repo souliane/teatree --title t --body "Routine status update."')
 
 
 # quote-scanner Slack-MCP arm (mcp__*slack* send) — now reachable via the
@@ -396,7 +477,7 @@ def _quote_bash_allow(ctx: GateContext) -> dict:
 
 
 def _arrange_mcp_privacy_gate(ctx: GateContext) -> None:
-    ctx.write_teatree_toml("[teatree]\nmcp_privacy_gate_enabled = true\n")
+    ctx.seed_setting("mcp_privacy_gate_enabled", value=True)
 
 
 def _quote_slack_deny(ctx: GateContext) -> dict:
@@ -416,7 +497,7 @@ _SELF_DM_CHANNEL = "D0BLIVEDM001"
 
 
 def _arrange_self_dm_gate(ctx: GateContext) -> None:
-    ctx.write_teatree_toml(f'[overlays.t3-acme]\nslack_dm_channel_id = "{_SELF_DM_CHANNEL}"\n')
+    ctx.seed_overlays({"t3-acme": {"slack_dm_channel_id": _SELF_DM_CHANNEL}})
 
 
 def _self_dm_deny(ctx: GateContext) -> dict:
@@ -432,6 +513,24 @@ def _self_dm_allow(ctx: GateContext) -> dict:
         "session_id": "sess-liveness",
         "tool_name": "mcp__claude_ai_Slack__slack_send_message",
         "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+    }
+
+
+# block-mcp-slack-write (#1196): a Slack MCP WRITE (any destination) denies —
+# every Slack write must route through the t3 CLI; a Slack MCP READ allows.
+def _mcp_slack_write_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+    }
+
+
+def _mcp_slack_write_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Slack__slack_get_channel_history",
+        "tool_input": {"channel": "C0COLLEAGUE9"},
     }
 
 
@@ -461,7 +560,7 @@ def _dispatch_quote_allow(ctx: GateContext) -> dict:
 
 
 def _arrange_dispatch_quote_on_task(ctx: GateContext) -> None:
-    ctx.write_teatree_toml("[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n")
+    ctx.seed_setting("dispatch_quote_gate_on_task_create_enabled", value=True)
 
 
 def _dispatch_quote_task_deny(ctx: GateContext) -> dict:
@@ -481,18 +580,17 @@ def _dispatch_quote_task_allow(ctx: GateContext) -> dict:
 
 
 def _arrange_banned_terms(ctx: GateContext) -> None:
-    cfg = ctx.tmp_path / "banned.toml"
-    cfg.write_text(_BANNED_TERM_TOML, encoding="utf-8")
-    ctx.monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+    ctx.seed_setting("banned_terms", ["acme"])
     ctx.monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+    _pin_public_probe(ctx)
 
 
 def _banned_bash_deny(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --title t --body "{_BANNED_BODY}"')
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "{_BANNED_BODY}"')
 
 
 def _banned_bash_allow(ctx: GateContext) -> dict:
-    return _bash('gh issue create --title t --body "Rolling out the integration."')
+    return _bash('gh issue create --repo souliane/teatree --title t --body "Rolling out the integration."')
 
 
 # block-uncovered-diff (PreToolUse Bash): a non-draft gh pr create whose diff
@@ -532,7 +630,7 @@ def _orch_bash_allow(ctx: GateContext) -> dict:
 
 
 def _arrange_orch_agent_gate(ctx: GateContext) -> None:
-    ctx.write_teatree_toml("[teatree]\norchestrator_boundary_agent_gate_enabled = true\n")
+    ctx.seed_setting("orchestrator_boundary_agent_gate_enabled", value=True)
 
 
 def _orch_agent_deny(ctx: GateContext) -> dict:
@@ -565,7 +663,7 @@ def _oob_merge_deny(ctx: GateContext) -> dict:
 
 
 def _oob_merge_allow(ctx: GateContext) -> dict:
-    ctx.write_teatree_toml('[overlays.acme]\nworkspace_repos = ["attacker-org/acme-product"]\n')
+    ctx.seed_overlays({"acme": {"workspace_repos": ["attacker-org/acme-product"]}})
     repo = ctx.tmp_path / "unmanaged"
     _init_repo(repo, "main", "someone-else/public")
     return {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 1"}, "cwd": str(repo)}
@@ -643,7 +741,7 @@ def _raw_pid_kill_allow(_ctx: GateContext) -> dict:
 
 
 def _secret_print_deny(_ctx: GateContext) -> dict:
-    return _bash("cat ~/.teatree.toml")
+    return _bash("cat ~/.netrc")
 
 
 def _secret_print_allow(_ctx: GateContext) -> dict:
@@ -710,12 +808,28 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         arrange=_arrange_block_edit_before_planned,
     ),
     GateRow(
+        gate_id="block-config-overwrite",
+        handler=router.handle_block_config_overwrite,
+        event="PreToolUse",
+        matched="Write",
+        deny_input=_block_config_overwrite_deny,
+        allow_input=_block_config_overwrite_allow,
+    ),
+    GateRow(
         gate_id="protect-default-branch",
         handler=router.handle_protect_default_branch,
         event="PreToolUse",
         matched="Edit",
         deny_input=_protect_branch_deny,
         allow_input=_protect_branch_allow,
+    ),
+    GateRow(
+        gate_id="block-main-clone-mutation",
+        handler=router.handle_block_main_clone_mutation,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_main_clone_bash_deny,
+        allow_input=_main_clone_bash_allow,
     ),
     GateRow(
         gate_id="validate-mr-metadata-bash",
@@ -764,6 +878,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_quote_bash_deny,
         allow_input=_quote_bash_allow,
+        arrange=_pin_public_probe,
     ),
     GateRow(
         gate_id="quote-scanner-slack-mcp",
@@ -782,6 +897,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_self_dm_deny,
         allow_input=_self_dm_allow,
         arrange=_arrange_self_dm_gate,
+    ),
+    GateRow(
+        gate_id="block-mcp-slack-write",
+        handler=router.handle_block_mcp_slack_write,
+        event="PreToolUse",
+        matched="mcp__claude_ai_Slack__slack_send_message",
+        deny_input=_mcp_slack_write_deny,
+        allow_input=_mcp_slack_write_allow,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",
@@ -907,7 +1030,7 @@ _EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset()
 _EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 0
 
 
-# ── fixtures (state isolation — the dev's real ~/.teatree.toml can't leak) ──
+# ── fixtures (state isolation — the dev's real config store can't leak) ──
 
 
 @pytest.fixture(autouse=True)
@@ -916,7 +1039,7 @@ def gate_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[GateCo
 
     Mirrors ``test_hook_router_gate_bypass_class.py``: patch ``router.STATE_DIR``
     and ``Path.home`` so neither real session state nor the developer's real
-    ``~/.teatree.toml`` can influence (or be influenced by) a gate under test.
+    config store can influence (or be influenced by) a gate under test.
     """
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
@@ -964,7 +1087,7 @@ def test_gate_allows_real_must_allow_payload(
     """(b) The gate ALLOWS its real must-ALLOW payload.
 
     No row is xfailed here anymore: the plan-tracker mismatch (#167) is fixed,
-    so a real ``teatree-plan`` /plan clears both plan gates and every gate's
+    so loading a real skill clears both plan gates and every gate's
     must-ALLOW payload passes through.
     """
     _mark_xfail(request, row.allow_phantom_reason)
@@ -1021,7 +1144,7 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
     )
 
 
-_NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] = frozenset(
+_NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict | None]]] = frozenset(
     {
         # Emits ``permissionDecision=allow`` (or ``None``) — it unblocks the
         # settings.json write, it never denies content.
@@ -1033,15 +1156,16 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] =
         # AskUserQuestion into a DeferredQuestion, not a content/enforcement
         # gate with a must-deny corpus payload.
         router.handle_route_away_mode_question,
-        # Loop-bootstrap enforcer — its deny is a one-off setup nudge to
-        # register the background-loop cron, not a content/enforcement gate.
-        router.handle_enforce_loop_registration,
         # Responsiveness nudge — advisory only (prints additionalContext once a
         # turn crosses the tool-call budget), returns ``None``, never denies.
         router.handle_orchestrator_turn_budget_nudge,
         # One-decision-per-call advisory — warn-only (stderr nudge on a batched
         # AskUserQuestion), returns ``None``, never denies.
         router.handle_warn_batched_questions,
+        # Orchestrator-investigation boundary (#1442) — a WARN-only nudge (stderr
+        # + always returns ``False``); it has no deny path, so no must-deny
+        # corpus payload.
+        router.handle_enforce_orchestrator_investigation_boundary,
     }
 )
 
@@ -1059,7 +1183,7 @@ def test_every_pretooluse_deny_handler_has_a_registry_row() -> None:
     Exempting a genuinely-non-deny handler requires a deliberate, reviewable
     addition to the allow-list, not a silent omission.
     """
-    registry: list[Callable[[dict], bool | None]] = router._HANDLERS["PreToolUse"]
+    registry: list[Callable[[dict], bool | Verdict | None]] = router._HANDLERS["PreToolUse"]
     allowlisted = _NON_DENY_PRETOOLUSE_HANDLERS - set(registry)
     assert not allowlisted, (
         "Non-deny allow-list names handlers absent from the live PreToolUse "

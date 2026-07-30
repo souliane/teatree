@@ -14,6 +14,7 @@ are documented on :func:`assert_merge_preconditions` / :func:`execute_bound_merg
 / :func:`record_merge_and_advance`.
 """
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass
@@ -24,28 +25,29 @@ from django.db import transaction
 from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.backend_protocols import ForgeMergeResult
 from teatree.core.merge.authorization import (
     MergePrecheck,
+    PresentedApprovals,
     _assert_anti_vacuity,
     _assert_clear_authorized,
     _assert_rubric_satisfied,
+    _config_standing_substrate_delegation,
+    assert_merge_provenance_trusted,
+    assert_no_active_review_lock,
+    assert_review_verdict_gate,
 )
-from teatree.core.merge.ci_rollup import (
-    _code_host_for,
-    fetch_live_head_sha,
-    fetch_pr_is_draft,
-    fetch_pr_merge_state,
-    fetch_required_checks_status,
-)
-from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
+from teatree.core.merge.ci_rollup import CodeHostQuery, attach_touched_paths
+from teatree.core.merge.errors import MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.pr_slug_resolution import (
     _reconcile_slug_against_reviewed_sha,
     _resolve_host_kind,
     resolve_pr_repo_slug,
 )
+from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.project import find_project_root
+from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
@@ -56,63 +58,20 @@ logger = logging.getLogger(__name__)
 MERGE_TRANSIENT_ATTEMPTS = 3
 MERGE_TRANSIENT_BASE_DELAY = 0.5
 
-# Lower-cased substrings that mark a forge merge response as TRANSIENT — the
-# forge momentarily failing to answer rather than refusing the merge. A
-# truncated/empty JSON body (the #1804 window), a network/connection error, a
-# timeout, or a 5xx. Matched against the combined stdout+stderr.
-_TRANSIENT_MERGE_MARKERS = (
-    "unexpected end of json input",
-    "unexpected eof",
-    "empty response",
-    "connection reset",
-    "connection refused",
-    "connection closed",
-    "broken pipe",
-    "timeout",
-    "timed out",
-    "eof",
-    "i/o timeout",
-    "temporary failure",
-    "service unavailable",
-    "bad gateway",
-    "gateway timeout",
-    "502",
-    "503",
-    "504",
-)
 
-# Lower-cased substrings that mark a forge merge response as a POLICY REFUSAL —
-# a verdict on the merge, never retried. Checked first so a refusal that also
-# mentions a transient-looking token (rare) is still classified as a refusal.
-_POLICY_REFUSAL_MERGE_MARKERS = (
-    "not mergeable",
-    "is not mergeable",
-    "required status check",
-    "review required",
-    "changes requested",
-    "merge conflict",
-    "405",
-    "422",
-)
+@dataclass(frozen=True, slots=True)
+class MergeAuditAuthorizers:
+    """The authorizer ids the post hook stamps on the ``MergeAudit`` for a non-default merge.
 
-
-def _is_transient_merge_response(rc: int, out: str, err: str) -> bool:
-    """True iff a non-zero forge merge response is transient (retryable).
-
-    A policy refusal (not-mergeable / required-checks / 405 / 422) is never
-    transient — checked first so a refusal is never mis-retried. An empty
-    body with no recognisable marker (rc != 0, no stdout, no stderr) is the
-    truncated/dropped-response shape and is treated as transient. Anything
-    else with an explicit non-transient message is NOT transient.
+    Both empty for an ordinary merge. ``expedited_by`` is the PENDING-checks
+    expedite waiver authoriser (§17.4.3 / PR-07); ``standing_delegation_by`` is the
+    config-sourced standing substrate authorizer (#3413). Grouped so
+    :func:`record_merge_and_advance` takes one audit-authorizer argument instead of
+    a widening list.
     """
-    if rc == 0:
-        return False
-    combined = f"{out}\n{err}".lower()
-    if any(marker in combined for marker in _POLICY_REFUSAL_MERGE_MARKERS):
-        return False
-    if any(marker in combined for marker in _TRANSIENT_MERGE_MARKERS):
-        return True
-    return not combined.strip()
+
+    expedited_by: str = ""
+    standing_delegation_by: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,14 +80,16 @@ class MergeOutcome:
     slug: str
     merged_sha: str
     ticket_state: str
+    # #3413: the config-sourced standing substrate authorizer id when this merge
+    # was authorized by the standing delegation (empty otherwise) — surfaced so the
+    # loop edge posts the "informed, not asked" Slack notification only on such a merge.
+    standing_delegation_by: str = ""
 
 
 def _reconcile_if_already_merged(
     *,
-    slug: str,
-    pr_id: int,
+    query: CodeHostQuery,
     live_sha: str,
-    host_kind: str = "github",
 ) -> "MergePrecheck | None":
     """§928 reconciliation — the recovery path for a lost post-merge hook.
 
@@ -147,24 +108,19 @@ def _reconcile_if_already_merged(
     no guarantee. Returns ``None`` when the PR is not (yet) merged so the
     caller proceeds with the normal fresh-merge path.
     """
-    merge_state = fetch_pr_merge_state(slug, pr_id, host_kind=host_kind)
+    merge_state = query.pr_merge_state()
     if not merge_state.is_merged:
         return None
-    return MergePrecheck(
-        verified_sha=live_sha,
-        already_merged_sha=merge_state.merge_commit_oid or live_sha,
-    )
+    return MergePrecheck(verified_sha=live_sha, already_merged_sha=merge_state.merge_commit_oid or live_sha)
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; each kwarg is a documented step input.
+def assert_merge_preconditions(
     *,
     clear: object,
     executing_loop_identity: str,
-    slug: str,
-    pr_id: int,
+    ref: PrRef,
     human_authorized: str = "",
-    host_kind: str = "github",
+    expedite_authorized: str = "",
 ) -> MergePrecheck:
     """Run the §17.4.3 loop validation in order; return the :class:`MergePrecheck`.
 
@@ -180,43 +136,65 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     runs the post hook idempotently instead of re-issuing the merge — a
     lost post-hook becomes recoverable rather than a permanent brick.
 
-    The substrate sign-off (step 5) is satisfied by EITHER a matching per-CLEAR
-    ``human_authorized`` OR the CLEAR's overlay standing at ``autonomy = full``.
-    ``human_authorized`` unlocks the merge **only** when the CLEAR is
-    substrate-class AND its recorded ``human_authorizer`` matches; it can never
-    unlock a non-substrate CLEAR. The ``autonomy = full`` carve-out is the
-    owner's standing, recorded grant that the overlay merges end-to-end without
-    a per-PR sign-off (invariant 4) — every other tier keeps the per-CLEAR
-    authoriser mandatory. Either path runs the identical sanctioned ``t3``
-    transition (invariant 8: even an owner-approved merge goes through this
-    transition, never raw ``gh`` and never a human-performed merge action). The
-    carve-out removes ONLY the per-PR sign-off — the quality/safety floor
-    (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
-    never-lockout, privacy scan) is untouched.
+    Substrate (step 5) is HELD for the owner — never covered by the standing
+    grant, not even at ``autonomy = full``: it pings-and-holds (the loop edge
+    DMs the owner). The ONLY thing that unlocks a substrate merge is a matching
+    per-CLEAR ``human_authorized`` re-presented at merge time; the AGENT then
+    executes through this same sanctioned transition (invariant 8). A substrate
+    diff is detected by EITHER the ``blast_class`` label OR the live diff paths
+    (:func:`attach_touched_paths`), so a mislabeled substrate change is still
+    held. Non-substrate self-merges through the standing grant unchanged. The
+    quality/safety floor (independent cold-review, reviewed-SHA bind, CI-green,
+    not-draft, never-lockout, privacy scan) is untouched.
     """
+    query = CodeHostQuery.for_ref(ref)
+    slug, pr_id = ref.slug, ref.pr_id
+
+    # Attach the live diff paths so the substrate authorization guard can detect
+    # a mislabeled substrate diff (path-based classifier — invariant 4). A forge
+    # error degrades to no paths: the path detector only WIDENS substrate over the
+    # recorded ``blast_class``, never narrows it, so a missing diff never weakens
+    # the label-based gate. Set BEFORE the authorize call so the substrate branch
+    # reads it.
+    attach_touched_paths(clear, query)
+
     authorized_clear = _assert_clear_authorized(
         clear=clear,
         executing_loop_identity=executing_loop_identity,
         slug=slug,
         pr_id=pr_id,
-        human_authorized=human_authorized,
+        approvals=PresentedApprovals(human=human_authorized, expedite=expedite_authorized),
+    )
+
+    # #3413 audit: re-derive whether the config-sourced standing delegation was the
+    # authorizing path (substrate CLEAR, presented id equals the configured
+    # ``substrate_auto_merge_authorized_by``) and NOT a per-PR recorded human
+    # approval — so a standing-delegation merge is stamped distinctly on the audit.
+    # A pure re-read of the same guard the authorize step ran; "" for every other
+    # merge (config unset, non-substrate, or per-PR human-authorized).
+    standing_delegation_by = (
+        ""
+        if authorized_clear.human_merge_authorized_by(human_authorized.strip())
+        else _config_standing_substrate_delegation(authorized_clear, human_authorized, resolved_slug=slug)
     )
 
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
-    live_sha = fetch_live_head_sha(slug, pr_id, host_kind=host_kind)
+    live_sha = query.live_head_sha()
     if not live_sha:
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
-    if live_sha != authorized_clear.reviewed_sha:
+    if not verify_sha_bound(cleared_sha=authorized_clear.reviewed_sha, live_sha=live_sha):
+        # A SHA mismatch fails CLOSED: the merge is REFUSED here and now, never
+        # retried against the moved head and never self-healed with a fresh CLEAR —
+        # the loop re-escalates and a human re-reviews the new tree (§17.4.3 step 2).
         # Show full SHAs (not [:8] prefixes) so a length-mismatch or any other
         # silent difference is obvious in the diagnostic (#1162).
-        reviewed_sha = authorized_clear.reviewed_sha
+        reviewed = authorized_clear.reviewed_sha
         msg = (
             f"PR head moved: live={live_sha} (length={len(live_sha)}) != "
-            f"reviewed={reviewed_sha} (length={len(reviewed_sha)}) — "
-            f"the CLEAR is stale (force-push / new commits) or was issued with a "
-            f"truncated SHA. Re-escalate; the loop never self-issues a replacement "
-            f"(§17.4.3 step 2)"
+            f"reviewed={reviewed} (length={len(reviewed)}) — the CLEAR is stale "
+            f"(force-push / new commits) or was issued with a truncated SHA. "
+            f"Re-escalate; the loop never self-issues a replacement (§17.4.3 step 2)"
         )
         raise MergePreconditionError(msg)
 
@@ -229,50 +207,95 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     # independent verifier at the head, or the merge is refused (see _assert_rubric_satisfied).
     _assert_rubric_satisfied(authorized_clear, live_sha)
 
-    reconcile = _reconcile_if_already_merged(
-        slug=slug,
-        pr_id=pr_id,
-        live_sha=live_sha,
-        host_kind=host_kind,
-    )
+    reconcile = _reconcile_if_already_merged(query=query, live_sha=live_sha)
     if reconcile is not None:
-        return reconcile
+        return dataclasses.replace(reconcile, standing_delegation_by=standing_delegation_by)
 
     # 4. Not draft.
-    if fetch_pr_is_draft(slug, pr_id, host_kind=host_kind):
+    if query.pr_is_draft():
         msg = f"{slug}#{pr_id} is in draft state — refusing to merge (§17.4.3 step 4)"
         raise MergePreconditionError(msg)
 
-    # 3. CI still green — against the forge's LIVE rollup, not the saved snapshot.
-    checks = fetch_required_checks_status(slug, pr_id, host_kind=host_kind)
-    if checks != "green":
+    # 3. CI still not FAILED — against the forge's LIVE rollup, not the saved
+    # snapshot. Three-valued (green/pending/failed):
+    #   * failed  — a real red verdict; ALWAYS refused. Expedite can never waive it
+    #               (the anti-vacuity pin: even a fully-authorized expedite CLEAR
+    #               with FAILED live checks is refused here).
+    #   * pending — queued checks, no verdict; refused UNLESS the CLEAR carries a
+    #               valid human-authorized waiver re-presented as ``expedite_authorized``
+    #               AND still bound to the reviewed tree (``expedite_pending_waived_by``).
+    #   * green   — proceeds unchanged.
+    checks = query.required_checks_status()
+    if checks == "failed":
         msg = (
-            f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — "
-            f"refusing to merge (§17.4.3 step 3; the live list is the source of "
-            f"truth, not the CLEAR snapshot)"
+            f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — refusing to "
+            f"merge (§17.4.3 step 3; the live list is the source of truth, not the CLEAR snapshot). "
+            f"A FAILED required check is a verdict — expedite can never waive it"
         )
         raise MergePreconditionError(msg)
+    if checks != "green":
+        if not authorized_clear.expedite_pending_waived_by(expedite_authorized):
+            msg = (
+                f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — refusing to "
+                f"merge (§17.4.3 step 3). A queued (pending) required check merges ONLY via the "
+                f"sanctioned human-authorized expedite waiver: `t3 <overlay> ticket merge <clear_id> "
+                f"--expedite-authorized <recorded-id>` on a CLEAR issued with `--expedite-authorize` "
+                f"and a `--local-ci-green-sha` bound to the reviewed tree"
+            )
+            raise MergePreconditionError(msg)
+        return MergePrecheck(
+            verified_sha=live_sha,
+            expedited_by=expedite_authorized.strip(),
+            standing_delegation_by=standing_delegation_by,
+        )
 
-    return MergePrecheck(verified_sha=live_sha)
+    return MergePrecheck(verified_sha=live_sha, standing_delegation_by=standing_delegation_by)
+
+
+def assert_not_draft(query: CodeHostQuery) -> None:
+    """§17.4.3 step 4 floor: refuse the bound merge when the PR/MR is in draft state.
+
+    The last-line not-draft gate at the merge chokepoint — re-reads the forge's
+    LIVE draft flag so an open→draft flip in the TOCTOU window between a caller's
+    snapshot and the irreversible PUT is refused here. A registered
+    ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
+    """
+    if query.pr_is_draft():
+        msg = f"{query.ref.slug}#{query.ref.pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
+        raise MergePreconditionError(msg)
+
+
+def assert_ci_not_failed(query: CodeHostQuery) -> None:
+    """§17.4.3 step 3 floor: refuse the bound merge on a live FAILED required-checks verdict.
+
+    The last-line CI-verdict gate at the merge chokepoint — re-reads the forge's
+    LIVE rollup so a green→red flip in the TOCTOU window is refused here. A FAILED
+    required check is a verdict expedite can NEVER waive, so it is refused
+    unconditionally (the pending-waiver lives only in
+    :func:`assert_merge_preconditions`, which the keystone runs first). A registered
+    ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
+    """
+    if query.required_checks_status() == "failed":
+        msg = (
+            f"live required-checks for {query.ref.slug}#{query.ref.pr_id} are failed — refusing bound merge "
+            f"(§17.4.3 step 3; a FAILED required check is a verdict expedite can never waive)"
+        )
+        raise MergePreconditionError(msg)
 
 
 def execute_bound_merge(
     *,
-    slug: str,
-    pr_id: int,
+    ref: PrRef,
     expected_head_oid: str,
-    host_kind: str = "github",
 ) -> str:
     """Squash-merge bound to ``expected_head_oid`` — fail closed on head drift.
 
-    GitHub: ``PUT repos/<slug>/pulls/<n>/merge`` with ``sha=<oid>``.
-    GitLab: ``PUT projects/<encoded>/merge_requests/<iid>/merge`` with
-    ``sha=<oid>`` (GitLab enforces the SHA-bind upstream and 409s on drift).
+    GitHub: ``PUT repos/<slug>/pulls/<n>/merge`` with ``sha=<oid>``. GitLab: ``PUT
+    projects/<encoded>/merge_requests/<iid>/merge`` with ``sha=<oid>`` (409s on drift).
 
-    If the forge reports the head moved, the merge is refused and raised
-    as :class:`MergeHeadMovedError` — a failed check, never a
-    retry-with-new-head (§17.4.3 "bind execution to the exact verified
-    SHA, fail closed").
+    If the forge reports the head moved, the merge is refused and raised as
+    :class:`MergeHeadMovedError` — a failed check, never a retry-with-new-head
+    (§17.4.3 "bind execution to the exact verified SHA, fail closed").
 
     A transient/empty-JSON/network/5xx forge response (#1813 — the #1804
     ``unexpected end of JSON input`` window) is the forge momentarily
@@ -285,26 +308,51 @@ def execute_bound_merge(
     bound SHA returns the existing merge commit so the caller runs the post
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
-    head-moved are NOT transient — they raise on the first attempt.
+    head-moved are NOT transient — they raise on the first attempt. Before the
+    retry loop, five gates run — the single chokepoint BOTH merge paths cross
+    (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
+    via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
+    (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
+    (north-star PR-4 — a directive keystone / opted-in ordinary ticket needs a clean
+    recorded merge-quality verdict at the shipped head), and the #18 not-draft +
+    FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
+    chokepoint so a green→red / open→draft flip in the TOCTOU window between a
+    caller's snapshot and this PUT is refused here — the solo lane had NO such
+    re-check despite the sweep docstring claiming one. A FAILED required check is
+    a verdict expedite can NEVER waive, so it is refused unconditionally (no
+    expedite plumbing at this chokepoint; the pending-waiver lives only in
+    ``assert_merge_preconditions``, which the keystone runs first).
     """
+    query = CodeHostQuery.for_ref(ref)
+    slug, pr_id = ref.slug, ref.pr_id
+    # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_squash_bound`` →
+    # here) reaches this shared chokepoint with NO keystone preconditions run, so
+    # the provenance gate must fire HERE too — otherwise a fork PR could auto-merge
+    # via the bypass path even though the keystone (below) refuses it.
+    assert_merge_provenance_trusted(slug=slug, pr_id=pr_id, host_kind=ref.host_kind)
+    assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
+    assert_no_active_review_lock(slug=slug, pr_id=pr_id)
+    # north-star PR-4: merely-green-but-not-well-engineered does not merge. A
+    # directive keystone (and, under `require_merge_quality_verdict`, an ordinary
+    # ticket) is refused unless a clean recorded merge-quality CriticVerdict
+    # (test_value + cleanliness) covers this exact shipped head. Lazy-imported like
+    # the other keystone gates so core.merge stays free of an import-time gate edge.
+    # The gate import is function-scoped on purpose: a module-level core.merge ->
+    # core.gates edge is a tach cycle (core.gates already imports core.merge.errors),
+    # so it stays deferred like the sibling merge-precondition gates.
+    from teatree.core.gates import merge_quality_gate  # noqa: PLC0415 avoids a core.merge/core.gates cycle
+
+    merge_quality_gate.assert_merge_quality_verdict(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
+    assert_not_draft(query)
+    assert_ci_not_failed(query)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
-            landed = _already_merged_at(
-                slug=slug,
-                pr_id=pr_id,
-                expected_head_oid=expected_head_oid,
-                host_kind=host_kind,
-            )
+            landed = _already_merged_at(query=query, expected_head_oid=expected_head_oid)
             if landed:
                 return landed
             time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
         try:
-            return _attempt_bound_merge(
-                slug=slug,
-                pr_id=pr_id,
-                expected_head_oid=expected_head_oid,
-                host_kind=host_kind,
-            )
+            return _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid)
         except MergeTransientError as exc:
             if attempt == MERGE_TRANSIENT_ATTEMPTS - 1:
                 raise
@@ -320,7 +368,7 @@ def execute_bound_merge(
     raise MergeTransientError(msg)  # pragma: no cover — the final attempt re-raises before the loop can fall through
 
 
-def _already_merged_at(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
+def _already_merged_at(*, query: CodeHostQuery, expected_head_oid: str) -> str:
     """The existing merge commit when the PR/MR is ALREADY merged at ``expected_head_oid``.
 
     A transient response may mask a merge that actually LANDED on the forge
@@ -330,13 +378,13 @@ def _already_merged_at(*, slug: str, pr_id: int, expected_head_oid: str, host_ki
     idempotent post hook rather than re-issuing a merge the forge would now
     405. Returns ``""`` when the PR/MR is not (yet) merged.
     """
-    merge_state = fetch_pr_merge_state(slug, pr_id, host_kind=host_kind)
+    merge_state = query.pr_merge_state()
     if not merge_state.is_merged:
         return ""
     return merge_state.merge_commit_oid or expected_head_oid
 
 
-def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
+def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str) -> str:
     """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response.
 
     The backend's :meth:`CodeHostBackend.merge_pr_squash_bound` runs the
@@ -345,7 +393,8 @@ def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_
     the forge-specific f-string here, so the byte-for-byte error parity the
     keystone tests pin is unchanged while the transport lives in the backend.
     """
-    result = _code_host_for(host_kind).merge_pr_squash_bound(
+    slug, pr_id = query.ref.slug, query.ref.pr_id
+    result = query.backend.merge_pr_squash_bound(
         slug=slug,
         pr_id=pr_id,
         expected_head_oid=expected_head_oid,
@@ -356,61 +405,9 @@ def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_
             slug=slug,
             pr_id=pr_id,
             expected_head_oid=expected_head_oid,
-            host_kind=host_kind,
+            host_kind=query.ref.host_kind,
         )
     return result.merged_sha or expected_head_oid
-
-
-def _raise_bound_merge_failure(
-    *,
-    result: ForgeMergeResult,
-    slug: str,
-    pr_id: int,
-    expected_head_oid: str,
-    host_kind: str,
-) -> None:
-    """Classify a non-zero merge response and raise the typed forge-specific error.
-
-    GitLab and GitHub have distinct head-moved sniffs and distinct error
-    f-strings (``!`` vs ``#``, ``glab`` vs ``gh``); both are preserved verbatim.
-    """
-    out, err = result.stdout, result.stderr
-    combined = f"{out}\n{err}".lower()
-    if host_kind == "gitlab":
-        if "sha" in combined and ("does not match" in combined or "409" in combined or "conflict" in combined):
-            msg = (
-                f"GitLab refused the merge of {slug}!{pr_id}: head moved off "
-                f"{expected_head_oid} (length={len(expected_head_oid)}, "
-                f"expected_head_oid mismatch). Treated as a failed check — "
-                f"NOT retried with a new head (§17.4.3)"
-            )
-            raise MergeHeadMovedError(msg)
-        if _is_transient_merge_response(result.returncode, out, err):
-            msg = (
-                f"merge of {slug}!{pr_id} hit a transient forge response: "
-                f"{err.strip() or out.strip() or 'empty glab api response'} — retrying (#1813)"
-            )
-            raise MergeTransientError(msg)
-        msg = f"merge of {slug}!{pr_id} failed: {err.strip() or out.strip() or 'glab api non-zero'}"
-        raise MergePreconditionError(msg)
-    if "head" in combined and ("modif" in combined or "changed" in combined or "409" in combined):
-        # Print the full ``expected_head_oid`` so a length mismatch can never
-        # masquerade as a value mismatch (#1162).
-        msg = (
-            f"GitHub refused the merge of {slug}#{pr_id}: head moved off "
-            f"{expected_head_oid} (length={len(expected_head_oid)}, "
-            f"expected_head_oid mismatch). Treated as a failed check — "
-            f"NOT retried with a new head (§17.4.3)"
-        )
-        raise MergeHeadMovedError(msg)
-    if _is_transient_merge_response(result.returncode, out, err):
-        msg = (
-            f"merge of {slug}#{pr_id} hit a transient forge response: "
-            f"{err.strip() or out.strip() or 'empty gh api response'} — retrying (#1813)"
-        )
-        raise MergeTransientError(msg)
-    msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"
-    raise MergePreconditionError(msg)
 
 
 def record_merge_and_advance(
@@ -418,8 +415,10 @@ def record_merge_and_advance(
     clear: object,
     merged_sha: str,
     required_checks_status: str,
+    repo_slug: str = "",
+    authorizers: MergeAuditAuthorizers | None = None,
 ) -> str:
-    """Post hook: consume CLEAR, write audit, bind attestation, ``mark_merged()``.
+    """Post hook: consume CLEAR, write audit, supersede siblings, ``mark_merged()``.
 
     All in ONE ``transaction.atomic()`` so the FSM advance and the durable
     merge record land atomically (the §4 worker-enqueue / sync-atomicity
@@ -432,6 +431,21 @@ def record_merge_and_advance(
     at ``reviewed_sha``" and runs this hook idempotently instead of
     re-issuing the merge). Returns the resulting ticket state.
 
+    ``repo_slug`` is the #1335-reconciled ``owner/repo`` the caller merged
+    against; it is stamped on the ``MergeAudit`` (#19) so the S1/S3 signal joins
+    read the merge-time truth first instead of re-resolving the CLEAR's offline
+    workstream slug. Empty only for a legacy/direct caller — the signal resolver
+    falls back to ``resolve_pr_repo_slug`` for a blank audit.
+
+    §15: a head-move re-review issues a fresh CLEAR at the new SHA, leaving the
+    older sibling unconsumed. Consuming ONE via a merge supersedes every sibling
+    unconsumed CLEAR for the same ``(slug, pr_id)`` in the same atomic block under
+    the row lock, so a stale orphan can no longer ratchet S4 hard-red forever. No
+    ``ReviewVerdict`` is moved: each sibling's verdict persists at its own
+    reviewed_sha and S3 counts it regardless of SHA, so there is no verdict-copy
+    path to hand-roll (GM-4's ``carry_forward`` is the primitive if one is ever
+    needed).
+
     The atomic block is wrapped in :func:`retry_on_locked` (#1520): a transient
     ``database is locked`` from a concurrent canonical-DB writer must not abort
     the merge keystone mid-flight. A retry re-opens the transaction, re-reads
@@ -440,9 +454,10 @@ def record_merge_and_advance(
     irreversible GitHub merge already ran before this hook; only this
     idempotent DB write retries).
     """
-    from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415
-    from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
+    stamps = authorizers or MergeAuditAuthorizers()
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller
         msg = "record_merge_and_advance requires a MergeClear instance"
         raise MergePreconditionError(msg)
@@ -470,8 +485,28 @@ def record_merge_and_advance(
                 clear=locked,
                 merged_sha=merged_sha,
                 required_checks_status=required_checks_status,
+                expedited_by=stamps.expedited_by,
+                repo_slug=repo_slug,
+                standing_delegation_by=stamps.standing_delegation_by,
             )
-            ticket = locked.ticket
+            # §15: supersede every sibling unconsumed CLEAR for the same PR —
+            # re-review at a moved head issues a fresh CLEAR at the new SHA,
+            # leaving the older one unconsumed. Once THIS merge consumes one, its
+            # siblings are no longer a stalled merge, so consume them in the same
+            # atomic block (single serialized UPDATE) under the row lock. The slug
+            # is matched case-INSENSITIVELY (``slug__iexact``): a forge slug is
+            # case-insensitive, so a sibling CLEAR recorded with a differently-cased
+            # ``owner/Repo`` must NOT survive to keep ratcheting the S4 hard-red gate
+            # forever (the rest of the pipeline resolves slugs with ``__iexact``).
+            MergeClear.objects.filter(
+                slug__iexact=locked.slug,
+                pr_id=locked.pr_id,
+                consumed_at__isnull=True,
+            ).exclude(pk=locked.pk).update(consumed_at=locked.consumed_at)
+            # The forge merge already landed, so the PR row is MERGED and a ticketless
+            # CLEAR (``--ticket-id`` is optional, and the loop never passed one) can
+            # recover from the PR the FSM it otherwise has nothing to advance.
+            ticket = locked.record_merged_pull_request()
             if ticket is None:
                 return ""
             # Bind the phase attestation to the merged HEAD/workstream it was
@@ -511,6 +546,7 @@ def merge_ticket_pr(
     clear: object,
     executing_loop_identity: str,
     human_authorized: str = "",
+    expedite_authorized: str = "",
 ) -> MergeOutcome:
     """The full keystone transition: pre-condition → atomic merge → post hook.
 
@@ -524,8 +560,14 @@ def merge_ticket_pr(
     id is re-presented here and **the agent executes** the merge through this
     same sanctioned transition (invariant 8 — approval is the gate, the agent
     is always the executor) — see :func:`assert_merge_preconditions`.
+
+    ``expedite_authorized`` is likewise empty for every loop-driven merge (the
+    loop never auto-expedites). For an expedite CLEAR with live PENDING checks
+    the recorded expedite authoriser is re-presented here to waive the pending
+    (never a FAILED) required check — a distinct key from ``human_authorized`` so
+    the substrate hold and the pending waiver can never cross-unlock.
     """
-    from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if not isinstance(clear, MergeClear):
         msg = "merge_ticket_pr requires a MergeClear instance"
@@ -540,6 +582,7 @@ def merge_ticket_pr(
             clear=clear,
             executing_loop_identity=executing_loop_identity,
             human_authorized=human_authorized,
+            expedite_authorized=expedite_authorized,
         )
 
 
@@ -560,6 +603,7 @@ def _merge_ticket_pr_inner(
     clear: "MergeClear",
     executing_loop_identity: str,
     human_authorized: str,
+    expedite_authorized: str = "",
 ) -> MergeOutcome:
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
@@ -570,13 +614,14 @@ def _merge_ticket_pr_inner(
         reviewed_sha=str(getattr(clear, "reviewed_sha", "") or ""),
         host_kind=host_kind,
     )
+    ref = PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind)
+    assert_merge_provenance_trusted(slug=slug, pr_id=pr_id, host_kind=host_kind)
     precheck = assert_merge_preconditions(
         clear=clear,
         executing_loop_identity=executing_loop_identity,
-        slug=slug,
-        pr_id=pr_id,
+        ref=ref,
         human_authorized=human_authorized,
-        host_kind=host_kind,
+        expedite_authorized=expedite_authorized,
     )
     if precheck.needs_reconcile:
         # §928: a prior attempt's irreversible merge already landed; only
@@ -589,18 +634,18 @@ def _merge_ticket_pr_inner(
         merged_sha = precheck.already_merged_sha
         reconciled = True
     else:
-        merged_sha = execute_bound_merge(
-            slug=slug,
-            pr_id=pr_id,
-            expected_head_oid=precheck.verified_sha,
-            host_kind=host_kind,
-        )
+        merged_sha = execute_bound_merge(ref=ref, expected_head_oid=precheck.verified_sha)
         reconciled = False
-    checks = fetch_required_checks_status(slug, pr_id, host_kind=host_kind)
+    checks = CodeHostQuery.for_ref(ref).required_checks_status()
     state = record_merge_and_advance(
         clear=clear,
         merged_sha=merged_sha,
         required_checks_status=checks,
+        repo_slug=slug,
+        authorizers=MergeAuditAuthorizers(
+            expedited_by=precheck.expedited_by,
+            standing_delegation_by=precheck.standing_delegation_by,
+        ),
     )
     logger.info(
         "merge keystone: %s#%s %s at %s; ticket state=%s",
@@ -610,4 +655,10 @@ def _merge_ticket_pr_inner(
         merged_sha[:8],
         state or "(no ticket)",
     )
-    return MergeOutcome(pr_id=pr_id, slug=slug, merged_sha=merged_sha, ticket_state=state)
+    return MergeOutcome(
+        pr_id=pr_id,
+        slug=slug,
+        merged_sha=merged_sha,
+        ticket_state=state,
+        standing_delegation_by=precheck.standing_delegation_by,
+    )

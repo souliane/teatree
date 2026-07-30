@@ -1,0 +1,438 @@
+# FROZEN pre-cutover per-phase cost baseline — do not regenerate against a
+# post-cutover window.
+#
+# Every figure below is measured over REAL headless dispatches only (see
+# `coverage`), started strictly before the `cutover` PR merged. It is committed
+# rather than queried because a table holding both populations separates them by
+# nothing it records.
+#
+# Regenerate/verify with:
+#   uv run python scripts/freeze_phase_cost_baseline.py --check
+#
+# Token figures are counts; `*_cost_usd` are US dollars. `billed_input` is
+# prompt + cache-read + cache-write. `median`/`p95` are nearest-rank, so each is
+# an observation some attempt actually recorded.
+coverage:
+  post_cutover_rows: 0
+  real_dispatch_rows: 1203
+  rows_with_cost_usd: 1203
+  rows_with_output_tokens: 1203
+  taskattempt_rows_total: 339944
+cutover:
+  merged_at: '2026-07-25T08:59:42Z'
+  model: claude-opus-5
+  pull_request: 3731
+per_phase:
+  answering:
+    attempts: 22
+    median_billed_input_tokens: 287709.0
+    median_cost_usd: 0.3363
+    median_num_turns: 11.0
+    median_output_tokens: 5469.0
+    p95_billed_input_tokens: 3091680.0
+    p95_cost_usd: 1.6968
+    p95_num_turns: 39.0
+    p95_output_tokens: 17336.0
+    total_cost_usd: 12.3118
+  architectural_review:
+    attempts: 24
+    median_billed_input_tokens: 2466124.0
+    median_cost_usd: 1.3817
+    median_num_turns: 43.0
+    median_output_tokens: 18929.0
+    p95_billed_input_tokens: 5190768.0
+    p95_cost_usd: 2.5856
+    p95_num_turns: 73.0
+    p95_output_tokens: 26658.0
+    total_cost_usd: 38.8987
+  codex_adversarial_reviewing:
+    attempts: 111
+    median_billed_input_tokens: 294303.0
+    median_cost_usd: 0.2429
+    median_num_turns: 10.0
+    median_output_tokens: 1608.0
+    p95_billed_input_tokens: 2074766.0
+    p95_cost_usd: 1.3247
+    p95_num_turns: 37.0
+    p95_output_tokens: 11020.0
+    total_cost_usd: 47.0808
+  codex_reviewing:
+    attempts: 564
+    median_billed_input_tokens: 273062.0
+    median_cost_usd: 0.2119
+    median_num_turns: 9.0
+    median_output_tokens: 1704.0
+    p95_billed_input_tokens: 3465210.0
+    p95_cost_usd: 1.6408
+    p95_num_turns: 46.0
+    p95_output_tokens: 15036.0
+    total_cost_usd: 234.7415
+  coding:
+    attempts: 42
+    median_billed_input_tokens: 354808.0
+    median_cost_usd: 0.6753
+    median_num_turns: 11.0
+    median_output_tokens: 6020.0
+    p95_billed_input_tokens: 12203825.0
+    p95_cost_usd: 10.0352
+    p95_num_turns: 98.0
+    p95_output_tokens: 101940.0
+    total_cost_usd: 101.2669
+  debugging:
+    attempts: 27
+    median_billed_input_tokens: 247988.0
+    median_cost_usd: 0.49
+    median_num_turns: 8.0
+    median_output_tokens: 3232.0
+    p95_billed_input_tokens: 5961655.0
+    p95_cost_usd: 5.4598
+    p95_num_turns: 60.0
+    p95_output_tokens: 62389.0
+    total_cost_usd: 31.3387
+  dogfood_smoke:
+    attempts: 6
+    median_billed_input_tokens: 1373995.0
+    median_cost_usd: 0.8247
+    median_num_turns: 27.0
+    median_output_tokens: 8742.0
+    p95_billed_input_tokens: 20160711.0
+    p95_cost_usd: 8.4742
+    p95_num_turns: 147.0
+    p95_output_tokens: 78291.0
+    total_cost_usd: 13.1227
+  eval_local:
+    attempts: 1
+    median_billed_input_tokens: 576858.0
+    median_cost_usd: 0.5543
+    median_num_turns: 15.0
+    median_output_tokens: 5036.0
+    p95_billed_input_tokens: 576858.0
+    p95_cost_usd: 0.5543
+    p95_num_turns: 15.0
+    p95_output_tokens: 5036.0
+    total_cost_usd: 0.5543
+  planning:
+    attempts: 9
+    median_billed_input_tokens: 914750.0
+    median_cost_usd: 2.1479
+    median_num_turns: 22.0
+    median_output_tokens: 23760.0
+    p95_billed_input_tokens: 2722600.0
+    p95_cost_usd: 5.1347
+    p95_num_turns: 42.0
+    p95_output_tokens: 38549.0
+    total_cost_usd: 19.3797
+  reviewing:
+    attempts: 337
+    median_billed_input_tokens: 843096.0
+    median_cost_usd: 1.305
+    median_num_turns: 18.0
+    median_output_tokens: 17430.0
+    p95_billed_input_tokens: 2862498.0
+    p95_cost_usd: 3.2261
+    p95_num_turns: 38.0
+    p95_output_tokens: 37914.0
+    total_cost_usd: 490.6182
+  scanning_news:
+    attempts: 27
+    median_billed_input_tokens: 1145799.0
+    median_cost_usd: 0.9704
+    median_num_turns: 27.0
+    median_output_tokens: 11405.0
+    p95_billed_input_tokens: 3822682.0
+    p95_cost_usd: 2.1517
+    p95_num_turns: 52.0
+    p95_output_tokens: 26315.0
+    total_cost_usd: 26.5715
+  shipping:
+    attempts: 5
+    median_billed_input_tokens: 6375332.0
+    median_cost_usd: 3.2499
+    median_num_turns: 69.0
+    median_output_tokens: 35023.0
+    p95_billed_input_tokens: 14002201.0
+    p95_cost_usd: 5.738
+    p95_num_turns: 123.0
+    p95_output_tokens: 54107.0
+    total_cost_usd: 14.8536
+  testing:
+    attempts: 28
+    median_billed_input_tokens: 218572.0
+    median_cost_usd: 0.2306
+    median_num_turns: 1.0
+    median_output_tokens: 510.0
+    p95_billed_input_tokens: 1745230.0
+    p95_cost_usd: 1.5921
+    p95_num_turns: 10.0
+    p95_output_tokens: 4645.0
+    total_cost_usd: 12.6018
+per_phase_model:
+  answering:
+    claude-haiku-4-5-20251001:
+      attempts: 4
+      median_billed_input_tokens: 1006763.0
+      median_cost_usd: 0.646
+      median_num_turns: 20.0
+      median_output_tokens: 6686.0
+      p95_billed_input_tokens: 3218001.0
+      p95_cost_usd: 1.6968
+      p95_num_turns: 48.0
+      p95_output_tokens: 22041.0
+      total_cost_usd: 3.7717
+    claude-sonnet-5:
+      attempts: 18
+      median_billed_input_tokens: 249078.0
+      median_cost_usd: 0.2945
+      median_num_turns: 9.0
+      median_output_tokens: 3156.0
+      p95_billed_input_tokens: 3091680.0
+      p95_cost_usd: 1.8244
+      p95_num_turns: 39.0
+      p95_output_tokens: 17336.0
+      total_cost_usd: 8.5401
+  architectural_review:
+    claude-haiku-4-5-20251001:
+      attempts: 22
+      median_billed_input_tokens: 2331316.0
+      median_cost_usd: 1.3458
+      median_num_turns: 43.0
+      median_output_tokens: 17450.0
+      p95_billed_input_tokens: 5135710.0
+      p95_cost_usd: 2.4884
+      p95_num_turns: 71.0
+      p95_output_tokens: 26127.0
+      total_cost_usd: 33.033
+    claude-sonnet-5:
+      attempts: 2
+      median_billed_input_tokens: 2746447.0
+      median_cost_usd: 2.4076
+      median_num_turns: 40.0
+      median_output_tokens: 22230.0
+      p95_billed_input_tokens: 5190768.0
+      p95_cost_usd: 3.4581
+      p95_num_turns: 73.0
+      p95_output_tokens: 30166.0
+      total_cost_usd: 5.8657
+  codex_adversarial_reviewing:
+    claude-haiku-4-5-20251001:
+      attempts: 78
+      median_billed_input_tokens: 238507.0
+      median_cost_usd: 0.1995
+      median_num_turns: 10.0
+      median_output_tokens: 1497.0
+      p95_billed_input_tokens: 1554890.0
+      p95_cost_usd: 0.9852
+      p95_num_turns: 34.0
+      p95_output_tokens: 9385.0
+      total_cost_usd: 22.8529
+    claude-sonnet-5:
+      attempts: 33
+      median_billed_input_tokens: 657527.0
+      median_cost_usd: 0.5218
+      median_num_turns: 11.0
+      median_output_tokens: 2612.0
+      p95_billed_input_tokens: 5889788.0
+      p95_cost_usd: 2.5253
+      p95_num_turns: 59.0
+      p95_output_tokens: 15547.0
+      total_cost_usd: 24.2279
+  codex_reviewing:
+    claude-haiku-4-5-20251001:
+      attempts: 484
+      median_billed_input_tokens: 251390.0
+      median_cost_usd: 0.195
+      median_num_turns: 8.0
+      median_output_tokens: 1524.0
+      p95_billed_input_tokens: 1160435.0
+      p95_cost_usd: 0.7478
+      p95_num_turns: 25.0
+      p95_output_tokens: 7136.0
+      total_cost_usd: 127.6141
+    claude-sonnet-5:
+      attempts: 80
+      median_billed_input_tokens: 1402513.0
+      median_cost_usd: 0.8462
+      median_num_turns: 26.0
+      median_output_tokens: 6472.0
+      p95_billed_input_tokens: 8059596.0
+      p95_cost_usd: 3.3821
+      p95_num_turns: 88.0
+      p95_output_tokens: 28468.0
+      total_cost_usd: 107.1273
+  coding:
+    claude-haiku-4-5-20251001:
+      attempts: 39
+      median_billed_input_tokens: 329773.0
+      median_cost_usd: 0.6567
+      median_num_turns: 11.0
+      median_output_tokens: 5897.0
+      p95_billed_input_tokens: 20073012.0
+      p95_cost_usd: 15.2266
+      p95_num_turns: 137.0
+      p95_output_tokens: 122614.0
+      total_cost_usd: 80.332
+    claude-opus-4-8:
+      attempts: 3
+      median_billed_input_tokens: 11018257.0
+      median_cost_usd: 9.8213
+      median_num_turns: 85.0
+      median_output_tokens: 72043.0
+      p95_billed_input_tokens: 12203825.0
+      p95_cost_usd: 10.0352
+      p95_num_turns: 98.0
+      p95_output_tokens: 101940.0
+      total_cost_usd: 20.9349
+  debugging:
+    claude-opus-4-8:
+      attempts: 27
+      median_billed_input_tokens: 247988.0
+      median_cost_usd: 0.49
+      median_num_turns: 8.0
+      median_output_tokens: 3232.0
+      p95_billed_input_tokens: 5961655.0
+      p95_cost_usd: 5.4598
+      p95_num_turns: 60.0
+      p95_output_tokens: 62389.0
+      total_cost_usd: 31.3387
+  dogfood_smoke:
+    claude-haiku-4-5-20251001:
+      attempts: 4
+      median_billed_input_tokens: 817422.0
+      median_cost_usd: 0.5547
+      median_num_turns: 24.0
+      median_output_tokens: 7639.0
+      p95_billed_input_tokens: 3909457.0
+      p95_cost_usd: 1.9038
+      p95_num_turns: 56.0
+      p95_output_tokens: 21338.0
+      total_cost_usd: 3.7049
+    claude-sonnet-5:
+      attempts: 2
+      median_billed_input_tokens: 1403541.0
+      median_cost_usd: 0.9435
+      median_num_turns: 27.0
+      median_output_tokens: 8742.0
+      p95_billed_input_tokens: 20160711.0
+      p95_cost_usd: 8.4742
+      p95_num_turns: 147.0
+      p95_output_tokens: 78291.0
+      total_cost_usd: 9.4177
+  eval_local:
+    claude-sonnet-5:
+      attempts: 1
+      median_billed_input_tokens: 576858.0
+      median_cost_usd: 0.5543
+      median_num_turns: 15.0
+      median_output_tokens: 5036.0
+      p95_billed_input_tokens: 576858.0
+      p95_cost_usd: 0.5543
+      p95_num_turns: 15.0
+      p95_output_tokens: 5036.0
+      total_cost_usd: 0.5543
+  planning:
+    claude-haiku-4-5-20251001:
+      attempts: 4
+      median_billed_input_tokens: 207414.0
+      median_cost_usd: 0.5182
+      median_num_turns: 11.0
+      median_output_tokens: 8293.0
+      p95_billed_input_tokens: 301553.0
+      p95_cost_usd: 5.1347
+      p95_num_turns: 12.0
+      p95_output_tokens: 17707.0
+      total_cost_usd: 6.9953
+    claude-opus-4-8:
+      attempts: 5
+      median_billed_input_tokens: 1734398.0
+      median_cost_usd: 2.5182
+      median_num_turns: 31.0
+      median_output_tokens: 27194.0
+      p95_billed_input_tokens: 2722600.0
+      p95_cost_usd: 3.0489
+      p95_num_turns: 42.0
+      p95_output_tokens: 38549.0
+      total_cost_usd: 12.3843
+  reviewing:
+    claude-haiku-4-5-20251001:
+      attempts: 282
+      median_billed_input_tokens: 751092.0
+      median_cost_usd: 1.0787
+      median_num_turns: 15.0
+      median_output_tokens: 14973.0
+      p95_billed_input_tokens: 2483330.0
+      p95_cost_usd: 2.8958
+      p95_num_turns: 37.0
+      p95_output_tokens: 36264.0
+      total_cost_usd: 360.4716
+    claude-opus-4-8:
+      attempts: 55
+      median_billed_input_tokens: 1720241.0
+      median_cost_usd: 2.0932
+      median_num_turns: 24.0
+      median_output_tokens: 22970.0
+      p95_billed_input_tokens: 4940861.0
+      p95_cost_usd: 5.1844
+      p95_num_turns: 40.0
+      p95_output_tokens: 42252.0
+      total_cost_usd: 130.1465
+  scanning_news:
+    claude-haiku-4-5-20251001:
+      attempts: 9
+      median_billed_input_tokens: 1441216.0
+      median_cost_usd: 1.1219
+      median_num_turns: 34.0
+      median_output_tokens: 16020.0
+      p95_billed_input_tokens: 4174644.0
+      p95_cost_usd: 2.2088
+      p95_num_turns: 56.0
+      p95_output_tokens: 28425.0
+      total_cost_usd: 11.6196
+    claude-sonnet-5:
+      attempts: 18
+      median_billed_input_tokens: 502534.0
+      median_cost_usd: 0.5658
+      median_num_turns: 3.0
+      median_output_tokens: 1181.0
+      p95_billed_input_tokens: 3114741.0
+      p95_cost_usd: 2.0417
+      p95_num_turns: 52.0
+      p95_output_tokens: 20208.0
+      total_cost_usd: 14.952
+  shipping:
+    claude-haiku-4-5-20251001:
+      attempts: 2
+      median_billed_input_tokens: 6375332.0
+      median_cost_usd: 3.2499
+      median_num_turns: 69.0
+      median_output_tokens: 42036.0
+      p95_billed_input_tokens: 14002201.0
+      p95_cost_usd: 5.738
+      p95_num_turns: 123.0
+      p95_output_tokens: 54107.0
+      total_cost_usd: 8.9879
+    claude-sonnet-5:
+      attempts: 3
+      median_billed_input_tokens: 1056333.0
+      median_cost_usd: 1.2335
+      median_num_turns: 8.0
+      median_output_tokens: 2482.0
+      p95_billed_input_tokens: 10870100.0
+      p95_cost_usd: 4.3653
+      p95_num_turns: 86.0
+      p95_output_tokens: 35023.0
+      total_cost_usd: 5.8657
+  testing:
+    claude-sonnet-5:
+      attempts: 28
+      median_billed_input_tokens: 218572.0
+      median_cost_usd: 0.2306
+      median_num_turns: 1.0
+      median_output_tokens: 510.0
+      p95_billed_input_tokens: 1745230.0
+      p95_cost_usd: 1.5921
+      p95_num_turns: 10.0
+      p95_output_tokens: 4645.0
+      total_cost_usd: 12.6018
+window:
+  first_attempt_started_at: '2026-07-13 14:25:08.888277'
+  last_attempt_started_at: '2026-07-25 03:23:36.707162'

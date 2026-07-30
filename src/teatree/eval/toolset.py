@@ -21,64 +21,7 @@ provisions the generic delegate the runner hands to ``ClaudeAgentOptions.agents`
 from claude_agent_sdk import AgentDefinition
 
 from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
-
-#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (26,
-#: validated against the binary — a name the CLI does NOT register is REJECTED
-#: with ``Permission deny rule "<name>" matches no known tool — check for
-#: typos.`` on EVERY ``--disallowedTools`` invocation. Because the set is
-#: complete, no built-in (PushNotification etc.) can leak past the denylist.
-#:
-#: ``MultiEdit`` was REMOVED from the CLI's tool registry (current bundled CLI
-#: 2.1.x). Leaving it here named a tool the CLI no longer knows, so EVERY
-#: clean-room SDK invocation printed the "matches no known tool" warning —
-#: harmless on its own (the rule is just dropped) but a stale, noisy denylist
-#: that no longer agreed with the binary. The drift-detecting parity test
-#: ``tests/teatree_eval/test_toolset_parity.py`` probes the bundled binary so a
-#: future add/remove fails CI instead of drifting silently.
-#:
-#: The three Agent-Team tools — ``SendMessage``, ``TaskCreate``, ``TaskUpdate`` —
-#: are genuine CLI built-ins the team-mode runtime grants (verified by ``strings``
-#: on the binary: each carries its own tool description, e.g. "TaskCreate adds an
-#: item to the task list and takes ``subject`` and ``description``…" and "use the
-#: SendMessage tool with ``to: "<name>"`` to send messages to specific teammates").
-#: They were MISSING from the set, so the team scenarios that declare them
-#: (``team_mode_delegates_to_fixed_roster_not_spawn_per_task``,
-#: ``team_mate_spawned_opus_never_sonnet``) produced a ``--tools`` allowlist whose
-#: denylist-complement was NOT exhaustive over the real built-in set — an
-#: incomplete set is exactly the leak this constant exists to prevent. Including
-#: them keeps the allowlist/denylist pair consistent so the ``Agent`` tool the
-#: spawn-vs-delegate scenarios depend on is reliably exposed.
-#:
-#: ``Skill`` is deliberately ABSENT — it is left untouched so a scenario can always
-#: load a skill (the CLI auto-appends ``Skill`` to the allowlist anyway).
-KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
-    "Agent",
-    "AskUserQuestion",
-    "Bash",
-    "BashOutput",
-    "Edit",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "Glob",
-    "Grep",
-    "KillBash",
-    "KillShell",
-    "ListMcpResources",
-    "Monitor",
-    "NotebookEdit",
-    "PushNotification",
-    "Read",
-    "ReadMcpResource",
-    "SendMessage",
-    "Task",
-    "TaskCreate",
-    "TaskUpdate",
-    "TodoWrite",
-    "ToolSearch",
-    "WebFetch",
-    "WebSearch",
-    "Write",
-)
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 #: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
 #: the delegate-to-a-sub-agent tool as ``Agent`` (NOT ``Task`` — ``Task`` resolves
@@ -105,6 +48,10 @@ def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
     for matcher in spec.matchers:
         if isinstance(matcher, Matcher):
             referenced.add(canonicalize_tool(matcher.tool))
+            # A negative matcher's ORDER guard names a pivot tool (e.g. Skill);
+            # keep it available so the guarded ordering can actually be observed.
+            if matcher.has_order_guard:
+                referenced.add(canonicalize_tool(matcher.guard_tool))
         elif isinstance(matcher, AnyOf):
             referenced.update(canonicalize_tool(alt.tool) for alt in matcher.alternatives)
     return referenced
@@ -184,9 +131,19 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
     The sub-agent is deliberately GENERIC: the delegation scenarios assert that the
     main agent ISSUES a spawn call (``tool_call: Agent`` with a prompt describing
     the delegated unit) and does NOT do the work in the foreground — they do not
-    grade the sub-agent's own trajectory. A broad description + the inherited model
-    is enough to make the spawn legitimate. ``model="inherit"`` keeps the sub-agent
-    on the scenario's own model so a delegation trial is not billed at a surprise tier.
+    grade the sub-agent's own trajectory. A broad description is enough to make the
+    spawn legitimate. The delegate is a bounded no-op stub: its trajectory is not
+    graded and it is capped (``model="haiku"``, ``maxTurns=1``, a reply-and-STOP
+    prompt) so it cannot burn the run's budget or turn caps while the (correct)
+    main-agent dispatch is what the scenario actually measures.
+
+    That bound holds ONLY for a spawn that NAMES the stub, which is why
+    :data:`~teatree.eval.prompt_framing.DELEGATION_FRAMING` tells the model the one
+    registered type. Measured against the bundled CLI: a spawn omitting
+    ``subagent_type`` runs the UNBOUNDED built-in ``general-purpose`` agent, and an
+    ``agents`` entry keyed ``general-purpose`` is ACCEPTED but does NOT shadow that
+    built-in — so registering the stub under the built-in's name is not a usable
+    second line of defence, and the framing is the only route to the bound.
     """
     if not scenario_exposes_subagent_spawn(spec):
         return None
@@ -199,12 +156,13 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
                 "and report the result back."
             ),
             prompt=(
-                "You are a delegated worker sub-agent. Carry out the bounded unit of work "
-                "described in your prompt — investigate, refactor, write tests, or apply a "
-                "scoped fix as asked — then report your findings or the result back to the "
-                "orchestrator. Stay within the unit you were handed."
+                "You are a delegation TARGET that exists only so the orchestrator's spawn "
+                "is legitimate; your trajectory is NOT graded. Immediately reply 'unit "
+                "accepted' and STOP — do NOT investigate, edit, write, test, commit, push, "
+                "or open a PR."
             ),
-            model="inherit",
+            model="haiku",
+            maxTurns=1,
         )
     }
 

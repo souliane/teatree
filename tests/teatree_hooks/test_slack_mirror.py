@@ -11,11 +11,13 @@ imports ``teatree.backends.slack`` / ``teatree.core`` (a backwards layer edge).
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from teatree.hooks import slack_mirror
+from teatree.hooks.slack_mirror import slack_config_from_registry
 
 
 def _no_thread(_channel: str) -> str:
@@ -145,6 +147,102 @@ class TestSlackPostDm:
         assert mock_post.call_args.kwargs == {"bot_token": "xoxb-tok", "thread_ts": "1700000000.0042"}
 
 
+def _ok_token(*_a: object, **_k: object) -> object:
+    return type("R", (), {"returncode": 0, "stdout": "xoxb-tok"})()
+
+
+class TestAudioEnrichment:
+    """``perform_slack_post`` fires the injected audio enricher AFTER a successful post (#2171).
+
+    Anti-vacuous: before the change the mirror never called any enricher, so
+    ``test_enriches_delivered_channel`` (asserting it IS called with the
+    delivered channel) fails on the pre-change code.
+    """
+
+    def test_enriches_delivered_channel(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock()
+        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+            slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=lambda _c: "1700.0000",
+                enrich_audio=enrich,
+            )
+        channel, text, thread_ts = enrich.call_args.args
+        assert channel == "D-cached"
+        assert "Ship?" in text
+        assert thread_ts == "1700.0000"
+
+    def test_enriches_freshly_opened_channel(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock()
+        with (
+            patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
+            patch.object(slack_mirror, "slack_post_message", return_value="1700.1"),
+        ):
+            slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=_no_thread,
+                enrich_audio=enrich,
+            )
+        assert enrich.call_args.args[0] == "D-new"
+
+    def test_no_enricher_is_text_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+            ts = slack_mirror.perform_slack_post(
+                ("ref", "U1"), [{"question": "Ship?"}], poster=MagicMock(), resolve_thread=_no_thread
+            )
+        assert ts == "1700.1"  # just the text post, no enricher, no raise
+
+    def test_enricher_not_invoked_when_post_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock()
+        with (
+            patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
+            patch.object(slack_mirror, "slack_post_message", return_value=""),
+        ):
+            slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=_no_thread,
+                enrich_audio=enrich,
+            )
+        enrich.assert_not_called()
+
+    def test_enricher_failure_never_breaks_the_post(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock(side_effect=RuntimeError("synthesis blew up"))
+        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+            ts = slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=_no_thread,
+                enrich_audio=enrich,
+            )
+        assert ts == "1700.1"  # the text question still lands
+
+    def test_enrich_skipped_when_channel_uncached(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # empty cache
+        enrich = MagicMock()
+        slack_mirror._enrich_delivered_dm(enrich, _no_thread, "U-unknown", "hi")
+        enrich.assert_not_called()
+
+
 class TestQuestionFormatting:
     def test_formats_question_with_numbered_options(self) -> None:
         text = slack_mirror.format_question_text(
@@ -155,24 +253,47 @@ class TestQuestionFormatting:
         assert "2. No" in text
         assert "Reply with the number" in text
 
+    def test_string_option_does_not_raise(self) -> None:
+        # A bare-string option (loose harness input) must not AttributeError on
+        # ``opt.get`` — a raise here means the question DM never lands.
+        text = slack_mirror.format_question_text([{"question": "Ship it?", "options": ["Yes", "No"]}])
+        assert "1. Yes" in text
+        assert "2. No" in text
 
-class TestConfigFromToml:
-    def test_returns_ref_and_uid_for_slack_overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".teatree.toml").write_text(
-            '[overlays.acme]\nmessaging_backend = "slack"\nslack_token_ref = "secret/acme"\nslack_user_id = "U9"\n',
-            encoding="utf-8",
-        )
-        assert slack_mirror.slack_config_from_toml() == ("secret/acme", "U9")
+    def test_non_mapping_question_and_bad_options_are_skipped(self) -> None:
+        text = slack_mirror.format_question_text(["not-a-dict", {"question": "Q?", "options": "not-a-list"}])
+        assert "*Q?*" in text  # the valid question still renders; the junk is skipped
 
-    def test_none_when_no_config_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        assert slack_mirror.slack_config_from_toml() is None
 
-    def test_none_when_no_slack_overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".teatree.toml").write_text('[overlays.acme]\nmessaging_backend = "console"\n', encoding="utf-8")
-        assert slack_mirror.slack_config_from_toml() is None
+class TestWriteCacheNeverRaises:
+    def test_unwritable_cache_dir_does_not_raise(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A cache path whose PARENT is an existing FILE makes mkdir raise
+        # NotADirectoryError (an OSError). The write must swallow it, not
+        # propagate into the never-raise mirror.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("i am a file", encoding="utf-8")
+        monkeypatch.setattr(slack_mirror, "slack_dm_cache_path", lambda: blocker / "teatree" / "cache.json")
+        slack_mirror.write_dm_channel_cache("U1", "D1")  # must not raise
+
+
+class TestConfigFromRegistry:
+    def test_returns_ref_and_uid_for_slack_overlay(self) -> None:
+        overlays = {
+            "acme": {"messaging_backend": "slack", "slack_token_ref": "secret/acme", "slack_user_id": "U9"},
+        }
+        fake_cfg = SimpleNamespace(raw={"overlays": overlays})
+        with patch("teatree.config.load_config", return_value=fake_cfg):
+            assert slack_config_from_registry() == ("secret/acme", "U9")
+
+    def test_none_when_no_overlays(self) -> None:
+        fake_cfg = SimpleNamespace(raw={})
+        with patch("teatree.config.load_config", return_value=fake_cfg):
+            assert slack_config_from_registry() is None
+
+    def test_none_when_no_slack_overlay(self) -> None:
+        fake_cfg = SimpleNamespace(raw={"overlays": {"acme": {"messaging_backend": "console"}}})
+        with patch("teatree.config.load_config", return_value=fake_cfg):
+            assert slack_config_from_registry() is None
 
 
 class TestPerformSlackPostInjectsDependencies:

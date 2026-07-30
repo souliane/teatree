@@ -180,7 +180,7 @@ def open_prs_anchor(*, target: Path | None = None, colorize: bool = False) -> li
     _ = colorize
     try:
         prs = _read_open_prs(target or default_path())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a fetch failure degrades to no PRs, never breaks the tick
         return []
     if not prs:
         return []

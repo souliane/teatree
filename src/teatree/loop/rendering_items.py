@@ -15,6 +15,7 @@ or comma joining.
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
+from urllib.parse import quote
 
 from teatree.url_classify import is_github_pr_url
 
@@ -64,7 +65,6 @@ def _short_desc(title: str) -> str:
 class _PRRef:
     iid: int
     url: str
-    annotation: str
     # #1113 enhancement: when a ``ReviewRequestPost`` row exists for this
     # MR's URL, the renderer surfaces a clickable Slack permalink chunk so
     # the operator can jump from the statusline straight to the review
@@ -100,14 +100,50 @@ class _ReassignRef:
 class _LinkCtx:
     """Renderer-side link deps bundled so item-shape helpers take 5 args.
 
-    The two travel together (the link formatter respects ``colorize`` to
-    choose OSC-8 vs. ``text <url>`` fallback), so passing them as a single
-    struct keeps ``_render_canonical_item``'s signature small and lets the
-    caller build the context once per render pass.
+    ``colorize`` and ``link`` travel together (the link formatter respects
+    ``colorize`` to choose OSC-8 vs. ``text <url>`` fallback), so passing them
+    as a single struct keeps ``_render_canonical_item``'s signature small and
+    lets the caller build the context once per render pass. ``search_base`` is
+    the overlay's tracker-search URL prefix (PR-17): when a ref has no canonical
+    URL, the chip links to ``search_base + <term>`` instead of rendering as bare
+    text — empty when the overlay's tracker cannot be resolved (last-resort bare).
     """
 
     colorize: bool
     link: _LinkFn
+    search_base: str = ""
+
+
+_DIGITS_RE = re.compile(r"\d+")
+
+
+def _search_term(label: str) -> str:
+    """Extract the searchable term from a chip label (``#214`` → ``214``).
+
+    Prefers the first run of digits (the ticket/MR number); when the label
+    carries no number (a title-slug fallback ref) the whole label stripped of
+    its ``⚡#!`` chip decoration is used.
+    """
+    match = _DIGITS_RE.search(label)
+    if match:
+        return match.group(0)
+    return label.lstrip("⚡#!").strip()
+
+
+def _effective_url(url: str, label: str, search_base: str) -> str:
+    """Resolve the URL a chip links to: the canonical one, else a tracker search (PR-17).
+
+    A real ``http(s)`` *url* is returned as-is. Otherwise — an unknown or
+    404'd canonical URL — the chip falls back to the overlay's tracker search
+    (``search_base`` + the label's search term) so it stays clickable rather
+    than rendering as bare text. Returns ``""`` only when even the search base
+    is unresolvable (the last-resort bare case).
+    """
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        return url
+    if not search_base:
+        return ""
+    return f"{search_base}{quote(_search_term(label))}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,9 +187,10 @@ def _render_canonical_item(
     trailing decoration. GitHub PRs render with the ``#`` chip prefix;
     GitLab MRs keep ``!``. Per the binding spec the renderer adds no
     per-MR title, no annotation chunk, and no review-permalink suffix —
-    richer per-MR signal belongs in dedicated zones.
+    richer per-MR signal belongs in dedicated zones. A ref with no canonical
+    URL links to the overlay's tracker search rather than rendering bare (PR-17).
     """
-    text = ctx.link(label, url, colorize=ctx.colorize)
+    text = ctx.link(label, _effective_url(url, label, ctx.search_base), colorize=ctx.colorize)
     topic = _short_desc(title)
     chips = " ".join(_format_mr_ref(r, ctx) for r in child_refs)
     inner = " ".join(part for part in (topic, chips) if part)
@@ -167,7 +204,8 @@ def _format_mr_ref(ref: _PRRef, ctx: _LinkCtx) -> str:
 
     Per the binding spec the chip is just the number — no title, no
     annotation, no Slack permalink suffix. GitHub PR URLs render with
-    the ``#`` prefix; GitLab MR URLs render with ``!``.
+    the ``#`` prefix; GitLab MR URLs render with ``!``. A ref with no URL
+    links to the overlay's tracker search rather than rendering bare (PR-17).
     """
     chip = f"{_chip_prefix(ref.url)}{ref.iid}"
-    return ctx.link(chip, ref.url, colorize=ctx.colorize)
+    return ctx.link(chip, _effective_url(ref.url, chip, ctx.search_base), colorize=ctx.colorize)

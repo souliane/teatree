@@ -12,6 +12,8 @@ These tests drive the real autonomy resolution (a ``[overlays.<n>]`` table +
 unstoppable Slack transport at the ``MessagingBackend`` boundary.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -19,6 +21,30 @@ import pytest
 
 from teatree.core.models import BotPing, ConfigSetting
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+
+
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overlay: str, user_id: str) -> None:
+    """Seed global + per-overlay ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps({overlay: {"slack_user_id": user_id}}),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -32,18 +58,13 @@ def _stage(
     autonomy: str,
     notify_on_post_on_behalf: bool | None = None,
 ) -> None:
-    # ``slack_user_id`` is a RAW key (TOML-home) — keep both the global and the
-    # per-overlay value in TOML so notify_user resolves the user id. ``autonomy``
-    # and ``notify_on_post_on_behalf`` are DB-home (#1775, no ``T3_*`` env var)
-    # so a TOML value for them is ignored on read — stage ``autonomy`` in the
+    # ``slack_user_id`` (both global and per-overlay) resolves via the Django-free
+    # cold reader — seed both in a config-store sqlite the reader resolves via
+    # ``T3_CONFIG_DB`` so notify_user resolves the user id. ``autonomy`` and
+    # ``notify_on_post_on_behalf`` are DB-home (#1775) — stage ``autonomy`` in the
     # ``ConfigSetting`` store scoped to the overlay, and the global toggle in the
     # global scope.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "U-OPERATOR"\n[overlays.{overlay}]\nslack_user_id = "U-OPERATOR"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    _seed_cold_slack_user(tmp_path, monkeypatch, overlay, "U-OPERATOR")
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     monkeypatch.setenv("T3_OVERLAY_NAME", overlay)
     ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)

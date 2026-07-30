@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.skill_support.loading import _AGENT_TASK_KEYWORDS, _PHASE_TO_SKILL, _STATUS_TO_SKILL
+from teatree.skill_support.loading import _PHASE_TO_SKILL, _STATUS_TO_SKILL
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SKILL_SEARCH_DIRS = (
@@ -34,14 +34,12 @@ def _resolves_to_skill(name: str) -> bool:
 def _routed_skill_names() -> set[str]:
     """Every skill name the routing tables can emit.
 
-    The values of the phase/status maps are skill targets; the keys of the
-    agent-task keyword map ARE skill names (each maps a keyword tuple to the
-    skill it routes to). All three are skill targets the loader can hand back.
+    The values of the phase/status maps are the skill targets the loader can
+    hand back for an explicit ``--phase`` or a ticket status.
     """
     names: set[str] = set()
     names.update(_PHASE_TO_SKILL.values())
     names.update(_STATUS_TO_SKILL.values())
-    names.update(_AGENT_TASK_KEYWORDS.keys())
     return names
 
 

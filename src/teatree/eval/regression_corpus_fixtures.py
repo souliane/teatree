@@ -94,7 +94,7 @@ def seed_repo_on_branch(work: Path, branch: str) -> Path:
 
 def unused_pid() -> int:
     """A pid that is (almost certainly) not alive — picks a high free slot."""
-    from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+    from teatree.utils.singleton import pid_alive  # noqa: PLC0415 — deferred: loaded per eval run
 
     for candidate in range(2_000_000, 2_000_500):
         if not pid_alive(candidate):

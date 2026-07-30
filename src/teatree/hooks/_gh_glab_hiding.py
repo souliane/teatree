@@ -36,7 +36,7 @@ heaviest consumer; publish_surface re-imports both.
 import re
 from typing import Final
 
-from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
+from teatree.hooks._shell_lexer import TokenKind, raw_substitution_sees_live, split_commands, tokenize
 
 # A leading ``KEY=value`` token is an inline env assignment, not the
 # command name -- bash applies it to the command's environment. Skipped
@@ -82,12 +82,18 @@ _CD_WITH_PATH_WORD_COUNT: Final[int] = 2
 _BARE_SHORT_FLAG_LEN: Final[int] = 2
 
 
-def command_segments(command: str) -> list[list[str]]:
-    """Return the WORD-value lists of every ``&&``/``;``/``|``/``&``/newline segment.
+def command_segments_with_raw(command: str) -> list[tuple[list[str], list[str]]]:
+    """Return each segment's decoded WORD values PAIRED with their raw source spans.
 
-    Each segment's leading inline env assignments (``FOO=1 gh ...``) are
-    stripped, mirroring :func:`publish_surface.is_git_commit_command`, so a
-    posting verb behind an env prefix is still seen. Empty segments are dropped.
+    Same segment splitting and leading-env-assignment stripping as
+    :func:`command_segments`, but each segment carries a second list — the
+    verbatim ``Token.raw`` source span of every retained word, index-aligned with
+    its decoded value. The raw span preserves quoting the decoded value has
+    dropped, which is what lets a consumer tell a LIVE substitution (unquoted /
+    double-quoted, bash expands it) from an INERT one (inside single quotes, bash
+    passes it verbatim) — a distinction the decoded value alone cannot make
+    (#3357). :func:`command_segments` is a view over this so the two can never
+    drift.
 
     The banned-terms SCANNER inspects the WHOLE payload (it finds a term in
     any segment), so the carve-out must inspect every segment too -- a
@@ -95,14 +101,26 @@ def command_segments(command: str) -> list[list[str]]:
     a true command, not noise, and ignoring it over-blocks a legitimate
     private-repo post.
     """
-    segments: list[list[str]] = []
+    segments: list[tuple[list[str], list[str]]] = []
     for segment in split_commands(tokenize(command)):
-        words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
-        while words and ENV_ASSIGNMENT_RE.fullmatch(words[0]):
-            words = words[1:]
-        if words:
-            segments.append(words)
+        word_tokens = [tok for tok in segment if tok.kind is TokenKind.WORD]
+        while word_tokens and ENV_ASSIGNMENT_RE.fullmatch(word_tokens[0].value):
+            word_tokens = word_tokens[1:]
+        if word_tokens:
+            segments.append(([tok.value for tok in word_tokens], [tok.raw for tok in word_tokens]))
     return segments
+
+
+def command_segments(command: str) -> list[list[str]]:
+    """Return the WORD-value lists of every ``&&``/``;``/``|``/``&``/newline segment.
+
+    A view over :func:`command_segments_with_raw` (dropping the raw spans) so the
+    decoded-word splitting the two expose can never drift. Each segment's leading
+    inline env assignments (``FOO=1 gh ...``) are stripped, mirroring
+    :func:`publish_surface.is_git_commit_command`, so a posting verb behind an env
+    prefix is still seen. Empty segments are dropped.
+    """
+    return [words for words, _ in command_segments_with_raw(command)]
 
 
 def strip_benign_prefix(words: list[str]) -> list[str] | None:
@@ -140,6 +158,29 @@ def token_has_substitution_marker(token: str) -> bool:
     (``--body "$(gh ... --repo PUBLIC ...)"``) just as easily as a bare token.
     """
     return any(marker in token for marker in _SUBSTITUTION_MARKERS)
+
+
+def raw_has_live_substitution(raw: str) -> bool:
+    """Return True iff a substitution marker in ``raw`` is one bash would EXPAND.
+
+    Reads the token's as-written source span rather than its decoded value:
+    ``$(``/``<(``/``>(``/backtick is expanded by bash only when it is unquoted or
+    inside DOUBLE quotes; inside SINGLE quotes it is inert literal text bash passes
+    verbatim. Delegates the quote-aware walk to the shared lexer state machine
+    (:func:`_shell_lexer.raw_substitution_sees_live`), the same walker the two
+    sibling pre-publish raw-span checks (``_body_file_resolution`` /
+    ``_publish_detection``) already use — so all three classify a substitution
+    identically (#3357).
+
+    An EMPTY raw span is treated as LIVE (fail closed): an in-process caller that
+    constructed a token without a source span cannot prove the marker inert, so
+    the gate keeps scanning. This is the quote-aware replacement for
+    :func:`token_has_substitution_marker`, which fired on the decoded value and so
+    could not tell an inert single-quoted marker from a live one.
+    """
+    if not raw:
+        return True
+    return raw_substitution_sees_live(raw, _SUBSTITUTION_MARKERS)
 
 
 def token_is_transport_construct(token: str) -> bool:

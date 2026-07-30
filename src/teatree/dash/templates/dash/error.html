@@ -1,0 +1,11 @@
+{% extends "dash/base.html" %}
+{% block title %}Refused{% endblock %}
+{% block heading %}Refused{% endblock %}
+{% block content %}
+  <section class="band">
+    <p class="banner-red">{{ reason }}</p>
+    <p class="toolbar">
+      <a class="dash-btn primary" href="{% url back %}">Back to {{ back_label }}</a>
+    </p>
+  </section>
+{% endblock %}

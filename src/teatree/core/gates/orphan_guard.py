@@ -17,15 +17,19 @@ points that keep the no-orphan invariant:
     workspace already contains orphans.
 """
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
-from teatree.config import load_config
-from teatree.core.cleanup import _branch_tree_matches_squash, classify_branch_commits, probe_host_cli
-from teatree.core.clone_paths import resolve_clone_path
+from teatree.config import clone_root
+from teatree.core.forge_pr_probe import find_open_pr_for_branch
 from teatree.core.models import Worktree
+from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
+from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+logger = logging.getLogger(__name__)
 
 
 class BranchStatus(StrEnum):
@@ -58,30 +62,21 @@ class BranchReport:
 def find_open_pr(repo: str, branch: str) -> str:
     """Return the URL of the open PR for ``branch``, or ``""`` if none.
 
-    Queries GitHub (``gh pr list``) and GitLab (``glab mr list``). Returns ``""``
-    when neither CLI is available (sandbox, CI without auth) — callers treat
-    that as "no open PR known" rather than erroring.
+    A thin :meth:`~teatree.core.forge_pr_probe.PrProbe.url_or_empty` adapter over
+    the shared :func:`find_open_pr_for_branch`: a probe that could not run (no CLI
+    in a sandbox, CI without auth) collapses to ``""`` here, because the orphan
+    scan surfaces the branch as an orphan either way — the distinction the
+    fail-closed teardown gate needs does not change what this caller does.
     """
-    url = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--limit", "1"],
-        repo,
-        lambda data: data[0]["url"],
-    )
-    if url:
-        return url
-    return probe_host_cli(
-        ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json", "-P", "1"],
-        repo,
-        lambda data: data[0]["web_url"],
-    )
+    return find_open_pr_for_branch(repo, branch).url_or_empty()
 
 
 def _origin_default_branch_target(repo: str) -> str:
     """Resolve ``origin/<default-branch>`` for the repo, defaulting to ``origin/main``.
 
     A repo whose default branch is ``master`` (or any non-``main`` name) was
-    misclassified as SYNCED because :func:`classify_branch_commits` defaulted
-    to ``origin/main``. Resolving the actual default via ``git symbolic-ref
+    misclassified as SYNCED because :func:`prefilter_branch_commits_by_subject`
+    defaulted to ``origin/main``. Resolving the actual default via ``git symbolic-ref
     refs/remotes/origin/HEAD`` makes the comparison authoritative.
     """
     try:
@@ -93,7 +88,7 @@ def _origin_default_branch_target(repo: str) -> str:
 def classify_branch(repo: str, branch: str) -> BranchReport:
     """Classify ``branch`` in ``repo`` as synced, open PR, or orphan (unpushed / pushed)."""
     target = _origin_default_branch_target(repo)
-    classification = classify_branch_commits(repo, branch, target=target)
+    classification = prefilter_branch_commits_by_subject(repo, branch, target=target)
     ahead = len(classification.genuinely_ahead)
 
     if ahead == 0:
@@ -121,9 +116,13 @@ def find_orphans_in_workspace() -> list[BranchReport]:
     """Return orphan branches across all tracked worktrees in the workspace.
 
     Deduplicates by ``(repo, branch)`` — multiple Worktree rows sharing a
-    branch produce a single report.
+    branch produce a single report. A single worktree whose classification
+    fails (a real git error — corrupt checkout, unresolvable target ref) is
+    logged and skipped rather than aborting the whole scan (#2937): this
+    sweep spans every tracked worktree in the workspace, and one bad row
+    must not hide every other worktree's orphan status.
     """
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     reports: list[BranchReport] = []
     seen: set[tuple[str, str]] = set()
     for wt in Worktree.objects.all():
@@ -134,7 +133,16 @@ def find_orphans_in_workspace() -> list[BranchReport]:
         if key in seen:
             continue
         seen.add(key)
-        report = classify_branch(str(repo_main), wt.branch)
+        try:
+            report = classify_branch(str(repo_main), wt.branch)
+        except CommandFailedError:
+            logger.warning(
+                "orphan scan: could not classify %s@%s (git command failed) — skipping",
+                repo_main,
+                wt.branch,
+                exc_info=True,
+            )
+            continue
         if report.is_orphan:
             reports.append(report)
     return reports

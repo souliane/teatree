@@ -47,7 +47,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Force the teatree opt-in marker AND the #256 auto-load opt-in active:
     # these cover ownership transfer / claim atomicity, not the opt-in gates.
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
 
 
 def _live_pid() -> int:
@@ -80,7 +80,7 @@ class TestTickOwnerRecord:
     def test_no_owner_is_tick_dispatch_not_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "first", "agent_id": "a1"})
         ctx = _ctx(capsys).lower()
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         assert "claim-next" in ctx
         assert "from its brief" not in ctx
         assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "first"
@@ -97,7 +97,7 @@ class TestDeadOwnerReclaim:
         # "nothing to re-spawn" (the negation IS the point) — what must be
         # absent is the retired roster vocabulary + the stale ghost
         # agentId being surfaced for resume.
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         for retired in ("from its brief", "takeover", "resume by", "ghost", "t3-main-loop", "t3-bug-hunt"):
             assert retired not in ctx
         entry = _read_loop_registry()[_OWNER_LOOP]
@@ -133,7 +133,7 @@ class TestSameSessionRestartStaysOwner:
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-owner"})
 
         ctx = _ctx(capsys).lower()
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         assert "resume by" not in ctx
         assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
@@ -220,7 +220,7 @@ def _race_round(
     # The bootstrap only fires for an opted-in loop owner (#256): a real
     # teatree-active marker file (read via the child's STATE_DIR env) plus the
     # auto-load opt-in env — monkeypatch does not cross the process boundary.
-    os.environ["T3_LOOPS_AUTO_LOAD"] = "1"
+    os.environ["T3_AUTOLOAD"] = "1"
     # State dir co-located with the shared registry dir so the reloaded child's
     # STATE_DIR (read at import from this env) sees the teatree-active marker.
     state_dir = Path(reg_dir).parent / "state"
@@ -245,7 +245,7 @@ def _race_round(
 
 def _is_owner_directive(ctx: str) -> bool:
     low = ctx.lower()
-    return "loop-tick owner" in low and "stay idle" not in low
+    return "loop owner" in low and "stay idle" not in low
 
 
 def _is_non_owner_directive(ctx: str) -> bool:

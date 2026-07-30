@@ -1,10 +1,11 @@
+import os
 import re
 from typing import TYPE_CHECKING
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
+from teatree.core.provision.step_runner import run_provision_steps
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.step_runner import run_provision_steps
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.types import RunCommand
 from teatree.utils.run import run_streamed
 from teatree.utils.singleton import AlreadyRunningError, singleton
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 class ServiceLauncher(RunnerBase):
     """Runs a worktree host service, always after its pre-run steps.
 
-    The only supported way to run a service. ``get_run_commands`` is reachable
+    The only supported way to run a service. ``runtime.run_commands`` is reachable
     only through here, so a caller cannot run a service without its
     prerequisites — the drift that let ``run build-frontend`` skip
     ``node_modules``/``customer.json`` is structurally impossible: the command
@@ -43,7 +44,7 @@ class ServiceLauncher(RunnerBase):
         seen: set[str] = set()
         steps: list[ProvisionStep] = []
         for service in services:
-            for step in overlay.get_pre_run_steps(worktree, service):
+            for step in overlay.runtime.pre_run_steps(worktree, service):
                 if step.name in seen:
                     continue
                 seen.add(step.name)
@@ -83,10 +84,11 @@ class ServiceLauncher(RunnerBase):
 
     def _run_locked(self) -> RunnerResult:
         self.prepare()
-        cmd = self.overlay.get_run_commands(self.worktree).get(self.service)
+        cmd = self.overlay.runtime.run_commands(self.worktree).get(self.service)
         if not cmd:
             return RunnerResult(ok=False, detail=f"no run command configured for {self.service!r}")
         args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)
         cwd = cmd.cwd if isinstance(cmd, RunCommand) else None
-        rc = run_streamed(args, cwd=cwd, check=False)
+        env = {**os.environ, **cmd.env} if isinstance(cmd, RunCommand) and cmd.env else None
+        rc = run_streamed(args, cwd=cwd, env=env, check=False)
         return RunnerResult(ok=rc == 0, detail=f"{self.service} finished (rc={rc})")

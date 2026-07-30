@@ -7,7 +7,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.overlay import OverlayConfig
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.worktree_env import _declared_core_keys
+from teatree.core.worktree.worktree_env import _declared_core_keys
 from teatree.utils.compose_contract import check_contract
 
 
@@ -69,7 +69,7 @@ class Command(TyperCommand):
             raise typer.BadParameter(msg)
 
         overlay = get_overlay()
-        produced = _declared_core_keys() | overlay.declared_env_keys()
+        produced = _declared_core_keys() | overlay.provisioning.declared_env_keys()
         allowed = {k.strip() for k in allow.split(",") if k.strip()}
 
         violations = check_contract(paths, produced=produced, allowed=allowed)

@@ -12,13 +12,25 @@ from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
 import teatree.core.management.commands.tasks as tasks_cmd
+import teatree.core.management.commands.tasks_interactive_launch as tasks_launch
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
-from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
-from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
+from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models.ticket_external_review import schedule_external_review
+from teatree.core.overlay import (
+    DbImportStrategy,
+    OverlayBase,
+    OverlayProvisioning,
+    OverlayRuntime,
+    ProvisionStep,
+    RunCommands,
+)
+from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
+from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 pytestmark = pytest.mark.filterwarnings(
@@ -26,7 +38,17 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
+class _CommandOverlayRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["run-backend", worktree.repo_path],
+            "frontend": ["run-frontend", worktree.repo_path],
+        }
+
+
 class CommandOverlay(OverlayBase):
+    runtime = _CommandOverlayRuntime()
+
     def get_repos(self) -> list[str]:
         return ["backend"]
 
@@ -39,16 +61,12 @@ class CommandOverlay(OverlayBase):
 
         return [ProvisionStep(name="remember-setup", callable=remember_setup)]
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "backend": ["run-backend", worktree.repo_path],
-            "frontend": ["run-frontend", worktree.repo_path],
-        }
-
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 COMMAND_SETTINGS: dict[str, object] = {}
+
+_NO_SESSION_ENV = {"CLAUDE_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}
 
 
 class TestLifecycleCommands(TestCase):
@@ -88,15 +106,21 @@ class TestLifecycleCommands(TestCase):
             assert worktree_id == wt.id
             assert status["state"] == Worktree.State.PROVISIONED
             assert status["repo_path"] == "/tmp/backend"
+            # status renders the last provision report.
+            assert status["provision_report"]["success"] is True
+            assert status["provision_report"]["steps"] >= 0
             # Teardown folds the old `clean` step — the row is deleted, not reset
             assert not Worktree.objects.filter(pk=worktree_id).exists()
 
 
-class DbStrategyOverlay(CommandOverlay):
-    """A CommandOverlay variant that declares a DB import strategy."""
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+class _DbStrategyOverlayProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return {"kind": "shared", "shared_postgres": True}
+
+
+class DbStrategyOverlay(CommandOverlay):
+    provisioning = _DbStrategyOverlayProvisioning()
+    """A CommandOverlay variant that declares a DB import strategy."""
 
 
 class TestHealMissingProvisionedDb(TestCase):
@@ -210,7 +234,7 @@ class TestProvisionTicketFlag(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch("teatree.core.resolve.git.current_branch", return_value="no-number-branch"),
+                patch("teatree.core.intake.resolve.git.current_branch", return_value="no-number-branch"),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
@@ -256,7 +280,7 @@ class TestTaskCommands(TestCase):
             )
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
             )
             refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
             reminders = cast("list[int]", call_command("followup", "remind"))
@@ -274,10 +298,10 @@ class TestTaskCommands(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_return_none_when_no_work_available(self) -> None:
-        assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
+        assert call_command("tasks", "work-next-headless", claimed_by="worker-1") is None
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
-    def test_work_next_sdk_refuses_loop_dispatched_phase(self) -> None:
+    def test_work_next_headless_refuses_loop_dispatched_phase(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")
@@ -290,7 +314,7 @@ class TestTaskCommands(TestCase):
         with patch.object(headless_mod, "run_headless", MagicMock()) as run_headless_mock:
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
             )
 
         run_headless_mock.assert_not_called()
@@ -304,8 +328,8 @@ class TestTaskCommands(TestCase):
         assert attempt.exit_code == 1
         assert "routing_error" in attempt.result
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=True)
-    def test_work_next_sdk_override_allows_loop_dispatched_phase(self) -> None:
+    def test_work_next_headless_allows_loop_dispatched_phase_under_headless_runtime(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")
@@ -316,13 +340,13 @@ class TestTaskCommands(TestCase):
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(headless_mod, "run_headless", MagicMock(return_value=attempt)) as run_headless_mock,
         ):
-            call_command("tasks", "work-next-sdk", claimed_by="worker-1")
+            call_command("tasks", "work-next-headless", claimed_by="worker-1")
 
         run_headless_mock.assert_called_once()
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_work_next_sdk_records_durable_failure_when_runner_raises(self) -> None:
-        # Under the no-fallback SDK cutover, ``work_next_sdk`` calls ``run_headless``
+    def test_work_next_headless_records_durable_failure_when_runner_raises(self) -> None:
+        # Under the no-fallback SDK cutover, ``work_next_headless`` calls ``run_headless``
         # which may RAISE on an SDK client startup/query/response error. Without the
         # same failure-recording the Celery-style wrapper does, the task stays
         # silently CLAIMED until lease reap, then re-fires forever with NO durable
@@ -340,7 +364,7 @@ class TestTaskCommands(TestCase):
         ):
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
             )
 
         run_headless_mock.assert_called_once()
@@ -375,7 +399,8 @@ class TestTasksListSession(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_anonymous_session_lists_nothing(self) -> None:
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": "", "XDG_DATA_HOME": ""}):
+        anon_env = {**_NO_SESSION_ENV, "XDG_DATA_HOME": ""}
+        with patch.dict("os.environ", anon_env):
             ticket = Ticket.objects.create(overlay="test")
             session = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             Task.objects.create(ticket=ticket, session=session, phase="coding")
@@ -390,7 +415,7 @@ class TestTasksListSession(TestCase):
         # list and a CLI subprocess can only read a stale on-disk snapshot
         # (`~/.claude/tasks/<session>/*.json`) that lags the live session. The
         # CLI must NOT pretend to show the harness TODO list — it scopes the
-        # teatree DB Task rows only, so `/t3:todos` builds the harness half from
+        # teatree DB Task rows only, so `/t3:checking` builds the harness half from
         # the live TaskList tool instead. The session view must therefore never
         # feed harness-store rows into the renderer (no `harness_todos`), which
         # goes RED on the old view that read the stale store and rendered it.
@@ -425,7 +450,7 @@ class TestSessionTodoRendering(TestCase):
     """The session-scoped renderer prints the teatree tasks only, grouped by status.
 
     The harness TODO list is NOT rendered here — it is the agent's live
-    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:todos``
+    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:checking``
     builds that half from the live ``TaskList`` harness tool.
     """
 
@@ -459,7 +484,7 @@ class TestSessionTodoRendering(TestCase):
             self._row(3, status="completed", reason="read the model"),
         ]
         session_view.render_session_view(rows, session_id="claude-abc", stream=out)
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         # The harness-TODO section never renders here (the CLI cannot read the
         # live harness list); only the teatree-tasks section does.
         assert "harness TODO" not in printed
@@ -473,12 +498,12 @@ class TestSessionTodoRendering(TestCase):
     def test_no_active_session_is_explicit(self) -> None:
         out = io.StringIO()
         session_view.render_session_view([], session_id="", stream=out)
-        assert "No active harness session" in out.getvalue()
+        assert "No active harness session" in _strip_ansi(out.getvalue())
 
     def test_empty_session_says_no_teatree_tasks(self) -> None:
         out = io.StringIO()
         session_view.render_session_view([], session_id="claude-abc", stream=out)
-        assert "No teatree tasks for this session" in out.getvalue()
+        assert "No teatree tasks for this session" in _strip_ansi(out.getvalue())
 
     def test_task_id_uses_distinct_prefix_not_bare_hash(self) -> None:
         out = io.StringIO()
@@ -487,7 +512,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "TODO-7" in printed
         assert "(ticket #42" in printed
         assert "task #7" not in printed
@@ -501,7 +526,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "fix the broken widget" in printed
         assert "ticket #42 (fix the broken widget)" in printed
 
@@ -514,7 +539,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "ticket #42 ()" not in printed
         assert "(ticket #42" in printed
 
@@ -525,80 +550,129 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "TODO-5" in printed
         assert "ticket #5" in printed
         assert "task #5" not in printed
 
 
-class TestReadHarnessTodos(TestCase):
-    """``read_harness_todos`` is the best-effort disk reader for HOOK consumers.
+class TestReconcileChecklist(TestCase):
+    """``tasks reconcile-checklist`` emits the in-session harness-TODO reconcile discipline.
 
-    It backs the PreCompact recovery snapshot and the statusline materialiser
-    (which cannot call the live ``TaskList`` tool); it is NOT used by the
-    interactive ``/t3:todos`` CLI view, which would lag the live session.
+    The harness TODO list lives only in the agent's live, in-memory ``TaskList``
+    state — a CLI subprocess cannot read or write it (the Task tools bypass
+    ``PreToolUse``/``PostToolUse`` hooks). So the deterministic helper a
+    background loop CANNOT be is, instead, a checklist EMITTER: it prints the
+    fixed reconcile/dedupe/complete steps the in-session agent then applies with
+    its own ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools, plus the open
+    teatree tasks for this session as candidate completion anchors. It writes
+    nothing and transitions nothing.
     """
 
-    def test_reads_from_harness_task_store(self) -> None:
-        with tempfile.TemporaryDirectory() as tasks_dir:
-            session_dir = Path(tasks_dir) / "claude-abc"
-            session_dir.mkdir()
-            (session_dir / "1.json").write_text(
-                json.dumps({"id": "1", "subject": "draft the helper", "status": "pending"}),
-                encoding="utf-8",
+    @override_settings(**COMMAND_SETTINGS)
+    def test_emits_the_reconcile_discipline_steps(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = _strip_ansi(out.getvalue())
+        # The agent must drive the live list with its OWN tools — the checklist
+        # names them explicitly so the discipline is self-contained.
+        assert "TaskList" in printed
+        assert "TaskUpdate" in printed
+        assert "TaskCreate" in printed
+        # The three reconcile actions the maintainer asked for.
+        assert "reconcile" in printed.lower()
+        assert "dedup" in printed.lower() or "duplicate" in printed.lower()
+        assert "completed" in printed.lower()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_lists_open_teatree_tasks_for_this_session_as_completion_anchors(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test", short_description="fix the widget")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            open_task = Task.objects.create(
+                ticket=ticket, session=mine, phase="coding", execution_reason="land the gate"
             )
-            (session_dir / "2.json").write_text(
-                json.dumps({"id": "2", "subject": "wire the CLI", "status": "in_progress"}),
-                encoding="utf-8",
+            other_ticket = Ticket.objects.create(overlay="test")
+            other = Session.objects.create(ticket=other_ticket, overlay="test", agent_id="claude-other")
+            Task.objects.create(ticket=other_ticket, session=other, phase="coding", execution_reason="someone else")
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = _strip_ansi(out.getvalue())
+        # This session's open teatree task surfaces as a completion candidate…
+        assert f"TODO-{open_task.pk}" in printed
+        assert "land the gate" in printed
+        # …and another session's task does not leak in.
+        assert "someone else" not in printed
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_makes_no_reconciliation_write_on_healthy_tasks(self) -> None:
+        # The emitter makes no reconciliation write: it never creates,
+        # completes, or transitions a HEALTHY task on the agent's behalf. A
+        # pending task and a freshly-claimed (live-lease) task both survive
+        # untouched, and the row count is unchanged.
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            pending = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            live = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="live-worker",
+                lease_expires_at=timezone.now() + timedelta(minutes=5),
             )
-            with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
-                todos = session_view.read_harness_todos("claude-abc")
-        assert todos == [("pending", "draft the helper"), ("in_progress", "wire the CLI")]
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            pending.refresh_from_db()
+            live.refresh_from_db()
+        assert pending.status == Task.Status.PENDING
+        assert live.status == Task.Status.CLAIMED, "a live-lease claim must NOT be reaped"
+        assert Task.objects.count() == 2
 
-    def test_orders_by_numeric_task_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tasks_dir:
-            session_dir = Path(tasks_dir) / "claude-abc"
-            session_dir.mkdir()
-            for task_id in ("2", "10", "1"):
-                (session_dir / f"{task_id}.json").write_text(
-                    json.dumps({"id": task_id, "subject": f"task {task_id}", "status": "pending"}),
-                    encoding="utf-8",
-                )
-            with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
-                todos = session_view.read_harness_todos("claude-abc")
-        assert [text for _status, text in todos] == ["task 1", "task 2", "task 10"]
+    @override_settings(**COMMAND_SETTINGS)
+    def test_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
+        # The command is a PURE READ — it makes no writes of any kind, not even
+        # reaping. A read surface reaping (CLAIMED→FAILED) with no preceding
+        # reclaim would terminally FAIL a recoverable crashed-session task on a
+        # mere `reconcile-checklist`, bypassing the rescue-before-fail ordering
+        # the boot/tick `run_boot_sweeps` owns. The stale claim stays CLAIMED.
+        from datetime import timedelta  # noqa: PLC0415
 
-    def test_falls_back_to_legacy_todowrite_state(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tasks_dir,
-            tempfile.TemporaryDirectory() as state_dir,
-            override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
-        ):
-            (Path(state_dir) / "claude-abc.todos").write_text(
-                "- [pending] draft the helper\n- [in_progress] wire the CLI\n",
-                encoding="utf-8",
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            stale = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="dead-worker",
+                lease_expires_at=timezone.now() - timedelta(minutes=5),
             )
-            with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
-                todos = session_view.read_harness_todos("claude-abc")
-        assert todos == [("pending", "draft the helper"), ("in_progress", "wire the CLI")]
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            stale.refresh_from_db()
+        assert stale.status == Task.Status.CLAIMED
 
-    def test_missing_everywhere_is_empty(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as tasks_dir,
-            tempfile.TemporaryDirectory() as state_dir,
-            override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
-            patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}),
-        ):
-            assert session_view.read_harness_todos("claude-abc") == []
-
-    def test_empty_session_id_is_empty(self) -> None:
-        assert session_view.read_harness_todos("") == []
+    @override_settings(**COMMAND_SETTINGS)
+    def test_no_session_still_emits_the_discipline(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", _NO_SESSION_ENV):
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = _strip_ansi(out.getvalue())
+        # An anonymous caller has no session-scoped teatree tasks, but the
+        # reconcile discipline (the load-bearing half) still prints.
+        assert "TaskList" in printed
 
 
-class DbOverlay(CommandOverlay):
-    """CommandOverlay with a DB import strategy that always fails."""
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+class _DbOverlayProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return DbImportStrategy(kind="dslr", source_database="development-acme")
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -614,6 +688,11 @@ class DbOverlay(CommandOverlay):
     ) -> bool:
         self.last_approve_remote_dump = approve_remote_dump
         return False
+
+
+class DbOverlay(CommandOverlay):
+    provisioning = _DbOverlayProvisioning()
+    """CommandOverlay with a DB import strategy that always fails."""
 
 
 _DB_MOCK_OVERLAY = {"test": DbOverlay()}
@@ -747,7 +826,7 @@ class TestUpdateTicketVariant(TestCase):
             overlay="test",
             repo_path="backend",
             branch="feature",
-            db_name=f"wt_{ticket.ticket_number}_old",
+            db_name=f"wt_{ticket.pk}_old",
         )
 
         _update_ticket_variant(ticket, "new")
@@ -755,7 +834,7 @@ class TestUpdateTicketVariant(TestCase):
         ticket.refresh_from_db()
         wt.refresh_from_db()
         assert ticket.variant == "new"
-        assert wt.db_name == f"wt_{ticket.ticket_number}_new"
+        assert wt.db_name == f"wt_{ticket.pk}_new"
 
     def test_skips_save_when_db_name_unchanged(self) -> None:
         from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
@@ -770,7 +849,7 @@ class TestUpdateTicketVariant(TestCase):
             overlay="test",
             repo_path="backend",
             branch="feature",
-            db_name=f"wt_{ticket.ticket_number}",
+            db_name=f"wt_{ticket.pk}",
         )
         original_db_name = wt.db_name
 
@@ -779,7 +858,7 @@ class TestUpdateTicketVariant(TestCase):
 
         wt.refresh_from_db()
         assert wt.db_name != original_db_name
-        assert wt.db_name == f"wt_{ticket.ticket_number}_acme"
+        assert wt.db_name == f"wt_{ticket.pk}_acme"
 
 
 class TestFollowupCommands(TestCase):
@@ -795,6 +874,19 @@ class TestFollowupCommands(TestCase):
         assert isinstance(errors, list)
         assert len(errors) == 1
         assert "No code host token for" in errors[0]
+
+    def test_sync_renders_summary_table_on_stderr(self) -> None:
+        import io as _io  # noqa: PLC0415
+
+        from tests._ansi import strip_ansi  # noqa: PLC0415
+
+        err = _io.StringIO()
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            call_command("followup", "sync", stderr=err)
+        printed = strip_ansi(err.getvalue())
+        # The human view is a table on stderr (stdout stays a JSON channel).
+        assert "followup sync" in printed
+        assert "prs_found" in printed
 
 
 class TestTicketCommand(TestCase):
@@ -849,10 +941,55 @@ class TestTicketCommand(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
 
-    def test_transition_mark_review_no_action_delivers_reviewer_ticket(self) -> None:
-        """#1077: the no-action disposition is reachable via the CLI transition."""
-        from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415
+    def test_ignore_and_unignore_are_cli_allowed_and_never_ship(self) -> None:
+        """#2275 cleanup: abandon (ignore) is CLI-reachable and never drives a forge post.
 
+        The two names must be in the CLI allow-list, and neither may name-map to a
+        ``_TICKET_TRANSITION_TASKS`` executor — in particular ``execute_ship`` (the
+        transition side effect that opens/pushes a PR). Their absence from the
+        NAME map is the structural proof that abandoning a mis-adopted ticket never
+        posts to the forge.
+
+        Teardown is now keyed on the TARGET STATE, not the name, so ``ignore``'s
+        IGNORED target DOES purge the ticket's worktrees — a local, non-posting
+        reap guarded by the analyze-before-wipe (#706). ``unignore`` restores a
+        non-terminal state, so it purges nothing.
+        """
+        assert {"ignore", "unignore"} <= ALLOWED_TRANSITIONS
+        assert "ignore" not in _TICKET_TRANSITION_TASKS
+        assert "unignore" not in _TICKET_TRANSITION_TASKS
+        # The forge-posting executor is never name-mapped to either abandon name.
+        assert _TICKET_TRANSITION_TASKS.get("ignore") != "execute_ship"
+        assert _TICKET_TRANSITION_TASKS.get("unignore") != "execute_ship"
+        # ignore lands in a terminal state → local worktree purge (non-posting);
+        # unignore restores a non-terminal state → no purge.
+        assert Ticket.State.IGNORED in _TERMINAL_TARGET_STATES
+
+    def test_transition_ignore_reaches_ignored_state(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "ignore"),
+        )
+        assert result["state"] == Ticket.State.IGNORED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra["ignored_from"] == Ticket.State.STARTED
+
+    def test_transition_unignore_restores_prior_state(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        call_command("ticket", "transition", ticket.pk, "ignore")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "unignore"),
+        )
+        assert result["state"] == Ticket.State.STARTED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert "ignored_from" not in (ticket.extra or {})
+
+    def test_transition_mark_review_no_action_closes_reviewer_ticket(self) -> None:
+        """#1077: the no-action disposition is reachable via the CLI transition."""
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab/x/-/merge_requests/1077c",
@@ -864,7 +1001,7 @@ class TestTicketCommand(TestCase):
             "dict[str, object]",
             call_command("ticket", "transition", ticket.pk, "mark_review_no_action"),
         )
-        assert result["state"] == Ticket.State.DELIVERED
+        assert result["state"] == Ticket.State.REVIEW_POSTED
         ticket.refresh_from_db()
         assert ticket.extra["last_review_state"] == "reviewed_no_action"
 
@@ -974,6 +1111,25 @@ class TestTasksCreateCommand(TestCase):
     def test_create_nonexistent_ticket(self) -> None:
         with pytest.raises(SystemExit):
             call_command("tasks", "create", 99999, phase="coding", reason="x")
+
+    def test_create_kind_fix_records_ticket_kind(self) -> None:
+        # #17: `tasks create --kind fix` classifies the ticket (RED before the
+        # option existed — the ticket stayed FEATURE).
+        ticket = Ticket.objects.create(overlay="test")
+        call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="fix")
+        ticket.refresh_from_db()
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_create_without_kind_leaves_ticket_unchanged(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX)
+        call_command("tasks", "create", ticket.pk, phase="coding", reason="x")
+        ticket.refresh_from_db()
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_create_unknown_kind_is_refused(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="bugfix")
 
 
 class TestTasksCancelCommand(TestCase):
@@ -1248,7 +1404,12 @@ class TestTasksListCommand(TestCase):
         assert len(result) == 1
         assert result[0]["execution_target"] == "interactive"
 
-    def test_list_reaps_stale_claims_before_returning_rows(self) -> None:
+    def test_list_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
+        # `tasks list` is a PURE READ — it makes no writes of any kind, not even
+        # reaping. A read surface reaping (CLAIMED→FAILED) with no preceding
+        # reclaim would terminally FAIL a recoverable crashed-session task on a
+        # mere listing, bypassing the rescue-before-fail ordering the boot/tick
+        # `run_boot_sweeps` owns. The stale claim stays CLAIMED.
         from datetime import timedelta  # noqa: PLC0415
 
         from django.utils import timezone  # noqa: PLC0415
@@ -1267,15 +1428,15 @@ class TestTasksListCommand(TestCase):
         result = cast("list[dict[str, object]]", call_command("tasks", "list"))
 
         stale.refresh_from_db()
-        assert stale.status == Task.Status.FAILED
+        assert stale.status == Task.Status.CLAIMED
         statuses = [row["status"] for row in result]
-        assert "claimed" not in statuses
-        assert "failed" in statuses
+        assert "claimed" in statuses
+        assert "failed" not in statuses
 
     def test_render_tasks_table_formats_rows(self) -> None:
         from io import StringIO  # noqa: PLC0415
 
-        from teatree.core.management.commands.tasks import TaskRow, _render_tasks_table  # noqa: PLC0415
+        from teatree.core.management.commands.tasks_session_view import TaskRow, render_tasks_table  # noqa: PLC0415
 
         rows: list[TaskRow] = [
             TaskRow(
@@ -1290,7 +1451,7 @@ class TestTasksListCommand(TestCase):
             ),
         ]
         buf = StringIO()
-        _render_tasks_table(rows, stream=buf)
+        render_tasks_table(rows, stream=buf)
         out = buf.getvalue()
         assert "teatree tasks (1)" in out
         assert "ID" in out
@@ -1306,10 +1467,10 @@ class TestTasksListCommand(TestCase):
     def test_render_tasks_table_handles_empty(self) -> None:
         from io import StringIO  # noqa: PLC0415
 
-        from teatree.core.management.commands.tasks import _render_tasks_table  # noqa: PLC0415
+        from teatree.core.management.commands.tasks_session_view import render_tasks_table  # noqa: PLC0415
 
         buf = StringIO()
-        _render_tasks_table([], stream=buf)
+        render_tasks_table([], stream=buf)
         assert "No tasks" in buf.getvalue()
 
 
@@ -1324,7 +1485,7 @@ class TestTasksStartCommand(TestCase):
     def _patch_env(run_mock: MagicMock) -> list[AbstractContextManager[object]]:
         return [
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(tasks_cmd.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(tasks_launch.shutil, "which", return_value="/usr/bin/claude"),
             patch("teatree.utils.run.run_streamed", new=run_mock),
         ]
 

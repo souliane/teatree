@@ -1,4 +1,6 @@
-name: Docs
+# TRIGGER: push to main only — regenerate the docs and deploy them to GitHub Pages
+# on every merge.
+name: Push · Publish docs (Pages)
 
 on:
   push:
@@ -20,11 +22,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: "3.13"
       - run: uv sync --group docs
@@ -32,6 +34,9 @@ jobs:
       # deploy from a slightly stale main still ships current docs.
       - run: uv run python manage.py generate_all_docs
       - run: uv run python scripts/hooks/generate_cli_reference.py
+      - run: uv run python scripts/hooks/generate_fsm_diagrams.py
+      - run: uv run python scripts/hooks/generate_dashboard_snapshot.py
+      - run: uv run python scripts/hooks/generate_cli_output_snapshot.py
       - run: uv run mkdocs build --strict
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5

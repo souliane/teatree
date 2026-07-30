@@ -1,0 +1,13 @@
+# Teatree-shaped tokens that are not importable names
+
+A config section header is not a module: `[teatree.speak] local = "all"`.
+
+An entry-point group inside a TOML header is not a module either:
+
+```toml
+[project.entry-points."teatree.overlays"]
+```
+
+A filename tail is not an attribute: the `teatree.pth` file resolves nowhere.
+
+A glob is not a path: `src/teatree/loop/scanners/*` covers every scanner.

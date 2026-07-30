@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # Pre-commit hook: reject files containing banned terms.
 #
-# Reads banned_terms from a TOML config file (e.g., ~/.teatree.toml):
-#   --config <path>  TOML file with a banned_terms array in any section.
+# The banned-terms list is DB-home: it is read from the canonical ConfigSetting
+# store (the DB is PRIVATE to the operator). Set it with:
+#   t3 <overlay> config_setting set banned_terms '["term1","term2"]'
+#   # Optional company-identifier carve-out (#1415 over-block): the org's OWN
+#   # compound identifiers / internal-URL namespaces — never customer PII. Each
+#   # entry's whole-token run is blanked BEFORE matching, so a shorter banned
+#   # term (a bare org slug) never surfaces inside a longer company identifier.
+#   t3 <overlay> config_setting set banned_terms_allowlist '["myorg-engineering","myorg-product"]'
+# The T3_BANNED_TERMS env value (comma-separated) still WINS over the DB.
 #
-# Example .pre-commit-config.yaml entry:
-#   entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
+# Example .pre-commit-config.yaml entry (the CLI reads the DB itself, so the
+# hook passes only the staged files and --diff-only):
+#   entry: scripts/hooks/check-banned-terms.sh
 #
-# Example TOML:
-#   [teatree]
-#   banned_terms = ["term1", "term2"]
-#
-# If no config or no banned_terms key, exits 0 (no-op).
+# An explicit empty list exits 0 (no-op). A genuinely UNSET list (no
+# banned_terms row and no env) WARNS loud and exits 0 by default — an unset list
+# is not a banned-term violation on a dev/solo box (#3247); it exits 2 (fail
+# loud) only when banned_terms_required is set (a deployment that MUST scrub).
 #
 # This is a THIN wrapper: all matching is delegated to
 # ``teatree.hooks.banned_terms_cli`` (which uses ``teatree.hooks.term_match``),
@@ -22,7 +29,9 @@
 # same verdict on a golden corpus so they cannot diverge again.
 #
 # Exit-code contract (consumed by ``teatree.hooks.banned_terms_scanner`` and
-# prek): 0 = clean, 1 = banned term found, 2 = the scanner COULD NOT RUN.
+# prek): 0 = clean (incl. an unset list when banned_terms_required is off, #3247),
+# 1 = banned term found, 2 = the scanner COULD NOT RUN (or an unset list when
+# banned_terms_required is on).
 # A security gate that fails OPEN on a crash is the bug class: the codebase
 # requires Python >= 3.13, so under an old system ``python3`` the matcher
 # import crashes (PEP-604 unions) and exits 1 — colliding with "banned term

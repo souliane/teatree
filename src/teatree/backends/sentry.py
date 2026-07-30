@@ -4,42 +4,56 @@ from typing import cast
 
 import httpx
 
+from teatree.backends.http_retry import SimpleRetryTransport
+
 
 class SentryClient:
-    """Sentry API client — fetches issue summaries for retro/triage skills."""
+    """Sentry API client — fetches issue summaries for retro/triage skills.
+
+    Every read runs under the shared bounded-retry transport
+    (:class:`~teatree.backends.http_retry.SimpleRetryTransport`) so a transient
+    ``5xx`` / ``429`` / connect timeout is retried instead of breaking the caller;
+    all four calls are idempotent GETs. Knobs default from ``T3_SENTRY_HTTP_*``.
+    """
 
     def __init__(self, *, token: str, org: str, base_url: str = "https://sentry.io") -> None:
         self.token = token
         self.org = org
         self.base_url = base_url.rstrip("/")
+        self._transport = SimpleRetryTransport(env_prefix="T3_SENTRY_HTTP")
 
     def get_top_issues(self, *, project: str, limit: int = 10) -> list[dict[str, object]]:
         with self._client() as client:
-            response = client.get(
-                f"/api/0/projects/{self.org}/{project}/issues/",
-                params={"query": "is:unresolved", "sort": "freq", "limit": limit},
+            response = self._transport.run(
+                lambda: client.get(
+                    f"/api/0/projects/{self.org}/{project}/issues/",
+                    params={"query": "is:unresolved", "sort": "freq", "limit": limit},
+                ),
+                idempotent=True,
             )
             response.raise_for_status()
             return cast("list[dict[str, object]]", response.json())
 
     def get_issue(self, issue_id: str) -> dict[str, object]:
         with self._client() as client:
-            response = client.get(f"/api/0/issues/{issue_id}/")
+            response = self._transport.run(lambda: client.get(f"/api/0/issues/{issue_id}/"), idempotent=True)
             response.raise_for_status()
             return cast("dict[str, object]", response.json())
 
     def get_issue_events(self, issue_id: str, *, limit: int = 10) -> list[dict[str, object]]:
         with self._client() as client:
-            response = client.get(
-                f"/api/0/issues/{issue_id}/events/",
-                params={"limit": limit},
+            response = self._transport.run(
+                lambda: client.get(f"/api/0/issues/{issue_id}/events/", params={"limit": limit}),
+                idempotent=True,
             )
             response.raise_for_status()
             return cast("list[dict[str, object]]", response.json())
 
     def list_projects(self) -> list[dict[str, object]]:
         with self._client() as client:
-            response = client.get(f"/api/0/organizations/{self.org}/projects/")
+            response = self._transport.run(
+                lambda: client.get(f"/api/0/organizations/{self.org}/projects/"), idempotent=True
+            )
             response.raise_for_status()
             return cast("list[dict[str, object]]", response.json())
 

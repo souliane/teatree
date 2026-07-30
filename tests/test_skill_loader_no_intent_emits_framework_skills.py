@@ -48,7 +48,6 @@ class TestNoIntentFilePathEmitsFrameworkSkills:
         )
 
         assert "ac-django" in result["suggestions"]
-        assert result["intent"] == ""
 
     def test_python_project_file_path_emits_ac_python(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'mypkg'\n", encoding="utf-8")
@@ -82,7 +81,6 @@ class TestNoIntentFilePathEmitsFrameworkSkills:
             }
         )
         assert result["suggestions"] == []
-        assert result["intent"] == ""
 
     def test_loaded_framework_skill_not_re_suggested(self, tmp_path: Path) -> None:
         (tmp_path / "manage.py").touch()

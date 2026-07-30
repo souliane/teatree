@@ -20,9 +20,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.backend_protocols import PrOpenState
-from teatree.core.models import BotPing, OnBehalfApproval, OutboundClaim, ReviewRequestPost
+from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval, OutboundClaim, ReviewRequestPost
 from teatree.loop.review_claim import emit_review_done_reactions
-from teatree.loop.scanners.review_nag import _post_thread_nag
+from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
@@ -98,12 +98,9 @@ class _Host:
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "{mode}"\nreview_nag_enabled = true\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
+    ConfigSetting.objects.set_value("review_nag_enabled", value=True)
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
 
@@ -113,7 +110,6 @@ def _seed(**overrides: Any) -> ReviewRequestPost:
         "slack_channel_id": _COLLEAGUE,
         "slack_thread_ts": _TS,
         "created_at": timezone.now() - dt.timedelta(days=2),
-        "last_nag_step": 0,
         "done_at": None,
     }
     spec.update(overrides)
@@ -214,15 +210,16 @@ class TestNagPostBypassClosed(TestCase):
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_no_post_and_release_step_under_ask(self) -> None:
+    def test_no_post_and_release_claim_under_ask(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, "ask")
         post = _seed()
         fake = _RouteAwareFake()
-        signal = _post_thread_nag(post, fake, target_step=1)
+        scanner = ReviewNagScanner(messaging=fake)
+        signal = scanner._post_engineers_pray(post, fake, timezone.now())
         assert fake.post_message_calls == []
         assert fake.post_routed_calls == []
         post.refresh_from_db()
-        assert post.last_nag_step == 0
+        assert post.last_nag_at is None
         assert signal is not None
         assert signal.kind == "review_nag.gated"
 
@@ -231,7 +228,8 @@ class TestNagPostBypassClosed(TestCase):
         OnBehalfApproval.record(target=_MR, action="review_nag_post", approver_id=_APPROVER)
         post = _seed()
         fake = _RouteAwareFake()
-        _post_thread_nag(post, fake, target_step=1)
+        scanner = ReviewNagScanner(messaging=fake)
+        scanner._post_engineers_pray(post, fake, timezone.now())
         assert fake.post_routed_calls == [(_COLLEAGUE, fake.post_routed_calls[0][1], _TS)]
         post.refresh_from_db()
-        assert post.last_nag_step == 1
+        assert post.last_nag_at is not None

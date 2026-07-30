@@ -32,20 +32,20 @@ class TestLoopsGroupRegistered:
         assert "loops" in names
 
 
-class TestLoopsTickRun:
-    def test_tick_delegates_to_management_command(self) -> None:
+class TestLoopsTick:
+    def test_per_loop_tick_delegates_with_the_loop_name(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loops_app, ["tick"])
+            result = runner.invoke(loops_app, ["tick", "--loop", "inbox"])
         assert result.exit_code == 0, result.stdout
-        call.assert_called_once_with("loops_tick")
+        call.assert_called_once_with("loops_tick", loop="inbox")
 
-    def test_tick_passes_overlay_and_json(self) -> None:
+    def test_per_loop_tick_passes_overlay_and_json(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            runner.invoke(loops_app, ["tick", "--overlay", "acme", "--json"])
-        call.assert_called_once_with("loops_tick", overlay="acme", json_output=True)
+            runner.invoke(loops_app, ["tick", "--loop", "inbox", "--overlay", "acme", "--json"])
+        call.assert_called_once_with("loops_tick", loop="inbox", overlay="acme", json_output=True)
 
-    def test_run_once_ticks_then_returns(self) -> None:
-        with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loops_app, ["run", "--once"])
-        assert result.exit_code == 0, result.stdout
-        call.assert_called_once_with("loops_tick")
+    def test_run_command_is_gone(self) -> None:
+        # The continuous master runner (`t3 loops run`) is retired with the master
+        # tick (#2650) — there is no fleet-wide tick to loop over.
+        result = runner.invoke(loops_app, ["run", "--once"])
+        assert result.exit_code != 0

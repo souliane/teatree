@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.core.notify import drain_undelivered_notifies
 
@@ -23,6 +24,7 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="subagent-dm-1",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="task done",
             error_message="no messaging backend or user_id configured",
@@ -34,6 +36,7 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="already-sent",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENT,
             text="delivered",
         )
@@ -43,6 +46,7 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="deferred-q",
             kind=BotPing.Kind.QUESTION,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="a question",
         )
@@ -52,6 +56,7 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="in-flight",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENDING,
             text="being sent right now",
         )
@@ -61,6 +66,7 @@ class TestRecoverableInfo(TestCase):
         row = BotPing.objects.create(
             idempotency_key="crashed-claim",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENDING,
             text="claimed then crashed",
         )
@@ -73,6 +79,7 @@ class TestRecoverableInfo(TestCase):
         row = BotPing.objects.create(
             idempotency_key="weeks-stale",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="recorded weeks ago",
         )
@@ -85,6 +92,7 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="exhausted",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="never delivers",
             attempts=BotPing.MAX_REDELIVERY_ATTEMPTS,
@@ -95,6 +103,7 @@ class TestRecoverableInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="abandoned",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.EXPIRED,
             text="given up on",
         )
@@ -106,6 +115,7 @@ class TestExpireStaleInfo(TestCase):
         row = BotPing.objects.create(
             idempotency_key="aged",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="old noise",
         )
@@ -119,6 +129,7 @@ class TestExpireStaleInfo(TestCase):
         row = BotPing.objects.create(
             idempotency_key="capped",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="hit the cap",
             attempts=BotPing.MAX_REDELIVERY_ATTEMPTS,
@@ -130,6 +141,7 @@ class TestExpireStaleInfo(TestCase):
         BotPing.objects.create(
             idempotency_key="fresh",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="still worth retrying",
             attempts=1,
@@ -141,6 +153,7 @@ class TestExpireStaleInfo(TestCase):
         row = BotPing.objects.create(
             idempotency_key="delivered",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.SENT,
             text="already gone",
         )
@@ -156,6 +169,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         BotPing.objects.create(
             idempotency_key="subagent-dm-2",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="sub-agent finished its on-behalf post",
             error_message="no messaging backend or user_id configured",
@@ -180,6 +194,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         BotPing.objects.create(
             idempotency_key="subagent-dm-3",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="still stranded",
         )
@@ -196,6 +211,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         BotPing.objects.create(
             idempotency_key="never-deliverable",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="backend never resolves",
         )
@@ -216,6 +232,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         row = BotPing.objects.create(
             idempotency_key="weeks-old",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="recorded weeks ago",
         )
@@ -235,6 +252,7 @@ class TestDrainUndeliveredNotifies(TestCase):
             BotPing.objects.create(
                 idempotency_key=key,
                 kind=BotPing.Kind.INFO,
+                audience=NotifyAudience.OWNER_DELIVERY.value,
                 status=BotPing.Status.NOOP,
                 text=key,
             )
@@ -253,6 +271,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         BotPing.objects.create(
             idempotency_key="backend-up-send-fails",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="backend resolves but the send breaks",
             attempts=3,
@@ -271,6 +290,7 @@ class TestDrainUndeliveredNotifies(TestCase):
         BotPing.objects.create(
             idempotency_key="backend-up-always-fails",
             kind=BotPing.Kind.INFO,
+            audience=NotifyAudience.OWNER_DELIVERY.value,
             status=BotPing.Status.NOOP,
             text="send keeps breaking",
         )

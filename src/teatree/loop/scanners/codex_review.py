@@ -10,21 +10,25 @@ Decision per open self-authored PR:
 
 1. ``draft: true`` → skip (the user is still iterating; auto-review
     would be noise)
-2. ``CodexReviewMarker.claim(slug, pr_id, head_sha)`` returns ``None``
-    (already dispatched on a previous tick for the same head SHA) → skip
-3. Otherwise → emit one ``codex_review.dispatch`` ``ScanSignal`` carrying
+2. Otherwise → emit one ``codex_review.dispatch`` ``ScanSignal`` carrying
     the dispatch variant (``codex:review`` by default, ``codex:adversarial-review``
     when the diff touches a high-stakes path) so the dispatcher can route
     it to the codex review agent.
 
+The scanner emits UNCONDITIONALLY per non-draft PR every tick — the
+per-SHA idempotency is enforced downstream at PERSIST time, where
+``persistence._handle_codex_review`` claims the ``CodexReviewMarker`` in the
+same transaction that creates the reviewer Task (#1 blocker fix). Before this
+move the scanner burned the marker on every tick even though persistence then
+dropped the dispatch, so the codex review never actually ran yet could not be
+retried. Keying the marker on ``head_sha`` still makes a force-push re-fire the
+review automatically.
+
 The CLI surface mirrors the agent zone naming: ``t3 codex review <pr_url>``
 spawns the same agent the scanner emits a signal for, so manual fire-and-
-forget invocation is available alongside the loop-driven auto-dispatch.
-
-Why a per-SHA marker rather than a PR-level marker: a force-push must
-re-fire the codex review (the diff changed). Keying on head_sha makes
-the re-fire automatic; a PR-level marker would silently skip the second
-review on a meaningful re-push.
+forget invocation is available alongside the loop-driven auto-dispatch. That
+manual path keeps claiming the marker itself (a human-triggered one-shot, not a
+loop persistence flow).
 """
 
 import json
@@ -34,7 +38,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
-from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.review.author_trust import classify_author
 from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
 from teatree.utils.run import run_allowed_to_fail
 
@@ -42,6 +46,13 @@ logger = logging.getLogger(__name__)
 
 
 _GH_NOT_INSTALLED_RC = 127
+
+#: ``gh pr list`` default page size is 30; a user with more than 30 open
+#: self-authored PRs on one repo would silently leave the overflow
+#: un-doublechecked (F5.4). Ask for a high explicit limit and warn when the
+#: result count reaches it, so a genuine >200-PR repo is visible rather than
+#: silently truncated.
+_LIST_OPEN_PRS_LIMIT = 200
 
 #: Path fragments that classify a diff as high-stakes; touching any of
 #: them routes the scanner's dispatch to ``codex:adversarial-review`` so
@@ -72,7 +83,14 @@ class GhPrJson(TypedDict, total=False):
     isDraft: bool
     url: str
     title: str
+    author: "GhAuthorJson"
     files: list[object]
+
+
+class GhAuthorJson(TypedDict, total=False):
+    """Shape of ``GhPrJson.author`` (``gh`` returns ``{"login": ...}``)."""
+
+    login: str
 
 
 class GhFileJson(TypedDict, total=False):
@@ -92,6 +110,7 @@ class PrSummary:
     changed_files: tuple[str, ...]
     url: str = ""
     title: str = ""
+    author: str = ""
 
 
 @runtime_checkable
@@ -122,7 +141,14 @@ class CodexReviewScanner:
         signals: list[ScanSignal] = []
         for slug in self.repos:
             for pr in self._safe_list(slug):
-                signal = self._evaluate(pr)
+                try:
+                    signal = self._evaluate(pr)
+                except Exception:
+                    # F5.6: isolate each PR — one PR whose classification raises
+                    # (e.g. a live visibility probe failing) must not drop the
+                    # codex dispatch for the other PRs in the sweep.
+                    logger.exception("codex_review failed to evaluate %s#%d", pr.slug, pr.number)
+                    continue
                 if signal is not None:
                     signals.append(signal)
                     logger.info(
@@ -146,16 +172,13 @@ class CodexReviewScanner:
     def _evaluate(self, pr: PrSummary) -> ScanSignal | None:
         if pr.is_draft:
             return None
-        variant = _classify_variant(pr.changed_files)
-        marker = CodexReviewMarker.claim(
-            slug=pr.slug,
-            pr_id=pr.number,
-            head_sha=pr.head_sha,
-            overlay=self.overlay,
-            variant=variant,
-        )
-        if marker is None:
-            return None
+        variant = _classify_variant(pr.changed_files, slug=pr.slug, author=pr.author)
+        # The scanner emits UNCONDITIONALLY per open non-draft PR (#1 blocker):
+        # the ``CodexReviewMarker`` idempotency claim moved to persist time
+        # (``persistence._handle_codex_review``) so it rides the same transaction
+        # that creates the reviewer Task — a dropped/failed persist rolls the
+        # marker back and re-fires next tick, instead of the scanner burning the
+        # marker before the review ever executed.
         return ScanSignal(
             kind="codex_review.dispatch",
             summary=f"codex review {pr.slug}#{pr.number} @ {pr.head_sha[:8]} ({variant})",
@@ -171,20 +194,26 @@ class CodexReviewScanner:
         )
 
 
-def _classify_variant(changed_files: tuple[str, ...]) -> str:
-    """Choose the codex review variant based on the diff's path footprint.
+def is_adversarial_review(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> bool:
+    """Whether a self-PR warrants the harder ADVERSARIAL review pass.
 
-    Defaults to ``codex:review``; routes to ``codex:adversarial-review``
-    when the diff touches a high-stakes path (auth, permissions,
-    migrations, secrets/tokens/credentials). The classifier is
-    intentionally conservative — false positives are fine (adversarial
-    review is strictly more thorough), false negatives are the actual
-    failure mode.
+    True when EITHER the PR is on a PUBLIC repo authored by an untrusted identity
+    (#1773 — the untrusted public author never gets the lenient self-PR path) OR
+    the diff touches a high-stakes path (auth, permissions, migrations,
+    secrets/tokens/credentials). Backend-agnostic (#3569): both the codex and the
+    Claude self-PR scanners route to their harder variant on a True. Intentionally
+    conservative — a false positive (an unnecessary adversarial pass) is strictly
+    more thorough; a false negative is the real failure mode.
     """
-    for path in changed_files:
-        lowered = path.lower()
-        if any(marker in lowered for marker in ADVERSARIAL_PATH_MARKERS):
-            return ADVERSARIAL_REVIEW_VARIANT
+    if slug and classify_author(slug, author).untrusted:
+        return True
+    return any(marker in path.lower() for path in changed_files for marker in ADVERSARIAL_PATH_MARKERS)
+
+
+def _classify_variant(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> str:
+    """Choose the codex review variant (standard vs adversarial) for a PR."""
+    if is_adversarial_review(changed_files, slug=slug, author=author):
+        return ADVERSARIAL_REVIEW_VARIANT
     return STANDARD_REVIEW_VARIANT
 
 
@@ -211,8 +240,10 @@ class GhCodexPrApi:
             "open",
             "--author",
             "@me",
+            "--limit",
+            str(_LIST_OPEN_PRS_LIMIT),
             "--json",
-            "number,headRefOid,isDraft,url,title,files",
+            "number,headRefOid,isDraft,url,title,author,files",
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:
@@ -233,6 +264,16 @@ class GhCodexPrApi:
             return []
         if not isinstance(data, list):
             return []
+        if len(data) >= _LIST_OPEN_PRS_LIMIT:
+            # F5.4: the page filled to the requested cap — there may be more open
+            # self-authored PRs beyond it that this tick will not doublecheck.
+            logger.warning(
+                "codex_review: %s returned %d open self-PRs, hitting the --limit %d cap — "
+                "PRs beyond the cap are not codex-reviewed this tick",
+                slug,
+                len(data),
+                _LIST_OPEN_PRS_LIMIT,
+            )
         decoded = (_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict))
         return [pr for pr in decoded if pr is not None]
 
@@ -256,6 +297,8 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary | None:
     is_draft = bool(raw.get("isDraft"))
     url = _as_str(raw.get("url"))
     title = _as_str(raw.get("title"))
+    author_raw = raw.get("author")
+    author = _as_str(author_raw.get("login")) if isinstance(author_raw, dict) else ""
     files_raw = raw.get("files")
     files: list[str] = []
     if isinstance(files_raw, list):
@@ -272,6 +315,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary | None:
         changed_files=tuple(files),
         url=url,
         title=title,
+        author=author,
     )
 
 
@@ -289,4 +333,5 @@ __all__ = [
     "CodexReviewScanner",
     "GhCodexPrApi",
     "PrSummary",
+    "is_adversarial_review",
 ]

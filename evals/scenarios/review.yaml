@@ -1,12 +1,12 @@
 - name: review_skill_refs_resolve
   scenario: "review must validate that every referenced skill name resolves before approving"
   agent_path: skills/review/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
     You are doing a self-review of a branch that edited
-    `~/.teatree-skills.yml` routing and an `agents/*.md` frontmatter
+    `$HOME/.teatree-skills.yml` routing and an `agents/*.md` frontmatter
     `companion_skills:` list. Following the review checklist, run the
     ONE Bash command that confirms every referenced skill name resolves
     to a real skill. One command only, no narration.
@@ -19,7 +19,7 @@
 - name: review_branch_current_with_main
   scenario: "review of a branch must update it to current main first to avoid phantom-reversion findings"
   agent_path: skills/review/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -44,13 +44,19 @@
 #   2. DMing the author as the signal instead of reacting.
 #   3. adding a second `:white_check_mark:` a colleague already placed (no dedup).
 #
+# Regressions 1 and 2 share ONE scenario (#3566): both are the same decision from
+# the same finished-clean-review state — emit the verdict reaction on
+# `(C_REVIEW, 171.5)` — so a trajectory that satisfies one satisfies the other,
+# and the two negatives (`:eyes:`, author DM) simply hang off that one positive.
+# Regression 3 stays separate: a different verdict from a different state.
+#
 # Fixtures use placeholder identities (`C_REVIEW` channel, `171.5` ts) per the
 # eval README's overlay-agnostic convention.
 
 - name: review_done_reacts_with_verdict_emoji
   agent_path: skills/review/SKILL.md
   scenario: "a finished clean review reacts with the verdict check, never an :eyes: claim-at-start"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -63,28 +69,13 @@
       args.command: '~ "t3 slack react C_REVIEW 171\.5 (white_check_mark|heavy_check_mark|\+1)"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 slack react \S+ \S+ eyes\b"'
-
-- name: review_signal_is_reaction_not_author_dm
-  agent_path: skills/review/SKILL.md
-  scenario: "the review verdict is signalled by a reaction on the broadcast, never a DM to the MR author"
-  model: claude-sonnet-4-6
-  max_turns: 3
-  tools: [Bash]
-  prompt: >-
-    You have FINISHED reviewing colleague MR !4120 and it is clean. The
-    review-broadcast message is `(C_REVIEW, 171.5)`. The reaction (not a direct
-    message to the author) is the signal. Run the ONE Bash command you would
-    issue to emit the verdict signal. One command only, no narration.
-  expect:
-    - tool_call: Bash
-      args.command: '~ "t3 slack react C_REVIEW 171\.5"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(notify (send|dm)|slack dm|chat\.postMessage|--dm-author|message the author)"'
 
 - name: review_reaction_dedups_existing_reactor
   agent_path: skills/review/SKILL.md
   scenario: "the review reacts with its own distinct verdict and never re-adds a check a colleague already placed"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -96,7 +87,7 @@
     no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 slack react C_REVIEW 171\.5 question\b"'
+      args.command: '~ "(t3 slack react C_REVIEW 171\.5 question\b|slack reactions[.\s]?add(?=.*C_REVIEW)(?=.*171\.5)(?=.*question))"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 slack react \S+ \S+ (white_check_mark|heavy_check_mark|\+1)"'
 
@@ -111,7 +102,7 @@
 - name: review_findings_posted_inline_not_general
   agent_path: skills/review/SKILL.md
   scenario: "a code-anchored review finding is posted as an inline --file/--line comment, never a general MR note"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -138,7 +129,7 @@
 - name: review_post_delegated_not_main_agent
   scenario: "the orchestrator delegates posting a review comment to a sub-agent, never posts it itself in the foreground"
   agent_path: skills/rules/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task]
   prompt: >-
@@ -151,3 +142,33 @@
       args.prompt: '~ "(?i)(post|comment).*(post-comment|--file|inline)"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 review post-comment"'
+
+# A review finding is classified on ONE axis: Blocker vs Nit. A Nit has NO
+# severity — it is BY DEFINITION non-blocking, so tagging it MED/LOW/HIGH is the
+# nonsensical "Nit (MED)" the skill names explicitly (SKILL.md § "Review Tone &
+# Formatting" → "never downgrade a HIGH/MED finding to `Nit:` … that produces the
+# nonsensical 'Nit (MED)' — terseness is about length, not severity"). The
+# positive matcher requires a bare `Nit:` post (keeps a no-op transcript RED);
+# the negative refuses ANY nit carrying a severity tag — `Nit (MED)`, `Nit (LOW)`,
+# `Nit (HIGH)`, or the `MED … nit` / `LOW … nit` inversions. A severity belongs
+# on a Blocker-axis finding (`HIGH (correctness):`, `MED:`), never on a Nit.
+- name: review_nit_carries_no_severity_tag
+  agent_path: skills/review/SKILL.md
+  scenario: "a nit is posted as a bare `Nit:` with no MED/LOW/HIGH severity tag — a nit has no severity (one axis: Blocker vs Nit)"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo`. The only thing
+    you found is a trivial, non-blocking style preference: a local variable in
+    `src/teatree/core/sweep.py` (line 88) would read better named `candidates`
+    than `c`. This is a nit — purely cosmetic, nothing blocks merge. Post it as an
+    inline comment. Run the ONE Bash command you would issue. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*[\"'']\s*Nit:"'
+    # A nit NEVER carries a severity. Refuse `Nit (MED)`/`Nit (LOW)`/`Nit (HIGH)`,
+    # the `Nit [MED]` bracket form, and the `MED … nit` / `LOW: … nit` inversions.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(nit\s*[\(\[]\s*(med|low|high)|(med|low|high)\b[^\n]*\bnit)"'

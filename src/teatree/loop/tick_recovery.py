@@ -7,28 +7,59 @@ orphaned ticket state), and the agent/mechanical helpers after dispatch
 produces actions.
 """
 
-import contextlib
 import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from teatree.loop.tick import TickReport
 
 logger = logging.getLogger(__name__)
 
 
-def _reap_stale_task_claims() -> None:
-    """Run the boot sweeps from the loop tick, swallowing a DB-blocked harness.
+def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
+    """Run the three recovery sweeps INDEPENDENTLY, recording each failure — never silently.
 
-    Best-effort wrapper over :func:`teatree.core.recovery_sweeps.run_boot_sweeps`
-    (the single SSOT, shared with ``t3 recover``): if the test harness blocks DB
-    access (pytest-django without a ``db`` marker), the loop tick should still
-    render scanners and signals.
+    Chains :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps` (the single
+    SSOT, shared with ``t3 recover``), :func:`~teatree.loop.transient_requeue.requeue_transient_failed`
+    (the bounded reopen of transient-FAILED tasks a crashed-session boot sweep never
+    rescues), and :func:`~teatree.loop.stuck_ticket_redispatch.redispatch_stuck_tickets`
+    (the bounded re-dispatch of stuck non-terminal tickets). The two loop-layer sweeps
+    compose the ``agents``/``core`` surfaces, so they run here rather than in the
+    core-only ``run_boot_sweeps``.
+
+    Each sweep runs in its OWN ``try`` so ANY exception from the FIRST never skips the
+    other two (the old shared ``suppress(RuntimeError)`` let one boot-sweep failure
+    silently disable transient-requeue AND stuck-redispatch, and recovery itself failed
+    invisibly). The catch is the broad ``Exception`` (#3441): a sweep can raise more than
+    ``RuntimeError`` — a ``DatabaseError`` on a poison row, a ``ValueError`` from a
+    classifier — and one unhandled exception used to abort the whole recovery step. A
+    failure is logged and recorded in *errors* (rendered in the tick's ``action_needed``),
+    so a DB-blocked pytest-django harness still renders (its ``RuntimeError: Database
+    access not allowed`` lands in *errors* exactly as before) while a real recovery
+    failure surfaces loudly instead of freezing the factory in silence.
     """
-    from teatree.core.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415
+    from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
+        repair_halt_reconcile,
+        stuck_ticket_redispatch,
+        transient_requeue,
+    )
 
-    with contextlib.suppress(RuntimeError):
-        run_boot_sweeps()
+    sweeps: tuple[tuple[str, Callable[[], object]], ...] = (
+        ("recovery:boot_sweeps", run_boot_sweeps),
+        ("recovery:transient_requeue", transient_requeue.requeue_transient_failed),
+        ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
+        ("recovery:repair_halt_reconcile", repair_halt_reconcile.resolve_reconciled_repair_halts),
+    )
+    for label, sweep in sweeps:
+        try:
+            sweep()
+        except Exception as exc:
+            logger.exception("Recovery sweep %s failed", label)
+            if errors is not None:
+                errors[label] = f"{type(exc).__name__}: {exc}"
 
 
 def _persist_agent_dispatches(report: "TickReport") -> None:
@@ -44,10 +75,13 @@ def _persist_agent_dispatches(report: "TickReport") -> None:
     bidirectional ``ReviewerPrsScanner`` cache (updated when the review
     Task completes) prevents re-spawning at the same SHA.
     """
-    from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415
+    from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415 — deferred: loaded at tick time
 
     try:
-        persist_agent_actions(report.actions)
+        # Thread the report's error sink so a dropped/failed per-zone persist
+        # records ``errors["persist:<zone>"]`` (rendered in action_needed) rather
+        # than a silent ``logger.debug`` — the #1 blocker fail-loud contract.
+        persist_agent_actions(report.actions, errors=report.errors)
     except Exception as exc:
         logger.exception("Persisting agent dispatches failed")
         report.errors["dispatch_persist"] = f"{type(exc).__name__}: {exc}"
@@ -60,7 +94,7 @@ def _execute_mechanical(report: "TickReport") -> None:
     reflects the post-transition state. Errors are captured in
     ``report.errors`` — they never abort the tick.
     """
-    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415
+    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     for action in report.actions:
         if action.kind != "mechanical":

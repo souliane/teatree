@@ -12,12 +12,17 @@ import json
 import os
 import shutil
 from dataclasses import dataclass, field
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
-from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, CheckResult, PrSummary
+from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
+    from teatree.types import RawAPIDict
 
 _GH_NOT_INSTALLED_RC = 127
 
@@ -35,6 +40,7 @@ class GhPrJson(TypedDict, total=False):
     mergeable: str
     mergeStateStatus: str
     author: "GhAuthorJson"
+    isCrossRepository: bool
 
 
 class GhAuthorJson(TypedDict, total=False):
@@ -46,16 +52,6 @@ class GhAuthorJson(TypedDict, total=False):
 class GhReviewJson(TypedDict, total=False):
     """Shape of one review entry inside ``GhPrJson.reviews``."""
 
-    state: str
-
-
-class GhCheckJson(TypedDict, total=False):
-    """Shape of one check entry inside ``GhPrJson.statusCheckRollup``."""
-
-    name: str
-    context: str
-    conclusion: str
-    status: str
     state: str
 
 
@@ -82,18 +78,21 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
     reviews: list[object] = list(reviews_raw) if isinstance(reviews_raw, list) else []
     rollup_raw = raw.get("statusCheckRollup")
     rollup: list[object] = list(rollup_raw) if isinstance(rollup_raw, list) else []
+    cross_repo = raw.get("isCrossRepository")
+    same_repo = (not cross_repo) if isinstance(cross_repo, bool) else None
     return PrSummary(
         slug=slug,
         number=number,
         head_sha=head_sha,
         is_draft=is_draft,
         has_changes_requested=_has_changes_requested(reviews),
-        checks=tuple(_decode_check(cast("GhCheckJson", item)) for item in rollup if isinstance(item, dict)),
+        rollup=tuple(cast("RawAPIDict", item) for item in rollup if isinstance(item, dict)),
         url=url,
         title=title,
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_is_behind_main(raw),
         author=_author_login(raw),
+        same_repo=same_repo,
     )
 
 
@@ -135,26 +134,6 @@ def _has_changes_requested(reviews: list[object]) -> bool:
     return False
 
 
-def _decode_check(raw: GhCheckJson) -> CheckResult:
-    name = _as_str(raw.get("name")) or _as_str(raw.get("context"))
-    conclusion = _as_str(raw.get("conclusion"))
-    status = _as_str(raw.get("status"))
-    # Legacy StatusContext entries (no ``status`` field) carry ``state``;
-    # treat ``state == SUCCESS`` as a green completed check so non-Check-Run
-    # contexts (e.g. external CI) still classify correctly.
-    if not status and not conclusion:
-        state = _as_str(raw.get("state")).upper()
-        if state == "SUCCESS":
-            conclusion = "SUCCESS"
-            status = "COMPLETED"
-        elif state == "PENDING":
-            status = "IN_PROGRESS"
-        elif state:
-            conclusion = "FAILURE"
-            status = "COMPLETED"
-    return CheckResult(name=name, conclusion=conclusion, status=status)
-
-
 @dataclass(slots=True)
 class GhPrApiClient:
     """``gh``-backed :class:`teatree.loop.scanners.pr_sweep.PrApiClient`.
@@ -177,7 +156,7 @@ class GhPrApiClient:
             "--limit",
             "100",
             "--json",
-            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author",
+            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author,isCrossRepository",
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:
@@ -226,10 +205,10 @@ class GhPrApiClient:
         precondition failure (head moved, policy refusal, transient exhaustion)
         returns ``(False, "")`` to preserve the caller's ``(ok, sha)`` contract.
         """
-        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415
+        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415 — tick-time import
 
         try:
-            merged_sha = execute_bound_merge(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+            merged_sha = execute_bound_merge(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
         except MergePreconditionError:
             return False, ""
         return True, merged_sha
@@ -250,16 +229,23 @@ class CallCommandMergeKeystone:
 
     loop_identity: str = "merge-loop"
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
-        from django.core.management import call_command  # noqa: PLC0415
+    def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
+        from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-        result = call_command("ticket", "merge", str(clear_id), loop_identity=self.loop_identity)
+        # #3413: thread the standing substrate authorizer through as the same
+        # ``--human-authorized`` an interactive substrate merge presents. Empty (the
+        # default) reproduces the prior loop-driven merge exactly.
+        result = call_command(
+            "ticket", "merge", str(clear_id), loop_identity=self.loop_identity, human_authorized=human_authorized
+        )
         if not isinstance(result, dict):
-            return False, "", "ticket merge returned non-dict"
+            return False, "", "ticket merge returned non-dict", "", ""
         merged = bool(result.get("merged"))
         merged_sha = str(result.get("merged_sha") or "")
         error = str(result.get("error") or "")
-        return merged, merged_sha, error
+        escalation_kind = str(result.get("escalation_kind") or "")
+        standing_delegation_by = str(result.get("standing_delegation_by") or "")
+        return merged, merged_sha, error, escalation_kind, standing_delegation_by
 
 
 @dataclass(slots=True)
@@ -269,7 +255,7 @@ class AutoReviewTaskDispatcher:
     def enqueue(  # noqa: PLR6301 — instance method to satisfy the injected ReviewDispatcher Protocol (mirrors sibling port adapters).
         self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str
     ) -> bool:
-        from teatree.core.models.auto_review_dispatch import AutoReviewDispatch  # noqa: PLC0415
+        from teatree.core.models.auto_review_dispatch import AutoReviewDispatch  # noqa: PLC0415 — lazy ORM import
 
         row = AutoReviewDispatch.enqueue(
             slug=slug,
@@ -283,30 +269,49 @@ class AutoReviewTaskDispatcher:
 
 @dataclass(slots=True)
 class SlackMergeNotifier:
-    """Post a one-line DM on every actual merge, and on a flag-level signal."""
+    """Route merge announcements + flag signals through the notify-relevance policy.
+
+    :meth:`announce` is an OWNER_DELIVERY (a PR merged) — DM'd exactly once per
+    merge via the :class:`~teatree.core.models.BotPing` idempotency ledger keyed
+    on the merged SHA. :meth:`flag` is INTERNAL (the loop re-flags every
+    un-reviewed PR each ~5-minute tick) — logged only, never DM'd, so re-flagging
+    the same stuck PR forever can never spam the owner. This replaces the former
+    raw ``backend.post_message`` bypass that DM'd on every tick per open PR (F1).
+    """
 
     backend: object
     user_id: str = ""
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
+        from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
+
         prefix = "merged (uv-audit fallback)" if fallback else "merged"
         sha_short = merged_sha[:8] if merged_sha else "?"
-        self._post(f"{prefix} {slug}#{pr_id} @ {sha_short}")
+        notify_user(
+            f"{prefix} {slug}#{pr_id} @ {sha_short}",
+            kind=NotifyKind.INFO,
+            idempotency_key=f"merge-announce:{slug}#{pr_id}:{merged_sha}",
+            audience=NotifyAudience.OWNER_DELIVERY,
+            backend=cast("MessagingBackend", self.backend) if self.backend is not None else None,
+            user_id=self.user_id or None,
+        )
 
-    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected MergeNotifier Protocol (mirrors sibling adapters).
+        from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — tick-time import, kept lazy
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — tick-time import, kept lazy
+
         target = url or f"{slug}#{pr_id}"
         if reason == _MERGEABLE_AWAITING_REVIEW_REASON:
-            self._post(f"mergeable, ready to request review {target}")
-            return
-        self._post(f"flag ({reason}) {target}")
-
-    def _post(self, text: str) -> None:
-        if not self.user_id:
-            return
-        post = getattr(self.backend, "post_dm", None) or getattr(self.backend, "post_message", None)
-        if not callable(post):
-            return
-        post(channel=self.user_id, text=text)
+            text = f"mergeable, ready to request review {target}"
+        else:
+            text = f"flag ({reason}) {target}"
+        notify_user(
+            text,
+            kind=NotifyKind.INFO,
+            idempotency_key=f"pr-sweep-flag:{slug}#{pr_id}:{reason}",
+            audience=NotifyAudience.INTERNAL,
+        )
 
 
 @dataclass(slots=True)

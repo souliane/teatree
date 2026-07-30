@@ -1,27 +1,40 @@
 """Phase 5 of the dream pass — regenerate the ``MEMORY.md`` index (#1933 § 6).
 
-``MEMORY.md`` is the index of the memory set: one line per memory file, each a
-clickable link plus a one-line summary (≤~200 chars), so a reader scans the
-index and opens the topic file for detail. This phase REGENERATES that index
-from the current ``*.md`` set under a ``memory_dir`` — it never moves content
-INTO the index (the body stays in the topic file), only re-derives the one-line
-pointers.
+``MEMORY.md`` is the index of the memory set: one BARE ``- name.md`` filename
+pointer per memory file, so a reader scans the index and opens the topic file for
+detail. This phase REGENERATES that index from the current ``*.md`` set under a
+``memory_dir`` — it never moves content INTO the index (the body stays in the topic
+file), only re-derives the one-line pointers.
 
-The regeneration is PURE and idempotent: the summary of each memory is derived
-deterministically (its frontmatter ``summary``/``description``, else its first
-non-heading prose line, clipped), lines are deduped by target filename and
-stably ordered (filename sort), and a header preamble is preserved. A re-run on
-an unchanged memory set produces a BYTE-IDENTICAL file — the property the test
-pins. It NEVER touches the real ``~/.claude``: the caller passes an explicit
+Each line is a bare ``- name.md`` pointer with NO free-text summary. Dropping the
+per-line summary is what keeps the WHOLE index under the ~24 KB session-load BYTE
+budget gate (d) enforces (#2723, #2755): at a realistic corpus (~230
+memories with ~50-byte filenames) even a 45-char summary pushes the index OVER the
+budget — undoing any curated compaction and forcing needless archival — whereas
+bare pointers fit every pointer with room to spare. The descriptive filename slug
+IS the hook, and the retention lesson still lives in the memory body (and, for
+archived files, the cold ``MEMORY_ARCHIVE.md`` via :func:`signature_text`), so a
+pure pointer list loses no lesson. This matches the hot-index form the decay phase
+already documents (``- name.md`` pointers never dangle).
+
+The regeneration is PURE and idempotent: lines are deduped by target filename and
+stably ordered (filename sort), and a header preamble is preserved. A re-run on an
+unchanged memory set produces a BYTE-IDENTICAL file — the property the test pins.
+It NEVER touches the real ``~/.claude``: the caller passes an explicit
 ``memory_dir``; a missing dir is a clean no-op.
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 _INDEX_NAME = "MEMORY.md"
-_SUMMARY_MAX_CHARS = 200
+
+#: The COLD archive index (#2723), written by the decay phase in the MAIN memory dir.
+#: It is NEVER re-indexed into the hot ``MEMORY.md`` — excluded here exactly like the
+#: hot index — so its one-line-per-archived-entry signatures do not re-bloat the index.
+_ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
 
 _HEADER = (
     "# Auto Memory — Index\n\n"
@@ -31,6 +44,14 @@ _HEADER = (
 
 _FRONTMATTER_SUMMARY_RE = re.compile(r"^(?:summary|description):\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _HEADING_RE = re.compile(r"^#{1,6}\s")
+
+#: Body lines whose leading ``key:`` is metadata, not a lesson. A node-typed
+#: memory whose body leads with ``node_type: memory`` must NOT have that line
+#: lifted as its signature (#2746 nit-4) — skip these and take the next real
+#: line. ``node_type:`` is included precisely because the bare ``type:`` prefix
+#: does not match it (``node_type`` starts with ``node_``).
+_METADATA_LINE_PREFIXES = ("name:", "summary:", "description:", "type:", "node_type:", "metadata:", "---")
+_BINDING_MARKERS = ("binding", "non-negotiable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,49 +73,97 @@ def _strip_frontmatter(text: str) -> tuple[str, str]:
     return text[3:end], text[end + 3 :]
 
 
-def _first_prose_line(body: str) -> str:
+def _first_substantive_line(body: str) -> str:
+    """First non-empty, non-heading, non-metadata body line (whitespace-collapsed).
+
+    Metadata-ish ``key:`` lines (:data:`_METADATA_LINE_PREFIXES`) are skipped so a
+    node-typed memory whose body leads with ``node_type: memory`` yields the real
+    lesson that follows, not the type marker (#2746 nit-4). A genuine lesson never
+    leads with one of those reserved metadata keys.
+    """
     for raw in body.splitlines():
         line = raw.strip().lstrip("-*").strip()
-        if line and not _HEADING_RE.match(raw.strip()):
-            return line
+        if not line or _HEADING_RE.match(raw.strip()):
+            continue
+        if line.lower().startswith(_METADATA_LINE_PREFIXES):
+            continue
+        return " ".join(line.split())
     return ""
 
 
-def _summary_for(text: str) -> str:
+def _first_binding_line(body: str) -> str:
+    """First BINDING / Non-Negotiable body line (headings allowed), else ``""``.
+
+    The last-resort signature when a memory carries no frontmatter summary and no
+    substantive prose — a body of headings where one declares a BINDING rule still
+    has a recoverable lesson.
+    """
+    for raw in body.splitlines():
+        line = raw.strip().lstrip("#-*").strip()
+        if line and any(marker in line.lower() for marker in _BINDING_MARKERS):
+            return " ".join(line.split())
+    return ""
+
+
+def signature_text(text: str) -> str:
+    """The memory's UNCLIPPED signature — the canonical lesson line (#2746 nit-4).
+
+    The single frontmatter-aware extractor shared by the hot index
+    (:func:`_summary_for`), the cold ``MEMORY_ARCHIVE.md`` index, and the
+    retention probe (both via :func:`gates._signature_line`). Resolution order:
+    the frontmatter ``description:``/``summary:`` value, else the first
+    substantive body prose line (metadata ``key:`` lines skipped), else the first
+    BINDING line, else ``""``. NEVER clipped — the verbatim line is what retention
+    needs to stay findable, and the returned text is always a (whitespace-collapsed)
+    substring of *text* so ``snapshot.contains(signature)`` stays True.
+    """
     front, body = _strip_frontmatter(text)
     match = _FRONTMATTER_SUMMARY_RE.search(front)
-    summary = match.group(1).strip() if match else _first_prose_line(body)
-    summary = " ".join(summary.split())  # collapse whitespace
-    if len(summary) > _SUMMARY_MAX_CHARS:
-        summary = summary[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
-    return summary
+    if match:
+        return " ".join(match.group(1).split())
+    prose = _first_substantive_line(body)
+    if prose:
+        return prose
+    return _first_binding_line(body)
 
 
-def _index_line(md: Path, summary: str) -> str:
-    link = f"[{md.name}]({md.name})"
-    return f"- {link} — {summary}" if summary else f"- {link}"
+def index_line_for(name: str) -> str:
+    """The single ``MEMORY.md`` index line for one memory — a bare ``- name.md`` pointer.
+
+    Exposed so the decay phase can PROJECT the post-archival index byte-for-byte the
+    way the re-index will render it (#2723), keeping the budget-tier stop condition
+    exact w.r.t. the gate-(d) byte budget.
+    """
+    return f"- {Path(name).name}"
+
+
+def render_index_lines(lines: Iterable[str]) -> str:
+    """Wrap already-rendered per-memory index *lines* with the standard preamble.
+
+    The pure tail of :func:`render_index`, exposed so the decay phase can render the
+    projected (post-archival) index exactly as it will be written.
+    """
+    body = "\n".join(lines)
+    return f"{_HEADER}{body}\n" if body else _HEADER
 
 
 def render_index(memory_dir: Path) -> str:
     """Render the full ``MEMORY.md`` text for the current memory set (deterministic).
 
-    Lines are deduped by filename and stably ordered (filename sort), so the
-    output is a pure function of the memory set's content — a re-run with no
-    changes renders the identical string.
+    Each line is a bare ``- name.md`` pointer, deduped by filename and stably
+    ordered (filename sort), so the output is a pure function of the memory set's
+    filenames — a re-run with no changes renders the identical string. Both the hot
+    ``MEMORY.md`` and the cold ``MEMORY_ARCHIVE.md`` are excluded so neither index
+    re-bloats the hot index; non-file ``*.md`` entries (a stray directory) are skipped.
     """
     seen: set[str] = set()
     lines: list[str] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name == _INDEX_NAME or md.name in seen:
+        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME} or md.name in seen or not md.is_file():
             continue
         seen.add(md.name)
-        try:
-            text = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        lines.append(_index_line(md, _summary_for(text)))
-    body = "\n".join(lines)
-    return f"{_HEADER}{body}\n" if body else _HEADER
+        lines.append(index_line_for(md.name))
+    return render_index_lines(lines)
 
 
 def reindex_memory(memory_dir: Path, *, dry_run: bool = False) -> ReindexResult:
@@ -120,4 +189,11 @@ def _count_lines(rendered: str) -> int:
     return sum(1 for line in rendered.splitlines() if line.startswith("- "))
 
 
-__all__ = ["ReindexResult", "reindex_memory", "render_index"]
+__all__ = [
+    "ReindexResult",
+    "index_line_for",
+    "reindex_memory",
+    "render_index",
+    "render_index_lines",
+    "signature_text",
+]

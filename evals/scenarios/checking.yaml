@@ -1,7 +1,7 @@
 - name: checking_is_read_only
   scenario: "/t3:checking is a read-only glance — it must not post, transition, or start work"
   agent_path: skills/checking/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

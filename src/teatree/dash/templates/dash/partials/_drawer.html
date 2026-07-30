@@ -1,0 +1,161 @@
+{% load dash_format %}
+<div class="drawer">
+  <div class="drawer-head">
+    <h2>
+      {% if detail.issue_href %}
+        <a class="mono" href="{{ detail.issue_href }}" target="_blank" rel="noopener"
+          title="Open {{ detail.issue_ref }} on the forge">{{ detail.issue_ref }}</a>
+      {% else %}
+        <span class="mono">#{{ detail.number }}</span>
+      {% endif %}
+      {% if detail.short_description %}{{ detail.short_description|code_spans }}{% else %}(no description){% endif %}
+    </h2>
+    <button type="button" class="drawer-close" data-drawer-close aria-label="Close ticket detail">×</button>
+  </div>
+  <div class="card-meta">
+    <span class="chip state" data-group="{{ detail.state_group }}">{{ detail.state_label }}</span>
+    {% if detail.overlay %}<span class="chip">{{ detail.overlay }}</span>{% endif %}
+    <span class="chip role">{{ detail.role }}</span>
+    <span class="chip">{{ detail.kind }}</span>
+    {% if detail.expedited %}<span class="chip expedited">expedited</span>{% endif %}
+    {% if detail.issue_href %}<a class="chip" href="{{ detail.issue_href }}" target="_blank" rel="noopener">{{ detail.issue_ref }}</a>{% endif %}
+  </div>
+
+  <h3>Actions</h3>
+  {% if drawer_error %}<p class="banner-red" role="alert">{{ drawer_error }}</p>{% endif %}
+  {% if detail.available_transitions %}
+    {# One form per transition: the vendored htmx drops the clicked submitter. #}
+    <div class="toolbar">
+      {% for name in detail.available_transitions %}
+        <form method="post" action="{% url 'dash:ticket_transition' detail.ticket_id %}"
+          hx-post="{% url 'dash:ticket_transition' detail.ticket_id %}" hx-target="#drawer" hx-swap="innerHTML">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="{{ name }}">
+          <button class="dash-btn primary" type="submit" onclick="return confirm('Transition #{{ detail.number|escapejs }} to {{ name|escapejs }}?')">{{ name }}</button>
+        </form>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">No legal transitions from {{ detail.state }}.</p>
+  {% endif %}
+
+  <h3>Lifecycle</h3>
+  <div class="mermaid">{{ detail.mermaid }}</div>
+
+  <h3>Transition history <span class="muted small">{% if detail.transitions_total > detail.transitions|length %}last {{ detail.transitions|length }} of {{ detail.transitions_total }}{% else %}{{ detail.transitions_total }}{% endif %}</span></h3>
+  <table class="dash">
+    <thead><tr><th>when</th><th>from</th><th>to</th><th>by</th><th>session</th></tr></thead>
+    <tbody>
+      {% for t in detail.transitions %}
+        <tr>
+          <td>{{ t.created_at }}</td>
+          <td><span class="chip state" data-group="{{ t.from_group }}">{{ t.from_state }}</span></td>
+          <td><span class="chip state" data-group="{{ t.to_group }}">{{ t.to_state }}</span></td>
+          <td>{{ t.triggered_by }}</td>
+          <td>{{ t.session_label }}</td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="5">No transitions recorded.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if detail.pr_chips %}
+    <h3>Pull requests</h3>
+    <div class="card-meta">
+      {% for pr in detail.pr_chips %}<a class="chip pr" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.state }}</a>{% endfor %}
+    </div>
+  {% endif %}
+
+  <h3>Tasks <span class="muted small">{% if detail.tasks_total > detail.tasks|length %}newest {{ detail.tasks|length }} of {{ detail.tasks_total }}{% else %}{{ detail.tasks_total }}{% endif %}</span></h3>
+  {% for task in detail.tasks %}
+    <div class="task-block">
+      <div class="card-meta">
+        <span class="chip mono">TODO-{{ task.task_id }}</span>
+        <span class="chip">{{ task.phase }}</span>
+        <span class="chip">{{ task.status }}</span>
+        <span class="chip" title="execution target — headless vs interactive">{{ task.execution_target }}</span>
+        {% if task.claimed_by %}<span class="chip">{{ task.claimed_by }}</span>{% endif %}
+        <span class="muted small">{% if task.attempts_total > task.attempts|length %}attempts: newest {{ task.attempts|length }} of {{ task.attempts_total }}{% else %}attempts: {{ task.attempts_total }}{% endif %}</span>
+      </div>
+      {% if task.attempts %}
+        <table class="dash provenance">
+          <thead>
+            <tr>
+              <th>model</th><th>effort</th><th>lane / target</th><th>duration</th><th>cost</th>
+              <th class="num">turns</th><th>tokens (in/out · cache r/w)</th><th>outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in task.attempts %}
+              <tr>
+                <td class="mono">{{ a.model|default:"—" }}</td>
+                <td class="mono small">{{ a.reasoning_effort|default:"—" }}</td>
+                <td>{{ a.lane|default:"—" }} · {{ a.execution_target }}</td>
+                <td>{{ a.duration|default:"—" }}</td>
+                <td>
+                  {% if a.cost_usd is not None %}
+                    {% if a.cost_is_estimated %}
+                      <span class="cost est" title="price-table estimate, not a reported figure">≈${{ a.cost_usd|floatformat:4 }} <span class="cost-tag">est</span></span>
+                    {% else %}
+                      <span class="cost reported" title="reported cost from the run">${{ a.cost_usd|floatformat:4 }} <span class="cost-tag">reported</span></span>
+                    {% endif %}
+                  {% else %}—{% endif %}
+                </td>
+                <td class="num">{{ a.num_turns|default:"—" }}</td>
+                <td class="mono small">{{ a.input_tokens|default:0 }}/{{ a.output_tokens|default:0 }} · {{ a.cache_read_tokens|default:0 }}/{{ a.cache_write_tokens|default:0 }}</td>
+                <td>
+                  {% if a.outcome %}<span class="chip outcome">{{ a.outcome }}</span>{% endif %}
+                  {% if a.exit_code is not None %}<span class="chip small" title="exit code">exit {{ a.exit_code }}</span>{% endif %}
+                </td>
+              </tr>
+              {% if a.error or a.artifact_path or a.launch_url or a.agent_session_id or a.skills_loaded %}
+                <tr class="provenance-extra">
+                  <td colspan="8">
+                    {% if a.error %}<div class="attempt-error" title="fingerprint {{ a.error_fingerprint }}">{{ a.error }}</div>{% endif %}
+                    {% if a.skills_loaded %}
+                      <div class="attempt-skills card-meta" title="skills loaded at dispatch">
+                        {% for skill in a.skills_loaded %}<span class="chip mono small">{{ skill }}</span>{% endfor %}
+                      </div>
+                    {% endif %}
+                    <div class="attempt-refs card-meta">
+                      {% if a.launch_url %}<a class="chip" href="{{ a.launch_url }}" target="_blank" rel="noopener">launch ↗</a>{% endif %}
+                      {% if a.artifact_path %}<span class="chip mono small" title="artifact">{{ a.artifact_path }}</span>{% endif %}
+                      {% if a.agent_session_id %}
+                        <a class="chip" href="{% url 'dash:transcript' a.agent_session_id %}"
+                          hx-get="{% url 'dash:transcript' a.agent_session_id %}" hx-target="#transcript-viewer" hx-swap="innerHTML"
+                          title="open the redacted agent transcript (click-through only)">transcript</a>
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+  {% empty %}
+    <p class="muted">No tasks.</p>
+  {% endfor %}
+  <div id="transcript-viewer"></div>
+
+  <h3>Sessions</h3>
+  <table class="dash">
+    <thead><tr><th class="num">id</th><th>agent</th><th>started</th><th>ended</th></tr></thead>
+    <tbody>
+      {% for s in detail.sessions %}
+        <tr><td class="num">{{ s.session_id }}</td><td>{{ s.agent_id }}</td><td>{{ s.started_at }}</td><td>{{ s.ended_at|default:"(open)" }}</td></tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="4">No sessions.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>Debug session</h3>
+  <form method="post" action="{% url 'dash:debug_session' %}" hx-post="{% url 'dash:debug_session' %}" hx-target="#debug-session-result" hx-swap="innerHTML">
+    {% csrf_token %}
+    <button class="dash-btn" type="submit" hx-confirm="Start a loopback debug session?">Debug session (loopback ttyd)</button>
+  </form>
+  <div id="debug-session-result"></div>
+</div>

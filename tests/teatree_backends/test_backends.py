@@ -5,8 +5,10 @@ import httpx
 import pytest
 
 from teatree.backends import gitlab, notion, slack
+from teatree.backends.gitlab import http_client as gitlab_http
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.slack import client as slack_client
+from teatree.core.backend_protocols import BackendResolutionError
 
 
 def test_slack_backend_posts_webhook_payload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,10 +164,12 @@ def test_gitlab_api_put_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result == {"id": 1}
 
 
-def test_gitlab_api_put_json_no_token() -> None:
+def test_gitlab_api_put_json_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
     api = GitLabAPI(token="", base_url="https://gl.test/api/v4")
-    assert api.put_json("endpoint") is None
+    with pytest.raises(BackendResolutionError):
+        api.put_json("endpoint")
 
 
 def test_gitlab_api_upload_file(monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
@@ -188,7 +192,9 @@ def test_gitlab_api_upload_file(monkeypatch: pytest.MonkeyPatch, tmp_path: pytes
     assert result["markdown"] == "![test](/uploads/x/test.png)"
 
 
-def test_gitlab_api_upload_file_no_token() -> None:
+def test_gitlab_api_upload_file_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
     api = GitLabAPI(token="", base_url="https://gl.test/api/v4")
-    assert api.upload_file(42, "/tmp/x.png") is None
+    with pytest.raises(BackendResolutionError):
+        api.upload_file(42, "/tmp/x.png")

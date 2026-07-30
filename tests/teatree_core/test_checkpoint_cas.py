@@ -95,7 +95,7 @@ class TestAdvanceCheckpointMonotonicTOCTOU:
             try:
                 barrier.wait(timeout=10)
                 advance_checkpoint_monotonic(now, path)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — a worker records whatever it raises for the parent to assert on
                 errors.append(exc)
 
         threads = [

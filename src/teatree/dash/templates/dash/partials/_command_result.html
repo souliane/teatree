@@ -1,0 +1,4 @@
+<div class="command-result">
+  <p><code>{{ result.label }}</code> — exit {{ result.exit_code }}{% if result.timed_out %} <span class="stalled">(timed out)</span>{% endif %}</p>
+  <pre class="output">{{ result.output|default:"(no output)" }}</pre>
+</div>

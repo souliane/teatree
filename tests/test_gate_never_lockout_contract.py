@@ -84,7 +84,6 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     ),
     # Narrow targeted-command gates — deny one specific command, never arbitrary Bash.
     "handle_block_direct_commands": "denies only specific t3-CLI-bypass commands (_deny_match denylist)",
-    "handle_block_out_of_band_merge": "denies only raw `gh pr merge` / `glab mr merge` on managed repos",
     "handle_block_raw_review_post": "denies only raw review-post commands that bypass the FSM",
     "handle_block_self_dm_via_mcp": (
         "denies only the 4 Slack MCP write tools to a self-DM id, never arbitrary Bash; "
@@ -97,14 +96,12 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
         "converts loop-driven AskUserQuestion to DeferredQuestion (present-mode deny arm, #1174); "
         "denies only AskUserQuestion, never arbitrary Bash"
     ),
-    # Narrow targeted-command gate — denies only Edit/Write when ticket is in STARTED (pre-plan) state.
-    "handle_block_edit_before_planned": (
-        "denies Edit/Write only when the ticket FSM is in STARTED (no PlanArtifact yet); fail-open on any error"
-    ),
-    # NB: handle_enforce_orchestrator_boundary is NO LONGER exempt — both its
-    # heavy-Bash arm and its default-ON foreground-Agent arm (#1692) now route
-    # their deny through _fail_open_or_deny, so the contract verifies the route
-    # structurally rather than tracking a TODO here.
+    # NB: the orchestrator-boundary gate (#1692) plus the plan-edit gate
+    # (#2384 PR-09) are NO LONGER exempt. Each routes its deny through the
+    # fail-open chokepoint, so the contract verifies the route STRUCTURALLY rather
+    # than tracking a redundant allowlist entry. Shrinking the allowlist to only
+    # the two documented hard-safety classes (public-egress leak, narrow
+    # targeted-command) is the whole point of routing them through the chokepoint.
 }
 
 
@@ -160,6 +157,78 @@ def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
     return {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
 
+def _reexport_sibling_sources(tree: ast.Module, handler_names: set[str]) -> list[ast.Module]:
+    """Parsed ASTs of the ``hooks/scripts`` siblings a re-exported handler is defined in.
+
+    A PreToolUse handler extracted into a sibling (the #2384 router split) is
+    registered in ``_HANDLERS`` under its re-exported name but DEFINED in the
+    sibling, reached via a top-level ``from <sibling> import <handler>`` at the
+    router head. To trace such a handler's deny path the call graph must include the
+    sibling's functions — the sibling reaches the deny writer through a lazy
+    ``from hook_router import emit_pretooluse_deny`` back-import.
+    """
+    scripts_dir = _HOOK_ROUTER_SRC.parent
+    sources: list[ast.Module] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
+            continue
+        if not any(alias.name in handler_names for alias in node.names):
+            continue
+        sources.extend(
+            ast.parse(path.read_text(encoding="utf-8"))
+            for path in _module_source_paths(node.module, handler_names, scripts_dir)
+        )
+    return sources
+
+
+def _module_source_paths(module: str, handler_names: set[str], scripts_dir: Path) -> list[Path]:
+    """Resolve a router import's module string to the ``hooks/scripts`` source file(s).
+
+    Handles the canonical absolute ``hooks.scripts.<name>`` /
+    ``hooks.scripts.handlers.<name>`` module paths (and the bare ``<name>`` a
+    subprocess-run router still yields). When the tail resolves to a PACKAGE
+    (``<name>/__init__.py`` — the consolidated ``banned_terms`` package), the
+    handler is DEFINED in a submodule and merely re-exported by ``__init__``, so
+    the ``__init__``'s ``from hooks.scripts.<name>.<sub> import <handler>`` is
+    followed recursively to the defining submodule. Returns ``[]`` for a
+    non-sibling import so an unrelated ``from teatree.x import y`` is skipped.
+    """
+    if module.startswith("hooks.") and not module.startswith("hooks.scripts."):
+        return []
+    tail = module.removeprefix("hooks.scripts.")
+    base = scripts_dir.joinpath(*tail.split("."))
+    module_file = base.with_suffix(".py")
+    if module_file.is_file():
+        return [module_file]
+    init = base / "__init__.py"
+    if not init.is_file():
+        return []
+    paths = [init]
+    init_tree = ast.parse(init.read_text(encoding="utf-8"))
+    for node in ast.walk(init_tree):
+        if isinstance(node, ast.ImportFrom) and node.module and any(a.name in handler_names for a in node.names):
+            paths.extend(_module_source_paths(node.module, handler_names, scripts_dir))
+    return paths
+
+
+def _call_graph_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """Every function in the router's PreToolUse call graph, including re-exported siblings.
+
+    The router's own functions PLUS the functions of each ``hooks/scripts`` sibling
+    it re-exports a PreToolUse handler from. The graph is name-based and module-flat
+    (``_callee_names`` keys on the call name regardless of import origin), so a
+    handler defined in a sibling and the sibling's lazy ``from hook_router import
+    emit_pretooluse_deny`` back-import resolve transitively once both modules' defs
+    share one dict. Router defs win on a name collision.
+    """
+    handler_names = set(_pretooluse_handler_names(tree))
+    funcs: dict[str, ast.FunctionDef] = {}
+    for sibling_tree in _reexport_sibling_sources(tree, handler_names):
+        funcs.update(_module_functions(sibling_tree))
+    funcs.update(_module_functions(tree))
+    return funcs
+
+
 def _callers_of(name: str, funcs: dict[str, ast.FunctionDef]) -> set[str]:
     """The names of module functions that call ``name`` directly."""
     return {fname for fname, func in funcs.items() if name in _callee_names(func)}
@@ -175,7 +244,7 @@ def _never_lockout_offenders(tree: ast.Module) -> list[str]:
     is caught, not evaded. Shared by the real-source check and the synthetic-source
     proof so both exercise the identical classifier.
     """
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     handlers = _pretooluse_handler_names(tree)
     offenders: list[str] = []
     for handler in handlers:
@@ -209,18 +278,49 @@ def test_every_pretooluse_deny_handler_is_never_lockout() -> None:
     )
 
 
-def test_loop_registration_gate_routes_through_fail_open() -> None:
-    """The incident gate itself must now fail-open-route (regression pin)."""
+def test_plan_edit_gate_routes_through_fail_open() -> None:
+    """The plan-edit gate fail-open-routes and is OFF the allowlist (#2384 PR-09 shrink).
+
+    ``handle_block_edit_before_planned`` already routes its deny through
+    ``_fail_open_or_deny``, so its allowlist entry was redundant. Removing it
+    shrinks the never-lockout exemption set to only the two documented
+    hard-safety classes — this pins that the gate is still fail-open-routed
+    (never a bare lockout) after the removal.
+    """
     tree = _module_tree()
-    funcs = _module_functions(tree)
-    reachable = _reachable_callees("handle_enforce_loop_registration", funcs)
-    assert _DENY_WRITER in reachable, "loop-registration gate must still be able to deny"
+    funcs = _call_graph_functions(tree)
+    reachable = _reachable_callees("handle_block_edit_before_planned", funcs)
+    assert _DENY_WRITER in reachable, "the plan-edit gate must still be able to deny"
     assert _FAIL_OPEN_ROUTER in reachable, (
-        "handle_enforce_loop_registration must route its deny through "
+        "handle_block_edit_before_planned must route its deny through "
         f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
     )
-    assert "handle_enforce_loop_registration" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
-        "the loop-registration gate is FIXED (fail-open-routed); it must not be on the exemption allowlist"
+    assert "handle_block_edit_before_planned" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
+        "the plan-edit gate is fail-open-routed; its redundant allowlist entry must be pruned"
+    )
+
+
+def test_out_of_band_merge_gate_routes_through_fail_open() -> None:
+    """The raw-merge gate fail-open-routes and is OFF the allowlist (FIX-EXPEDITE PART B).
+
+    ``handle_block_out_of_band_merge`` was the ONLY merge-adjacent gate denying via a
+    bare ``emit_pretooluse_deny`` — it honoured neither the self-rescue allowlist, the
+    master ``danger_gate_fail_open``, nor a per-gate kill-switch. PART B routes both
+    deny sites through ``_fail_open_or_deny`` and adds the ``raw-merge`` kill-switch, so
+    the gate now joins the fix-the-class siblings (loop-registration, plan-edit) instead
+    of the narrow-exempt allowlist. This pins it is still fail-open-routed (never a bare
+    lockout) after the removal.
+    """
+    tree = _module_tree()
+    funcs = _call_graph_functions(tree)
+    reachable = _reachable_callees("handle_block_out_of_band_merge", funcs)
+    assert _DENY_WRITER in reachable, "the raw-merge gate must still be able to deny"
+    assert _FAIL_OPEN_ROUTER in reachable, (
+        "handle_block_out_of_band_merge must route its deny through "
+        f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
+    )
+    assert "handle_block_out_of_band_merge" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
+        "the raw-merge gate is fail-open-routed; its narrow-exemption allowlist entry must be pruned"
     )
 
 
@@ -232,7 +332,7 @@ def test_exemption_allowlist_has_no_stale_entries() -> None:
     fail-open-routing) must be pruned, not left as a silent broadening.
     """
     tree = _module_tree()
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     handlers = set(_pretooluse_handler_names(tree))
 
     stale: list[str] = []
@@ -261,7 +361,7 @@ def test_write_pretooluse_deny_has_single_funnel() -> None:
     fail-open / circuit-breaker routing un-sidesteppable.
     """
     tree = _module_tree()
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     assert _DENY_WRITER in funcs, f"{_DENY_WRITER} not found in hook_router — writer rename regression"
 
     callers = _callers_of(_DENY_WRITER, funcs)

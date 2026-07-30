@@ -150,6 +150,7 @@ _SKILL_SUPPORT_SUBMODULES = (
     "loading",
     "map",
     "ref_validator",
+    "requires_parser",
     "schema",
 )
 
@@ -271,7 +272,7 @@ class TestFacadeImportSmoke:
             "execute_bound_merge",
             "assert_merge_preconditions",
             "resolve_pr_repo_slug",
-            "fetch_pr_merge_state",
+            "CodeHostQuery",
             "MergePreconditionError",
             "MergeHeadMovedError",
         ):
@@ -279,7 +280,7 @@ class TestFacadeImportSmoke:
 
     def test_config_package_facade_re_exports(self) -> None:
         config = importlib.import_module("teatree.config")
-        for name in ("load_config", "UserSettings", "CONFIG_PATH", "discover_overlays"):
+        for name in ("load_config", "UserSettings", "discover_overlays"):
             assert hasattr(config, name), f"teatree.config missing {name}"
 
     def test_gates_package_modules_import(self) -> None:
@@ -337,7 +338,6 @@ class TestFacadeImportSmoke:
         skill_support = importlib.import_module("teatree.skill_support")
         for name in (
             "resolve_all",
-            "resolve_companions",
             "resolve_requires",
             "DEFAULT_SKILLS_DIR",
             "SkillLoadingPolicy",

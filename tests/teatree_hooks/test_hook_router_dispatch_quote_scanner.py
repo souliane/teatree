@@ -16,6 +16,8 @@ patterns.
 """
 
 import json
+import os
+import sqlite3
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -31,8 +33,9 @@ from teatree.hooks.quote_scanner import dispatch_quote_ok_reason, extract_dispat
 
 @pytest.fixture(autouse=True)
 def _isolated_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Pin the ledger + blocklist root to ``tmp_path`` so tests don't touch real state."""
+    """Pin the ledger + blocklist root AND the config DB to ``tmp_path`` so tests never touch real state."""
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
     return tmp_path
 
 
@@ -55,10 +58,12 @@ def _ledger_lines(tmp_path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
 
 
-# A HIGH user-voice shape — a heading announcing a verbatim user block.
-# Neutral synthetic content; trips the existing ``heading-user-mandate``
-# pattern without quoting any real person.
-_HIGH_VOICE_PROMPT = "## User mandate\n\nImplement the export endpoint and wire it to the dashboard."
+# A HIGH user-voice shape — a heading that explicitly announces a verbatim user
+# block. Neutral synthetic content; trips the unconditional
+# ``heading-user-ask-verbatim`` pattern (a bare ``## User mandate`` shape now
+# downgrades to MEDIUM without adjacent quote evidence, #3240) without quoting any
+# real person.
+_HIGH_VOICE_PROMPT = "## User ask (verbatim, 2026-05-20)\n\nImplement the export endpoint and wire it to the dashboard."
 
 
 class TestExtractDispatchPayload:
@@ -123,7 +128,7 @@ class TestHandlerDeny:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # The subject field is scanned too — a quote pasted there is caught.
-        data = _agent("ordinary brief body", description="## User mandate")
+        data = _agent("ordinary brief body", description="## User ask (verbatim, 2026-05-20)")
         blocked = handle_dispatch_prompt_quote_scanner(data)
         assert blocked is True
         capsys.readouterr()
@@ -207,10 +212,28 @@ def _run_task(description: str, *, subject: str = "do work", session_id: str = "
     return blocked, (json.loads(raw) if raw else None)
 
 
+def _seed_gate_flag(*, value: bool) -> None:
+    """Seed the DB-home ``dispatch_quote_gate_on_task_create_enabled`` flag in the hermetic config DB."""
+    db = Path(os.environ["T3_CONFIG_DB"])
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) "
+            "VALUES ('', 'dispatch_quote_gate_on_task_create_enabled', ?)",
+            (json.dumps(value),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _enable_task_gate() -> None:
-    (Path.home() / ".teatree.toml").write_text(
-        "[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n", encoding="utf-8"
-    )
+    _seed_gate_flag(value=True)
 
 
 class TestOnTaskCreateGate:
@@ -238,7 +261,7 @@ class TestOnTaskCreateGate:
 
     def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:
         _enable_task_gate()
-        blocked, payload = _run_task("ordinary brief", subject="## User mandate")
+        blocked, payload = _run_task("ordinary brief", subject="## User ask (verbatim, 2026-05-20)")
         assert blocked is True
         assert payload is not None
         assert payload["continue"] is False
@@ -260,7 +283,7 @@ class TestOnTaskCreateGate:
         assert ledger[-1]["override"] is True
 
     def test_default_off_passes_through_even_on_high_quote(self, tmp_path: Path) -> None:
-        # No ~/.teatree.toml (flag unset) → the gate is inert by default. A HIGH
+        # No config row (flag unset) → the gate is inert by default. A HIGH
         # quote must pass through untouched (the gate ships opt-in pending #1640).
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
         assert blocked is False
@@ -269,18 +292,18 @@ class TestOnTaskCreateGate:
         assert _ledger_lines(tmp_path) == []
 
     def test_explicit_false_disables(self, tmp_path: Path) -> None:
-        (Path.home() / ".teatree.toml").write_text(
-            "[teatree]\ndispatch_quote_gate_on_task_create_enabled = false\n", encoding="utf-8"
-        )
+        _seed_gate_flag(value=False)
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
         assert blocked is False
         assert payload is None
 
     def test_broken_config_fails_disabled(self, tmp_path: Path) -> None:
-        # A broken ~/.teatree.toml fails CLOSED to disabled (mirrors the #167
+        # A corrupt/unreadable config DB fails CLOSED to disabled (mirrors the #167
         # plan-gate-on-task-create posture): an unvalidated gate must never wedge
-        # the fan-out on a config the operator can't parse.
-        (Path.home() / ".teatree.toml").write_text("not = valid = toml [[[", encoding="utf-8")
+        # the fan-out on a config the operator can't read.
+        db = Path(os.environ["T3_CONFIG_DB"])
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"not a sqlite database at all")
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
         assert blocked is False
         assert payload is None

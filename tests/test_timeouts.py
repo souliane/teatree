@@ -1,6 +1,11 @@
 """Tests for the multi-tier timeout configuration system."""
 
-from unittest.mock import patch
+import json
+import os
+import sqlite3
+import tempfile
+from pathlib import Path
+from unittest import mock
 
 import pytest
 from django.test import TestCase, override_settings
@@ -19,6 +24,23 @@ from teatree.timeouts import (
     TimeoutConfig,
     load_timeouts,
 )
+
+
+def _seed_config(db: Path, key: str, value: object, scope: str = "") -> None:
+    """Seed a ``teatree_config_setting`` row the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestTimeoutConfig:
@@ -94,19 +116,17 @@ class TestLoadTimeouts(TestCase):
         cfg = load_timeouts(FakeOverlay())
         assert cfg.get(SETUP) == 500  # overlay wins over Django settings
 
-    def test_user_toml_beats_overlay(self) -> None:
+    def test_user_db_setting_beats_overlay(self) -> None:
         class FakeOverlay:
             def get_timeouts(self) -> dict[str, int]:
                 return {"setup": 500}
 
-        fake_config_raw = {"teatree": {"timeouts": {"setup": 10}}}
-
-        class FakeConfig:
-            raw = fake_config_raw
-
-        with patch("teatree.config.load_config", return_value=FakeConfig()):
-            cfg = load_timeouts(FakeOverlay())
-        assert cfg.get(SETUP) == 10  # user TOML wins over overlay
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "timeouts", {"setup": 10})
+            with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
+                cfg = load_timeouts(FakeOverlay())
+        assert cfg.get(SETUP) == 10  # user DB setting wins over overlay
 
     def test_overlay_without_get_timeouts(self) -> None:
         """Overlay that doesn't implement get_timeouts() is fine."""

@@ -1,6 +1,9 @@
 """Tests for the bundled t3-teatree overlay."""
 
+import json
+import sqlite3
 import subprocess
+from collections.abc import Callable
 from importlib.metadata import entry_points
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -8,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_mod
 import teatree.contrib.t3_teatree.overlay as overlay_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.contrib.t3_teatree.apps import T3TeatreeConfig
@@ -17,25 +19,42 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.overlay_loader import get_overlay
 
+OverlayRegistry = dict[str, dict[str, object]]
+
+
+def _seed_overlays_registry(db_path: Path, overlays: OverlayRegistry) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 @pytest.fixture
-def isolated_config(tmp_path: Path, monkeypatch) -> Path:
-    """Redirect overlay discovery to a fresh tmp toml, ignoring the user's real config.
+def isolated_config(tmp_path: Path, monkeypatch) -> Callable[[OverlayRegistry], None]:
+    """Seed the DB-home ``overlays`` registry the discovery path reads, hermetic per test.
 
-    ``CONFIG_PATH`` is baked into ``load_config`` / ``discover_overlays``
-    defaults at def-time, so monkeypatching the module constant alone is not
-    enough — we wrap both callables to always pass the tmp path explicitly.
+    ``discover_overlays`` / ``OverlayConfig.apply_toml_overrides`` read the
+    ``overlays`` row from ``load_config().raw`` via the Django-free ``cold_reader``,
+    resolved from ``T3_CONFIG_DB``. Point that at a per-test sqlite and stage
+    ``T3_WORKSPACE_DIR`` at the ``tmp_path / "workspace"`` root every test builds under.
     """
-    from functools import partial  # noqa: PLC0415
+    config_db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(config_db))
+    monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path / "workspace"))
 
-    toml_path = tmp_path / "teatree.toml"
-    monkeypatch.setattr(overlay_mod, "load_config", partial(config_mod.load_config, path=toml_path))
-    monkeypatch.setattr(
-        overlay_mod,
-        "discover_overlays",
-        partial(config_mod.discover_overlays, config_path=toml_path),
-    )
-    return toml_path
+    def _seed(overlays: OverlayRegistry) -> None:
+        _seed_overlays_registry(config_db, overlays)
+
+    return _seed
 
 
 class TestTeatreeOverlayIsValid:
@@ -50,6 +69,28 @@ class TestTeatreeOverlayIsValid:
         ):
             overlay = get_overlay()
             assert isinstance(overlay, TeatreeOverlay)
+
+
+class TestCompanionSkills:
+    def test_slack_formatting_is_declared_as_companion(self) -> None:
+        overlay = TeatreeOverlay()
+        assert "slack-formatting" in overlay.config.companion_skills
+
+    def test_companion_resolves_to_a_real_skill(self) -> None:
+        # The declared companion must name a skill that exists on disk, or the
+        # skill-loading policy silently drops it.
+        skill_md = _repo_root() / "skills" / "slack-formatting" / "SKILL.md"
+        assert skill_md.is_file()
+
+    def test_active_overlay_companion_skills_surfaces_it(self) -> None:
+        from teatree.agents.skill_bundle import active_overlay_companion_skills  # noqa: PLC0415
+
+        with patch.object(
+            overlay_loader_mod,
+            "_discover_overlays",
+            return_value={"t3-teatree": TeatreeOverlay()},
+        ):
+            assert "slack-formatting" in active_overlay_companion_skills()
 
 
 class TestIdentityAliases:
@@ -81,8 +122,8 @@ class TestClassifyCustomerDisplayImpact:
         # Teatree is a developer harness — no change is customer-display-impacting,
         # so the mandatory-E2E gate (#1967) is inert for this overlay.
         overlay = TeatreeOverlay()
-        assert overlay.classify_customer_display_impact(["src/teatree/core/views/x.py"]) is False
-        assert overlay.classify_customer_display_impact(["anything.py"]) is False
+        assert overlay.review.classify_customer_display_impact(["src/teatree/core/views/x.py"]) is False
+        assert overlay.review.classify_customer_display_impact(["anything.py"]) is False
 
 
 class TestGetWorkspaceRepos:
@@ -90,12 +131,12 @@ class TestGetWorkspaceRepos:
         self,
         tmp_path: Path,
         monkeypatch,
-        isolated_config: Path,
+        isolated_config: Callable[[OverlayRegistry], None],
     ) -> None:
         """Discovery empty → final fallback is ``get_repos()``."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        isolated_config.write_text(f'[teatree]\nworkspace_dir = "{workspace}"\n', encoding="utf-8")
+        isolated_config({})
         monkeypatch.setattr(overlay_mod, "_repo_root", lambda: tmp_path / "elsewhere")
 
         overlay = TeatreeOverlay()
@@ -107,17 +148,16 @@ class TestGetWorkspaceRepos:
         overlay.config.workspace_repos = ["souliane/teatree"]
         assert overlay.get_workspace_repos() == ["souliane/teatree"]
 
-    def test_aggregates_teatree_and_toml_overlays(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+    def test_aggregates_teatree_and_toml_overlays(
+        self, tmp_path: Path, monkeypatch, isolated_config: Callable[[OverlayRegistry], None]
+    ) -> None:
         """Dynamic discovery aggregates teatree's repo + every ``[overlays.*].path``."""
         workspace = tmp_path / "workspace"
         (workspace / "souliane" / "teatree").mkdir(parents=True)
         (workspace / "acme" / "t3-acme").mkdir(parents=True)
 
-        isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.t3-acme]\npath = "{workspace / "acme" / "t3-acme"}"\n'
-            'class = "t3_acme.overlay:AcmeOverlay"\n',
-            encoding="utf-8",
+        isolated_config(
+            {"t3-acme": {"path": str(workspace / "acme" / "t3-acme"), "class": "t3_acme.overlay:AcmeOverlay"}}
         )
 
         monkeypatch.setattr(overlay_mod, "_repo_root", lambda: workspace / "souliane" / "teatree")
@@ -129,18 +169,16 @@ class TestGetWorkspaceRepos:
         assert "souliane/teatree" in repos
         assert "acme/t3-acme" in repos
 
-    def test_skips_overlays_outside_workspace_dir(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+    def test_skips_overlays_outside_workspace_dir(
+        self, tmp_path: Path, monkeypatch, isolated_config: Callable[[OverlayRegistry], None]
+    ) -> None:
         """Overlays whose path sits outside ``workspace_dir`` are silently skipped."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         outside = tmp_path / "elsewhere" / "rogue"
         outside.mkdir(parents=True)
 
-        isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.rogue]\npath = "{outside}"\nclass = "rogue:Overlay"\n',
-            encoding="utf-8",
-        )
+        isolated_config({"rogue": {"path": str(outside), "class": "rogue:Overlay"}})
 
         monkeypatch.setattr(overlay_mod, "_repo_root", lambda: outside)
 
@@ -154,11 +192,11 @@ class TestGetFollowupRepos:
         self,
         tmp_path: Path,
         monkeypatch,
-        isolated_config: Path,
+        isolated_config: Callable[[OverlayRegistry], None],
     ) -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        isolated_config.write_text(f'[teatree]\nworkspace_dir = "{workspace}"\n', encoding="utf-8")
+        isolated_config({})
         monkeypatch.setattr(overlay_mod, "_repo_root", lambda: tmp_path / "elsewhere")
 
         overlay = TeatreeOverlay()
@@ -220,6 +258,19 @@ class TestGetProvisionSteps(TestCase):
 
         assert [step.name for step in steps] == ["sync-dependencies", "install-overlays-editable"]
 
+    def test_both_steps_are_subprocess_only_so_they_are_time_boxed(self) -> None:
+        """Both steps are pure subprocess shellouts → ``subprocess_only`` so a stall aborts loud (#2244).
+
+        The teatree overlay declares NO ``db_import`` strategy, so these are the
+        ONLY provision steps it runs. Without the flag the dogfooding path would
+        have no ceiling/heartbeat/alert — a network stall on ``uv sync`` would
+        hang silently.
+        """
+        overlay = TeatreeOverlay()
+        steps = overlay.get_provision_steps(self.worktree)
+
+        assert all(step.subprocess_only for step in steps)
+
     def test_sync_step_runs_uv_sync_in_on_disk_worktree(self) -> None:
         """`uv sync` must run in the on-disk worktree path, not in the repo identifier."""
         overlay = TeatreeOverlay()
@@ -254,7 +305,9 @@ class TestInstallOverlaysEditableStep:
         path.mkdir(parents=True, exist_ok=True)
         (path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "0.0.0"\n', encoding="utf-8")
 
-    def test_installs_overlay_worktree_editable(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+    def test_installs_overlay_worktree_editable(
+        self, tmp_path: Path, monkeypatch, isolated_config: Callable[[OverlayRegistry], None]
+    ) -> None:
         """Discovered overlay under workspace_dir → `uv pip install -e <overlay_worktree>` in teatree worktree."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
@@ -267,11 +320,7 @@ class TestInstallOverlaysEditableStep:
         self._make_pyproject(teatree_wt, "teatree")
         self._make_pyproject(overlay_wt, "t3-acme")
 
-        isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
-            encoding="utf-8",
-        )
+        isolated_config({"t3-acme": {"path": str(main_overlay), "class": "t3_acme.overlay:AcmeOverlay"}})
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
@@ -293,7 +342,9 @@ class TestInstallOverlaysEditableStep:
         assert mock_run.call_args.args[0] == ["uv", "pip", "install", "-e", str(overlay_wt)]
         assert mock_run.call_args.kwargs["cwd"] == str(teatree_wt)
 
-    def test_skips_overlays_outside_workspace_dir(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+    def test_skips_overlays_outside_workspace_dir(
+        self, tmp_path: Path, monkeypatch, isolated_config: Callable[[OverlayRegistry], None]
+    ) -> None:
         """Overlay whose main clone lives outside workspace_dir is silently skipped."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
@@ -305,11 +356,7 @@ class TestInstallOverlaysEditableStep:
         self._make_pyproject(teatree_wt, "teatree")
         self._make_pyproject(ticket_dir / "rogue", "rogue")
 
-        isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.rogue]\npath = "{outside_overlay}"\nclass = "rogue:Overlay"\n',
-            encoding="utf-8",
-        )
+        isolated_config({"rogue": {"path": str(outside_overlay), "class": "rogue:Overlay"}})
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
@@ -333,7 +380,7 @@ class TestInstallOverlaysEditableStep:
         self,
         tmp_path: Path,
         monkeypatch,
-        isolated_config: Path,
+        isolated_config: Callable[[OverlayRegistry], None],
     ) -> None:
         """The teatree entry-point overlay resolves to the teatree worktree — skip to avoid redundant re-install."""
         workspace = tmp_path / "workspace"
@@ -342,11 +389,8 @@ class TestInstallOverlaysEditableStep:
         teatree_wt = ticket_dir / "teatree"
         self._make_pyproject(teatree_wt, "teatree")
 
-        isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.t3-teatree]\npath = "{teatree_wt}"\n'
-            'class = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"\n',
-            encoding="utf-8",
+        isolated_config(
+            {"t3-teatree": {"path": str(teatree_wt), "class": "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"}}
         )
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
@@ -367,7 +411,9 @@ class TestInstallOverlaysEditableStep:
 
         mock_run.assert_not_called()
 
-    def test_skips_overlays_without_worktree(self, tmp_path: Path, monkeypatch, isolated_config: Path) -> None:
+    def test_skips_overlays_without_worktree(
+        self, tmp_path: Path, monkeypatch, isolated_config: Callable[[OverlayRegistry], None]
+    ) -> None:
         """Overlay with main clone under workspace_dir but no sibling worktree is silently skipped."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
@@ -378,11 +424,7 @@ class TestInstallOverlaysEditableStep:
         teatree_wt = ticket_dir / "teatree"
         self._make_pyproject(teatree_wt, "teatree")
 
-        isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
-            encoding="utf-8",
-        )
+        isolated_config({"t3-acme": {"path": str(main_overlay), "class": "t3_acme.overlay:AcmeOverlay"}})
 
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(
@@ -408,7 +450,7 @@ class TestGetTestCommand(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        assert overlay.get_test_command(worktree) == ["uv", "run", "pytest"]
+        assert overlay.runtime.test_command(worktree) == ["uv", "run", "pytest"]
 
 
 class TestGetLintCommand(TestCase):
@@ -416,7 +458,7 @@ class TestGetLintCommand(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        assert overlay.get_lint_command(worktree) == ["prek", "run", "--all-files"]
+        assert overlay.runtime.lint_command(worktree) == ["prek", "run", "--all-files"]
 
 
 class TestReapWorktreeExternalResources(TestCase):
@@ -427,19 +469,21 @@ class TestReapWorktreeExternalResources(TestCase):
         return Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="teatree", branch="1523-x")
 
     def test_reaps_the_worktree_compose_project(self) -> None:
+        from teatree.core.worktree.worktree_env import compose_project  # noqa: PLC0415
         from teatree.docker.reap import ReapResult  # noqa: PLC0415
 
         worktree = self._worktree()
+        project = compose_project(worktree)
         with patch.object(
             overlay_mod,
             "reap_compose_project",
-            return_value=ReapResult(project="teatree-wt1523", containers_removed=2, images_removed=1),
+            return_value=ReapResult(project=project, containers_removed=2, images_removed=1),
         ) as mock_reap:
-            outcomes = TeatreeOverlay().reap_worktree_external_resources(worktree)
+            outcomes = TeatreeOverlay().provisioning.reap_external_resources(worktree)
 
-        mock_reap.assert_called_once_with("teatree-wt1523")
+        mock_reap.assert_called_once_with(project)
         assert len(outcomes) == 1
-        assert "teatree-wt1523" in outcomes[0]
+        assert project in outcomes[0]
 
     def test_returns_empty_when_nothing_to_reap(self) -> None:
         from teatree.docker.reap import ReapResult  # noqa: PLC0415
@@ -450,7 +494,7 @@ class TestReapWorktreeExternalResources(TestCase):
             "reap_compose_project",
             return_value=ReapResult(project="teatree-wt1523"),
         ):
-            assert TeatreeOverlay().reap_worktree_external_resources(worktree) == []
+            assert TeatreeOverlay().provisioning.reap_external_resources(worktree) == []
 
 
 class TestRepoRoot:
@@ -484,28 +528,21 @@ class TestEntryPointDiscovery:
 class TestMaxConcurrentAutoStarts:
     """The in-repo dogfooding overlay raises loop auto-start concurrency to 3."""
 
-    def test_in_repo_overlay_resolves_to_three(self, tmp_path: Path, monkeypatch) -> None:
+    def test_in_repo_overlay_resolves_to_three(self) -> None:
         """The in-repo overlay's settings module sets the value to 3.
 
-        Built against an empty config so the resolved value reflects the
-        bundled overlay's own setting, not whatever the developer's real
-        ``~/.teatree.toml`` happens to override ``[overlays.t3-teatree]`` to.
-        ``OverlayConfig.apply_toml_overrides`` resolves through
-        ``teatree.config.CONFIG_PATH`` at construction time, so pointing that
-        constant at a fresh empty toml is what makes this hermetic — the
-        class-level ``TeatreeOverlay.config`` is baked at import against the
-        host config and cannot be trusted here.
+        Built against a hermetic empty config store (the conftest isolation
+        clears ``T3_CONFIG_DB``) so the resolved value reflects the bundled
+        overlay's own setting, not a developer's ``[overlays.t3-teatree]``
+        override — the class-level ``TeatreeOverlay.config`` is baked at import
+        against the host config and cannot be trusted here.
         """
-        empty_config = tmp_path / "teatree.toml"
-        empty_config.write_text("", encoding="utf-8")
-        monkeypatch.setattr(config_mod, "CONFIG_PATH", empty_config)
-
         config = OverlayConfig(settings_module=overlay_mod._SETTINGS_MODULE, overlay_name="t3-teatree")
         assert config.max_concurrent_auto_starts == 3
 
     def test_base_default_stays_one(self) -> None:
         """Guard: external/multi-repo overlays must keep the conservative default of 1."""
-        assert OverlayConfig.max_concurrent_auto_starts == 1
+        assert OverlayConfig.model_fields["max_concurrent_auto_starts"].default == 1
         assert OverlayConfig().max_concurrent_auto_starts == 1
 
 
@@ -522,11 +559,11 @@ class TestOverlayDefaults(TestCase):
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
 
-        assert overlay.get_env_extra(worktree) == {}
-        assert overlay.get_db_import_strategy(worktree) is None
-        assert overlay.get_post_db_steps(worktree) == []
-        assert overlay.get_symlinks(worktree) == []
-        assert overlay.get_services_config(worktree) == {}
+        assert overlay.provisioning.env_extra(worktree) == {}
+        assert overlay.provisioning.db_import_strategy(worktree) is None
+        assert overlay.provisioning.post_db_steps(worktree) == []
+        assert overlay.provisioning.symlinks(worktree) == []
+        assert overlay.provisioning.services_config(worktree) == {}
         # #1540/#1367: the default gate is inherited by the teatree overlay —
         # a conforming title, a conventional-commit description first line, and
         # a What/Why body passes with no errors.

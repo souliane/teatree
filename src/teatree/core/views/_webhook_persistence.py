@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from django.db import IntegrityError, transaction
 
 from teatree.core.models import IncomingEvent
+from teatree.core.models.provenance import classify_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ class IngestionRecord:
 
 
 def persist_incoming_event(record: IngestionRecord) -> bool:
+    # The single ingestion chokepoint every inbound flow passes through (all three
+    # webhook views + the future socket lane), so the #116 provenance is stamped ONCE
+    # here from (source, actor) — the views need no change.
+    provenance = classify_provenance(record.source, record.actor)
     try:
         with transaction.atomic():
             IncomingEvent.objects.create(
@@ -43,6 +48,7 @@ def persist_incoming_event(record: IngestionRecord) -> bool:
                 body=record.body,
                 payload_json=record.payload_json or {},
                 idempotency_key=record.idempotency_key,
+                provenance=provenance,
             )
     except IntegrityError:
         logger.debug("%s already ingested — replay suppressed", record.idempotency_key)

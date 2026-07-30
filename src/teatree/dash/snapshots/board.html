@@ -1,0 +1,312 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeaTree · Board</title>
+  <link rel="icon" href="/static/dash/favicon.svg">
+  <link rel="stylesheet" href="/static/dash/css/dash.css">
+  <script>
+    // Apply the operator's pinned theme before first paint (no flash). Absent a
+    // pin, the CSS prefers-color-scheme media query decides.
+    try {
+      var t = localStorage.getItem("t3-theme");
+      if (t === "light" || t === "dark") { document.documentElement.dataset.theme = t; }
+    } catch (e) {}
+  </script>
+  <script src="/static/dash/js/htmx-2.0.4.min.js" defer></script>
+  <script src="/static/dash/js/idiomorph-ext-0.7.3.min.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRFToken": "CSRF"}' hx-ext="morph">
+  <a class="skip-link" href="#dash-main">Skip to main content</a>
+  <header class="dash-header">
+    <span class="dash-brand">
+      <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true">
+        <path fill="currentColor" d="M16 3C9 8 6 14 8 22c1 4 4 6 8 7 4-1 7-3 8-7 2-8-1-14-8-19Z"/>
+      </svg>
+      TeaTree
+      <span class="dash-instance" title="which machine this dashboard is served from">INSTANCE</span>
+    </span>
+    <nav class="dash-nav" aria-label="Dashboard sections">
+
+        <a href="/dash/board/" class="active">Board</a>
+
+        <a href="/dash/health/" class="">Health</a>
+
+        <a href="/dash/loops/" class="">Loops</a>
+
+        <a href="/dash/sessions/" class="">Sessions</a>
+
+        <a href="/dash/presets/" class="">Schedule</a>
+
+        <a href="/dash/settings/" class="">Settings</a>
+
+    </nav>
+    <div class="dash-actions">
+
+      <button type="button" class="dash-btn" data-terminal
+        hx-post="/dash/debug/session/" hx-target="#terminal-result" hx-swap="innerHTML"
+        hx-confirm="Start a loopback debug session?"
+        aria-label="Open a loopback terminal session">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M2 3h12v10H2zM4.5 6.5l2 1.5-2 1.5M8.5 10h3"/>
+        </svg>
+        Terminal
+      </button>
+      <button type="button" class="theme-toggle" data-theme-toggle
+        aria-label="Switch between light and dark theme">Theme</button>
+    </div>
+  </header>
+  <div id="terminal-result" class="terminal-result"></div>
+  <main class="dash-main" id="dash-main">
+    <h1 class="dash-h1">Board</h1>
+
+  <form class="dash-filters" method="get" action="/dash/board/">
+    <input type="text" name="text" value="" placeholder="search #/description">
+    <input type="text" name="overlay" value="" placeholder="overlay">
+    <select name="role">
+      <option value="">any role</option>
+      <option value="author" >author</option>
+      <option value="reviewer" >reviewer</option>
+    </select>
+    <select name="kind">
+      <option value="">any kind</option>
+      <option value="feature" >feature</option>
+      <option value="fix" >fix</option>
+    </select>
+    <label><input type="checkbox" name="ignored" value="1" > ignored</label>
+    <button class="dash-btn primary" type="submit">Filter</button>
+    <span class="result-count">0 shown</span>
+  </form>
+
+  <div id="board"
+    hx-get="/dash/board/columns/?text=&overlay=&role=&kind="
+    hx-trigger="every 4s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    <div class="fsm-rail" role="presentation">
+
+    <span class="fsm-node" data-group="backlog"><span class="fsm-dot"></span>Backlog</span>
+    <span class="fsm-link" data-group="backlog"></span>
+
+    <span class="fsm-node" data-group="building"><span class="fsm-dot"></span>Building</span>
+    <span class="fsm-link" data-group="building"></span>
+
+    <span class="fsm-node" data-group="reviewing"><span class="fsm-dot"></span>Reviewing</span>
+    <span class="fsm-link" data-group="reviewing"></span>
+
+    <span class="fsm-node" data-group="landed"><span class="fsm-dot"></span>Landed</span>
+
+
+
+</div>
+<div class="kanban-groups">
+
+    <section class="kanban-group" data-group="backlog">
+      <h2>Backlog</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="not_started">
+            <h3><span>Not started</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="scoped">
+            <h3><span>Scoped</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+      </div>
+    </section>
+
+    <section class="kanban-group" data-group="building">
+      <h2>Building</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="started">
+            <h3><span>Started</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="planned">
+            <h3><span>Planned</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="coded">
+            <h3><span>Coded</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="tested">
+            <h3><span>Tested</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+      </div>
+    </section>
+
+    <section class="kanban-group" data-group="reviewing">
+      <h2>Reviewing</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="reviewed">
+            <h3><span>Reviewed</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="shipped">
+            <h3><span>Shipped</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="in_review">
+            <h3><span>In review</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+      </div>
+    </section>
+
+    <section class="kanban-group" data-group="landed">
+      <h2>Landed</h2>
+      <div class="kanban-columns">
+
+          <div class="kanban-column" data-state="merged">
+            <h3><span>Merged</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="retrospected">
+            <h3><span>Retrospected</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+          <div class="kanban-column" data-state="delivered">
+            <h3><span>Delivered</span><span class="count">0</span></h3>
+            <p class="column-empty">—</p>
+          </div>
+
+      </div>
+    </section>
+
+
+</div>
+
+  </div>
+
+  <aside id="drawer" aria-label="Ticket detail"></aside>
+
+  </main>
+
+
+  <script src="/static/dash/js/mermaid-11.min.js"></script>
+  <script>
+    // Theme the lifecycle diagram from the CSS tokens so it matches the palette in
+    // both light and dark — never a hardcoded theme.
+    function mermaidTokens() {
+      var s = getComputedStyle(document.documentElement);
+      var v = function (n) { return s.getPropertyValue(n).trim(); };
+      return {
+        startOnLoad: false,
+        theme: "base",
+        themeVariables: {
+          darkMode: (document.documentElement.dataset.theme || "dark") !== "light",
+          background: v("--surface-2"),
+          mainBkg: v("--surface"),
+          primaryColor: v("--surface"),
+          primaryBorderColor: v("--line"),
+          primaryTextColor: v("--ink"),
+          lineColor: v("--ink-muted"),
+          secondaryColor: v("--surface-2"),
+          tertiaryColor: v("--surface-2"),
+          fontFamily: v("--font-mono"),
+          fontSize: "13px"
+        }
+      };
+    }
+    function initMermaid() { mermaid.initialize(mermaidTokens()); }
+    function renderDrawerDiagram(root) {
+      var nodes = root.querySelectorAll(".mermaid");
+      nodes.forEach(function (n) {
+        if (!n.dataset.src) { n.dataset.src = n.textContent; }
+        else { n.removeAttribute("data-processed"); n.innerHTML = n.dataset.src; }
+      });
+      if (nodes.length) { mermaid.run({ nodes: nodes }); }
+    }
+    initMermaid();
+    document.body.addEventListener("htmx:afterSwap", function (evt) {
+      if (evt.target.id === "drawer") { renderDrawerDiagram(evt.target); }
+    });
+    window.addEventListener("t3:theme", function () {
+      initMermaid();
+      var drawer = document.getElementById("drawer");
+      if (drawer) { renderDrawerDiagram(drawer); }
+    });
+  </script>
+
+  <script>
+    // A morph writes the DOM value PROPERTY, bypassing the dirty-value flag, so a
+    // polled swap resets whatever field has focus. Idiomorph's own ignoreActiveValue
+    // is too blunt for that: it ALSO skips morphing the active element's children,
+    // freezing the label of the button you just clicked. Guard a focused text
+    // field's value only. Deferred scripts run before this event.
+    document.addEventListener("DOMContentLoaded", function () {
+      if (!window.Idiomorph) { return; }
+      Idiomorph.defaults.callbacks.beforeAttributeUpdated = function (name, node) {
+        var active = document.activeElement;
+        var editable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+        return !(name === "value" && node === active && editable);
+      };
+    });
+    // A refused write answers 400 carrying the surface plus its reason; htmx discards
+    // non-2xx bodies by default, so opt every dash swap into showing it instead.
+    document.body.addEventListener("htmx:beforeSwap", function (evt) {
+      if (evt.detail.xhr.status === 400) { evt.detail.shouldSwap = true; evt.detail.isError = false; }
+    });
+    (function () {
+      // Theme toggle: flip data-theme, persist, and re-theme any live mermaid.
+      function currentTheme() {
+        if (document.documentElement.dataset.theme) return document.documentElement.dataset.theme;
+        return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      }
+      document.addEventListener("click", function (evt) {
+        var toggle = evt.target.closest("[data-theme-toggle]");
+        if (toggle) {
+          var next = currentTheme() === "dark" ? "light" : "dark";
+          document.documentElement.dataset.theme = next;
+          try { localStorage.setItem("t3-theme", next); } catch (e) {}
+          window.dispatchEvent(new CustomEvent("t3:theme"));
+          return;
+        }
+        var transcriptClose = evt.target.closest("[data-transcript-close]");
+        if (transcriptClose) {
+          var viewer = document.getElementById("transcript-viewer");
+          if (viewer) { viewer.innerHTML = ""; }
+          return;
+        }
+        // Right side panel: close button clears the drawer.
+        if (evt.target.closest("[data-drawer-close]")) {
+          var drawer = document.getElementById("drawer");
+          if (drawer) drawer.innerHTML = "";
+        }
+      });
+      // Esc dismisses the open side panel.
+      document.addEventListener("keydown", function (evt) {
+        if (evt.key === "Escape") {
+          var drawer = document.getElementById("drawer");
+          if (drawer && drawer.innerHTML.trim()) drawer.innerHTML = "";
+        }
+      });
+      // A freshly-launched loopback ttyd terminal auto-opens in a new tab; the
+      // htmx swap traces to the button click, so the pop-up is user-initiated.
+      document.body.addEventListener("htmx:afterSwap", function (evt) {
+        var el = evt.target.querySelector("[data-ttyd-launch]");
+        var url = el && el.getAttribute("data-ttyd-launch");
+        if (url) window.open(url, "_blank", "noopener");
+      });
+    })();
+  </script>
+</body>
+</html>

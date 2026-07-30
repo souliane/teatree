@@ -4,32 +4,27 @@
 ``ConfigSetting`` store (+ ``T3_*`` env). A ``[teatree]`` / ``[overlays.<name>]``
 TOML value for it is ignored on read, so every mode is staged via
 ``ConfigSetting.objects.set_value`` rather than TOML. ``get_effective_settings``
-is exercised end-to-end with no mocks. ``CONFIG_PATH`` is monkeypatched to an
-isolated (unwritten) file so the real ``~/.teatree.toml`` never leaks in.
+is exercised end-to-end with no mocks; the Django test DB is the sole config tier,
+so the real host config never leaks in.
 
 The fine-grained (mode, action) → verdict matrix lives in
-``tests/test_on_behalf_post_mode.py``; this file focuses on the deprecation
-shim and the retirement of the legacy ``ask_before_post_on_behalf`` TOML alias.
+``tests/test_on_behalf_post_mode.py``; this file focuses on the retirement of
+the legacy ``ask_before_post_on_behalf`` TOML alias.
 """
-
-import warnings
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
-from teatree.on_behalf_gate import OnBehalfVerdict, ask_before_post_on_behalf_enabled, resolve_on_behalf_verdict
+from teatree.on_behalf_gate import OnBehalfVerdict, on_behalf_post_will_block, resolve_on_behalf_verdict
 
 
 class _OnBehalfDbBase(TestCase):
-    """Isolate ``CONFIG_PATH`` and the on-behalf env so the DB store is the sole tier."""
+    """Isolate the on-behalf env so the DB store is the sole config tier."""
 
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
@@ -56,6 +51,28 @@ class TestExplicitModes(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 
 
+class TestProactivePreCheck(_OnBehalfDbBase):
+    """``on_behalf_post_will_block`` is the forward-looking BLOCK predicate.
+
+    A caller runs it BEFORE attempting a colleague-visible post so it can offer
+    the owner the enable-setting / approve-once choice proactively, instead of
+    hitting the gate and only then reacting.
+    """
+
+    def test_visible_post_will_block_under_a_blocking_mode(self) -> None:
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
+        assert on_behalf_post_will_block("post_comment") is True
+
+    def test_immediate_mode_will_not_block(self) -> None:
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        assert on_behalf_post_will_block("post_comment") is False
+
+    def test_draft_form_action_will_not_block_even_under_ask(self) -> None:
+        # A draft AUTO_DRAFTs (colleague-invisible), so it never needs a pre-ask.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
+        assert on_behalf_post_will_block("post_draft_note") is False
+
+
 class TestPerOverlayOverride(_OnBehalfDbBase):
     def test_per_overlay_override_wins_over_global(self) -> None:
         """A trusted overlay can opt into IMMEDIATE without flipping the global.
@@ -69,40 +86,6 @@ class TestPerOverlayOverride(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
 
 
-class TestDeprecatedShim(_OnBehalfDbBase):
-    """``ask_before_post_on_behalf_enabled()`` is kept for one release."""
-
-    def test_returns_true_under_ask(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert ask_before_post_on_behalf_enabled() is True
-
-    def test_returns_true_under_draft_or_ask(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "draft_or_ask")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert ask_before_post_on_behalf_enabled() is True
-
-    def test_returns_false_under_immediate(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert ask_before_post_on_behalf_enabled() is False
-
-    def test_emits_deprecation_warning(self) -> None:
-        # Reset the module-level once-flag so this test sees the warning.
-        import teatree.on_behalf_gate as gate_mod  # noqa: PLC0415
-
-        gate_mod._DEPRECATION_EMITTED = False
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            ask_before_post_on_behalf_enabled()
-        assert any(
-            issubclass(w.category, DeprecationWarning) and "resolve_on_behalf_verdict" in str(w.message) for w in caught
-        )
-
-
 class TestRetiredLegacyTomlAlias(_OnBehalfDbBase):
     """The legacy ``ask_before_post_on_behalf`` TOML alias is RETIRED (#1775).
 
@@ -113,15 +96,12 @@ class TestRetiredLegacyTomlAlias(_OnBehalfDbBase):
     """
 
     def test_legacy_true_is_ignored_falls_through_to_default(self) -> None:
-        self.config_path.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
-        # Ignored → DRAFT_OR_ASK default (coincides with the old ASK mapping here).
+        # DRAFT_OR_ASK default (coincides with the old ASK mapping here).
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
         assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 
     def test_legacy_false_is_ignored_does_not_open_the_gate(self) -> None:
-        # The retired shim no longer maps ``false`` → IMMEDIATE: the gate stays
-        # at the DRAFT_OR_ASK default and a visible post still BLOCKs.
-        self.config_path.write_text("[teatree]\nask_before_post_on_behalf = false\n", encoding="utf-8")
+        # The gate stays at the DRAFT_OR_ASK default and a visible post still BLOCKs.
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
 
     def test_no_db_row_defaults_to_draft_or_ask(self) -> None:

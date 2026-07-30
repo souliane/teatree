@@ -15,13 +15,22 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
+import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
-from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
+from teatree.core.overlay import (
+    OverlayBase,
+    OverlayMetadata,
+    OverlayProvisioning,
+    OverlayRuntime,
+    ProvisionStep,
+    RunCommands,
+    ServiceSpec,
+    ToolCommand,
+)
 from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = [
@@ -54,7 +63,50 @@ class _WorkflowMetadata(OverlayMetadata):
         ]
 
 
+class _WorkflowOverlayProvisioning(OverlayProvisioning):
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {
+            "DJANGO_SETTINGS_MODULE": "project.settings",
+            "POSTGRES_DB": worktree.db_name or "test_db",
+        }
+
+    def compose_file(self, worktree: "Worktree") -> str:
+        return "/fake/docker-compose.yml"
+
+    def services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
+        return {
+            "postgres": {
+                "shared": True,
+                "start_command": ["docker", "compose", "up", "-d", "db"],
+            },
+            "redis": {
+                "shared": True,
+                "start_command": ["docker", "compose", "up", "-d", "redis"],
+            },
+        }
+
+    def reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        return ProvisionStep(name="reset-passwords", callable=lambda: None)
+
+
+class _WorkflowOverlayRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["python", "manage.py", "runserver"],
+            "frontend": ["npm", "run", "start"],
+            "build-frontend": ["npm", "run", "build"],
+        }
+
+    def test_command(self, worktree: Worktree) -> list[str]:
+        return ["pytest", "--rootdir", worktree.repo_path]
+
+
 class WorkflowOverlay(OverlayBase):
+    provisioning = _WorkflowOverlayProvisioning()
+    runtime = _WorkflowOverlayRuntime()
     """Rich overlay that supports the full lifecycle for workflow tests."""
 
     metadata = _WorkflowMetadata()
@@ -73,43 +125,6 @@ class WorkflowOverlay(OverlayBase):
             ProvisionStep(name="symlinks", callable=lambda: None, description="Link .venv"),
             ProvisionStep(name="migrations", callable=_record_provision, description="Run migrations"),
         ]
-
-    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
-
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "backend": ["python", "manage.py", "runserver"],
-            "frontend": ["npm", "run", "start"],
-            "build-frontend": ["npm", "run", "build"],
-        }
-
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {
-            "DJANGO_SETTINGS_MODULE": "project.settings",
-            "POSTGRES_DB": worktree.db_name or "test_db",
-        }
-
-    def get_compose_file(self, worktree: "Worktree") -> str:
-        return "/fake/docker-compose.yml"
-
-    def get_services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
-        return {
-            "postgres": {
-                "shared": True,
-                "start_command": ["docker", "compose", "up", "-d", "db"],
-            },
-            "redis": {
-                "shared": True,
-                "start_command": ["docker", "compose", "up", "-d", "redis"],
-            },
-        }
-
-    def get_test_command(self, worktree: Worktree) -> list[str]:
-        return ["pytest", "--rootdir", worktree.repo_path]
-
-    def get_reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
-        return ProvisionStep(name="reset-passwords", callable=lambda: None)
 
     def get_workspace_repos(self) -> list[str]:
         return ["backend", "frontend"]
@@ -213,24 +228,29 @@ class TestLifecycleProvision(TestCase):
         wt_frontend.refresh_from_db()
         assert wt_backend.state == Worktree.State.PROVISIONED
         assert wt_frontend.state == Worktree.State.PROVISIONED
-        assert wt_backend.db_name == "wt_42_testclient"
+        # db_name is keyed on the unique Ticket pk, not the derived ticket_number.
+        assert wt_backend.db_name == f"wt_{wt_backend.ticket_id}_testclient"
         assert wt_backend.extra.get("provisioned_by_overlay") is True
         assert wt_frontend.extra.get("provisioned_by_overlay") is True
 
-        envfile = ticket_dir / ".t3-cache" / ".t3-env.cache"
-        assert envfile.is_file(), "env cache should be generated during setup"
-        env_content = envfile.read_text()
-        assert "WT_VARIANT=testclient" in env_content
-        assert "WT_DB_NAME=wt_42_testclient" in env_content
-        assert "DJANGO_SETTINGS_MODULE=" in env_content
-        # Per-repo copies are regular files, not symlinks (#1313) — a
-        # host-absolute symlink would dangle inside a bind-mounted container.
-        backend_copy = ticket_dir / "backend" / ".t3-env.cache"
-        frontend_copy = ticket_dir / "frontend" / ".t3-env.cache"
-        assert backend_copy.is_file()
-        assert not backend_copy.is_symlink()
-        assert frontend_copy.is_file()
-        assert not frontend_copy.is_symlink()
+        # Each repo gets its OWN cache under the out-of-repo .t3-cache/ sibling
+        # (#3097 follow-up) — provisioning the frontend second must not clobber
+        # the backend's cache.
+        backend_cache = ticket_dir / ".t3-cache" / "backend" / ".t3-env.cache"
+        frontend_cache = ticket_dir / ".t3-cache" / "frontend" / ".t3-env.cache"
+        assert backend_cache.is_file(), "backend env cache should be generated during setup"
+        assert frontend_cache.is_file(), "frontend env cache should be generated during setup"
+        backend_content = backend_cache.read_text()
+        assert "WT_VARIANT=testclient" in backend_content
+        assert f"WT_DB_NAME=wt_{wt_backend.ticket_id}_testclient" in backend_content
+        assert "DJANGO_SETTINGS_MODULE=" in backend_content
+        # Each repo's cache carries its OWN compose project, not the sibling's.
+        assert f"COMPOSE_PROJECT_NAME=backend-wt{wt_backend.ticket_id}" in backend_content
+        assert f"COMPOSE_PROJECT_NAME=frontend-wt{wt_frontend.ticket_id}" in frontend_cache.read_text()
+        # No copy lands inside any repo working tree (#3097) — the caches are
+        # the out-of-repo .t3-cache/ siblings.
+        assert not (ticket_dir / "backend" / ".t3-env.cache").exists()
+        assert not (ticket_dir / "frontend" / ".t3-env.cache").exists()
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_start_transitions_to_services_up(self) -> None:
@@ -258,7 +278,10 @@ class TestLifecycleProvision(TestCase):
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP
 
-        with patch.object(worktree_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}):
+        with (
+            _patch_overlay(),
+            patch.object(worktree_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+        ):
             status = cast("dict[str, str]", call_command("worktree", "status", path=backend_path))
         assert status["state"] == Worktree.State.SERVICES_UP
         assert status["repo_path"] == "backend"
@@ -326,12 +349,14 @@ class TestLifecycleProvision(TestCase):
         wt1.refresh_from_db()
         wt2.refresh_from_db()
 
-        assert wt1.db_name == "wt_100_alpha"
-        assert wt2.db_name == "wt_200_beta"
+        # db_name keys on the unique Ticket pk, not the derived ticket_number.
+        assert wt1.db_name == f"wt_{wt1.ticket_id}_alpha"
+        assert wt2.db_name == f"wt_{wt2.ticket_id}_beta"
+        assert wt1.db_name != wt2.db_name
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_password_reset_runs_automatically(self) -> None:
-        """Verify worktree provision calls get_reset_passwords_command and runs it."""
+        """Verify worktree provision calls provisioning.reset_passwords_command and runs it."""
         wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
 
@@ -351,7 +376,8 @@ class TestLifecycleProvision(TestCase):
             nonlocal reset_called
             reset_called = True
 
-        original_overlay.get_reset_passwords_command = lambda wt: ProvisionStep(  # type: ignore[assignment]
+        original_overlay.provisioning = type(original_overlay.provisioning)()
+        original_overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(  # type: ignore[assignment]
             name="reset-passwords",
             callable=_track_reset,
         )
@@ -618,8 +644,9 @@ class TestRunBackend(TestCase):
                 "run",
                 side_effect=fake_subprocess_run,
             ),
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch("teatree.core.runners.provision._workspace_dir", return_value=workspace),
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch("teatree.core.runners.provision.clone_root", return_value=workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=workspace),
         ):
             ticket_id = cast(
                 "int",
@@ -668,7 +695,7 @@ class TestRunBackend(TestCase):
 
         backend_wt.refresh_from_db()
         assert backend_wt.state == Worktree.State.PROVISIONED
-        assert backend_wt.db_name == "wt_999_testclient"
+        assert backend_wt.db_name == f"wt_{backend_wt.ticket_id}_testclient"
 
         # --- Step 3: run backend (docker compose) ---
         mock_config = MagicMock()
@@ -722,8 +749,15 @@ class TestToolAndCleanCommands(TestCase):
         assert "check_translations" in mock_popen.call_args.args[0]
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_clean_only_removes_created_worktrees(self) -> None:
-        """Verify clean-all only removes worktrees in CREATED state."""
+    def test_clean_all_keeps_not_done_worktrees(self) -> None:
+        """clean-all no longer reaps non-done worktrees — only done+redundant ones are wiped.
+
+        Both worktrees belong to a not-done (NOT_STARTED) ticket, so the
+        consolidated done-reaper KEEPS them with a reported reason rather than
+        destroying a provisioned/abandoned row on a state guess. Done-worktree
+        reaping itself is covered against real git by ``test_worktree_done.py`` and
+        ``TestCleanAllReapsAndSurvivesForeignOverlay``.
+        """
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/30")
 
         created_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="stale", branch="old")
@@ -741,9 +775,9 @@ class TestToolAndCleanCommands(TestCase):
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))
 
-        assert len(result) == 1
-        assert "stale" in result[0]
-        assert Worktree.objects.filter(pk=created_wt.pk).count() == 0
+        assert any("KEPT" in line and "old" in line for line in result), result
+        assert any("KEPT" in line and "current" in line for line in result), result
+        assert Worktree.objects.filter(pk=created_wt.pk).count() == 1
         assert Worktree.objects.filter(pk=active_wt.pk).count() == 1
 
 

@@ -111,7 +111,7 @@ def collect_ticket_artifacts(ticket: "Ticket", *, port_resolver: PortResolver | 
     worktree's ``ports`` is the empty dict — keeping the collector pure and
     deterministic for callers that only need the durable DB signals.
     """
-    from django.apps import apps  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
     worktree_model = apps.get_model("core", "Worktree")
     worktrees = tuple(

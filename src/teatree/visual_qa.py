@@ -23,12 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.core.models.types import VisualQAPageDetail, VisualQAPageError, VisualQASummary
 from teatree.core.overlay import OverlayBase
 from teatree.utils import git
 
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
+
+    from teatree.core.models.types import VisualQASummary
 
 PlaywrightError: type[BaseException] = Exception
 try:
@@ -39,7 +40,7 @@ else:
     PlaywrightError = _PlaywrightError
 
 # Default file patterns that warrant a browser sanity check.
-# Overlays can override via ``OverlayBase.get_visual_qa_targets()``.
+# Overlays can override via ``OverlayBase.review.visual_qa_targets()``.
 DEFAULT_TRIGGER_GLOBS: tuple[str, ...] = (
     "*.html",
     "*.scss",
@@ -99,8 +100,14 @@ class VisualQAReport:
     def total_errors(self) -> int:
         return sum(len(page.errors) for page in self.pages)
 
-    def summary(self) -> VisualQASummary:
+    def summary(self) -> "VisualQASummary":
         """Return a JSON-serialisable snapshot for ``Ticket.extra``."""
+        from teatree.core.models.types import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            VisualQAPageDetail,
+            VisualQAPageError,
+            VisualQASummary,
+        )
+
         details: list[VisualQAPageDetail] = [
             {
                 "url": page.url,
@@ -135,12 +142,12 @@ def matches_triggers(paths: list[str], globs: tuple[str, ...] = DEFAULT_TRIGGER_
 def detect_targets(diff: list[str], overlay: OverlayBase | None = None) -> list[str]:
     """Return URL paths to load given the changed files.
 
-    When *overlay* exposes ``get_visual_qa_targets``, defer to it so each
+    When *overlay* exposes ``review.visual_qa_targets``, defer to it so each
     project can map diff paths to the URLs it cares about.  Otherwise fall
     back to the default trigger globs and return ``["/"]`` if any matched.
     """
     if overlay is not None:
-        targets = overlay.get_visual_qa_targets(diff)
+        targets = overlay.review.visual_qa_targets(diff)
         return list(targets[:MAX_PAGES]) if targets else []
     return ["/"] if matches_triggers(diff) else []
 
@@ -173,7 +180,7 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     can fail open with a clear message rather than blocking the push.
     """
     try:
-        from playwright.sync_api import sync_playwright  # noqa: PLC0415
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     except ImportError:
         msg = "playwright is not installed. Run: uv sync && playwright install chromium"
         raise VisualQAUnavailableError(msg) from None
@@ -186,7 +193,7 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
+            browser = pw.chromium.launch(headless=True)
             context = browser.new_context(viewport={"width": 1280, "height": 900})
             for index, target in enumerate(targets[:MAX_PAGES]):
                 if time.monotonic() >= deadline:

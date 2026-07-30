@@ -2,7 +2,7 @@
 
 A bug-investigation sub-agent that begins root-causing against a clone
 many commits behind ``origin/<default>`` forms an initially-wrong
-root-cause hypothesis on phantom symptoms. :mod:`teatree.core.branch_currency`
+root-cause hypothesis on phantom symptoms. :mod:`teatree.core.worktree.branch_currency`
 (#940) covers branch-currency *before cold review/ship* (the PR-branch
 exit-point). This module covers the earlier point: **before any bug
 investigation reads repo files**.
@@ -15,7 +15,7 @@ warning, a deterministic refusal — quoting the remediation command (the
 canonical ``t3 update`` and the in-repo fallback) so the sub-agent
 cannot proceed against stale code.
 
-Distinct from :mod:`teatree.core.branch_currency` (#940): this is the
+Distinct from :mod:`teatree.core.worktree.branch_currency` (#940): this is the
 *entry-point* gate (before reading any file for investigation); #940 is
 the *exit-point* gate (before cold review/ship on a feature branch).
 """

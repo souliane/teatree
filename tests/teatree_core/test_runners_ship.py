@@ -13,8 +13,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.backend_protocols import BackendResolutionError
-from teatree.core.models import Ticket, Worktree
+from teatree.config import UserSettings
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.gates import debt_delta_gate, pr_budget_gate
+from teatree.core.models import PullRequest, Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -66,6 +68,131 @@ class TestShipExecutor(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["pr_urls"] == ["https://example.com/mr/1"]
 
+    def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
+        # North-star PR-2: the autonomous loop's task-driven ship reaches
+        # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the
+        # budget gate must live at the ShipExecutor chokepoint. With the cap at 1
+        # and one open PR already recorded for this (repo, ticket), the ship is
+        # refused and NO PR is created. RED before the _open_pr_and_record guard:
+        # host.create_pr is called on the pre-fix code.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        PullRequest.objects.create(
+            ticket=ticket,
+            url=f"https://github.com/{slug}/pull/1",
+            repo=slug,
+            iid="1",
+            overlay="test",
+        )
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/2"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "max_open_prs_per_repo_per_ticket" in result.detail
+        host.create_pr.assert_not_called()
+
+    def test_loop_ship_path_allows_pr_when_budget_not_reached(self) -> None:
+        # Inert-at-limit companion: with the cap at 1 and no existing open PR for
+        # this (repo, ticket), the loop ship proceeds and opens the PR.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        host.create_pr.assert_called_once()
+
+    def test_loop_ship_path_refuses_net_new_debt(self) -> None:
+        # North-star PR-3: the autonomous loop's task-driven ship reaches
+        # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates — the
+        # same bypass class the budget gate closed. With require_debt_delta on and
+        # a net-new noqa in the branch diff, the ship is refused and NO PR is
+        # created. RED before the _open_pr_and_record debt guard: the pre-fix loop
+        # path calls host.create_pr with the debt un-gated.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+        new_noqa = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+risky = frobnicate()  # noqa: F821\n"
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "debt_delta_gate" in result.detail
+        host.create_pr.assert_not_called()
+
+    def test_loop_ship_path_allows_pr_when_diff_is_clean(self) -> None:
+        # Inert companion: require_debt_delta on but the branch introduces no
+        # net-new debt, so the loop ship proceeds and opens the PR.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+        clean = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+clean = compute()\n"
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=clean),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        host.create_pr.assert_called_once()
+
     def test_returns_failure_when_no_code_host(self) -> None:
         ticket = self._ticket_with_worktree()
 
@@ -112,6 +239,33 @@ class TestShipExecutor(TestCase):
 
         assert result.ok is False
         assert "url" in result.detail.lower()
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_create_pr_url_that_fails_reread_reports_failure_with_no_url_recorded(self) -> None:
+        """#1194 verify-by-re-read: a create URL whose re-read 404s is not trusted.
+
+        ``create_pr`` handed back a well-formed URL for the right repo, but a fresh
+        independent GET reports ``UNKNOWN`` (the create silently no-op'd / the PR
+        does not exist). The ship runner MUST report failure and record no
+        ``pr_urls`` entry — no phantom PR advances the FSM.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/phantom"}
+        host.current_user.return_value = "souliane"
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "verify-by-re-read" in result.detail
         ticket.refresh_from_db()
         assert "pr_urls" not in (ticket.extra or {})
 
@@ -193,7 +347,11 @@ class TestShipExecutor(TestCase):
         # #312: an empty commit body still gets the standard What/Why scaffold.
         assert spec.description == "feat: x\n\n## What\n\n## Why"
 
-    def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
+    def test_assignee_empty_when_host_login_empty_and_no_registry_identity(self) -> None:
+        # #3100: git user.name is a display name, not a forge login, so it is not
+        # an assignee candidate. With an empty host login and no trusted-identity
+        # registry handle, the PR is created UNASSIGNED rather than with a login
+        # the forge would reject (which would fail the whole create).
         ticket = self._ticket_with_worktree()
         host = MagicMock()
         host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
@@ -204,12 +362,11 @@ class TestShipExecutor(TestCase):
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "")),
-            patch("teatree.core.runners.ship.git.config_value", return_value="dev"),
         ):
             ShipExecutor(ticket).run()
 
         (spec,) = host.create_pr.call_args.args
-        assert spec.assignee == "dev"
+        assert spec.assignee == ""
 
 
 class TestShipResolvesBranchFromInvokingWorktree(TestCase):
@@ -726,6 +883,17 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
             ),
             patch("teatree.backends.gitlab.client.GitLabCodeHost.current_user", autospec=True, return_value="souliane"),
             patch("teatree.backends.github.client.GitHubCodeHost.current_user", autospec=True, return_value="souliane"),
+            # #1194: the create is verify-by-re-read confirmed against a live GET.
+            patch(
+                "teatree.backends.gitlab.client.GitLabCodeHost.get_pr_open_state",
+                autospec=True,
+                return_value=PrOpenState.OPEN,
+            ),
+            patch(
+                "teatree.backends.github.client.GitHubCodeHost.get_pr_open_state",
+                autospec=True,
+                return_value=PrOpenState.OPEN,
+            ),
             patch("teatree.core.runners.ship.git.push"),
         ):
             result = ShipExecutor(ticket).run()

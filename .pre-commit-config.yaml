@@ -55,10 +55,10 @@ repos:
   # Target is the supported floor (django>=X.Y in pyproject.toml) so rewrites stay
   # compatible with every Django version the project supports.
   - repo: https://github.com/adamchainz/django-upgrade
-    rev: 1db0cbd209d6c4dc78191593942e6269fae99e8d  # 1.30.0
+    rev: 5adcd2667f92470d6637737d60c5d3fc00105e6b  # 1.31.1
     hooks:
       - id: django-upgrade
-        args: [--target-version, "5.2"]
+        args: [--target-version, "6.0"]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: fa93bc3224c614a0e9786d3e2d3d48edcca246eb  # v0.15.1
     hooks:
@@ -66,8 +66,12 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
+      # stages:[commit] REQUIRED: without stage metadata prek runs these at pre-push too;
+      # pin to commit (CI lint re-runs them whole-tree) so the push stays a fast signal.
       - id: end-of-file-fixer
+        stages: [commit]
       - id: trailing-whitespace
+        stages: [commit]
       - id: mixed-line-ending
         args: [--fix=lf]
   - repo: https://github.com/DavidAnson/markdownlint-cli2
@@ -83,8 +87,14 @@ repos:
   - repo: https://github.com/pappasam/toml-sort
     rev: 4ec24891e200ae663aa2a7cecd19516080777133  # v0.24.2
     hooks:
+      # `config/defaults.toml` is excluded because its LAYOUT is load-bearing, not
+      # cosmetic: `[teatree]` leads under the hand-written header (the renderer reproduces
+      # the file byte-for-byte, so a reshuffle would show as churn in every snapshot diff),
+      # and the `[loops.<name>]` table order IS the seed order pinned against the frozen
+      # `0001_initial` copy. toml-sort would sort the top-level tables alphabetically and
+      # move `[teatree]` last. The `[teatree]` keys stay sorted by the renderer itself.
       - id: toml-sort-fix
-        exclude: ^(pyproject\.toml|uv\.lock)$
+        exclude: ^(pyproject\.toml|uv\.lock|src/teatree/config/defaults\.toml)$
 
   # Phase 3 - Fast syntax
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -92,6 +102,10 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=600]
+        stages: [commit]  # pin off pre-push (see end-of-file-fixer above); CI lint re-runs it
+        # Vendored dashboard JS (mermaid is ~3 MB minified) is load-bearing at
+        # runtime — the templates load it via {% static %}, so it must be tracked.
+        exclude: ^src/teatree/dash/static/dash/js/.*\.min\.js$
       - id: check-json
       - id: check-merge-conflict
       - id: check-toml
@@ -135,9 +149,6 @@ repos:
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
     hooks:
-      - id: rst-backticks
-      - id: rst-directive-colons
-      - id: rst-inline-touching-normal
       - id: text-unicode-replacement-char
   - repo: https://github.com/codespell-project/codespell
     rev: 63c8f8312b7559622c0d82815639671ae42132ac  # v2.4.1
@@ -173,7 +184,7 @@ repos:
       - id: banned-terms
         name: banned-terms
         language: script
-        entry: scripts/hooks/check-banned-terms.sh --diff-only --config ~/.teatree.toml
+        entry: scripts/hooks/check-banned-terms.sh --diff-only
         types: [text]
         exclude: |
           (?x)^(
@@ -253,6 +264,43 @@ repos:
         entry: uv run python scripts/hooks/generate_cli_reference.py
         pass_filenames: false
         files: ^src/teatree/cli/
+      - id: cli-reference-sync
+        name: CLI reference doc in sync with the command tree
+        language: system
+        entry: uv run python scripts/hooks/check_cli_reference_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: generate-fsm-diagrams
+        name: Generate the FSM lifecycle diagrams from the models
+        language: system
+        entry: uv run python scripts/hooks/generate_fsm_diagrams.py
+        pass_filenames: false
+        files: ^src/teatree/core/(models/(worktree|pull_request|ticket)\.py|diagrams\.py)$
+      - id: fsm-diagrams-sync
+        name: FSM lifecycle diagrams in sync with their models
+        language: system
+        entry: uv run python scripts/hooks/check_fsm_diagrams_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: generate-dashboard-snapshot
+        name: Generate the admin-dashboard HTML snapshot from the models
+        language: system
+        entry: uv run python scripts/hooks/generate_dashboard_snapshot.py
+        pass_filenames: false
+        # Also fires on any registered model module: the snapshot lists every
+        # model's verbose_name, so a verbose_name change must regenerate it (the
+        # FSM-diagram hook keys on its model modules the same way). The /admin/
+        # re-skin adds two HTML-affecting inputs: the base_site.html override
+        # (injects the token <link>s the snapshot captures) and admin-theme.css.
+        files: ^src/teatree/(core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
+      - id: generate-cli-output-snapshot
+        name: Generate the representative CLI-output fixture from the CLI
+        language: system
+        entry: uv run python scripts/hooks/generate_cli_output_snapshot.py
+        pass_filenames: false
+        files: ^src/teatree/cli/
       - id: generate-management-commands-doc
         name: Generate management-commands reference doc
         language: system
@@ -293,13 +341,6 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [manual]
-      - id: eval-skill-triggers
-        name: Skill-triggers eval lane (declared trigger frontmatter fires on claimed prompts; sub-second, token-free)
-        language: system
-        entry: uv run t3 eval skill-triggers
-        pass_filenames: false
-        always_run: true
-        stages: [commit]
       - id: eval-pinned-regressions
         name: Pinned-regressions eval lane (every past process failure pinned as a deterministic git/FSM check; token-free)
         language: system
@@ -374,6 +415,12 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
+      - id: gate-relaxation
+        name: Anti-relaxation + tach-soundness gate (§17.6.1/§17.6.2, #850)
+        language: system
+        entry: uv run python scripts/hooks/check_gate_relaxation.py
+        pass_filenames: false
+        always_run: true
 
   # Phase 7c - Version sync
   - repo: local
@@ -409,13 +456,28 @@ repos:
         stages: [manual]
 
   # Phase 8b - Pre-push
-  # No full-suite pytest gate here on purpose: the test suite is CI's job, never
+  # No FULL-suite pytest gate here on purpose: the whole suite is CI's job, never
   # the local push path. A host under load times out unrelated wall-clock and
   # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
-  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) stay as
-  # explicit opt-ins. Guarded by tests/test_no_full_suite_on_pre_push.py.
+  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
+  # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The push gate
+  # below (dev/push-gate.sh, #122) runs the never-lockout safety contract plus the
+  # incremental push gate -- the scoped doctest (Engine A) + scoped ast-grep
+  # regression scan (Engine B), FULL on any uncertainty, behind the DB-home
+  # `incremental_push_gate` flag (ON by default => scoped to the diff; OFF =>
+  # whole-tree both, the pre-#122 run). The broad tests/quality directory is CI-only
+  # (~420s locally even with push_heavy deselected -- it hit the push wall-clock cap);
+  # CI's test-shard lane runs it whole-tree on every PR, so relocating it off the push
+  # path loses no coverage. Guarded by tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
+      - id: ci-critical-parity
+        name: CI-critical parity (never-lockout contract + incremental push gate; path-scoped)
+        language: system
+        entry: dev/push-gate.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
       - id: doc-update-gate
         name: README/BLUEPRINT update gate (#1461)
         language: system
@@ -430,6 +492,20 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+      - id: snapshot-baseline-gate
+        name: Snapshot-baseline gate (staged visual baseline needs a recorded attestation)
+        language: system
+        entry: uv run python scripts/hooks/check_snapshot_baseline.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+      - id: pr-body-stray
+        name: Refuse a staged PR/MR body scratch file (belongs in a temp file, never the repo)
+        language: system
+        entry: uv run python scripts/hooks/check_pr_body_stray.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
       - id: comment-density
         name: Near-zero-comments gate (added comments must not restate the code)
         language: system

@@ -2,6 +2,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 
 from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models.types import PREntrySerialized
 
 from ._filters import _overlay_q, _task_overlay_q
 from ._types import ActionRequiredItem, AutomationSummary, DiscussionData, ReviewCommentDetail
@@ -95,7 +96,7 @@ _DISCUSSION_STATUS_DISPLAY = {
 }
 
 
-def _check_pr(pr: dict, ticket: "Ticket") -> list[ActionRequiredItem]:
+def _check_pr(pr: PREntrySerialized, ticket: "Ticket") -> list[ActionRequiredItem]:
     """Return action items for a single PR dict."""
     if not isinstance(pr, dict) or pr.get("draft") or pr.get("state") in {"merged", "closed"}:
         return []

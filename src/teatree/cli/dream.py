@@ -8,10 +8,12 @@ stamping) live in that command.
 
 ``t3 dream run [--since <iso>] [--dry-run]`` runs a pass NOW (manual escape
 hatch; ignores cadence; ``--dry-run`` does everything except writing rows).
-``t3 dream tick`` is the cron entry point; it runs only when the dream cadence
-has elapsed — schedule it ~04:00 (decoupled from the live 12-minute loop).
+``t3 dream tick`` is the off-live-tick entry point the worker's
+:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` chain fires; it runs
+only when the dream cadence has elapsed (the ``dream`` row's ~04:00 slot, decoupled
+from the live 12-minute loop).
 
-The CLI, the off-live-tick cron, and the 48h staleness alarm (``t3 doctor``) are
+The CLI, the off-live-tick driver, and the 48h staleness alarm (``t3 doctor``) are
 the thin surface; the distillation engine (phases 1-3) and the file-side phases
 4-6 live behind the ``dream`` management command.
 """
@@ -59,7 +61,7 @@ def run_command(
     """Run one consolidation pass NOW (ignores cadence)."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     args: list[str] = ["run"]
     if dry_run:
@@ -78,6 +80,24 @@ def tick_command() -> None:
     """Run one consolidation pass IF the dream cadence has elapsed (cron entry)."""
     ensure_django()
 
-    from django.core.management import call_command  # noqa: PLC0415
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("dream", "tick")
+
+
+compliance_app = typer.Typer(
+    name="compliance",
+    help="Inspect the instruction-compliance accountant (#2663) — the root-KPI metric.",
+    no_args_is_help=True,
+)
+dream_app.add_typer(compliance_app)
+
+
+@compliance_app.command("show")
+def compliance_show_command() -> None:
+    """Print the latest compliance snapshot — rate, recurrence count, open escalations."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
+
+    call_command("dream", "compliance")

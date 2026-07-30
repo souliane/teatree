@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils import django_db_dslr as dslr_mod
 from teatree.utils import run as run_mod
-from teatree.utils.django_db import DjangoDbImporter, _MigrateResult
+from teatree.utils.django_db import DjangoDbImporter
+from teatree.utils.django_db import dslr as dslr_mod
+from teatree.utils.django_db.migrate import _MigrateResult
 
 from ._shared import _make_importer, _ok_run
 

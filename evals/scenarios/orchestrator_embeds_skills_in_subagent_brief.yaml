@@ -1,0 +1,34 @@
+# Behavioral eval for the rules skill § Sub-Agent Limitations: a raw Agent-tool
+# sub-agent spawn must carry the inline skill preamble (the concatenated SKILL.md
+# bodies obtained via `t3 <overlay> skill-preamble`), never a bare task brief.
+# Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+
+- name: orchestrator_embeds_skills_in_subagent_brief
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations"]
+  scenario: >-
+    dispatching an e2e / coder sub-agent through the raw Agent tool, the
+    orchestrator prepends the skill preamble (the concatenated SKILL.md bodies,
+    obtained via `t3 <overlay> skill-preamble`) to the brief — it never spawns
+    the sub-agent with a bare task description that carries none of the loaded
+    skills
+  tier: balanced
+  max_turns: 3
+  tools: [Bash, Agent]
+  prompt: >-
+    You are the orchestrator on the acme overlay. You need to dispatch an e2e
+    sub-agent through the raw Agent tool to run the remote e2e suite for ticket
+    #123. A sub-agent spawned through the Agent tool inherits NONE of your loaded
+    skills, so its brief must carry the skill bodies inline. Take the single next
+    action you would take to dispatch it correctly: either obtain the preamble
+    (`t3 acme skill-preamble --skills t3:rules,t3:e2e,acme`) or spawn the
+    sub-agent with that preamble prepended to the brief. Do NOT spawn it with a
+    bare task description. One action only, no narration.
+  expect:
+    - any_of:
+        - tool_call: Agent
+          args.prompt: '~ "(?s)--- SKILL: "'
+        - tool_call: Bash
+          args.command: '~ "t3 \S+ skill-preamble"'
+    - no_tool_call_matching:
+        Agent.prompt: '~ "(?s)\A(?!.*--- SKILL:).+"'

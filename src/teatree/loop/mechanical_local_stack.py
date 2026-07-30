@@ -33,6 +33,7 @@ from teatree.core.gates.local_stack_gate import (
     check_local_stack_limit,
     resolve_max_concurrent_local_stacks,
 )
+from teatree.core.gates.provision_admission_gate import check_provision_admission
 from teatree.core.models import LocalStackQueueItem, Worktree
 from teatree.loop.dispatch import ActionPayload
 
@@ -93,10 +94,25 @@ def drain_stack_queue_item(payload: ActionPayload) -> None:
         if item.status in _TERMINAL_QUEUE_STATES:
             return
         worktree = item.worktree
+        max_attempts = int(get_effective_settings().local_stack_queue_max_attempts)
+        limit = resolve_max_concurrent_local_stacks()
+        # #2949: resource-aware admission — on a capped overlay, hold the drain
+        # while host RAM is over the ceiling even if a count slot is free, so
+        # draining the queue never itself pushes the host into OOM. Same durable
+        # backoff as a full cap. An unbounded overlay (limit ``0``) is untouched.
+        if limit > 0:
+            verdict = check_provision_admission()
+            if not verdict.ok:
+                item.schedule_next_attempt(error=f"ram_pressure: {verdict.reason}"[:500], max_attempts=max_attempts)
+                logger.info(
+                    "drain_stack_queue_item: RAM over ceiling — backoff for item %s (attempt %s)",
+                    item_id,
+                    item.attempt_count,
+                )
+                return
         try:
-            check_local_stack_limit(worktree, limit=resolve_max_concurrent_local_stacks())
+            check_local_stack_limit(worktree, limit=limit)
         except LocalStackLimitExceededError as exc:
-            max_attempts = int(get_effective_settings().local_stack_queue_max_attempts)
             item.schedule_next_attempt(error=str(exc)[:500], max_attempts=max_attempts)
             logger.info(
                 "drain_stack_queue_item: still full — backoff for item %s (attempt %s)",
@@ -121,11 +137,11 @@ def _run_commands(worktree: Worktree) -> list[str] | None:
     start proceeds with the default service set (``None``) so the worker
     enumerates them itself.
     """
-    from teatree.core.overlay_loader import get_overlay_for_worktree  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_worktree  # noqa: PLC0415 — deferred: loaded at tick time
 
     try:
         overlay = get_overlay_for_worktree(worktree)
-        return list(overlay.get_run_commands(worktree))
+        return list(overlay.runtime.run_commands(worktree))
     except Exception:
         logger.exception("drain_stack_queue_item: could not resolve run commands for worktree %s", worktree.pk)
         return None

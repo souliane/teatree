@@ -101,6 +101,23 @@ class TestNotFlagged:
         result = detect_raw_pid_kill("git kill 5")
         assert not result.is_raw_pid_kill
 
+    def test_semicolon_inside_a_quoted_string_is_not_a_command_position(self) -> None:
+        # The shared lexer keeps a quoted span whole, so the ``;`` inside the
+        # string never splits out a bogus ``kill 1234`` segment (the quote-blind
+        # regex split false-denied this).
+        result = detect_raw_pid_kill('echo "if it hangs; kill 1234 then retry"')
+        assert not result.is_raw_pid_kill
+
+    def test_kill_pid_inside_single_quotes_is_not_flagged(self) -> None:
+        result = detect_raw_pid_kill("echo 'run kill 4242 to stop it'")
+        assert not result.is_raw_pid_kill
+
+    def test_real_kill_after_a_quoted_semicolon_still_flags(self) -> None:
+        # Anti-vacuity: a genuine chained raw-pid kill after a quoted arg fires.
+        result = detect_raw_pid_kill('echo "starting; up" && kill -9 4242')
+        assert result.is_raw_pid_kill
+        assert result.pid == 4242
+
     def test_non_kill_command(self) -> None:
         result = detect_raw_pid_kill("ps -axo pid,comm")
         assert not result.is_raw_pid_kill

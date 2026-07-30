@@ -5,19 +5,37 @@ This module bridges ``teatree.core`` (overlay registry) and
 need to extract tokens or branch on platform themselves.
 """
 
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
+from teatree.core.account_fingerprint import current_account_fingerprint
+from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.core.backend_registry import get_backend_provider
+
+if TYPE_CHECKING:
+    from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import get_all_overlays, get_overlay
-from teatree.paths import find_overlay_db
-from teatree.utils import git
-from teatree.utils.forge import forge_from_remote
+from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays, get_overlay
+from teatree.core.toml_backends import (
+    _apply_voice_classifier_mode,
+    _code_host_from_toml_overlay,
+    _code_host_from_toml_overlay_for_repo,
+    _find_external_db,
+    _hosts_from_toml,
+    _messaging_from_toml,
+    _messaging_from_toml_overlay,
+    _toml_messaging_backend,
+)
+from teatree.types import SharePointRemoteSpec
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +61,6 @@ class OverlayBackends:
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     exclude_labels: tuple[str, ...] = ()
     overlay: OverlayBase | None = None
-    auto_start_assigned_issues: bool = False
     max_concurrent_auto_starts: int = 1
     stale_threshold_days: int = 3
     external_db: Path | None = None
@@ -58,8 +75,39 @@ class OverlayBackends:
         return self.hosts[0] if self.hosts else None
 
 
-_code_host_cache: dict[str, CodeHostBackend | None] = {}
-_messaging_cache: dict[str, MessagingBackend | None] = {}
+_code_host_cache: dict[str, CodeHostBackend] = {}
+_messaging_cache: dict[str, MessagingBackend] = {}
+
+
+@dataclass(slots=True)
+class _CacheAccountState:
+    """The Claude account fingerprint the process-wide backend caches hold.
+
+    A ``/login`` switch invalidates every resolved backend — the old account's
+    Slack workspace is no longer reachable — but long-lived processes (the
+    ``t3 mcp serve`` server, the loop worker) never re-run the SessionStart switch
+    detector, so they keep serving the stale backend and ``notify_user`` drops
+    every owner DM silently until restart. The cache-read path compares this
+    against the live fingerprint and self-resets on a change, so each process
+    re-resolves on its next call — no restart needed. ``None`` means "no cache
+    populated yet" (also the state right after a reset). Held on a mutable object
+    so the cache-read path mutates an attribute rather than rebinding a global.
+    """
+
+    fingerprint: str | None = None
+
+
+_cache_account_state = _CacheAccountState()
+
+# A resolved backend is cached for the process lifetime; a ``None`` result is
+# cached only for this brief monotonic window (F4.5). A single transient tick
+# where credentials momentarily fail to resolve returned ``None`` — which the
+# old permanent-cache pinned for the whole loop's life, disabling the code host /
+# messaging until a restart. Re-resolving after a short TTL lets the next tick
+# recover on its own; a genuinely-unconfigured overlay just pays a cheap re-read.
+_ERROR_NONE_TTL_SECONDS = 30.0
+_code_host_none_until: dict[str, float] = {}
+_messaging_none_until: dict[str, float] = {}
 
 
 def _active_overlay_name(overlay_name: str | None) -> str:
@@ -72,6 +120,24 @@ def _active_overlay_name(overlay_name: str | None) -> str:
     if overlay_name:
         return overlay_name
     return os.environ.get("T3_OVERLAY_NAME", "") or ""
+
+
+def _reset_caches_if_account_switched() -> None:
+    """Self-heal the backend caches after a Claude ``/login`` account switch.
+
+    Long-lived processes never re-run the SessionStart switch detector; without
+    this guard they keep serving the backend resolved under the old account and
+    drop every owner DM silently. Comparing the live account fingerprint to the
+    one the caches were populated under, and resetting on a change, re-resolves
+    on the next call. An empty fingerprint ("cannot tell" — an unreadable
+    ``~/.claude.json``) never claims a switch, matching ``fingerprint_switched``.
+    """
+    current = current_account_fingerprint()
+    if not current:
+        return
+    if _cache_account_state.fingerprint and _cache_account_state.fingerprint != current:
+        reset_backend_caches()
+    _cache_account_state.fingerprint = current
 
 
 def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend | None:
@@ -87,12 +153,32 @@ def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend |
     overlays (no ``class:`` key) are supported via a TOML fallback so a
     bare ``django.setup()`` resolves the right credentials.
     """
+    _reset_caches_if_account_switched()
     key = _active_overlay_name(overlay_name)
     if key in _code_host_cache:
         return _code_host_cache[key]
+    if _none_still_fresh(_code_host_none_until, key):
+        return None
     backend = _build_code_host(key)
+    if backend is None:
+        _code_host_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
+        warn_throttled(
+            logger,
+            f"code-host-none:{key}",
+            "code host for overlay %r resolved to None — re-resolving after %.0fs (not cached for the process life)",
+            key or "<default>",
+            _ERROR_NONE_TTL_SECONDS,
+        )
+        return None
     _code_host_cache[key] = backend
+    _code_host_none_until.pop(key, None)
     return backend
+
+
+def _none_still_fresh(deadlines: dict[str, float], key: str) -> bool:
+    """Whether a cached ``None`` for *key* is still inside its short TTL window."""
+    deadline = deadlines.get(key)
+    return deadline is not None and time.monotonic() < deadline
 
 
 def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
@@ -135,11 +221,25 @@ def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend 
     the correct overlay's Slack bot instead of silently falling back to
     no-backend.
     """
+    _reset_caches_if_account_switched()
     key = _active_overlay_name(overlay_name)
     if key in _messaging_cache:
         return _messaging_cache[key]
+    if _none_still_fresh(_messaging_none_until, key):
+        return None
     backend = _build_messaging(key)
+    if backend is None:
+        _messaging_none_until[key] = time.monotonic() + _ERROR_NONE_TTL_SECONDS
+        warn_throttled(
+            logger,
+            f"messaging-none:{key}",
+            "messaging for overlay %r resolved to None — re-resolving after %.0fs (not cached for the process life)",
+            key or "<default>",
+            _ERROR_NONE_TTL_SECONDS,
+        )
+        return None
     _messaging_cache[key] = backend
+    _messaging_none_until.pop(key, None)
     return backend
 
 
@@ -147,10 +247,92 @@ def _build_messaging(overlay_name: str) -> MessagingBackend | None:
     try:
         overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
-        return _messaging_from_toml_overlay(overlay_name)
+        if overlay_name:
+            return _messaging_from_toml_overlay(overlay_name)
+        return OwnerMessagingTransport.sole() or _messaging_from_toml_overlay(overlay_name)
     backend = get_backend_provider().get_messaging(overlay)
     _apply_voice_classifier_mode(backend)
     return backend
+
+
+class OwnerMessagingTransport:
+    """Owner-DM transport resolution across every registered overlay (credentials, not count)."""
+
+    @staticmethod
+    def credentialed_backends() -> list[MessagingBackend]:
+        """One messaging backend per registered overlay that carries a real transport.
+
+        Credentials, not count: overlays whose ``messaging_backend`` is noop/empty
+        carry no transport and are excluded (via
+        :func:`configured_messaging_from_overlay`), so the list length IS the
+        disambiguation signal — one entry is an unambiguous owner transport, several
+        are a real ambiguity the caller must name rather than guess through. The
+        owner-DM egress (:func:`teatree.core.notify.resolve_owner_dm_backend`) reads
+        this to split "no transport anywhere" from "several transports, pick one".
+
+        Enumerated through :meth:`OverlayConfigResolver.all_names` — NOT
+        ``get_all_overlays()`` — so a **path-only** TOML overlay (a ``path`` but no
+        instantiable ``class``) carrying real Slack credentials still contributes its
+        transport. ``configured_messaging_from_overlay`` already resolves such an
+        overlay by name through the TOML fallback; iterating only the instantiable
+        set made the sole credentialed overlay on a two-overlay box (a path-only
+        product overlay beside the noop ``t3-teatree``) resolve to no backend,
+        parking every headless ``notify_user`` owner DM undelivered and reddening the
+        doctor's ambient-egress gate from whichever cwd the noop overlay owned.
+        """
+        return [
+            backend
+            for name in OverlayConfigResolver.all_names()
+            if (backend := configured_messaging_from_overlay(name)) is not None
+        ]
+
+    @staticmethod
+    def sole() -> MessagingBackend | None:
+        """The one registered overlay carrying a real messaging transport, or ``None``.
+
+        The env-independent AMBIENT tier, symmetric with ``notify_targets._sole_overlay_field``:
+        the headless worker and the MCP server export no ``T3_OVERLAY_NAME``, so
+        ``get_overlay(None)`` raises ``Multiple overlays found`` the moment a second
+        overlay is registered. Without this tier that ambiguity collapsed to "no backend"
+        and :func:`teatree.core.notify.notify_user` silently no-op'd every owner DM.
+
+        Ambiguity is resolved by CREDENTIALS, not by count (see
+        :meth:`credentialed_backends`): two credentialed overlays still return
+        ``None`` — a multi-transport box must never guess which workspace the owner reads.
+        """
+        credentialed = OwnerMessagingTransport.credentialed_backends()
+        if len(credentialed) != 1:
+            return None
+        return credentialed[0]
+
+
+def configured_messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
+    """Like :func:`messaging_from_overlay`, but honours the MCP resolver contract (#3299).
+
+    Returns ``None`` when the overlay's ``messaging_backend`` resolves to
+    ``"noop"``/empty — i.e. the overlay declares ``Service.SLACK`` but has no
+    real messaging transport. ``messaging_from_overlay`` returns a *truthy*
+    :class:`~teatree.backends.messaging_noop.NoopMessagingBackend` there, which
+    :func:`~teatree.mcp.service_resolver.resolve_declaring_overlay_client` would
+    wrongly accept — stopping the search before it reaches the overlay that
+    actually carries the Slack credentials. The MCP Slack group passes THIS seam
+    to the resolver so the noop declarer is skipped, restoring the resolver's
+    documented "``None`` when unconfigured" contract at the source. Every other
+    caller keeps the no-``None``-guard :func:`messaging_from_overlay`.
+    """
+    if _resolved_messaging_backend(overlay_name) in {"", "noop"}:
+        return None
+    return messaging_from_overlay(overlay_name)
+
+
+def _resolved_messaging_backend(overlay_name: str | None) -> str:
+    """The overlay's effective ``messaging_backend`` choice (``""`` when unresolvable)."""
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
+        return _toml_messaging_backend(key)
+    return overlay.config.messaging_backend or ""
 
 
 def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None:
@@ -167,54 +349,78 @@ def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None
     )
 
 
-def _messaging_from_toml_overlay(overlay_name: str) -> MessagingBackend | None:
-    """Build a messaging backend from a path-only TOML overlay entry.
+def notion_client_from_overlay(overlay_name: str | None = None) -> "NotionPageClient | None":
+    """Build a direct-Notion API client from the active overlay's token.
 
-    Used by the fallback in :func:`messaging_from_overlay` so wrapper
-    scripts that opt into an overlay without a registered Python class
-    still route to its credentials. Mirrors the discovery shape of
-    ``_backends_from_toml``.
+    Returns ``None`` when no ``notion_token`` resolves (the default-safe posture
+    — the runtime status-sync then no-ops). Mirrors :func:`messaging_from_overlay`
+    but stays uncached: the client holds no live connection, and skipping the
+    cache avoids cross-overlay token bleed in tests.
     """
-    if not overlay_name:
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
         return None
-    from teatree.config import load_config  # noqa: PLC0415
-
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
+    token = overlay.config.get_notion_token()
+    if not token:
         return None
-    return _messaging_from_toml(cfg)
+    return get_backend_provider().build_notion_client(token=token)
 
 
-def _code_host_from_toml_overlay(overlay_name: str) -> CodeHostBackend | None:
-    """Build a code-host backend from a path-only TOML overlay entry."""
-    if not overlay_name:
-        return None
-    from teatree.config import load_config  # noqa: PLC0415
+def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryReadClient | None":
+    """Build a read-only Sentry client from the active overlay's config.
 
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
-        return None
-    return _host_from_toml(cfg)
-
-
-def _code_host_from_toml_overlay_for_repo(overlay_name: str, repo_path: str) -> CodeHostBackend | None:
-    """Per-repo code host from a path-only TOML overlay entry (#2025).
-
-    The path-only fallback must derive the forge from *repo_path*'s origin
-    host too — otherwise the original #2025 token-precedence bug survives
-    for TOML-only overlays (``_host_from_toml`` is GitHub-first).
+    Returns ``None`` when the overlay declares no ``sentry_org`` (the
+    default-safe posture — the sentry MCP group's resolver then moves to the next
+    declaring overlay or fails loud). Mirrors :func:`notion_client_from_overlay`:
+    resolved through the registered provider so ``core`` never imports the
+    concrete ``teatree.backends.sentry`` client. Uncached — the client holds no
+    live connection.
     """
-    if not overlay_name:
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
         return None
-    from teatree.config import load_config  # noqa: PLC0415
+    config = overlay.config
+    if not config.sentry_org:
+        return None
+    return get_backend_provider().build_sentry_client(
+        token=config.get_sentry_token(),
+        org=config.sentry_org,
+        base_url=config.sentry_url,
+    )
 
-    overlays = load_config().raw.get("overlays") or {}
-    cfg = overlays.get(overlay_name)
-    if not isinstance(cfg, dict):
+
+def sharepoint_client_from_overlay(overlay_name: str | None = None) -> "SharePointReadClient | None":
+    """Build a read-only SharePoint/OneDrive client from the environment (#3084).
+
+    The remote's tenant/site/root values are client-specific and must stay out of
+    this public repo, so they are read from the ``TEATREE_SHAREPOINT_*`` wrapper
+    environment (set by the private skill/overlay), NOT from committed config —
+    mirroring the issue's env-var fetch helper. Returns ``None`` when
+    ``TEATREE_SHAREPOINT_REMOTE`` is unset (the default-safe posture — the
+    sharepoint MCP group's resolver then moves to the next declaring overlay or
+    fails loud). Resolved through the registered provider so ``core`` never
+    imports the concrete ``teatree.backends.sharepoint`` client. The
+    ``overlay_name`` argument keeps the resolver's ``build(name)`` contract; the
+    gate that a registered overlay must DECLARE the service still holds upstream.
+    """
+    del overlay_name  # config is env-scoped, not per-overlay; gating is upstream.
+    remote = os.environ.get("TEATREE_SHAREPOINT_REMOTE", "")
+    if not remote:
         return None
-    return _host_from_toml_for_repo(cfg, repo_path)
+    return get_backend_provider().build_sharepoint_client(
+        SharePointRemoteSpec(
+            remote=remote,
+            root=os.environ.get("TEATREE_SHAREPOINT_ROOT", ""),
+            config_path=os.environ.get("TEATREE_SHAREPOINT_CONFIG", ""),
+            password_command=os.environ.get("TEATREE_SHAREPOINT_PASSWORD_COMMAND", ""),
+            site_url=os.environ.get("TEATREE_SHAREPOINT_SITE_URL", ""),
+            library_path=os.environ.get("TEATREE_SHAREPOINT_LIBRARY_PATH", ""),
+        ),
+    )
 
 
 def iter_overlay_backends() -> list[OverlayBackends]:
@@ -249,7 +455,6 @@ def iter_overlay_backends() -> list[OverlayBackends]:
                 ready_labels=tuple(overlay.config.ready_labels),
                 exclude_labels=tuple(overlay.config.exclude_labels),
                 overlay=overlay,
-                auto_start_assigned_issues=bool(overlay.config.auto_start_assigned_issues),
                 max_concurrent_auto_starts=int(overlay.config.max_concurrent_auto_starts),
                 stale_threshold_days=int(overlay.config.stale_threshold_days),
                 identities=identities,
@@ -273,7 +478,7 @@ def _resolved_identities() -> tuple[str, ...]:
     user_identity_aliases '[...]'``). Reading through ``get_effective_settings``
     means every consumer agrees on the parsed shape and sees the DB value.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     return tuple(get_effective_settings().user_identity_aliases)
 
@@ -283,7 +488,7 @@ def _backends_from_toml(
     identities: tuple[str, ...] = (),
 ) -> list[OverlayBackends]:
     """Build backends for TOML overlays not discovered via entry points."""
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result: list[OverlayBackends] = []
     config = load_config()
@@ -310,142 +515,6 @@ def _backends_from_toml(
     return result
 
 
-def _find_external_db(name: str, cfg: dict) -> Path | None:
-    project_path = cfg.get("path", "")
-    if not project_path:
-        return None
-    return find_overlay_db(name, project_path)
-
-
-def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
-    """Return every code-host backend a TOML overlay opts into.
-
-    Pre-#976 the loop only constructed one host per TOML overlay, so an
-    entry with both ``gitlab_token_ref`` and ``github_token_ref`` silently
-    dropped one platform. Build both when both resolve so the loop can
-    scan each forge independently.
-    """
-    from teatree.utils.secrets import read_pass  # noqa: PLC0415
-
-    provider = get_backend_provider()
-    hosts: list[CodeHostBackend] = []
-    github_token_ref = cfg.get("github_token_ref", "")
-    if github_token_ref:
-        token = read_pass(github_token_ref)
-        if token:
-            hosts.append(provider.build_github_host(token=token))
-
-    gitlab_token_ref = cfg.get("gitlab_token_ref", "")
-    gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
-    if gitlab_token_ref:
-        token = read_pass(gitlab_token_ref)
-        if token:
-            hosts.append(provider.build_gitlab_host(token=token, base_url=gitlab_url))
-    return hosts
-
-
-def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
-    """Single-host shim — first matching host per TOML overlay.
-
-    Pre-#976 callers consumed exactly one host per TOML overlay. Kept so
-    code paths outside the loop scanner stack don't need to learn the
-    multi-host shape just to read out the legacy default.
-    """
-    hosts = _hosts_from_toml(cfg)
-    return hosts[0] if hosts else None
-
-
-def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | None:
-    """Build the TOML overlay's host for *repo_path*'s origin forge (#2025).
-
-    Mirrors :func:`teatree.backends.loader.get_code_host_for_repo` for the
-    path-only TOML overlay: the forge is the repo's origin host, not
-    token-presence order. Raises :class:`BackendResolutionError` when the
-    repo's forge has no token ref configured on the overlay; falls back to
-    the overlay default only when the repo has no origin / an unrecognised
-    host.
-    """
-    from teatree.utils.secrets import read_pass  # noqa: PLC0415
-
-    remote = git.remote_url(repo=repo_path)
-    forge = forge_from_remote(remote) if remote else ""
-    if not forge:
-        return _host_from_toml(cfg)
-
-    provider = get_backend_provider()
-    if forge == "github":
-        github_token_ref = cfg.get("github_token_ref", "")
-        token = read_pass(github_token_ref) if github_token_ref else ""
-        if token:
-            return provider.build_github_host(token=token)
-    else:
-        gitlab_token_ref = cfg.get("gitlab_token_ref", "")
-        token = read_pass(gitlab_token_ref) if gitlab_token_ref else ""
-        if token:
-            return provider.build_gitlab_host(token=token, base_url=cfg.get("gitlab_url", "https://gitlab.com"))
-
-    msg = (
-        f"repo origin resolves to the {forge} forge ({remote!r}) but the TOML overlay "
-        f"has no {forge} token configured — cannot open a PR. "
-        f"Configure {forge}_token_ref for this overlay."
-    )
-    raise BackendResolutionError(msg)
-
-
-def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
-    if cfg.get("messaging_backend") != "slack":
-        return None
-    from teatree.utils.secrets import read_pass  # noqa: PLC0415
-
-    token_ref = cfg.get("slack_token_ref", "")
-    if not token_ref:
-        return None
-    bot_token = read_pass(f"{token_ref}-bot")
-    app_token = read_pass(f"{token_ref}-app")
-    user_token_ref = cfg.get("user_token_ref", "")
-    user_token = read_pass(user_token_ref) if user_token_ref else ""
-    user_id = cfg.get("slack_user_id", "")
-    # Setup-time provisioned IM channel id (#1342). When set, threads into
-    # the Slack bot so its ``open_dm`` short-circuits the live
-    # ``conversations.open`` for the configured user, routing DMs through this
-    # bot's IM instead of failing ``channel_not_found``.
-    dm_channel_id = cfg.get("slack_dm_channel_id", "")
-    if bot_token:
-        # Loop construction path — a malformed user token degrades to
-        # bot-only instead of crashing the tick (see ``get_messaging``).
-        backend = get_backend_provider().build_slack_messaging(
-            bot_token=bot_token,
-            app_token=app_token or "",
-            user_token=user_token,
-            user_id=user_id,
-            dm_channel_id=dm_channel_id,
-        )
-        _apply_voice_classifier_mode(backend)
-        return backend
-    return None
-
-
-def _apply_voice_classifier_mode(backend: "MessagingBackend | None") -> None:
-    """Resolve the voice/token classifier mode from config (#1395).
-
-    Reads the effective setting (env / per-overlay / global) and
-    threads it into a :class:`SlackBotBackend` via its setter. Noop
-    backends and missing-credentials cases are skipped. Tolerates
-    fake configs that don't carry a ``user`` attribute (path-only TOML
-    fallback test fixtures) by leaving the backend on its default
-    :attr:`SlackVoiceClassifierMode.WARN`.
-    """
-    setter = getattr(backend, "set_voice_classifier_mode", None)
-    if setter is None or not callable(setter):
-        return
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-
-        setter(get_effective_settings().slack_voice_classifier_mode)
-    except (AttributeError, ImportError):
-        return
-
-
 def reset_backend_caches() -> None:
     """Clear all per-overlay backend caches.
 
@@ -454,15 +523,23 @@ def reset_backend_caches() -> None:
     """
     _code_host_cache.clear()
     _messaging_cache.clear()
+    _code_host_none_until.clear()
+    _messaging_none_until.clear()
+    _cache_account_state.fingerprint = None
     get_backend_provider().reset_caches()
 
 
 __all__ = [
     "OverlayBackends",
+    "OwnerMessagingTransport",
     "ci_service_from_overlay",
     "code_host_for_repo_from_overlay",
     "code_host_from_overlay",
+    "configured_messaging_from_overlay",
     "iter_overlay_backends",
     "messaging_from_overlay",
+    "notion_client_from_overlay",
     "reset_backend_caches",
+    "sentry_client_from_overlay",
+    "sharepoint_client_from_overlay",
 ]

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.review_findings import FilingContext, FindingsStore
+from teatree.core.review.review_findings import FilingContext, FindingsStore
 from teatree.eval.gate_failures import (
     GateFailure,
     GateVerdict,
@@ -26,6 +26,7 @@ from teatree.eval.gate_failures import (
     extract_gate_failures,
     gate_identity_slug,
     record_gate_failures,
+    recurring_fingerprints,
 )
 from teatree.eval.session_transcript import SessionEvent, parse_session_jsonl
 
@@ -277,8 +278,49 @@ class TestEscalate:
 
 
 @pytest.fixture
-def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
-    return cfg
+def banned_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_BANNED_TERMS", "acmecorp")
+
+
+class TestRecurrenceCountsRepeatsWithinOneSession:
+    """A gate the agent tripped 67 times in ONE session is recurring by any reading.
+
+    ``FindingsStore`` keys each session on its own file whose findings are a
+    ``fingerprint -> classification`` MAP, so N firings of one gate collapse to a
+    single entry and the cross-session file count stays 1. An observed transcript
+    held 102 blocks of exactly 2 gate identities and reported both
+    ``recurring: false``. Recurrence is what escalates a finding from "write a
+    memory" to "build a gate", so that false negative disables the escalation path
+    in precisely the case it exists for — a corrective visibly failing to take,
+    over and over, inside one run.
+    """
+
+    def test_a_gate_repeated_within_one_session_is_recurring(self, tmp_path: Path) -> None:
+        store = FindingsStore(data_dir=tmp_path)
+        repeated = [_preventable("only-session") for _ in range(3)]
+        record_gate_failures(store, repeated)
+        assert repeated[0].fingerprint in recurring_fingerprints(repeated, store=store)
+
+    def test_a_single_firing_in_a_single_session_is_not_recurring(self, tmp_path: Path) -> None:
+        store = FindingsStore(data_dir=tmp_path)
+        once = _preventable("only-session")
+        record_gate_failures(store, [once])
+        assert once.fingerprint not in recurring_fingerprints([once], store=store)
+
+    def test_the_cross_session_signal_still_counts(self, tmp_path: Path) -> None:
+        # One firing each in two sessions: no intra-session repeat, still recurring.
+        store = FindingsStore(data_dir=tmp_path)
+        first, second = _preventable("s1"), _preventable("s2")
+        record_gate_failures(store, [first])
+        record_gate_failures(store, [second])
+        assert second.fingerprint in recurring_fingerprints([second], store=store)
+
+    def test_a_repeated_gate_within_one_session_escalates(self, tmp_path: Path) -> None:
+        # The end-to-end consequence — the filer, not just the reported flag.
+        store = FindingsStore(data_dir=tmp_path)
+        repeated = [_preventable("only-session") for _ in range(4)]
+        record_gate_failures(store, repeated)
+        host = _FakeHost()
+        filed = escalate_gate_failures(host, failures=repeated, store=store, context=_CONTEXT)
+        assert len(filed) == 1, "one issue for the repeated gate, deduped by fingerprint"
+        assert len(host.created) == 1

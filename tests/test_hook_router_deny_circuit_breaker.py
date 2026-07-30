@@ -19,6 +19,7 @@ from their real per-session state files.
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -28,14 +29,33 @@ import pytest
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the breaker's kill-switch resolves."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def env(tmp_path: Path) -> dict[str, str]:
     """A subprocess env with STATE_DIR, skill search dirs, and HOME on tmp_path.
 
     Seeds one real, loadable skill (``ac-reviewing-codebase``) so the
     skill-loading gate has a genuine load-first demand to enforce, and points
-    ``HOME`` at a clean temp dir so the breaker's ``~/.teatree.toml`` read sees
-    its default (enabled) unless a test writes a config.
+    ``HOME`` at a clean temp dir (with no ``T3_CONFIG_DB``) so the breaker's
+    DB-home config read resolves to an absent store and sees its default
+    (enabled) unless a test seeds a config DB.
     """
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -57,6 +77,13 @@ def _state_dir(env: dict[str, str]) -> Path:
     return Path(env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"])
 
 
+# A single cold ``hook_router`` spawn is ~2-3s; the 15s ceiling only guards a
+# genuine hang. It is env-overridable so a heavily-loaded dev box (where a cold
+# spawn momentarily stalls, not a real hang) can widen it without touching CI,
+# which keeps the default.
+_SUBPROCESS_TIMEOUT_S = int(os.environ.get("T3_HOOK_TEST_SUBPROCESS_TIMEOUT", "15"))
+
+
 def _run(env: dict[str, str], payload: dict) -> tuple[int, dict | None, str]:
     """Drive the real PreToolUse chain via ``main()``; return (rc, deny-json, stderr)."""
     result = subprocess.run(
@@ -65,7 +92,7 @@ def _run(env: dict[str, str], payload: dict) -> tuple[int, dict | None, str]:
         capture_output=True,
         text=True,
         check=False,
-        timeout=15,
+        timeout=_SUBPROCESS_TIMEOUT_S,
         env=env,
     )
     payload_out = json.loads(result.stdout) if result.stdout.strip() else None
@@ -217,9 +244,9 @@ class TestKillSwitchIsPureNoOp:
     """``deny_circuit_breaker_enabled = false`` makes the breaker a pure pass-through."""
 
     def test_disabled_breaker_passes_denials_through_unchanged(self, env: dict[str, str]) -> None:
-        (Path(env["HOME"]) / ".teatree.toml").write_text(
-            "[teatree]\ndeny_circuit_breaker_enabled = false\n", encoding="utf-8"
-        )
+        db = Path(env["HOME"]) / "db.sqlite3"
+        _seed_config_db(db, {"deny_circuit_breaker_enabled": False})
+        env["T3_CONFIG_DB"] = str(db)
         for _ in range(5):
             rc, payload, _ = _run(env, _safety_deny("off"))
             _assert_denied(rc, payload)
@@ -228,6 +255,111 @@ class TestKillSwitchIsPureNoOp:
 
         assert _streak(env, "off") is None, "the breaker writes no streak state when disabled"
         assert _circuit_broken(env, "off") == [], "the breaker records no signal when disabled"
+
+
+def _no_verify_deny(session_id: str, message: str) -> dict:
+    """A DISTINCT self-bypass (``--no-verify``) commit that trips the direct-command gate.
+
+    The ``--no-verify`` deny reason is command-INDEPENDENT, so on a reason-only
+    fingerprint three different commits shared one streak. Distinct ``message``s
+    keep the calls distinct.
+    """
+    return {
+        "session_id": session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": f"git commit --no-verify -m {message}"},
+    }
+
+
+def _grant_file(env: dict[str, str], session_id: str) -> Path:
+    return _state_dir(env) / f"{session_id}.fp-grants"
+
+
+class TestSelfBypassDoesNotPoisonDistinctCommands:
+    """#3252(a) — a denied self-bypass does not poison later DISTINCT commands.
+
+    Three DISTINCT ``--no-verify`` commits each trip the same command-independent
+    safety gate. On the pre-fix reason-only fingerprint they shared one streak
+    and the 3rd falsely tripped with the LOOPING escalation (poisoning a distinct
+    command). With the call signature folded into the fingerprint each keeps its
+    own streak of 1 and the breaker never trips. RED on pre-fix code.
+    """
+
+    def test_distinct_self_bypass_denials_never_trip(self, env: dict[str, str]) -> None:
+        payloads = [
+            _no_verify_deny("poison", "first"),
+            _no_verify_deny("poison", "second"),
+            _no_verify_deny("poison", "third"),
+        ]
+        for payload in payloads:
+            rc, deny, _ = _run(env, payload)
+            _assert_denied(rc, deny)
+            assert deny is not None
+            assert "LOOPING" not in deny["permissionDecisionReason"], (
+                "a DISTINCT command must not inherit a looping escalation from an earlier self-bypass"
+            )
+            _assert_streak_count(env, "poison", 1)
+
+        assert _circuit_broken(env, "poison") == [], "distinct commands never trip the breaker"
+
+
+class TestConfirmedFalsePositiveGrant:
+    """#3252(b) — a confirmed identical false positive stops re-prompting.
+
+    A ``[fp-confirmed:]`` token suppresses the deny and records a session-scoped,
+    per-fingerprint grant; the IDENTICAL command WITHOUT the token then auto-passes
+    (the grant hit) instead of re-prompting. RED on pre-fix code (no grant store,
+    and the token is not recognised).
+    """
+
+    def test_confirmed_fp_grants_and_identical_call_stops_reprompting(self, env: dict[str, str]) -> None:
+        confirmed = {
+            "session_id": "grant",
+            "tool_name": "Bash",
+            "tool_input": {"command": "uv run pytest --no-cov -q [fp-confirmed: known-quick targeted run]"},
+        }
+        rc_confirm, payload_confirm, stderr_confirm = _run(env, confirmed)
+        assert rc_confirm == 0, "the [fp-confirmed:] call is suppressed (allowed)"
+        assert payload_confirm is None
+        assert "CONFIRMED FALSE POSITIVE" in stderr_confirm
+        assert _grant_file(env, "grant").is_file(), "a session grant is recorded"
+
+        identical = _safety_deny("grant")  # same command, no token
+        rc_reuse, payload_reuse, _ = _run(env, identical)
+        assert rc_reuse == 0, "the identical FP auto-passes via the grant — no re-prompt"
+        assert payload_reuse is None
+        assert _streak(env, "grant") is None, "a granted call accumulates no streak"
+
+    def test_distinct_command_after_grant_still_denies(self, env: dict[str, str]) -> None:
+        confirmed = {
+            "session_id": "grant2",
+            "tool_name": "Bash",
+            "tool_input": {"command": "uv run pytest --no-cov -q [fp-confirmed: known fine]"},
+        }
+        _run(env, confirmed)
+        # A DIFFERENT heavy command shares neither fingerprint nor grant.
+        other = {"session_id": "grant2", "tool_name": "Bash", "tool_input": {"command": "npm run build"}}
+        rc, payload, _ = _run(env, other)
+        _assert_denied(rc, payload)
+
+
+class TestUxGateGrantStopsReprompting:
+    """#3252(b) — after a UX gate trips open, the identical FP stops re-prompting.
+
+    The 3rd identical skill-loading denial fails open AND records a grant; the 4th
+    identical call then auto-passes via the grant instead of climbing to the
+    threshold again. RED on pre-fix code (the 4th restarts a fresh streak).
+    """
+
+    def test_fourth_identical_ux_call_auto_passes_via_grant(self, env: dict[str, str]) -> None:
+        _seed_pending(env, "uxg", ["ac-reviewing-codebase"])
+        rcs = [_run(env, _skill_deny(env, "uxg"))[0] for _ in range(3)]
+        assert rcs == [2, 2, 0], "first two deny, the third fails open"
+        assert _grant_file(env, "uxg").is_file(), "the auto-relax records a confirmed-FP grant"
+
+        rc4, payload4, _ = _run(env, _skill_deny(env, "uxg"))
+        assert rc4 == 0, "the 4th identical FP auto-passes via the grant — no re-prompt"
+        assert payload4 is None
 
 
 class TestFingerprintDiscrimination:

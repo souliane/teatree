@@ -18,14 +18,19 @@ Exit codes:
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.hooks.banned_term_registry import allowlist_terms
+from teatree.hooks.banned_terms_cli import resolve_banned_terms
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+from teatree.hooks.term_match import matched_term
 
 _DIFF_DETECTORS = (_scan_diff_comments,)
 
@@ -49,7 +54,11 @@ _EMAIL_RE = re.compile(
     re.ASCII,
 )
 _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
-_IP_RE = re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
+# Every branch must yield a FOUR-octet address. The ``10`` branch carries its own
+# second octet because ``10`` alone left it three-wide, so a three-component string
+# like a doc section reference or a three-part version string matched as a private
+# IP — and a real four-octet address matched only its first three octets.
+_IP_RE = re.compile(r"\b(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b")
 _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
 _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")
@@ -78,15 +87,35 @@ def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
 _ALLOW_MARKER = "privacy-scan:allow"
 
 
-def _build_banned_re(banned_terms: str) -> re.Pattern[str] | None:
-    terms = [t.strip() for t in banned_terms.split(",") if t.strip()]
-    if not terms:
-        return None
-    escaped = [re.escape(t) for t in terms]
-    return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
+def _banned_allowlist() -> tuple[str, ...]:
+    return allowlist_terms()
 
 
-def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, str]]:
+def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
+    """Resolve the banned-terms list from the canonical source, fail-closed.
+
+    Reuses the shared :func:`resolve_banned_terms` so the public-leak scan reads
+    the SAME DB-home ``banned_terms`` list the commit/posting gates do (the
+    ``T3_BANNED_TERMS`` env value still overrides). A present-but-unset row is the
+    load-bug-shaped UNSET that must NOT silently degrade to an empty ban list
+    (that would quietly disable the gate on a config typo): the banned-terms
+    detector is reported INERT on stderr — the other detectors still run, so the
+    pre-push gate is never wedged — instead of going silently inert.
+    ``banned_terms = []`` is the deliberate, silent opt-out.
+    """
+    try:
+        return resolve_banned_terms(env_value=env_value)
+    except BannedTermsUnsetError:
+        print(
+            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_terms` "
+            "list is present-but-unset (the other detectors still run; set `banned_terms = []` "
+            "to opt out deliberately).",
+            file=sys.stderr,
+        )
+        return ()
+
+
+def _scan_line(line: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[tuple[str, str]]:
     findings: list[tuple[str, str]] = []
     if _ALLOW_MARKER in line:
         return findings
@@ -106,8 +135,8 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
         for m in _HOSTNAME_RE.finditer(line)
         if not _FALSE_POSITIVE_RE.search(m.group())
     )
-    if banned_re:
-        findings.extend(("banned_term", m.group()) for m in banned_re.finditer(line))
+    if term := matched_term(line, terms, allowlist):
+        findings.append(("banned_term", term))
     return findings
 
 
@@ -133,44 +162,197 @@ def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
     return findings
 
 
+def _scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
+    """Per-line + whole-text findings for one text blob (no file attribution).
+
+    Whole-file mode: every line is scanned. Used for filesystem targets (the
+    directory tree/core scan and a single-file scan), where each line is raw
+    content, never a diff.
+    """
+    findings: list[dict[str, str | int]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        findings.extend(
+            {"line": lineno, "category": category, "match": match}
+            for category, match in _scan_line(line, terms, allowlist)
+        )
+    findings.extend(_run_diff_detectors(text))
+    return findings
+
+
+#: A unified-diff hunk header — ``@@ … @@`` (2-way) or ``@@@ … @@@`` (combined,
+#: one extra ``@`` per parent). The leading run of ``@`` gives the marker-column
+#: width: ``len(run) - 1`` columns precede each hunk-body line.
+_HUNK_HEADER_RE = re.compile(r"^(@{2,}) ")
+
+
+def _is_hunk_body(raw: str, marker_width: int) -> bool:
+    """True when ``raw`` is a diff hunk-body line for the current marker width.
+
+    A body line begins with ``marker_width`` marker characters, each one of
+    space (context), ``+`` (added) or ``-`` (removed). Anything else (a file
+    header, a commit-message line, plain text) is not a body line and ends the
+    current hunk.
+    """
+    return len(raw) >= marker_width and all(char in " +-" for char in raw[:marker_width])
+
+
+def _diff_scan_lines(text: str) -> Iterator[tuple[int, str]]:
+    """Yield ``(lineno, content)`` for each diff line the per-line scan should inspect.
+
+    Diff-mode scoping for the push-gate path (souliane/teatree#3681). A unified
+    diff's *context* (`` ``) and *removed* (``-``) hunk lines are already-public
+    by definition — they exist unchanged on the parent commit the push builds
+    onto — so a credential/PII finding on them is a false positive that blocks a
+    legitimate push (a refactor pulling synthetic fixtures into the diff as
+    context/removed lines). They are skipped. Every other line is yielded
+    verbatim: *added* (``+``) hunk lines carry the genuinely-new content the
+    gate must still catch, and lines outside any hunk — commit-message bodies
+    (the push-gate scans ``%B`` alongside the patch, the #703 case) or plain
+    text piped with no diff structure — are new content too and are scanned
+    exactly as in whole-file mode.
+
+    Combined diffs (``git show --cc`` on merge commits) carry one marker column
+    per parent; a line counts as added when any column is ``+``, which keeps a
+    merge's conflict resolutions in scope.
+    """
+    in_hunk = False
+    marker_width = 1
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        header = _HUNK_HEADER_RE.match(raw)
+        if header is not None:
+            marker_width = len(header.group(1)) - 1
+            in_hunk = marker_width >= 1
+            continue
+        if in_hunk and _is_hunk_body(raw, marker_width):
+            if "+" in raw[:marker_width]:
+                yield lineno, raw
+            continue
+        in_hunk = False
+        yield lineno, raw
+
+
+def _scan_diff(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
+    """Diff-mode findings: per-line detectors over ADDED lines only, plus whole-text detectors.
+
+    The per-line credential/PII detectors run over :func:`_diff_scan_lines`
+    (added + non-hunk lines), so already-public context/removed lines never
+    trip them. The whole-text diff detectors still see the full text — they are
+    already added-line-scoped internally.
+    """
+    findings: list[dict[str, str | int]] = []
+    for lineno, line in _diff_scan_lines(text):
+        findings.extend(
+            {"line": lineno, "category": category, "match": match}
+            for category, match in _scan_line(line, terms, allowlist)
+        )
+    findings.extend(_run_diff_detectors(text))
+    return findings
+
+
+#: Directories a directory-argument walk never descends into: version-control
+#: internals, vendored dependencies, and tool caches — none of which is source
+#: the operator is about to push, and all of which would add noise or churn.
+_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        ".tox",
+    }
+)
+
+
+def _iter_directory_files(root: Path) -> Iterator[Path]:
+    """Yield the regular files under *root*, skipping VCS / vendored / cache dirs and symlinks."""
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if _SKIP_DIR_NAMES & set(path.relative_to(root).parts):
+            continue
+        yield path
+
+
+def _scan_directory(
+    root: Path,
+    terms: tuple[str, ...],
+    allowlist: tuple[str, ...],
+) -> list[dict[str, str | int]]:
+    """Walk *root* and scan each text file, tagging every finding with its file path.
+
+    A directory is the scanner's most obvious invocation (``privacy-scan .``); it must
+    not traceback on it. A binary / undecodable file is skipped, so the scan degrades to
+    fewer files, never a crash — and each finding names the file it is in so it is locatable.
+    """
+    findings: list[dict[str, str | int]] = []
+    for path in _iter_directory_files(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = path.relative_to(root).as_posix()
+        for finding in _scan_text(text, terms, allowlist):
+            finding["file"] = rel
+            findings.append(finding)
+    return findings
+
+
+def _location(finding: dict[str, str | int]) -> str:
+    """Locatable position of a finding: ``<file> line N`` in a directory scan, else ``line N``."""
+    file = finding.get("file")
+    return f"{file} line {finding['line']}" if file else f"line {finding['line']}"
+
+
 def _plain_summary(findings: list[dict[str, str | int]]) -> str:
     """Deterministic plain-text findings summary for non-TTY callers.
 
-    Stable, greppable, line-oriented (one finding per line: line number,
-    category, redacted match). Consumed verbatim by the pre-push gate's
-    refusal message and by any scripted caller of ``t3 tool
-    privacy-scan``. The redaction of the match itself is already applied
-    upstream in ``_scan_line`` (api keys are truncated to a 20-char
-    prefix); other categories carry the raw match by design so the user
+    Stable, greppable, line-oriented (one finding per line: location, category,
+    redacted match). Consumed verbatim by the pre-push gate's refusal message and
+    by any scripted caller of ``t3 tool privacy-scan``. The redaction of the match
+    itself is already applied upstream in ``_scan_line`` (api keys are truncated to
+    a 20-char prefix); other categories carry the raw match by design so the user
     can locate the offending text.
     """
     if not findings:
         return "Privacy scan: clean (0 findings)"
     header = f"Privacy scan: {len(findings)} finding(s)"
-    rows = [f"  line {f['line']}: {f['category']}: {f['match']}" for f in findings]
+    rows = [f"  {_location(f)}: {f['category']}: {f['match']}" for f in findings]
     return "\n".join([header, *rows])
 
 
 @app.command()
 def main(
     input_file: str = typer.Argument("-", help="File to scan (- for stdin, or a file path)"),
-    banned_terms: str = typer.Option("", envvar="T3_BANNED_TERMS", help="Comma-separated banned terms"),
+    banned_terms: str = typer.Option(
+        "",
+        envvar="T3_BANNED_TERMS",
+        help="Comma-separated banned terms (overrides the DB-home banned_terms source).",
+    ),
     *,
     strict: bool = typer.Option(True, help="Strict mode (exit 1 on any finding). Use --no-strict for warnings only."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Scan text for privacy-sensitive patterns."""
-    text = sys.stdin.read() if input_file == "-" else Path(input_file).read_text(encoding="utf-8")
-    banned_re = _build_banned_re(banned_terms)
-    all_findings: list[dict[str, str | int]] = []
+    terms = _resolve_scan_terms(banned_terms)
+    allowlist = _banned_allowlist()
+    target = None if input_file == "-" else Path(input_file)
+    if target is not None and target.is_dir():
+        all_findings = _scan_directory(target, terms, allowlist)
+    elif target is None:
+        # stdin is the push-gate path: a unified diff (or a `%B` message +
+        # patch blob). Scope the per-line detectors to added / non-hunk lines.
+        all_findings = _scan_diff(sys.stdin.read(), terms, allowlist)
+    else:
+        # A filesystem file is raw content, not a diff — scan every line.
+        all_findings = _scan_text(target.read_text(encoding="utf-8"), terms, allowlist)
 
-    for lineno, line in enumerate(text.splitlines(), 1):
-        all_findings.extend(
-            {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, banned_re)
-        )
-
-    all_findings.extend(_run_diff_detectors(text))
-    all_findings.sort(key=lambda f: int(f["line"]))
+    all_findings.sort(key=lambda f: (str(f.get("file", "")), int(f["line"])))
 
     if json_output:
         print(json.dumps(all_findings, indent=2))
@@ -184,11 +366,11 @@ def main(
         print(_plain_summary(all_findings))
         if all_findings:
             table = Table(title="Privacy Scan Findings")
-            table.add_column("Line", style="dim", justify="right")
+            table.add_column("Location", style="dim")
             table.add_column("Category", style="bold")
             table.add_column("Match")
             for f in all_findings:
-                table.add_row(str(f["line"]), str(f["category"]), str(f["match"]))
+                table.add_row(_location(f), str(f["category"]), str(f["match"]))
             console.print(table)
         else:
             console.print("[green]Privacy scan: clean[/]")

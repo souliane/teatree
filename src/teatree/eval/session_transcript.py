@@ -11,8 +11,7 @@ Every line is one JSON envelope keyed by ``type``:
 
 ``assistant`` carries ``message.content[]`` blocks (``thinking`` / ``text`` /
 ``tool_use``); a ``tool_use`` block carries ``name``, ``input``, ``id`` and a
-``caller`` object. A ``Skill`` tool call carries ``input.skill`` (e.g.
-``t3:teatree-plan``).
+``caller`` object.
 
 ``user`` carries ``message.content`` as a str (a real prompt) or a list of
 ``tool_result`` blocks.
@@ -24,6 +23,14 @@ outcomes use the version-volatile pair ``hook`` / ``hook_success`` (plus
 ``exitCode`` (0 = allow, non-zero = deny), ``stdout`` / ``stderr``
 (PRIVACY-SENSITIVE — never surfaced by the conformance report), ``toolUseID``
 and ``command``.
+
+A DENYING gate MAY stamp a small non-privacy-sensitive ``gate_id`` marker on its
+deny output (PR-25 plan_gate marker), so a conformance invariant can key on the
+gate WITHOUT ever reading the raw (privacy-sensitive) deny reason. It is read
+from a top-level ``attachment.gate_id`` when the harness surfaces it there, else
+from the ``gate_id`` key of the JSON-decoded ``stdout`` deny payload (top-level
+or nested under ``hookSpecificOutput``) — ONLY that one marker key, never the
+reason.
 
 Parsing is fail-soft: a malformed line, a missing field, or an unrecognised
 hook discriminator yields a best-effort :class:`SessionEvent` (or is skipped)
@@ -53,10 +60,11 @@ class SessionEvent:
     """One ordered event from an on-disk session JSONL line.
 
     A single dataclass spans the three envelope kinds. ``tool_name`` /
-    ``tool_input`` / ``skill`` are populated only for an ``assistant``
-    ``tool_use`` block; ``hook_event`` / ``hook_exit_code`` / ``tool_use_id``
-    only for a hook ``attachment``. ``raw`` keeps the parsed line so a caller
-    can reach a field this dataclass does not surface.
+    ``tool_input`` are populated only for an ``assistant`` ``tool_use`` block;
+    ``hook_event`` / ``hook_exit_code`` / ``tool_use_id`` / ``gate_id`` only for
+    a hook ``attachment`` (``gate_id`` only on a deny that stamped the marker).
+    ``raw`` keeps the parsed line so a caller can reach a field this dataclass
+    does not surface.
     """
 
     line_no: int
@@ -65,10 +73,10 @@ class SessionEvent:
     timestamp: str | None
     tool_name: str | None
     tool_input: dict[str, Any] | None
-    skill: str | None
     hook_event: str | None
     hook_exit_code: int | None
     tool_use_id: str | None
+    gate_id: str | None
     raw: dict[str, Any]
 
 
@@ -84,18 +92,47 @@ def _int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _attachment_hook_fields(attachment: dict[str, Any]) -> tuple[str | None, int | None, str | None]:
-    """Return ``(hook_event, exit_code, tool_use_id)`` from a hook attachment.
+def _attachment_hook_fields(attachment: dict[str, Any]) -> tuple[str | None, int | None, str | None, str | None]:
+    """Return ``(hook_event, exit_code, tool_use_id, gate_id)`` from a hook attachment.
 
     Reads ``hookEvent`` / ``exitCode`` / ``toolUseID`` defensively — any may be
     absent on a given Claude Code version (the schema is volatile), in which
     case the corresponding slot is ``None`` and the event still parses.
+    ``gate_id`` is the optional non-privacy deny marker (see :func:`_attachment_gate_id`).
     """
     return (
         _str_or_none(attachment.get("hookEvent")),
         _int_or_none(attachment.get("exitCode")),
         _str_or_none(attachment.get("toolUseID")),
+        _attachment_gate_id(attachment),
     )
+
+
+def _attachment_gate_id(attachment: dict[str, Any]) -> str | None:
+    """Extract ONLY the ``gate_id`` deny marker from a hook attachment, never the reason.
+
+    A top-level ``attachment.gate_id`` wins when the harness surfaces the marker
+    there. Otherwise the recorded ``stdout`` deny payload is JSON-decoded and its
+    ``gate_id`` key is read (top-level, else nested under ``hookSpecificOutput``).
+    The (privacy-sensitive) ``permissionDecisionReason`` is never read. Fail-soft:
+    any absent field or undecodable ``stdout`` yields ``None``.
+    """
+    top_level = _str_or_none(attachment.get("gate_id"))
+    if top_level:
+        return top_level
+    stdout = attachment.get("stdout")
+    if not isinstance(stdout, str) or not stdout:
+        return None
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    marker = _str_or_none(payload.get("gate_id"))
+    if marker:
+        return marker
+    return _str_or_none(_as_dict(payload.get("hookSpecificOutput")).get("gate_id"))
 
 
 def _event_from_envelope(line_no: int, obj: dict[str, Any]) -> SessionEvent:
@@ -103,7 +140,9 @@ def _event_from_envelope(line_no: int, obj: dict[str, Any]) -> SessionEvent:
     event_type = event_type if isinstance(event_type, str) else "unknown"
     attachment = _as_dict(obj.get("attachment"))
     is_hook = attachment.get("type") in _HOOK_ATTACHMENT_TYPES
-    hook_event, exit_code, tool_use_id = _attachment_hook_fields(attachment) if is_hook else (None, None, None)
+    hook_event, exit_code, tool_use_id, gate_id = (
+        _attachment_hook_fields(attachment) if is_hook else (None, None, None, None)
+    )
     return SessionEvent(
         line_no=line_no,
         type=event_type,
@@ -111,10 +150,10 @@ def _event_from_envelope(line_no: int, obj: dict[str, Any]) -> SessionEvent:
         timestamp=_str_or_none(obj.get("timestamp")),
         tool_name=None,
         tool_input=None,
-        skill=None,
         hook_event=hook_event,
         hook_exit_code=exit_code,
         tool_use_id=tool_use_id,
+        gate_id=gate_id,
         raw=obj,
     )
 
@@ -125,13 +164,11 @@ def _tool_use_event(line_no: int, envelope: SessionEvent, block: dict[str, Any])
         return None
     tool_input = block.get("input")
     tool_input = dict(tool_input) if isinstance(tool_input, dict) else {}
-    skill = _str_or_none(tool_input.get("skill")) if name == "Skill" else None
     return dataclasses.replace(
         envelope,
         line_no=line_no,
         tool_name=name,
         tool_input=tool_input,
-        skill=skill,
         tool_use_id=_str_or_none(block.get("id")),
     )
 
@@ -178,11 +215,6 @@ def parse_session_jsonl(text: str) -> list[SessionEvent]:
 def extract_tool_calls(events: list[SessionEvent]) -> list[SessionEvent]:
     """Return only the events that carry a tool invocation (``tool_name`` set)."""
     return [event for event in events if event.tool_name is not None]
-
-
-def extract_skill_invocations(events: list[SessionEvent]) -> list[SessionEvent]:
-    """Return only the ``Skill`` tool calls (``skill`` set)."""
-    return [event for event in events if event.skill is not None]
 
 
 def extract_hook_events(events: list[SessionEvent]) -> list[SessionEvent]:

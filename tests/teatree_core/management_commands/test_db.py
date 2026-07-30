@@ -1,6 +1,7 @@
 """Tests for the db management command."""
 
 import io
+import os
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -15,6 +16,8 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils.approval import ApprovalRefusedError
 from tests.teatree_core.management_commands._overlays import (
+    DB_ENV_PROBE,
+    ENV_CAPTURE_OVERLAY,
     FAILING_IMPORT_OVERLAY,
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
@@ -81,6 +84,44 @@ class TestDbRefresh(TestCase):
 
             assert "refreshed" in result.lower()
 
+    @_patch_overlays(ENV_CAPTURE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_env_scoped_to_db_work_not_leaked(self) -> None:
+        """`db refresh` must not leak the overlay env into the process.
+
+        The command used to `os.environ.update(env_extra)` and never restore it
+        (its `VIRTUAL_ENV` drop was a no-op). The env is now scoped to the DB
+        work — applied during db_import + reset, then restored.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/test",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+            worktree.provision()
+            worktree.save()
+
+            with patch.dict(os.environ, {"VIRTUAL_ENV": "/loop/venv"}, clear=False):
+                os.environ.pop(DB_ENV_PROBE, None)
+                result = cast("str", call_command("db", "refresh", path=str(wt_dir)))
+
+                seen = get_overlay().seen
+                # Applied during the DB work (behaviour preserved), venv dropped …
+                assert seen["import_probe"] == "applied"
+                assert seen["import_virtual_env"] is None
+                assert seen["reset_probe"] == "applied"
+                # … restored afterward: no bleed into the process.
+                assert DB_ENV_PROBE not in os.environ
+                assert os.environ.get("VIRTUAL_ENV") == "/loop/venv"
+
+            assert "refreshed" in result.lower()
+
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
     def test_failed_import_raises_system_exit_1(self) -> None:
@@ -113,7 +154,7 @@ class TestDbRefresh(TestCase):
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_post_db_steps_loop(self) -> None:
-        """Db refresh iterates over overlay.get_post_db_steps and calls each callable."""
+        """Db refresh iterates over overlay.provisioning.post_db_steps and calls each callable."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -175,7 +216,7 @@ class TestDbRefresh(TestCase):
         """`db refresh --fresh-dump` must reach the remote-dump branch.
 
         Regression for #955. `refresh` never passed `slow_import` into
-        `overlay.db_import(...)`, so `DjangoDbImporter.run()` returned at
+        `overlay.provisioning.db_import(...)`, so `DjangoDbImporter.run()` returned at
         the `not slow_import` guard (after the early DSLR return) BEFORE
         the `if allow_remote_dump:` remote `pg_dump` block. `--fresh-dump`
         silently degraded to "restore stale local DSLR snapshot".

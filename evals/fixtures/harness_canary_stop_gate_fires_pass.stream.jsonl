@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-harness_canary_stop_gate_fires-pass", "model": "claude-haiku-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "That decision needs the user; the Stop gate bounced my prose answer, so I will ask through the structured tool."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": "[{\"question\": \"Which branch should this ship to \u2014 main or develop?\", \"options\": [{\"label\": \"main\"}, {\"label\": \"develop\"}]}]"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

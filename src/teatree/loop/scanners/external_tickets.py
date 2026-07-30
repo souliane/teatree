@@ -9,14 +9,21 @@ import logging
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+from django.apps import apps
 
 from teatree.loop.scanners.base import ScanSignal
 
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
+
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATES = ("delivered", "ignored")
-_PLACEHOLDERS = ", ".join("?" for _ in _TERMINAL_STATES)
-_QUERY = f"SELECT id, state, issue_url, overlay FROM teatree_ticket WHERE state NOT IN ({_PLACEHOLDERS}) ORDER BY id"  # noqa: S608 — literal placeholder count, no user input
+# Placeholder count is filled per-scan from the enum-sourced excluded set.
+_QUERY_TEMPLATE = (
+    "SELECT id, state, issue_url, overlay FROM teatree_ticket WHERE state NOT IN ({placeholders}) ORDER BY id"
+)
 
 
 @dataclass(slots=True)
@@ -31,10 +38,18 @@ class ExternalTicketsScanner:
     def scan(self) -> list[ScanSignal]:
         if not self.db_path.is_file():
             return []
+        # Enum-sourced (not raw strings) so this raw-SQLite reader excludes exactly
+        # the states the ORM in-flight queryset does. ``apps.get_model`` yields the
+        # values only — no ORM query/connection — so the "reads external DBs
+        # directly" contract holds; sorted for a stable placeholder order.
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+        excluded = tuple(sorted(ticket_model.in_flight_excluded_states()))
+        placeholders = ", ".join("?" for _ in excluded)
+        query = _QUERY_TEMPLATE.format(placeholders=placeholders)
         try:
             conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
             try:
-                rows = conn.execute(_QUERY, _TERMINAL_STATES).fetchall()
+                rows = conn.execute(query, excluded).fetchall()
             finally:
                 conn.close()
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:

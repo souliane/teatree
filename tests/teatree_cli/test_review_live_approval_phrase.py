@@ -60,3 +60,28 @@ class TestApprovalPhraseWholeWord:
         assert _has_approval_phrase("thumbs up") is False
         assert _has_approval_phrase("looks good to me") is False
         assert _has_approval_phrase("") is False
+
+
+class TestApprovalPhraseQuotation:
+    """A quoted approval phrase is reported speech and must not authorize."""
+
+    def test_double_quoted_phrase_does_not_match(self) -> None:
+        assert _has_approval_phrase('the button is labelled "post it"') is False
+        assert _has_approval_phrase('he said "go ahead" but I disagree') is False
+
+    def test_curly_quoted_phrase_does_not_match(self) -> None:
+        assert _has_approval_phrase("she wrote “approved” on the wrong ticket") is False
+
+    def test_backtick_quoted_phrase_does_not_match(self) -> None:
+        assert _has_approval_phrase("the CLI prints `ship it` on success") is False
+
+    def test_unquoted_phrase_beside_a_quotation_still_matches(self) -> None:
+        # The quotation is masked, but the real, unquoted approval still counts.
+        assert _has_approval_phrase('he said "maybe later" but go ahead') is True
+
+    def test_apostrophe_negation_still_refused_not_masked_as_a_quote(self) -> None:
+        # Straight single quotes are NOT quote delimiters — the apostrophe in
+        # "don't" must not be read as opening a quote span (which would swallow
+        # the negation and wrongly grant approval).
+        assert _has_approval_phrase("don't post live") is False
+        assert _has_approval_phrase("please don't go ahead") is False

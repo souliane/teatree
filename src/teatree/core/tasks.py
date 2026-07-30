@@ -4,14 +4,32 @@ from typing import TypedDict
 from django.db import transaction
 from django.tasks import task
 
-from teatree.config import workspace_dir
-from teatree.core.landscape_gather import run_landscape
+from teatree.config import get_effective_settings, worktree_root
+from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.deterministic_phases import run_deterministic_phase
+from teatree.core.gates.critic_gate import record_critic_findings
+from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
+from teatree.core.intake.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
+from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
-from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
+from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
+from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 
 logger = logging.getLogger(__name__)
+
+# The initial claim lease for a headless task must match the heartbeat's renewal
+# window (``agents.headless._LEASE_SECONDS`` = 900s), NOT ``Task.claim``'s 300s
+# default. The heartbeat only renews to 900s from the first tick (~60s); with the
+# 300s default the pre-first-tick window is just ~5 heartbeats, so under CPU
+# starvation (a loaded box running several coders) the first renewal slips past
+# 300s, the lease lapses, ``reclaim_orphaned_claims`` re-queues the still-running
+# task, and it aborts "lease lost: re-claimed by another worker" — a self-inflicted
+# reclaim. Claiming with 900s from the start closes that window. Kept equal to
+# ``_LEASE_SECONDS`` by ``test_headless_claim_lease_matches_heartbeat`` (core cannot
+# import the agents layer, so the value is duplicated and drift-guarded by test).
+_HEADLESS_CLAIM_LEASE_SECONDS = 900
 
 
 def _persist_intake_landscape(ticket: Ticket) -> None:
@@ -27,7 +45,7 @@ def _persist_intake_landscape(ticket: Ticket) -> None:
     leaves no artifact.
     """
     try:
-        survey = run_landscape(workspace_dir())
+        survey = run_landscape(worktree_root())
     except Exception:
         logger.warning("Intake landscape gather failed for ticket %s; skipping artifact", ticket.pk, exc_info=True)
         return
@@ -35,6 +53,29 @@ def _persist_intake_landscape(ticket: Ticket) -> None:
         LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
     except ValueError:
         logger.info("Intake landscape survey for ticket %s was empty; no artifact recorded", ticket.pk)
+
+
+def _attachment_gate_refusal(ticket: Ticket) -> str | None:
+    """Intake attachment-fetch gate verdict for *ticket* (PR-15, M5).
+
+    Reads the ticket's issue text through the code-host seam (fail-open — a forge
+    outage yields no attachments and hands off), builds the manifest, and returns
+    a refusal naming every un-fetched attachment plus the ``--fetch`` command, or
+    ``None`` to hand off. Vacuous on a zero-attachment ticket. The kill-switch
+    ``[teatree] attachment_gate_enabled = false`` short-circuits to ``None`` so a
+    stuck ticket is never a lockout.
+    """
+    if not get_effective_settings(ticket.overlay or None).attachment_gate_enabled:
+        return None
+    texts = ticket_text_sources(ticket, code_host=code_host_from_overlay(ticket.overlay or None))
+    workspace = worktree_root()
+    fetch_command = f"t3 {ticket.overlay or '<overlay>'} ticket attachments {ticket.pk} --fetch"
+    return attachment_gate_refusal(
+        ticket,
+        texts=texts,
+        attachments_dir=attachments_dir_for(ticket, workspace=workspace),
+        fetch_command=fetch_command,
+    )
 
 
 class TransitionResult(TypedDict, total=False):
@@ -47,23 +88,36 @@ class TransitionResult(TypedDict, total=False):
 
 @task()
 def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
-    import traceback  # noqa: PLC0415
+    import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
-    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
+    from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
     task_obj = Task.objects.get(pk=task_id)
+
+    # The atomic claim is the SOLE admission decision (F4). Win the compare-and-swap
+    # BEFORE any work runs — including the poison-pill and routing failure paths — so a
+    # re-delivered COMPLETED/FAILED task, or one a live rival already holds, is a
+    # successful no-op instead of a second billed execution on the same row (the
+    # measured 74%-duplicate mechanism: two DBTaskResult jobs for one Task, or a
+    # redelivered terminal job, both executing in full). ``claim`` raises
+    # ``InvalidTransitionError`` when the row is terminal or held under a live lease.
+    # The heartbeat-matched lease means a starved first heartbeat cannot let the initial
+    # 300s window lapse and re-queue this live task (_HEADLESS_CLAIM_LEASE_SECONDS).
+    try:
+        task_obj.claim(claimed_by="headless-worker", lease_seconds=_HEADLESS_CLAIM_LEASE_SECONDS)
+    except InvalidTransitionError as exc:
+        logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
+        return {"skipped": "not claimable (claimed elsewhere or terminal)"}
 
     # Poison-pill guard (souliane/teatree#1959): a task whose ticket names a
     # non-empty overlay that no longer resolves crashes ``get_overlay_for_ticket``
     # on every drain. Fail it permanently here — a recorded FAILED attempt the
     # operator can inspect — instead of raising an exception that re-fires next
-    # tick.
+    # tick. The claim above already made this worker the owner.
     if not task_obj.ticket.has_dispatchable_overlay():
         reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
         logger.warning("Task %s: %s", task_obj.pk, reason)
-        if task_obj.status == Task.Status.PENDING:
-            task_obj.claim(claimed_by="unknown-overlay-guard")
         task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
         return {"exit_code": 1, "unknown_overlay": reason}
 
@@ -71,7 +125,7 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     # (role, phase) has a registered phase agent) must run INTERACTIVE in the
     # in-session ``/loop`` slot, never as a metered detached headless-SDK run.
     # The predicate lives in ONE shared helper both headless entry
-    # points consult (``loop_dispatch_refusal``), so the ``work-next-sdk`` CLI
+    # points consult (``loop_dispatch_refusal``), so the ``work-next-headless`` CLI
     # path cannot drift from this seam (souliane/teatree#1375). Refuse here and
     # record a ``routing_error`` instead of shelling out — closing the seam
     # where a stray enqueue (a re-enqueue, a queue drainer, a manual
@@ -79,16 +133,17 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     routing_refusal = loop_dispatch_refusal(task_obj)
     if routing_refusal is not None:
         logger.warning("Task %s: %s", task_obj.pk, routing_refusal)
-        if task_obj.status == Task.Status.PENDING:
-            task_obj.claim(claimed_by="headless-routing-guard")
         task_obj.complete_with_attempt(exit_code=1, error=routing_refusal, result={"routing_error": routing_refusal})
         return {"exit_code": 1, "routing_error": routing_refusal}
 
-    # Claim here (when the worker actually starts) instead of at enqueue time
-    if task_obj.status == Task.Status.PENDING:
-        task_obj.claim(claimed_by="headless-worker")
+    # A non-agentic phase runs its own implementation, not a generic ticket-work
+    # brief its least-privilege toolset cannot satisfy (#3570). Shared with the
+    # ``work-next-headless`` lane so the two entry points cannot drift.
+    if (deterministic := run_deterministic_phase(task_obj)) is not None:
+        return dict(deterministic)
+
     try:
-        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415
+        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415 — deferred: call-time import
 
         overlay = get_overlay_for_ticket(task_obj.ticket)
         attempt = get_headless_runner()(
@@ -96,43 +151,90 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
             phase=phase,
             overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
         )
-    except Exception:
-        task_obj.complete_with_attempt(exit_code=1, error=traceback.format_exc())
+    except Exception as exc:
+        error = traceback.format_exc()
+        # Surface the ``claude`` CLI subprocess stderr. The claude-agent-sdk
+        # ``ProcessError`` stringifies to "Check stderr output for details" and
+        # carries the real cause on its ``.stderr`` attribute, which was being
+        # discarded — leaving every headless subprocess failure undiagnosable in
+        # the recorded attempt and the worker log. Fold it into both.
+        subprocess_stderr = getattr(exc, "stderr", None) or getattr(getattr(exc, "__cause__", None), "stderr", None)
+        if subprocess_stderr:
+            logger.exception("Task %s headless subprocess stderr:\n%s", task_obj.pk, subprocess_stderr)
+            error = f"{error}\n--- claude subprocess stderr ---\n{subprocess_stderr}"
+        task_obj.complete_with_attempt(exit_code=1, error=error)
         raise
     else:
         return {"attempt_id": attempt.pk, "exit_code": attempt.exit_code, "result": attempt.result}
 
 
-@task()
-def drain_headless_queue() -> dict[str, list[int]]:
+def drain_headless_queue_body() -> dict[str, list[int]]:
     """Auto-enqueue pending headless tasks for execution (safety net), failing poison rows.
 
-    Loop-dispatched phase tasks (those whose ``(ticket.role, phase)`` has a
-    registered phase agent) are skipped — the loop is their sole dispatcher,
-    so draining them here would double-run them (the same guard the
-    ``_auto_enqueue_headless_task`` post_save applies). Only genuinely
-    headless tasks with no registered phase agent are drained.
+    Tasks the in-session ``/loop`` owns (``runs_in_session`` — a loop-dispatched
+    phase pair under ``agent_runtime=interactive``) are skipped, so draining them
+    here never double-runs work the loop is dispatching (the same guard the
+    ``_auto_enqueue_headless_task`` post_save applies). Under a headless
+    ``agent_runtime`` those phase tasks are headless and ``runs_in_session`` is
+    ``False``, so they drain like any other headless work.
+
+    Under ``agent_runtime=headless`` the drain ALSO adopts stale
+    ``execution_target=interactive`` pending rows — phase tasks created during a
+    laptop ``/loop`` era whose target was routed INTERACTIVE, then orphaned when
+    the box moved to the headless lane with no interactive session ever alive to
+    dispatch them (the undispatchable-forever class the "codex_reviewing"
+    backlog was in). Each is ``route_to_headless``-d before dispatch, permanently
+    closing the laptop->box orphan. Under ``agent_runtime=interactive`` the
+    interactive rows are the ``/loop`` slot's job and are left untouched.
 
     A task whose ticket names a non-empty unknown overlay is failed permanently
     rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
     ``execute_headless_task`` on every tick forever — the poison pill this drain
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
-    """
-    from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
 
+    This is the plain body shared by the ``@task drain_headless_queue`` (the
+    default-queue safety net) and the loops-queue maintenance chain
+    (:func:`teatree.loops.timer_reconciler.drain_headless_chain`) that schedules
+    it, so the two call sites can never drift.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.headless_admission import headless_admission_denied_reason  # noqa: PLC0415 — deferred: call-time
+    from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
+
+    headless_runtime = get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
+    targets = [Task.ExecutionTarget.HEADLESS]
+    if headless_runtime:
+        targets.append(Task.ExecutionTarget.INTERACTIVE)
+    # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future
+    # ``not_before``. Draining it here would re-enqueue it, let the runner pre-flight
+    # re-park it, and churn a junk park attempt every ~5 min for the whole park window.
+    # The same ``_claimable_now_q`` gate the claim path uses skips it until its window
+    # re-arms, so the park is honoured once at both the drain and the claim seam.
     pending = (
         Task.objects.filter(
-            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_target__in=targets,
             status=Task.Status.PENDING,
         )
+        .filter(_claimable_now_q(timezone.now()))
         .select_related("ticket")
-        .only("pk", "phase", "ticket__role", "ticket__overlay")
+        .only("pk", "phase", "execution_target", "ticket__role", "ticket__overlay")
     )
+    # Consult the admission governor once per drain (F9). A DENY applies
+    # backpressure to the ENQUEUE step only — poison rows are still failed and
+    # cleaned this tick; live rows stay PENDING for the next admitted drain.
+    # Fail-open (None) leaves the pre-governor behaviour byte-for-byte intact.
+    admission_denied = headless_admission_denied_reason()
+    if admission_denied is not None:
+        logger.warning("Governor DENIED headless drain admission: %s (pending rows stay queued)", admission_denied)
     enqueued: list[int] = []
+    rerouted: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
-        if subagent_for_phase(task_obj.ticket.role, task_obj.phase):
+        if runs_in_session(role=task_obj.ticket.role, phase=task_obj.phase):
             continue
         if not task_obj.ticket.has_dispatchable_overlay():
             reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
@@ -141,14 +243,27 @@ def drain_headless_queue() -> dict[str, list[int]]:
             task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
             failed_unknown_overlay.append(task_obj.pk)
             continue
+        if admission_denied is not None:
+            continue
+        if task_obj.execution_target == Task.ExecutionTarget.INTERACTIVE:
+            task_obj.route_to_headless(
+                reason="Stale interactive row adopted by headless drain (laptop->box orphan, agent_runtime=headless)"
+            )
+            rerouted.append(task_obj.pk)
         execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
-    return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
+    return {"enqueued": enqueued, "rerouted": rerouted, "failed_unknown_overlay": failed_unknown_overlay}
+
+
+@task()
+def drain_headless_queue() -> dict[str, list[int]]:
+    """The default-queue ``@task`` wrapper around :func:`drain_headless_queue_body`."""
+    return drain_headless_queue_body()
 
 
 @task()
 def sync_followup() -> dict[str, int | list[str] | list[dict[str, int | str]]]:
-    from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415
+    from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     result = _sync()
     return {
@@ -171,13 +286,28 @@ def refresh_followup_snapshot() -> dict[str, int]:
 
 @task()
 def execute_retrospect(ticket_id: int) -> TransitionResult:
-    """Run retrospection I/O for a ticket in the RETROSPECTED state.
+    """Stamp the retro-phase marker for a ticket in the RETROSPECTED state.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
     On success, advances ``RETROSPECTED → DELIVERED`` via ``mark_delivered()``.
+
+    ``RetroPhaseMarker.run()`` runs OUTSIDE the FSM-advance transaction (#1522
+    shape, mirroring ``execute_ship``): a short atomic state-check, the runner as
+    a top-level operation, then a short atomic re-check + ``mark_delivered``. The
+    marker is durable evidence that the retro phase was reached, so it must
+    outlive a refused delivery — inside the advance atomic its ``merge_extra``
+    would be a savepoint the ``CriticGateError`` below unwinds, losing the
+    evidence the same way the rolled-back ``CriticFinding`` rows are lost.
+
+    When the SELFCATCH-5 critic gate blocks (enforcing mode), it raises
+    ``CriticGateError`` from inside the advance atomic, rolling back the
+    ``CriticFinding`` rows it just wrote. We re-record them on a FRESH transaction
+    (a sibling of the rolled-back delivery atomic, so they survive) before
+    reporting the refusal — the operator sees the very findings the block tells
+    them to resolve.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -189,46 +319,110 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = RetroExecutor(ticket).run()
-        if not result.ok:
-            logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+    result = RetroPhaseMarker(ticket).run()
+    if not result.ok:
+        logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-        ticket.mark_delivered()
-        ticket.save()
+    try:
+        with transaction.atomic():
+            ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+            if ticket.state != Ticket.State.RETROSPECTED:
+                logger.info(
+                    "execute_retrospect FSM advance skipped for ticket %s: state=%s (already delivered)",
+                    ticket_id,
+                    ticket.state,
+                )
+                return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+            ticket.mark_delivered()
+            ticket.save()
+    except CriticGateError as exc:
+        _persist_critic_block(ticket_id, exc)
+        return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
 
+def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
+    """Re-record the blocked delivery's critic findings on a fresh transaction (#SELFCATCH-5).
+
+    Runs after the delivery atomic has rolled back, so the rows persist despite the
+    block. Best-effort: a recording failure must not mask the original refusal.
+    """
+    try:
+        with transaction.atomic():
+            ticket = Ticket.objects.get(pk=ticket_id)
+            record_critic_findings(ticket, exc.specs)
+    except Exception as recording_error:  # noqa: BLE001 — never mask the delivery refusal with a recording failure.
+        logger.warning("critic block finding re-record failed for ticket %s: %s", ticket_id, recording_error)
+
+
 @task()
 def execute_teardown(ticket_id: int) -> TransitionResult:
-    """Tear down worktrees for a MERGED ticket.
+    """Tear down worktrees for a terminal-state ticket via the analyze-then-wipe reaper.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    Teardown is best-effort: per-worktree errors are reported in the result
-    detail but do not advance the ticket. The ticket stays in MERGED until
-    the operator either fixes the underlying issue and re-enqueues, or moves
-    on with ``retrospect()`` once the residual state is acceptable.
+    Runs for any ticket in ``_DONE_TICKET_STATES`` (MERGED / DELIVERED / IGNORED —
+    SHIPPED is excluded because its PR is still open), so an abandoned, delivered,
+    or merged ticket purges its worktrees the moment it is done, not only the merge
+    paths. Teardown is best-effort: per-worktree errors are reported in the result
+    detail but do not advance the ticket. The ticket stays in its terminal state
+    until the operator either fixes the underlying issue and re-enqueues, or moves
+    on once the residual state is acceptable.
+
+    There is no force-bypass (CORRECTION 1): :class:`WorktreeTeardown` routes every
+    worktree through the analyze-before-wipe reaper, which proves each unpushed
+    commit and uncommitted change redundant before wiping. A squash-merge that
+    landed a new SHA and deleted the source ref is proven redundant by patch-id and
+    wiped; a branch with genuinely-unsynced work (an async ship that never drained,
+    #707/#708) is KEPT and surfaced, never force-destroyed.
+
+    ``WorktreeTeardown.run()`` (docker down + DB drop + git worktree removal —
+    potentially minutes) runs OUTSIDE the state-check transaction (#1522 shape):
+    a short atomic guard, then the executor as a top-level operation. Teardown
+    does not advance the ticket (it stays MERGED), so there is no advance atomic.
+    Running the reaper inside the ``select_for_update`` atomic held the SQLite
+    global write lock (``BEGIN IMMEDIATE``) for the whole run, stalling every
+    other writer and expiring live leases.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.MERGED:
+        if ticket.state not in _DONE_TICKET_STATES:
             logger.info(
-                "execute_teardown skipped for ticket %s: state=%s (not MERGED)",
+                "execute_teardown skipped for ticket %s: state=%s (not a terminal state)",
                 ticket_id,
                 ticket.state,
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeTeardown(ticket).run()
-        if not result.ok:
-            logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+    result = WorktreeTeardown(ticket).run()
+    if not result.ok:
+        logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+def enqueue_teardown_for_terminal_tickets() -> list[int]:
+    """One-shot backlog drain: enqueue teardown for every terminal ticket still holding worktrees.
+
+    The operational catch-up for tickets that reached a terminal state BEFORE the
+    target-state teardown enqueue existed, so their worktrees never got reaped. It
+    is idempotent — ``execute_teardown`` re-checks state and the reaper keeps any
+    unsynced work — so re-running it is safe. NOT invoked automatically; an operator
+    calls it explicitly to drain the pile-up. Returns the ticket pks enqueued.
+    """
+    ticket_ids = list(
+        Ticket.objects.filter(state__in=_DONE_TICKET_STATES, worktrees__isnull=False)
+        .distinct()
+        .values_list("pk", flat=True)
+    )
+    for ticket_id in ticket_ids:
+        execute_teardown.enqueue(int(ticket_id))
+    return [int(ticket_id) for ticket_id in ticket_ids]
 
 
 @task()
@@ -251,6 +445,14 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     explicitly opted out of planning, mirroring the external-delivery skip). The
     loop's own autonomous FSM never stamps either marker, so its flow is
     unchanged.
+
+    ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
+    potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
+    mirroring ``execute_ship``): a short atomic state-check, the executor as a
+    top-level operation, then a short atomic re-check + ``schedule_planning``.
+    Running the provisioner inside the ``select_for_update`` atomic held the
+    SQLite global write lock (``BEGIN IMMEDIATE``) for the whole run, stalling
+    every other writer and expiring live leases.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -262,21 +464,59 @@ def execute_provision(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeProvisioner(ticket).run()
-        if not result.ok:
-            logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+    result = WorktreeProvisioner(ticket).run()
+    if not result.ok:
+        logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-        _persist_intake_landscape(ticket)
+    _persist_intake_landscape(ticket)
+
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.STARTED:
+            logger.info(
+                "execute_provision FSM advance skipped for ticket %s: state=%s (already advanced, not STARTED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
         if under_external_delivery(ticket):
             logger.info("Ticket %s under external delivery; skipping auto-planner (#2104)", ticket_id)
         elif is_trivial_plan_skip(ticket):
             logger.info("Ticket %s marked trivial; skipping auto-planner (plan-gate carve-out)", ticket_id)
         else:
+            refusal = _attachment_gate_refusal(ticket)
+            if refusal is not None:
+                # Attachments un-fetched: hold at STARTED (like the delivery /
+                # trivial skips, but transient). Record a deduped DeferredQuestion
+                # so the hold is a SURFACED escalation, not a silent freeze behind
+                # a gate that reports ok. Running `ticket attachments --fetch`
+                # re-enqueues execute_provision, which re-checks and hands off.
+                logger.warning("Ticket %s intake held pending attachments: %s", ticket_id, refusal)
+                _record_attachment_hold_question(ticket, refusal)
+                return {"ticket_id": ticket_id, "ok": True, "detail": refusal}
             ticket.schedule_planning()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:
+    """Surface an attachment-gate hold as a durable, deduped ``DeferredQuestion``.
+
+    The intake gate holds a ticket at STARTED when referenced attachments are
+    un-fetched. Without an escalation the ticket silently freezes behind a gate
+    that returns ``ok=True``. Deduped per ticket on ``dedupe_marker`` so a
+    redelivered/re-run provision collapses to one queued question.
+    """
+    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    question = (
+        f"Intake held on {where}: referenced attachments are not fetched, so the ticket "
+        f"cannot start planning. {refusal} Fetch them (the command above), or ignore the ticket?"
+    )
+    DeferredQuestion.record(question, dedupe_marker=f"attachment-hold:{ticket.pk}")
 
 
 @task()

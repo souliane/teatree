@@ -16,8 +16,8 @@ of those directory names.
 
 Reference sites enumerated:
 
-* the ``~/.teatree-skills.yml`` keyword->skill routing config (and any
-    ``T3_SUPPLEMENTARY_SKILLS`` override location) — the file that carried the
+* the ``.teatree-skills.yml`` keyword->skill routing config in the home dir (and
+    any ``T3_SUPPLEMENTARY_SKILLS`` override location) — the file that carried the
     real ``ac-reviewing-skills`` dangling name the owner caught;
 * ``agents/*.md`` frontmatter ``skills:`` and ``companion_skills`` lists.
 
@@ -34,7 +34,7 @@ from pathlib import Path
 _SUGGESTION_CUTOFF = 0.6
 _MAX_SUGGESTIONS = 3
 _CONFIG_LINE_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)")
-_FRONTMATTER_LIST_KEYS = ("skills", "companion_skills", "requires", "companions")
+_FRONTMATTER_LIST_KEYS = ("skills", "companion_skills", "requires")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +107,13 @@ def _bare_segment(name: str) -> str:
     return segment
 
 
-def _resolves(name: str, canonical: set[str]) -> bool:
+def resolves_to_canonical(name: str, canonical: set[str]) -> bool:
+    """Whether *name*'s bare skill segment is one of the *canonical* skill names.
+
+    The shared resolution predicate: the dangling-reference sites here and the
+    ``t3 doctor`` configured-review-skill check (#3352) both resolve a reference
+    name against the same canonical set the skill-loading hook enumerates.
+    """
     return _bare_segment(name) in canonical
 
 
@@ -121,7 +127,7 @@ def _suggest(name: str, canonical: set[str]) -> list[str]:
 
 
 def validate_supplementary_config(config_path: Path, canonical: set[str]) -> list[DanglingReference]:
-    """Flag dangling skill names in the ``~/.teatree-skills.yml`` routing config.
+    """Flag dangling skill names in the home-dir ``.teatree-skills.yml`` routing config.
 
     A missing config file is *not* a failure (fail-open) — the file is
     optional. Comments and blank lines are skipped, matching the hook's own
@@ -142,7 +148,7 @@ def validate_supplementary_config(config_path: Path, canonical: set[str]) -> lis
         if not match:
             continue
         name = match.group(1)
-        if not _resolves(name, canonical):
+        if not resolves_to_canonical(name, canonical):
             findings.append(
                 DanglingReference(
                     path=config_path,
@@ -158,8 +164,8 @@ def validate_supplementary_config(config_path: Path, canonical: set[str]) -> lis
 def validate_agent_frontmatter(agent_path: Path, canonical: set[str]) -> list[DanglingReference]:
     """Flag dangling skill names in an ``agents/*.md`` frontmatter list field.
 
-    Scans the ``skills:`` / ``companion_skills:`` / ``requires:`` /
-    ``companions:`` list items inside the leading ``---`` frontmatter block.
+    Scans the ``skills:`` / ``companion_skills:`` / ``requires:`` list items
+    inside the leading ``---`` frontmatter block.
     """
     if not agent_path.is_file():
         return []
@@ -181,7 +187,7 @@ def validate_agent_frontmatter(agent_path: Path, canonical: set[str]) -> list[Da
             continue
         if in_list and stripped.startswith("- "):
             name = stripped.removeprefix("- ").strip().strip("'\"")
-            if name and not _resolves(name, canonical):
+            if name and not resolves_to_canonical(name, canonical):
                 findings.append(
                     DanglingReference(
                         path=agent_path,
@@ -234,7 +240,7 @@ def validate_repo_refs(repo_root: Path) -> list[DanglingReference]:
     Scoped to the repo: the canonical set is the plugin's ``skills/`` tree
     (CI-portable — no dependence on a developer's ``~/.claude/skills``), and
     the only reference site is ``agents/*.md`` frontmatter. The personal
-    ``~/.teatree-skills.yml`` lives outside the repo and is validated by the
+    home-dir ``.teatree-skills.yml`` lives outside the repo and is validated by the
     runnable ``t3 tool validate-skill-refs`` command, not this repo gate.
     """
     canonical = canonical_skill_names([repo_root / "skills"])

@@ -28,7 +28,13 @@ class OverlayScaffolder:
         (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
         (pkg_dir / "overlay.py").write_text(
             dedent(f"""\
+                from typing import TYPE_CHECKING
+
                 from teatree.core.overlay import OverlayBase
+
+                if TYPE_CHECKING:
+                    from teatree.overlay_sdk import WorktreeLike
+                    from teatree.types import ProvisionStep, SkillMetadata
 
 
                 class {self.overlay_class_name}Overlay(OverlayBase):
@@ -37,10 +43,10 @@ class OverlayScaffolder:
                     def get_repos(self) -> list[str]:
                         return []
 
-                    def get_provision_steps(self, worktree):
+                    def get_provision_steps(self, worktree: "WorktreeLike") -> list["ProvisionStep"]:
                         return []
 
-                    def get_skill_metadata(self):
+                    def get_skill_metadata(self) -> "SkillMetadata":
                         return {{"skill_path": "skills/{skill_name}/SKILL.md"}}
             """),
             encoding="utf-8",
@@ -77,7 +83,7 @@ class OverlayScaffolder:
         )
 
     def copy_config_templates(self) -> None:
-        from importlib.resources import files  # noqa: PLC0415
+        from importlib.resources import files  # noqa: PLC0415 — deferred: loaded only on this code path
 
         template_dir = files("teatree.templates").joinpath("overlay")
         templates = {
@@ -95,7 +101,7 @@ class OverlayScaffolder:
             dest.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
     def write_pyproject(self, project_name: str) -> None:
-        from importlib.resources import files  # noqa: PLC0415
+        from importlib.resources import files  # noqa: PLC0415 — deferred: loaded only on this code path
 
         template = (
             files("teatree.templates").joinpath("overlay").joinpath("pyproject.toml.tmpl").read_text(encoding="utf-8")

@@ -46,7 +46,7 @@ class LiveValidator(Protocol):
 def build_live_validator() -> LiveValidator:
     """The real, METERED live validator: run the candidate's spec via the SDK runner pass@k.
 
-    Wraps :class:`~teatree.eval.sdk_runner.SdkInProcessRunner` (subscription-metered,
+    Wraps :class:`~teatree.eval.api_runner.ApiInProcessRunner` (subscription-metered,
     ``require_executed`` so a missing ``claude`` fails loud rather than decoratively
     skipping a gate the promotion depends on) and aggregates via
     :func:`~teatree.eval.pass_at_k.run_pass_at_k`. Returns the gate verdict
@@ -55,12 +55,15 @@ def build_live_validator() -> LiveValidator:
     This is the OPT-IN path — ``t3 dream run --full`` supplies it; the nightly
     ``tick`` does NOT (it withholds, so nothing auto-lands without a metered check).
     """
-    from teatree.eval.pass_at_k import run_pass_at_k  # noqa: PLC0415
-    from teatree.eval.report import evaluate as evaluate_run  # noqa: PLC0415
-    from teatree.eval.sdk_runner import SdkInProcessRunner  # noqa: PLC0415
+    from teatree.eval.api_runner import (  # noqa: PLC0415 — lazy: the eval harness is imported only on the opt-in metered path, keeping the dream loop's import chain free of the SDK runner otherwise.
+        ApiInProcessRunner,
+        ApiRunnerParams,
+    )
+    from teatree.eval.pass_at_k import run_pass_at_k  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.eval.report import evaluate as evaluate_run  # noqa: PLC0415 — deferred: loaded at tick time
 
     def _validate(spec: EvalSpec, *, trials: int, require: str) -> bool:
-        runner = SdkInProcessRunner(require_executed=True)
+        runner = ApiInProcessRunner(ApiRunnerParams(require_executed=True))
         return run_pass_at_k(spec, lambda s: evaluate_run(s, runner.run(s)), k=trials, require=require).ok
 
     return _validate

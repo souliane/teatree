@@ -1,7 +1,6 @@
 """Database operations: migrate, refresh, restore from CI, reset passwords, introspect."""
 
 import json
-import os
 import sys
 
 import typer
@@ -11,10 +10,11 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import resolve_worktree
 from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError
+from teatree.utils.env import patched_environ
 
 #: Leading SQL keywords allowed past the cheap pre-filter of ``db query``.
 #: This is a *best-effort* guard, not a proof of read-only-ness: leading-token
@@ -120,10 +120,13 @@ class Command(TyperCommand):
         converges on one DB.
 
         Unlike ``resetdb`` this drops nothing — live ticket/session/lease
-        rows survive. Unlike the old ``uv --directory <clone>`` wrapper it
-        cannot target a different (auto-isolated) DB than the runtime
-        resolves. Dispatched via teatree-core (``python -m teatree``) so it
-        reaches the runtime self-DB regardless of which overlay invokes it.
+        rows survive. It applies every pending migration in ``INSTALLED_APPS``,
+        so it brings BOTH the teatree-core apps AND the active overlay's own
+        Django app current in one pass. When the overlay ships its own settings
+        module the ``t3`` bridge runs this in the overlay ``manage.py`` context
+        (where the overlay app is in ``INSTALLED_APPS``); an overlay on the base
+        ``teatree.settings`` reaches it via ``python -m teatree``. Either way it
+        targets the same canonical control DB the merge gate reads.
 
         Fail-closed: a real migrate failure exits non-zero with the captured
         error, never leaving a half-migrated DB look like a success.
@@ -176,7 +179,7 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         overlay = get_overlay()
-        strategy = overlay.get_db_import_strategy(worktree)
+        strategy = overlay.provisioning.db_import_strategy(worktree)
         if strategy is None:
             self.stderr.write("No DB import strategy configured in the overlay.")
             raise SystemExit(1)
@@ -204,39 +207,36 @@ class Command(TyperCommand):
 
         self.stdout.write(f"Refreshing DB '{worktree.db_name}' (force={force})...")
 
-        # Set overlay env vars so pg tools can connect with the right credentials
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
-        env.pop("VIRTUAL_ENV", None)
-        os.environ.update(overlay.get_env_extra(worktree))
+        # Overlay env (and the VIRTUAL_ENV drop) lets the host pg tools connect with the
+        # right credentials, scoped to the DB work so it never bleeds into the process.
+        with patched_environ(overlay.provisioning.env_extra(worktree), remove=("VIRTUAL_ENV",)):
+            # #955: --fresh-dump must force slow_import. The remote-dump branch
+            # in DjangoDbImporter.run() sits *after* the `if not slow_import:
+            # return False` guard (which itself follows the early DSLR return),
+            # so without this the flag silently degrades to "restore the stale
+            # local DSLR snapshot" instead of fetching a fresh remote dump.
+            success = overlay.provisioning.db_import(
+                worktree,
+                force=force,
+                slow_import=fresh_dump,
+                dslr_snapshot=dslr_snapshot,
+                dump_path=dump_path,
+                approve_remote_dump=fresh_dump,
+            )
+            if not success:
+                self.stderr.write(f"DB import failed for {worktree.db_name}. Check output above for details.")
+                raise SystemExit(1)
 
-        # Run the overlay's import logic
-        # #955: --fresh-dump must force slow_import. The remote-dump branch
-        # in DjangoDbImporter.run() sits *after* the `if not slow_import:
-        # return False` guard (which itself follows the early DSLR return),
-        # so without this the flag silently degrades to "restore the stale
-        # local DSLR snapshot" instead of fetching a fresh remote dump.
-        success = overlay.db_import(
-            worktree,
-            force=force,
-            slow_import=fresh_dump,
-            dslr_snapshot=dslr_snapshot,
-            dump_path=dump_path,
-            approve_remote_dump=fresh_dump,
-        )
-        if not success:
-            self.stderr.write(f"DB import failed for {worktree.db_name}. Check output above for details.")
-            raise SystemExit(1)
+            # Run post-DB steps (migrations, collectstatic, etc.)
+            for step in overlay.provisioning.post_db_steps(worktree):
+                self.stdout.write(f"  Running post-DB step: {step.name}")
+                step.callable()
 
-        # Run post-DB steps (migrations, collectstatic, etc.)
-        for step in overlay.get_post_db_steps(worktree):
-            self.stdout.write(f"  Running post-DB step: {step.name}")
-            step.callable()
-
-        # Reset passwords
-        reset_step = overlay.get_reset_passwords_command(worktree)
-        if reset_step:  # pragma: no branch
-            self.stdout.write("  Resetting passwords...")
-            reset_step.callable()
+            # Reset passwords
+            reset_step = overlay.provisioning.reset_passwords_command(worktree)
+            if reset_step:  # pragma: no branch
+                self.stdout.write("  Resetting passwords...")
+                reset_step.callable()
 
         # FSM transition
         worktree.db_refresh()
@@ -269,7 +269,7 @@ class Command(TyperCommand):
         recorded ``(op, tenant)`` matches the gate's expected scope (named
         in its refusal message) regardless of case/whitespace.
         """
-        from teatree.core.models.db_approval import DbApproval, DbApprovalError  # noqa: PLC0415
+        from teatree.core.models.db_approval import DbApproval, DbApprovalError  # noqa: PLC0415 — lazy ORM import
 
         try:
             approval = DbApproval.record(op, tenant, approver)
@@ -283,13 +283,13 @@ class Command(TyperCommand):
         """Restore the worktree database from the latest CI dump."""
         worktree = resolve_worktree(path)
         overlay = get_overlay()
-        strategy = overlay.get_db_import_strategy(worktree)
+        strategy = overlay.provisioning.db_import_strategy(worktree)
         if strategy is None:
             self.stderr.write("No DB import strategy configured in the overlay.")
             raise SystemExit(1)
 
         # Use db_import with a hint to skip DSLR/local and go straight to CI
-        success = overlay.db_import(worktree, force=True)
+        success = overlay.provisioning.db_import(worktree, force=True)
         if not success:
             self.stderr.write(f"CI restore failed for {worktree.db_name}.")
             raise SystemExit(1)
@@ -305,7 +305,7 @@ class Command(TyperCommand):
         """Reset all user passwords to a known dev value."""
         worktree = resolve_worktree(path)
         overlay = get_overlay()
-        step = overlay.get_reset_passwords_command(worktree)
+        step = overlay.provisioning.reset_passwords_command(worktree)
         if not step:
             self.stderr.write("No reset-passwords command configured in the overlay.")
             raise SystemExit(1)

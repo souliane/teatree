@@ -25,11 +25,77 @@ audited — so the team can reason about all four (DB, on-behalf, merge,
 question) as the same primitive.
 """
 
-from typing import ClassVar
+import hashlib
+import re
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.db.models import Max
 from django.utils import timezone
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def question_fingerprint(text: str) -> str:
+    """A normalized-text fingerprint that collapses cosmetically-different clones.
+
+    Lowercases, strips, and collapses runs of whitespace before hashing, so eight
+    "I lack the tools to review" review-failure clones — differing only in
+    trailing whitespace or casing — map to one marker and dedup to a single
+    :class:`DeferredQuestion` instead of eight identical rows.
+    """
+    normalized = _WHITESPACE_RE.sub(" ", text.strip().lower())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+
+
+#: Signals that a ``needs_user_input`` reason is a tool-lack / mis-provisioned
+#: DISPATCH fault — a session reporting it lacks the tools / checkout / access to do
+#: its assigned work — not a genuine decision the owner must make. Any one branch is
+#: sufficient. Each keys on a signal owner *decision* questions do not carry, so a
+#: real "how should I proceed on X?" ("cannot decide", "no clean approach") stays
+#: OWNER_QUESTION. Branches (4)-(7) were added after (1)-(3) still leaked review
+#: parks that reported the same fault by its consequence/symptom (#201/#202).
+_TOOL_LACK_SELFREPORT_RE = re.compile(
+    r"(?:"
+    # (1) capability negation adjacent to a tool word
+    r"\b(?:lack|lacks|lacking|no|without|missing|denied|deprived of)\b[^.]{0,40}?"
+    r"\b(?:shell|bash|gh|tool|tools|toolset)\b"
+    r"|\bshell[- ]?denied\b"  # (2) bare "shell-denied"
+    r"|\bneeds?\b[^.]{0,40}?\bsession\b[^.]{0,40}?\btool"  # (3) hand-off phrasings
+    r"|\bsession with (?:the )?(?:standard )?tool"
+    r"|\bpicked up by (?:a )?session\b"
+    # (4) dispatch-provisioning phrase ("tool access") — only in a provisioning report
+    r"|\btool access\b"
+    # (5) no accessible checkout / working tree / working copy / repo access
+    r"|\bno\b[^.]{0,30}?\b(?:accessible )?(?:checkout|working tree|working copy|repo(?:sitory)? access)\b"
+    # (6) internal task-context tools (TaskGet/TaskList/TaskRead) returning nothing
+    r"|\btask(?:get|list|read)\b[^.]{0,60}?\b(?:returned nothing|nothing|empty|unavailable|no rows)\b"
+    # (7) inability to do tool-requiring work (the consequence phrasing of a lack)
+    r"|\b(?:cannot|can't|can not|unable to|couldn't|could not)\b[^.]{0,60}?"
+    r"\b(?:inspect|make code changes|run the required|run [^.]{0,20}?verify-gates|verify-gates"
+    r"|clone|check ?out|apply the patch)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_tool_lack_selfreport(text: str) -> bool:
+    """True if *text* is an agent's own "I lack the tools to proceed" dispatch fault.
+
+    An agent that stops with ``needs_user_input`` because its session was
+    dispatched WITHOUT the shell / ``gh`` / toolset / checkout its own work needs is
+    reporting a DISPATCH fault — a phase mis-provisioned for its job — not asking the
+    owner to decide anything. Surfacing that self-report to the owner's DM is the
+    exact leak this classifier defends (it reached the owner as "*Pending question* …
+    This session lacks any shell/write tool …", and later as the review-phase
+    "launched without … tool access, so I cannot inspect the PR diff …" / "no shell,
+    TaskGet/TaskList returned nothing" leaks). Such a reason is recorded ``INTERNAL``
+    — logged / statusline-only, never DM'd. See ``_TOOL_LACK_SELFREPORT_RE``.
+    """
+    return bool(_TOOL_LACK_SELFREPORT_RE.search(_WHITESPACE_RE.sub(" ", text.strip())))
 
 
 class DeferredQuestionError(ValueError):
@@ -57,8 +123,23 @@ class DeferredQuestion(models.Model):
         SLACK = "slack", "Slack reply"
         LOCAL = "local", "Local CLI"
         STALE = "stale", "Stale"
+        POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
+
+    class Audience(models.TextChoices):
+        OWNER_QUESTION = "owner_question", "Owner question"
+        INTERNAL = "internal", "Internal"
 
     question = models.TextField()
+    # Who the question is for. OWNER_QUESTION rows are DM'd to the owner; INTERNAL
+    # rows (repair-loop stalls, dispatch-health escalations synthesized by the box
+    # about its OWN health) are logged/statusline-only and never reach the owner
+    # feed — mirroring ``NotifyAudience`` so the two queues share one audience model.
+    audience = models.CharField(
+        max_length=16,
+        default=Audience.OWNER_QUESTION,
+        choices=Audience.choices,
+        db_index=True,
+    )
     options_json = models.TextField(blank=True, default="")
     session_id = models.CharField(max_length=255, blank=True, default="")
     tool_use_id = models.CharField(max_length=255, blank=True, default="")
@@ -70,8 +151,19 @@ class DeferredQuestion(models.Model):
     slack_ts = models.CharField(max_length=64, blank=True, default="")
     slack_channel = models.CharField(max_length=64, blank=True, default="")
     options_hash = models.CharField(max_length=64, blank=True, default="")
+    # Idempotency marker for escalation-once callers (repair-loop stalls, headless
+    # needs-input parks): a non-empty marker collapses repeat records of the same
+    # underlying signal to one PENDING row. Blank for the ordinary capture path.
+    dedupe_marker = models.CharField(max_length=64, blank=True, default="", db_index=True)
     generation = models.PositiveIntegerField(default=0)
     run_id = models.CharField(max_length=255, blank=True, default="")
+    parked_task = models.ForeignKey(
+        "core.Task",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deferred_questions",
+    )
     resolved_via = models.CharField(
         max_length=8,
         blank=True,
@@ -99,6 +191,24 @@ class DeferredQuestion(models.Model):
     def is_pending(self) -> bool:
         return self.answered_at is None and self.dismissed_at is None
 
+    @property
+    def stable_notify_ref(self) -> str:
+        """Stable discriminator for outward-notification idempotency keys.
+
+        Prefers the harness-assigned ``tool_use_id`` — stable across restarts
+        and independent of this DB's autoincrement — so a key built from it does
+        not shift when the local pk does. Only when the harness supplied no
+        ``tool_use_id`` does it fall back to the pk, qualified by the fleet
+        ``instance_id`` (:mod:`teatree.instance_id`) so two instances'
+        independently-numbered rows can never collide into a false-dedup on a
+        shared operator DM surface. Never the bare local pk.
+        """
+        if self.tool_use_id:
+            return self.tool_use_id
+        from teatree.instance_id import instance_id  # noqa: PLC0415 — leaf import kept out of module load
+
+        return f"{instance_id()}:{self.pk}"
+
     @classmethod
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — guarded factory: each kwarg is a documented column, kwargs-only.
@@ -113,6 +223,9 @@ class DeferredQuestion(models.Model):
         options_hash: str = "",
         generation: int = 0,
         run_id: str = "",
+        dedupe_marker: str = "",
+        parked_task: "Task | None" = None,
+        audience: str = Audience.OWNER_QUESTION,
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
 
@@ -123,6 +236,16 @@ class DeferredQuestion(models.Model):
         kwargs (``slack_ts`` / ``slack_channel`` / ``options_hash`` /
         ``generation`` / ``run_id``) link the row to its Slack DM so a
         later Slack reply can resolve exactly the live generation (#1174).
+        ``parked_task`` correlates a headless-lane question back to the SDK
+        task that emitted ``needs_user_input`` so the reply re-queues a
+        headless resume of that task (the SDK lane has no Slack DM yet — the
+        tick-level poster scanner mirrors it later).
+
+        ``dedupe_marker`` is the escalate-once guard: when non-empty, an existing
+        PENDING row already carrying that marker is returned instead of writing a
+        duplicate — so two consecutive repair-loop stalls, or eight identical
+        "I lack tools" review-failure parks, collapse to a single queued question
+        rather than flooding the backlog.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -130,6 +253,14 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(msg)
 
         with transaction.atomic():
+            if dedupe_marker:
+                existing = (
+                    cls.objects.select_for_update()
+                    .filter(dedupe_marker=dedupe_marker, answered_at__isnull=True, dismissed_at__isnull=True)
+                    .first()
+                )
+                if existing is not None:
+                    return existing
             return cls.objects.create(
                 question=clean_question,
                 options_json=options_json or "",
@@ -140,7 +271,43 @@ class DeferredQuestion(models.Model):
                 options_hash=options_hash or "",
                 generation=generation,
                 run_id=run_id or "",
+                dedupe_marker=dedupe_marker or "",
+                parked_task=parked_task,
+                audience=audience or cls.Audience.OWNER_QUESTION,
             )
+
+    @classmethod
+    def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows with no Slack mirror yet, oldest first.
+
+        The headless lane and ``task_repair._escalate_stall`` record a row
+        with an empty ``slack_ts``; the tick-level poster drains exactly these
+        so a reply can later bind. A row already mirrored (``slack_ts != ""``)
+        or resolved is excluded.
+        """
+        return cls.objects.filter(
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+            slack_ts="",
+            audience=cls.Audience.OWNER_QUESTION,
+        ).order_by("created_at")
+
+    def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:
+        """Stamp the Slack mirror coordinates single-use; ``True`` on the transition.
+
+        An idempotent ``UPDATE … WHERE slack_ts = ''`` so a concurrent second
+        drain (or a re-tick after a partial stamp) sees 0 rows updated and does
+        not re-stamp — the verify-by-re-read seam for the poster scanner.
+        """
+        if not channel or not slack_ts:
+            return False
+        updated = bool(
+            type(self).objects.filter(pk=self.pk, slack_ts="").update(slack_ts=slack_ts, slack_channel=channel)
+        )
+        if updated:
+            self.slack_ts = slack_ts
+            self.slack_channel = channel
+        return updated
 
     @classmethod
     def next_generation(cls, *, session_id: str, run_id: str) -> int:

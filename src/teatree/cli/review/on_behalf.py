@@ -40,17 +40,16 @@ def on_behalf_gate_active() -> bool:
     permitted (returns ``False``) under
     :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
 
-    Wired through a soft import so this command works whether or not the
-    gate PR has merged yet: if the module is absent the gate is treated
-    as inactive (no behaviour change until it lands).
+    The import stays lazy so ``teatree.cli`` is importable before
+    ``django.setup()``, but it is never guarded: an unresolvable gate must surface,
+    never resolve to "gate off" — a safety gate has no fail-OPEN degradation.
     """
-    try:
-        from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415
-    except ModuleNotFoundError:
-        return False
-    # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under
-    # ASK and DRAFT_OR_ASK. AUTO_DRAFT never fires for "approve".
-    return resolve_on_behalf_verdict("approve") is not OnBehalfVerdict.PROCEED
+    from teatree.on_behalf_gate import on_behalf_post_will_block  # noqa: PLC0415 — lazy CLI import
+
+    # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under ASK
+    # and DRAFT_OR_ASK (AUTO_DRAFT never fires for "approve"), so the proactive
+    # will-block pre-check is exactly this gate's active predicate.
+    return on_behalf_post_will_block("approve")
 
 
 def gate_target(repo: str, mr: int) -> str:
@@ -89,7 +88,7 @@ def check_on_behalf(repo: str, mr: int, action: str) -> str:
     (``post_draft_note``) is exempt under every mode and always returns
     ``""`` here — a draft is colleague-invisible and needs no approval.
     """
-    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415 — lazy CLI import
 
     return on_behalf_block_message(gate_target(repo, mr), action)
 
@@ -103,7 +102,7 @@ def publish_on_behalf[T](repo: str, mr: int, action: str, publish: Callable[[], 
     approval survives a retry) and writes no audit; a BLOCK with no recorded
     approval raises :class:`OnBehalfPostBlockedError` before *publish* runs.
     """
-    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415 — lazy CLI import
 
     return require_on_behalf_approval(target=gate_target(repo, mr), action=action, publish=publish)
 
@@ -115,7 +114,7 @@ def check_on_behalf_issue(repo: str, issue_iid: int, action: str) -> str:
     recorded :class:`OnBehalfApproval` matches ``(<repo>#<issue>, <action>)``),
     else ``""``.
     """
-    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415 — lazy CLI import
 
     return on_behalf_block_message(issue_gate_target(repo, issue_iid), action)
 
@@ -127,9 +126,61 @@ def publish_on_behalf_issue[T](repo: str, issue_iid: int, action: str, publish: 
     before *publish* runs; a post that raises rolls back the consume so the
     approval survives a retry.
     """
-    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
+    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415 — lazy CLI import
 
     return require_on_behalf_approval(target=issue_gate_target(repo, issue_iid), action=action, publish=publish)
+
+
+def publish_or_blocked(
+    repo: str,
+    mr: int,
+    action: str,
+    body: Callable[[], tuple[str, int]],
+) -> tuple[str, int]:
+    """Run *body* (the GitLab post) atomically with the on-behalf consume + audit (#1879).
+
+    ``check_on_behalf`` already peeked non-consuming; here the approval is
+    consumed in the same ``transaction.atomic`` as the post, so a failed
+    post rolls back the consume (no burn) and writes no lying audit. A
+    BLOCK racing in after the peek is surfaced as ``(message, 1)``.
+
+    A verify-after-post failure (#2081) raises
+    :class:`~teatree.cli.review.audit.ReviewArtifactNotVerifiedError` from
+    *inside* ``body``, so it propagates through the same ``transaction.atomic``
+    and rolls back the consume + audit exactly like a post failure — then it is
+    surfaced here as ``(message, 1)`` instead of the phantom "posted" claim. A
+    non-404 transport error on the read-back is NOT caught here: it propagates
+    so a flaky GET surfaces as ``api_unavailable``, never a false post-failure.
+    """
+    return _surface(lambda: publish_on_behalf(repo, mr, action, body))
+
+
+def publish_or_blocked_issue(
+    repo: str,
+    issue_iid: int,
+    action: str,
+    body: Callable[[], tuple[str, int]],
+) -> tuple[str, int]:
+    """Issue/work-item twin of :func:`publish_or_blocked` — same atomic consume + audit, issue-scoped gate.
+
+    Routes *body* through :func:`publish_on_behalf_issue` so the recorded
+    approval the gate consumes is scoped to ``(<repo>#<issue>, <action>)``,
+    never an MR. Surfaces a BLOCK / verify-after-delete failure identically.
+    """
+    return _surface(lambda: publish_on_behalf_issue(repo, issue_iid, action, body))
+
+
+def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
+    """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``."""
+    from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415 — lazy pre-django.setup import
+    from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415 — lazy pre-setup import
+
+    try:
+        return run()
+    except OnBehalfPostBlockedError as blocked:
+        return str(blocked), 1
+    except ReviewArtifactNotVerifiedError as unverified:
+        return str(unverified), 1
 
 
 def register(review_app: typer.Typer) -> None:
@@ -183,7 +234,10 @@ def register(review_app: typer.Typer) -> None:
         """
         ensure_django()
 
-        from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError  # noqa: PLC0415
+        from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            OnBehalfApproval,
+            OnBehalfApprovalError,
+        )
 
         try:
             approval = OnBehalfApproval.record(target=target, action=action, approver_id=approver)

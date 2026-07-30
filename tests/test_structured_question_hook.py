@@ -21,12 +21,14 @@ handler.
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_enforce_structured_question, handle_warn_batched_questions
+from hooks.scripts.question_gates import is_user_directed_question
 
 
 def _assistant(text: str, tool_uses: list[str] | None = None) -> dict:
@@ -99,6 +101,255 @@ class TestBlocksInlineUserDirectedQuestion:
 
         assert _decision(capsys).get("decision") == "block"
         assert result is True
+
+
+class TestBlocksAnnouncedButUnissuedAsk:
+    """The narrated-ask recall hole.
+
+    A final turn that ANNOUNCES an imminent user ask ("Action: Ask about X",
+    "I'll ask the user which ...") or PRINTS `AskUserQuestion(...)` as text,
+    with no real tool call, has no '?' and no soft-ask cue, so the pre-fix
+    heuristic let the turn end and the decision was silently lost (the exact
+    metered reds of `structured_question_one_decision_per_question`).
+    """
+
+    @pytest.mark.parametrize(
+        "announcement",
+        [
+            "**Action:** Ask about the first PR's merge decision now, before touching the other two.",
+            "I'll ask the user which target branch to use.",
+            "Next step: ask whether the commits should be squashed.",
+            "I need to ask the user for the deployed dev URL before any done claim.",
+            "Let me ask about the merge decision for PR #1.",
+        ],
+    )
+    def test_announced_ask_without_tool_call_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], announcement: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(announcement)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    @pytest.mark.parametrize(
+        "announcement",
+        [
+            "I'll go ahead and ask about the first PR using the structured question tool.",
+            "I won't batch all three decisions - I'll just ask about the first PR now.",
+            "Let me quickly ask the user which PR to merge first.",
+            "I'm going to go ahead and ask whether PR #1 should merge now.",
+            "I'm just going to ask the user which branch to target.",
+        ],
+    )
+    def test_bounded_filler_announced_ask_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], announcement: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(announcement)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_pathological_filler_repetition_completes_fast(self) -> None:
+        degenerate = "i " + "just " * 10_000
+        start = time.perf_counter()
+        is_user_directed_question(degenerate)
+
+        assert time.perf_counter() - start < 1.0
+
+    def test_announced_ask_with_tool_call_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("ship it"),
+                _assistant("Asking about the first PR now.", tool_uses=["AskUserQuestion"]),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "disposition",
+        [
+            "I asked about the target branch; once you answer, I'll ask the second decision.",
+            "Waiting for your answer on the branch decision before surfacing the next one.",
+            "The first decision is posed - pausing for your response; then I'll ask about squashing.",
+        ],
+    )
+    def test_pending_answer_disposition_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], disposition: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(disposition)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_past_tense_report_does_not_block(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [_user("status"), _assistant("The ticket asked for a doc update; I shipped it and CI is green.")],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "printed_call",
+        [
+            'AskUserQuestion(questions=[{"question": "Merge PR #1 now?", "options": []}])',
+            '```python\nAskUserQuestion(questions=[{"question": "Merge PR #1 now?", "options": []}])\n```',
+        ],
+    )
+    def test_printed_call_syntax_without_tool_call_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], printed_call: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(printed_call)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_deferral_narration_mentioning_the_tool_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("ship it"),
+                _assistant(
+                    "The AskUserQuestion for the branch decision was captured as DeferredQuestion #4 - "
+                    "waiting for the user's answer via Slack."
+                ),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "narration",
+        [
+            "No need to ask the user - I resolved the target branch from the repo config and merged.",
+            "I did not need to ask; the value was in the project config.",
+            "I will not ask the user - the repo config already pins the target branch, so I proceeded.",
+            "I'm not going to ask the user for approval - the default read is safe.",
+            "I did not just ask about each PR; the merge order was determinable from the dependency graph.",
+            "Then ask the user for the deployed URL before accepting evidence.",
+            "First ask the user which tenant, and only then run the fixture.",
+            "Per the rules, a blocked sub-agent must ask via AskUserQuestion rather than working around the gate.",
+            "The reviewer should ask for a deployed URL before accepting evidence.",
+            "## Ask About Auth Before External Service Integrations",
+            "Added the `AskUserQuestion(` printed-call detector to question_gates.py; suite green.",
+        ],
+    )
+    def test_non_first_person_or_negated_or_cited_ask_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], narration: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("run the loop"), _assistant(narration)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "lost_decision",
+        [
+            "I'll ask the user which target branch to use; once you answer, I'll proceed with the merge.",
+            'AskUserQuestion(questions=[{"question": "Which branch?"}]) - waiting for your response.',
+        ],
+    )
+    def test_disposition_without_a_real_prior_ask_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], lost_decision: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(lost_decision)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
+class TestBlocksRenderedToolCallChip:
+    """The rendered-chip recall hole (the 2026-07-08 OAuth-lane metered reds).
+
+    The model mimics the chat-UI RENDERING of an AskUserQuestion call as text —
+    a standalone emphasized tool-name line, optionally footnoted "*View tool
+    call*" / "*(1 more tool call)*" — with ZERO real tool calls. No ``?``, no
+    soft-ask cue, no call parenthesis: every pre-fix wire missed it and the
+    decision was silently lost. The parametrized chips are the four observed
+    red terminals, verbatim.
+    """
+
+    @pytest.mark.parametrize(
+        "chip",
+        [
+            "**AskUserQuestion**\n\n*View tool call*",
+            "**AskUserQuestion — PR #1 merge decision**",
+            "**AskUserQuestion**\n*(1 more tool call)*",
+            "**AskUserQuestion:**",
+            "**AskUserQuestion**.",
+            "AskUserQuestion\n*View tool call*",
+            "> **AskUserQuestion — PR #1 merge decision**\n\nQuoting the red terminal verbatim above.",
+        ],
+    )
+    def test_rendered_chip_without_tool_call_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], chip: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(chip)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_rendered_chip_with_real_tool_call_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("ship it"),
+                _assistant("**AskUserQuestion — PR #1 merge decision**", tool_uses=["AskUserQuestion"]),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "mention",
+        [
+            "**AskUserQuestion for every decision** is the rule; this run needed no user input.",
+            "**AskUserQuestion-based routing** now dispatches decisions.",
+            "Wired the **AskUserQuestion** chip detector into question_gates.py; suite green.",
+            "## AskUserQuestion\n\nThe section documents when a decision goes through the tool; none was pending.",
+            "View tool call",
+            "3 more tool calls",
+        ],
+    )
+    def test_prose_mention_or_heading_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], mention: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("run the loop"), _assistant(mention)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
 
 
 class TestPassesWhenCompliantOrNoQuestion:
@@ -174,6 +425,40 @@ class TestPassesWhenCompliantOrNoQuestion:
 
         assert _decision(capsys) == {}
         assert result is not True
+
+
+class TestQuotedOrHistoricalQuestionDoesNotFire:
+    """A quoted / historical question is not a live ask (#3261).
+
+    The gate must not force a spurious ``AskUserQuestion`` when the turn merely
+    quotes an earlier question back (answering "what was the last question you
+    asked me?") or recounts a past question — while a genuine live question,
+    including one that follows historical prose, still fires.
+    """
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            'The last question I asked you was: "Should I merge PR #1 or wait for review?"',
+            "To recap, my earlier question was `Do you want me to proceed with the rollback?`",
+            "You asked whether to merge or wait — that was the last question I posed.",
+            "The question I asked earlier was whether you wanted me to deploy or hold?",
+            "> Should I open the PR now?\n\nThat was what I asked before; it is already resolved.",
+        ],
+    )
+    def test_quoted_or_historical_question_does_not_fire(self, prose: str) -> None:
+        assert is_user_directed_question(prose) is False
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "Should I merge PR #1 or wait for review?",
+            "You asked me to ship it. Now, do you want me to open the PR or hold?",
+            "The last question I asked was answered. Should I proceed with the deploy now?",
+        ],
+    )
+    def test_genuine_live_question_still_fires(self, prose: str) -> None:
+        assert is_user_directed_question(prose) is True
 
 
 class TestFailSafeAndEdgeInputs:
@@ -518,6 +803,151 @@ class TestGateIsLoopDrivenContextAware:
 
         assert _decision(capsys) == {}
         assert result is not True
+
+
+class TestGateSkipsLiveUserTurn:
+    """A live user turn skips the gate even when this session owns the loop (#807).
+
+    The over-fire: this session is the SessionStart-designated tick-owner
+    (``_session_drives_loop`` true), but a human is actively responding in real
+    time (``_is_live_user_turn`` true). Forcing an ``AskUserQuestion`` menu into
+    that free-form discussion is exactly the pointless nagging the gate must
+    avoid. The anti-vacuous pair pins both dimensions: live turn ⇒ skip, and the
+    SAME owning session with no live turn ⇒ the gate still fires (the live-turn
+    escape is not an over-exemption that neuters the autonomous-loop job).
+    """
+
+    @staticmethod
+    def _owner_record(session_id: str, pid: int) -> dict[str, dict]:
+        return {
+            router._OWNER_LOOP: {
+                "session_id": session_id,
+                "agent_id": "a",
+                "pid": pid,
+                "heartbeat_ts": 0,
+            }
+        }
+
+    @pytest.fixture(autouse=True)
+    def _registry_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg = tmp_path / "data"
+        reg.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg))
+
+    def _inline_question_transcript(self, tmp_path: Path) -> Path:
+        return _write_transcript(
+            tmp_path,
+            [_user("let us discuss the design"), _assistant("Done. Should I push the branch now?")],
+        )
+
+    def test_must_not_fire_on_live_user_turn_even_when_owner(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Over-fire reproduction: this session OWNS the tick (drives_loop true),
+        # but a human typed a prompt seconds ago in it (live user turn). The
+        # human is reading the prose, so the gate MUST NOT force a tool call.
+        router._write_loop_registry(self._owner_record("owner-live", os.getpid()))
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: True)
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "owner-live"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_must_fire_on_autonomous_owner_turn_when_not_live(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Anti-over-exemption: the SAME owning session with NO live user turn is
+        # a genuinely autonomous loop run, where the inline question is invisible
+        # — the gate MUST still fire. This goes GREEN only because the skip is
+        # gated on the live-turn signal, not an unconditional owner exemption.
+        router._write_loop_registry(self._owner_record("owner-auto", os.getpid()))
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: False)
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "owner-auto"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
+class TestSequencingOfferDoesNotFire:
+    """Anti-vacuous pair: the rhetorical sequencing offer passes; a real offer fires."""
+
+    def test_sequencing_offer_does_not_block(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The documented false positive: an offer about the ORDER of the agent's
+        # own work ("write X now or react first") is self-resolvable, not a lost
+        # user decision — it must NOT block.
+        offer = "I can write the regression test next. Want me to write it now or react to the Slack message first?"
+        transcript = _write_transcript(tmp_path, [_user("review the MR"), _assistant(offer)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_genuine_go_no_go_offer_still_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Proves the offer suppression did not weaken the gate: a real go/no-go
+        # offer (no "now … or … first" sequencing) still blocks.
+        transcript = _write_transcript(
+            tmp_path, [_user("finish the work"), _assistant("All set. Want me to open the PR now?")]
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
+class TestClarifyAfterRejectedQuestionDoesNotFire:
+    """Anti-vacuous pair: a post-rejection clarification passes; an unrelated one fires."""
+
+    def test_clarification_after_rejected_question_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The user rejected an AskUserQuestion and asked to clarify; the harness
+        # already routes that re-ask, so the agent's prose clarification (which
+        # carries a decision cue) must NOT be force-gated into a second tool call.
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("do the config work"),
+                _assistant("Which surface should I target?", tool_uses=["AskUserQuestion"]),
+                _user("none of these — what do you mean by config surface?"),
+                _assistant(
+                    "By config surface I mean the DB-home ConfigSetting store. "
+                    "Did you want me to target that or the TOML export?"
+                ),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_decision_question_without_prior_rejected_question_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Control: the same clarify-shaped wording but NO prior AskUserQuestion in
+        # the transcript — the exemption must not apply, so the inline decision
+        # still blocks. Guards against the exemption over-firing on any clarify
+        # phrasing.
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("do the config work"),
+                _assistant("On it."),
+                _user("none of these — handle migrations too"),
+                _assistant("Should I target main or develop for the migration?"),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
 
 
 class TestWiredIntoRouter:

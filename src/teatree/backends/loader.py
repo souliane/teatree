@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
 from teatree.backends.github import GitHubCodeHost
+from teatree.backends.github.api import gh_ambient_auth_available, gh_can_push
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.ci import GitLabCIService
@@ -23,9 +24,9 @@ from teatree.core.backend_protocols import (
     MessagingBackend,
     PrOpenState,
 )
-from teatree.utils import git
+from teatree.core.messaging_tokens import resolve_messaging_tokens
+from teatree.utils import git, git_remote
 from teatree.utils.forge import forge_from_remote
-from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -33,30 +34,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _github_host(overlay: "OverlayBase") -> GitHubCodeHost | None:
+    """Return a GitHub code host for *overlay*, or ``None`` when unauthenticated.
+
+    An explicit ``get_github_token()`` authors requests; failing that, the
+    ambient ``gh`` CLI login (:func:`gh_ambient_auth_available`) backs an
+    empty-token host so a gh-CLI-only box still surfaces GitHub PRs/issues/
+    reviews — the same carve-out :func:`_github_host_for_repo` already applies
+    on the ship path (#2946). Only a box with neither returns ``None``.
+
+    The ambient probe shells out to ``gh auth status``, so it runs lazily —
+    only when no explicit token is present. No memoization here: the
+    ``backend_factory`` registry already caches resolved backends per process.
+    """
+    github_token = overlay.config.get_github_token()
+    if github_token:
+        return GitHubCodeHost(token=github_token)
+    if gh_ambient_auth_available():
+        return GitHubCodeHost(token="")
+    return None
+
+
 def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
     """Return the configured CodeHostBackend for *overlay*, or ``None``.
 
     Selection follows ``overlay.config.code_host``; falls back to inspecting
-    the available tokens when the field is unset.
+    the available tokens when the field is unset. An ambient ``gh`` login backs
+    a tokenless GitHub host, but only after every explicitly-configured host —
+    an explicit GitLab token outranks it (see :func:`_github_host`).
 
     Pre-#976 single-platform callers — anything that wires a single host
     into a Django view or CLI command — keep calling this. The multi-host
     loop scanner stack calls :func:`get_code_hosts` instead.
     """
     choice = overlay.config.code_host
-    github_token = overlay.config.get_github_token()
+    if choice not in {"", "github", "gitlab"}:
+        msg = f"Unknown code_host: {choice!r}"
+        raise ValueError(msg)
+
+    if choice == "github":
+        return _github_host(overlay)
+
     gitlab_token = overlay.config.get_gitlab_token()
-
-    if choice == "github" or (not choice and github_token):
-        return GitHubCodeHost(token=github_token) if github_token else None
-
-    if choice == "gitlab" or (not choice and gitlab_token):
+    if choice == "gitlab":
         return GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url) if gitlab_token else None
 
-    if choice in {"", "github", "gitlab"}:
-        return None
-    msg = f"Unknown code_host: {choice!r}"
-    raise ValueError(msg)
+    # Auto mode: an explicit GitHub token wins, then an explicit GitLab token,
+    # then — only when no explicit host resolved — an ambient gh login (or
+    # ``None``). Ambient GitHub must rank below ANY explicitly-configured host.
+    github_token = overlay.config.get_github_token()
+    if github_token:
+        return GitHubCodeHost(token=github_token)
+    if gitlab_token:
+        return GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url)
+    return _github_host(overlay)
 
 
 def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
@@ -73,38 +104,51 @@ def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
     other token resolves. Empty / auto picks both whenever tokens resolve.
     """
     choice = overlay.config.code_host
+    if choice not in {"", "github", "gitlab"}:
+        msg = f"Unknown code_host: {choice!r}"
+        raise ValueError(msg)
+
     hosts: list[CodeHostBackend] = []
-    github_token = overlay.config.get_github_token()
     gitlab_token = overlay.config.get_gitlab_token()
 
     if choice == "github":
-        if github_token:
-            hosts.append(GitHubCodeHost(token=github_token))
+        github_host = _github_host(overlay)
+        if github_host is not None:
+            hosts.append(github_host)
         return hosts
     if choice == "gitlab":
         if gitlab_token:
             hosts.append(GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url))
         return hosts
-    if choice not in {"", "github", "gitlab"}:
-        msg = f"Unknown code_host: {choice!r}"
-        raise ValueError(msg)
 
-    # Auto mode: build one host per token that resolves. GitHub first so
-    # ``OverlayBackends.host`` (= ``hosts[0]``) preserves the legacy
-    # GitHub-wins-when-both-set precedence that single-platform callers
-    # downstream depend on.
+    # Auto mode: build one host per token that resolves. An explicit GitHub
+    # token goes first so ``OverlayBackends.host`` (= ``hosts[0]``) preserves
+    # the legacy GitHub-wins-when-both-set precedence single-platform callers
+    # depend on. Then GitLab. Then — only when NO explicit GitHub token — an
+    # ambient gh login is appended LAST, so an ambient-only GitHub host is
+    # primary solely when it is the sole host and never usurps an explicitly
+    # configured GitLab host.
+    github_token = overlay.config.get_github_token()
     if github_token:
         hosts.append(GitHubCodeHost(token=github_token))
     if gitlab_token:
         hosts.append(GitLabCodeHost(token=gitlab_token, base_url=overlay.config.gitlab_url))
+    if not github_token:
+        ambient_github = _github_host(overlay)
+        if ambient_github is not None:
+            hosts.append(ambient_github)
     return hosts
 
 
 def _host_backend(overlay: "OverlayBase", forge: Literal["github", "gitlab"]) -> CodeHostBackend | None:
-    """Build the backend for a resolved *forge* token, or ``None`` if no token."""
+    """Build the backend for a resolved *forge*, or ``None`` when unauthenticated.
+
+    GitHub falls back to the ambient ``gh`` login when no token is wired (see
+    :func:`_github_host`); GitLab's REST transport has no ambient path, so it
+    stays token-gated.
+    """
     if forge == "github":
-        token = overlay.config.get_github_token()
-        return GitHubCodeHost(token=token) if token else None
+        return _github_host(overlay)
     token = overlay.config.get_gitlab_token()
     return GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url) if token else None
 
@@ -122,29 +166,61 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     return _host_backend(overlay, forge)
 
 
-def pr_is_merged_or_closed(pr_url: str) -> bool:
-    """Whether the PR/MR at *pr_url* is provably MERGED or CLOSED (#2081).
+def issue_is_done(overlay: "OverlayBase", issue_url: str) -> bool:
+    """Whether *issue_url*'s upstream issue is done per *overlay*'s ``is_issue_done``.
 
-    Resolves the per-URL code host with the active overlay's credentials and
-    reads live state via :meth:`CodeHostBackend.get_pr_open_state`. Fail-OPEN:
-    only a *definite* MERGED/CLOSED returns ``True``; an empty URL, UNKNOWN
-    (auth / network / parse failure), an unresolvable host, or any exception
-    returns ``False`` so a transient API hiccup never suppresses a downstream
-    action.
+    The single completion-detection seam the ``sync-completions`` sweep and the
+    ``TicketCompletionScanner`` both consult before advancing a post-ship ticket.
+    Fail-SKIP: an unresolvable host, a fetch failure, an error payload, or a
+    non-dict response all return ``False`` (never advance on uncertainty) and a
+    fetch failure is logged, never raised — it must not abort the sweep or wedge
+    the scan.
+    """
+    host = get_code_host_for_url(overlay, issue_url)
+    if host is None:
+        return False
+    try:
+        issue_data = host.get_issue(issue_url)
+    except Exception:  # noqa: BLE001 — a fetch failure skips the ticket, never aborts the caller
+        logger.warning("Failed to fetch issue %s — skipping completion check", issue_url)
+        return False
+    if not isinstance(issue_data, dict) or "error" in issue_data:
+        return False
+    return bool(overlay.is_issue_done(issue_data))
+
+
+def pr_open_state(pr_url: str) -> PrOpenState:
+    """Live OPEN / MERGED / CLOSED state of the PR/MR at *pr_url*, per the forge.
+
+    Resolves the per-URL code host with the owning overlay's credentials and reads
+    :meth:`CodeHostBackend.get_pr_open_state`. Every indeterminate case — an empty
+    URL, an unresolvable overlay or host, any transport error — collapses to
+    :attr:`PrOpenState.UNKNOWN`, so a caller can never mistake a failed read for a
+    definite verdict. Distinguishing MERGED from CLOSED is what lets the board
+    reconcile advance a landed ticket while resolving an abandoned one.
     """
     if not pr_url:
-        return False
-    from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415
+        return PrOpenState.UNKNOWN
+    from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415 — deferred: backends ↔ core cycle
 
     try:
         host = get_code_host_for_url(get_overlay_for_url(pr_url), pr_url)
         if host is None:
-            return False
-        state = host.get_pr_open_state(pr_url=pr_url)
+            return PrOpenState.UNKNOWN
+        return host.get_pr_open_state(pr_url=pr_url)
     except Exception:
-        logger.exception("Live-state check failed for %s — failing open", pr_url)
-        return False
-    return state in {PrOpenState.MERGED, PrOpenState.CLOSED}
+        logger.exception("Live-state check failed for %s", pr_url)
+        return PrOpenState.UNKNOWN
+
+
+def pr_is_merged_or_closed(pr_url: str) -> bool:
+    """Whether the PR/MR at *pr_url* is provably MERGED or CLOSED (#2081).
+
+    Fail-OPEN: only a *definite* MERGED/CLOSED returns ``True``; the UNKNOWN that
+    :func:`pr_open_state` collapses every failure into returns ``False`` so a
+    transient API hiccup never suppresses a downstream action.
+    """
+    return pr_open_state(pr_url) in {PrOpenState.MERGED, PrOpenState.CLOSED}
 
 
 def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBackend | None:
@@ -157,25 +233,85 @@ def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBa
     GitLab-hosted repo and ran ``gh`` against a GitLab remote (#2025).
 
     Raises :class:`BackendResolutionError` when the origin host is a
-    recognised forge but the overlay has no credentials for it — surfacing
-    the mismatch BEFORE the PR-creation attempt instead of letting a raw
-    ``gh``/``glab`` GraphQL error be the first signal. Falls back to
+    recognised forge but the overlay has no working credentials for it —
+    surfacing the mismatch BEFORE the PR-creation attempt instead of letting
+    a raw ``gh``/``glab`` GraphQL error be the first signal. Falls back to
     :func:`get_code_host` (the overlay default) only when the repo has no
     origin remote / an unrecognised host.
+
+    GitHub carve-out: an overlay with no explicitly-configured GitHub token
+    is not necessarily unauthenticated — ``_run_gh`` already inherits the
+    ambient environment (and thus ``gh``'s own logged-in account) whenever
+    no token is passed. So when the forge is GitHub and no token is
+    configured, :func:`_github_host_for_repo` checks
+    :func:`gh_ambient_auth_available` and, if it passes, builds a
+    ``GitHubCodeHost(token="")`` that relies on that fallback rather than
+    raising. It ALSO prefers that logged-in account over a configured token
+    that provably cannot push to this repo — the non-collaborator ``gh pr
+    create`` → "must be a collaborator (createPullRequest)" abort. GitLab has
+    no equivalent: its REST transport (``GitLabHTTPClient``) returns early on
+    an empty token with no ``glab`` call at all, so it keeps raising here.
     """
     remote = git.remote_url(repo=repo_path)
     forge = forge_from_remote(remote) if remote else ""
     if not forge:
         return get_code_host(overlay)
+    if forge == "github":
+        return _github_host_for_repo(overlay, remote)
     backend = _host_backend(overlay, forge)
-    if backend is None:
-        msg = (
-            f"repo origin resolves to the {forge} forge ({remote!r}) but the active "
-            f"overlay has no {forge} credentials configured — cannot open a PR. "
-            f"Configure a {forge} token for this overlay."
-        )
-        raise BackendResolutionError(msg)
-    return backend
+    if backend is not None:
+        return backend
+    msg = (
+        f"repo origin resolves to the {forge} forge ({remote!r}) but the active "
+        f"overlay has no {forge} credentials configured — cannot open a PR. "
+        f"Configure a {forge} token for this overlay."
+    )
+    raise BackendResolutionError(msg)
+
+
+def _github_host_for_repo(overlay: "OverlayBase", remote: str) -> CodeHostBackend:
+    """Return the GitHub code host for *remote*'s repo, preferring the collaborator identity.
+
+    The configured GitHub token authors the PR unless it PROVABLY cannot push to
+    this repo while the ambient ``gh`` CLI account can — a bot/PAT configured for
+    other repos that is not a collaborator here, whose ``createPullRequest`` fails
+    "must be a collaborator". In that one case the logged-in ``gh`` account (the
+    collaborator) authors the PR. Falls back to the ambient account when no token
+    is configured (the #2946 carve-out), and raises when neither a token nor an
+    ambient ``gh`` login is available.
+    """
+    token = overlay.config.get_github_token()
+    slug = git_remote.slug_from_remote(remote)
+    if token and not _configured_token_blocked_but_ambient_can(slug, token=token):
+        return GitHubCodeHost(token=token)
+    if gh_ambient_auth_available():
+        return GitHubCodeHost(token="")
+    if token:
+        return GitHubCodeHost(token=token)
+    msg = (
+        f"repo origin resolves to the github forge ({remote!r}) but the active "
+        "overlay has no github credentials configured and no ambient gh login — "
+        "cannot open a PR. Configure a github token for this overlay."
+    )
+    raise BackendResolutionError(msg)
+
+
+def _configured_token_blocked_but_ambient_can(slug: str, *, token: str) -> bool:
+    """Whether *token* PROVABLY cannot push to *slug* while the ambient gh account can.
+
+    The single condition that overrides a configured token with the ambient
+    collaborator account. Both probes must be DEFINITE: the configured token
+    must return a definite ``push == false`` and the ambient account a definite
+    ``push == true``. Any uncertainty (no slug, ambient login absent, a
+    :func:`gh_can_push` ``None`` from a transient/parse error) leaves the
+    configured token in place — the PR-authoring identity never silently
+    switches on a flaky probe. The ambient probes run only after the configured
+    token is proven push-blocked, so a working token costs one ``repos/{slug}``
+    read and never touches the ambient account.
+    """
+    if not slug or gh_can_push(slug, token=token) is not False:
+        return False
+    return gh_ambient_auth_available() and gh_can_push(slug, token="") is True
 
 
 def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
@@ -196,19 +332,23 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     """
     choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
-        token_ref = overlay.config.slack_token_ref
-        user_token_ref = getattr(overlay.config, "user_token_ref", "")
+        tokens = resolve_messaging_tokens(
+            slack_token_ref=overlay.config.slack_token_ref,
+            user_token_ref=overlay.config.user_token_ref,
+            bot_fallback=overlay.config.get_slack_token(),
+        )
         return SlackBotBackend(
-            bot_token=read_pass(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
-            app_token=read_pass(f"{token_ref}-app") if token_ref else "",
-            user_token=read_pass(user_token_ref) if user_token_ref else "",
+            bot_token=tokens.bot,
+            app_token=tokens.app,
+            user_token=tokens.user,
             user_id=overlay.config.slack_user_id,
             # Setup-time provisioned IM channel id (#1342) — see
-            # ``OverlayConfig.slack_dm_channel_id``. ``getattr`` keeps older
-            # third-party overlay subclasses (that pre-date the field)
-            # working without an explicit default.
-            dm_channel_id=getattr(overlay.config, "slack_dm_channel_id", ""),
+            # ``OverlayConfig.slack_dm_channel_id``.
+            dm_channel_id=overlay.config.slack_dm_channel_id,
             degrade_bad_user_token=True,
+            # dm_only scope profile: the backend refuses every outbound but the
+            # owner's own DM (``assert_owner_dm`` at its token funnels).
+            owner_dm_only=overlay.config.slack_scope_profile == "dm_only",
         )
     if choice == "noop":
         return NoopMessagingBackend()
@@ -216,7 +356,12 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     raise ValueError(msg)
 
 
-@lru_cache(maxsize=1)
+# Bounded so multiple overlays (each keyed on its own token/url) coexist —
+# ``maxsize=1`` evicted the previous overlay's service on every alternating
+# resolve, rebuilding the GitLabAPI client each time. Realistic setups run a
+# handful of overlays, so a small ceiling avoids the thrash without unbounded
+# growth on token rotation.
+@lru_cache(maxsize=8)
 def get_ci_service(
     *,
     gitlab_token: str = "",

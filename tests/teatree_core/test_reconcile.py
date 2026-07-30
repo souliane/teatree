@@ -1,7 +1,9 @@
-"""Tests for teatree.core.reconcile — state drift detector."""
+"""Tests for teatree.core.worktree.reconcile — state drift detector."""
 
 import shutil
+import subprocess
 import tempfile
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
@@ -9,18 +11,33 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.worktree.branch_classification as bc
+from teatree.core.management.commands._workspace.cleanup import _fix_drift
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase
-from teatree.core.reconcile import (
+from teatree.core.models.merge_clear import MergeAudit, MergeClear
+from teatree.core.overlay import OverlayBase, OverlayProvisioning
+from teatree.core.worktree.reconcile import (
+    _GLOBAL_DRIFT_KEY,
+    DoneButUnmerged,
     Drift,
+    DuplicateScope,
     EnvCacheDrift,
     MissingEnvCache,
     MissingWorktreeDir,
+    UnpushedWork,
     UnresolvableOverlay,
+    _collect_stale_worktree_dirs,
+    _done_but_unmerged_for_ticket,
+    _duplicate_scope_for_ticket,
+    _unpushed_work_for_worktree,
+    find_orphan_dbs,
     reconcile_all,
     reconcile_ticket,
+    reconcile_work_state_all,
 )
-from teatree.core.worktree_env import write_env_cache
+from teatree.core.worktree.worktree_env import write_env_cache
+from teatree.utils import git
+from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 from tests.teatree_core.conftest import CommandOverlay
 
 _COMMAND = {"test": CommandOverlay()}
@@ -49,11 +66,14 @@ def _make_ghost(tmp: str, *, dir_name: str = "ticket-ghost") -> tuple[Ticket, Wo
     return ticket, wt, wt_path
 
 
-class _PgUserOverlay(CommandOverlay):
-    """Overlay that connects to postgres as a non-default superuser role."""
-
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+class _PgUserOverlayProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "localhost"}
+
+
+class _PgUserOverlay(CommandOverlay):
+    provisioning = _PgUserOverlayProvisioning()
+    """Overlay that connects to postgres as a non-default superuser role."""
 
 
 def _make(tmp: str, *, db_name: str = "wt_99") -> tuple[Ticket, Worktree, Path]:
@@ -85,15 +105,35 @@ class TestDriftDataclass(TestCase):
         assert drift.has_drift
         assert "missing-env-cache" in drift.format()
 
+    def test_work_state_findings_render_for_doctor(self) -> None:
+        # workspace doctor surfaces the SELFCATCH-1 findings for free via format().
+        drift = Drift(
+            ticket_pk=1,
+            unpushed_work=[UnpushedWork(worktree_pk=5, branch="feature", shas=["abc feat: x"])],
+            done_but_unmerged=[DoneButUnmerged(ticket_pk=1, branch="feature", reason="no merge audit")],
+            duplicate_scopes=[DuplicateScope(issue_number="42", paths=[Path("/w/42-a"), Path("/w/42-b")])],
+        )
+        rendered = drift.format()
+        assert drift.has_drift
+        assert "unpushed-work: wt#5 feature" in rendered
+        assert "done-but-unmerged: ticket#1 feature" in rendered
+        assert "duplicate-scope: issue 42" in rendered
+
+    def test_unpushed_probe_error_renders_reason(self) -> None:
+        drift = Drift(
+            ticket_pk=1, unpushed_work=[UnpushedWork(worktree_pk=5, branch="feature", probe_error="git boom")]
+        )
+        assert "probe inconclusive: git boom" in drift.format()
+
 
 class TestReconcileTicket(TestCase):
     def test_detects_missing_env_cache(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, _, _ = _make(tmp)
             drift = reconcile_ticket(ticket)
@@ -105,9 +145,9 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, _ = _make(tmp)
             spec = write_env_cache(wt)
@@ -123,9 +163,9 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, wt_path = _make(tmp)
             write_env_cache(wt)
@@ -139,11 +179,11 @@ class TestReconcileTicket(TestCase):
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
             patch(
-                "teatree.core.reconcile._find_docker_containers",
+                "teatree.core.worktree.reconcile._find_docker_containers",
                 return_value=["backend-wt99-web-1"],
             ),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, _ = _make(tmp)
             wt.state = Worktree.State.CREATED  # post-teardown
@@ -156,14 +196,74 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, _ = _make(tmp)
             write_env_cache(wt)
             drift = reconcile_ticket(ticket)
         assert not drift.has_drift
+
+
+class TestStaleClonePathDrift(TestCase):
+    """A ``clone_path`` that outlived its clone is drift the doctor names and repairs.
+
+    Left in place it turns every redundancy probe below it into "could not read",
+    which the emit record renders as "no unique commits" — the shape the judgment
+    skill routes to DELETE.
+    """
+
+    def _patches(self) -> tuple[AbstractContextManager, ...]:
+        return (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
+        )
+
+    @staticmethod
+    def _clone(workspace: Path) -> Path:
+        clone = workspace / "backend"
+        clone.mkdir(parents=True)
+        subprocess.run(
+            [_GIT, "init", "-q", "-b", "main", str(clone)], check=True, capture_output=True, env=_clean_env()
+        )
+        return clone
+
+    def test_a_stale_clone_path_is_reported_and_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for ctx in self._patches():
+                self.enterContext(ctx)
+            workspace = Path(tmp) / "workspace"
+            clone = self._clone(workspace)
+            ticket, wt, _ = _make(tmp)
+            wt.extra = {**wt.extra, "clone_path": str(Path(tmp) / "moved-away" / "backend")}
+            wt.save(update_fields=["extra"])
+            write_env_cache(wt)
+
+            drift = reconcile_ticket(ticket)
+            assert [f.worktree_pk for f in drift.stale_clone_paths] == [wt.pk]
+            assert "stale-clone-path" in drift.format()
+
+            with patch("teatree.core.management.commands._workspace.cleanup.clone_root", return_value=workspace):
+                fixes = _fix_drift(drift)
+
+            assert any(f"repaired clone_path wt#{wt.pk}" in line for line in fixes), fixes
+            wt.refresh_from_db()
+            assert wt.extra["clone_path"] == str(clone)
+
+    def test_a_live_clone_path_is_not_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for ctx in self._patches():
+                self.enterContext(ctx)
+            clone = self._clone(Path(tmp) / "workspace")
+            ticket, wt, _ = _make(tmp)
+            wt.extra = {**wt.extra, "clone_path": str(clone)}
+            wt.save(update_fields=["extra"])
+            write_env_cache(wt)
+
+            assert reconcile_ticket(ticket).stale_clone_paths == []
 
 
 class TestReconcileMissingDbUsesWorktreePgUser(TestCase):
@@ -187,9 +287,9 @@ class TestReconcileMissingDbUsesWorktreePgUser(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=self._OVERLAYS),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", side_effect=self._existing_only_as_superuser),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", side_effect=self._existing_only_as_superuser),
         ):
             ticket, wt, _ = _make(tmp)
             write_env_cache(wt)
@@ -200,9 +300,9 @@ class TestReconcileMissingDbUsesWorktreePgUser(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=self._OVERLAYS),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=False),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=False),
         ):
             ticket, wt, _ = _make(tmp)
             write_env_cache(wt)
@@ -219,9 +319,9 @@ class TestReconcileUnresolvableOverlay(TestCase):
     def _patches(self):
         return (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         )
 
     def test_records_unresolvable_overlay_instead_of_raising(self) -> None:
@@ -261,3 +361,293 @@ class TestReconcileUnresolvableOverlay(TestCase):
         assert ghost_ticket.pk in drifts
         assert ok_ticket.pk in drifts
         assert len(drifts[ok_ticket.pk].missing_worktree_dirs) == 1
+
+
+class TestStaleWorktreeDirAttributionIsSegmentAnchored(TestCase):
+    """Stale-dir attribution anchors the ticket-number on path segments (#WT-PR-D finding 17).
+
+    ``/9`` must not match ``/90``: the pre-fix raw substring (``f"/{n}" in path``)
+    mis-attributed an unrelated ticket-90 dir to ticket 9.
+    """
+
+    def _ticket9_with_wt(self) -> tuple[Ticket, Worktree]:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/9")
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="repo",
+            branch="9-fix",
+            extra={"worktree_path": "/ws/9-fix/repo"},
+        )
+        return ticket, wt
+
+    def test_ticket90_dir_not_attributed_to_ticket9(self) -> None:
+        ticket, wt = self._ticket9_with_wt()
+        drift = Drift(ticket_pk=ticket.pk)
+        foreign = "/ws/90-other/repo"  # belongs to ticket 90, not 9
+        with (
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value={foreign}),
+            patch("teatree.core.worktree.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
+        ):
+            _collect_stale_worktree_dirs(drift, [wt], ticket, Path("/ws"))
+
+        assert drift.stale_worktree_dirs == []
+
+    def test_genuine_ticket9_dir_is_attributed(self) -> None:
+        ticket, wt = self._ticket9_with_wt()
+        drift = Drift(ticket_pk=ticket.pk)
+        genuine = "/ws/9-elsewhere/repo"  # a stale dir genuinely for ticket 9
+        with (
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value={genuine}),
+            patch("teatree.core.worktree.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
+        ):
+            _collect_stale_worktree_dirs(drift, [wt], ticket, Path("/ws"))
+
+        assert len(drift.stale_worktree_dirs) == 1
+        assert str(drift.stale_worktree_dirs[0].path) == genuine
+
+
+# ── SELFCATCH-1: work-tracking-truth findings ────────────────────────
+
+
+def _init_repo(tmp: Path) -> Path:
+    """A bare origin + a work clone with one base commit on main pushed to origin."""
+    remote = tmp / "remote.git"
+    subprocess.run(
+        [_GIT, "init", "-q", "--bare", "-b", "main", str(remote)],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    work = tmp / "work"
+    work.mkdir()
+    _run_git("init", "-q", "-b", "main", cwd=work)
+    _run_git("config", "user.email", "t@t", cwd=work)
+    _run_git("config", "user.name", "t", cwd=work)
+    _run_git("remote", "add", "origin", str(remote), cwd=work)
+    (work / "base.txt").write_text("base\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", "initial", cwd=work)
+    _run_git("push", "-q", "origin", "main", cwd=work)
+    _run_git("fetch", "-q", "origin", cwd=work)
+    return work
+
+
+def _branch_with_unpushed_commit(work: Path, branch: str, fname: str, subject: str) -> None:
+    """Create ``branch`` off main with one committed-but-unpushed commit, then return to main."""
+    _run_git("checkout", "-q", "-b", branch, "main", cwd=work)
+    (work / fname).write_text("x\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=work)
+    _run_git("commit", "-q", "-m", subject, cwd=work)
+    _run_git("checkout", "-q", "main", cwd=work)
+
+
+def _no_forge() -> AbstractContextManager[object]:
+    """Stub the forge merge-state probe absent so only deterministic git content decides."""
+    return patch.object(bc, "probe_host_cli", return_value="")
+
+
+class TestUnpushedWorkFinding(TestCase):
+    """A live worktree carrying commits absent from every remote is surfaced (PR-01/PR-25 class)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _wt(self, wt_path: Path, branch: str) -> Worktree:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/7")
+        return Worktree.objects.create(
+            ticket=ticket, repo_path="repo", branch=branch, extra={"worktree_path": str(wt_path)}
+        )
+
+    def test_committed_unpushed_commit_is_flagged(self) -> None:
+        work = _init_repo(self.tmp)
+        _branch_with_unpushed_commit(work, "feature", "new.txt", "feat: unpushed work")
+        _run_git("checkout", "-q", "feature", cwd=work)
+        finding = _unpushed_work_for_worktree(self._wt(work, "feature"))
+        assert isinstance(finding, UnpushedWork)
+        assert finding.shas
+        assert not finding.probe_error
+        assert "feat: unpushed work" in finding.shas[0]
+
+    def test_fully_pushed_worktree_is_not_flagged(self) -> None:
+        work = _init_repo(self.tmp)  # HEAD == origin/main, nothing local
+        assert _unpushed_work_for_worktree(self._wt(work, "main")) is None
+
+    def test_non_git_dir_is_not_flagged(self) -> None:
+        plain = self.tmp / "not-a-repo"
+        plain.mkdir()
+        assert _unpushed_work_for_worktree(self._wt(plain, "main")) is None
+
+    def test_inconclusive_probe_is_a_finding_not_silent_pass(self) -> None:
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=empty)  # a git worktree with an unresolvable HEAD
+        finding = _unpushed_work_for_worktree(self._wt(empty, "main"))
+        assert isinstance(finding, UnpushedWork)
+        assert finding.probe_error
+        assert not finding.shas
+
+
+class TestDoneButUnmergedFinding(TestCase):
+    """A ticket marked done whose branch never merged is surfaced (believe-done-what-isn't)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _done_ticket(self, branch: str, work: Path) -> tuple[Ticket, Worktree]:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/8", state=Ticket.State.MERGED)
+        wt = Worktree.objects.create(ticket=ticket, repo_path="repo", branch=branch, extra={"clone_path": str(work)})
+        return ticket, wt
+
+    def test_done_ticket_unmerged_branch_flagged(self) -> None:
+        work = _init_repo(self.tmp)
+        _branch_with_unpushed_commit(work, "feature", "ahead.txt", "feat: never merged")
+        ticket, wt = self._done_ticket("feature", work)
+        with _no_forge():
+            finding = _done_but_unmerged_for_ticket(ticket, [wt], self.tmp)
+        assert isinstance(finding, DoneButUnmerged)
+        assert finding.branch == "feature"
+        assert "unmerged commit" in finding.reason
+
+    def test_done_ticket_with_merge_audit_not_flagged(self) -> None:
+        work = _init_repo(self.tmp)
+        _branch_with_unpushed_commit(work, "feature", "ahead.txt", "feat: merged")
+        ticket, wt = self._done_ticket("feature", work)
+        clear = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=8,
+            slug="repo",
+            reviewed_sha="a" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+        MergeAudit.objects.create(clear=clear, merged_sha="b" * 40, required_checks_status="green")
+        with _no_forge():
+            assert _done_but_unmerged_for_ticket(ticket, [wt], self.tmp) is None
+
+    def test_done_ticket_upstream_branch_not_flagged(self) -> None:
+        work = _init_repo(self.tmp)  # branch "main" is fully upstream (redundant)
+        ticket, wt = self._done_ticket("main", work)
+        with _no_forge():
+            assert _done_but_unmerged_for_ticket(ticket, [wt], self.tmp) is None
+
+    def test_inconclusive_branch_probe_is_a_finding(self) -> None:
+        work = _init_repo(self.tmp)  # branch does not exist → git cherry fails → inconclusive
+        ticket, wt = self._done_ticket("ghost-branch", work)
+        with _no_forge():
+            finding = _done_but_unmerged_for_ticket(ticket, [wt], self.tmp)
+        assert isinstance(finding, DoneButUnmerged)
+        assert "inconclusive" in finding.reason
+
+    def test_non_done_ticket_not_flagged(self) -> None:
+        work = _init_repo(self.tmp)
+        _branch_with_unpushed_commit(work, "feature", "ahead.txt", "feat: in progress")
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/8", state=Ticket.State.STARTED)
+        wt = Worktree.objects.create(ticket=ticket, repo_path="repo", branch="feature", extra={"clone_path": str(work)})
+        with _no_forge():
+            assert _done_but_unmerged_for_ticket(ticket, [wt], self.tmp) is None
+
+
+class TestDuplicateScopeFinding(TestCase):
+    """More than one worktree dir for the same issue scope is surfaced (blind-redo)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt_root = self.tmp / "wtroot"
+        self.wt_root.mkdir()
+
+    def _ticket(self, branch: str) -> Ticket:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/42")
+        ticket.extra = {"branch": branch}
+        ticket.save()
+        return ticket
+
+    def test_two_worktree_dirs_for_one_issue_flagged(self) -> None:
+        (self.wt_root / "42-first").mkdir()
+        (self.wt_root / "42-second").mkdir()
+        ticket = self._ticket("42-first")
+        finding = _duplicate_scope_for_ticket(ticket, [], self.wt_root)
+        assert isinstance(finding, DuplicateScope)
+        assert finding.issue_number == "42"
+        assert any(p.name == "42-second" for p in finding.paths)
+
+    def test_single_scope_not_flagged(self) -> None:
+        (self.wt_root / "42-first").mkdir()
+        ticket = self._ticket("42-first")
+        assert _duplicate_scope_for_ticket(ticket, [], self.wt_root) is None
+
+
+class TestReconcileWorkStateAll(TestCase):
+    """The loop entry point surfaces work-state drift and stays read-only."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_surfaces_unpushed_and_stays_read_only(self) -> None:
+        work = _init_repo(self.tmp)
+        _branch_with_unpushed_commit(work, "feature", "new.txt", "feat: unpushed")
+        _run_git("checkout", "-q", "feature", cwd=work)
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/7")
+        Worktree.objects.create(ticket=ticket, repo_path="repo", branch="feature", extra={"worktree_path": str(work)})
+        with _no_forge():
+            drifts = reconcile_work_state_all()
+        assert ticket.pk in drifts
+        assert drifts[ticket.pk].unpushed_work
+        # Read-only: the surfaced work is NOT auto-pushed — it stays unpushed.
+        assert git.commits_absent_from_all_remotes(str(work), "HEAD")
+
+    def test_clean_worktree_yields_no_findings(self) -> None:
+        work = _init_repo(self.tmp)
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/7")
+        Worktree.objects.create(ticket=ticket, repo_path="repo", branch="main", extra={"worktree_path": str(work)})
+        with _no_forge():
+            assert reconcile_work_state_all() == {}
+
+
+class TestFindOrphanDbs(TestCase):
+    """``find_orphan_dbs`` gives ``Drift.orphan_dbs`` a producer (leaked-DB detection).
+
+    A teardown whose DB drop failed still deletes the Worktree row, so the ``wt_*``
+    database is left referenced by nothing. The reconciler must surface it so
+    ``workspace doctor`` can drop it, rather than let it leak forever.
+    """
+
+    def _psql_listing(self, *db_names: str) -> subprocess.CompletedProcess[str]:
+        stdout = "\n".join(f"{name}|postgres|UTF8" for name in db_names) + "\n"
+        return subprocess.CompletedProcess(args=["psql"], returncode=0, stdout=stdout, stderr="")
+
+    def test_wt_db_with_no_worktree_row_is_orphan(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1")
+        Worktree.objects.create(ticket=ticket, repo_path="repo", branch="fix-1", db_name="wt_referenced")
+
+        with (
+            patch("teatree.core.worktree.reconcile.shutil.which", return_value="/usr/bin/psql"),
+            patch(
+                "teatree.core.worktree.reconcile.run_allowed_to_fail",
+                return_value=self._psql_listing("wt_referenced", "wt_leaked", "template1"),
+            ),
+        ):
+            orphans = find_orphan_dbs()
+
+        assert [o.db_name for o in orphans] == ["wt_leaked"]
+
+    def test_no_psql_client_yields_no_findings(self) -> None:
+        with patch("teatree.core.worktree.reconcile.shutil.which", return_value=None):
+            assert find_orphan_dbs() == []
+
+    def test_reconcile_all_surfaces_orphan_db_under_global_key(self) -> None:
+        with (
+            patch("teatree.core.worktree.reconcile.shutil.which", return_value="/usr/bin/psql"),
+            patch(
+                "teatree.core.worktree.reconcile.run_allowed_to_fail",
+                return_value=self._psql_listing("wt_leaked"),
+            ),
+        ):
+            drifts = reconcile_all()
+
+        assert _GLOBAL_DRIFT_KEY in drifts
+        assert [o.db_name for o in drifts[_GLOBAL_DRIFT_KEY].orphan_dbs] == ["wt_leaked"]

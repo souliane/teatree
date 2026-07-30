@@ -15,7 +15,7 @@ and every small canonical-source skill (smallest-first fill); only the largest
 peripheral skills shed. The realistic-overload condition is preserved — the bundle
 still dwarfs the preamble.
 
-Two seams keep :mod:`teatree.eval.sdk_runner` thin (it is at its module-LOC
+Two seams keep :mod:`teatree.eval.api_runner` thin (it is at its module-LOC
 cap): :func:`build_system_prompt` resolves the lane-correct system prompt
 (one skill + live-env framing, or the budgeted bundle + bundle framing), and
 :func:`build_user_prompt` prepends the polluted preamble to the scenario prompt.
@@ -28,7 +28,8 @@ pollution lives in the prompt TEXT, never as a faked multi-turn history.
 from pathlib import Path
 
 from teatree.eval.models import UNDER_LOAD_LANE, EvalSpec
-from teatree.eval.prompt_framing import LIVE_ENV_FRAMING, SKILL_BUNDLE_FRAMING
+from teatree.eval.prompt_framing import DELEGATION_FRAMING, LIVE_ENV_FRAMING, SKILL_BUNDLE_FRAMING
+from teatree.eval.toolset import scenario_exposes_subagent_spawn
 
 #: ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 #: module's path (the same backwards-edge convention discovery follows) so the
@@ -58,7 +59,7 @@ _BUNDLE_CHAR_BUDGET = 600_000
 #: skill): ``rules`` is the cross-cutting invariant surface that every real session
 #: loads, so it is the single most important source of the cross-rule competition
 #: the lane reproduces. Keeping it guarantees a scenario whose ``agent_path`` is a
-#: DIFFERENT skill (e.g. ``speed``) still runs under the rules-skill load.
+#: DIFFERENT skill (e.g. ``wip``) still runs under the rules-skill load.
 _ALWAYS_KEEP_SKILLS: frozenset[str] = frozenset({"rules"})
 
 
@@ -165,14 +166,20 @@ def build_system_prompt(spec: EvalSpec, *, clean_room_prompt: str, skills_dir: P
     :data:`_BUNDLE_CHAR_BUDGET` (the scenario's own ``agent_path`` skill always
     kept) so a full bundle + a realistic preamble + a multi-tool scenario fits the
     model's input window instead of 400ing before the model runs.
+
+    A scenario that can reach the ``Agent`` SPAWN tool additionally gets
+    :data:`DELEGATION_FRAMING` appended in BOTH lanes, naming the one sub-agent the
+    runner registers so a dispatch lands on the bounded stub instead of the
+    unbounded built-in — see that constant for the measured reason.
     """
+    delegation = DELEGATION_FRAMING if scenario_exposes_subagent_spawn(spec) else ""
     if spec.lane != UNDER_LOAD_LANE:
-        return clean_room_prompt
+        return clean_room_prompt + delegation
     bundle = load_budgeted_skill_bundle(
         keep_skill=_agent_path_skill_name(spec.agent_path),
         skills_dir=skills_dir,
     )
-    return SKILL_BUNDLE_FRAMING + bundle + LIVE_ENV_FRAMING
+    return SKILL_BUNDLE_FRAMING + bundle + LIVE_ENV_FRAMING + delegation
 
 
 def build_user_prompt(spec: EvalSpec) -> str:

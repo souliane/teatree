@@ -26,9 +26,18 @@ from django.test import TestCase
 from teatree.core.merge import merge_ticket_pr, restore_caller_branch
 from teatree.core.merge.head_guard import _capture_head, _restore_head
 from teatree.core.models import MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these pre-date it and target other concerns, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+
 
 _SHA = "a" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
@@ -80,7 +89,7 @@ def _ticket() -> Ticket:
 
 
 def _clear(ticket: Ticket) -> MergeClear:
-    return MergeClear.objects.create(
+    clear = MergeClear.objects.create(
         ticket=ticket,
         pr_id=2380,
         slug="souliane/teatree",
@@ -89,16 +98,30 @@ def _clear(ticket: Ticket) -> MergeClear:
         gh_verify_result=MergeClear.VerifyResult.GREEN,
         blast_class=MergeClear.BlastClass.DOCS,
     )
+    # The #2829 merge-verdict gate requires the sibling verdict the real
+    # ``clear`` path records.
+    seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
+    return clear
 
 
-def _gh_ok(argv: list[str]) -> tuple[int, str, str]:
-    joined = " ".join(argv)
+def _read_probe(joined: str) -> tuple[int, str, str] | None:
+    """The §17.4.3 read-only probes (head / draft / checks / branch-protection)."""
     if "headRefOid" in joined:
         return (0, _SHA, "")
     if "isDraft" in joined:
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        # Base branch "main"; empty required-context gate → live rollup verdict stands.
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
+    return None
+
+
+def _gh_ok(argv: list[str]) -> tuple[int, str, str]:
+    joined = " ".join(argv)
+    if (probe := _read_probe(joined)) is not None:
+        return probe
     if "state,mergeCommit" in joined:
         return (0, '{"state": "OPEN", "mergeCommit": null}', "")
     if "pulls" in joined and "merge" in joined:

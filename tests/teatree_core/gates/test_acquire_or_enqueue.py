@@ -14,6 +14,7 @@ from django.test import TestCase
 
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, acquire_or_enqueue
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
 
 
@@ -74,6 +75,44 @@ class TestEnqueueWhenStillFull(TestCase):
             # The whole point of #2190: NO SystemExit — proven by it not raising.
             result = acquire_or_enqueue(candidate, write_out=lambda _m: None)
         assert result is False
+
+
+class TestRamAwareAdmission(TestCase):
+    """#2949: on a capped overlay, hold a new stack when host RAM is over the ceiling."""
+
+    def test_ram_over_ceiling_enqueues_even_with_a_free_count_slot(self) -> None:
+        candidate = _worktree(ticket_number="600", state=Worktree.State.PROVISIONED)
+        messages: list[str] = []
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
+            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.hold("ram")),
+        ):
+            acquired = acquire_or_enqueue(candidate, write_out=messages.append)
+        assert acquired is False
+        item = LocalStackQueueItem.objects.get(worktree=candidate)
+        assert item.status == LocalStackQueueItem.Status.QUEUED
+        assert any("queued" in m.lower() for m in messages)
+
+    def test_ram_ok_proceeds_to_the_count_gate(self) -> None:
+        candidate = _worktree(ticket_number="601", state=Worktree.State.PROVISIONED)
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
+            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.allow()),
+        ):
+            acquired = acquire_or_enqueue(candidate, write_out=lambda _m: None)
+        assert acquired is True
+        assert LocalStackQueueItem.objects.count() == 0
+
+    def test_unbounded_overlay_never_ram_holds(self) -> None:
+        """The default (unbounded) overlay keeps its pre-#2949 behaviour — RAM is not consulted."""
+        candidate = _worktree(ticket_number="602", state=Worktree.State.PROVISIONED)
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=0),
+            patch.object(gate_mod, "check_provision_admission", return_value=ProvisionAdmissionVerdict.hold("ram")),
+        ):
+            acquired = acquire_or_enqueue(candidate, write_out=lambda _m: None)
+        assert acquired is True
+        assert LocalStackQueueItem.objects.count() == 0
 
 
 class TestReapThenAcquire(TestCase):
@@ -174,6 +213,51 @@ class TestReapIdleStacksHelper(TestCase):
             assert reap_idle_stacks(overlay="t3-heavy") == 0
         wt.refresh_from_db()
         assert wt.state == Worktree.State.SERVICES_UP
+
+
+class TestReapScopedByTicketOverlay(TestCase):
+    """F2.11: the reap is scoped by the TICKET's overlay, not the (possibly blank) Worktree.overlay.
+
+    A candidate row auto-detected via cwd can carry an empty ``Worktree.overlay``
+    while its ticket carries the real overlay; reaping by ``candidate.overlay``
+    alone would target the wrong (empty) overlay, free nothing, and needlessly
+    re-enqueue. The reap must use ``candidate.ticket.overlay or candidate.overlay``
+    — matching the cap-count scoping in ``check_local_stack_limit``.
+    """
+
+    def test_reap_uses_ticket_overlay_when_worktree_overlay_blank(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-heavy", issue_url="https://example.com/t3-heavy/issues/700")
+        candidate = Worktree.objects.create(
+            overlay="",  # blank — auto-detected via cwd
+            ticket=ticket,
+            repo_path="backend",
+            branch="700-feat",
+            state=Worktree.State.PROVISIONED,
+        )
+        blocker_ticket = Ticket.objects.create(overlay="t3-heavy", issue_url="https://example.com/t3-heavy/issues/701")
+        Worktree.objects.create(
+            overlay="t3-heavy",
+            ticket=blocker_ticket,
+            repo_path="backend",
+            branch="701-feat",
+            state=Worktree.State.SERVICES_UP,
+        )
+
+        captured: dict[str, object] = {}
+
+        def _reap(*, overlay: str, write_out: object = None) -> int:
+            captured["overlay"] = overlay
+            return 0
+
+        with (
+            patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
+            patch.object(gate_mod, "_running_container_count", return_value=1),
+            patch.object(gate_mod, "reap_idle_stacks", side_effect=_reap),
+        ):
+            acquire_or_enqueue(candidate, write_out=lambda _m: None)
+
+        # Scoped to the ticket's real overlay, NOT the blank Worktree.overlay ("").
+        assert captured["overlay"] == "t3-heavy"
 
 
 class TestCheckLimitUntouched(TestCase):

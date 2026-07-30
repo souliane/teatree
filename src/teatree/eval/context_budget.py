@@ -1,11 +1,12 @@
 """Section-scoped system-prompt extraction — the eval token-cost lever.
 
-The metered ``sdk`` lane drives one in-process Agent-SDK query per scenario and resends the
+The metered ``api`` lane drives one in-process Agent-SDK query per scenario and resends the
 WHOLE ``agent_path`` SKILL.md as ``--system-prompt`` every time, with no
 cross-scenario cache. The dominant input-token cost of a suite run is therefore
-the sum of those whole-file prompts: ~1.6 M input tokens across the catalog,
-half of it ``skills/rules/SKILL.md`` (77 KB) resent for 40 scenarios that each
-test ONE of its ~50 rules.
+the sum of those whole-file prompts: 18.1 MB across the catalog were nothing
+narrowed, two thirds of it ``skills/rules/SKILL.md`` (155 KB) resent for 78 specs
+that each test ONE of its 73 sections. The specs narrowed so far take what is
+actually sent down to 10.5 MB.
 
 A scenario that pins one rule does not need the other forty-nine in its system
 prompt. When a spec declares ``agent_sections`` this module sends only those
@@ -64,11 +65,19 @@ def extract_sections(text: str, section_names: tuple[str, ...]) -> str:
 
 
 def _section_spans(text: str, headings: list[re.Match[str]]) -> list[tuple[str, int, int]]:
-    """``(heading_text, start, end)`` for each section, end = next heading start."""
+    """``(heading_text, start, end)`` per section, end at the next SAME-OR-SHALLOWER heading.
+
+    Ending at the next heading of any depth would stop a section at its own first
+    subsection, so a rule whose carve-outs and worked examples live under deeper
+    headings would reach the grader stripped of them — a silently narrowed rule that
+    every matcher still passes.
+    """
     spans: list[tuple[str, int, int]] = []
     for index, match in enumerate(headings):
-        title = match.group(2)
-        start = match.start()
-        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
-        spans.append((title, start, end))
+        depth = len(match.group(1))
+        end = next(
+            (later.start() for later in headings[index + 1 :] if len(later.group(1)) <= depth),
+            len(text),
+        )
+        spans.append((match.group(2), match.start(), end))
     return spans

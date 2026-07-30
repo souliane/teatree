@@ -1,15 +1,39 @@
 """Behaviour tests for the bot→user notification helper (#963)."""
 
+import json
+import os
+import sqlite3
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, IncomingEvent
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user, resolve_owner_dm_backend
+from teatree.core.notify_types import NotifyReason
 
 _DB_LOCKED = OperationalError("database is locked")
+
+
+def _seed_config(db: Path, key: str, value: object, scope: str = "") -> None:
+    """Seed a ``teatree_config_setting`` row the cold reader (and load_config) resolve."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:
@@ -27,6 +51,7 @@ class TestNotifyUser(TestCase):
             "tests are green",
             kind=NotifyKind.INFO,
             idempotency_key="sess=a;turn=1",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -63,6 +88,7 @@ class TestNotifyUser(TestCase):
             "answering your question",
             kind=NotifyKind.ANSWER,
             idempotency_key="threaded-answer",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -76,11 +102,51 @@ class TestNotifyUser(TestCase):
             "first message in the conversation",
             kind=NotifyKind.INFO,
             idempotency_key="rootless",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
 
         assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+
+    def test_table_blocks_reach_post_message_with_fence_fallback(self) -> None:
+        # A caller with tabular data passes the monospace fence as ``text`` and
+        # the native ``table`` block as ``blocks``; both must reach post_message.
+        from teatree.backends.slack.table_format import render_table_message  # noqa: PLC0415
+
+        backend = _backend()
+        message = render_table_message(["ID", "Name"], [["1", "Alice"]], title="Records")
+
+        notify_user(
+            message.fence,
+            kind=NotifyKind.INFO,
+            idempotency_key="table-dm",
+            audience=NotifyAudience.OWNER_DELIVERY,
+            backend=backend,
+            user_id="U_ME",
+            blocks=message.blocks,
+            linkify=False,
+        )
+
+        call_kwargs = backend.post_message.call_args.kwargs
+        assert [b["type"] for b in call_kwargs["blocks"]] == ["section", "table"]
+        assert "```" in call_kwargs["text"]
+
+    def test_no_blocks_kwarg_on_the_text_only_path(self) -> None:
+        # A plain notification calls post_message without a ``blocks`` kwarg, so
+        # a backend predating the argument keeps working unchanged.
+        backend = _backend()
+
+        notify_user(
+            "plain text notification",
+            kind=NotifyKind.INFO,
+            idempotency_key="plain-no-blocks",
+            audience=NotifyAudience.OWNER_DELIVERY,
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert "blocks" not in backend.post_message.call_args.kwargs
 
     def test_active_thread_lookup_db_error_falls_back_to_root(self) -> None:
         backend = _backend()
@@ -92,6 +158,7 @@ class TestNotifyUser(TestCase):
                 "lookup blew up but the DM still lands",
                 kind=NotifyKind.INFO,
                 idempotency_key="thread-lookup-db-error",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -105,6 +172,7 @@ class TestNotifyUser(TestCase):
             "draft reply ready",
             kind="answer",
             idempotency_key="alias-str",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -118,6 +186,7 @@ class TestNotifyUser(TestCase):
             "first",
             kind=NotifyKind.INFO,
             idempotency_key="dup",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -125,6 +194,7 @@ class TestNotifyUser(TestCase):
             "second",
             kind=NotifyKind.INFO,
             idempotency_key="dup",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -156,6 +226,7 @@ class TestNotifyUser(TestCase):
                     "concurrent second tick",
                     kind=NotifyKind.INFO,
                     idempotency_key="toctou",
+                    audience=NotifyAudience.OWNER_DELIVERY,
                     backend=backend,
                     user_id="U_ME",
                 )
@@ -167,6 +238,7 @@ class TestNotifyUser(TestCase):
             "first tick",
             kind=NotifyKind.INFO,
             idempotency_key="toctou",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -198,6 +270,7 @@ class TestNotifyUser(TestCase):
                 "retry me",
                 kind=NotifyKind.INFO,
                 idempotency_key="retry-1306",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=bad_backend,
                 user_id="U_ME",
             )
@@ -212,6 +285,7 @@ class TestNotifyUser(TestCase):
                 "retry me",
                 kind=NotifyKind.INFO,
                 idempotency_key="retry-1306",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=good_backend,
                 user_id="U_ME",
             )
@@ -228,6 +302,7 @@ class TestNotifyUser(TestCase):
                 "no backend",
                 kind=NotifyKind.QUESTION,
                 idempotency_key="noop-backend",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=None,
                 user_id="U_ME",
             )
@@ -243,6 +318,7 @@ class TestNotifyUser(TestCase):
             "no user id",
             kind=NotifyKind.QUESTION,
             idempotency_key="noop-uid",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="",
         )
@@ -259,6 +335,7 @@ class TestNotifyUser(TestCase):
             "boom",
             kind=NotifyKind.INFO,
             idempotency_key="failed",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -283,6 +360,7 @@ class TestNotifyUser(TestCase):
             "this never lands",
             kind=NotifyKind.INFO,
             idempotency_key="empty-channel",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -310,6 +388,7 @@ class TestNotifyUser(TestCase):
             "not actually posted",
             kind=NotifyKind.INFO,
             idempotency_key="ok-false",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -331,6 +410,7 @@ class TestNotifyUser(TestCase):
             "phantom success",
             kind=NotifyKind.INFO,
             idempotency_key="empty-ts",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -349,6 +429,7 @@ class TestNotifyUser(TestCase):
             "still sent",
             kind=NotifyKind.INFO,
             idempotency_key="permalink-fail",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -368,6 +449,7 @@ class TestNotifyUser(TestCase):
                 "shh",
                 kind=NotifyKind.INFO,
                 idempotency_key="disabled",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -399,6 +481,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "delivery claim under lock contention",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-claim",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -414,6 +497,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "lock contention on the sent finalize",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-sent",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -431,6 +515,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "no backend, locked audit",
                 kind=NotifyKind.QUESTION,
                 idempotency_key="db-locked-noop",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=None,
                 user_id="U_ME",
             )
@@ -445,6 +530,7 @@ class TestNotifyUserNeverRaises(TestCase):
                 "delivery failed, locked finalize",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-failed",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -462,6 +548,7 @@ class TestNotifyUserLinkify(TestCase):
             text,
             kind=NotifyKind.INFO,
             idempotency_key="linkify-md",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -488,6 +575,7 @@ class TestNotifyUserLinkify(TestCase):
                 "approve !281 then !999",
                 kind=NotifyKind.INFO,
                 idempotency_key="linkify-mr",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -505,6 +593,7 @@ class TestNotifyUserLinkify(TestCase):
             text,
             kind=NotifyKind.INFO,
             idempotency_key="linkify-off",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
             linkify=False,
@@ -521,6 +610,7 @@ class TestNotifyUserLinkify(TestCase):
                 "ship [the PR](https://example.com/pr/1) and !281",
                 kind=NotifyKind.INFO,
                 idempotency_key="linkify-overlay-fail",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -533,12 +623,13 @@ class TestNotifyUserLinkify(TestCase):
         assert "!281" in sent_text
 
     def test_workaround_user_id_kwarg_still_supported(self) -> None:
-        """``notify_user(user_id="U0DEMOUSER1")`` workaround must still work."""
+        """``notify_user(user_id="U0DEMOUSER1", audience=NotifyAudience.OWNER_DELIVERY)`` workaround must still work."""
         backend = _backend()
         sent = notify_user(
             "ping",
             kind=NotifyKind.INFO,
             idempotency_key="user-id-workaround",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U0DEMOUSER1",
         )
@@ -569,3 +660,39 @@ class TestPublicHelperSurface:
         out = notify_module.format_notification("hello", NotifyKind.INFO)
         assert "hello" in out
         assert "info" in out.lower()
+
+
+class TestResolveUserId(TestCase):
+    """``resolve_user_id``: overlay registry → global DB ``slack_user_id`` → empty."""
+
+    def test_global_db_fallback_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "slack_user_id", "U-GLOBAL")
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
+                os.environ.pop("T3_OVERLAY_NAME", None)
+                assert notify_module.resolve_user_id() == "U-GLOBAL"
+
+    def test_overlay_registry_beats_global_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "slack_user_id", "U-GLOBAL")
+            _seed_config(db, "overlays", {"acme": {"slack_user_id": "U-OVERLAY"}})
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": "acme"}):
+                assert notify_module.resolve_user_id() == "U-OVERLAY"
+
+    def test_empty_when_nothing_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "unrelated", "x")  # a DB with the table but no slack_user_id row
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
+                os.environ.pop("T3_OVERLAY_NAME", None)
+                assert notify_module.resolve_user_id() == ""
+
+
+class ResolveOwnerDmBackendFailClosedTests(TestCase):
+    def test_a_broken_transport_resolution_is_treated_as_no_transport(self) -> None:
+        with patch("teatree.core.notify.messaging_from_overlay", side_effect=RuntimeError("bad entry point")):
+            backend, reason = resolve_owner_dm_backend()
+        assert backend is None
+        assert reason is NotifyReason.NO_MESSAGING_BACKEND

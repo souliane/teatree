@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
@@ -12,15 +13,19 @@ from django.core.exceptions import ImproperlyConfigured
 
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
+from teatree.config.settings import OverlayEntry
+from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import (
     OverlayConfigResolver,
     _discover_toml_overlays,
     frontend_repos_for_overlay,
+    get_overlay,
     get_overlay_for_repo,
     get_overlay_for_url,
     infer_overlay_for_url,
     resolve_overlay_name,
+    ticket_repo_is_overlay_own,
 )
 
 owned_repos_for_overlay = OverlayConfigResolver.owned_repos
@@ -101,6 +106,24 @@ class TestDiscoverTomlOverlaysImportError:
             result = _discover_toml_overlays(OverlayBase, set())
         assert result == {}
         assert "failed to load class" in caplog.text
+
+
+class TestDiscoverTomlOverlaysConformance:
+    """A registry overlay whose hook signature is non-conforming is warned + skipped (#3526).
+
+    Mirrors the non-subclass handling above: a registry-configured overlay is
+    lenient — a signature mismatch is logged and the overlay dropped, not fatal
+    (the fatal path is reserved for entry-point overlays).
+    """
+
+    def test_skips_non_conforming_overlay(self, caplog):
+        config = _make_config(
+            {"nonconforming": {"class": "tests.test_overlay_loader:_NonConformingOverlay"}},
+        )
+        with patch.object(config_mod, "load_config", return_value=config), caplog.at_level("WARNING"):
+            result = _discover_toml_overlays(OverlayBase, set())
+        assert result == {}
+        assert "require_sections" in caplog.text
 
 
 class TestInferOverlayForUrl:
@@ -398,6 +421,67 @@ class TestGetOverlayForRepo:
         assert "failed during repo resolution" in caplog.text
 
 
+class TestTicketRepoIsOverlayOwn:
+    """``ticket_repo_is_overlay_own`` scopes a ticket to its overlay's OWN repos (#2895).
+
+    Distinguishes an overlay's canonical ``get_repos()`` from its broader
+    ``get_workspace_repos()`` routing set — a ticket reached only through the
+    latter (a sibling project's own repo-ownership config doesn't enumerate
+    its own meta/tooling repo, so its tickets are routed through this
+    overlay's workspace-repo list purely for dispatch) is not "this
+    overlay's own codebase".
+    """
+
+    def _ticket(self, issue_url: str, overlay: str = "a") -> Ticket:
+        return Ticket(issue_url=issue_url, overlay=overlay)
+
+    def test_full_slug_match_against_own_repos_is_true(self):
+        overlays = {"a": _RepoOverlay(["acme/widgets"])}
+        ticket = self._ticket("https://github.com/acme/widgets/issues/7")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_bare_name_match_against_own_repos_is_true(self):
+        """Mirrors the bundled overlay's own ``get_repos() == ["teatree"]`` bare-name case."""
+        overlays = {"a": _RepoOverlay(["teatree"])}
+        ticket = self._ticket("https://github.com/souliane/teatree/issues/7")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_routed_through_workspace_repo_not_in_get_repos_is_false(self):
+        """A ticket owned only by ``get_workspace_repos()`` routing is NOT the overlay's own repo."""
+
+        class _RoutedOverlay(_RepoOverlay):
+            def get_workspace_repos(self) -> list[str]:
+                return [*self._repos, "acme/sibling-tooling"]
+
+        overlays = {"a": _RoutedOverlay(["acme/widgets"])}
+        ticket = self._ticket("https://github.com/acme/sibling-tooling/issues/3")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is False
+
+    def test_blank_issue_url_fails_open(self):
+        ticket = self._ticket("")
+        assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_unresolvable_overlay_fails_open(self):
+        ticket = self._ticket("https://github.com/acme/widgets/issues/7", overlay="ghost-overlay")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value={}):
+            assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_get_repos_raising_fails_open_and_does_not_propagate(self, caplog):
+        class _Broken(_RepoOverlay):
+            def get_repos(self) -> list[str]:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        overlays = {"a": _Broken(["acme/widgets"])}
+        ticket = self._ticket("https://github.com/acme/widgets/issues/7")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is True
+        assert "get_repos" in caplog.text
+
+
 class TestGetOverlayForUrl:
     """``get_overlay_for_url`` resolves the owning overlay from a forge URL (TODO-282).
 
@@ -469,19 +553,94 @@ class TestGetOverlayForUrl:
             assert get_overlay_for_url("") is overlays["only"]
 
 
+class TestAmbientOverlayMatchesConfigResolution:
+    """A bare ``get_overlay()`` resolves the cwd's overlay instead of crashing on ambiguity.
+
+    ``teatree.config`` already resolves the ACTIVE overlay as ``T3_OVERLAY_NAME``
+    → cwd walked up to its ``manage.py`` (``discover_active_overlay``) → the
+    single installed overlay. ``get_overlay`` stopped one tier short, so on a
+    two-overlay install one process held two active overlays: the settings tier
+    layered an overlay's DB rows while every backend / gate / skill resolver
+    raised ``Multiple overlays found`` and had it swallowed into a benign-looking
+    "nothing configured" answer by its caller. The two tiers must agree.
+    """
+
+    def _two_overlays_no_pin(self, overlays: dict):
+        """Register *overlays* with ``T3_OVERLAY_NAME`` unset (the conftest pins it)."""
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        return (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+        )
+
+    def _overlays(self) -> dict[str, OverlayBase]:
+        return {"t3-alpha": _StubOverlay(), "t3-beta": _StubOverlay()}
+
+    def test_cwd_owned_overlay_wins_over_the_ambiguity_error(self):
+        overlays = self._overlays()
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with (
+            env_patch,
+            discover_patch,
+            patch(
+                "teatree.config.discover_active_overlay",
+                return_value=OverlayEntry(name="t3-beta", overlay_class="", project_path=Path("/w/beta")),
+            ),
+        ):
+            assert get_overlay() is overlays["t3-beta"]
+
+    def test_cwd_owning_no_overlay_still_fails_loud(self):
+        overlays = self._overlays()
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with (
+            env_patch,
+            discover_patch,
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            pytest.raises(ImproperlyConfigured, match=r"Multiple overlays found"),
+        ):
+            get_overlay()
+
+    def test_unregistered_cwd_overlay_still_fails_loud(self):
+        """A cwd naming an overlay teatree does not have must never resolve to a guess."""
+        overlays = self._overlays()
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with (
+            env_patch,
+            discover_patch,
+            patch(
+                "teatree.config.discover_active_overlay",
+                return_value=OverlayEntry(name="t3-gamma", overlay_class="", project_path=Path("/w/gamma")),
+            ),
+            pytest.raises(ImproperlyConfigured, match=r"Multiple overlays found"),
+        ):
+            get_overlay()
+
+    def test_env_pin_still_wins_over_the_cwd(self):
+        overlays = self._overlays()
+        with (
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "t3-alpha"}),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch(
+                "teatree.config.discover_active_overlay",
+                side_effect=AssertionError("the env pin must short-circuit cwd discovery"),
+            ),
+        ):
+            assert get_overlay() is overlays["t3-alpha"]
+
+
 class TestResolveOverlayName:
     """``resolve_overlay_name`` folds a name onto its registered canonical form (#1959)."""
 
     def test_registered_name_resolves_to_itself(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("t3-teatree") == "t3-teatree"
 
     def test_legacy_short_alias_folds_onto_entry_point(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("teatree") == "t3-teatree"
@@ -489,7 +648,7 @@ class TestResolveOverlayName:
 
     def test_unknown_name_resolves_to_none(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("removed-overlay") is None
@@ -501,7 +660,7 @@ class TestResolveOverlayName:
 
     def test_dispatchable_check_via_resolution(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("teatree") is not None
@@ -637,6 +796,46 @@ class TestPathOnlyOwnedScopes:
             assert path_only_owned_scopes() == []
 
 
+class TestDiscoverOverlaysBootstrapsDjango:
+    """``_discover_overlays`` boots Django before eagerly importing overlay modules (#3567).
+
+    An entry-point overlay module (``teatree/contrib/t3_teatree/overlay.py``) does a
+    module-level ``from teatree.core.models import Worktree`` — a Django model class,
+    which needs the app registry populated. When the calling process's env already
+    carries ``DJANGO_SETTINGS_MODULE=teatree.settings`` but ``django.setup()`` has not
+    run, settings resolve fine (so the ``ImproperlyConfigured`` guard in
+    ``overlay_skill_metadata`` never fires) yet the model import raises
+    ``AppRegistryNotReady`` — crashing the very first bare ``t3`` command of a session.
+
+    Driven in a child interpreter with the env var pre-set and ``django.setup()``
+    unrun, mirroring an agent-session host that inherits the var from upstream of the
+    shell. Pre-fix the child exits non-zero with ``AppRegistryNotReady``; post-fix
+    ``_discover_overlays`` calls ``ensure_django`` first and resolves cleanly.
+    """
+
+    def _env_with_settings_preset(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
+        return env
+
+    def test_discover_overlays_with_preset_settings_module_does_not_crash(self) -> None:
+        probe = (
+            "from teatree.core.overlay_loader import _discover_overlays\n"
+            "overlays = _discover_overlays()\n"
+            "print('discover-ok', sorted(overlays))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=self._env_with_settings_preset(),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        assert "AppRegistryNotReady" not in result.stderr
+        assert "discover-ok" in result.stdout
+
+
 # ── Test helpers ─────────────────────────────────────────────────────
 
 
@@ -652,3 +851,28 @@ class _StubOverlay(OverlayBase):
 
 class _NotAnOverlay:
     """A class that does not subclass OverlayBase."""
+
+
+class _NarrowValidatePr:
+    """metadata.validate_pr predating the require_sections keyword (#3526 non-conforming).
+
+    Deliberately not an ``OverlayMetadata`` subclass — the narrow signature would
+    be a lexical override the type checker rejects; the conformance scan reads the
+    runtime signature, which is the surface under test.
+    """
+
+    def validate_pr(self, title: str, description: str):
+        del title, description
+        return {"errors": [], "warnings": []}
+
+
+class _NonConformingOverlay(OverlayBase):
+    """Registry overlay whose validate_pr cannot accept the documented keyword."""
+
+    metadata = _NarrowValidatePr()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []

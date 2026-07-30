@@ -244,6 +244,21 @@ class TestMigrationBlobs:
         blobs = _migration_blobs("/repo", "tree")
         assert blobs == {"core/0001_initial": "aaa"}
 
+    def test_ignores_test_mirror_directories_outside_src(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A test-mirror ``tests/<app>/migrations/`` dir is never read as one.
+
+        ``tests/<app>/migrations/*.py`` mirrors the src layout but holds pytest
+        modules, not Django migrations (souliane/teatree#3862) — a real fork probe
+        must never synthesise a fake app from a test-mirror directory.
+        """
+        out = (
+            "100644 blob aaa\tsrc/teatree/core/migrations/0001_initial.py\n"
+            "100644 blob bbb\ttests/teatree_core/migrations/test_something.py\n"
+        )
+        monkeypatch.setattr(probe_module, "_git", lambda repo, *args: (0, out))
+        blobs = _migration_blobs("/repo", "tree")
+        assert blobs == {"core/0001_initial": "aaa"}
+
 
 class TestLeavesByApp:
     def test_no_blobs_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:

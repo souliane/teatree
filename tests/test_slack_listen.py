@@ -1,6 +1,8 @@
 """Tests for ``t3 slack listen`` and ``t3 slack status`` CLI commands."""
 
+import json
 import os
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
@@ -8,13 +10,31 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from teatree.cli.slack_listen import _resolve_overlays, slack_app
+from teatree.cli.slack.listen import _resolve_overlays, slack_app
 from teatree.types import RawAPIDict
 
 runner = CliRunner()
 
 _DM_CHANNEL = "D_SELF"
 _USER_ID = "U_OPERATOR"
+
+
+def _seed_registry(db: Path, overlays: dict[str, dict]) -> None:
+    """Seed a cold-readable config DB with the ``overlays`` registry row."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @dataclass
@@ -47,52 +67,45 @@ class _RouteAwareFake:
 
 class TestResolveOverlays:
     def test_returns_empty_when_no_config(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
         assert _resolve_overlays("") == []
 
-    def test_reads_overlays_from_toml(self, tmp_path: Path, monkeypatch) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.myapp]\nmessaging_backend = "slack"\nslack_token_ref = "test/ref"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
-        with patch("teatree.cli.slack_listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
+    def test_reads_overlays_from_registry(self, tmp_path: Path, monkeypatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(db, {"myapp": {"messaging_backend": "slack", "slack_token_ref": "test/ref"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        with patch("teatree.cli.slack.listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
             result = _resolve_overlays("")
 
         assert len(result) == 1
         assert result[0][0] == "myapp"
 
     def test_skips_non_slack_overlays(self, tmp_path: Path, monkeypatch) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.myapp]\nmessaging_backend = "email"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(db, {"myapp": {"messaging_backend": "email"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _resolve_overlays("") == []
 
     def test_warns_when_tokens_missing(self, tmp_path: Path, monkeypatch, capsys) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.broken]\nmessaging_backend = "slack"\nslack_token_ref = "broken/ref"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
-        with patch("teatree.cli.slack_listen.read_pass", return_value=""):
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(db, {"broken": {"messaging_backend": "slack", "slack_token_ref": "broken/ref"}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        with patch("teatree.cli.slack.listen.read_pass", return_value=""):
             result = _resolve_overlays("")
 
         assert result == []
 
     def test_restricts_to_named_overlay(self, tmp_path: Path, monkeypatch) -> None:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(
-            '[overlays.a]\nmessaging_backend = "slack"\nslack_token_ref = "a/ref"\n'
-            '[overlays.b]\nmessaging_backend = "slack"\nslack_token_ref = "b/ref"\n',
-            encoding="utf-8",
+        db = tmp_path / "config.sqlite3"
+        _seed_registry(
+            db,
+            {
+                "a": {"messaging_backend": "slack", "slack_token_ref": "a/ref"},
+                "b": {"messaging_backend": "slack", "slack_token_ref": "b/ref"},
+            },
         )
-        monkeypatch.setattr("teatree.cli.slack_listen.Path.home", lambda: tmp_path)
-        with patch("teatree.cli.slack_listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        with patch("teatree.cli.slack.listen.read_pass", side_effect=["xoxb-bot", "xapp-app"]):
             result = _resolve_overlays("a")
 
         assert len(result) == 1
@@ -101,7 +114,7 @@ class TestResolveOverlays:
 
 class TestStatusCommand:
     def test_no_pid_file(self, tmp_path: Path) -> None:
-        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+        with patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
             result = runner.invoke(slack_app, ["status"])
 
         assert result.exit_code == 1
@@ -110,27 +123,29 @@ class TestStatusCommand:
     def test_stale_pid_file(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "slack-listener.pid"
         pid_file.write_text("999999999\n", encoding="utf-8")
-        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+        with patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
             result = runner.invoke(slack_app, ["status"])
 
         assert result.exit_code == 1
         assert "not running" in result.stdout
-        assert not pid_file.is_file()
+        # read_pid reuses the flock file in place; unlinking it would orphan a live holder's lock (#3617).
+        assert pid_file.is_file()
 
     def test_garbled_pid_file(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "slack-listener.pid"
         pid_file.write_text("not-a-number\n", encoding="utf-8")
-        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+        with patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
             result = runner.invoke(slack_app, ["status"])
 
         assert result.exit_code == 1
         assert "not running" in result.stdout
-        assert not pid_file.is_file()
+        # read_pid reuses the flock file in place; unlinking it would orphan a live holder's lock (#3617).
+        assert pid_file.is_file()
 
     def test_running_pid(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "slack-listener.pid"
         pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
-        with patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
+        with patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"):
             result = runner.invoke(slack_app, ["status"])
 
         assert result.exit_code == 0
@@ -146,6 +161,23 @@ class TestCheckCommand:
 
         assert result.exit_code == 1
 
+    def test_stands_down_when_another_drain_holds_the_lock(self) -> None:
+        # The 30s cron can double-fire; a concurrent drain would double-ack the
+        # same mentions. A singleton serialises it — a second drain stands down
+        # (exit 0) and never touches the queue (#3313).
+        from teatree.backends.slack.receiver import default_queue_path  # noqa: PLC0415
+        from teatree.utils.singleton import singleton  # noqa: PLC0415
+
+        pid = default_queue_path().with_name("slack-drain.pid")
+        with (
+            singleton("slack-drain", pid_path=pid),
+            patch("teatree.backends.slack.receiver.drain_event_queue") as drain,
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        drain.assert_not_called()
+
     def test_prints_user_messages_as_json(self) -> None:
         events = [
             {
@@ -159,7 +191,7 @@ class TestCheckCommand:
         ]
         with (
             patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
-            patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()),
         ):
             result = runner.invoke(slack_app, ["check"])
 
@@ -175,7 +207,7 @@ class TestCheckCommand:
         ]
         with (
             patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
-            patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()),
         ):
             result = runner.invoke(slack_app, ["check"])
 
@@ -195,7 +227,7 @@ class TestCheckCommand:
         fake = _RouteAwareFake()
         with (
             patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
-            patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: fake),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake),
         ):
             result = runner.invoke(slack_app, ["check"])
 
@@ -207,7 +239,7 @@ class TestCheckCommand:
         events = [{"overlay": "ov", "event": {"type": "message", "user": "U1", "text": "hi", "ts": "1.0"}}]
         with (
             patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
-            patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: None),
+            patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: None),
         ):
             result = runner.invoke(slack_app, ["check"])
 
@@ -231,7 +263,7 @@ class TestCheckCommand:
             encoding="utf-8",
         )
 
-        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()):
+        with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()):
             result = runner.invoke(slack_app, ["check"])
 
         assert result.exit_code == 0
@@ -259,8 +291,8 @@ class TestCheckCommand:
 class TestListenCommand:
     def test_exits_when_no_overlays(self, tmp_path: Path) -> None:
         with (
-            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
-            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[]),
+            patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack.listen._resolve_overlays", return_value=[]),
         ):
             result = runner.invoke(slack_app, ["listen"])
 
@@ -273,7 +305,7 @@ class TestListenCommand:
         pid_file = tmp_path / "slack-listener.pid"
         with (
             singleton("slack-listener", pid_path=pid_file),
-            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
         ):
             result = runner.invoke(slack_app, ["listen"])
 
@@ -284,9 +316,9 @@ class TestListenCommand:
         pid_file = tmp_path / "slack-listener.pid"
         pid_file.write_text("999999999\n", encoding="utf-8")
         with (
-            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
-            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
-            patch("teatree.cli.slack_listen.run_listener"),
+            patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack.listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch("teatree.cli.slack.listen.run_listener"),
         ):
             result = runner.invoke(slack_app, ["listen"])
 
@@ -304,9 +336,9 @@ class TestListenCommand:
         from teatree.utils.singleton import singleton  # noqa: PLC0415
 
         with (
-            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
-            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
-            patch("teatree.cli.slack_listen.run_listener"),
+            patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack.listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch("teatree.cli.slack.listen.run_listener"),
         ):
             runner.invoke(slack_app, ["listen"])
 
@@ -318,9 +350,9 @@ class TestListenCommand:
         from teatree.utils.singleton import singleton  # noqa: PLC0415
 
         with (
-            patch("teatree.cli.slack_listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
-            patch("teatree.cli.slack_listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
-            patch("teatree.cli.slack_listen.run_listener", side_effect=RuntimeError("boom")),
+            patch("teatree.cli.slack.listen.default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch("teatree.cli.slack.listen._resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch("teatree.cli.slack.listen.run_listener", side_effect=RuntimeError("boom")),
         ):
             result = runner.invoke(slack_app, ["listen"])
 
@@ -336,17 +368,15 @@ class TestReactCommand:
     """``t3 slack react`` routes through the on-behalf egress (#960/#1750)."""
 
     def _gate(self, tmp_path: Path, monkeypatch, mode: str) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "{mode}"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+        ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
     def test_no_backend_exits_1(self, tmp_path: Path, monkeypatch) -> None:
         self._gate(tmp_path, monkeypatch, "immediate")
-        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: None):
+        with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: None):
             result = runner.invoke(slack_app, ["react", "D1", "1.0", "eyes"])
 
         assert result.exit_code == 1
@@ -355,7 +385,7 @@ class TestReactCommand:
     def test_self_dm_react_succeeds_ungated(self, tmp_path: Path, monkeypatch) -> None:
         self._gate(tmp_path, monkeypatch, "ask")
         fake = _RouteAwareFake()
-        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: fake):
+        with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake):
             result = runner.invoke(slack_app, ["react", _DM_CHANNEL, "1.0", "eyes"])
 
         assert result.exit_code == 0
@@ -365,7 +395,7 @@ class TestReactCommand:
     def test_colleague_react_blocked_under_ask(self, tmp_path: Path, monkeypatch) -> None:
         self._gate(tmp_path, monkeypatch, "ask")
         fake = _RouteAwareFake()
-        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: fake):
+        with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake):
             result = runner.invoke(slack_app, ["react", "C_COLLEAGUE", "1.0", "merge"])
 
         assert result.exit_code == 1

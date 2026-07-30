@@ -25,7 +25,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.merge import MergePreconditionError, pr_slug_resolution
+from teatree.core.merge import CodeHostQuery, MergePreconditionError, pr_slug_resolution
+from teatree.utils.pr_ref import PrRef
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -40,19 +41,18 @@ _REPO_TWO = "mirror-org/downstream-overlay-fork"
 
 
 def _head_by_repo(matching: set[str]):
-    """A ``fetch_live_head_sha`` stub returning the reviewed SHA for *matching* repos.
+    """A ``CodeHostQuery.live_head_sha`` stub: the reviewed SHA for *matching* repos.
 
     Every repo in *matching* exposes PR #N at ``_REVIEWED_SHA``; every other repo
     exposes it at ``_WRONG_SHA``. Which repo "owns" the reviewed work is decided
-    purely by membership in *matching*, so a same-SHA ambiguity is modelled by
-    putting two repos in the set.
+    purely by the query's bound ``ref.slug``, so a same-SHA ambiguity is modelled
+    by putting two repos in the set.
     """
 
-    def _fetch(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
-        del pr_id, host_kind
-        return _REVIEWED_SHA if slug in matching else _WRONG_SHA
+    def _live_head(self: CodeHostQuery) -> str:
+        return _REVIEWED_SHA if self.ref.slug in matching else _WRONG_SHA
 
-    return _fetch
+    return _live_head
 
 
 class TestSameShaMultiCandidateRaises(TestCase):
@@ -67,14 +67,14 @@ class TestSameShaMultiCandidateRaises(TestCase):
         detect the ambiguity.
         """
         with patch(
-            "teatree.core.merge.pr_slug_resolution.fetch_live_head_sha",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha",
+            autospec=True,
             side_effect=_head_by_repo({_REPO_ONE, _REPO_TWO}),
         ):
             matches = pr_slug_resolution._probe_candidate_repos(
-                pr_id=_PR_ID,
+                query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
                 reviewed_sha=_REVIEWED_SHA,
                 candidates=[_REPO_ONE, _REPO_TWO],
-                host_kind="github",
             )
 
         assert matches == [_REPO_ONE, _REPO_TWO], (
@@ -92,7 +92,8 @@ class TestSameShaMultiCandidateRaises(TestCase):
         """
         with (
             patch(
-                "teatree.core.merge.pr_slug_resolution.fetch_live_head_sha",
+                "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha",
+                autospec=True,
                 side_effect=_head_by_repo({_REPO_ONE, _REPO_TWO}),
             ),
             patch(
@@ -119,14 +120,14 @@ class TestSingleMatchHappyPathPreserved(TestCase):
 
     def test_probe_returns_the_single_match(self) -> None:
         with patch(
-            "teatree.core.merge.pr_slug_resolution.fetch_live_head_sha",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha",
+            autospec=True,
             side_effect=_head_by_repo({_REPO_ONE}),
         ):
             matches = pr_slug_resolution._probe_candidate_repos(
-                pr_id=_PR_ID,
+                query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
                 reviewed_sha=_REVIEWED_SHA,
                 candidates=[_REPO_ONE, _REPO_TWO],
-                host_kind="github",
             )
 
         assert matches == [_REPO_ONE]
@@ -135,7 +136,8 @@ class TestSingleMatchHappyPathPreserved(TestCase):
         """One candidate matches the reviewed SHA → reconciliation returns it (no raise)."""
         with (
             patch(
-                "teatree.core.merge.pr_slug_resolution.fetch_live_head_sha",
+                "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha",
+                autospec=True,
                 side_effect=_head_by_repo({_REPO_ONE}),
             ),
             patch(
@@ -158,14 +160,14 @@ class TestDifferentShaGuardPreserved(TestCase):
 
     def test_probe_returns_empty_when_no_candidate_matches(self) -> None:
         with patch(
-            "teatree.core.merge.pr_slug_resolution.fetch_live_head_sha",
+            "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha",
+            autospec=True,
             side_effect=_head_by_repo(set()),
         ):
             matches = pr_slug_resolution._probe_candidate_repos(
-                pr_id=_PR_ID,
+                query=CodeHostQuery.for_ref(PrRef(slug=_INITIAL_SLUG, pr_id=_PR_ID)),
                 reviewed_sha=_REVIEWED_SHA,
                 candidates=[_REPO_ONE, _REPO_TWO],
-                host_kind="github",
             )
 
         assert matches == []
@@ -180,7 +182,8 @@ class TestDifferentShaGuardPreserved(TestCase):
         """
         with (
             patch(
-                "teatree.core.merge.pr_slug_resolution.fetch_live_head_sha",
+                "teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha",
+                autospec=True,
                 side_effect=_head_by_repo(set()),
             ),
             patch(

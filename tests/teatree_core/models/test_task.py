@@ -7,8 +7,19 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import (
+    ConfigSetting,
+    DeferredQuestion,
+    InvalidTransitionError,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
+from teatree.core.models.task_attempt import TaskAttemptQuerySet
 from tests.teatree_core.models._shared import _advance_ticket_to_tested
+
+_FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestTask(TestCase):
@@ -138,6 +149,198 @@ class TestTask(TestCase):
 
         with pytest.raises(InvalidTransitionError, match="Can only reopen failed tasks"):
             task.reopen()
+
+
+class TestClaimedBySessionPersistence(TestCase):
+    """``claimed_by_session`` is written by ``claim`` and blanked on every return/terminal path (F1.5).
+
+    Pre-fix ``claim`` never SET the column and the ``complete``/``fail``/``park``/
+    ``_route`` ``update_fields`` lists omitted it, so ``_clear_claim`` blanked it
+    only in memory — the DB kept a stale attribution and the ``renew_lease``
+    claim-generation CAS (which filters on ``claimed_by_session``) operated on it.
+    """
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        return Task.objects.create(ticket=ticket, session=session)
+
+    def _db_session(self, task: Task) -> str:
+        # Read the persisted column directly — never the in-memory instance.
+        return Task.objects.values_list("claimed_by_session", flat=True).get(pk=task.pk)
+
+    def test_claim_persists_session_to_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        assert self._db_session(task) == "sess-1"
+        # claim() ends with refresh_from_db, so the instance agrees with the row.
+        assert task.claimed_by_session == "sess-1"
+
+    def test_claim_defaults_session_to_empty(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker")
+        assert self._db_session(task) == ""
+
+    def test_complete_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.complete()
+        assert self._db_session(task) == ""
+
+    def test_complete_surfacing_advance_failure_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.complete_surfacing_advance_failure()
+        assert self._db_session(task) == ""
+
+    def test_fail_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.fail()
+        assert self._db_session(task) == ""
+
+    def test_park_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.park(not_before=timezone.now() + timezone.timedelta(minutes=5))
+        assert self._db_session(task) == ""
+
+    def test_route_blanks_session_in_db(self) -> None:
+        task = self._task()
+        task.claim(claimed_by="worker", claimed_by_session="sess-1")
+        task.route_to_headless(reason="retry")
+        assert self._db_session(task) == ""
+
+    def test_reclaim_overwrites_stale_session_in_db(self) -> None:
+        # A CLAIMED task whose lease has expired is reclaimable; a fresh claim
+        # must overwrite the dead owner's session so the row's attribution is
+        # truthful (renew_lease's CAS filters on it).
+        task = self._task()
+        task.claim(claimed_by="worker-A", claimed_by_session="sess-A")
+        Task.objects.filter(pk=task.pk).update(lease_expires_at=timezone.now() - timezone.timedelta(minutes=5))
+        reclaimer = Task.objects.get(pk=task.pk)
+        reclaimer.claim(claimed_by="worker-B", claimed_by_session="sess-B")
+        assert self._db_session(task) == "sess-B"
+
+
+class TestNeedsUserInputHeadlessLane(TestCase):
+    """A headless ``needs_user_input`` parks a correlated DeferredQuestion, not an interactive task.
+
+    In the SDK/headless lane there is no human terminal to claim an
+    interactive followup, so the durable record is a mirror-pending
+    ``DeferredQuestion`` correlated to the parked task (its ``parked_task``
+    FK). The tick-level poster scanner posts it to Slack; the reply re-queues
+    a headless resume. The interactive lane keeps its in-session followup.
+    """
+
+    def _parked_headless_task(self, *, reason: str = "Which DB host?") -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id=_FAKE_UUID)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            agent_session_id=_FAKE_UUID,
+            result={"needs_user_input": True, "user_input_reason": reason},
+        )
+        return task
+
+    def test_headless_runtime_records_correlated_deferred_question(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
+        task = self._parked_headless_task()
+
+        task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert not Task.objects.filter(execution_target=Task.ExecutionTarget.INTERACTIVE).exists()
+        question = DeferredQuestion.objects.get()
+        assert question.parked_task_id == task.pk
+        assert "Which DB host?" in question.question
+        assert question.slack_ts == ""
+        assert question.is_pending
+
+    def test_interactive_runtime_keeps_in_session_followup(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
+        task = self._parked_headless_task()
+
+        task.complete()
+
+        assert DeferredQuestion.objects.count() == 0
+        followup = Task.objects.filter(
+            parent_task=task,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        ).get()
+        assert followup.parent_task_id == task.pk
+
+
+class TestTaskDisplaySubject(TestCase):
+    """``display_subject()`` yields a human-readable title, never the bare phase token."""
+
+    def test_prefers_explicit_subject(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/7")
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding", subject="Hand-written summary")
+
+        assert task.display_subject() == "Hand-written summary"
+
+    def test_derives_from_ticket_short_description(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/issues/42",
+            short_description="Improve the export pipeline",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        assert task.display_subject() == "#42 Improve the export pipeline"
+
+    def test_derives_from_extra_issue_title_when_no_short_description(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/issues/99",
+            extra={"issue_title": "Export pipeline rework"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        assert task.display_subject() == "#99 Export pipeline rework"
+
+    def test_falls_back_to_phase_when_no_title(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="dogfood-smoke://acme")
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="dogfood_smoke")
+
+        assert task.display_subject() == f"#{ticket.pk} dogfood_smoke"
+
+    def test_never_returns_the_bare_phase_token(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/3")
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="short_describe")
+
+        subject = task.display_subject()
+        assert subject.strip()
+        assert subject != "short_describe"
+
+
+class TestTaskAttemptQuerySet(TestCase):
+    """The relocated ``TaskAttempt`` manager still yields a ``TaskAttemptQuerySet``."""
+
+    def test_manager_returns_task_attempt_queryset(self) -> None:
+        assert isinstance(TaskAttempt.objects.all(), TaskAttemptQuerySet)
+
+    def test_headless_filters_to_headless_attempts(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session)
+        headless = TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.HEADLESS)
+        TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.INTERACTIVE)
+
+        assert list(TaskAttempt.objects.headless()) == [headless]
 
 
 class TestChildTaskSpawning(TestCase):

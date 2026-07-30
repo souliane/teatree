@@ -44,7 +44,7 @@ from typing import TypedDict
 
 import yaml
 
-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.models import UNDER_LOAD_LANE, EvalSpec
@@ -208,7 +208,7 @@ def _scenario_entry(candidate: Mapping[str, object], drift_rule: str) -> Scenari
 
 def _candidate_spec(candidate: Mapping[str, object]) -> EvalSpec:
     """Build the would-be ``under_load`` scenario spec from a candidate row."""
-    from teatree.eval.loader import _parse_spec  # noqa: PLC0415
+    from teatree.eval.loader import _parse_spec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     drift_rule = str(candidate.get("drift_rule") or "the cited drift rule")
     entry = _scenario_entry(candidate, drift_rule)

@@ -6,6 +6,8 @@ against the real DB; the value is parsed as JSON so a bool kill-switch, a
 string, an int, or a list all round-trip into the override store.
 """
 
+import re
+import tomllib
 from io import StringIO
 from pathlib import Path
 
@@ -13,10 +15,16 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import get_effective_settings
+from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.enums import Mode
+from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.core.models import ConfigSetting
+
+
+def _teatree(document: dict[str, object]) -> dict[str, object]:
+    """A dump's ``[teatree]`` table, flattened back to the flat key namespace."""
+    return flatten_settings_table(document.get("teatree", {}))
 
 
 class TestConfigSettingSet(TestCase):
@@ -74,6 +82,20 @@ class TestConfigSettingSet(TestCase):
         assert ConfigSetting.objects.filter(key="mode").exists() is False
         # The store is untouched, so config reads still resolve.
         assert get_effective_settings().mode is not None
+
+    def test_set_rejects_inconsistent_harness_provider_pair(self) -> None:
+        # #3688: an agent_harness_provider valid only under pydantic_ai, written
+        # while agent_harness sits at its claude_sdk default, is refused at WRITE
+        # time (exit 2) with the store left untouched — one loud error instead of
+        # a fleet-wide repair-halt flood on every later dispatch.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "agent_harness_provider", '"openai_compatible"')
+        assert ConfigSetting.objects.filter(key="agent_harness_provider").exists() is False
+
+    def test_set_accepts_consistent_harness_provider_pair(self) -> None:
+        call_command("config_setting", "set", "agent_harness", '"pydantic_ai"')
+        call_command("config_setting", "set", "agent_harness_provider", '"openai_compatible"')
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "openai_compatible"
 
     def test_set_rejects_quoted_bool_string(self) -> None:
         # #258 blocker 2: a JSON string ``"false"`` for a bool-typed setting
@@ -162,6 +184,75 @@ class TestConfigSettingList(TestCase):
         call_command("config_setting", "list", stdout=out)
         assert "no" in out.getvalue().lower()
 
+    def test_list_groups_rows_under_the_same_nested_hierarchy(self) -> None:
+        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+        ConfigSetting.objects.set_value("autoload", value=True)
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        rendered = out.getvalue()
+        assert "Gates" in rendered
+        assert "Quality" in rendered
+        assert "Merge & done" in rendered
+        assert rendered.index("Merge & done") < rendered.index("require_merge_evidence")
+        # The level's indent is what makes the hierarchy readable in a flat terminal.
+        assert re.search(r"^\s+Gates$", rendered, re.MULTILINE)
+        assert re.search(r"^(\s+)Quality$", rendered, re.MULTILINE)
+        gates_indent = re.search(r"^(\s+)Gates$", rendered, re.MULTILINE).group(1)
+        quality_indent = re.search(r"^(\s+)Quality$", rendered, re.MULTILINE).group(1)
+        assert len(quality_indent) > len(gates_indent), "a child level is not indented under its parent"
+
+    def test_list_shows_a_row_no_declaration_owns_rather_than_hiding_it(self) -> None:
+        ConfigSetting.objects.create(key="a_key_no_declaration_base_carries", value=True, scope="")
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        rendered = out.getvalue()
+        assert "a_key_no_declaration_base_carries" in rendered
+        assert UNGROUPED_PATH[0] in rendered
+
+
+class TestConfigSettingListMarksDeadRows(TestCase):
+    """A stored row no live declaration owns says so (souliane/teatree#3862).
+
+    The Ungrouped banner reads as "uncategorised setting", not "dead key", so a row
+    the resolver silently drops rendered here as a live control — a stored
+    ``issue_implementer_require_label = True`` was read as a live intake gate while
+    ``decide_intake`` admits a trusted author with no label at all.
+    """
+
+    def _rendered(self) -> str:
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        return out.getvalue()
+
+    def _row_line(self, key: str) -> str:
+        return next(line for line in self._rendered().splitlines() if line.strip().startswith(f"{key} ="))
+
+    def test_a_retired_row_is_marked_dead_with_its_remedy(self) -> None:
+        ConfigSetting.objects.create(key="issue_implementer_require_label", value=True, scope="")
+        line = self._row_line("issue_implementer_require_label")
+        assert "retired" in line
+        assert "config_setting clear" in line
+
+    def test_an_unrecorded_stale_row_is_marked_too(self) -> None:
+        ConfigSetting.objects.create(key="a_key_no_declaration_base_carries", value=True, scope="")
+        assert "not a declared setting" in self._row_line("a_key_no_declaration_base_carries")
+
+    def test_an_internal_state_row_is_named_state_not_offered_the_clear_remedy(self) -> None:
+        # The stamp row is live state the transition chain rewrites every pass; telling
+        # the operator to clear it would make the next pass read a switch that never
+        # happened. Not-a-known-key is not the same question as not-in-use.
+        ConfigSetting.objects.create(key="loop_preset_transition_stamp", value="maintenance", scope="")
+        line = self._row_line("loop_preset_transition_stamp")
+        assert "internal state" in line
+        assert "config_setting clear" not in line
+
+    def test_a_live_row_carries_no_marker(self) -> None:
+        # Positive control: the marker must distinguish, not decorate every row.
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        line = self._row_line("issue_implementer_enabled")
+        assert "retired" not in line
+        assert "not a declared setting" not in line
+
 
 class TestConfigSettingGet(TestCase):
     def test_get_reports_stored_db_value(self) -> None:
@@ -174,101 +265,103 @@ class TestConfigSettingGet(TestCase):
         # the file/env fallback.
         assert "db" in rendered.lower()
 
-    def test_get_reports_file_fallback_when_no_db_row(self) -> None:
-        # No DB row -> get reports the resolved file/env value and names the
-        # fallback source, so an absent override is visible (dual-read read-side).
+    def test_get_reports_env_default_source_when_no_db_row(self) -> None:
+        # No DB row -> get reports the resolved code-default value and names the
+        # env/default source (DB-home: no file fallback), so an absent override
+        # is visible.
         assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").exists() is False
         out = StringIO()
         call_command("config_setting", "get", "issue_implementer_max_concurrent", stdout=out)
         rendered = out.getvalue().lower()
-        assert "file" in rendered or "fallback" in rendered
+        assert "env/default" in rendered
 
     def test_get_rejects_non_overridable_key(self) -> None:
         with pytest.raises(SystemExit):
             call_command("config_setting", "get", "not_a_real_setting", stderr=StringIO())
 
 
-class TestConfigSettingImport(TestCase):
-    @pytest.fixture(autouse=True)
-    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+class TestConfigSettingColdHookGateKey(TestCase):
+    """A cold-hook gate key round-trips through get/list/set/clear.
 
-    def test_import_seeds_operational_keys_from_toml(self) -> None:
-        self.config_path.write_text(
-            "[teatree]\nissue_implementer_enabled = true\nissue_implementer_max_concurrent = 4\n",
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
-        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 4
+    ``COLD_HOOK_SETTINGS`` keys (e.g. ``out_of_band_merge_gate_enabled``) that
+    ``list`` shows are also settable/gettable/clearable — the unified known-key set.
+    """
 
-    def test_import_skips_bootstrap_and_unknown_keys(self) -> None:
-        # A bootstrap-file-only key (private_repos) and an unknown key must NOT be
-        # imported into the DB store — only operational overridable keys move.
-        self.config_path.write_text(
-            '[teatree]\nprivate_repos = ["acme/secret"]\nnot_a_real_setting = "x"\nmode = "auto"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(key="private_repos").exists() is False
-        assert ConfigSetting.objects.filter(key="not_a_real_setting").exists() is False
-        # The one operational key did move.
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
+    def test_get_of_a_gate_key_reports_db_value(self) -> None:
+        ConfigSetting.objects.set_value("out_of_band_merge_gate_enabled", value=False)
+        out = StringIO()
+        call_command("config_setting", "get", "out_of_band_merge_gate_enabled", stdout=out)
+        rendered = out.getvalue().lower()
+        assert "false" in rendered
+        assert "db" in rendered
 
-    def test_import_is_idempotent(self) -> None:
-        self.config_path.write_text("[teatree]\nissue_implementer_max_concurrent = 4\n", encoding="utf-8")
-        call_command("config_setting", "import", stdout=StringIO())
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").count() == 1
+    def test_get_of_a_gate_key_reports_code_default_when_no_row(self) -> None:
+        # No DB row: the resolved value is the in-code ColdHookSetting default
+        # (out_of_band_merge_gate_enabled defaults to True), reported as a
+        # code/default source — not a refusal.
+        assert ConfigSetting.objects.filter(key="out_of_band_merge_gate_enabled").exists() is False
+        out = StringIO()
+        call_command("config_setting", "get", "out_of_band_merge_gate_enabled", stdout=out)
+        rendered = out.getvalue().lower()
+        assert "true" in rendered
+        assert "default" in rendered
 
-    def test_import_walks_per_overlay_tables_into_overlay_scope(self) -> None:
-        # An operational DB-home key under [overlays.<name>] migrates into that
-        # overlay's DB scope, not the global scope (#1775 in-PR add).
-        self.config_path.write_text(
-            '[teatree]\nmode = "interactive"\n\n[overlays.myproj]\npath = "~/p"\nmode = "auto"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        # The global row carries the [teatree] value; the overlay scope carries
-        # the [overlays.myproj] override.
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
+    def test_set_of_a_gate_key_is_accepted_and_round_trips(self) -> None:
+        call_command("config_setting", "set", "out_of_band_merge_gate_enabled", "false")
+        assert ConfigSetting.objects.get_effective("out_of_band_merge_gate_enabled") is False
 
-    def test_import_skips_non_setting_overlay_keys(self) -> None:
-        # Overlay-table bootstrap keys (path/url/…) are not settings and must NOT
-        # become ConfigSetting rows.
-        self.config_path.write_text(
-            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nurl = "git@x"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(scope="myproj").exists() is False
+    def test_set_of_a_gate_key_rejects_a_quoted_bool_string(self) -> None:
+        # The cold-hook parser is strict (mirrors the cold reader): a quoted
+        # "false" is not a bool and must be refused at write time.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "out_of_band_merge_gate_enabled", '"false"')
+        assert ConfigSetting.objects.filter(key="out_of_band_merge_gate_enabled").exists() is False
 
-    def test_import_per_overlay_is_idempotent(self) -> None:
-        self.config_path.write_text(
-            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nmode = "auto"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(key="mode", scope="myproj").count() == 1
+    def test_clear_of_a_gate_key_removes_the_row(self) -> None:
+        ConfigSetting.objects.set_value("out_of_band_merge_gate_enabled", value=False)
+        call_command("config_setting", "clear", "out_of_band_merge_gate_enabled")
+        assert ConfigSetting.objects.get_effective("out_of_band_merge_gate_enabled") is None
 
-    def test_import_no_clobber_preserves_a_db_set_value(self) -> None:
-        # The ``t3 setup`` auto-migration mode: a value the user changed via
-        # ``config_setting set`` must survive a later import of a stale TOML value.
-        ConfigSetting.objects.set_value("mode", "auto")
-        self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
-        call_command("config_setting", "import", "--no-clobber", stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
 
-    def test_import_default_clobbers_a_db_set_value(self) -> None:
-        # Without --no-clobber the manual import refreshes from the file.
-        ConfigSetting.objects.set_value("mode", "auto")
-        self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
+class TestConfigSettingFlagTrailer(TestCase):
+    """Set/get of a feature-flag key carries a governance trailer, a setting does not."""
+
+    def test_set_of_a_flag_key_prints_the_flag_trailer(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "set", "outer_loop_enabled", "true", stdout=out)
+        rendered = out.getvalue()
+        assert "feature flag" in rendered
+        assert "stage=dark" in rendered
+        assert "tracking" in rendered
+
+    def test_set_of_a_durable_setting_has_no_flag_trailer(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "set", "issue_implementer_max_concurrent", "3", stdout=out)
+        assert "feature flag" not in out.getvalue()
+
+    def test_get_of_a_flag_key_prints_the_flag_trailer(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "get", "outer_loop_enabled", stdout=out)
+        assert "feature flag" in out.getvalue()
+
+
+class TestConfigSettingFlagsAudit(TestCase):
+    """``config_setting flags`` is the read-only dead-toggle audit report."""
+
+    def test_flags_lists_every_registered_flag_with_its_stage(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "flags", stdout=out)
+        rendered = out.getvalue()
+        # loop_runner_enabled was graduated out by PR-28 (durable kill-switch, not a
+        # dying flag); the live registry is all-DARK, so its rows render stage=dark.
+        for key in ("outer_loop_enabled", "factory_score_enabled"):
+            assert key in rendered
+        assert "loop_runner_enabled" not in rendered
+        assert "stage=dark" in rendered
+
+    def test_flags_is_read_only_creates_no_rows(self) -> None:
+        call_command("config_setting", "flags", stdout=StringIO())
+        assert ConfigSetting.objects.count() == 0
 
 
 class TestConfigSettingOverlayScope(TestCase):
@@ -317,3 +410,163 @@ class TestConfigSettingOverlayScope(TestCase):
         rendered = out.getvalue()
         assert "global" in rendered
         assert "ov" in rendered
+
+
+class TestConfigSettingExport(TestCase):
+    """``config_setting export`` — the inverse of import (TOML round-trip, PR6)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_export_to_stdout_dumps_teatree_and_overlay_tables(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')
+        call_command("config_setting", "set", "issue_implementer_max_concurrent", "3")
+        call_command("config_setting", "set", "mode", '"interactive"', "--overlay", "myproj")
+        out = StringIO()
+        call_command("config_setting", "export", stdout=out)
+        doc = tomllib.loads(out.getvalue())
+        assert _teatree(doc)["mode"] == "auto"
+        assert _teatree(doc)["issue_implementer_max_concurrent"] == 3
+        assert isinstance(_teatree(doc)["issue_implementer_max_concurrent"], int)
+        assert doc["overlays"]["myproj"]["mode"] == "interactive"
+
+    def test_export_output_writes_a_file(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_enabled", "true")
+        target = self.tmp_path / "dump.toml"
+        call_command("config_setting", "export", "--output", str(target))
+        doc = tomllib.loads(target.read_text(encoding="utf-8"))
+        assert _teatree(doc)["issue_implementer_enabled"] is True
+
+    def test_export_overlay_scopes_the_dump(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')  # global
+        call_command("config_setting", "set", "mode", '"interactive"', "--overlay", "myproj")
+        out = StringIO()
+        call_command("config_setting", "export", "--overlay", "myproj", stdout=out)
+        doc = tomllib.loads(out.getvalue())
+        assert doc["overlays"]["myproj"]["mode"] == "interactive"
+        # The global scope is excluded when a single overlay is requested.
+        assert "teatree" not in doc
+
+
+class TestConfigSettingExportFilters(TestCase):
+    """The two export filters over the CLI — both off by default, both together = the file shape."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def _export(self, *flags: str) -> str:
+        out = StringIO()
+        call_command("config_setting", "export", *flags, stdout=out)
+        return out.getvalue()
+
+    def test_no_flag_dumps_only_the_overridden_rows(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')
+        assert set(_teatree(tomllib.loads(self._export()))) == {"mode"}
+
+    def test_default_keys_only_drops_the_overlay_scopes(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')
+        call_command("config_setting", "set", "mode", '"interactive"', "--overlay", "myproj")
+        assert "overlays" not in tomllib.loads(self._export("--default-keys-only"))
+
+    def test_include_defaults_emits_the_unoverridden_keys_too(self) -> None:
+        emitted = _teatree(tomllib.loads(self._export("--include-defaults")))
+        assert "merge_wip" in emitted
+
+    def test_both_flags_produce_the_shipped_file_shape(self) -> None:
+        dump = self._export("--default-keys-only", "--include-defaults")
+        assert dump.startswith("# teatree shipped defaults")
+        assert set(tomllib.loads(dump)) == {"teatree", "loops", "modes", "schedules"}
+
+
+class TestConfigSettingImport(TestCase):
+    """``config_setting import`` — the inverse of ``export`` over the CLI (TOML round-trip)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def _write_toml(self, text: str) -> Path:
+        path = self.tmp_path / "dump.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_import_from_file_writes_rows(self) -> None:
+        path = self._write_toml('[teatree]\nmode = "auto"\nissue_implementer_max_concurrent = 9\n')
+        call_command("config_setting", "import", "--input", str(path), stdout=StringIO())
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 9
+
+    def test_import_dry_run_writes_nothing(self) -> None:
+        path = self._write_toml('[teatree]\nmode = "auto"\n')
+        out = StringIO()
+        call_command("config_setting", "import", "--input", str(path), "--dry-run", stdout=out)
+        assert ConfigSetting.objects.count() == 0
+        assert "would import" in out.getvalue()
+
+    def test_import_rejects_unknown_key_and_writes_nothing(self) -> None:
+        path = self._write_toml('[teatree]\nnot_a_setting = 1\nmode = "auto"\n')
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "rejected not_a_setting" in err.getvalue()
+        assert ConfigSetting.objects.count() == 0
+
+    def test_import_reports_a_folded_alias(self) -> None:
+        path = self._write_toml('[teatree]\nspeed = "full"\n')
+        out = StringIO()
+        call_command("config_setting", "import", "--input", str(path), stdout=out)
+        assert "folded retired alias speed -> wip" in out.getvalue()
+        assert ConfigSetting.objects.get_effective("wip") == "full"
+
+    def test_import_rejects_invalid_toml_and_writes_nothing(self) -> None:
+        path = self._write_toml("[teatree\nmode = broken")  # malformed TOML
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "invalid TOML" in err.getvalue()
+        assert ConfigSetting.objects.count() == 0
+
+
+class TestConfigSettingSeed(TestCase):
+    """`config_setting seed` — the provenance-aware DEPLOY seed (#3435).
+
+    Distinct from `set`: it skips a value equal to the code default, preserves an
+    operator override, and stamps provenance the doctor autofix reads.
+    """
+
+    def _seed(self, key: str, value: str) -> str:
+        out = StringIO()
+        call_command("config_setting", "seed", key, value, stdout=out)
+        return out.getvalue()
+
+    def test_seed_below_default_creates_row(self) -> None:
+        # provision_ram_ceiling_percent code default is 85; 75 differs, so it seeds.
+        text = self._seed("provision_ram_ceiling_percent", "75")
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 75
+        assert "created" in text
+        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        assert row.seeded_by == "entrypoint"
+        assert row.seed_value == 75
+
+    def test_seed_equal_to_code_default_writes_nothing(self) -> None:
+        # provision_max_concurrency code default is 0; seeding 0 is a documented no-op.
+        text = self._seed("provision_max_concurrency", "0")
+        assert ConfigSetting.objects.filter(key="provision_max_concurrency").exists() is False
+        assert "skipped-equals-default" in text
+
+    def test_seed_preserves_operator_override(self) -> None:
+        call_command("config_setting", "set", "provision_ram_ceiling_percent", "90")
+        self._seed("provision_ram_ceiling_percent", "75")
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+
+    def test_seed_refuses_unknown_key(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "seed", "not_a_setting", "1")
+
+    def test_seed_refuses_invalid_json(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "seed", "provision_ram_ceiling_percent", "not-json")

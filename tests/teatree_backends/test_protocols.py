@@ -5,7 +5,6 @@ from teatree.core.backend_protocols import (
     CIService,
     CodeHostBackend,
     ForgeMergeResult,
-    MessageSpec,
     MessagingBackend,
     PrMergeState,
     PrOpenState,
@@ -51,6 +50,10 @@ class _FakeCodeHost:
     def current_user(self) -> str:
         return ""
 
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        _ = repo, login
+        return True
+
     def list_my_prs(self, *, author: str) -> list[dict[str, object]]:
         _ = author
         return []
@@ -62,6 +65,22 @@ class _FakeCodeHost:
     def list_review_requested_prs(self, *, reviewer: str) -> list[dict[str, object]]:
         _ = reviewer
         return []
+
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[dict[str, object]]:
+        _ = (repo, state, author)
+        return []
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
+    def get_repo(self, *, repo: str) -> dict[str, object]:
+        _ = repo
+        return {}
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         _ = (pr_url, reviewer)
@@ -87,6 +106,10 @@ class _FakeCodeHost:
         _ = (repo, pr_iid)
         return []
 
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[dict[str, object]]:
+        _ = (repo, pr_iid)
+        return []
+
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         _ = (repo, filepath)
         return {}
@@ -101,6 +124,10 @@ class _FakeCodeHost:
 
     def get_issue(self, issue_url: str) -> dict[str, object]:
         _ = issue_url
+        return {}
+
+    def update_issue(self, *, issue_url: str, body: str) -> dict[str, object]:
+        _ = (issue_url, body)
         return {}
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> dict[str, object]:
@@ -121,6 +148,13 @@ class _FakeCodeHost:
 
     def list_assigned_issues(self, *, assignee: str) -> list[dict[str, object]]:
         _ = assignee
+        return []
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:
+        return []
+
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:
+        _ = author, repo_slugs
         return []
 
     def create_issue(
@@ -170,7 +204,23 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return False
 
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        _ = (slug, pr_id)
+        return ""
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        _ = (slug, pr_id)
+        return None
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[str, object]]:
+        _ = (slug, pr_id)
+        return []
+
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[dict[str, object]]:
+        _ = (slug, pr_id)
+        return []
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         _ = (slug, pr_id)
         return []
 
@@ -201,6 +251,10 @@ class _FakeMessaging:
         return []
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
+        _ = (channel, limit)
+        return []
+
+    def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
         _ = (channel, limit)
         return []
 
@@ -277,8 +331,3 @@ def test_non_conforming_class_is_not_messaging_backend() -> None:
         pass
 
     assert not isinstance(NotAMessaging(), MessagingBackend)
-
-
-def test_message_spec_default_thread_ts() -> None:
-    spec = MessageSpec(channel="C123", text="hello")
-    assert spec.thread_ts == ""

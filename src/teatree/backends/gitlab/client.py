@@ -1,17 +1,18 @@
+import logging
 import re
 from pathlib import Path
 from typing import TypedDict, cast
-from urllib.parse import quote_plus, urlparse
-
-import httpx
+from urllib.parse import urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
-from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab import api as _gitlab_api
 from teatree.backends.gitlab import issue_notes as _issue_notes
+from teatree.backends.gitlab import issue_ops as _issue_ops
+from teatree.backends.gitlab import pr_reads as _pr_reads
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab.discussions import _count_unresolved_resolvable_threads, _read_int
 from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
@@ -22,6 +23,9 @@ from teatree.core.backend_protocols import (
     UploadVerification,
 )
 from teatree.types import RawAPIDict
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
@@ -33,56 +37,6 @@ _GITLAB_MR_STATE_MAP: dict[str, PrOpenState] = {
     "closed": PrOpenState.CLOSED,
     "locked": PrOpenState.CLOSED,
 }
-
-
-def _read_int(data: RawAPIDict, key: str) -> int:
-    """Return ``data[key]`` as an int, or ``-1`` when the key is absent / non-int.
-
-    The sentinel ``-1`` lets callers distinguish "field missing in payload" from
-    a legitimate zero. GitLab's approvals payload uses both ``int`` and ``str``
-    encodings across versions, so we accept either.
-    """
-    value = data.get(key)
-    if isinstance(value, bool):
-        return -1
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return -1
-    return -1
-
-
-def _count_unresolved_resolvable_threads(discussions: list[RawAPIDict]) -> int:
-    """Count open ``resolvable`` discussion threads — what blocks an MR merge.
-
-    A thread is "unresolved-resolvable" when at least one of its notes is
-    ``resolvable: true`` AND no note carries ``resolved: true``. System notes
-    and non-resolvable comments are skipped: the GitLab "must resolve all
-    threads" policy is keyed on the same ``resolvable`` flag.
-    """
-    count = 0
-    for disc in discussions:
-        if not isinstance(disc, dict):
-            continue
-        notes_raw = disc.get("notes", [])
-        if not isinstance(notes_raw, list):
-            continue
-        has_resolvable = False
-        has_resolved = False
-        for note in notes_raw:
-            if not isinstance(note, dict):
-                continue
-            note_dict = cast("RawAPIDict", note)
-            if note_dict.get("resolvable") is True:
-                has_resolvable = True
-            if note_dict.get("resolved") is True:
-                has_resolved = True
-        if has_resolvable and not has_resolved:
-            count += 1
-    return count
 
 
 class _GitLabUser(TypedDict, total=False):
@@ -158,6 +112,11 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """Return the authenticated GitLab username."""
         return self._client.current_username()
 
+    def is_assignable(self, *, repo: str, login: str) -> bool:  # noqa: PLR6301 — CodeHostBackend Protocol surface.
+        """GitLab's MR create tolerates a non-member assignee, so no probe (#3100)."""
+        del repo, login
+        return True
+
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         return self._client.list_all_open_mrs(author, updated_after=updated_after)
 
@@ -175,6 +134,26 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         return self._client.list_open_issues_for_assignee(assignee)
 
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues *author* FILED, scoped to *repo_slugs* (empty = global) — intake query (#3235)."""
+        return self._client.list_open_issues_for_author(author, project_slugs=repo_slugs)
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues carrying *label*, scoped to *repo_slugs* (empty = global) — #3634."""
+        return self._client.list_open_issues_for_label(label, project_slugs=repo_slugs)
+
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
+        return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+
+    def get_repo(self, *, repo: str) -> RawAPIDict:
+        return _pr_reads.repo_metadata(self._resolve_project(repo), repo=repo)
+
     def create_issue(
         self,
         *,
@@ -183,18 +162,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         body: str,
         labels: list[str] | None = None,
     ) -> RawAPIDict:
-        """Open a GitLab issue on *repo* and return the created payload.
-
-        The returned dict carries ``web_url`` (the clickable issue link) and
-        ``iid``. Returns ``{"error": ...}`` when the project cannot resolve.
-        """
-        project = self._resolve_project(repo)
-        if project is None:
-            return {"error": f"Could not resolve project: {repo}"}
-        payload: RawAPIDict = {"title": title, "description": body}
-        if labels:
-            payload["labels"] = ",".join(labels)
-        return self._client.post_json(f"projects/{project.project_id}/issues", payload) or {}
+        """Open a GitLab issue on *repo* and return the created payload."""
+        spec = _issue_ops.NewIssue(repo=repo, title=title, body=body, labels=labels or [])
+        return _issue_ops.create_issue(self._client, self._resolve_project(repo), spec)
 
     def create_sub_issue(
         self,
@@ -233,16 +203,8 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return nest_error or created
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
-        """Return open issues on *repo* whose title/description match *query*.
-
-        Returns an empty list when the project cannot resolve — the caller
-        treats "no matches" and "unresolvable" identically.
-        """
-        project = self._resolve_project(repo)
-        if project is None:
-            return []
-        endpoint = f"projects/{project.project_id}/issues?state=opened&search={quote_plus(query)}&per_page=100"
-        return self._client.get_json_paginated(endpoint)
+        """Return open issues on *repo* whose title/description match *query*."""
+        return _issue_ops.search_open_issues(self._client, self._resolve_project(repo), query=query)
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
@@ -271,6 +233,21 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return self._client.get_json_paginated(
             f"projects/{project.project_id}/merge_requests/{pr_iid}/notes?per_page=100"
         )
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return thread-structured, author-carrying discussion threads for an MR (#3340).
+
+        Unlike :meth:`list_pr_comments` (a flat note list), this preserves the
+        thread grouping AND each note's authorship — what
+        :func:`thread_opened_solely_by` needs to tell a stale bot thread apart
+        from one a human replied to. Keyed like its neighbours (``repo`` +
+        ``pr_iid``) so a caller selects threads through the backend without
+        dropping to the forge-specific ``project_id``-keyed API client.
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            return []
+        return cast("list[RawAPIDict]", self._client.get_mr_discussions(project.project_id, pr_iid))
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
@@ -401,58 +378,26 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def get_issue(self, issue_url: str) -> RawAPIDict:
         """Fetch a GitLab issue from its full URL.
 
-        Supports the canonical web format ``https://gitlab.example.com/<group>/<repo>/-/issues/<iid>``.
-        Returns ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or when
-        the project cannot be resolved.
-
-        Raises:
-            IssueNotFoundError: when the GitLab API returns HTTP 404 (issue
-                permanently deleted or never existed).  Any other HTTP error
-                (5xx) or network failure propagates as-is so the scanner keeps
-                retrying it.
+        Propagates :class:`IssueNotFoundError` from the delegate on HTTP 404 (the
+        issue was permanently deleted); every other error propagates as-is so the
+        scanner keeps retrying it.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
-        try:
-            issue = self._client.get_issue(project.project_id, int(match["iid"]))
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:  # noqa: PLR2004
-                raise IssueNotFoundError(issue_url) from exc
-            raise
-        return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}
+        return _issue_ops.get_issue(self._client, issue_url)
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
         """Close a GitLab issue, optionally leaving an audit-trail note first.
 
-        Idempotent: ``PUT state_event=close`` is a no-op on an already-closed
-        issue. Returns ``{"error": ...}`` when the URL is not a recognised
-        GitLab issue URL or when the project cannot be resolved.
+        The note is posted here (not in the delegate) so the delegate stays a
+        single-purpose state transition; an unparsable URL still short-circuits
+        there, before any write.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
         if comment:
             self.post_issue_comment(issue_url=issue_url, body=comment)
-        return (
-            self._client.put_json(
-                f"projects/{project.project_id}/issues/{int(match['iid'])}",
-                {"state_event": "close"},
-            )
-            or {}
-        )
+        return _issue_ops.close_issue(self._client, issue_url)
+
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Replace a GitLab issue's description in place."""
+        return _issue_ops.update_issue(self._client, issue_url, body=body)
 
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
         """Return the project slug that OWNS *issue_url* (the note's own project).
@@ -493,7 +438,18 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """
         project = self._resolve_project(repo)
         if project is None:
-            return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)
+            # MERGE-AUTHORISING read: an unresolvable project must NOT degrade to
+            # ``approvals_left=0`` (which reads as "approved, safe to merge").
+            # Fail closed — one outstanding approval, no approvers — so an
+            # unresolvable slug can never authorise an auto-merge. Mirrors the
+            # GitHub sibling's fail-closed ``approvals_left=1``.
+            warn_throttled(
+                logger,
+                f"gitlab-approvals-unresolved:{repo}",
+                "GitLab approvals read could not resolve project %r — failing closed (approvals_left=1)",
+                repo,
+            )
+            return ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0)
 
         raw = self._client.get_mr_approvals(project.project_id, pr_iid)
         approved_by_raw = raw.get("approved_by", [])
@@ -539,8 +495,20 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
         return self._merge_rpc().fetch_pr_is_draft(slug=slug, pr_id=pr_id)
 
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        return self._merge_rpc().fetch_pr_same_repo(slug=slug, pr_id=pr_id)
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
         return self._merge_rpc().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)

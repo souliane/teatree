@@ -5,24 +5,7 @@ compatibility: macOS/Linux, zsh or bash, git, glab or gh CLI for issue fetching.
 requires:
   - workspace
   - architecture-design
-companions:
   - writing-plans
-triggers:
-  priority: 60
-  keywords:
-    - '(new ticket|start working|what should i do)'
-    - '([a-z]+-\d+|\b(ticket|issue) #?\d+)'
-  urls:
-    - 'https?://gitlab\.[^\s]+/-/(issues|merge_requests|jobs)/\d+'
-    - 'https?://github\.com/[^\s]+/(issues|pull)/\d+'
-    - 'https?://(www\.)?notion\.(so|site)/'
-    - 'https?://[^\s]*\.atlassian\.net/wiki/'
-    - 'https?://linear\.app/[^\s]+/issue/'
-search_hints:
-  - ticket
-  - issue
-  - start working on
-  - intake
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -85,22 +68,27 @@ Acting on a different ticket than the one requested — or smearing one ticket's
 
 #### Tooling Rules
 
-- **CLI over MCP (do this — never the reverse).** Fetch the issue body with the forge CLI as the **first** action. Reach for an MCP service only for a source that has no CLI (e.g. Notion, Slack). Do **not** open an MCP issue-fetch when `glab`/`gh` can read the same issue.
+- **MCP forge tools first for the issue fetch.** Fetch the issue body + discussion with the forge MCP tools as the **first** action — they return structured JSON, no text parsing:
 
-  The one command to run for the URL the user pasted — copy-paste, fill the placeholders, no narration:
+  ```text
+  # GitHub: mcp__teatree__github_issue(issue_url) + mcp__teatree__github_issue_comments(issue_url)
+  # GitLab: mcp__teatree__gitlab_issue(issue_url) + mcp__teatree__gitlab_issue_comments(issue_url)
+  ```
+
+  Fall back to the forge CLI only when the MCP server isn't connected (or when you need a capability the tool doesn't cover yet — full comment pagination on very long threads, see **Pagination** below):
 
   ```bash
-  # GitLab issue (gitlab.com/<group>/<repo>/-/issues/<iid>) — body + every discussion in one pass
+  # CLI fallback — GitLab issue (gitlab.com/<group>/<repo>/-/issues/<iid>): body + every discussion in one pass
   glab issue view <iid> --repo <group>/<repo> --comments
 
-  # GitHub issue (github.com/<owner>/<repo>/issues/<n>) — body + all comments
+  # CLI fallback — GitHub issue (github.com/<owner>/<repo>/issues/<n>): body + all comments
   gh issue view <n> --repo <owner>/<repo> --comments
 
-  # Notion / Slack / other CLI-less source only
+  # Notion / Slack / other source with no forge MCP tool
   t3 tool notion-download <signed-url>
   ```
 
-  Then traverse the linked graph (sub-pages, related MRs, threads) per the table above. `glab issue view ... --comments` / `gh issue view ... --comments` is the canonical intake fetch — not an MCP call.
+  Then traverse the linked graph (sub-pages, related MRs, threads) per the table above. The `mcp__teatree__<forge>_issue` / `<forge>_issue_comments` pair is the canonical intake fetch; the `glab`/`gh issue view` commands are its fallback.
 - **Image safety** — before reading any downloaded image, validate it with `file <path>`. Only raster (PNG/JPEG/GIF/WebP) are safe to read. Non-raster (SVG/XML/HTML) or empty/corrupt files will poison the conversation context with unrecoverable "Could not process image" errors.
 - **Pagination** — `glab api .../notes` returns one page (typically 20). Use `?per_page=100` or `--paginate` and de-duplicate.
 - **Inaccessible sources** — if a link points to a source you cannot reach (e.g., partner Jira behind SSO), STOP and report it. Do not silently proceed with a partial picture.
@@ -127,6 +115,8 @@ glab mr list --search "#<issue-number>" --state merged
 If a merged PR references this issue and its body claims the work is complete, **stop and confirm with the user** before continuing. If the user agrees the work is done, close the issue with a comment pointing to the merged PR — do not start a redundant scoping/implementation pass.
 
 **Run this check even when an upstream brief, coordinator, or mission prompt names the ticket as the "current" or "next" one.** A brief asserting a ticket authoritatively is not evidence the ticket is unresolved — backlogs drift and merged-but-open issues accumulate. Verify against merged PRs *before* creating a worktree, not after. Closing the stale issue with evidence and advancing to the next backlog item is the correct outcome, not a deviation from the brief.
+
+**The same check applies when the ticket IS an open PR, not just an issue** — a `codex_reviewing`/review-phase dispatch against an already-open PR (e.g. one titled generically after a hard-stopped session, like `chore(handover): fast-push checkpoint before termination`) may itself be fully superseded by a later, already-merged PR that shipped the same commit(s) under a different title. Prose diffing (`git diff origin/main...<branch>`) is unreliable here — a branch far behind `main` shows spurious changes from main's own unrelated evolution. Verify with a real apply instead: `git switch -c <name>-v2 origin/main && git cherry-pick <each commit sha>`. An EMPTY cherry-pick (after resolving only cosmetic/formatting conflicts) is definitive proof of full supersession — close the PR as a duplicate and stop; do not merge origin/main straight into the stale branch (drags in hundreds of unrelated commits and trips pre-commit hooks on files you never touched).
 
 ### 1c. Landscape Survey (Non-Negotiable — feeds the planner)
 
@@ -158,9 +148,9 @@ git -C <worktree> status --porcelain                                            
 git -C <worktree> log <branch> --not --remotes --oneline                                  # unpushed commits
 ```
 
-The survey **fails open**: an inconclusive git probe or a forge that cannot be listed is reported as a warning, never silently dropped — a missed in-flight branch is worse than a noisy warning. The deterministic gather + classification lives in `teatree.core.landscape` (`survey_landscape`); the planner receives the resulting `LandscapeSurvey` (open PRs, in-flight worktrees, per-issue recommendations) as input and **must not re-derive it**.
+The survey **fails open**: an inconclusive git probe or a forge that cannot be listed is reported as a warning, never silently dropped — a missed in-flight branch is worse than a noisy warning. The deterministic gather + classification lives in `teatree.core.intake.landscape` (`survey_landscape`); the planner receives the resulting `LandscapeSurvey` (open PRs, in-flight worktrees, per-issue recommendations) as input and **must not re-derive it**.
 
-**Baked into the intake FSM step (#2541).** For the autonomous flow the survey is not a manual CLI step — the intake FSM worker (`execute_provision`, after the worktrees materialise and before the planner is scheduled) gathers it and persists a durable `LandscapeArtifact` row tied to the ticket. The planner then consumes that persisted survey (a headless planner sees it inline in its `INTAKE LANDSCAPE SURVEY` system-context block; any planner reads `LandscapeArtifact.latest_for(ticket)`), so the survey is *produced by intake and consumed by the planner via the FSM* rather than re-derived. Persistence is best-effort — a forge outage during provision never blocks provisioning or planning; the planner then falls back to the `t3 <overlay> workspace landscape` fetch above. `t3 <overlay> info artifacts <ticket>` surfaces the latest persisted survey alongside the ticket's other artifacts.
+**Baked into the intake FSM step (#2541).** For the autonomous flow the survey is not a manual CLI step — the intake FSM worker (`execute_provision`, after the worktrees materialise and before the planner is scheduled) gathers it and persists a durable `LandscapeArtifact` row tied to the ticket. The planner then consumes that persisted survey (a headless planner sees it inline in its `INTAKE LANDSCAPE SURVEY` system-context block; any planner reads `LandscapeArtifact.latest_for(ticket)`), so the survey is *produced by intake and consumed by the planner via the FSM* rather than re-derived. Persistence is best-effort — a forge outage during provision never blocks provisioning or planning; the planner then falls back to the `t3 <overlay> workspace landscape` fetch above. `t3 info artifacts <ticket>` surfaces the latest persisted survey alongside the ticket's other artifacts.
 
 ### 2. State Acceptance Criteria
 

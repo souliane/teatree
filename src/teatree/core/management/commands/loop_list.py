@@ -4,7 +4,7 @@ Backs the read-only ``t3 loop list``. Unlike ``t3 loop status`` (which prints
 the statusline file written at the *last* tick, so its countdowns are stale),
 this rebuilds the state on every call from the cadence ledger, the mini-loop
 registry + ``[loops]`` config, and the infra-slot leases — including the
-PID-anchored loop-owner liveness. ORM access lives here (a management command,
+PID-anchored t3-master liveness. ORM access lives here (a management command,
 not a plain typer command) per the project's "anything touching the ORM is a
 management command" rule.
 
@@ -14,17 +14,21 @@ marks fired, or mutates a row.
 """
 
 import datetime as dt
-import json
-from typing import Annotated, Any
+from collections.abc import Sequence
+from typing import IO, Annotated, Any, cast
 
 import typer
-from django_typer.management import TyperCommand
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.session_identity import current_session_id
+from teatree.core.table_output import print_table
 from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusReport, build_report, owned_per_loop_owners
 
 _NEVER = "—"
-_REMEDIATION = "register the `t3 loop tick` cron, or run `t3 loop claim` in a Claude Code session to take ownership"
+_REMEDIATION = (
+    "re-register each enabled loop's `/loop` via the `/t3:health` skill, or run `t3 loop claim` "
+    "in a Claude Code session to take ownership (force a one-off render with `t3 loops tick`)"
+)
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
 
@@ -49,15 +53,38 @@ def _next_tick_label(entry: LoopStatusEntry, now: dt.datetime) -> str:
     return f"in {_human_age(entry.due_seconds(now))}"
 
 
-def _entry_line(entry: LoopStatusEntry, now: dt.datetime) -> str:
-    enabled = "enabled" if entry.enabled else "disabled"
-    cadence = _human_age(entry.cadence_seconds)
-    age = _human_age(entry.age_seconds(now))
-    next_tick = _next_tick_label(entry, now)
-    line = f"  {entry.name:<22} {enabled:<8} cadence {cadence:<7} last {age:<10} next {next_tick}"
+def _held_cell(entry: LoopStatusEntry) -> str:
     if entry.kind.value == "infra-slot":
-        line += "  held" if entry.held else "  idle"
-    return line
+        return "held" if entry.held else "idle"
+    if entry.held:
+        # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
+        return "held"
+    # A #3159 preset can flip a mini-loop with NO LoopState hold: the disagreement
+    # between the effective `admitted` verdict and the base `enabled` flag is the
+    # preset's doing — masking a base-enabled loop off, or forcing a base-disabled one on.
+    if entry.enabled and not entry.admitted:
+        return "masked"
+    if not entry.enabled and entry.admitted:
+        return "forced-on"
+    return ""
+
+
+def _entry_row(entry: LoopStatusEntry, now: dt.datetime) -> list[str]:
+    return [
+        entry.name,
+        "enabled" if entry.enabled else "disabled",
+        _human_age(entry.cadence_seconds),
+        _human_age(entry.age_seconds(now)),
+        _next_tick_label(entry, now),
+        _held_cell(entry),
+    ]
+
+
+_ENTRY_HEADERS = ["Loop", "State", "Cadence", "Last", "Next", "Held"]
+
+
+def _render_entries_table(title: str, entries: Sequence[LoopStatusEntry], now: dt.datetime, stream: IO[str]) -> None:
+    print_table(_ENTRY_HEADERS, [_entry_row(entry, now) for entry in entries], title=title, stream=stream)
 
 
 def _owner_line(owner: LoopOwnerStatus) -> str:
@@ -103,16 +130,25 @@ def _stall_lines(report: LoopStatusReport) -> list[str]:
     return [f"STALLED — last tick {age} ago", f"  hint: {_REMEDIATION}"]
 
 
-def _render_text(report: LoopStatusReport, *, show_all: bool) -> list[str]:
-    now = report.generated_at
-    lines = ["infra slots:"]
-    lines.extend(_entry_line(entry, now) for entry in report.infra_slots)
-    lines.append("mini-loops:")
-    lines.extend(_entry_line(entry, now) for entry in report.mini_loops)
-    lines.append(_owner_line(report.owner))
+def _status_lines(report: LoopStatusReport, *, show_all: bool) -> list[str]:
+    """The non-tabular status lines rendered below the loop tables.
+
+    The owner, per-loop-owner and stall blocks are status prose (one live
+    session's health), not record rows, so they stay lines rather than joining
+    the loop tables.
+    """
+    lines = [_owner_line(report.owner)]
     lines.extend(_per_loop_owner_lines(_resolve_per_loop_owners(report, show_all=show_all)))
     lines.extend(_stall_lines(report))
     return lines
+
+
+def _render_human(report: LoopStatusReport, stream: IO[str], *, show_all: bool) -> None:
+    now = report.generated_at
+    _render_entries_table("infra slots", report.infra_slots, now, stream)
+    _render_entries_table("mini-loops", report.mini_loops, now, stream)
+    for line in _status_lines(report, show_all=show_all):
+        stream.write(line)
 
 
 def _entry_payload(entry: LoopStatusEntry, now: dt.datetime) -> dict[str, Any]:
@@ -120,6 +156,7 @@ def _entry_payload(entry: LoopStatusEntry, now: dt.datetime) -> dict[str, Any]:
         "name": entry.name,
         "kind": entry.kind.value,
         "enabled": entry.enabled,
+        "admitted": entry.admitted,
         "cadence_seconds": entry.cadence_seconds,
         "last_fired_at": entry.last_fired_at.isoformat() if entry.last_fired_at else "",
         "age_seconds": entry.age_seconds(now),
@@ -140,7 +177,7 @@ def _owner_payload(owner: LoopOwnerStatus) -> dict[str, Any]:
     }
 
 
-def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
+def _payload(report: LoopStatusReport, *, show_all: bool) -> dict[str, Any]:
     now = report.generated_at
     payload = {
         "generated_at": report.generated_at.isoformat(),
@@ -166,10 +203,10 @@ def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
     per_loop_owners = _resolve_per_loop_owners(report, show_all=show_all)
     if per_loop_owners:
         payload["per_loop_owners"] = [_owner_payload(owner) for owner in per_loop_owners]
-    return json.dumps(payload, indent=2)
+    return payload
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     help = "Print LIVE loop status computed from the DB (read-only; #1744)."
 
     def handle(
@@ -183,10 +220,15 @@ class Command(TyperCommand):
                 help="Also show the per-loop owning sessions (cross-session health view, #1834).",
             ),
         ] = False,
-    ) -> None:
+    ) -> dict[str, Any]:
         report = build_report()
-        if json_output:
-            self.stdout.write(_render_json(report, show_all=show_all))
-            return
-        for line in _render_text(report, show_all=show_all):
-            self.stdout.write(line)
+        payload = _payload(report, show_all=show_all)
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_human(report, stream, show_all=show_all),
+        )
+        return payload

@@ -1,10 +1,10 @@
 """Tests for the two-stage SIMPLE answer builder (#1014).
 
 Stage A is zero-token: it renders an answer directly from teatree's own
-dashboard/active-ticket state. Stage B is a single ``claude -p --model
-haiku`` call, gated by ``T3_SLACK_ANSWER_TOKEN_BUDGET`` and bounded to
-return the ``NEEDS_WORK`` sentinel when it cannot answer cheaply. Only
-the ``claude`` subprocess is mocked; everything else is real.
+dashboard/active-ticket state. Stage B is a single cheap-tier turn through
+the shared one-shot seam, gated by ``T3_SLACK_ANSWER_TOKEN_BUDGET`` and
+bounded to return the ``NEEDS_WORK`` sentinel when it cannot answer cheaply.
+Only ``_run_cheap_turn`` is mocked; everything else is real.
 """
 
 from unittest.mock import patch
@@ -32,7 +32,7 @@ class TestStageADirectState:
                 "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
                 return_value="overlay=teatree\nPR #545: feat(loop)\n",
             ) as get_statusline,
-            patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku,
+            patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as cheap_turn,
         ):
             answer = build_simple_answer(row)
 
@@ -40,7 +40,7 @@ class TestStageADirectState:
         assert "overlay=teatree" in answer
         assert "PR #545: feat(loop)" in answer
         get_statusline.assert_called_once()
-        haiku.assert_not_called()
+        cheap_turn.assert_not_called()
 
     def test_pending_question_answered_from_state_without_llm(self) -> None:
         row = _row("what's pending?")
@@ -49,16 +49,16 @@ class TestStageADirectState:
                 "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
                 return_value="overlay=teatree\nticket=#1121\n",
             ),
-            patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku,
+            patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as cheap_turn,
         ):
             answer = build_simple_answer(row)
 
         assert answer is not None
-        haiku.assert_not_called()
+        cheap_turn.assert_not_called()
 
 
-class TestStageBHaikuFallback:
-    def test_falls_to_haiku_when_stage_a_returns_none(self) -> None:
+class TestStageBCheapTurnFallback:
+    def test_falls_to_cheap_turn_when_stage_a_returns_none(self) -> None:
         row = _row("which PRs are open?")
         with (
             patch(
@@ -66,9 +66,9 @@ class TestStageBHaikuFallback:
                 return_value="",
             ),
             patch(
-                "teatree.loop.slack_answer.simple_answer._run_haiku",
+                "teatree.loop.slack_answer.simple_answer._run_cheap_turn",
                 return_value="No open PRs right now.",
-            ) as haiku,
+            ) as cheap_turn,
             patch(
                 "teatree.loop.slack_answer.simple_answer.precheck_budget",
                 return_value=_AllowVerdict(),
@@ -77,9 +77,9 @@ class TestStageBHaikuFallback:
             answer = build_simple_answer(row)
 
         assert answer == "No open PRs right now."
-        haiku.assert_called_once()
+        cheap_turn.assert_called_once()
 
-    def test_haiku_needs_work_sentinel_propagates(self) -> None:
+    def test_cheap_turn_needs_work_sentinel_propagates(self) -> None:
         row = _row("which PRs are open?")
         with (
             patch(
@@ -87,7 +87,7 @@ class TestStageBHaikuFallback:
                 return_value="",
             ),
             patch(
-                "teatree.loop.slack_answer.simple_answer._run_haiku",
+                "teatree.loop.slack_answer.simple_answer._run_cheap_turn",
                 return_value=NEEDS_WORK_SENTINEL,
             ),
             patch(
@@ -99,14 +99,14 @@ class TestStageBHaikuFallback:
 
         assert answer == NEEDS_WORK_SENTINEL
 
-    def test_token_budget_exhausted_skips_haiku_returns_none(self) -> None:
+    def test_token_budget_exhausted_skips_cheap_turn_returns_none(self) -> None:
         row = _row("which PRs are open?")
         with (
             patch(
                 "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
                 return_value="",
             ),
-            patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku,
+            patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as cheap_turn,
             patch(
                 "teatree.loop.slack_answer.simple_answer.precheck_budget",
                 return_value=_SkipVerdict(),
@@ -115,7 +115,7 @@ class TestStageBHaikuFallback:
             answer = build_simple_answer(row)
 
         assert answer is None
-        haiku.assert_not_called()
+        cheap_turn.assert_not_called()
 
 
 class TestStageAReturnsStatuslineNotDashboard:
@@ -133,7 +133,7 @@ class TestStageAReturnsStatuslineNotDashboard:
         # Real statusline file content the user expects to see verbatim.
         self._write_statusline(tmp_path, monkeypatch, "overlay=teatree\nPR #999: feat(loop) hello\n")
         row = _row("what's the status?")
-        with patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku:
+        with patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as cheap_turn:
             answer = build_simple_answer(row)
 
         assert answer is not None
@@ -142,7 +142,7 @@ class TestStageAReturnsStatuslineNotDashboard:
         # Dashboard table markers (markdown row delimiter "| Ref |" etc.) must
         # NOT appear — the bug was Stage A returning render_dashboard() output.
         assert "| Ref |" not in answer
-        haiku.assert_not_called()
+        cheap_turn.assert_not_called()
 
     def test_stage_a_does_not_return_dashboard_table_for_dashboard_keyword(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -153,7 +153,7 @@ class TestStageAReturnsStatuslineNotDashboard:
         # of which dashboard keyword matched.
         self._write_statusline(tmp_path, monkeypatch, "overlay=teatree\nticket=#1121\n")
         row = _row("hey what is this loop dashboard")
-        with patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku:
+        with patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as cheap_turn:
             answer = build_simple_answer(row)
 
         assert answer is not None
@@ -162,7 +162,7 @@ class TestStageAReturnsStatuslineNotDashboard:
         # No dashboard table markers leaked through.
         assert "| Ref |" not in answer
         assert "# Loop dashboard" not in answer
-        haiku.assert_not_called()
+        cheap_turn.assert_not_called()
 
     def test_stage_a_returns_none_when_statusline_empty(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Empty statusline (and no file) means Stage A must yield None so
@@ -171,7 +171,7 @@ class TestStageAReturnsStatuslineNotDashboard:
         row = _row("what's the status?")
         with (
             patch(
-                "teatree.loop.slack_answer.simple_answer._run_haiku",
+                "teatree.loop.slack_answer.simple_answer._run_cheap_turn",
                 return_value=NEEDS_WORK_SENTINEL,
             ),
             patch(
@@ -181,7 +181,7 @@ class TestStageAReturnsStatuslineNotDashboard:
         ):
             answer = build_simple_answer(row)
 
-        # Stage A returned None → fell through to Stage B haiku which
+        # Stage A returned None → fell through to Stage B cheap turn which
         # returned NEEDS_WORK. The assertion is that we did NOT short-circuit
         # with a stale statusline answer.
         assert answer == NEEDS_WORK_SENTINEL

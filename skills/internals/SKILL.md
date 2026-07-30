@@ -1,0 +1,118 @@
+---
+name: internals
+description: "How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`."
+eval_exempt: reference for teatree's own internals; the behaviours it describes are graded by the code/review skills' evals and by the repo's own gates, not by a trajectory over this overview
+metadata:
+  version: 0.0.1
+---
+
+# TeaTree — Internals
+
+TeaTree is a personal code factory for multi-repo projects — it turns a ticket URL into a merged pull request by driving AI agents through lifecycle phases. Under the hood it's a Django project; overlays are lightweight Python packages that extend it for specific projects.
+
+## Architecture
+
+- **TeaTree IS the Django project.** Requires a local clone; installed via `uv tool install --editable .`.
+- **Overlays** register via `teatree.overlays` entry points and provide project-specific configuration. <!-- skill-symbol-ref: entry-point group name, not an importable module -->
+- **Skills** live in `skills/` and are loaded by the agent's skill system.
+- **Hooks** in `hooks/scripts/` run on agent lifecycle events (e.g., prompt submit, pre/post tool use).
+
+## Lifecycle Phases
+
+```
+ticket → code → test → review → ship → review-request
+```
+
+Each phase maps to a skill (`t3:ticket`, `t3:code`, etc.). The `Session` model tracks visited phases and enforces quality gates (e.g., can't ship without testing).
+
+**Posture: autonomous end-to-end completion of in-scope tickets.** The resolved default is that the factory carries an in-scope ticket all the way through these phases without pausing to ask "should I continue?". When a ticket sits at a phase boundary (e.g. `TESTED`) with no blocker and no genuine decision, the agent's next action *advances* it toward ship/review — it does not stall on a permission check the user never needs to answer (cross-ref `/t3:rules` § "Publishing Actions Are Mode-Conditional" for `auto` vs `interactive`, and the autonomy posture in CLAUDE.md). A pause is reserved for a real blocker or a genuine ask (a debatable architectural choice, an ambiguous destination); the absence of those is the signal to proceed, not to check in. Pinned by `evals/scenarios/factory_finishes_in_scope_ticket.yaml`.
+
+## CLI Reference
+
+Top-level commands (no overlay needed): `t3 startoverlay`, `t3 docs`, `t3 agent`, `t3 sessions`, `t3 cost`, `t3 tokens`, `t3 speak`, `t3 ui`, `t3 admin`, `t3 info`, `t3 config`, `t3 banned-terms`, `t3 ci`, `t3 codex`, `t3 review`, `t3 review-request`, `t3 eval`, `t3 doctor`, `t3 tool`, `t3 setup`, `t3 update`, `t3 assess`, `t3 overlay`, `t3 loop`, `t3 mcp`, `t3 slack`, `t3 task`, `t3 recover`, `t3 dogfood`, `t3 dream`, `t3 mutation`. (This list is kept honest by `tests/teatree_skill_support/test_teatree_skill_cli_reference.py`, which asserts every name is a registered `t3` command; the in-sync full reference with descriptions is `docs/generated/cli-reference.md`.)
+
+Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
+
+```bash
+t3 loop start                         # Spawn the loop-owner session (registers each enabled loop's /loop)
+t3 loops tick --loop <name>           # Run one enabled loop's tick (per-loop only; bare `t3 loops tick` is a hard error, #2650)
+t3 loop status                        # Show the loop's last-rendered statusline
+t3 <overlay> resetdb                  # Drop and recreate the SQLite database
+t3 <overlay> worktree provision          # Provision worktree (ports, DB, overlay steps)
+t3 <overlay> worktree start          # Start dev servers
+t3 <overlay> worktree status         # Show worktree state
+t3 <overlay> worktree teardown       # Stop services, clean up
+t3 <overlay> tasks work-next-headless      # Claim/execute next headless task; refuses loop-dispatched phases while agent_runtime=interactive
+t3 <overlay> tasks start              # Claim and launch next interactive task in the current terminal
+t3 <overlay> pr create <ticket-id>    # Open the PR: validate ship gates + trigger the ship transition (advance a TESTED ticket toward review)
+t3 <overlay> followup sync            # Daily ticket/PR sync
+```
+
+## Key Models
+
+- **Ticket** — issue URL, overlay, variant, repos
+- **Worktree** — repo path, branch, ports, state (FSM: created → provisioned → services_up → ready)
+- **Session** — agent session with visited phases, repos modified/tested
+- **Task** — claimable work unit with lease, heartbeat, parent chain
+- **TaskAttempt** — execution result with exit code, structured output
+
+These models are surfaced in a small Django admin dashboard. A rendered, drift-checked HTML snapshot of it — generated through Django's test client by `scripts/hooks/generate_dashboard_snapshot.py` — lives at [docs/generated/dashboard/admin-index.html](../../docs/generated/dashboard/admin-index.html) as an always-fresh "screenshot". The CLI front door gets the same treatment: the deterministically-rendered output of `t3 --help` + `t3 loop --help` (via `scripts/hooks/generate_cli_output_snapshot.py`) is captured at [docs/generated/cli/representative-output.md](../../docs/generated/cli/representative-output.md), the curated complement to the exhaustive CLI reference.
+
+## Overlay API
+
+Overlays subclass `OverlayBase` and override methods:
+
+- `get_repos()` — repo list for worktree creation
+- `get_provision_steps(worktree)` — setup steps (migrations, fixtures)
+- `get_run_commands(worktree)` — dev server commands
+- `get_db_import_strategy(worktree)` — DSLR/dump import config
+- `get_services_config(worktree)` — Docker services
+- `get_visual_qa_targets(changed_files)` — URL paths the pre-push browser sanity gate should load (default: `[]` — opt in by mapping diff paths to URLs)
+- `get_e2e_env_extras(env_cache)` — overlay-specific env vars merged into the Playwright environment (e.g. map `WT_VARIANT` → `CUSTOMER`); default `{}`
+- `get_e2e_preflight(customer, base_url)` — pre-Playwright gates that fail fast on auth/SSO/network issues; default `[]`
+- `get_e2e_run_provenance(spec_path)` — resolve a vanilla spec path to its manifest entry id (e.g. CI lane) recorded on the run so it is reproducible from the DB alone; default `""` (overlay with no per-spec manifest)
+- `get_e2e_scenarios(spec_path)` — the per-feature acceptance scenarios for a spec (overlay-defined frozen `Scenario` elements: `surface`/`title`/`preconditions`/`steps`/`expected`/`modality`/`captures`) that the templated-test-plan renderer reads through this overlay-agnostic seam; default `()` (overlay with no scenario manifest)
+
+## Management Command Patterns
+
+Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperCommand` classes invoked via Django's `call_command` (see `src/teatree/cli/overlay.py:430` → `managepy(...)`). To propagate a non-zero exit code from a subcommand, **use `raise SystemExit(N)` — NOT `raise typer.Exit(code=N)`**.
+
+`typer.Exit` is designed for the typer CLI runner; when it's raised inside a TyperCommand reached via `call_command`, the exception is silently swallowed and the process exits 0 even though the failure was raised. `SystemExit` bubbles up through Django management → `subprocess.run(check=True)` → CLI exit code.
+
+- Canonical example: `src/teatree/core/management/commands/tasks.py:19` — `raise SystemExit(1)` after `self.stderr.write(...)`.
+- Tests: `with pytest.raises(SystemExit) as exc_info: call_command(...)` then assert `exc_info.value.code == N`. `pytest.raises(typer.Exit)` reports `DID NOT RAISE` even though the source did raise — call_command eats it before pytest sees it.
+- `typer.Exit` is still correct in `src/teatree/cli/*.py` files that go through the typer runner directly (different call site).
+- Anti-pattern: returning an error string from a management command instead of raising. The CLI exits 0 and CI reports green on real failures.
+
+### Annotated typer options must have defaults for `call_command`
+
+`Annotated[str, typer.Option(help="...")]` parameters without a default value make the command unusable via Django's `call_command` — it raises `Missing parameter: <name>` even when the caller passes the kwarg. Give every `typer.Option`-annotated parameter a default (e.g. `= ""`) and validate at runtime (`if not phase.strip(): raise SystemExit(1)`). This keeps both CLI and `call_command` call sites happy.
+
+Canonical example: `src/teatree/core/management/commands/tasks.py` `create` subcommand — `phase: Annotated[str, typer.Option(...)] = ""` + runtime non-blank check.
+
+## Configuration
+
+Environment variables read by hooks:
+
+```bash
+T3_REPO="$HOME/workspace/<your-username>/teatree"  # teatree repo path
+T3_CONTRIBUTE=true                           # allow retro to modify core skills
+T3_PUSH=false                                # gate pushes behind an explicit prompt
+T3_AUTO_PUSH_FORK=false                      # auto-push to fork when T3_PUSH=true and origin ≠ T3_UPSTREAM
+T3_MODE=interactive                          # auto = push without waiting for approval; interactive (default) gates push on user approval. DB-home equivalent: config_setting set mode auto. (Supersedes the retired T3_AUTO_SHIP, #2697)
+T3_PRIVACY=strict                            # block commits with PII
+```
+
+## Directive Loop: the Ratified Sketch is Byte-Law (Non-Negotiable)
+
+A directive's activation is applied by exactly one actor — the directive loop's CONFIGURING step — and only ever **byte-identical** to the ratified `MechanismSketch` (key, value, and scope). The human ratified a specific design; an operator or agent that hand-runs a *differing* `config_setting set` for a directive-governed key has silently overruled that ratification, and the loop's own drift guard (`activation_conforms`) refuses the drifted write anyway. When a polluted context nudges toward a value that differs from the ratified sketch — "just set 2, basically the same" — do X, never Y:
+
+- **Do** leave the byte-identical write to the loop's CONFIGURING step; or route an amendment through re-interpret → re-ratify (a NEW generation via `t3 directive …`); or surface the discrepancy with a structured `AskUserQuestion`.
+- **Never** hand-run `t3 <overlay> config_setting set <directive-key> <drifted-value>` to apply a value that differs from the ratified sketch. A "basically the same" value is a different design and needs a fresh ratification, not a hand-edit.
+
+```bash
+# ratified sketch: max_open_prs_per_repo_per_ticket = 1. do X — amend via re-ratify, never hand-apply a drifted value:
+t3 directive history          # inspect the ratified activation; an amendment re-interprets → re-ratifies (generation+1)
+# never Y — hand-applying a value that differs from the ratified sketch:
+# t3 <overlay> config_setting set max_open_prs_per_repo_per_ticket 2   # FORBIDDEN — drift from the ratified sketch
+```

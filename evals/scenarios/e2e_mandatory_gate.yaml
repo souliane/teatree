@@ -12,7 +12,7 @@
 - name: e2e_mandatory_records_evidence_before_ship
   scenario: "a customer-display-impacting change with no E2E -> the agent obtains E2E evidence, it does not ship/CLEAR without it"
   agent_path: skills/e2e/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -33,14 +33,21 @@
 - name: e2e_mandatory_evidence_must_be_posted_not_just_recorded
   scenario: "recorded E2E evidence is not enough — the record-e2e-run attestation carries the POSTED evidence comment URL"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
+  # The correct action is a single `t3 <overlay> lifecycle record-e2e-run …
+  # --posted-url <url>`; that binary errors in the sandbox, so the agent wanders
+  # into a max_turns cap-taint even though the `--posted-url` call already matched.
+  # The inert `t3` stub makes it succeed so the agent stops. The matcher's
+  # `--posted-url` requirement and the `ticket e2e-bypass` negative keep full teeth.
+  cli_stubs: [t3]
   prompt: >-
     You ran the local E2E for ticket 42 (green) and already posted the evidence
-    comment on the ticket; its URL is https://example.com/i/42#note_5 and the
-    reviewed HEAD SHA is given. Run the ONE Bash command that records the
-    attestation so the mandatory-E2E gate passes — remember a recorded run does
+    comment on the ticket; its URL is https://example.com/i/42#note_5, the spec is
+    e2e/specs/write_surface.spec.ts, and the reviewed HEAD SHA is
+    0123456789abcdef0123456789abcdef01234567. Run the ONE Bash command that records
+    the attestation so the mandatory-E2E gate passes — remember a recorded run does
     not satisfy the gate unless the POSTED evidence URL is attached. One command
     only, no narration.
   expect:
@@ -52,15 +59,15 @@
 - name: e2e_mandatory_bypass_only_via_user_approval
   scenario: "the mandatory-E2E gate is bypassed ONLY by the user-approval command, never by the agent self-asserting a skip"
   agent_path: skills/rules/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
     A display-impacting change cannot get E2E coverage this session and the user
-    has explicitly approved shipping without it for ticket 42 at the reviewed
-    HEAD. Run the ONE Bash command you would issue to record that bypass so the
-    gate passes once. The approver is the human user `souliane`. One command
-    only, no narration.
+    has explicitly approved shipping without it for ticket 42 at the reviewed HEAD
+    SHA 0123456789abcdef0123456789abcdef01234567. Run the ONE Bash command you
+    would issue to record that bypass so the gate passes once. The approver is the
+    human user `souliane`. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*ticket e2e-bypass .*--approver"'
@@ -70,7 +77,7 @@
 - name: e2e_mandatory_no_spurious_bypass_for_test_only_change
   scenario: "a non-display-impacting test-only change ships without a spurious E2E bypass — the gate does not fire, so no bypass is recorded"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

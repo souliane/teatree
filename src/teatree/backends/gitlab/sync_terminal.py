@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, cast
 
 import httpx
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.core.gates.dod_gate import record_terminal_dod_violation
 from teatree.core.models import Ticket, Worktree
 from teatree.types import PREntryDict, RawAPIDict, SyncResult
@@ -29,10 +29,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_STATE_ORDER = [s.value for s in Ticket.State]
 
+def detect_merged_prs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> bool:
+    """Apply merged status to every in-flight ticket; return whether the fetch succeeded.
 
-def detect_merged_prs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> None:
+    The caller advances the incremental sync watermark only on ``True`` — see
+    :func:`_fetch_terminal_pr_urls`.
+    """
     merged_urls = _fetch_terminal_pr_urls(
         client.list_recently_merged_mrs,
         username,
@@ -41,12 +44,14 @@ def detect_merged_prs(client: "GitLabAPI", username: str, result: SyncResult, la
         label="Merged",
     )
     if merged_urls is None:
-        return
+        return False
     for ticket in Ticket.objects.in_flight():
         apply_merged_status(ticket, merged_urls, result)
+    return True
 
 
-def detect_closed_prs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> None:
+def detect_closed_prs(client: "GitLabAPI", username: str, result: SyncResult, last_sync: str | None) -> bool:
+    """Apply closed status to every in-flight ticket; return whether the fetch succeeded."""
     closed_urls = _fetch_terminal_pr_urls(
         client.list_recently_closed_mrs,
         username,
@@ -55,9 +60,10 @@ def detect_closed_prs(client: "GitLabAPI", username: str, result: SyncResult, la
         label="Closed",
     )
     if closed_urls is None:
-        return
+        return False
     for ticket in Ticket.objects.in_flight():
         apply_closed_status(ticket, closed_urls, result)
+    return True
 
 
 def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResult) -> None:
@@ -73,7 +79,7 @@ def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResul
 
     set_keys = cast("TicketExtra", {"prs": prs}) if changed else None
     also_set: TicketSiblingFields = {}
-    advancing_to_merged = all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state)
+    advancing_to_merged = all_merged and Ticket.state_advances(ticket.state, Ticket.State.MERGED)
     if advancing_to_merged:
         also_set["state"] = Ticket.State.MERGED
     if set_keys or also_set:
@@ -138,11 +144,13 @@ def _scan_merged_prs(prs: RawAPIDict, merged_urls: set[str], result: SyncResult)
 
 
 def _cleanup_merged_worktrees(ticket: Ticket, result: SyncResult) -> None:
-    for worktree in Worktree.objects.filter(ticket=ticket):
+    for worktree in Worktree.objects.for_ticket(ticket):
         try:
             cleanup_result = cleanup_worktree(worktree)
             result.worktrees_cleaned += 1
             result.errors.extend(cleanup_result.errors)
+        except WorktreeBusyError as exc:
+            logger.info("Keeping worktree %s (live work): %s", worktree.repo_path, exc)
         except Exception as exc:
             logger.exception("Failed to clean worktree %s", worktree.repo_path)
             result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")
@@ -156,11 +164,16 @@ def _fetch_terminal_pr_urls(
     *,
     label: str,
 ) -> set[str] | None:
+    """The terminal PR URLs in the ``last_sync`` window, or ``None`` on a FAILED read.
+
+    An empty set means the window genuinely held no terminal PR; ``None`` means
+    the window was never read. Collapsing the two is what let a 502 look like
+    "nothing merged" to the caller, which then ratcheted the monotonic watermark
+    past the unread window — permanently skipping every MR that merged inside it.
+    """
     try:
         raw_prs = fetcher(username, updated_after=last_sync)
     except httpx.HTTPError as exc:
         result.errors.append(f"{label} PR fetch failed: {exc}")
-        return None
-    if not raw_prs:
         return None
     return {str(raw.get("web_url", "")) for raw in raw_prs}

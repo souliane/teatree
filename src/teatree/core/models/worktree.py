@@ -4,14 +4,29 @@ from typing import ClassVar, cast
 from django.db import models
 from django_fsm import FSMField, transition
 
-from teatree.config import load_config as _load_config
 from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
+from teatree.utils.postgres_secret import postgres_pass_key
 
 
-def _workspace_dir() -> Path:
-    return _load_config().user.workspace_dir
+class WorktreeDbNameConflictError(RuntimeError):
+    """Raised when another live worktree of a different ticket owns a computed db_name.
+
+    ``db_name`` is keyed on the immutable, unique Ticket pk so a collision
+    cannot arise through the normal flow; this guards a hand-built or legacy
+    row from clobbering another ticket's database before ``db_import``.
+    """
+
+
+class WorktreeComposeProjectConflictError(RuntimeError):
+    """Raised when another live worktree of a different ticket owns a computed compose project.
+
+    ``compose_project`` is frozen on the immutable, unique Ticket pk so a
+    collision cannot arise through the normal flow; this guards a hand-built,
+    legacy, or backfilled row from bringing a docker stack up under a name
+    another live worktree already runs (a clobber at ``docker compose up``).
+    """
 
 
 class Worktree(models.Model):
@@ -31,6 +46,11 @@ class Worktree(models.Model):
     branch = models.CharField(max_length=255)
     state = FSMField(max_length=32, choices=State.choices, default=State.CREATED)
     db_name = models.CharField(max_length=255, blank=True)
+    # Frozen docker-compose project name (``<repo_path>-wt<ticket.pk>``). Set once
+    # at provision time and never rewritten — renaming it would orphan a running
+    # stack's containers. Empty before provisioning; resolved (stored-or-derived)
+    # through ``worktree_env.compose_project``.
+    compose_project = models.CharField(max_length=255, blank=True, default="")
     extra = models.JSONField(default=dict, blank=True)
     # #2190 Activity-recency signal for the idle-stack reaper. Stamped on
     # ``start_services``/``verify``/``db_refresh`` (the operator-driven
@@ -46,12 +66,6 @@ class Worktree(models.Model):
     # in-flight evidence work, so reaping it would force a slow re-provision to
     # re-capture. Null = no E2E run has touched it.
     last_e2e_run = models.DateTimeField(null=True, blank=True)
-
-    # Transient (non-DB) carrier for the pre-blank ``(db_name, extra)`` snapshot
-    # the ``teardown`` body captures, read by the post_transition receiver that
-    # enqueues ``execute_worktree_teardown`` (#2385). Default empty so a row
-    # that never tore down still reads safely.
-    teardown_snapshot: "tuple[str, WorktreeExtra]" = ("", WorktreeExtra())
 
     objects = WorktreeManager()
 
@@ -73,6 +87,17 @@ class Worktree(models.Model):
         path = self.worktree_path
         return bool(path) and not Path(path).exists()
 
+    @property
+    def pass_key(self) -> str:
+        """Canonical, collision-free ``pass`` key for this worktree's postgres password.
+
+        Keyed on the immutable, unique Ticket pk (NOT the derived, non-unique
+        ``ticket_number``), so two tickets sharing a trailing issue number never
+        share one secret entry. Ticket-scoped — the same canonical key the
+        db_name uses — so a ticket's sibling repos share one database password.
+        """
+        return postgres_pass_key(self.ticket_id)  # ty: ignore[unresolved-attribute]  # Django FK accessor
+
     @transition(field=state, source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
     def provision(self) -> None:
         """Schedule heavy provisioning side-effects.
@@ -89,6 +114,12 @@ class Worktree(models.Model):
         name — the body stays free of the worktree-tasks up-edge (#2385).
         """
         self.db_name = self._build_db_name()
+        # STICKY (unlike db_name, which is recomputed every provision): set the
+        # compose project once and keep it for the worktree's life. An orphaned
+        # db is reaped scheme-agnostically, but renaming a compose project would
+        # orphan a RUNNING stack's containers — so a worktree keeps the name its
+        # stack was first brought up under.
+        self.compose_project = self.compose_project or self._build_compose_project()
 
     @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
@@ -103,7 +134,7 @@ class Worktree(models.Model):
         receiver's job (``teatree.core.signals``), keyed on the transition
         name (#2385).
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         if services is not None:
             extra = self._extra()
@@ -124,7 +155,7 @@ class Worktree(models.Model):
         receiver's job (``teatree.core.signals``), keyed on the transition
         name (#2385).
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         extra = self._extra()
         if urls:
@@ -134,7 +165,7 @@ class Worktree(models.Model):
 
     @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def db_refresh(self) -> None:
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         extra = self._extra()
         extra["db_refreshed_at"] = timezone.now().isoformat()
@@ -167,30 +198,92 @@ class Worktree(models.Model):
     def teardown(self) -> None:
         """Schedule docker down + DB drop + git worktree removal.
 
-        Pure transition body (BLUEPRINT §4): snapshot ``db_name`` and
-        ``extra`` for the worker, reset them on the row, then enqueue
+        Pure transition body (BLUEPRINT §4): the FSM resets to CREATED and the
+        ``post_transition`` receiver (``teatree.core.signals``) enqueues
         ``execute_worktree_teardown`` after commit. The worker runs the
         destructive cleanup (docker compose down, dropdb, ``git worktree
-        remove``, branch delete) using the captured snapshot, then
-        deletes the Worktree row, so the FSM ``CREATED`` state lasts
-        only until the worker fires.
+        remove``, branch delete) and only THEN deletes the Worktree row.
 
-        The body BLANKS ``db_name`` / ``extra`` here, so the
-        ``post_transition`` receiver (``teatree.core.signals``) cannot read
-        them off the live row — it would enqueue a teardown with an empty
-        DB name and never drop the database. The PRE-BLANK values are
-        stashed on the transient :attr:`teardown_snapshot` attribute, which
-        the receiver reads to enqueue ``execute_worktree_teardown`` with the
-        correct snapshot (#2385).
+        The recovery pointers (``db_name`` / ``extra`` — which name the database
+        to drop and the on-disk worktree to remove) are KEPT on the row until
+        that cleanup succeeds and deletes it. Blanking them in the body (the
+        previous shape) opened a data-loss window: the state commit landed with
+        empty pointers while the on_commit callback still had to fire, so a
+        death between the two left a committed CREATED row with no db_name — the
+        live database and git worktree orphaned with nothing able to reap them.
+        A CREATED row still carrying its pointers is exactly what a reaper needs
+        to finish the job; ``assert_db_name_unclaimed`` already excludes CREATED
+        rows, so keeping the pointers never blocks a re-provision.
         """
-        self.teardown_snapshot = (self.db_name, self._extra())
-        self.db_name = ""
-        self.extra = {}
 
     def _build_db_name(self) -> str:
         ticket = cast("Ticket", self.ticket)
         variant_suffix = f"_{ticket.variant}" if ticket.variant else ""
-        return f"wt_{ticket.ticket_number}{variant_suffix}"
+        # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
+        # ``ticket_number``): two tickets sharing a trailing issue number must
+        # never resolve to one database. Ticket-scoped (not worktree-scoped) so a
+        # ticket's sibling repos share one database, as the per-ticket env cache
+        # requires.
+        return f"wt_{ticket.pk}{variant_suffix}"
+
+    def assert_db_name_unclaimed(self) -> None:
+        """Fail loud if another LIVE worktree of a DIFFERENT ticket owns ``db_name``.
+
+        Defense-in-depth guard the provision runner calls before ``db_import``:
+        ``db_name`` is ticket-pk-keyed so a collision cannot arise through the
+        normal flow, but a hand-built or legacy row could still clobber another
+        ticket's database. CREATED rows own no database yet and are excluded.
+        """
+        if not self.db_name:
+            return
+        ticket_pk = self.ticket_id  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        conflict = (
+            Worktree.objects.exclude(pk=self.pk)
+            .exclude(ticket_id=ticket_pk)
+            .exclude(state=Worktree.State.CREATED)
+            .filter(db_name=self.db_name)
+            .first()
+        )
+        if conflict is not None:
+            msg = (
+                f"db_name {self.db_name!r} is owned by another live worktree "
+                f"(#{conflict.pk}); refusing db_import for worktree #{self.pk} to avoid clobber."
+            )
+            raise WorktreeDbNameConflictError(msg)
+
+    def _build_compose_project(self) -> str:
+        ticket = cast("Ticket", self.ticket)
+        # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
+        # ``ticket_number``): two tickets sharing a trailing issue number must
+        # never collide on one docker stack. Per-repo (NOT ticket-scoped) — each
+        # repo runs its own compose project, unlike the ticket-shared db_name.
+        return f"{self.repo_path}-wt{ticket.pk}"
+
+    def assert_compose_project_unclaimed(self) -> None:
+        """Fail loud if another LIVE worktree of a DIFFERENT ticket owns ``compose_project``.
+
+        Defense-in-depth guard ``worktree start`` calls before ``docker compose up``:
+        ``compose_project`` is ticket-pk-keyed so a collision cannot arise through
+        the normal flow, but a hand-built, legacy, or backfilled row could still
+        bring a stack up under a name another live worktree already runs — clobbering
+        it. CREATED rows own no stack yet and are excluded.
+        """
+        if not self.compose_project:
+            return
+        ticket_pk = self.ticket_id  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        conflict = (
+            Worktree.objects.exclude(pk=self.pk)
+            .exclude(ticket_id=ticket_pk)
+            .exclude(state=Worktree.State.CREATED)
+            .filter(compose_project=self.compose_project)
+            .first()
+        )
+        if conflict is not None:
+            msg = (
+                f"compose project {self.compose_project!r} is owned by another live worktree "
+                f"(#{conflict.pk}); refusing docker compose up for worktree #{self.pk} to avoid clobber."
+            )
+            raise WorktreeComposeProjectConflictError(msg)
 
     def get_extra(self) -> WorktreeExtra:
         return validated_worktree_extra(self.extra)

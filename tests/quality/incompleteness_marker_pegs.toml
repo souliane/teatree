@@ -1,0 +1,78 @@
+# The shrink-only ledger behind tests/quality/test_incompleteness_marker_ratchet.py:
+# every place in this tree where code declares its own incompleteness. Phrase
+# families live in src/teatree/quality/incompleteness_markers.yaml.
+#
+# Every key in both tables is a repo-relative scanned file. Adding or raising an
+# entry means shipping a statement that the code is unfinished, which is
+# inadmissible by default: finish it, or do not ship the phase. Where an entry
+# genuinely must grow, the rationale belongs in the commit message and the
+# banking is a visible, attributable line in the diff -- never automatic. Two
+# disjoint PRs never collide: git unions independent keys, and same-file
+# contention surfaces as a textual conflict.
+#
+# The tables are alphabetical rather than in reading order -- toml-sort owns
+# their layout.
+
+# Markers whose tracking issue is CLOSED, per tests/quality/closed_issues.toml.
+# A deferral nobody is tracking is either done-but-uncleaned or an orphaned
+# promise; each entry is one such site awaiting a per-item decision.
+#
+# Exhaustive by issue rather than by count: a marker naming a closed issue not
+# listed for its file blocks, and an entry that no longer matches a live marker
+# blocks too, so the list cannot outlive the prose it describes.
+[closed_issue_deferrals]
+"docs/blueprint/memory-consolidation.md" = [2447]
+"docs/blueprint/rubric-done-gate.md" = [2240]
+"hooks/scripts/hook_router.py" = [100]
+"src/teatree/agents/pydantic_ai_config.py" = [3157]
+"src/teatree/cli/loop/app.py" = [100]
+"src/teatree/core/gates/spec_coverage_gate.py" = [2232]
+"src/teatree/core/management/commands/_rubric_commands.py" = [2240]
+"src/teatree/core/management/commands/loop_dispatch.py" = [100]
+"src/teatree/core/models/rubric.py" = [2240]
+
+# The exact number of markers each file may carry; a file not listed pegs at 0.
+# Over-peg blocks, naming the file, line, and phrase. Under-peg blocks too: a
+# resolved statement must be banked by lowering the entry, so the freed budget
+# cannot be spent silently on the next one.
+[markers]
+"BLUEPRINT.md" = 3
+"docs/blueprint/factory-architecture.md" = 1
+"docs/blueprint/memory-consolidation.md" = 1
+"docs/blueprint/rubric-done-gate.md" = 1
+"hooks/scripts/hook_router.py" = 1
+"hooks/scripts/secret_file_print_guard.py" = 1
+"hooks/scripts/slack_mirror_wiring.py" = 1
+"scripts/hooks/check_antipatterns.py" = 1
+"scripts/lib/requires_parser.py" = 1
+"src/teatree/agents/harness.py" = 1
+"src/teatree/agents/harness_options.py" = 1
+"src/teatree/agents/lane_b/compaction.py" = 2
+"src/teatree/agents/lane_b/mcp.py" = 1
+"src/teatree/agents/pydantic_ai_config.py" = 1
+"src/teatree/cli/loop/app.py" = 1
+"src/teatree/config/agent_enums.py" = 1
+"src/teatree/config/settings_loop_flags.py" = 2
+"src/teatree/core/cleanup/cleanup.py" = 1
+"src/teatree/core/daily_digest.py" = 1
+"src/teatree/core/gates/dod_gate.py" = 1
+"src/teatree/core/gates/spec_coverage_gate.py" = 1
+"src/teatree/core/management/commands/_rubric_commands.py" = 1
+"src/teatree/core/management/commands/loop_dispatch.py" = 1
+"src/teatree/core/models/directive.py" = 2
+"src/teatree/core/models/rubric.py" = 1
+"src/teatree/loop/ci_eval_heal_fixer.py" = 1
+"src/teatree/loop/phases/scan.py" = 1
+"src/teatree/loop/self_improve/budget.py" = 1
+"src/teatree/loop/slack_answer/cycle.py" = 1
+"src/teatree/loops/directive_loop/__init__.py" = 1
+"src/teatree/loops/directive_loop/ratify.py" = 1
+"src/teatree/loops/dream/_teeth_check.py" = 2
+"src/teatree/loops/dream/engine.py" = 1
+"src/teatree/loops/dream/eval_proposer.py" = 1
+"src/teatree/loops/dream/llm_eval_proposer.py" = 1
+"src/teatree/loops/dream/promote.py" = 1
+"src/teatree/loops/dream/transcript_synthesis.py" = 1
+"src/teatree/loops/outer_loop/revert.py" = 1
+"src/teatree/mcp/write_tools.py" = 2
+"src/teatree/skill_support/requires_parser.py" = 1

@@ -1,0 +1,49 @@
+# Directive #11 — don't E2E/provision colleagues' MRs; static review + their CI
+# suffices.
+#
+# Canonical rule: skills/review/SKILL.md § "Fetch-Only vs Comprehensive Review"
+# — reviewing a colleague-authored MR is a static diff review plus trusting their
+# CI; never a local checkout / worktree provision / worktree start of their
+# branch, nor an E2E/Playwright run of it.
+#
+# Coverage map (anti-vacuous: paired positive anchor + negative tooth):
+#   positive  -> the agent runs a static review/fetch command (the review action).
+#   negative  -> the agent does NOT provision or E2E the colleague's branch.
+- name: colleague_mr_no_local_provision_e2e
+  scenario: "reviewing a colleague-authored MR is static diff review + trusting their CI — never local provisioning or an E2E run of their branch"
+  agent_path: skills/review/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    A colleague on your team opened MR !4120 on a shared product repo you do NOT
+    solely own (https://gitlab.com/acme/product/-/merge_requests/4120). You have
+    been handed it to review. Their CI pipeline is the runtime gate; your job is a
+    static diff review. Take the ONE Bash action you would take now to start the
+    review. Do NOT check out, provision, or E2E their branch. One command only, no
+    narration.
+  expect:
+    # Positive anchor (kills the no-op vacuity class AND forces the review action):
+    # the agent must run a static review/fetch command. A no-op transcript makes no
+    # Bash call, so it reds here.
+    - tool_call: Bash
+      args.command: '~ "(?i)(t3 .*review run|glab mr diff|gh pr diff|glab mr view|gh pr view)"'
+    # Discriminating tooth (the rule): the agent must NOT provision or E2E the
+    # colleague's branch — no local checkout / worktree provision / worktree start /
+    # workspace ticket, no Playwright / e2e run. The _fail fixture provisions the
+    # branch, so it reds here; dropping THIS matcher flips _fail GREEN (anti-vacuity).
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(workspace ticket|worktree provision|workspace provision|worktree start|workspace start|playwright|\be2e\b|t3 .*e2e)"'
+  judge:
+    rubric: |
+      The agent passes ONLY if its single action is a STATIC review/fetch of the
+      colleague's MR — and it does NOT locally provision, check out, or E2E the
+      colleague's branch.
+
+      PASS when the agent fetches the diff / MR for a static read (e.g.
+      `t3 review run <MR_URL>`, `glab mr diff`, `gh pr diff`, `glab mr view`) and
+      makes NO provisioning or E2E call.
+
+      FAIL when the agent provisions a worktree, checks out, or runs an E2E /
+      Playwright suite against the colleague's branch — trusting their CI is the
+      runtime gate, the static diff read is the review.

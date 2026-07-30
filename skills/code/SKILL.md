@@ -5,7 +5,6 @@ compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
   - architecture-design
-companions:
   - test-driven-development
 metadata:
   version: 0.0.1
@@ -21,7 +20,7 @@ This skill delegates the generic implementation doctrine to:
 - `test-driven-development` — red/green/refactor discipline and failing-test-first rules
 - `verification-before-completion` — proof before any completion claim
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 The implementation phase. Follow test-driven development and project conventions.
 
@@ -43,6 +42,17 @@ Write the **failing test first**, then the implementation that makes it pass. Th
 **Run the test before claiming it is correct, and never push a regression/golden-master test you have not run (Non-Negotiable).** A freshly-written test is not "correct", "likely correct", or "done" until you have *run it locally and read its output in this same response*. Pushing a test to CI to find out whether it passes — while reporting it as correct/likely-correct — is the banned "seems correct" claim (`/t3:rules` § "Verification Before Completion"): CI is a slow oracle, not a substitute for running the test yourself, and a test authored against a config you assumed produces the right values routinely fails on first run (the assumed golden was wrong). **Where an authoritative reference exists** — a Tilgungsplan/amortization PDF, a spec's worked example, a vendored golden file — the test is a golden-master that must **assert every value the reference fixes** (every row, every monthly figure), not a sampled subset, and you verify the test's output equals the reference *before* pushing. A narrow run on a migration-heavy repo uses `--no-migrations --reuse-db` so "run it first" costs seconds, not a full migration replay — there is no excuse to skip the run. The order is: write the test → run it locally (`--no-migrations --reuse-db` for a narrow node-id) → confirm its output matches the authoritative reference (every value) → only then commit and push. Reporting "likely correct, pushing to CI" before that run is a FAIL.
 
 Misleading names are bugs — rename the symbol instead of explaining it with a comment.
+
+## Comments Are Code — Minimal, Self-Documenting (Non-Negotiable)
+
+**Names + types ARE the documentation. A long comment is a code smell — refactor instead of explain.** Comment ONLY the non-obvious WHY (a threat-model note, a workaround for an external bug, a counter-intuitive invariant). Never restate WHAT the code already says.
+
+- **Do not restate the code.** `# divide the cents by one hundred` above `return cents / 100`, `# update the rows with the metadata` above `.update(**metadata)` — delete it. The line below already says it.
+- **No signature-echo docstrings.** `"""Add the feature flag."""` on `def add_feature_flag(...)` adds nothing — drop it. A docstring earns its place only by carrying a non-obvious why the signature does not.
+- **A long comment is a refactor signal, not a license.** When you feel the urge to write a multi-line block explaining a function, the function name / structure is wrong — rename or split it. Multi-line comments are legit when they carry a genuine non-obvious why (and that's rare); they are abuse when they narrate the code. Length is the smell: if it's long, refactor; don't explain.
+- **Rationale lives in the commit message, not inline.** Why a change was made, which ticket/MR it relates to, what was tried — all of that goes in the commit body. Never an inline `# per review` / `# consolidated into !NNNN` / `# TODO(W20)` tracker note.
+
+The deterministic backstop is the advisory `comment-density` gate (`teatree.hooks.privacy_diff_comment_density` → the pre-push hook, the CI job, and `t3 tool comment-density`). It is content-aware: it flags a comment whose words merely restate the next code line, and a docstring opening that merely echoes the signature — a single such line is enough. Genuine non-obvious-why comments and justified multi-line blocks are NOT flagged. The gate is advisory (it never blocks); the discipline is yours to keep — the gate is the safety net, not the author.
 
 ## Workflow
 
@@ -272,10 +282,11 @@ When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — 
   The test file **mirrors the production module's path** under `tests/` with a `test_` prefix (a helper at `src/<pkg>/util/money.py` gets `tests/<pkg>/util/test_money.py`). When you add a new production file, create its test file in the same change — do X, never Y: **do** write the mirroring `tests/.../test_*.py` now; **never** declare the helper done with no test file on disk.
 
   ```bash
-  # new production file: src/teatree/util/money.py  →  create its mirror test now
-  touch tests/teatree/util/test_money.py
+  # EXAMPLE — `<pkg>` is a placeholder; substitute your own package. Nothing here is a work item.
+  # new production file: src/<pkg>/util/money.py  →  create its mirror test now
+  touch tests/<pkg>/util/test_money.py
   # write the failing test (RED), then run only that node so feedback is seconds:
-  uv run pytest tests/teatree/util/test_money.py -q --no-migrations --reuse-db
+  uv run pytest tests/<pkg>/util/test_money.py -q --no-migrations --reuse-db
   ```
 
 - **Don't create an uncoverable/unreachable defensive guard — restructure so the type is precise.** A "shared core returning `T | None` + a thin wrapper that re-asserts non-`None`" shape forces an unreachable branch: the wrapper's `if x is None: raise` (or `assert x is not None`) can never execute when the core's contract guarantees non-`None` for that call, so it is both uncoverable (the 100%-new-line rule can't be met without breaking the contract) and a lint violation (`assert` is banned in `src/`; `# noqa` is not an option). The fix is at the design level, not a suppression: split into **two purpose-typed methods** — one that always produces and returns `T` (the create/attestation path), one that returns `T | None` (the read-only path) — sharing the *policy/logic*, not a `T | None` return. Each call site then gets a precisely-typed value with no narrowing, no defensive guard, no `assert`, and full coverage falls out naturally. When you find yourself adding an "unreachable / defensive, should never happen" guard purely to satisfy the type checker, that is the signal the return type is too loose — tighten it by splitting, don't guard it.

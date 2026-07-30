@@ -4,43 +4,28 @@ Companion to the ``t3 dogfood overlay-provision-smoke`` management
 command: the loop queues a ``dogfood_smoke`` task once per cadence
 window (default 24h — nightly) so latent CLI bugs in the overlay
 provision path surface in the loop, not in the user's next E2E
-session. Mirrors :class:`teatree.loop.scanners.scanning_news.ScanningNewsScanner`
-in shape — a fixed-rate platform behaviour, not coupled to delivery
-velocity.
+session. One of the periodic task-queuing family that share
+:class:`teatree.loop.scanners.phase_cadence.PhaseCadence` — a fixed-rate
+platform behaviour, not coupled to delivery velocity.
 
 The scanner only *schedules*; the dispatcher picks up the queued task
 and shells out to ``t3 dogfood overlay-provision-smoke``. Failures DM
-the user via :mod:`teatree.notify` from inside the management command,
+the user via :mod:`teatree.core.notify` from inside the management command,
 so the scanner has no responsibility for the verdict pipeline beyond
 keeping its cadence honest.
 """
 
-import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from django.apps import apps
-from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.modelkit.phases import DOGFOOD_SMOKE_PHASE
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from teatree.core.models import Session as _Session
-    from teatree.core.models import Task as _Task
-    from teatree.core.models import Ticket as _Ticket
-
-logger = logging.getLogger(__name__)
-
-
-#: Canonical phase token written to ``Task.phase`` for smoke tasks.
-DOGFOOD_SMOKE_PHASE = "dogfood_smoke"
-
-#: States that mean a smoke task is still in-flight (cannot queue a dupe).
-_IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
 
 
 @dataclass(slots=True)
@@ -63,16 +48,21 @@ class ProvisionSmokeScanner:
     def scan(self) -> list[ScanSignal]:
         if not self.overlay_name:
             return []
-        if self._in_flight_task_exists():
+        cadence = PhaseCadence(self.overlay_name, phase=DOGFOOD_SMOKE_PHASE, cadence_hours=self.cadence_hours)
+        if cadence.in_flight_exists():
             return []
 
-        now = timezone.now()
-        last_run_at = self._last_run_at()
-        trigger = self._evaluate_trigger(now=now, last_run_at=last_run_at)
+        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
             return []
 
-        task = self._queue_task(trigger=trigger)
+        task = cadence.queue_task(
+            placeholder_issue_url=f"dogfood-smoke://{self.overlay_name}",
+            agent_id=f"dogfood-smoke-{self.overlay_name}",
+            execution_reason=f"Periodic provision smoke ({trigger}) via skill: {self.skill}",
+            subject=f"Provision smoke: {self.overlay_name}",
+            log_label="ProvisionSmokeScanner",
+        )
         if task is None:
             return []
         return [
@@ -88,89 +78,6 @@ class ProvisionSmokeScanner:
                 },
             ),
         ]
-
-    def _in_flight_task_exists(self) -> bool:
-        task_model = _task_model()
-        if task_model is None:
-            return False
-        return task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=DOGFOOD_SMOKE_PHASE,
-            status__in=_IN_FLIGHT_TASK_STATES,
-        ).exists()
-
-    def _last_run_at(self) -> object:
-        task_model = _task_model()
-        if task_model is None:
-            return None
-        aggregate = task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=DOGFOOD_SMOKE_PHASE,
-        ).aggregate(ts=Max("session__started_at"))
-        return aggregate["ts"]
-
-    def _evaluate_trigger(self, *, now: object, last_run_at: object) -> str | None:
-        if last_run_at is None:
-            return "bootstrap"
-        elapsed_hours = (now - last_run_at).total_seconds() / 3600.0  # type: ignore[operator]
-        if elapsed_hours >= self.cadence_hours:
-            return "cadence"
-        return None
-
-    def _queue_task(self, *, trigger: str) -> "_Task | None":
-        ticket_model = _ticket_model()
-        task_model = _task_model()
-        session_model = _session_model()
-        if ticket_model is None or task_model is None or session_model is None:
-            return None
-        try:
-            with transaction.atomic():
-                ticket, _created = ticket_model.objects.get_or_create(
-                    issue_url=self._placeholder_issue_url(),
-                    defaults={"overlay": self.overlay_name, "role": "author"},
-                )
-                if ticket.overlay != self.overlay_name:
-                    ticket.overlay = self.overlay_name
-                    ticket.save(update_fields=["overlay"])
-                session = session_model.objects.create(
-                    overlay=self.overlay_name,
-                    ticket=ticket,
-                    agent_id=f"dogfood-smoke-{self.overlay_name}",
-                )
-                return task_model.objects.create(
-                    ticket=ticket,
-                    session=session,
-                    phase=DOGFOOD_SMOKE_PHASE,
-                    execution_target=task_model.ExecutionTarget.HEADLESS,
-                    execution_reason=(f"Periodic provision smoke ({trigger}) via skill: {self.skill}"),
-                )
-        except Exception:
-            logger.exception("ProvisionSmokeScanner: failed to queue smoke task")
-            return None
-
-    def _placeholder_issue_url(self) -> str:
-        return f"dogfood-smoke://{self.overlay_name}"
-
-
-def _ticket_model() -> "type[_Ticket] | None":
-    try:
-        return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _task_model() -> "type[_Task] | None":
-    try:
-        return cast("type[_Task]", apps.get_model("core", "Task"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _session_model() -> "type[_Session] | None":
-    try:
-        return cast("type[_Session]", apps.get_model("core", "Session"))
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def build_provision_smoke_scanner(

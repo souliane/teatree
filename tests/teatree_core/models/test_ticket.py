@@ -4,13 +4,18 @@ Number derivation, locked ``extra`` RMW, FSM transitions, and the
 shippable-diff gate.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models.ticket_state_sets import TicketStateSetsModel
+from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -114,6 +119,99 @@ class TestTicketMergeExtra(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra == {"visual_qa": {"x": 1}, "prs": {}}
         assert ticket.variant == "v"
+
+
+class TestMergeExtraSkipsTheNoOpWrite(TestCase):
+    """A merge that changes nothing takes no write.
+
+    Re-stamping a value the row already holds is what a replaying caller does:
+    ``mark_reviewed_externally`` accepts its own target so a re-review at a moved
+    head SHA can re-stamp, and the tick sweep re-fires it for every closed reviewer
+    ticket. On the write-serialised production SQLite each of those took the
+    database's single write lock to store the bytes already there.
+    """
+
+    @staticmethod
+    def _updates(fn: Callable[[], None]) -> list[str]:
+        with CaptureQueriesContext(connection) as captured:
+            fn()
+        return [q["sql"] for q in captured.captured_queries if q["sql"].lstrip().upper().startswith("UPDATE")]
+
+    def test_restamping_the_same_extra_issues_no_update(self) -> None:
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc", "last_review_state": "approved"})
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "abc"}))
+
+        assert updates == []
+        ticket.refresh_from_db()
+        assert ticket.extra == {"reviewed_sha": "abc", "last_review_state": "approved"}
+
+    def test_a_real_change_still_writes(self) -> None:
+        # Anti-vacuity: the elide is decided from the locked re-read, never blanket.
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc"})
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "def"}))
+
+        assert len(updates) == 1
+        ticket.refresh_from_db()
+        assert ticket.extra == {"reviewed_sha": "def"}
+
+    def test_an_unchanged_extra_with_a_changed_sibling_field_still_writes(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1}, variant="x")
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"a": 1}, also_set={"variant": "y"}))
+
+        assert len(updates) == 1
+        ticket.refresh_from_db()
+        assert ticket.variant == "y"
+
+    def test_popping_an_absent_key_issues_no_update(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1})
+
+        updates = self._updates(lambda: ticket.merge_extra(pop_keys=["never_set"]))
+
+        assert updates == []
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
+
+
+class TestStampIssueTitle(TestCase):
+    """``Ticket.stamp_issue_title`` seeds the dashboard label from the forge title."""
+
+    def test_stamps_extra_and_short_description(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        written = ticket.stamp_issue_title("Make the dashboard usable")
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "Make the dashboard usable"
+        assert ticket.short_description == "Make the dashboard usable"
+        assert set(written) == {"extra", "short_description"}
+
+    def test_blank_title_is_a_noop(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        assert ticket.stamp_issue_title("") == []
+        ticket.refresh_from_db()
+        assert ticket.short_description == ""
+        assert "issue_title" not in (ticket.extra or {})
+
+    def test_does_not_clobber_existing_values(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/o/r/issues/5",
+            short_description="hand-written",
+            extra={"issue_title": "original title"},
+        )
+        assert ticket.stamp_issue_title("new title") == []
+        ticket.refresh_from_db()
+        assert ticket.short_description == "hand-written"
+        assert ticket.extra["issue_title"] == "original title"
+
+    def test_long_title_is_truncated_to_column_width(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        max_len = Ticket._meta.get_field("short_description").max_length or 80
+        ticket.stamp_issue_title("x" * (max_len + 50))
+        ticket.refresh_from_db()
+        assert len(ticket.short_description) == max_len
+        # The full untruncated title is preserved for the summariser.
+        assert ticket.extra["issue_title"] == "x" * (max_len + 50)
 
 
 class TestTicketTransitions(TestCase):
@@ -341,14 +439,15 @@ class TestHasShippableDiff(TestCase):
 
         assert ticket.has_shippable_diff() is True
 
-    def test_review_skips_shipping_task_when_no_diff(self) -> None:
+    def test_review_with_no_diff_skips_shipping_and_auto_ignores(self) -> None:
         ticket = self._make_ticket_with_worktree(commits_ahead=0)
         _advance_ticket_to_tested(ticket)
 
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra.get("ignored_from") == Ticket.State.REVIEWED
         assert not ticket.tasks.filter(phase="shipping").exists()
         assert "no shippable diff" in ticket.extra.get("shipping_skipped", "")
 
@@ -369,13 +468,19 @@ class TestHasShippableDiff(TestCase):
 
         assert ticket.has_shippable_diff() is False
 
-    def test_returns_false_when_repo_path_is_not_a_git_directory(self) -> None:
+    def test_raises_when_present_checkout_probe_is_unverifiable(self) -> None:
+        # A checkout that is present on disk but cannot be probed (here: a real
+        # directory that is not a git repo) is UNVERIFIABLE, not verified-empty.
+        # Per #F1.4 it must raise so the caller HOLDs the tick, never flatten to
+        # False (which would route review() to dispose and abandon a live ticket
+        # on a transient git error). The gone-from-disk case still returns False.
         ticket = Ticket.objects.create()
         not_a_repo = self._tmp_path / "not-a-repo"
         not_a_repo.mkdir()
         Worktree.objects.create(ticket=ticket, repo_path=str(not_a_repo), branch="feature")
 
-        assert ticket.has_shippable_diff() is False
+        with pytest.raises(WorktreeProbeUnverifiableError):
+            ticket.has_shippable_diff()
 
 
 class TestHasDispatchableOverlay(TestCase):
@@ -534,3 +639,86 @@ class TestTicketArtifacts(TestCase):
 
         with pytest.raises(AttributeError):
             artifacts.ticket_id = 99  # frozen dataclass rejects mutation
+
+
+class TestHasCompletedPhase(TestCase):
+    """``Ticket.has_completed_phase`` tells a live phase apart from a superseded one.
+
+    True iff the FSM state has already reached the state the phase produces, so the
+    transient-requeue sweep can retire a dead FAILED task whose output the ticket
+    already has instead of escalating an already-answered away-mode question.
+    """
+
+    def test_phase_at_or_before_state_is_completed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.TESTED)
+
+        # testing produces TESTED (== state) and coding produces CODED (< state): both done.
+        assert ticket.has_completed_phase("testing") is True
+        assert ticket.has_completed_phase("coding") is True
+        assert ticket.has_completed_phase("test") is True  # short-verb spelling normalizes
+
+    def test_phase_beyond_state_is_not_completed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.TESTED)
+
+        # reviewing produces REVIEWED (> state): the ticket has NOT reached it.
+        assert ticket.has_completed_phase("reviewing") is False
+        assert ticket.has_completed_phase("shipping") is False
+
+    def test_unknown_or_off_ladder_is_conservatively_incomplete(self) -> None:
+        # An unknown phase and an off-ladder state both default to NOT completed —
+        # the safe answer that escalates rather than silently retiring a live task.
+        assert Ticket.objects.create(state=Ticket.State.TESTED).has_completed_phase("bughunt") is False
+        assert Ticket.objects.create(state=Ticket.State.IN_REVIEW).has_completed_phase("coding") is False
+
+
+class TestTicketStateSets(TestCase):
+    """The canonical ticket state-set classmethods — the SSOT the scanners/managers read.
+
+    ~10 sites used to re-hand-roll these sets (some as raw strings that bypass the
+    enum), the drift class behind #798/#799/#808. Each classmethod is pinned to its
+    exact intended membership so any future edit that changes a set breaks HERE, and
+    every member is asserted to be a real ``State`` so a rename can't silently rot.
+    """
+
+    def test_sets_live_on_the_composed_facet(self) -> None:
+        # The SSOT is the field-less TicketStateSetsModel facet, reachable as a
+        # Ticket classmethod via composition — not re-defined on the concrete model.
+        assert issubclass(Ticket, TicketStateSetsModel)
+        assert Ticket.merged_states.__func__ is TicketStateSetsModel.merged_states.__func__
+
+    def test_marker_release_states_membership(self) -> None:
+        assert Ticket.marker_release_states() == frozenset(
+            {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+        )
+
+    def test_in_flight_excluded_states_membership(self) -> None:
+        assert Ticket.in_flight_excluded_states() == frozenset(
+            {Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
+        )
+
+    def test_in_flight_excluded_is_marker_release_minus_merged(self) -> None:
+        # The invariant the docstring names: a MERGED ticket's PR has landed but the
+        # ticket is still in flight (retro/delivery pending), so it stays on the board.
+        assert Ticket.in_flight_excluded_states() == Ticket.marker_release_states() - {Ticket.State.MERGED}
+
+    def test_completable_states_membership(self) -> None:
+        assert Ticket.completable_states() == frozenset(
+            {Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED},
+        )
+
+    def test_merged_states_membership(self) -> None:
+        assert Ticket.merged_states() == frozenset(
+            {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED},
+        )
+
+    def test_every_set_member_is_a_real_state(self) -> None:
+        valid = set(Ticket.State.values)
+        for name in (
+            "marker_release_states",
+            "in_flight_excluded_states",
+            "completable_states",
+            "merged_states",
+        ):
+            states = getattr(Ticket, name)()
+            assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"
+            assert states <= valid, f"{name} has non-State members: {states - valid}"

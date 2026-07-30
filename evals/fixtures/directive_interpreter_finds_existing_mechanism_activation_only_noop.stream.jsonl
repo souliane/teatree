@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_interpreter_finds_existing_mechanism_activation_only-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me think about the constraint before drafting a sketch."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

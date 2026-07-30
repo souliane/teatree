@@ -7,9 +7,10 @@ PR that touches no safety module pays nothing.
 
 The exit code is the programmatic ratchet in
 :meth:`teatree.quality.mutation_run.BaselineRatchet.verdict`: a run that surfaces
-MORE surviving mutants than the recorded ``baseline_surviving`` total FAILS — in
-both ``warn`` and ``block`` mode — because the surviving count may only ever
-shrink. This is the prerequisite to flipping ``mode`` to ``"block"`` later.
+MORE surviving mutants than the recorded ``baseline_surviving`` total FAILS —
+because the surviving count may only ever shrink. ``[tool.teatree.mutation].mode``
+is validated but does not change that verdict; ``"warn"`` and ``"block"`` are
+equivalent today.
 
 ``t3 mutation run --update-baseline`` rewrites the per-module
 ``baseline_surviving`` counts to the current measurement. The ratchet only moves
@@ -98,7 +99,7 @@ def run(
         _update_baseline(outcome, allow_regression=allow_regression)
         return
 
-    code = BaselineRatchet.verdict(outcome, mode=settings.mode, baseline=settings.baseline_total)
+    code = BaselineRatchet.verdict(outcome, baseline=settings.baseline_total)
     if code != 0:
         raise typer.Exit(code=code)
 
@@ -125,7 +126,7 @@ def _update_baseline(outcome: MutationOutcome, *, allow_regression: bool) -> Non
 
 
 def _write_baseline(pyproject: Path, baseline: dict[str, int]) -> None:
-    import tomlkit  # noqa: PLC0415
+    import tomlkit  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     doc = tomlkit.parse(pyproject.read_text(encoding="utf-8"))
     table = doc.setdefault("tool", {}).setdefault("teatree", {}).setdefault("mutation", tomlkit.table())

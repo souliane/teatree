@@ -5,6 +5,8 @@ Lifted verbatim from the former monolithic ``tests/test_cli_doctor.py``
 only relocated under a focused package by concern.
 """
 
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,21 +16,19 @@ from django.test import TestCase
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 from teatree.core.models import ConfigSetting
 
-from ._shared import _editable_map, _fake_entry_point, _stage_home, _write_teatree_toml
+from ._shared import _editable_map, _fake_entry_point, _stage_home
 
 
 class TestCheckEditableSanity(TestCase):
-    """End-to-end sanity check wired to a real ``~/.teatree.toml``.
+    """End-to-end sanity check wired to the DB-home config store.
 
     ``editable_info`` and ``entry_points`` are the two external boundaries
     we cannot make real without installing actual packages, so they stay as
     mocks. Everything else (config loading, repo discovery) runs live.
 
-    ``contribute`` is a DB-home setting (#1775), so it is staged through the
-    ``ConfigSetting`` store rather than a ``[teatree]`` TOML value (which is
-    ignored on read). ``contribute=false`` is the resolved default, so those
-    cases need no DB row — only an empty ``~/.teatree.toml`` for the parts of
-    config loading that still touch the file.
+    ``contribute`` is a DB-home setting (#1775), staged through the
+    ``ConfigSetting`` store. ``contribute=false`` is the resolved default, so
+    those cases need no DB row at all.
     """
 
     @pytest.fixture(autouse=True)
@@ -38,14 +38,12 @@ class TestCheckEditableSanity(TestCase):
 
     def test_empty_when_contribute_false_and_nothing_editable(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
 
         with patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")):
             assert DoctorService.check_editable_sanity() == []
 
     def test_empty_when_contribute_true_and_all_editable(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
         ConfigSetting.objects.set_value("contribute", value=True)
 
         with patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")):
@@ -53,7 +51,6 @@ class TestCheckEditableSanity(TestCase):
 
     def test_auto_fixes_teatree_when_contribute_true(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
         ConfigSetting.objects.set_value("contribute", value=True)
         teatree_repo = self.tmp_path / "repos" / "teatree"
         teatree_repo.mkdir(parents=True)
@@ -72,7 +69,6 @@ class TestCheckEditableSanity(TestCase):
 
     def test_warns_when_contribute_true_and_teatree_repo_not_found(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
         ConfigSetting.objects.set_value("contribute", value=True)
         self.monkeypatch.delenv("T3_REPO", raising=False)
         self.monkeypatch.chdir(self.tmp_path)
@@ -87,7 +83,6 @@ class TestCheckEditableSanity(TestCase):
 
     def test_warns_when_teatree_editable_but_contribute_false(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
 
         with patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")):
             problems = DoctorService.check_editable_sanity()
@@ -96,7 +91,6 @@ class TestCheckEditableSanity(TestCase):
 
     def test_teatree_editable_warning_does_not_scold_contributor_setup(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
 
         with patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")):
             problems = DoctorService.check_editable_sanity()
@@ -107,10 +101,9 @@ class TestCheckEditableSanity(TestCase):
 
     def test_auto_fixes_overlay_when_contribute_true(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(
-            self.tmp_path / ".teatree.toml",
-            f'[teatree]\nworkspace_dir = "{self.tmp_path}"\n',
-        )
+        # Overlay repos are discovered under config.clone_root(), resolved from
+        # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
+        self.monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.tmp_path))
         ConfigSetting.objects.set_value("contribute", value=True)
         overlay_repo = self.tmp_path / "my-overlay"
         overlay_repo.mkdir()
@@ -135,7 +128,6 @@ class TestCheckEditableSanity(TestCase):
 
     def test_warns_when_overlay_editable_but_contribute_false(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
         self.monkeypatch.setattr(
             "importlib.metadata.entry_points",
             lambda **_kw: [_fake_entry_point("my-overlay")],
@@ -152,7 +144,6 @@ class TestCheckEditableSanity(TestCase):
 
     def test_empty_when_all_states_align_with_contribute_false(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
         self.monkeypatch.setattr(
             "importlib.metadata.entry_points",
             lambda **_kw: [_fake_entry_point("my-overlay")],
@@ -163,10 +154,9 @@ class TestCheckEditableSanity(TestCase):
 
     def test_warns_when_overlay_repo_not_found(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(
-            self.tmp_path / ".teatree.toml",
-            f'[teatree]\nworkspace_dir = "{self.tmp_path}"\n',
-        )
+        # Overlay repos are discovered under config.clone_root(), resolved from
+        # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
+        self.monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.tmp_path))
         ConfigSetting.objects.set_value("contribute", value=True)
         # No ``my-overlay`` directory under workspace_dir.
         self.monkeypatch.setattr(
@@ -182,3 +172,33 @@ class TestCheckEditableSanity(TestCase):
             problems = DoctorService.check_editable_sanity()
 
         assert any("overlay" in p and "repo not found" in p for p in problems)
+
+
+class TestCheckEditableSanityWrapperGating(TestCase):
+    """``_check_editable_sanity`` — a mismatch WARNs but does NOT gate; a crash FAILs (#3313)."""
+
+    def test_mismatch_problems_warn_but_return_true(self):
+        from teatree.cli.doctor import _check_editable_sanity  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with (
+            patch.object(DoctorService, "check_editable_sanity", return_value=["teatree is editable but ..."]),
+            redirect_stdout(buf),
+        ):
+            result = _check_editable_sanity()
+        assert result is True
+        out = buf.getvalue()
+        assert "WARN" in out
+        assert "FAIL" not in out
+
+    def test_crash_is_a_gating_fail(self):
+        from teatree.cli.doctor import _check_editable_sanity  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with (
+            patch.object(DoctorService, "check_editable_sanity", side_effect=RuntimeError("overlay boom")),
+            redirect_stdout(buf),
+        ):
+            result = _check_editable_sanity()
+        assert result is False
+        assert "FAIL" in buf.getvalue()

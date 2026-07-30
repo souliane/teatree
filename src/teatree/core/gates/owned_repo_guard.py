@@ -27,11 +27,20 @@ Opt-in + misconfig guard:
 *   verdict ``unknown`` → raise :class:`UnownedRepoError` (block-with-remediation).
 """
 
+import logging
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
-from teatree.core.repo_scope import host_aware_owns, identity_from_host_and_slug, repo_identity_for_cwd, repo_scope
+from teatree.core.intake.repo_scope import (
+    host_aware_owns,
+    identity_from_host_and_slug,
+    repo_identity_for_cwd,
+    repo_scope,
+)
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -48,12 +57,23 @@ class MergeKeystoneResult(TypedDict, total=False):
     ticket_state: str
     error: str
     escalated: bool
+    # ``"substrate"`` when a substrate-class refusal was escalated (the loop edge
+    # pings the owner once and holds — ping-and-hold). Empty / absent for any
+    # other refusal so the loop pings ONLY on substrate, not every held merge.
+    escalation_kind: str
+    # #3413: the config-sourced standing substrate authorizer id when the merge was
+    # authorized by the owner's standing delegation (``substrate_auto_merge_authorized_by``);
+    # absent for every other merge, so the loop edge posts the "informed, not asked"
+    # Slack notification only when present.
+    standing_delegation_by: str
 
 
 class _MergeClearLike(Protocol):
     slug: str
     pr_id: int | str
     ticket: object
+
+    def is_substrate(self) -> bool: ...  # pragma: no branch
 
 
 class PushScopeVerdict(StrEnum):
@@ -163,12 +183,19 @@ def classify_active_push(cwd: Path) -> PushScopeVerdict:
     (never-lockout on the internal-exception axis, distinct from the clean
     unknown verdict above which fails closed).
     """
-    from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415
+    from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415 — lazy import
 
     try:
         overlays = get_all_overlays()
         path_only_scopes = OverlayConfigResolver.path_only_owned_scopes()
     except Exception:  # noqa: BLE001 — broken overlay must not wedge a push; fail OPEN.
+        warn_throttled(
+            logger,
+            "owned_repo_guard:classify_active_push",
+            "owned-repo scope gate: overlay resolution failed while classifying a push — failing OPEN "
+            "(the scope gate is disabled until the overlay registry loads); fix the overlay so pushes are scoped",
+            exc_info=True,
+        )
         return PushScopeVerdict.ALLOW
     return classify_push_for_overlays(cwd, overlays, path_only_scopes=path_only_scopes)
 
@@ -213,9 +240,19 @@ def escalated_merge_result(clear: "_MergeClearLike", error: str) -> MergeKeyston
     """The canonical "merge held, re-escalate" result for a CLEAR.
 
     Shared by every keystone-merge refusal (scope-gate AND merge-precondition)
-    so the held-merge result shape stays defined in exactly one place.
+    so the held-merge result shape stays defined in exactly one place. Carries
+    ``escalation_kind = "substrate"`` when the held CLEAR is substrate, so the
+    loop edge pings the owner ONCE and holds (ping-and-hold) — and only on
+    substrate, never on every held merge.
     """
-    return {"merged": False, "escalated": True, "pr_id": int(clear.pr_id), "slug": clear.slug, "error": error}
+    return {
+        "merged": False,
+        "escalated": True,
+        "pr_id": int(clear.pr_id),
+        "slug": clear.slug,
+        "error": error,
+        "escalation_kind": "substrate" if clear.is_substrate() else "",
+    }
 
 
 def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKeystoneResult | None:
@@ -233,7 +270,7 @@ def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKey
     if approved:
         return None
     try:
-        from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415
+        from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415 — lazy import
 
         issue_url = str(getattr(clear.ticket, "issue_url", "") or "")
         verdict = merge_scope_verdict(
@@ -243,6 +280,14 @@ def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKey
             path_only_scopes=OverlayConfigResolver.path_only_owned_scopes(),
         )
     except Exception:  # noqa: BLE001 — a resolver error must never wedge a merge; fail OPEN.
+        warn_throttled(
+            logger,
+            "owned_repo_guard:merge_clear_refusal",
+            "owned-repo scope gate: overlay resolution failed while classifying a keystone merge target — "
+            "failing OPEN (the scope gate is disabled until the overlay registry loads); the merge's other "
+            "gates (cold-review, SHA-bind, substrate) remain in force",
+            exc_info=True,
+        )
         return None
     if verdict is not PushScopeVerdict.REQUIRE_APPROVAL:
         return None

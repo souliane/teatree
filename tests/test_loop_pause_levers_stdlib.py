@@ -1,57 +1,51 @@
-"""The Stop self-pump pause levers must read durable state WITHOUT django.setup() (#2559).
+"""The Stop self-pump pause levers read durable state WITHOUT django.setup() (#2559, fast-hooks).
 
 The Stop hook is invoked as a bare ``python3`` (``hooks.json``): the harness
 never sources the user's shell profile and the interpreter is whatever the
-harness picks — it has NO ``uv`` env, so teatree's dependencies (Django et al.)
-are not importable. ``django_bootstrap.bootstrap_teatree_django()`` therefore
-returns ``False`` in the real Stop context.
+harness picks — it has NO ``uv`` env, so an in-process ``django.setup()`` cannot
+be relied on. Before #2559 both durable pause levers gated their read on that
+bootstrap and FAILED OPEN when it failed — a durable DB pause / away override was
+silently ineffective at suppressing the self-pump.
 
-Before the fix, both durable pause levers gated their read on that bootstrap —
-``db_loop_state_suppresses_self_pump`` (the DB ``LoopState`` 'pause everything' of
-the always-on ``dispatch`` loop, via ``t3 loop pause`` / migration 0087) and
-``_resolved_away_mode`` (``t3 teatree availability away``) —
-each returned ``False`` when the bootstrap failed — i.e. fail-OPEN. So under the
-real bare-``python3`` Stop hook a durable DB pause / away override was SILENTLY
-INEFFECTIVE at suppressing the self-pump: the pump kept firing through a pause.
+#2559 fixed that by shelling out to the ``t3`` CLI (a child process that
+bootstraps Django). fast-hooks removes even that: the ``t3`` child cold-booted
+Django (~3s), which — twice per Stop — dominated the ~15s Stop hook and blew the
+30s timeout (the recurring TIMEOUT). Both levers now read durable state DIRECTLY
+in stdlib: ``db_loop_state_suppresses_self_pump`` reads the ``teatree_loop_state``
+row via the Django-free ``teatree.config.cold_reader.loop_status``, and the mode
+posture is cold-read off the same control DB via
+``teatree.config.cold_mode.resolve_cold_posture`` (#3826 replaced the JSON mirror
+file the probe used to obey, which had drifted a week out of date).
 
-The fix makes both levers stdlib-only — they subprocess the ``t3`` CLI (the
-editable install carries its own venv, so it bootstraps Django in a CHILD
-process) exactly the way ``_consolidated_pending_work`` already does, instead of
-importing teatree in the bare hook interpreter. These tests reproduce the exact
-bare-``python3`` context (bootstrap fails) and prove a durable pause now
-suppresses the pump: RED before the fix, GREEN after.
+These tests reproduce the bare-``python3`` context (the in-process bootstrap is
+forced to fail) and prove a durable pause / away override STILL suppresses the
+pump — now with no ``django.setup()`` AND no per-lever subprocess. The #2559
+structural invariant (no in-process django bootstrap in the levers) is re-pinned
+against the new mechanism.
 """
 
-import json
 import os
-import subprocess
-import sys
+import sqlite3
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.loop_state_self_pump_gate as gate
+import hooks.scripts.mode_posture_probe as posture_probe
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_loop_self_pump
-
-# ``hook_router`` puts its own dir on ``sys.path`` and binds the gate functions
-# via bare ``from <sibling> import …`` — that creates SEPARATE module instances
-# from ``hooks.scripts.<sibling>`` (the dual identity called out in
-# ``hooks/CLAUDE.md``). Patch the instances the router actually calls so the
-# stdlib subprocess stubs land on the live code paths.
-gate = sys.modules["loop_state_self_pump_gate"]
-away_probe = sys.modules["availability_away_probe"]
 
 
 @pytest.fixture(autouse=True)
 def _bare_python3_stop_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reproduce the real bare-``python3`` Stop hook context.
+    """Reproduce the real bare-``python3`` Stop hook context, fully isolated.
 
-    The hook interpreter cannot ``django.setup()`` — so BOTH levers' shared
-    bootstrap is forced to fail, exactly as it does in production. Everything
-    else (state dir, registry, bash-env fallback) is redirected into ``tmp_path``
-    so a developer's real config never leaks into the test.
+    The in-process django bootstrap is forced to fail (as in production), and the
+    state dir / registry / bash-env are redirected into ``tmp_path`` so a
+    developer's real config never leaks into the test. With no ``availability_schedule``
+    row seeded, the away probe sees no schedule windows and never falls back to the
+    ``t3`` subprocess unless a test configures one.
     """
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -59,13 +53,8 @@ def _bare_python3_stop_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # The defining property of the bare-python3 Stop hook: teatree is NOT
-    # importable in the hook interpreter, so the shared django bootstrap returns
-    # False. The fixed levers no longer call it (they subprocess ``t3`` so a
-    # CHILD process bootstraps Django) — but the router still imports it for
-    # OTHER handlers, so force it False there to prove the away lever does NOT
-    # depend on an in-process django.setup(). This is the exact production
-    # reality the #2559 bug lived in: a False bootstrap.
+    # The router still imports the in-process bootstrap for OTHER handlers; force
+    # it False to prove the levers do NOT depend on an in-process django.setup().
     monkeypatch.setattr(router, "bootstrap_teatree_django", lambda: False)
 
 
@@ -86,175 +75,219 @@ def _fake_pending(monkeypatch: pytest.MonkeyPatch, entries: list[dict]) -> None:
     monkeypatch.setattr(router, "_consolidated_pending_work", lambda: entries)
 
 
-def _fake_t3(
-    monkeypatch: pytest.MonkeyPatch,
-    target: object,
-    responses: dict[str, tuple[int, str]],
-) -> list[list[str]]:
-    """Stub ``shutil.which('t3')`` + ``subprocess.run`` on *target*'s module.
+def _config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dispatch_status: str | None = None) -> Path:
+    """Build the PRIMARY DB (with a ``teatree_loop_state`` table) and point cold_reader at it.
 
-    *responses* maps a marker substring of the argv (e.g. ``"loop-state"`` or
-    ``"availability"``) to a ``(returncode, stdout)`` pair. The captured argv
-    list is returned so a test can assert the lever shelled out to ``t3``
-    instead of touching the ORM.
+    ``T3_CONFIG_DB`` makes ``cold_reader.canonical_config_db`` resolve this DB;
+    its PARENT is the PRIMARY data dir the away probe reads
+    the mode posture from. *dispatch_status* seeds the ``dispatch`` row; ``None``
+    leaves it absent (the ``enabled`` fall-through). The three posture-carrying mode
+    rows are seeded so a test only has to point an override at one.
     """
-    calls: list[list[str]] = []
+    db = tmp_path / "db.sqlite3"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            "CREATE TABLE teatree_loop_state ("
+            "id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
+            "status TEXT NOT NULL, created_at TEXT, updated_at TEXT);"
+            "CREATE TABLE teatree_loop_preset (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
+            "defers_questions BOOL NOT NULL, pauses_self_pump BOOL NOT NULL, presence_sensitive BOOL NOT NULL);"
+            "CREATE TABLE teatree_loop_preset_override (id INTEGER PRIMARY KEY, preset_name TEXT NOT NULL, "
+            "until TEXT, set_at TEXT NOT NULL);"
+        )
+        conn.executemany(
+            "INSERT INTO teatree_loop_preset "
+            "(name, defers_questions, pauses_self_pump, presence_sensitive) VALUES (?,?,?,?)",
+            [("engaged", 0, 0, 1), ("unattended", 1, 0, 1), ("offline", 1, 1, 0)],
+        )
+        if dispatch_status is not None:
+            conn.execute("INSERT INTO teatree_loop_state (name, status) VALUES ('dispatch', ?)", (dispatch_status,))
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
 
-    monkeypatch.setattr(target, "shutil", SimpleNamespace(which=lambda _name: "/usr/local/bin/t3"))
 
-    def _run(argv: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-        calls.append(list(argv))
-        joined = " ".join(argv)
-        for marker, (code, out) in responses.items():
-            if marker in joined:
-                return SimpleNamespace(returncode=code, stdout=out, stderr="")
-        return SimpleNamespace(returncode=1, stdout="", stderr="")
+def _override(tmp_path: Path, mode_name: str, *, until: str | None = None) -> None:
+    """Point the L3 override row at *mode_name* in the PRIMARY control DB."""
+    conn = sqlite3.connect(tmp_path / "db.sqlite3")
+    try:
+        conn.execute("DELETE FROM teatree_loop_preset_override")
+        conn.execute(
+            "INSERT INTO teatree_loop_preset_override (preset_name, until, set_at) "
+            "VALUES (?, ?, '2026-01-01 00:00:00')",
+            (mode_name, until),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-    monkeypatch.setattr(target, "subprocess", SimpleNamespace(run=_run, TimeoutExpired=subprocess.TimeoutExpired))
-    return calls
 
+class TestDbPauseLeverReadsViaColdReader:
+    """``db_loop_state_suppresses_self_pump`` reads the durable pause via ``cold_reader``."""
 
-class TestDbPauseLeverIsStdlibOnly:
-    """``db_loop_state_suppresses_self_pump`` reads the durable pause via ``t3``."""
-
-    def test_gate_module_imports_no_django_bootstrap(self) -> None:
-        # The structural #2559 invariant: the gate must NOT import the in-process
-        # django bootstrap at all — it is stdlib-only (shutil + subprocess + json)
-        # so the bare-python3 Stop hook never needs a ``django.setup()`` of its
-        # own. A re-introduced bootstrap import would silently reinstate the
-        # fail-open bug, so guard it here.
+    def test_lever_never_imports_in_process_django_bootstrap(self) -> None:
+        # The structural #2559 invariant, re-pinned: the lever must NOT import the
+        # in-process django bootstrap — it is Django-free (cold_reader + a src
+        # bootstrap) so the bare-python3 Stop hook never needs its own
+        # ``django.setup()``. A re-introduced bootstrap would silently reinstate
+        # the fail-open bug. It also no longer shells out per-lever (fast-hooks).
         assert not hasattr(gate, "bootstrap_teatree_django")
-        assert hasattr(gate, "shutil")
-        assert hasattr(gate, "subprocess")
+        assert not hasattr(gate, "subprocess")
+        assert hasattr(gate, "teatree_src_on_path")
 
-    def test_db_paused_dispatch_suppresses_under_bare_python3(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The exact #2559 reproduction: django.setup() is impossible (bootstrap
-        # forced False by the fixture), yet a durable PAUSE on the ``dispatch``
-        # loop is readable via the ``t3`` subprocess. The lever MUST suppress.
-        calls = _fake_t3(
-            monkeypatch,
-            gate,
-            {"loop-state": (0, json.dumps({"name": "dispatch", "status": "paused"}))},
-        )
-
-        assert gate.db_loop_state_suppresses_self_pump() is True
-        assert any("loop-state" in " ".join(c) for c in calls)  # shelled out, did not ORM
-
-    def test_db_disabled_dispatch_suppresses_under_bare_python3(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_t3(
-            monkeypatch,
-            gate,
-            {"loop-state": (0, json.dumps({"name": "dispatch", "status": "disabled"}))},
-        )
+    def test_db_paused_dispatch_suppresses_under_bare_python3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The exact #2559 reproduction: in-process django.setup() is impossible,
+        # yet a durable PAUSE on ``dispatch`` is readable via cold_reader.
+        _config_db(tmp_path, monkeypatch, dispatch_status="paused")
         assert gate.db_loop_state_suppresses_self_pump() is True
 
-    def test_db_enabled_dispatch_does_not_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_t3(
-            monkeypatch,
-            gate,
-            {"loop-state": (0, json.dumps({"name": "dispatch", "status": "enabled"}))},
-        )
+    def test_db_disabled_dispatch_suppresses_under_bare_python3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch, dispatch_status="disabled")
+        assert gate.db_loop_state_suppresses_self_pump() is True
+
+    def test_db_enabled_dispatch_does_not_suppress(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch, dispatch_status="enabled")
         assert gate.db_loop_state_suppresses_self_pump() is False
 
-    def test_t3_absent_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No ``t3`` on PATH ⇒ genuinely unreadable ⇒ fail OPEN (do not suppress),
-        # so the other gates still decide and the pump never crashes the session.
-        monkeypatch.setattr(gate, "shutil", SimpleNamespace(which=lambda _name: None))
+    def test_absent_row_fails_open(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch, dispatch_status=None)
         assert gate.db_loop_state_suppresses_self_pump() is False
 
-    def test_t3_error_exit_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_t3(monkeypatch, gate, {"loop-state": (1, "")})
+    def test_missing_db_fails_open(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "nope.sqlite3"))
         assert gate.db_loop_state_suppresses_self_pump() is False
 
 
-class TestAwayLeverIsStdlibOnly:
-    """``_resolved_away_mode`` reads the resolved availability via ``t3``.
+class TestPauseLeverColdReadsTheControlDb:
+    """``_resolved_pauses_self_pump`` cold-reads the mode posture off the control DB.
 
-    The router's thin ``_resolved_away_mode`` delegates to the stdlib sibling
-    ``availability_away_probe`` (#2559), so the subprocess stub patches that
-    module — the instance the live delegate actually shells out from.
+    The router's thin wrapper delegates to the stdlib sibling ``posture_probe``, which
+    resolves the SAME override row the Django resolver reads — no mirror file, no
+    subprocess, no ``django.setup()`` (#2559, #3826).
     """
 
-    def test_probe_imports_no_django_bootstrap(self) -> None:
-        # Structural #2559 invariant: the away probe is stdlib-only.
-        assert not hasattr(away_probe, "bootstrap_teatree_django")
-        assert hasattr(away_probe, "shutil")
-        assert hasattr(away_probe, "subprocess")
+    def test_probe_never_imports_in_process_django_bootstrap(self) -> None:
+        assert not hasattr(posture_probe, "bootstrap_teatree_django")
 
-    def test_away_override_resolves_true_under_bare_python3(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_t3(
-            monkeypatch,
-            away_probe,
-            {"availability": (0, "availability: mode=away source=override")},
-        )
-        assert router._resolved_away_mode() is True
+    def test_probe_never_shells_out_to_t3(self) -> None:
+        # The subprocess fallback existed only because the mirror could not evaluate a
+        # schedule. The cold reader evaluates it directly, so the Stop hot path pays no
+        # child process at all.
+        assert not hasattr(posture_probe, "subprocess")
 
-    def test_present_resolves_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_t3(
-            monkeypatch,
-            away_probe,
-            {"availability": (0, "availability: mode=present source=default")},
-        )
-        assert router._resolved_away_mode() is False
+    def test_holiday_override_resolves_true_under_bare_python3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "offline")
+        assert router._resolved_pauses_self_pump() is True
 
-    def test_t3_absent_resolves_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(away_probe, "shutil", SimpleNamespace(which=lambda _name: None))
-        assert router._resolved_away_mode() is False
+    def test_reachable_override_resolves_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "engaged")
+        assert router._resolved_pauses_self_pump() is False
+
+    def test_no_override_no_schedule_resolves_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        assert router._resolved_pauses_self_pump() is False
+
+    def test_expired_holiday_override_falls_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An expired override is inactive → falls through to the (absent) schedule →
+        # default. Anti-vacuous: an ACTIVE holiday override on the same row resolves
+        # True (the sibling test above).
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "offline", until="2000-01-01 00:00:00")
+        assert router._resolved_pauses_self_pump() is False
+
+
+class TestUnattendedPostureLeverStdlib:
+    """The unattended posture defers questions but does NOT pause the self-pump (#2544).
+
+    The stdlib probe splits the posture into ``resolved_defers_questions`` and
+    ``resolved_pauses_self_pump``, read here under the same bare-``python3``
+    reproduction as the pump lever above.
+    """
+
+    def test_unattended_override_defers_but_does_not_pause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "unattended")
+        assert posture_probe.resolved_defers_questions() is True
+        assert posture_probe.resolved_pauses_self_pump() is False
+
+    def test_holiday_override_defers_and_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "offline")
+        assert posture_probe.resolved_defers_questions() is True
+        assert posture_probe.resolved_pauses_self_pump() is True
+
+    def test_reachable_override_neither_defers_nor_pauses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "engaged")
+        assert posture_probe.resolved_defers_questions() is False
+        assert posture_probe.resolved_pauses_self_pump() is False
+
+    def test_no_override_neither_defers_nor_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        assert posture_probe.resolved_defers_questions() is False
+        assert posture_probe.resolved_pauses_self_pump() is False
+
+    def test_router_question_deferral_reads_the_split_predicate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # handle_route_away_mode_question must defer under the unattended posture too
+        # — it reads _resolved_defers_questions, not the pump-pause lever.
+        _config_db(tmp_path, monkeypatch)
+        _override(tmp_path, "unattended")
+        assert router._resolved_defers_questions() is True
+
+    def test_stop_self_pump_keeps_running_under_autonomous_away(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point of #2544: unlike the holiday posture, an unattended one must
+        # NOT suppress the Stop self-pump.
+        _config_db(tmp_path, monkeypatch, dispatch_status="enabled")
+        _override(tmp_path, "unattended")
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert result is True  # unattended: the pump keeps firing
 
 
 class TestStopSelfPumpEndToEndUnderBarePython3:
     """The whole handler suppresses through a durable pause in the bare context."""
 
-    def test_db_pause_suppresses_pump_even_with_pending_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The end-to-end #2559 proof: bootstrap fails (bare python3), there is
-        # pending work, this session owns the loop, availability is present — but
-        # a durable DB PAUSE on ``dispatch`` is readable via ``t3``. The Stop
-        # self-pump must NOT block (the pause is honoured).
+    def test_db_pause_suppresses_pump_even_with_pending_work(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch, dispatch_status="paused")
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-
-        def _which(name: str) -> str | None:
-            return "/usr/local/bin/t3" if name == "t3" else None
-
-        def _run(argv: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-            joined = " ".join(argv)
-            if "loop-state" in joined:
-                return SimpleNamespace(
-                    returncode=0, stdout=json.dumps({"name": "dispatch", "status": "paused"}), stderr=""
-                )
-            if "availability" in joined:
-                return SimpleNamespace(returncode=0, stdout="availability: mode=present source=default", stderr="")
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
-
-        for mod in (gate, away_probe):
-            monkeypatch.setattr(mod, "shutil", SimpleNamespace(which=_which))
-            monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run=_run, TimeoutExpired=subprocess.TimeoutExpired))
 
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
         assert result is not True  # paused: no block, the session may end
 
-    def test_away_override_suppresses_pump_even_with_pending_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_holiday_override_suppresses_pump_even_with_pending_work(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch, dispatch_status="enabled")  # loop runnable
+        _override(tmp_path, "offline")  # but the user asked for everything to pause
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
-        def _which(name: str) -> str | None:
-            return "/usr/local/bin/t3" if name == "t3" else None
-
-        def _run(argv: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-            joined = " ".join(argv)
-            if "loop-state" in joined:
-                return SimpleNamespace(
-                    returncode=0, stdout=json.dumps({"name": "dispatch", "status": "enabled"}), stderr=""
-                )
-            if "availability" in joined:
-                return SimpleNamespace(returncode=0, stdout="availability: mode=away source=override", stderr="")
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
-
-        for mod in (gate, away_probe):
-            monkeypatch.setattr(mod, "shutil", SimpleNamespace(which=_which))
-            monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run=_run, TimeoutExpired=subprocess.TimeoutExpired))
-
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
-        assert result is not True  # away: the pause wins over the standing directive
+        assert result is not True  # holiday: the pause wins over the standing directive

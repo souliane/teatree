@@ -72,3 +72,114 @@ class TestPullRequestModel(TestCase):
         pr.mark_merged()
         pr.save()
         assert pr.state == PullRequest.State.MERGED
+
+
+_URL = "https://github.com/acme/widget/pull/42"
+
+
+def _row(ticket: Ticket, *, slug: str = "acme/widget", pr_id: int = 42, url: str = _URL) -> PullRequest:
+    return PullRequest.objects.create(ticket=ticket, overlay=ticket.overlay, url=url, repo=slug, iid=str(pr_id))
+
+
+class TestOwningTicket(TestCase):
+    def test_resolves_through_the_pull_request_foreign_key(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        _row(ticket)
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+    def test_falls_back_to_the_ticket_extra_prs_map(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"prs": {_URL: {}}})
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42, pr_url=_URL) == ticket
+
+    def test_unlinked_pull_request_resolves_to_nothing(self) -> None:
+        Ticket.objects.create(overlay="t3-teatree")
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42, pr_url=_URL) is None
+
+    def test_a_different_repo_with_the_same_number_is_not_the_owner(self) -> None:
+        _row(Ticket.objects.create(overlay="t3-teatree"))
+
+        assert PullRequest.objects.owning_ticket(slug="acme/gadget", pr_id=42) is None
+
+    def test_the_extra_prs_fallback_runs_without_being_handed_the_pr_url(self) -> None:
+        """The backfill knows only ``(slug, pr_id)`` — a CLEAR carries no PR url."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"prs": {_URL: {}}})
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+    def test_the_extra_prs_fallback_ignores_a_different_pr_on_the_same_repo(self) -> None:
+        Ticket.objects.create(overlay="t3-teatree", extra={"prs": {_URL: {}}})
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=43) is None
+
+
+class TestForgeSlugsAreCaseInsensitive(TestCase):
+    """A forge slug is case-insensitive, so a mis-cased row must still be found.
+
+    ``execution``'s sibling supersede and ``merge_quality_gate``'s ticket
+    resolution both already match ``__iexact`` for exactly this reason. A
+    case-sensitive PR lookup silently marks 0 rows and resolves no ticket, so
+    the keystone advances nothing and the board starves behind a real merge.
+    """
+
+    def test_owning_ticket_resolves_a_differently_cased_slug(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        _row(ticket, slug="Acme/Widget")
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+    def test_record_forge_merge_marks_a_differently_cased_slug(self) -> None:
+        row = _row(Ticket.objects.create(overlay="t3-teatree"), slug="Acme/Widget")
+
+        assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=42) == 1
+
+        row.refresh_from_db()
+        assert row.state == PullRequest.State.MERGED
+
+    def test_the_extra_prs_fallback_matches_a_differently_cased_slug(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            extra={"prs": {"https://github.com/Acme/Widget/pull/42": {}}},
+        )
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+
+class TestRecordForgeMerge(TestCase):
+    def test_open_row_transitions_to_merged(self) -> None:
+        row = _row(Ticket.objects.create(overlay="t3-teatree"))
+
+        assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=42) == 1
+
+        row.refresh_from_db()
+        assert row.state == PullRequest.State.MERGED
+
+    def test_already_merged_row_is_a_no_op(self) -> None:
+        row = _row(Ticket.objects.create(overlay="t3-teatree"))
+        row.mark_merged()
+        row.save()
+
+        assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=42) == 0
+
+    def test_review_requested_and_approved_rows_both_advance(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        requested = _row(ticket, pr_id=7, url="https://github.com/acme/widget/pull/7")
+        requested.request_review()
+        requested.save()
+        approved = _row(ticket, pr_id=8, url="https://github.com/acme/widget/pull/8")
+        approved.request_review()
+        approved.approve()
+        approved.save()
+
+        assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=7) == 1
+        assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=8) == 1
+
+        requested.refresh_from_db()
+        approved.refresh_from_db()
+        assert requested.state == PullRequest.State.MERGED
+        assert approved.state == PullRequest.State.MERGED
+
+    def test_no_row_for_the_pr_is_a_no_op(self) -> None:
+        assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=99) == 0

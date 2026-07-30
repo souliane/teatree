@@ -26,10 +26,11 @@ Output schema (one JSON object on stdout):
     "verdict": "ready_to_review"|"needs_attention",
 }``
 
-GitHub PRs return exit code 2 with ``{"error": "unsupported_forge",
-"forge": "github"}`` — explicit "not yet implemented", never a
-masquerading success. Forge resolution is structural (URL shape), not
-heuristic. Other malformed URLs exit 2 with ``error="bad_url"``.
+Both forges are audited into the same shape: GitLab through
+:func:`_audit_gitlab_mr` here, GitHub through
+:func:`teatree.cli.review.run_github.audit_github_pr`. Forge resolution is
+structural (URL shape), not heuristic. A URL that names neither exits 2 with
+``error="bad_url"``.
 """
 
 import json
@@ -230,11 +231,11 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     normalized into :class:`_ReviewRunAPIError` so the CLI surfaces a
     structured ``api_unavailable`` payload rather than a raw traceback.
     """
-    import httpx  # noqa: PLC0415
+    import httpx  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
-    from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
-    from teatree.cli.review.service import ReviewService  # noqa: PLC0415
-    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
+    from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.cli.review.service import ReviewService  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415 — deferred: ORM/app-registry
 
     parsed = repo_and_iid(url)
     if parsed is None:
@@ -242,7 +243,8 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
         raise ValueError(msg)
     repo, iid = parsed
     encoded = repo.replace("/", "%2F")
-    api = GitLabAPI(token=ReviewService.get_gitlab_token(), base_url=ReviewService._resolve_base_url())  # noqa: SLF001
+    service = ReviewService(ReviewService.get_gitlab_token(repo), repo=repo)
+    api = GitLabAPI(token=service.token, base_url=service._resolve_base_url())  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
 
     try:
         changes_payload = api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes")
@@ -273,6 +275,13 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     )
 
 
+def _audit_github_pr(url: str) -> ReviewRunResult:
+    """Run the GitHub audit, imported at call time so the module split stays acyclic."""
+    from teatree.cli.review.run_github import audit_github_pr  # noqa: PLC0415 — deferred: run_github imports back
+
+    return audit_github_pr(url)
+
+
 def _skip_verdict_for_state(changes_payload: object) -> str:
     """Return ``skipped_merged`` / ``skipped_closed`` for a dead MR, else ``""`` (#2081).
 
@@ -291,35 +300,33 @@ def _skip_verdict_for_state(changes_payload: object) -> str:
 
 @review_app.command(name="run")
 def run(
-    url: str = typer.Argument(help="GitLab MR URL (GitHub PR URLs return unsupported_forge)."),
+    url: str = typer.Argument(help="GitLab MR or GitHub PR URL to audit."),
 ) -> None:
-    """Run the review-shape audit for an MR and print a JSON summary.
+    """Run the review-shape audit for a GitLab MR or GitHub PR and print a JSON summary.
 
     Read-only: this command never posts to GitLab or GitHub. It fetches
     diff metadata, existing-review state (discussions + draft notes +
     approvals), classifies complexity, and emits a small findings
-    catalog. The reviewer sub-agent consumes the JSON and decides what
-    to do next via ``t3 review post-draft-note`` / ``post-comment``.
+    catalog. Both forges produce the same payload shape, so the reviewer
+    sub-agent consumes one contract and decides what to do next via
+    ``t3 review post-draft-note`` / ``post-comment``.
 
     Exit codes:
 
     * ``0`` — audit ran, JSON printed.
-    * ``1`` — URL parsed but the GitLab API refused the audit
+    * ``1`` — URL parsed but the forge refused the audit
         (``api_unavailable``: missing token, 401/403/404, connection
         failure, or any other backend error).
-    * ``2`` — URL refused before any API call (``unsupported_forge`` for
-        GitHub PRs, ``bad_url`` for anything else).
+    * ``2`` — URL refused before any API call (``bad_url``: neither a
+        GitLab MR nor a GitHub PR URL).
     """
     forge = forge_of(url)
-    if forge is Forge.GITHUB:
-        typer.echo(json.dumps({"error": "unsupported_forge", "forge": "github", "url": url}, sort_keys=True))
-        raise typer.Exit(code=2)
-    if forge is not Forge.GITLAB:
+    if forge not in {Forge.GITLAB, Forge.GITHUB}:
         typer.echo(json.dumps({"error": "bad_url", "url": url}, sort_keys=True))
         raise typer.Exit(code=2)
     ensure_django()
     try:
-        result = _audit_gitlab_mr(url)
+        result = _audit_gitlab_mr(url) if forge is Forge.GITLAB else _audit_github_pr(url)
     except ValueError:
         typer.echo(json.dumps({"error": "bad_url", "url": url}, sort_keys=True))
         raise typer.Exit(code=2) from None

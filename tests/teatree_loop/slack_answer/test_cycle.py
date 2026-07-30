@@ -157,11 +157,11 @@ class TestSimple:
                 "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
                 return_value="overlay=acme\nticket=#1\n",
             ),
-            patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku,
+            patch("teatree.loop.slack_answer.simple_answer._run_cheap_turn") as cheap,
         ):
             report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
-        haiku.assert_not_called()
+        cheap.assert_not_called()
         assert len(backend.replies) == 1
         channel, ts, text = backend.replies[0]
         assert (channel, ts) == ("C1", "1.0")  # threaded under the user msg

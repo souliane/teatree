@@ -19,7 +19,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.backend_protocols import ApprovalState, ReviewState
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import Ticket
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayReview
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.types import RawAPIDict
@@ -37,7 +37,6 @@ class FakeCodeHost:
     my_prs: list[RawAPIDict] = field(default_factory=list)
     approvals: dict[tuple[str, int], ApprovalState] = field(default_factory=dict)
     approval_calls: list[tuple[str, int]] = field(default_factory=list)
-    raise_not_implemented: bool = False
 
     def current_user(self) -> str:
         return self.user
@@ -88,9 +87,6 @@ class FakeCodeHost:
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         self.approval_calls.append((repo, pr_iid))
-        if self.raise_not_implemented:
-            msg = "GitHub stub"
-            raise NotImplementedError(msg)
         return self.approvals.get(
             (repo, pr_iid),
             ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0),
@@ -116,15 +112,20 @@ def _gitlab_mr(
     }
 
 
-class _StubOverlay:
-    """Minimal overlay stub matching the ``can_auto_merge`` surface."""
-
+class _StubReview:
     def __init__(self, guard: MergeGuard) -> None:
         self._guard = guard
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         _ = (target_ref, thread_ref)
         return self._guard
+
+
+class _StubOverlay:
+    """Minimal overlay stub matching the ``review.can_auto_merge`` surface."""
+
+    def __init__(self, guard: MergeGuard) -> None:
+        self.review = _StubReview(guard)
 
 
 class TestGitLabApprovalsScanner(TestCase):
@@ -279,27 +280,11 @@ class TestGitLabApprovalsScanner(TestCase):
         ticket = Ticket.objects.get(issue_url=url)
         assert ticket.extra["last_approval_sha"] == "sha-2"
 
-    def test_github_backend_silently_skipped(self) -> None:
-        """``get_mr_approvals`` raising NotImplementedError → scanner skips the PR."""
-        host = FakeCodeHost(
-            raise_not_implemented=True,
-            my_prs=[_gitlab_mr(iid=48, sha="ddd444")],
-        )
-        scanner = GitLabApprovalsScanner(host=host)
-
-        signals = scanner.scan()
-
-        assert signals == []
-        # The scanner must still have CALLED the backend — silent skip, not
-        # short-circuit. This catches a regression where a future "only call
-        # GitLab backends" filter forgets to call the unknown ones at all.
-        assert host.approval_calls == [("acme/backend", 48)]
-
     def test_github_url_pattern_skipped_without_backend_call(self) -> None:
         """GitHub PR URLs (``/pull/`` shape) are filtered out before the backend call.
 
         This keeps a mixed-host overlay from paying a backend round-trip per
-        tick to discover that the GitHub backend raises NotImplementedError.
+        tick — the GitLab auto-merge signal this scanner drives is GitLab-only.
         """
         host = FakeCodeHost(
             my_prs=[
@@ -466,7 +451,7 @@ class TestPerPrIsolation(TestCase):
 
         call_count = 0
 
-        class _RaisingFirstOverlay:
+        class _RaisingFirstReview:
             """Raises ValueError for the first MR, allows the second."""
 
             def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
@@ -476,6 +461,9 @@ class TestPerPrIsolation(TestCase):
                     msg = "description does not match canonical format"
                     raise ValueError(msg)
                 return MergeGuard(allowed=True, reason="", escalate=False)
+
+        class _RaisingFirstOverlay:
+            review = _RaisingFirstReview()
 
         scanner = GitLabApprovalsScanner(host=host)
         with patch.object(overlay_loader_mod, "get_overlay", return_value=_RaisingFirstOverlay()):
@@ -509,12 +497,22 @@ class TestPerPrIsolation(TestCase):
             scanner.scan()
 
 
+class _MergeGuardOverlayReview(OverlayReview):
+    def __init__(self, overlay: "_MergeGuardOverlay") -> None:
+        self._overlay = overlay
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        _ = (target_ref, thread_ref)
+        return self._overlay._guard
+
+
 class _MergeGuardOverlay(OverlayBase):
     """Concrete overlay owning a repo and returning a fixed merge guard."""
 
     def __init__(self, *, repos: list[str], guard: MergeGuard) -> None:
         self._repos = repos
         self._guard = guard
+        self.review = _MergeGuardOverlayReview(self)
 
     def get_repos(self) -> list[str]:
         return self._repos
@@ -525,10 +523,6 @@ class _MergeGuardOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Any) -> list:
         _ = worktree
         return []
-
-    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
-        _ = (target_ref, thread_ref)
-        return self._guard
 
 
 class TestGitLabApprovalsMultiOverlay(TestCase):

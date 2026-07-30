@@ -1,25 +1,32 @@
 """Tests for the dream distillation engine SEAM (#1933)."""
 
+import json
 import os
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import distill, engine
+from teatree.loops.dream import distill, engine, sdk_distiller
 from teatree.loops.dream.engine import (
     ConsolidationExtract,
     DistilledCluster,
+    DistillEmptyReason,
+    DistillResult,
     DreamRunResult,
     TranscriptMember,
     WeightedSnippet,
+    WriteOutcome,
     build_extract,
+    cluster_is_grounded,
     enumerate_members,
+    normalize_ws,
     run_consolidation,
     write_clusters,
 )
@@ -39,6 +46,9 @@ def _no_clusters(_extract: ConsolidationExtract) -> list[DistilledCluster]:
 
 
 class RunConsolidationSeamTestCase(TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
     def test_returns_dream_run_result(self) -> None:
         result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
         assert isinstance(result, DreamRunResult)
@@ -55,6 +65,29 @@ class RunConsolidationSeamTestCase(TestCase):
         run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
         assert ConsolidatedMemory.objects.count() == 0
 
+    def test_truncated_extract_is_threaded_into_the_result_and_warned(self) -> None:
+        # F6.7: ConsolidationExtract.truncated was computed and propagated but never
+        # read. A pass that clipped/dropped high-signal drift for prompt budget now
+        # surfaces it — threaded onto the result and logged at WARNING.
+        big = "x" * 1_000_000
+        members = [TranscriptMember(path=self.tmp / f"feedback_{i}.md", kind="memory") for i in range(50)]
+        for member in members:
+            member.path.write_text(big)
+        with (
+            patch.object(engine, "enumerate_members", return_value=members),
+            self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs,
+        ):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.extract_truncated is True
+        assert any("TRUNCATED" in line for line in logs.output)
+
+    def test_untruncated_extract_leaves_the_result_flag_false(self) -> None:
+        members = [TranscriptMember(path=self.tmp / "feedback_a.md", kind="memory")]
+        members[0].path.write_text("BINDING: short lesson")
+        with patch.object(engine, "enumerate_members", return_value=members):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.extract_truncated is False
+
     def test_injected_distiller_receives_extract(self) -> None:
         seen: list[ConsolidationExtract] = []
 
@@ -68,6 +101,42 @@ class RunConsolidationSeamTestCase(TestCase):
                 run_consolidation(overlay="", since=None, dry_run=False, distiller=_spy)
         assert len(seen) == 1
         assert isinstance(seen[0], ConsolidationExtract)
+
+    def test_result_carries_the_extract_and_distilled_count(self) -> None:
+        # D1c: the result carries the bounded extract it built (so the command can
+        # reuse it for the compliance/automatable-ask phases) and the honest
+        # snippets_distilled count.
+        with tempfile.TemporaryDirectory() as tmp:
+            member = _write_member(Path(tmp))
+            with patch.object(engine, "enumerate_members", return_value=[member]):
+                result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+        assert result.extract is not None
+        assert result.snippets_distilled == len(result.extract.snippets)
+        assert result.snippets_distilled >= 1
+        assert result.clusters_rejected == 0
+
+    def test_result_counts_ungrounded_clusters_rejected(self) -> None:
+        # D1c: an ungrounded distiller cluster is rejected by the ledger guard and the
+        # count flows through to the result (surfaced in the command summary).
+        def _ungrounded(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="x",
+                    rule="an ungrounded rule",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation="a quote absent from every cited snippet",
+                    durable_destination="",
+                )
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            member = _write_member(Path(tmp))
+            with patch.object(engine, "enumerate_members", return_value=[member]):
+                result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_ungrounded)
+        assert result.clusters_recorded == 0
+        assert result.clusters_rejected == 1
 
 
 _CITATION = "pushed without running the gate, CI went red"
@@ -104,8 +173,8 @@ class WriteClustersTestCase(TestCase):
 
     def test_writes_one_row_per_valid_cluster(self) -> None:
         member = _write_member(self.tmp)
-        written = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
-        assert written == 1
+        outcome = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=0)
         row = ConsolidatedMemory.objects.get(cluster_key="k1")
         assert row.rule == "Run the gate before pushing."
         assert row.source_files == [str(member.path)]
@@ -117,6 +186,28 @@ class WriteClustersTestCase(TestCase):
         write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
         assert ConsolidatedMemory.objects.filter(cluster_key="k1").count() == 1
 
+    def test_different_llm_slugs_same_members_upsert_to_one_row(self) -> None:
+        # #2723: the distiller emits DIFFERENT slugs across two runs for the SAME
+        # member set. With a DETERMINISTIC cluster_key (sha256 over the members) the
+        # second run UPSERTS the existing row instead of creating a duplicate.
+        member = _write_member(self.tmp)
+        extract = _extract_of(member)
+        payload_a = (
+            f'[{{"cluster_key":"slug-run-1","rule":"Run the gate before pushing.",'
+            f'"source_files":["{member.path}"],"is_binding":false,'
+            f'"verified_citation":"{_CITATION}","durable_destination":"feedback/run_gate.md"}}]'
+        )
+        payload_b = payload_a.replace("slug-run-1", "a-completely-different-slug-run-2")
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload_a):
+            clusters_a = sdk_distiller.sdk_distiller(extract)
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload_b):
+            clusters_b = sdk_distiller.sdk_distiller(extract)
+
+        write_clusters(clusters_a, extract, dry_run=False)
+        write_clusters(clusters_b, extract, dry_run=False)
+        # ONE row — the reworded slug did not fork a duplicate.
+        assert ConsolidatedMemory.objects.count() == 1
+
     def test_rejects_cluster_with_empty_source_files(self) -> None:
         member = _write_member(self.tmp)
         bad = DistilledCluster(
@@ -127,8 +218,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation=_CITATION,
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_rejects_cluster_citing_unknown_path(self) -> None:
@@ -141,8 +232,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation=_CITATION,
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_rejects_cluster_with_blank_citation(self) -> None:
@@ -155,8 +246,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation="   ",
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_rejects_real_path_with_invented_quote(self) -> None:
@@ -169,8 +260,8 @@ class WriteClustersTestCase(TestCase):
             verified_citation="a mistake that never appears in the snippet text",
             durable_destination="",
         )
-        written = write_clusters([bad], _extract_of(member), dry_run=False)
-        assert written == 0
+        outcome = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=0, rejected=1)
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
     def test_accepts_citation_with_differing_whitespace(self) -> None:
@@ -183,14 +274,33 @@ class WriteClustersTestCase(TestCase):
             verified_citation=f"  {_CITATION}  ",
             durable_destination="",
         )
-        written = write_clusters([spaced], _extract_of(member), dry_run=False)
-        assert written == 1
+        outcome = write_clusters([spaced], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=0)
 
     def test_dry_run_writes_nothing(self) -> None:
         member = _write_member(self.tmp)
-        written = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=True)
-        assert written == 1
+        outcome = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=True)
+        assert outcome == WriteOutcome(written=1, rejected=0)
         assert ConsolidatedMemory.objects.count() == 0
+
+    def test_write_outcome_counts_and_warns_on_rejected_cluster(self) -> None:
+        # D1c: a grounded cluster is written; an ungrounded one is counted as rejected
+        # AND logged at WARNING (silently dropped before), so an ungrounded distiller
+        # batch is surfaced rather than swallowed.
+        member = _write_member(self.tmp)
+        good = _cluster_for(member)
+        bad = DistilledCluster(
+            cluster_key="bad",
+            rule="an invented rule with no grounding",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation="a quote that never appears in the snippet text at all",
+            durable_destination="",
+        )
+        with self.assertLogs("teatree.loops.dream.engine", level="WARNING") as logs:
+            outcome = write_clusters([good, bad], _extract_of(member), dry_run=False)
+        assert outcome == WriteOutcome(written=1, rejected=1)
+        assert any("ungrounded cluster" in line for line in logs.output)
 
     def test_max_member_weight_is_the_cited_snippet_weight(self) -> None:
         member = _write_member(self.tmp)
@@ -367,6 +477,280 @@ class BuildExtractTestCase(TestCase):
         extract = build_extract([member])
         assert extract.truncated is False
 
+    def test_keeps_user_correction_prose_with_no_signal_keyword(self) -> None:
+        chatter = "\n".join(f'{{"type":"assistant","text":"chatter {i}"}}' for i in range(50))
+        correction = '{"type":"user","text":"I told you again — do not build a new banner, stop"}'
+        member = self._member("session.jsonl", chatter + "\n" + correction, kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "told you again" in joined
+        assert "chatter 25" not in joined
+
+    def test_keeps_repeated_near_identical_user_turn(self) -> None:
+        repeated = "the config portal authoring UI is still missing from the deliverable"
+        lines = [f'{{"type":"user","text":"{repeated}"}}' for _ in range(3)]
+        lines.append('{"type":"assistant","text":"some neutral response with no cue"}')
+        member = self._member("session.jsonl", "\n".join(lines), kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert repeated in joined
+
+    def test_neutral_transcript_chatter_is_still_excluded(self) -> None:
+        neutral = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(40))
+        member = self._member("session.jsonl", neutral, kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "computed result row" not in joined
+
+    def test_keeps_substantive_learning_prose_with_no_signal_keyword(self) -> None:
+        # #2986: the day's richest drift is a declarative finding carrying no literal
+        # signal token and no correction/ask cue. The keyword gate starved it before,
+        # so a plain pass distilled 0 clusters from a corpus full of real learnings.
+        chatter = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(50))
+        learning = '{"type":"assistant","text":"root caused the empty owner crash to a missing tenant filter"}'
+        member = self._member("session.jsonl", chatter + "\n" + learning, kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "root caused the empty owner crash" in joined
+        assert "computed result row 25" not in joined
+
+    def test_transcript_floor_survives_high_weight_memory_flood(self) -> None:
+        flood = [self._member(f"feedback_{i}.md", "BINDING: " + ("x" * 50_000)) for i in range(20)]
+        correction = '{"type":"user","text":"why did you do this again? do not, stop, I told you"}'
+        transcript = self._member("session.jsonl", correction, kind="main")
+        extract = build_extract([*flood, transcript])
+        transcript_paths = {str(s.path) for s in extract.snippets if s.kind != "memory"}
+        assert str(transcript.path) in transcript_paths
+
+    def test_floor_keeps_multiple_transcripts_under_memory_flood(self) -> None:
+        flood = [self._member(f"feedback_{i}.md", "BINDING: " + ("x" * 40_000)) for i in range(20)]
+        transcripts = [
+            self._member(
+                f"session_{i}.jsonl",
+                '{"type":"user","text":"stop — do not do that again, I told you not to"}',
+                kind="main",
+            )
+            for i in range(5)
+        ]
+        extract = build_extract([*flood, *transcripts])
+        kept_transcripts = {str(s.path) for s in extract.snippets if s.kind != "memory"}
+        assert len(kept_transcripts) == 5
+
+    def test_memory_floor_survives_task_output_flood(self) -> None:
+        # RED before D1a/D1b: a task_output that merely QUOTES "BINDING" scored the
+        # full BINDING floor (100) and — with no memory floor — flooded the whole
+        # ceiling, starving the curated memory out of the prompt entirely (the pass
+        # then distilled 0 real clusters). The memory floor + kind-aware weighting
+        # guarantee the durable doctrine survives a night of large task outputs.
+        memory = self._member("feedback_rule.md", "a durable feedback lesson about pushing the gate")
+        flood = [self._member(f"task_{i}.output", "BINDING: " + ("x" * 8_000), kind="task_output") for i in range(20)]
+        extract = build_extract([*flood, memory])
+        kept_memories = {str(s.path) for s in extract.snippets if s.kind == "memory"}
+        assert str(memory.path) in kept_memories
+
+    def test_binding_quoting_transcript_does_not_outrank_memory(self) -> None:
+        # RED before D1a: a transcript that only QUOTES a BINDING rule scored the full
+        # BINDING floor (100) and OUTRANKED the feedback memory (90) that actually owns
+        # the rule. Kind-aware weighting reserves the BINDING/feedback floors for curated
+        # memory, so a quoting transcript can never tie or outrank the memory.
+        memory = self._member("feedback_rule.md", "a durable feedback lesson", kind="memory")
+        transcript = self._member("task_quote.output", "BINDING: never push to a red branch", kind="task_output")
+        extract = build_extract([transcript, memory])
+        weights = {s.kind: s.weight for s in extract.snippets}
+        assert weights["memory"] >= weights["task_output"]
+
+
+class CorrectionProseProducesGroundedClusterTestCase(TestCase):
+    """A transcript carrying only correction prose still reaches the distiller and grounds (#1933)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_correction_only_transcript_yields_a_grounded_cluster(self) -> None:
+        body = '{"type":"user","text":"I told you again — do not build a new banner, stop"}'
+        member = TranscriptMember(path=self.tmp / "session.jsonl", kind="main")
+        member.path.write_text(body)
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="correction",
+                    rule="Do not rebuild what the user told you not to.",
+                    source_files=[str(snippet.path)],
+                    is_binding=True,
+                    verified_citation="do not build a new banner",
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert ConsolidatedMemory.objects.filter(cluster_key="correction").count() == 1
+
+    def test_substantive_learning_only_transcript_yields_a_grounded_cluster(self) -> None:
+        # #2986: a transcript whose only substance is a declarative learning (no
+        # signal token, no correction/ask cue) must still reach the distiller and
+        # ground a cluster. RED before the fix: the keyword gate dropped the line, the
+        # extract was empty, the distiller was never called, 0 rows were written.
+        chatter = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(30))
+        finding = '{"type":"assistant","text":"root caused the empty owner crash to a missing tenant filter"}'
+        member = TranscriptMember(path=self.tmp / "session.jsonl", kind="main")
+        member.path.write_text(chatter + "\n" + finding)
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="learning",
+                    rule="Guard resolve_owner against a missing tenant filter.",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation="root caused the empty owner crash to a missing tenant filter",
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert ConsolidatedMemory.objects.filter(cluster_key="learning").count() == 1
+
+
+class EscapedJsonlCitationGroundsTestCase(TestCase):
+    r"""A citation of a real .jsonl turn grounds once transcript content is decoded (#1933).
+
+    A raw session ``.jsonl`` line JSON-escapes its content — an em-dash is ``\u2014``,
+    an inner quote is ``\"``, a newline is ``\n``. The distiller reads the DECODED
+    human text and quotes it verbatim, so before the extract shared that one decoded
+    form the decoded citation was never a substring of the escaped snippet and every
+    transcript-cited cluster was rejected as ungrounded. These tests pin the decoded
+    representation AND prove the anti-hallucination substring gate still has teeth.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    @staticmethod
+    def _realistic_session_jsonl() -> str:
+        """A byte-for-byte realistic session transcript: content is JSON-escaped."""
+        return "\n".join(
+            json.dumps(obj)
+            for obj in (
+                {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "noise"}]}},
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": 'stop — do not build a new "banner" again\nI told you not to',
+                    },
+                },
+            )
+        )
+
+    def _member(self) -> TranscriptMember:
+        path = self.tmp / "session.jsonl"
+        path.write_text(self._realistic_session_jsonl())
+        return TranscriptMember(path=path, kind="main")
+
+    def test_fixture_is_genuinely_escaped_on_disk(self) -> None:
+        # Guards the test itself: if the fixture stopped escaping, the bug it
+        # reproduces would silently vanish and the grounding assertion would be vacuous.
+        on_disk = (self._member()).path.read_text()
+        assert "\\u2014" in on_disk
+        assert '\\"banner\\"' in on_disk
+
+    def test_snippet_text_is_decoded_not_escaped(self) -> None:
+        extract = build_extract([self._member()])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "—" in joined
+        assert '"banner"' in joined
+        assert "\\u2014" not in joined
+        assert '\\"' not in joined
+
+    def test_decoded_citation_grounds(self) -> None:
+        # RED before the fix: the decoded quote is not a substring of the escaped
+        # snippet, so the ledger rejected the cluster and recorded nothing.
+        member = self._member()
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="grounded",
+                    rule="Do not rebuild what the user told you not to.",
+                    source_files=[str(snippet.path)],
+                    is_binding=True,
+                    verified_citation='do not build a new "banner" again I told you not to',
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert ConsolidatedMemory.objects.filter(cluster_key="grounded").count() == 1
+
+    def test_hallucinated_citation_is_still_rejected(self) -> None:
+        # The gate MUST keep its teeth: an invented quote that never appears in the
+        # decoded transcript is rejected, not recorded.
+        member = self._member()
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="hallucinated",
+                    rule="A rule the transcript never supports.",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation="the user demanded a full rewrite of the auth layer",
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert result.clusters_recorded == 0
+        assert result.clusters_rejected == 1
+        assert ConsolidatedMemory.objects.filter(cluster_key="hallucinated").count() == 0
+
+
+class GroundingPunctuationFoldTestCase(TestCase):
+    """The grounding substring test folds smart/straight punctuation symmetrically (#1933).
+
+    A decoded transcript may carry a straight quote where the model's citation used a
+    curly one (or the reverse). Folding both operands to one canonical form keeps a
+    genuine citation grounded while remaining a strict substring test — an invented
+    quote is still rejected.
+    """
+
+    _SNIPPET: ClassVar[dict[str, str]] = {
+        "/s.jsonl": normalize_ws('{"role": "user"} do not ship the "beta" build tonight')
+    }
+
+    def _cluster(self, citation: str) -> DistilledCluster:
+        return DistilledCluster(
+            cluster_key="k",
+            rule="r",
+            source_files=["/s.jsonl"],
+            is_binding=False,
+            verified_citation=citation,
+            durable_destination="",
+        )
+
+    def test_smart_quote_citation_grounds_against_straight_quote_snippet(self) -> None:
+        assert cluster_is_grounded(self._cluster("do not ship the “beta” build"), self._SNIPPET)
+
+    def test_em_dash_citation_grounds_against_hyphen_snippet(self) -> None:
+        snippet = {"/s.jsonl": normalize_ws('{"role": "user"} stop - do not build a new banner')}
+        assert cluster_is_grounded(self._cluster("stop — do not build a new banner"), snippet)
+
+    def test_invented_citation_still_rejected_after_fold(self) -> None:
+        assert not cluster_is_grounded(self._cluster("ship the “release” build now"), self._SNIPPET)
+
 
 class WeightedSnippetTestCase(TestCase):
     def test_is_frozen(self) -> None:
@@ -427,6 +811,35 @@ class TestEnumerateMembersMainTranscripts:
             since=datetime.now(tz=UTC) - timedelta(hours=1),
         )
         assert members == []
+
+    def test_file_reaped_after_recency_check_does_not_crash_the_sort(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A /tmp session .jsonl is actively reaped: it can vanish between the recency
+        # check and the mtime sort. The sort keys on the mtime captured up front, so a
+        # now-deleted path never re-stats — the whole pass no longer crashes.
+        slug = tmp_path / "slug"
+        slug.mkdir()
+        (slug / "a.jsonl").write_text("{}\n")
+        (slug / "b.jsonl").write_text("{}\n")
+
+        real_recent_mtime = engine._recent_file_mtime
+
+        def reaping_probe(path: Path, cutoff_ts: float) -> float | None:
+            mtime = real_recent_mtime(path, cutoff_ts)
+            if mtime is not None:
+                path.unlink()  # reaped right after the recency check, before the sort
+            return mtime
+
+        monkeypatch.setattr(engine, "_recent_file_mtime", reaping_probe)
+
+        members = enumerate_members(
+            projects_dir=tmp_path,
+            task_output_roots=[],
+            since=datetime.now(tz=UTC) - timedelta(hours=1),
+        )
+
+        assert {m.path.name for m in members} == {"a.jsonl", "b.jsonl"}
 
     def test_nonexistent_projects_dir_returns_empty(self, tmp_path: Path) -> None:
         members = enumerate_members(
@@ -528,6 +941,48 @@ class TestEnumerateMembersTaskOutput:
         assert kinds == {"memory", "main", "subagent", "task_output"}
 
 
+class TestTaskOutputRoots:
+    def test_both_tmp_and_var_tmp_roots_globbed_when_both_exist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uid = os.geteuid()
+        base_tmp = tmp_path / "tmp"
+        base_var_tmp = tmp_path / "var_tmp"
+        (base_tmp / f"claude-{uid}").mkdir(parents=True)
+        (base_var_tmp / f"claude-{uid}").mkdir(parents=True)
+        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
+
+        roots = engine._task_output_roots()
+
+        assert roots == [base_tmp / f"claude-{uid}", base_var_tmp / f"claude-{uid}"]
+
+    def test_only_existing_roots_are_returned(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        uid = os.geteuid()
+        base_tmp = tmp_path / "tmp"
+        base_var_tmp = tmp_path / "var_tmp"
+        base_tmp.mkdir()  # base present but no claude-{uid} subdir under it
+        (base_var_tmp / f"claude-{uid}").mkdir(parents=True)
+        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(base_tmp), str(base_var_tmp)))
+
+        roots = engine._task_output_roots()
+
+        assert roots == [base_var_tmp / f"claude-{uid}"]
+
+    def test_roots_deduplicated_when_bases_resolve_to_the_same_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uid = os.geteuid()
+        real_base = tmp_path / "real"
+        (real_base / f"claude-{uid}").mkdir(parents=True)
+        link_base = tmp_path / "link"
+        link_base.symlink_to(real_base)
+        monkeypatch.setattr(engine, "_TASK_OUTPUT_TMP_BASES", (str(real_base), str(link_base)))
+
+        roots = engine._task_output_roots()
+
+        assert roots == [real_base / f"claude-{uid}"]
+
+
 class TestEnumerateMembersMemoryFiles:
     def test_memory_md_picked_up_as_memory_kind(self, tmp_path: Path) -> None:
         memory_dir = tmp_path / "slug" / "memory"
@@ -567,67 +1022,6 @@ class TestTranscriptMember:
         member = TranscriptMember(path=tmp_path / "x.jsonl", kind="main")
         with pytest.raises(AttributeError):
             member.kind = "other"  # type: ignore[misc]
-
-
-def _extract_with_one_snippet() -> ConsolidationExtract:
-    return ConsolidationExtract(
-        snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
-        truncated=False,
-    )
-
-
-class SdkDistillerParseTestCase(TestCase):
-    def test_parses_clusters_from_json(self) -> None:
-        payload = (
-            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
-            '"is_binding":true,"verified_citation":"the mistake","durable_destination":"d.md"}]'
-        )
-        with patch.object(engine, "_run_distiller_turn", return_value=payload):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert len(clusters) == 1
-        assert clusters[0].cluster_key == "k1"
-        assert clusters[0].is_binding is True
-        assert clusters[0].source_files == ["/feedback_x.md"]
-
-    def test_parses_json_embedded_in_prose(self) -> None:
-        payload = (
-            "Here is the result:\n"
-            '[{"cluster_key":"k1","rule":"do x","source_files":["/f.md"],'
-            '"is_binding":false,"verified_citation":"m","durable_destination":""}]\n'
-            "Done."
-        )
-        with patch.object(engine, "_run_distiller_turn", return_value=payload):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert len(clusters) == 1
-
-    def test_malformed_json_yields_no_clusters(self) -> None:
-        with patch.object(engine, "_run_distiller_turn", return_value="not json at all"):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert clusters == []
-
-    def test_skips_entries_missing_required_keys(self) -> None:
-        payload = (
-            '[{"rule":"no key here"},'
-            '{"cluster_key":"ok","rule":"r","source_files":["/f.md"],'
-            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
-        )
-        with patch.object(engine, "_run_distiller_turn", return_value=payload):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert [c.cluster_key for c in clusters] == ["ok"]
-
-    def test_sdk_turn_failure_raises(self) -> None:
-        with (
-            patch.object(engine, "_run_distiller_turn", side_effect=RuntimeError("sdk boom")),
-            pytest.raises(RuntimeError),
-        ):
-            engine._sdk_distiller(_extract_with_one_snippet())
-
-    def test_empty_extract_short_circuits_without_sdk_call(self) -> None:
-        empty = ConsolidationExtract(snippets=(), truncated=False)
-        with patch.object(engine, "_run_distiller_turn") as turn:
-            clusters = engine._sdk_distiller(empty)
-        turn.assert_not_called()
-        assert clusters == []
 
 
 def _many_members(tmp_path: Path, count: int) -> list[TranscriptMember]:
@@ -690,6 +1084,28 @@ class ChunkedDistillTestCase(TestCase):
 
         assert batch_count["n"] > 1
 
+    def test_one_failing_batch_is_isolated_and_counted_not_fatal(self) -> None:
+        # F6.4: a batch whose distiller call RAISES must not discard the clusters
+        # already distilled from the other batches (paid LLM work). The failure is
+        # isolated per batch, counted, and the surviving clusters still land.
+        members = _many_members(self.tmp, 9)
+        extract = build_extract(members)
+        calls = {"n": 0}
+
+        def _spy(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            calls["n"] += 1
+            if calls["n"] == 2:  # the middle batch blows up
+                msg = "distiller boom"
+                raise RuntimeError(msg)
+            return [_cluster_for(TranscriptMember(path=batch.snippets[0].path, kind="memory"), key=f"k{calls['n']}")]
+
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_MEMBERS": "3"}):
+            outcome = distill.distill_in_batches(extract, distiller=_spy)
+
+        assert calls["n"] == 3  # all three batches were attempted, the failure did not abort
+        assert outcome.failed_batches == 1
+        assert {c.cluster_key for c in outcome.clusters} == {"k1", "k3"}  # the survivors landed
+
 
 class SilentEmptyBatchTestCase(TestCase):
     """A batch returning 0 clusters from non-empty input is surfaced, not swallowed (#1933)."""
@@ -726,6 +1142,30 @@ class SilentEmptyBatchTestCase(TestCase):
         with patch.object(engine, "enumerate_members", return_value=[]):
             result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
         assert result.empty_batches == 0
+
+    def test_empty_batch_warning_surfaces_a_broken_reason(self) -> None:
+        # #2847: a distiller signalling an unparsable reply makes the 0-cluster WARNING
+        # name WHY, so an operator can tell a broken parse from a healthy no-consolidation.
+        members = _many_members(self.tmp, 2)
+        extract = build_extract(members)
+
+        def _broken(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE)
+
+        with self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured:
+            distill.distill_in_batches(extract, distiller=_broken)
+        assert any("unparsable" in line for line in captured.output)
+
+    def test_empty_batch_warning_surfaces_a_healthy_reason(self) -> None:
+        members = _many_members(self.tmp, 2)
+        extract = build_extract(members)
+
+        def _healthy(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
+
+        with self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured:
+            distill.distill_in_batches(extract, distiller=_healthy)
+        assert any("nothing_to_consolidate" in line for line in captured.output)
 
 
 class RunConsolidationEvalProposalTestCase(TestCase):

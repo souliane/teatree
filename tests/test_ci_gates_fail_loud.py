@@ -175,3 +175,44 @@ class TestDocsDriftRegeneratesAntipatternCatalog:
             "The catalog generator step must set ANTIPATTERN_CATALOG_NO_STAGE=1 so it does "
             "not git-add the regenerated file (which would hide drift from git diff)."
         )
+
+
+_CI_PARITY = _REPO_ROOT / "dev" / "ci-parity.sh"
+
+
+class TestCiParityRunsModuleHealthRatchet:
+    """Mirror CI's module-health-gate job in the local full-CI-predicate script.
+
+    `dev/ci-parity.sh` claims to be the EXACT full CI predicate, so it must run
+    every blocking gate CI runs — including the ``module-health-gate`` job.
+
+    The regression (souliane/teatree#3506): the ``module-health`` prek hook is a
+    ``commit-msg``-stage hook, and step 1's ``prek run --all-files`` fires only the
+    default stage, so it is structurally skipped. CI's ``module-health-gate`` job
+    doesn't run the hook at all — it runs the ratchet in ``--from-ref`` diff mode
+    over the PR's base..head range, which no ``ci-parity.sh`` step reproduced. A
+    branch CI would fail on a file crossing the LOC cap read green locally.
+    """
+
+    def _ci_module_health_run(self) -> str:
+        return " ".join(_job_run_commands(_load_ci_jobs()["module-health-gate"]))
+
+    def test_ci_job_uses_from_ref_diff_mode(self) -> None:
+        run = self._ci_module_health_run()
+        assert "check_module_health.py" in run, "CI job must run the module-health ratchet."
+        assert "--from-ref" in run, (
+            "The module-health-gate CI job must run check_module_health.py in "
+            "--from-ref diff mode. If it changed, ci-parity.sh's mirror must too."
+        )
+
+    def test_ci_parity_runs_the_module_health_ratchet(self) -> None:
+        text = _CI_PARITY.read_text(encoding="utf-8")
+        assert "check_module_health.py" in text, (
+            "dev/ci-parity.sh must run the module-health ratchet, mirroring CI's "
+            "module-health-gate job (souliane/teatree#3506). Without it a branch CI "
+            "fails on the LOC ratchet reads green locally."
+        )
+        assert "--from-ref" in text, (
+            "dev/ci-parity.sh must run the module-health ratchet in --from-ref diff "
+            "mode (the CI twin), not the staged-file commit-msg-hook mode."
+        )

@@ -24,6 +24,7 @@ subprocess so the real exit code propagates through ``sys.exit``.
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -34,30 +35,55 @@ import pytest
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
-def _run_router(event: str, payload: dict, *, config: str | None = None) -> subprocess.CompletedProcess[str]:
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the cold hook readers resolve."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_router(
+    event: str, payload: dict, *, settings: dict[str, object] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run hook_router.py as a subprocess; return (returncode, stdout, stderr).
 
-    Runs with ``HOME`` pointed at a clean temp dir so the
-    orchestrator-Bash gate's ``~/.teatree.toml`` read sees its default
-    (enabled) — isolating these deny/allow assertions from the
-    developer's real config (which may set the #115 failsafe to disable
-    the gate). ``Path.home()`` honours ``HOME`` on POSIX.
+    Runs with ``HOME`` at a clean temp dir and no ``T3_CONFIG_DB`` /
+    ``XDG_DATA_HOME`` so the orchestrator-Bash gate's DB-home config read
+    resolves to an absent store and sees its default (enabled) — isolating
+    these deny/allow assertions from the developer's real config (which may set
+    the #115 failsafe to disable the gate).
 
-    ``config`` seeds ``~/.teatree.toml`` in that temp HOME — used to
-    enable a default-OFF gate (e.g. the #1442 foreground-Agent deny)
-    whose deny path this contract test must exercise.
+    ``settings`` seeds the DB-home ``teatree_config_setting`` store (pointed to
+    via ``T3_CONFIG_DB``) — used to enable a default-OFF gate (e.g. the #1442
+    foreground-Agent deny) whose deny path this contract test must exercise.
     """
     with tempfile.TemporaryDirectory() as home:
-        if config is not None:
-            (Path(home) / ".teatree.toml").write_text(config, encoding="utf-8")
         env = {**os.environ, "HOME": home, "USERPROFILE": home}
+        env.pop("XDG_DATA_HOME", None)
+        if settings is not None:
+            db = Path(home) / "db.sqlite3"
+            _seed_config_db(db, settings)
+            env["T3_CONFIG_DB"] = str(db)
+        else:
+            env.pop("T3_CONFIG_DB", None)
         return subprocess.run(
             [sys.executable, str(HOOK_ROUTER), "--event", event],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=30,
             env=env,
         )
 
@@ -103,8 +129,8 @@ class TestDenyExitsCodeTwo:
         # the orchestrator's own hot path), so the deny path must be enabled
         # via config to exercise the deny-exits-2 contract on the Agent arm.
         payload = {"tool_name": "Agent", "tool_input": {"description": "x", "run_in_background": False}}
-        config = "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n"
-        result = _run_router("PreToolUse", payload, config=config)
+        settings = {"orchestrator_boundary_agent_gate_enabled": True}
+        result = _run_router("PreToolUse", payload, settings=settings)
         assert result.returncode == 2, f"deny must exit 2 (got {result.returncode}); stdout={result.stdout!r}"
         out = json.loads(result.stdout)
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -218,7 +244,7 @@ def _run_router_with_transcript(event: str, transcript_path: str, home: str) -> 
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=30,
         env=env,
     )
 

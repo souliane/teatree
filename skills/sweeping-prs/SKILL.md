@@ -80,7 +80,7 @@ This emits JSON listing every open PR authored by the user across the forge:
 }
 ```
 
-The `author` field is resolved from the overlay's `get_gitlab_username()` (or the configured `<host>_username` in `~/.teatree.toml`) with a fallback to `host.current_user()`. Set the username explicitly when the configured user differs from the OAuth identity.
+The `author` field is resolved from the overlay's `get_gitlab_username()` (or the configured `<host>_username` in the overlay's DB `overlays` registry row) with a fallback to `host.current_user()`. Set the username explicitly when the configured user differs from the OAuth identity.
 
 The CLI is intentionally read-only — it does not modify branches, push, or change CI. Mutating actions live in this skill so the agent can prompt for non-default-base PRs and conflict resolution.
 
@@ -145,13 +145,13 @@ After push, watch the pipeline. On red, delegate to the existing fix-push-monito
 
 ### Step 7.5 — Re-read live merge state (before every merge, non-negotiable)
 
-A sweep often runs while the user is *also* merging PRs by hand. Before you act on any PR — and especially before Step 8 — **re-read that PR's live merge state and skip it if it is already merged.** Do — never assume the discovery snapshot is still current:
+A sweep often runs while the user is *also* merging PRs by hand. Before you act on any PR — and especially before Step 8 — **re-read that PR's live merge state and skip it if it is already merged.** Do — never assume the discovery snapshot is still current. Prefer the `mcp__teatree__github_pr_get` / `mcp__teatree__gitlab_pr_get` MCP tool — it returns the live `{open_state, merge_state, draft, author, approvals}` for one PR as structured JSON, no text parsing; fall back to the forge CLI only when the MCP server isn't connected:
 
 ```bash
-# GitHub: re-read live state for THIS PR right before acting on it
+# CLI fallback (MCP server not connected) — GitHub: re-read live state for THIS PR
 gh pr view <pr-number> --repo <org/repo> --json state,mergedAt,mergeStateStatus,reviewDecision
 
-# GitLab: same live re-read
+# CLI fallback — GitLab: same live re-read
 glab mr view <iid> --repo <org/repo> --output json   # inspect "state" / "merged_at"
 ```
 
@@ -242,9 +242,9 @@ Never reuse one worktree across multiple PRs in a sweep. Each PR gets its own wo
 
 ## Configuration
 
-| `~/.teatree.toml` key | Purpose |
+| Overlay `overlays`-registry key | Purpose |
 |---|---|
-| `[overlays.<name>]` `gitlab_username_pass_key` | Pass-store key holding the GitLab username for the overlay. Resolves to `overlay.config.get_gitlab_username()`. |
-| `[overlays.<name>]` `github_username` | Plain GitHub login for the overlay (no secret needed). |
+| `gitlab_username_pass_key` | Pass-store key holding the GitLab username for the overlay. Resolves to `overlay.config.get_gitlab_username()`. |
+| `github_username` | Plain GitHub login for the overlay (no secret needed). |
 
 Without a configured username, the sweep falls back to `host.current_user()` (the OAuth-authenticated identity). Set the username explicitly when the workforce identity differs from the bot identity.

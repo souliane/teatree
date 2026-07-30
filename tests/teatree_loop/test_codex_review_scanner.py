@@ -4,16 +4,21 @@ The scanner is the structural fix for the "user has to remember to run
 ``/codex:review`` after every push" failure mode encoded in the
 ``feedback_fleet_of_agents_with_codex_doublecheck`` binding. It runs
 every tick, walks the configured repo list, and emits one
-``codex_review.dispatch`` signal per open self-authored PR whose head SHA
-the scanner hasn't seen before — keyed on ``(slug, pr_id, head_sha)``
-via :class:`CodexReviewMarker`. Re-ticking on the same SHA is a no-op;
-a force-push (new SHA) re-fires.
+``codex_review.dispatch`` signal per open non-draft self-authored PR.
+
+The per-SHA idempotency (keyed on ``(slug, pr_id, head_sha)`` via
+:class:`CodexReviewMarker`) moved DOWNSTREAM to persist time (#1 blocker):
+``persistence._handle_codex_review`` claims the marker in the same transaction
+that creates the reviewer Task, so the scanner emits UNCONDITIONALLY and a
+dropped persist rolls the marker back for retry. A force-push (new SHA) still
+re-fires because the marker key includes ``head_sha``.
 
 The scanner is the loop-level enforcement of the fleet-of-agents rule:
 the user never has to ask "have you run codex on this?" again.
 """
 
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 
@@ -33,6 +38,14 @@ from teatree.loop.scanners.codex_review import (
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #1773 untrusted-public-author variant routing is exercised by
+    # TestUntrustedPublicAuthor; the pre-#1773 path-footprint tests treat the
+    # repo as internal so the author gate is a no-op for them.
+    monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
+
+
 SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 NEW_HEAD = "1234567890abcdeffeedfacecafebabe87654321"
@@ -45,6 +58,7 @@ def _pr(
     head: str = HEAD,
     is_draft: bool = False,
     changed_files: tuple[str, ...] = ("src/teatree/loop/scanners/codex_review.py",),
+    author: str = "souliane",
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -54,6 +68,7 @@ def _pr(
         changed_files=changed_files,
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
+        author=author,
     )
 
 
@@ -94,18 +109,24 @@ class TestDispatchOnNewSha:
         assert payload["pr_url"] == f"https://github.com/{SLUG}/pull/1254"
         assert payload["overlay"] == "teatree"
 
-    def test_marker_row_persisted_after_dispatch(self) -> None:
-        """After dispatch, a :class:`CodexReviewMarker` row makes re-ticks a no-op."""
+    def test_scanner_does_not_claim_marker_at_scan_time(self) -> None:
+        """The per-SHA marker moved to PERSIST time — the scanner emits, no marker (#1)."""
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr()]})
         scanner = _scanner(api=api)
 
-        scanner.scan()
+        signals = scanner.scan()
 
-        marker = CodexReviewMarker.objects.get(slug=SLUG, pr_id=1254, head_sha=HEAD)
-        assert marker.overlay == "teatree"
+        assert [s.kind for s in signals] == ["codex_review.dispatch"]
+        assert not CodexReviewMarker.objects.filter(slug=SLUG, pr_id=1254, head_sha=HEAD).exists()
 
-    def test_second_tick_on_same_head_does_not_redispatch(self) -> None:
-        """The hard requirement: re-ticking on the same SHA is silent."""
+    def test_second_tick_on_same_head_re_emits_dedup_is_persist_time(self) -> None:
+        """The scanner emits UNCONDITIONALLY every tick; dedup is now at persist time (#1).
+
+        Before the #1 blocker fix the scanner burned the marker on the first tick
+        and went silent thereafter — even though persistence then dropped the
+        dispatch, so the review never ran. Now the scanner re-emits and
+        ``persistence._handle_codex_review`` owns the per-SHA idempotency.
+        """
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr()]})
         scanner = _scanner(api=api)
 
@@ -113,7 +134,7 @@ class TestDispatchOnNewSha:
         second = scanner.scan()
 
         assert [s.kind for s in first] == ["codex_review.dispatch"]
-        assert second == []
+        assert [s.kind for s in second] == ["codex_review.dispatch"]
 
     def test_new_head_sha_after_force_push_redispatches(self) -> None:
         """A new head SHA on the same PR (force-push) fires a fresh dispatch."""
@@ -172,6 +193,40 @@ class TestAdversarialClassifier:
         signals = scanner.scan()
 
         assert signals[0].payload["variant"] == "codex:review"
+
+
+class TestUntrustedPublicAuthor:
+    """#1773: a benign diff from an untrusted PUBLIC-repo author is adversarial."""
+
+    def test_untrusted_public_author_routes_to_adversarial(self) -> None:
+        api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="evilhacker", changed_files=("README.md",))]})
+        scanner = _scanner(api=api)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert signals[0].payload["variant"] == ADVERSARIAL_REVIEW_VARIANT
+
+    def test_trusted_public_author_stays_standard(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
+        api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="souliane", changed_files=("README.md",))]})
+        scanner = _scanner(api=api)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert signals[0].payload["variant"] == STANDARD_REVIEW_VARIANT
+
+    def test_untrusted_author_allowed_standard_on_private_repo(self) -> None:
+        api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="evilhacker", changed_files=("README.md",))]})
+        scanner = _scanner(api=api)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=True):
+            signals = scanner.scan()
+
+        assert signals[0].payload["variant"] == STANDARD_REVIEW_VARIANT
 
 
 class TestSignalAttribution:

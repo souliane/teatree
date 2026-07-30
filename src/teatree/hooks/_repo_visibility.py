@@ -4,8 +4,9 @@ Split out of :mod:`teatree.hooks.publish_surface` to keep that module under
 the project's per-file LOC ceiling. This module owns the "is this repo
 private?" question and nothing about command classification:
 
-- the offline ``[teatree] private_repos`` slug-namespace allowlist (the
-    reliable, network-free, recommended mechanism),
+- the DB-home ``private_repos`` slug-namespace allowlist (the reliable,
+    network-free, recommended mechanism), read from the canonical
+    ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`,
 - the day-cached ``gh``/``glab`` live-visibility probe (best-effort
     fallback; the binary is resolved against an augmented PATH so it works
     inside the restricted PreToolUse subprocess), and
@@ -22,8 +23,9 @@ import time
 from pathlib import Path
 from typing import Final, TypedDict
 
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+from teatree.config import cold_reader
+from teatree.hooks import git_config_offline
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 
 class _VisibilityEntry(TypedDict):
@@ -36,9 +38,18 @@ class _VisibilityEntry(TypedDict):
 # A slug must have at least ``owner/repo`` (host-prefixed slugs add more).
 _MIN_SLUG_PARTS: Final[int] = 2
 
-# How long a cached visibility verdict stays fresh. Repo visibility changes
-# rarely; a day-long cache keeps the offline path fast.
+# How long a cached POSITIVE visibility verdict stays fresh. Repo visibility
+# changes rarely; a day-long cache keeps the offline path fast.
 _VISIBILITY_TTL_S: Final[int] = 24 * 60 * 60
+
+# Sentinel + TTL for a NEGATIVE cache entry: a probe that RAN but could not
+# resolve visibility (tool absent, auth differs, slug unrecognised). Without it,
+# every unresolved slug re-probes at the full 5s budget PER segment on every
+# publish, stacking toward the 30s hook ceiling. The negative entry is short-
+# lived (distinct from the 24h positive TTL) because an unresolvable repo may
+# become resolvable soon (auth fixed, tool installed).
+_UNKNOWN_VERDICT: Final[str] = "UNKNOWN"
+_UNKNOWN_TTL_S: Final[int] = 5 * 60
 
 # Visibility probe budget -- a hook that hangs blocks the user, so the
 # network call gets a tight timeout and any failure falls back to "unknown".
@@ -58,15 +69,8 @@ _PROBE_PATH_EXTRA: Final[tuple[str, ...]] = (
 )
 
 
-def _config_path() -> Path:
-    override = os.environ.get("T3_BANNED_TERMS_CONFIG")
-    if override:
-        return Path(override)
-    return Path.home() / ".teatree.toml"
-
-
 def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] private_repos`` slug-namespace allowlist.
+    """Return the DB-home ``private_repos`` slug-namespace allowlist.
 
     Each entry is matched as a case-insensitive path-segment prefix against the
     repo's host-stripped ``owner/repo`` slug (see
@@ -75,25 +79,14 @@ def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
     (``owner/repo``) or host-qualified (``host/owner/repo`` -- the form a repo
     URL carries); the match is host-qualification-symmetric, so either form
     covers the commit surface (host-qualified cwd slug) and the pr-create
-    surface (bare ``--repo`` slug) alike. Reads the TOML directly (no
-    Django/config import) to stay importable from the hook process.
+    surface (bare ``--repo`` slug) alike. Reads the canonical ``ConfigSetting``
+    store via the Django-free :mod:`teatree.config.cold_reader`; *config_path*
+    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``), which is
+    how a test points it at a seeded temp DB. Set the list with
+    ``t3 <overlay> config_setting set private_repos '["owner/repo"]'``.
     """
-    import tomllib  # noqa: PLC0415
-
-    target = config_path if config_path is not None else _config_path()
-    if not target.is_file():
-        return []
-    try:
-        raw = tomllib.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    teatree = raw.get("teatree", {})
-    if not isinstance(teatree, dict):
-        return []
-    entries = teatree.get("private_repos", [])
-    if not isinstance(entries, list):
-        return []
-    return [str(e).strip().lower() for e in entries if str(e).strip()]
+    raw = cold_reader.list_setting("private_repos", default=[], db_path=config_path)
+    return [str(e).strip().lower() for e in raw if str(e).strip()]
 
 
 def slug_for_cwd(cwd: Path) -> str:
@@ -125,16 +118,13 @@ def slug_for_cwd(cwd: Path) -> str:
         tripped the substring matcher and falsely downgraded a PUBLIC repo
         (#1953).
 
-    ``FileNotFoundError`` (the ``git`` binary unresolved on the restricted hook
-    PATH) and ``OSError`` are caught alongside ``CommandFailedError`` so a
-    degraded subprocess fails SAFE to an empty slug -- an uncaught error would
-    propagate out of the carve-out and crash the whole gate, denying the offline
-    allowlist any chance to downgrade.
+    The ``origin`` URL is resolved OFFLINE-FIRST (:func:`_origin_remote_url`):
+    parsing ``.git/config`` directly needs no ``git`` binary, so the slug
+    resolves inside the restricted PreToolUse hook subprocess where a bare
+    ``git`` is unresolvable. An empty slug fails SAFE -- the destination then
+    resolves PUBLIC and the gate stays hard-blocking.
     """
-    try:
-        url = git.remote_url(repo=str(cwd))
-    except (CommandFailedError, OSError):
-        return ""
+    url = _origin_remote_url(cwd)
     if not url:
         return ""
     cleaned = url.strip().rstrip("/").removesuffix(".git")
@@ -154,6 +144,47 @@ def slug_for_cwd(cwd: Path) -> str:
     return cleaned
 
 
+def _origin_remote_url(cwd: Path) -> str:
+    """Resolve ``cwd``'s ``origin`` URL, OFFLINE-FIRST.
+
+    The offline ``.git/config`` parse (:func:`git_config_offline.origin_url`)
+    spawns no process, so it resolves the remote inside the restricted
+    PreToolUse hook subprocess where a bare ``git`` is unresolvable -- the bug
+    that left a flagless ``glab mr create`` / ``gh pr create`` to the user's
+    OWN private repo with no slug to match the offline ``private_repos``
+    allowlist, over-blocking it. The PATH-augmented subprocess is the fallback
+    for the rare configs an offline parse cannot read (e.g. an
+    ``[include]``-redirected url).
+    """
+    offline = git_config_offline.origin_url(cwd)
+    if offline:
+        return offline
+    return _origin_url_via_git(cwd)
+
+
+def _origin_url_via_git(cwd: Path) -> str:
+    """Resolve ``origin`` via ``git remote get-url`` against the augmented PATH.
+
+    The PreToolUse hook subprocess inherits a restricted PATH where a bare
+    ``git`` may not resolve; resolving the binary against the augmented probe
+    PATH (the same one the visibility probe uses) keeps this fallback working
+    in-hook. Any failure (binary absent, not a repo) fails SAFE to ``""``.
+    """
+    binary = shutil.which("git", path=_probe_search_path())
+    if binary is None:
+        return ""
+    try:
+        result = run_allowed_to_fail(
+            [binary, "-C", str(cwd), "remote", "get-url", "origin"],
+            expected_codes=(0,),
+            env=_probe_env(),
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except (CommandFailedError, OSError, TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
 def _is_canonical_host(host: str) -> bool:
     """Return True iff ``host`` is a canonical hostname rather than an SSH alias.
 
@@ -168,19 +199,17 @@ def _is_canonical_host(host: str) -> bool:
 
 
 def _cache_root() -> Path:
-    """Resolve a writable cache dir that never collides with the config file.
+    """Resolve a writable cache dir for the visibility verdict cache.
 
-    The historical default ``~/.teatree`` is the shell-sourceable config FILE
-    in this environment, so a cache write under it raised "Not a directory"
-    and the verdict could never persist. Honour ``T3_DATA_DIR`` when set, else
-    use the XDG cache dir. If the chosen root already exists as a
-    non-directory, fall back to a sibling so the write still succeeds.
+    Routes through the single :func:`teatree.hooks._hook_state.hook_state_root`
+    resolver (``T3_DATA_DIR`` else the canonical XDG data dir) so hook state does
+    not scatter across ``~/.teatree`` / ``~/.cache`` / the data dir. If the chosen
+    root already exists as a non-directory, fall back to a sibling so the write
+    still succeeds.
     """
-    base = os.environ.get("T3_DATA_DIR")
-    if base:
-        return Path(base)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    root = (Path(xdg) if xdg else Path.home() / ".cache") / "teatree"
+    from teatree.hooks._hook_state import hook_state_root  # noqa: PLC0415 — deferred: keep the cold-hook top light
+
+    root = hook_state_root()
     if root.exists() and not root.is_dir():
         return Path.home() / ".teatree-data"
     return root
@@ -206,7 +235,8 @@ def _read_visibility_cache(slug: str) -> str | None:
     verdict = entry.get("visibility")
     if not isinstance(ts, (int, float)) or not isinstance(verdict, str):
         return None
-    if time.time() - ts > _VISIBILITY_TTL_S:
+    ttl = _UNKNOWN_TTL_S if verdict == _UNKNOWN_VERDICT else _VISIBILITY_TTL_S
+    if time.time() - ts > ttl:
         return None
     return verdict
 
@@ -261,7 +291,7 @@ def _probe_gh(repo_path: str) -> str | None:
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
-    except (CommandFailedError, OSError):
+    except (CommandFailedError, OSError, TimeoutExpired):
         return None
     verdict = result.stdout.strip().upper()
     return verdict or None
@@ -282,7 +312,7 @@ def _probe_glab(repo_path: str) -> str | None:
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
-    except (CommandFailedError, OSError):
+    except (CommandFailedError, OSError, TimeoutExpired):
         return None
     try:
         project = json.loads(result.stdout)
@@ -348,16 +378,31 @@ def forge_qualified_slug(slug: str, forge: str) -> str:
     return f"{canonical_host}/{slug}"
 
 
-def slug_is_private(slug: str) -> bool:
-    """Resolve whether ``slug`` is a private repo (cache -> probe -> cache write)."""
+def slug_visibility(slug: str) -> str | None:
+    """Resolve ``slug``'s visibility verdict (upper-cased), or ``None`` (cache -> probe -> cache).
+
+    ``None`` is the fail-safe unknown -- an absent probe tool, an unrecognised
+    slug, or a probe error. Callers read a ``"PRIVATE"`` verdict (the carve-out)
+    or a ``"PUBLIC"`` one (the affirmative-public leak-gate scope in
+    :mod:`teatree.hooks.public_visibility`); every other verdict, and ``None``,
+    is neither.
+
+    A negative (``None``) probe result is short-TTL cached under the
+    :data:`_UNKNOWN_VERDICT` sentinel so an unresolvable slug is not re-probed at
+    the full 5s budget on every publish -- the read maps that sentinel back to
+    ``None`` for callers.
+    """
     cached = _read_visibility_cache(slug)
     if cached is not None:
-        return cached == "PRIVATE"
+        return None if cached == _UNKNOWN_VERDICT else cached
     verdict = probe_visibility(slug)
-    if verdict is None:
-        return False
-    _write_visibility_cache(slug, verdict)
-    return verdict == "PRIVATE"
+    _write_visibility_cache(slug, verdict if verdict is not None else _UNKNOWN_VERDICT)
+    return verdict
+
+
+def slug_is_private(slug: str) -> bool:
+    """Return True iff ``slug``'s visibility verdict is ``"PRIVATE"``."""
+    return slug_visibility(slug) == "PRIVATE"
 
 
 def _strip_host_prefix(slug: str) -> str:
@@ -410,7 +455,7 @@ def slug_namespace_matches(entry: str, slug: str) -> bool:
 
 
 def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
-    """Return True iff ``slug`` matches the offline ``[teatree] private_repos`` allowlist.
+    """Return True iff ``slug`` matches the DB-home ``private_repos`` allowlist.
 
     Each entry is matched against the slug's host-stripped ``owner/repo`` path
     segments via :func:`slug_namespace_matches` -- a leading-segment-prefix
@@ -428,7 +473,7 @@ def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
 
 
 def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
-    """Return True iff ``term`` is (a token-run of) a ``[teatree] private_repos`` entry.
+    """Return True iff ``term`` is (a token-run of) a ``private_repos`` entry.
 
     A configured ``private_repos`` entry is, by definition, a private repo's
     OWN org/repo slug substring (a neutral example: ``acme-engineering``). When
@@ -449,7 +494,7 @@ def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
     is longer than the entry's token run and so is NOT contained -- both stay
     blocked.
     """
-    from teatree.hooks.term_match import _contains_run, tokens  # noqa: PLC0415
+    from teatree.hooks.term_match import _contains_run, tokens  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     term_tokens = tokens(term)
     if not term_tokens:

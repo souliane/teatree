@@ -9,7 +9,7 @@ after the CLI dropped it in 2.1.x) therefore made that warning fire on EVERY
 clean-room SDK invocation — harmless on its own (the rule is dropped) but proof the
 denylist had silently diverged from the binary.
 
-The catalog-level test in ``test_sdk_runner.py`` pins the EXPECTED set; this test
+The catalog-level test in ``test_api_runner.py`` pins the EXPECTED set; this test
 PROBES the actual bundled binary so a future add/remove of a CLI tool fails CI
 deterministically rather than drifting unnoticed. It is marked ``integration`` so it
 only runs where the bundled ``claude`` is present (it auto-skips otherwise) and is

@@ -73,7 +73,7 @@ def detect_repo_mode(
 
 
 def _config_override() -> RepoMode | None:
-    from teatree.config import get_effective_settings  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     raw = get_effective_settings().repo_mode
     if not raw:

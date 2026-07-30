@@ -1,1 +1,0 @@
-../../src/teatree/trigger_parser.py

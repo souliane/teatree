@@ -7,27 +7,36 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.config import worker_is_quiescing
 from teatree.core.loop_lease_manager import (
-    GLOBAL_OWNER_SLOT,
     PER_LOOP_OWNER_PREFIX,
+    T3_MASTER_SLOT,
     LoopLeaseManager,
     LoopLeaseQuerySet,
     OwnershipStatus,
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
+from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
+from teatree.core.managers_issue_match import matching_issue_q
+from teatree.core.managers_overlay import for_overlay as _for_overlay
+from teatree.core.managers_overlay import overlay_scope_q
+from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
+from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
+from teatree.core.managers_session import SessionQuerySet
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, schema_behind_code
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
 if TYPE_CHECKING:
-    from teatree.core.models.incoming_event import IncomingEvent
-    from teatree.core.models.reply_dispatch import ReplyDispatch
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
 
 __all__ = [
-    "GLOBAL_OWNER_SLOT",
     "PER_LOOP_OWNER_PREFIX",
+    "T3_MASTER_SLOT",
+    "ClaimOrder",
     "IncomingEventManager",
     "LoopLeaseManager",
     "LoopLeaseQuerySet",
@@ -40,6 +49,7 @@ __all__ = [
     "TicketManager",
     "WorktreeManager",
     "is_per_loop_owner_slot",
+    "overlay_scope_q",
     "per_loop_owner_slot",
 ]
 
@@ -47,23 +57,22 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class _OverlayFilterMixin:
+class TicketQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
-        if overlay:
-            # Include tickets with empty overlay (created before multi-overlay)
-            return self.filter(Q(overlay=overlay) | Q(overlay=""))  # type: ignore[attr-defined]
-        return self.all()  # type: ignore[attr-defined]
+        return _for_overlay(self, overlay)
 
-
-class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
     def resolve(self, ref: str) -> "Ticket":
-        """Resolve a ticket from a numeric pk, an issue number, or an issue URL.
+        """Resolve a ticket from a pk, an issue number, an issue URL, or a repo key.
 
         Accepts a numeric pk (``"314"`` — direct DB lookup), a full issue URL
         (``"https://github.com/owner/repo/issues/466"`` — exact match on
-        ``issue_url``), or a bare issue number when no pk exists (``"466"`` —
+        ``issue_url``), a bare issue number when no pk exists (``"466"`` —
         matches an ``issue_url`` ending in ``/466`` *or* one stored as the
-        bare string ``"466"``, #707). Shared by
+        bare string ``"466"``, #707), or the collision-free repo-namespaced
+        key (``"owner/repo#466"`` — exact match on ``repo_namespaced_key``,
+        #2293). The bare-number fallback stays ambiguous by construction (a
+        digit alone carries no repo information) — pass the repo-namespaced
+        key or the full URL when two repos share an issue number. Shared by
         ``pr create`` and ``lifecycle visit-phase`` so both accept the same
         identifier set (#694) — callers naturally pass the forge issue number
         and must not silently hit ``DoesNotExist``.
@@ -81,35 +90,47 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
                 if ticket is not None:
                     return ticket
                 raise
+        keyed = self.filter(repo_namespaced_key=ref).first()
+        if keyed is not None:
+            return keyed
         ticket = self.filter(issue_url=ref).first()
         if ticket is None:
-            msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
+            msg = f"No ticket matching {ref!r} (looked up by pk, issue_url, and repo_namespaced_key)"
             raise ticket_model.DoesNotExist(msg)
         return ticket
+
+    def matching_issue(self, issue_url: str) -> models.QuerySet:
+        # Tickets that ARE the given issue — the issue-URL alias-collapse predicate
+        # (#2293) lives in :func:`~teatree.core.managers_issue_match.matching_issue_q`.
+        return self.filter(matching_issue_q(issue_url))
 
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
             self.for_overlay(overlay)
-            .exclude(state__in=[ticket_model.State.DELIVERED, ticket_model.State.IGNORED])
+            .exclude(state__in=ticket_model.in_flight_excluded_states())
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
 
 
-class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
+class WorktreeQuerySet(models.QuerySet):
+    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
+        return _for_overlay(self, overlay)
+
+    def for_ticket(self, ticket: "Ticket") -> models.QuerySet:
+        return self.filter(ticket=ticket)
+
     def active(self, overlay: str | None = None) -> models.QuerySet:
-        """Worktrees whose ticket is still in flight (not delivered or ignored).
+        """Worktrees whose ticket is still in flight (not delivered, review-posted, or ignored).
 
         Matches the worktrees panel one-to-one so the KPI count and table size agree.
         """
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
-            self.for_overlay(overlay)
-            .exclude(ticket__state__in=[ticket_model.State.DELIVERED, ticket_model.State.IGNORED])
-            .order_by("pk")
+            self.for_overlay(overlay).exclude(ticket__state__in=ticket_model.in_flight_excluded_states()).order_by("pk")
         )
 
     def stamp_e2e_run(self, ticket_pk: int, *, now: datetime | None = None) -> int:
@@ -121,8 +142,6 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
         no stack, so there is nothing for the reaper to preserve. Returns the
         number of rows stamped.
         """
-        from django.utils import timezone  # noqa: PLC0415
-
         worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
 
         return self.filter(
@@ -131,45 +150,20 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
         ).update(last_e2e_run=now or timezone.now())
 
 
-class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
-    def for_agent(self, agent_id: str) -> models.QuerySet:
-        return self.filter(agent_id=agent_id).order_by("pk")
-
-
-class IncomingEventQuerySet(models.QuerySet):
-    def unprocessed(self) -> models.QuerySet:
-        return self.filter(processed_at__isnull=True)
-
-    def active_dm_thread(self, *, channel: str) -> str:
-        incoming_event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
-
-        if not channel:
-            return ""
-        latest = (
-            self.filter(source=incoming_event_model.Source.SLACK, channel_ref=channel)
-            .order_by("-received_at", "-pk")
-            .values_list("thread_ref", flat=True)
-            .first()
-        )
-        return latest or ""
-
-
-class ReplyDispatchQuerySet(models.QuerySet):
-    def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
-        from django.utils import timezone  # noqa: PLC0415
-
-        reply_dispatch_model = cast("type[ReplyDispatch]", apps.get_model("core", "ReplyDispatch"))
-
-        moment = now or timezone.now()
-        return (
-            self.filter(status=reply_dispatch_model.Status.FAILED)
-            .exclude(action_name="dead_letter_alert")
-            .filter(models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=moment))
-            .order_by("next_retry_at", "pk")
-        )
-
-
 class TaskQuerySet(models.QuerySet):
+    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
+        """Tasks scoped to an overlay through the ticket OR the session.
+
+        A ``Task`` has no overlay column of its own — its overlay is the
+        ticket's or the session's, so the scope clause spans both relations
+        and includes legacy empty-overlay rows. An empty ``overlay`` returns
+        every task. Delegates to :func:`overlay_scope_q`, the single source of
+        truth for the Task overlay clause, shared with ``_claimable_for_target``
+        (the loop claim), the MCP ``loop_stats`` read, and the dashboard
+        selectors (F1.6).
+        """
+        return self.filter(overlay_scope_q(overlay))
+
     def for_claude_session(self, claude_session_id: str) -> models.QuerySet:
         """Tasks whose session is the given Claude session, newest first.
 
@@ -191,7 +185,7 @@ class TaskQuerySet(models.QuerySet):
         ``reviewing`` one, mirroring the ``normalize_phase`` contract the
         rest of the system honours.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -207,14 +201,35 @@ class TaskQuerySet(models.QuerySet):
         as a zombie session. Same SSOT (``phase_spellings``), opposite
         status set.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         return self.filter(
             phase__in=phase_spellings(phase),
-            status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
+            status__in=task_model.Status.active(),
         )
+
+    def not_auto_review_armed(self) -> models.QuerySet:
+        """Tasks the #68 auto-review dispatch did NOT arm — the stray/armed discriminator (#3910).
+
+        Reaping an armed task costs its PR a full dispatch deadline: the claim is
+        keyed per ``(slug, pr_id, head_sha)``, so nothing re-arms that head until
+        the deadline passes and the next sweep reclaims it (#3920). Bounded, not
+        permanent — but still a wasted cycle, so an armed task stays off the
+        reaper's list.
+        """
+        return self.filter(auto_review_dispatches__isnull=True)
+
+    def in_flight_for_phase(self, overlay: str, phase: str) -> models.QuerySet:
+        """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
+        return _in_flight_for_phase(self, overlay, phase)
+
+    def last_run_at_for_phase(
+        self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
+    ) -> datetime | None:
+        """Most recent ``Session.started_at`` for an overlay+phase task, or ``None`` — the cadence clock."""
+        return _last_run_at_for_phase(self, overlay, phase, statuses=statuses)
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
@@ -233,6 +248,7 @@ class TaskQuerySet(models.QuerySet):
         claimed_by_session: str = "",
         lease_seconds: int = 300,
         extra_filter: "Q | None" = None,
+        ordering: "ClaimOrder | None" = None,
     ) -> "Task | None":
         """Atomically claim the oldest PENDING task — backend-agnostic (#786, N4).
 
@@ -257,16 +273,30 @@ class TaskQuerySet(models.QuerySet):
         orthogonal to the role-label ``claimed_by``; it rides the SET
         clause only and never the CAS WHERE predicate, so the claim
         semantics are byte-identical with or without it.
+        ``ordering`` (a :class:`ClaimOrder`) lets a caller pick the claim order
+        (PR-13 admission priority: a queued TODO/followup before a new-ticket
+        auto-start). ``None`` (the default) is today's plain oldest-``pk`` order,
+        so a caller that omits it is byte-identical to before.
         Returns the claimed task, or ``None`` when nothing is claimable.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        # Two admission gates, both admitting NO new task: the drain gate (a rolling
+        # deploy is quiescing this worker) and the deploy-order gate (#3901 — the control
+        # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
+        # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
+        # are untouched by either.
+        if worker_is_quiescing() or schema_behind_code():
+            return None
         now = timezone.now()
-        candidates = self.filter(status=task_model.Status.PENDING)
+        candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
+        if ordering is not None:
+            candidates = candidates.annotate(**ordering.annotations)
+        order_fields = ordering.order_by if ordering is not None else ("pk",)
         with transaction.atomic():
-            oldest_pk = candidates.order_by("pk").values_list("pk", flat=True).first()
+            oldest_pk = candidates.order_by(*order_fields).values_list("pk", flat=True).first()
             if oldest_pk is None:
                 return None
             # Compare-and-swap on status: only the writer that still sees
@@ -310,12 +340,29 @@ class TaskQuerySet(models.QuerySet):
         #786 B1 lesson): exactly one of N concurrent ticks updates the row
         and the losers update 0 rows. Runs *before* ``reap_stale_claims``
         in the tick so a recoverable orphan is taken over, not failed.
+
+        #2009: the re-queue is the repair-loop's retry chokepoint, so the
+        per-phase iteration budget and stall detector are enforced here. A row
+        whose ticket-phase has hit the configured iteration cap, or has stalled
+        on two consecutive identical failures (which also escalates to the user),
+        is dropped from the re-queue set and held CLAIMED — so a doomed phase
+        neither re-runs nor burns more attempts on the identical failure.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
         with transaction.atomic():
-            return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
+            candidate_pks = list(
+                self.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).values_list("pk", flat=True)
+            )
+            requeueable = self._requeueable_within_budget(candidate_pks)
+            if not requeueable:
+                return 0
+            return self.filter(
+                pk__in=requeueable,
+                status=task_model.Status.CLAIMED,
+                lease_expires_at__lt=now,
+            ).update(
                 status=task_model.Status.PENDING,
                 claimed_at=None,
                 claimed_by="",
@@ -323,6 +370,26 @@ class TaskQuerySet(models.QuerySet):
                 lease_expires_at=None,
                 heartbeat_at=None,
             )
+
+    def _requeueable_within_budget(self, candidate_pks: list[int]) -> list[int]:
+        """Filter *candidate_pks* to those whose ticket-phase may still re-queue (#2009).
+
+        Consults the repair-loop budget per row: a phase at its iteration cap
+        (:class:`~teatree.core.repair_loop.MaxIterationsExceeded`) or stalled on
+        two identical failures (:class:`~teatree.core.repair_loop.IterationStalled`,
+        which also escalates to the user) is dropped from the re-queue set.
+        """
+        allowed: list[int] = []
+        for task in self.filter(pk__in=candidate_pks).select_related("ticket", "session"):
+            try:
+                task.check_requeue_allowed()
+            except (MaxIterationsExceeded, IterationStalled) as exc:
+                logger.warning(
+                    "reclaim skip task=%s ticket=%s %s: %s", task.pk, task.ticket_id, type(exc).__name__, exc
+                )
+                continue
+            allowed.append(task.pk)
+        return allowed
 
     def replay_orphaned_transitions(self) -> int:
         """Replay FSM transitions a mid-transition crash dropped. Returns the count (#883).
@@ -359,13 +426,24 @@ class TaskQuerySet(models.QuerySet):
         # the first one seen for each ticket. ``distinct("ticket_id")`` is
         # Postgres-only; teatree's production DB is SQLite (the #786 B1
         # backend-agnostic lesson), so this stays a plain ordered scan.
-        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+        #
+        # A terminal ticket is excluded (#3879): no branch of the shared path
+        # advances one, so a crash can have dropped nothing. Every branch guards
+        # on a source that is not its own target EXCEPT ``mark_reviewed_externally``,
+        # which accepts REVIEW_POSTED so a re-review at a moved head SHA can
+        # re-stamp — leaning on the guard therefore re-fired that self-loop for
+        # every closed review on every tick, minting a teardown job each time.
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+        advanceable = self.filter(status=task_model.Status.COMPLETED).exclude(
+            ticket__state__in=ticket_model.marker_release_states()
+        )
 
         replayed = 0
         seen: set[int] = set()
-        for task in self.filter(status=task_model.Status.COMPLETED).select_related("ticket").order_by("-pk"):
+        for task in advanceable.select_related("ticket").order_by("-pk"):
             if task.ticket_id in seen:
                 continue
             seen.add(task.ticket_id)
@@ -425,40 +503,73 @@ class TaskQuerySet(models.QuerySet):
             self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
         )
 
-    def active_claim_exists(self) -> bool:
-        """True iff some task is CLAIMED with a still-live lease.
+    def live_headless_agent_count(self) -> int:
+        """Live HEADLESS agents in flight — CLAIMED, unexpired-lease, HEADLESS target.
 
-        A live CLAIMED lease means a worker / sub-agent is actively driving
-        a unit of loop work right now — the deferred-reinstall drain reads
-        this to DEFER re-anchoring the running interpreter until no unit is
-        in flight (never mutate the code out from under an active agent).
-        An expired lease is not in-flight (the worker is gone; the reaper /
-        reclaimer will sweep it).
+        The single divisor for the per-agent test-worker budget AND the
+        governor's ceiling comparison (#3644/F9). Counts EVERY live headless
+        agent — a registered-phase task AND a free-form one (``architectural_review``
+        etc.). ``dispatchable_q()`` selects only ``(role, phase)`` pairs with a
+        registered sub-agent, so counting through it UNDERcounted the free-form
+        headless agents that go through the very ``with_test_worker_cap`` this
+        number divides — a smaller divisor gave each agent MORE pytest workers,
+        the melt direction. Counting the true live-agent set fixes it.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).exists()
+        return self.filter(
+            status=task_model.Status.CLAIMED,
+            lease_expires_at__gt=now,
+            execution_target=task_model.ExecutionTarget.HEADLESS,
+        ).count()
+
+    def active_claims(self) -> models.QuerySet:
+        """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).
+
+        A live CLAIMED lease means a worker / sub-agent is actively driving a unit
+        of loop work right now; an expired lease is not in-flight (the worker is
+        gone; the reaper / reclaimer will sweep it). This is the single predicate
+        both ``active_claim_exists`` (the deferred-reinstall + drain readiness check)
+        and ``t3 worker drain``'s still-claimed listing read, so the two can never
+        drift.
+        """
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        now = timezone.now()
+        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
+
+    def active_claim_exists(self) -> bool:
+        """True iff some task is CLAIMED with a still-live lease.
+
+        The deferred-reinstall drain and ``t3 worker drain`` read this to DEFER an
+        action (re-anchoring the running interpreter / swapping the deploy image)
+        until no unit is in flight — never mutate the code out from under an active
+        agent.
+        """
+        return self.active_claims().exists()
 
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
+        # Drain gate (rolling deploy): a quiescing worker sees NO claimable work, so
+        # the interactive/headless claim commands admit zero new tasks during the
+        # deploy window. Orthogonal to the supervisor's stop condition — in-flight
+        # leases keep renewing.
+        if worker_is_quiescing() or schema_behind_code():
+            return self.none()
         now = timezone.now()
         qs = (
             self.filter(
                 execution_target=target,
-                status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
+                status__in=task_model.Status.active(),
             )
             .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+            .filter(_claimable_now_q(now))
             .order_by("pk")
         )
         if overlay:
-            qs = qs.filter(
-                Q(ticket__overlay=overlay)
-                | Q(session__overlay=overlay)
-                | Q(ticket__overlay="")
-                | Q(session__overlay="")
-            )
+            qs = qs.for_overlay(overlay)
         return qs
 
 

@@ -1,0 +1,81 @@
+# Ticket lifecycle
+
+<!-- BEGIN GENERATED: ticket-fsm -->
+```mermaid
+stateDiagram-v2
+    [*] --> not_started
+    not_started --> scoped : scope
+    not_started --> coded : code_direct
+    not_started --> reviewed : reconcile_reviewed
+    not_started --> merged : reconcile_merged
+    not_started --> review_posted : mark_review_no_action
+    not_started --> review_posted : mark_reviewed_externally
+    not_started --> ignored : ignore
+    scoped --> started : start
+    scoped --> coded : code_direct
+    scoped --> reviewed : reconcile_reviewed
+    scoped --> merged : reconcile_merged
+    scoped --> review_posted : mark_review_no_action
+    scoped --> review_posted : mark_reviewed_externally
+    scoped --> ignored : ignore
+    started --> started : start
+    started --> planned : plan
+    started --> coded : code_direct
+    started --> reviewed : reconcile_reviewed
+    started --> merged : reconcile_merged
+    started --> review_posted : mark_review_no_action
+    started --> review_posted : mark_reviewed_externally
+    started --> ignored : ignore
+    planned --> coded : code
+    planned --> reviewed : reconcile_reviewed
+    planned --> merged : reconcile_merged
+    planned --> review_posted : mark_review_no_action
+    planned --> review_posted : mark_reviewed_externally
+    planned --> ignored : ignore
+    coded --> started : rework
+    coded --> tested : test
+    coded --> reviewed : reconcile_reviewed
+    coded --> merged : reconcile_merged
+    coded --> review_posted : mark_review_no_action
+    coded --> review_posted : mark_reviewed_externally
+    coded --> ignored : ignore
+    tested --> started : rework
+    tested --> reviewed : reconcile_reviewed
+    tested --> reviewed : review
+    tested --> merged : reconcile_merged
+    tested --> review_posted : mark_review_no_action
+    tested --> review_posted : mark_reviewed_externally
+    tested --> ignored : ignore
+    reviewed --> started : rework
+    reviewed --> reviewed : reconcile_reviewed
+    reviewed --> shipped : ship
+    reviewed --> merged : reconcile_merged
+    reviewed --> review_posted : mark_review_no_action
+    reviewed --> review_posted : mark_reviewed_externally
+    reviewed --> ignored : ignore
+    shipped --> started : reopen
+    shipped --> shipped : ship
+    shipped --> in_review : request_review
+    shipped --> merged : reconcile_merged
+    shipped --> ignored : ignore
+    in_review --> started : reopen
+    in_review --> reviewed : reconcile_reviewed
+    in_review --> merged : mark_merged
+    in_review --> merged : reconcile_merged
+    in_review --> ignored : ignore
+    merged --> started : reopen
+    merged --> reviewed : reopen_for_followup
+    merged --> merged : mark_merged
+    merged --> merged : reconcile_merged
+    merged --> retrospected : retrospect
+    merged --> ignored : ignore
+    retrospected --> started : reopen
+    retrospected --> reviewed : reconcile_reviewed
+    retrospected --> retrospected : retrospect
+    retrospected --> delivered : mark_delivered
+    retrospected --> ignored : ignore
+    delivered --> reviewed : reopen_for_followup
+    review_posted --> review_posted : mark_review_no_action
+    review_posted --> review_posted : mark_reviewed_externally
+```
+<!-- END GENERATED: ticket-fsm -->

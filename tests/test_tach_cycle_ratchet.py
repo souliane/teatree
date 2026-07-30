@@ -31,14 +31,8 @@ _TACH = _REPO / "tach.toml"
 # four new nodes already imported teatree.core inside the monolithic
 # teatree.backends node — the split makes that pre-existing coupling visible as
 # four separate fan-in entries; it adds no new coupling.
-# Bumped 17 → 18 (#1838 agent-teams Track-B PR#7a): teatree.teams is promoted
-# from a foundation leaf to a domain-layer consumer of teatree.core — the maker-
-# only pane layer (panes / pane_reaper / guardrails) legitimately reads the
-# Task/Session lease + LoopLease ownership via teatree.core. One reviewed new
-# fan-in entry (teatree.teams), the correct lower→higher direction mirroring
-# teatree.agents / teatree.backends; nothing in core/loop/loops/agents imports
-# teams back (the #2320 inertness scan + the no-core→agents/backends test still
-# hold).
+# Bumped 17 → 18 (#1838): teatree.teams was promoted from a foundation leaf to a
+# domain-layer consumer of teatree.core. Superseded — see the #3734 entry below.
 # Bumped 18 → 19 (#2413 PR-2): teatree.loop.scanners is split out of the
 # teatree.loop monolith into its own tach node so the scanner → review_claim
 # back-edges become declared (and severable) instead of hidden inside one node.
@@ -68,7 +62,25 @@ _TACH = _REPO / "tach.toml"
 # drop out to offset. One new fan-in entry (teatree.loop.slack_answer) in the
 # correct lower→higher direction; it is a pure carve artifact and adds no new
 # coupling.
-_CORE_FANIN_BASELINE = 21
+# Bumped 21 → 22 (PR-27): teatree.overlay_sdk is the surface-frozen overlay-
+# authoring facade node. It re-exports OverlayBase / ProvisionStep / Variant /
+# the probe + config helpers from teatree.core (and teatree.types / .config /
+# .utils / .docker / .visual_qa), so it legitimately depends on teatree.core —
+# an integration-layer facade over the domain layer, the correct lower→higher
+# direction. One new fan-in entry; nothing in core imports it back.
+# Bumped 22 → 23 (#2413 review-claim outcome stratum): the review-DONE reaction
+# poster is carved out of the orchestration-top teatree.loop.review_claim into
+# its own leaf node (teatree.loop.review_done_reactions) so the review_done_ack
+# scanner reaches it without the scanners → orchestration back-edge tach rejects.
+# The carved code's `teatree.core.on_behalf_egress` import is unchanged — it was
+# already core-coupled inside the teatree.loop node — and teatree.loop keeps its
+# own independent core coupling, so it does not drop out to offset. One new
+# fan-in entry in the correct lower→higher direction; a pure carve artifact that
+# adds no new coupling.
+# Lowered 23 -> 22 (#3734): the agent-teams pane layer is retired, so the
+# teatree.teams node and its core fan-in entry are gone. The reduction is banked
+# rather than left as headroom, so a future fan-in still needs its own review.
+_CORE_FANIN_BASELINE = 22
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

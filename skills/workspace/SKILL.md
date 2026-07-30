@@ -4,17 +4,6 @@ description: Environment and workspace lifecycle — worktree creation, setup, D
 requires:
   - rules
 compatibility: macOS/Linux, zsh or bash, git, docker with compose plugin, PostgreSQL CLIs (psql, createdb, dropdb, pg_restore), direnv, lsof. Optional dslr, uv, jq.
-triggers:
-  priority: 120
-  keywords:
-    - '\b(worktree|setup|servers?|start session|refresh db|cleanup|clean up|reset passwords?|restore.*(db|database))\b'
-    - '\b(database|start (the )?backend|start (the )?frontend)\b'
-search_hints:
-  - setup
-  - worktree
-  - create worktree
-  - servers
-  - cleanup
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -62,9 +51,9 @@ Each ticket gets its own directory with one git worktree per affected repo and a
 
 None — this is the foundation skill.
 
-## Configuration (`~/.teatree`)
+## Configuration
 
-Key variables used by this skill (see `/t3:setup` for the full config reference):
+Key environment variables used by this skill (see `/t3:setup` for the full config reference):
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -79,16 +68,13 @@ Key variables used by this skill (see `/t3:setup` for the full config reference)
 A locally-running worktree (state `services_up` or `ready`) holds a
 docker stack, language servers, browsers, and CI processes. On a memory-
 constrained host, running two stacks in parallel can OOM the machine and
-abort both. The setting `max_concurrent_local_stacks` in `~/.teatree.toml`
-caps how many distinct tickets can be in those states at once for a
-given overlay:
+abort both. The DB-home setting `max_concurrent_local_stacks` caps how
+many distinct tickets can be in those states at once for a given overlay
+— set it in the `ConfigSetting` store:
 
-```toml
-[teatree]
-max_concurrent_local_stacks = 1   # 0 = unbounded (default, no behaviour change)
-
-[overlays.heavy-overlay]
-max_concurrent_local_stacks = 1   # per-overlay override is supported
+```bash
+t3 <overlay> config_setting set max_concurrent_local_stacks 1   # default 1 (single in-flight stack, headless-safe); 0 = unbounded
+t3 <overlay> config_setting set max_concurrent_local_stacks 1 --overlay heavy-overlay   # per-overlay override is supported
 ```
 
 When the cap is set and the limit would be exceeded, `t3 <overlay>
@@ -116,7 +102,7 @@ Teatree stores runtime data (ticket cache, PR reminders, followup state) in:
 $T3_DATA_DIR  (default: ${XDG_DATA_HOME:-$HOME/.local/share}/teatree)
 ```
 
-`~/.teatree` is the **config file** — never use it as a data directory. Set `T3_DATA_DIR` in `~/.teatree` to override the default location.
+`T3_DATA_DIR` (an environment variable) overrides the default data-directory location — it is data storage, not config; teatree's settings live in the DB `ConfigSetting` store.
 
 ## Setup Verification
 
@@ -124,15 +110,55 @@ If the environment seems incomplete (missing `uv`, hooks not firing, overlay abs
 
 ## Commands
 
-All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for the full command list. Key command groups: `lifecycle` (setup/start/restart/teardown), `workspace` (ticket/finalize/clean-all), `run` (backend/frontend/tests), `db` (refresh/restore-ci/reset-passwords).
+All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for the full command list. Key command groups: `lifecycle` (setup/start/restart/teardown), `workspace` (ticket/finalize/clean-all/relocate), `run` (backend/frontend/tests), `db` (refresh/restore-ci/reset-passwords).
+
+### Per-overlay workspace dir + `workspace relocate`
+
+Worktrees regroup under a dedicated dir PER OVERLAY. Two DISTINCT roots — conflating them breaks provisioning:
+
+- **WORKTREE root** `config.worktree_root()` (where NEW worktrees are created) resolves, first match wins: the `T3_WORKSPACE_DIR` env var / Django setting (explicit back-compat override), then a DB-home `ConfigSetting` `workspace_dir` row (overlay scope, then global — set with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`), then the sound default `~/workspace/t3-workspaces/<overlay>/`. A `[teatree] workspace_dir` TOML value is DB-home and ignored on read — it is warned about on load and migrated once with `config_setting import`.
+- **CLONE root** `config.clone_root()` (`~/workspace`, where main repo clones live) is what `find_clone_path` and every clone-discovery caller use. It resolves: `T3_WORKSPACE_DIR` env / Django setting, then `~/workspace`. Provisioning DISCOVERS clones under this root and CREATES the worktree under the worktree root — passing the worktree root to `find_clone_path` would scan the wrong dir and fail "No git clone found".
+
+**One canonical root, alternates drained (#3583).** `core/worktree/worktree_roots.py` is the single answer to "which roots hold teatree worktrees?". Only the canonical worktree root is ever written to; the SCANNED set additionally covers every root existing registered worktrees actually live in, so an alternate root an ad-hoc `git worktree add` created is DRAINED by `clean-all` rather than left to accumulate — and once drained it is never written to again, collapsing the split with no manual migration. `t3 doctor check` reports the state: it FAILs on a registered worktree git PROVED is not a checkout, WARNs UNVERIFIED when git declined to answer, and WARNs on a namespace split across roots — all over the same three-valued `probe_checkout` the reapers use, so the reaper, the doctor and the setup-time warning can never disagree about which dirs are broken. Physically deleting an emptied alternate root directory is a deployment action, not something `clean-all` does.
+
+**A dead registered checkout has ONE owner (#3583 follow-up).** A registered `Worktree` row whose dir is provably not a git repo is released by the ROW reaper (`core/worktree/broken_checkout.py`), not by the broken-DIR pass — which still skips a row-tracked dir. The two used to defer to each other, so `clean-all` (the fix `t3 doctor check` prints) could not act on a single item the doctor flagged. Because no probe can read a dead dir, the release is decided from the BRANCH in the source clone under the #706 standard: released only when the checkout is PROVABLY not a repo AND the branch holds nothing that exists on no remote. An unresolvable clone, an unreadable push state, or genuinely unpushed commits KEEP the row with a reason — recover those with `t3 <overlay> workspace salvage`, then re-run `clean-all`.
+
+To move an overlay's EXISTING teatree-managed worktrees onto the new per-overlay dir:
+
+```bash
+t3 <overlay> workspace relocate            # move existing worktrees under the resolved per-overlay dir
+t3 <overlay> workspace relocate --dry-run  # list the moves without touching anything
+```
+
+It uses `git worktree move` (never a raw `mv` — git's worktree admin must update so the moved worktree stays linked to its clone), then rewrites each `Worktree` row's stored path. It **SKIPS and reports** any worktree that is git-locked, has uncommitted changes, or is a live mid-task one (its ticket has a live session/active task, or the process CWD is inside it); it is **idempotent** (a worktree already there is a no-op) and **continues past a single failed move** (reports it, never aborts the run).
 
 ## Cleanup Patterns
 
-`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is squash-merged** (any FSM state, via the forge merged-PR signal with a patch-id `git cherry` fallback — a squash-merge is NOT an ancestor of `origin/<default>`, so is-ancestor / three-dot-diff alone misses it — not just `CREATED` rows), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree, reaps DB-unreferenced auto-isolated worktree env roots (the per-worktree `db.sqlite3` dirs under `~/.local/share/teatree-worktrees` left behind when a checkout is gone — never one holding a `.git` checkout), classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), reaps **orphaned RAW git worktrees** (a real `git worktree` with no teatree `Worktree` DB row — created by a sub-agent's bare `git worktree add`, the accumulation source that reached 183 on a real host; #2361), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is squash-merged** (any FSM state, via the forge merged-PR signal with a patch-id `git cherry` fallback — a squash-merge is NOT an ancestor of `origin/<default>`, so is-ancestor / three-dot-diff alone misses it — not just `CREATED` rows), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree (only projects teatree itself provisioned — those named `<repo>-wt<ticket-pk>`; the deploy stack and unrelated user projects are never candidates), reaps the auto-isolated worktree env roots **whose own stamp names a checkout this venue can see is gone** (the per-worktree `db.sqlite3` dirs under `~/.local/share/teatree-worktrees` — never one holding a `.git` checkout, never an unstamped one), classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), reaps **orphaned RAW git worktrees** (a real `git worktree` with no teatree `Worktree` DB row — created by a sub-agent's bare `git worktree add`, the accumulation source that reached 183 on a real host; #2361), reaps **broken checkouts** (#3583 — a dir that CARRIES a `.git` entry yet fails `git rev-parse`, i.e. a half-created or corrupted worktree nothing can use; a dir with NO `.git` was never a checkout and belongs to the auto-isolated env-dir reaper above, and a dir a live `Worktree` row still tracks is left to its row), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
 
-Branch names matching a `clean_ignore` glob in `~/.teatree.toml` (`[teatree] clean_ignore = ["spike/*", "dev-override"]`, per-overlay overridable) are never reaped on **any** deletion path — the squash-merged-row reaper, the `CREATED`-state row loop, and every branch-prune pass (gone-remote, fully-merged, squash-merged) — for never-merge dev overrides and long-lived spikes. One shared predicate enforces this, resolving the patterns through the row's own overlay (`[overlays.<name>].clean_ignore` → global `[teatree] clean_ignore`) for worktree rows, and through the active overlay for the repo-scoped branch passes. When the squash signal is uncertain (no merged PR, non-empty diff, forge CLI absent) the worktree is **kept with a warning**, never deleted — the data-loss guards (#706/#835/#1506) are never bypassed. `clean-all` runs **fully unattended by default** (#2361): it never blocks on stdin and never prompts per worktree — an uncertain or unsynced worktree is kept with a warning, not a question. Pass `--interactive` to opt into the per-worktree push/abandon/skip prompt; the flag takes effect only when stdin/stdout are real TTYs, so it still runs unattended in a pipe or loop tick. A worktree with **uncommitted changes** (a live one an agent may be mid-task in) is always kept, never bundle-and-reaped on a merged signal (#2243) — only `force`/explicit-abandon bundles and reaps a dirty worktree.
+**The judgment layer is a separate skill.** `clean-all` is the mechanical reaper — it auto-deletes the provably-redundant and EMITs every item it could not auto-decide (`t3 <overlay> workspace emit` → a JSON array). Deciding what to DO with each emitted item — salvage unmerged work to a fresh PR (`workspace salvage`), delete a shipped/superseded item, push post-merge commits to a new PR, skip a colleague's or a live item, or keep an uncertain one — is the **`/t3:sweeping-worktrees`** skill. Load it when sweeping stale/lost worktrees, branches, or stashes, or triaging `workspace emit`.
 
-**Orphaned RAW worktrees (#2361).** A `git worktree` with no teatree `Worktree` row is invisible to the DB-row reaper, so they pile up indefinitely. `clean-all` discovers them by listing each known main clone's `git worktree` registry and subtracting the DB-tracked set, then disposes of each one safety-first: a worktree whose branch is already on a remote (or a detached one with no unique commit) is reaped; one with **uncommitted changes** is always kept (a live mid-task worktree); one with **unpushed unique work** is governed by `--reap-unsynced` — `keep` (default, safe — leave it with a warning) or `snapshot` (capture a recovery bundle+diff via the shared `worktree_snapshot` mechanism FIRST, verify the artifact materialised, and only THEN reap, so the commits stay recoverable). The #706/#835 data-loss guard is never bypassed: unique work is never reaped without a successful snapshot, and an inconclusive pushed-state probe keeps the worktree. Because reaping 183 worktrees that may hold unpushed work is high-stakes, the snapshot-and-reap of unsynced orphans is an explicit `--reap-unsynced=snapshot` opt-in — the owner triggers the mass reap.
+Branch names matching a `clean_ignore` glob (the DB-home `clean_ignore` setting in the `ConfigSetting` store, per-overlay overridable — set with `t3 <overlay> config_setting set clean_ignore '["spike/*", "dev-override"]'`; a `[teatree] clean_ignore` TOML value is ignored on read) are never reaped on **any** deletion path — the squash-merged-row reaper, the `CREATED`-state row loop, and every branch-prune pass (gone-remote, fully-merged, squash-merged) — for never-merge dev overrides and long-lived spikes. One shared predicate enforces this, resolving the patterns through the row's own overlay (the overlay-scope `ConfigSetting` row → the global-scope row) for worktree rows, and through the active overlay for the repo-scoped branch passes. When the squash signal is uncertain (no merged PR, non-empty diff, forge CLI absent) the worktree is **kept with a warning**, never deleted — the data-loss guards (#706/#835/#1506) are never bypassed. `clean-all` runs **fully unattended by default** (#2361): it never blocks on stdin and never prompts per worktree — an uncertain or unsynced worktree is kept with a warning, not a question. Pass `--interactive` to opt into the per-worktree push/abandon/skip prompt; the flag takes effect only when stdin/stdout are real TTYs, so it still runs unattended in a pipe or loop tick. A worktree with **uncommitted changes** (a live one an agent may be mid-task in) is always kept, never bundle-and-reaped on a merged signal (#2243) — only `force`/explicit-abandon bundles and reaps a dirty worktree.
+
+**Env-dir ownership is one answer, and the FILESYSTEM is its primary source (#3852).** "Does a live checkout own this env dir?" is resolved from a scan of every directory carrying a `.git` under the scanned roots, UNION every checkout `git worktree list` reports across the discoverable clones, UNION the `Worktree` rows (`_workspace.checkout_registry` — the same seam the raw-orphan pass below asks, not a second answer to one question), plus each dir's own `owner-checkout.path` stamp, which inverts the one-way slug hash so liveness is proven rather than inferred. The slug is `sha256(checkout_path)`, so whether that path exists on disk IS the question; a registry answer is only a proxy. Registries alone were not enough in two ways: `paths.resolve_data_dir` mints an env dir for ANY checkout (so an unregistered agent worktree read as an orphan), and clone discovery found 1 of the clones actually present, with a never-discovered clone producing no gap at all. Every pass also stamps the env dir of each checkout it discovered, so the durable mapping grows instead of covering only newly-minted dirs.
+
+**The scan covers everything it does not explicitly exclude (#3872).** It walks INTO checkouts (agent worktrees nest inside their own clone) and THROUGH symlinked dirs (the host reaches its own teatree clone that way), deduplicating recursion on the resolved path so a symlink loop terminates. Only a fixed set of package/venv/tool-cache dirs is excluded, because none can hold a checkout the resolver mints an env dir for. Every other uncovered path is a gap, so a miss can never present as `complete` — a silent skip drops live checkouts from the keep-set while the answer still reads complete, which is the whole evidence the deletion rests on.
+
+Two fail-closed guards. Any gap — an unreadable directory, a subtree past the walk's runaway depth cap, or a clone whose `git worktree list` exits non-zero — keeps EVERY dir and reports the gap. And a dir modified at or after the instant the keep-set was computed is kept: the box provisions continuously, so a snapshot-then-delete loop would otherwise reap an env dir minted mid-pass, while live. `--dry-run` prints a per-dir `KEPT '<slug>': <reason>` / `WOULD Remove …` line for every dir, so the preview is a full account rather than a list of deletions.
+
+**A scan that skipped nothing can still be blind, so only the STAMP is venue-independent (#3872).** Making every skip record a gap closes the case where the walk declined to look; it cannot close the case where there was nothing there to look at. Run `clean-all` in the container the project mandates `t3` runs in and the isolated-env root is bind-mounted while the clone owning those dirs is not: the walk reads every root that exists, skips nothing, records **no gap**, reports `complete` — and every host-owned env dir reads as an orphan. The blindness is bidirectional (measured: the host proposes removing 43 dirs, the container 102, and two dirs the container keeps as owned appear in the host's removal list), so no venue's scan result is a sound liveness test on its own. A dir is therefore reclaimable in exactly one shape: **its own stamp names a checkout that does not exist AND lies within a root this venue walked**, judged by `venue_can_observe` (the path is under a scanned root, and the directory that would contain it is readable). A stamp naming a path this venue cannot see, and a dir carrying **no stamp at all**, are both missing evidence — kept, with the reason on the dir's own `KEPT` line.
+
+Every new env dir is stamped at birth (`IsolatedEnvDir.open_for` writes the stamp before the control DB is seeded, so a startup that dies mid-copy still leaves a claimed dir). Dirs predating that are reclaimed by backfill — and because stamping is itself venue-limited, run it **in every venue that can see checkouts**, host and container both:
+
+```bash
+t3 <overlay> workspace stamp-owners   # deletes nothing; stamps what THIS venue can see
+```
+
+Until a dir is stamped the reclaim is deliberately conservative and frees less; that is the intended trade against a command that offered to delete a live agent's control DB.
+
+**Orphaned RAW worktrees (#2361).** A `git worktree` with no teatree `Worktree` row is invisible to the DB-row reaper, so they pile up indefinitely. `clean-all` discovers them by listing each known main clone's `git worktree` registry and subtracting the DB-tracked set, then disposes of each one safety-first: a worktree whose branch is already on a remote (or a detached one with no unique commit) is reaped; one with **uncommitted changes** is always kept (a live mid-task worktree); one with **unpushed unique work** is kept with a warning and salvaged only by an explicit push of the branch. The #706/#835 data-loss guard is never bypassed: unique work is never reaped, and an inconclusive pushed-state probe keeps the worktree.
+
+**Remote-state freshness gates the whole pass.** The "is it on a remote?" probe reads local `refs/remotes/*`, which go stale when a branch is deleted upstream by anything other than this clone — the ordinary forge auto-delete-on-merge. Against a stale ref, unpushed work reads as pushed and the last copy gets reaped. So each clone's tracking refs are refreshed (`git fetch --all --prune`) before any of its orphans is classified, and a **failed refresh fails closed**: the clone is skipped whole (`SKIPPED clone <path>: could not refresh remote refs`) and nothing in it is touched. On an offline host the pass therefore reaps nothing rather than reaping wrongly.
 
 Each per-worktree teardown funnels through one resilient seam (`reap_one_worktree`), so a single bad row never aborts the whole run. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
 
@@ -245,7 +271,7 @@ t3 <overlay> worktree provision             # re-run; now green end-to-end
 
 ### Never Hand-Edit Generated Files
 
-Setup tools (`t3 <overlay> worktree provision`, etc.) generate configuration files (`.t3-cache/.t3-env.cache`, docker overrides, port allocations). The env cache is regenerated on every `t3 <overlay> worktree start`; **manual edits create drift** and the next env-dependent command refuses with "env cache stale". Mutate it only via `t3 <overlay> env set KEY=VALUE`.
+Setup tools (`t3 <overlay> worktree provision`, etc.) generate configuration files (`.t3-cache/.t3-env.cache`, docker overrides, port allocations). The env cache is regenerated on every `t3 <overlay> worktree start`; **manual edits create drift** and the next env-dependent command refuses with "env cache stale". Mutate it only via `t3 <overlay> env set-var KEY=VALUE`.
 
 When a generated file is wrong or incomplete, **re-run the setup tool** — don't manually patch the file. If setup fails, diagnose the root cause in the setup script (see `/t3:debug`), don't work around it.
 
@@ -282,11 +308,11 @@ Before any edit, confirm you are not in the main clone: `git rev-parse --show-to
 
 #### Urgent relief from a misbehaving gate — kill switch, never a live clone edit
 
-When a teatree gate running in the main clone is **actively blocking you** and you need immediate relief while the durable fix is prepared in a worktree, the answer is the **out-of-repo kill switch**, not a live edit to the clone's `src/` or `hooks/`. The kill switch flips a config flag in `~/.teatree.toml` — it touches no tracked file, so it gives instant relief without polluting the shared base:
+When a teatree gate running in the main clone is **actively blocking you** and you need immediate relief while the durable fix is prepared in a worktree, the answer is the **out-of-repo kill switch**, not a live edit to the clone's `src/` or `hooks/`. The kill switch flips a config flag in the DB `ConfigSetting` store (out-of-repo) — it touches no tracked file, so it gives instant relief without polluting the shared base:
 
 ```bash
 # RIGHT — disable the gate out-of-repo (kill switch / config), no clone edit:
-t3 <overlay> gate disable                  # flips [teatree] orchestrator_bash_gate_enabled = false in ~/.teatree.toml
+t3 <overlay> gate disable                  # sets orchestrator_bash_gate_enabled = false in the DB store
 # the command is unconditionally runnable EVEN WHEN the gate is enabled (it never
 # matches the heavy-Bash denylist), so it is the always-available self-rescue.
 # re-enable once the durable fix lands:
@@ -296,7 +322,7 @@ t3 <overlay> gate enable
 sed -i 's/raise/pass/' ~/workspace/<overlay>/teatree/hooks/gate.py   # FORBIDDEN — live clone edit
 ```
 
-If even `t3 … gate disable` is somehow blocked, set `orchestrator_bash_gate_enabled = false` under `[teatree]` in `~/.teatree.toml` from any external shell — the kill switch is a plain config line and needs no `t3` at all. Other gates have their own switches: `t3 <overlay> gate skill-loading disable` for the skill-loading gate. See [`references/troubleshooting.md`](references/troubleshooting.md) § self-rescue for the full recovery path. The durable fix still goes through a worktree off `origin/main` (above) — the kill switch buys time, it is not the fix.
+If even `t3 … gate disable` is somehow blocked, the kill-switch value can be written straight into the DB store (`~/.local/share/teatree/db.sqlite3`, table `teatree_config_setting`) with the `sqlite3` CLI — it is out-of-repo and needs no repo edit. Other gates have their own switches: `t3 <overlay> gate skill-loading disable` for the skill-loading gate. See [`references/troubleshooting.md`](references/troubleshooting.md) § self-rescue for the full recovery path. The durable fix still goes through a worktree off `origin/main` (above) — the kill switch buys time, it is not the fix.
 
 ### Full Worktree Isolation (Non-Negotiable)
 
@@ -357,13 +383,13 @@ Project skills define the specific endpoints to check (e.g., admin login, API ve
 
 Two distinct gates run on a worktree, with two different overlay hooks:
 
-- `OverlayBase.get_health_checks(worktree)` — **post-provision invariants**. Did `worktree provision` finish its job? (symlinks valid, env cache populated, compose override generated.) Run by `worktree provision` to fail fast on broken setup.
-- `OverlayBase.get_readiness_probes(worktree)` — **post-start runtime checks**. Is the started worktree actually serving? (HTTP probes against allocated ports, health endpoints, dependent services responding.) Run by `worktree ready` and `workspace ready` to gate "ready to use" claims.
+- `overlay.provisioning.health_checks(worktree)` (`OverlayProvisioning`) — **post-provision invariants**. Did `worktree provision` finish its job? (symlinks valid, env cache populated, compose override generated.) Run by `worktree provision` to fail fast on broken setup.
+- `overlay.runtime.readiness_probes(worktree)` (`OverlayRuntime`) — **post-start runtime checks**. Is the started worktree actually serving? (HTTP probes against allocated ports, health endpoints, dependent services responding.) Run by `worktree ready` and `workspace ready` to gate "ready to use" claims.
 
 **Decision rule for overlay authors:**
 
 - If the check makes sense before any service starts (file present, symlink target reachable, env var set), implement it as a `HealthCheck`.
-- If the check requires a running process (HTTP probe, command exit code, service round-trip), implement it as a `Probe` via `http_probe()` / `command_probe()` — see `teatree.core.readiness`.
+- If the check requires a running process (HTTP probe, command exit code, service round-trip), implement it as a `Probe` via `http_probe()` / `command_probe()` — see `teatree.core.worktree.readiness`.
 
 **Agent rule when starting a worktree:**
 
@@ -373,25 +399,37 @@ Two distinct gates run on a worktree, with two different overlay hooks:
 
 For the full extension points table, override chain, and project skill creation guide, see [`references/extension-points.md`](references/extension-points.md).
 
-Key methods on `OverlayBase`: `get_repos()`, `get_required_ports()`, `get_port_env()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`, `get_health_checks()`, `get_readiness_probes()`. See the reference for the full list.
+Key hooks: `get_repos()` and `get_provision_steps()` are the mandatory hooks on `OverlayBase`. The rest are grouped on composed providers — provisioning hooks on `overlay.provisioning` (`env_extra()`, `db_import_strategy()`, `services_config()`, `compose_file()`, `health_checks()`, …) and run hooks on `overlay.runtime` (`run_commands()`, `verify_endpoints()`, `readiness_probes()`, …), with NO `get_` prefix. See the reference and the generated [`overlay-extension-points.md`](../../docs/generated/overlay-extension-points.md) for the full list.
 
 ## Lifecycle State Machine
 
+Generated from the `Worktree` model's `@transition` decorators — edit the model,
+not this block (`scripts/hooks/generate_fsm_diagrams.py`).
+
+<!-- BEGIN GENERATED: worktree-fsm -->
 ```mermaid
 stateDiagram-v2
-    provisioned --> provisioned : db_refresh
-    services_up --> provisioned : db_refresh
-    ready --> provisioned : db_refresh
-    created --> provisioned : provision
-    provisioned --> services_up : start_services
+    [*] --> created
     created --> created : teardown
+    created --> provisioned : provision
     provisioned --> created : teardown
-    ready --> created : teardown
+    provisioned --> provisioned : db_refresh
+    provisioned --> provisioned : provision
+    provisioned --> services_up : start_services
     services_up --> created : teardown
+    services_up --> provisioned : db_refresh
+    services_up --> provisioned : stop_services
+    services_up --> services_up : start_services
     services_up --> ready : verify
+    ready --> created : teardown
+    ready --> provisioned : db_refresh
+    ready --> provisioned : stop_services
+    ready --> services_up : start_services
+    ready --> ready : verify
 ```
+<!-- END GENERATED: worktree-fsm -->
 
-The `services_up → ready` transition runs `OverlayBase.get_readiness_probes()`. A worktree is **only** "ready to use" once probes pass — `services_up` alone proves processes launched, not that they serve traffic.
+The `services_up → ready` transition runs `overlay.runtime.readiness_probes()`. A worktree is **only** "ready to use" once probes pass — `services_up` alone proves processes launched, not that they serve traffic.
 
 ## Troubleshooting
 

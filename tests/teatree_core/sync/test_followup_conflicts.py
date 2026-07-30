@@ -73,11 +73,14 @@ class TestFollowupSurfacesConflictedMRs(TestCase):
         mock_client = _make_mock_client([_CONFLICTED_MR, _CLEAN_MR])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
-        buffer = StringIO()
+        out_buf, err_buf = StringIO(), StringIO()
         command = Command()
-        command.stdout = OutputWrapper(buffer)
+        command.stdout = OutputWrapper(out_buf)
+        command.stderr = OutputWrapper(err_buf)
         summary = command.sync()
-        printed = buffer.getvalue()
+        # PR-30: the loud human banner is a diagnostic → stderr, keeping stdout a
+        # pure JSON channel. The machine-readable summary is the return value.
+        printed = err_buf.getvalue()
 
         assert "WARNING" in printed
         assert "conflict" in printed.lower()

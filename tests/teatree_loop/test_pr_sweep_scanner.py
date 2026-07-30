@@ -19,24 +19,68 @@ pre-conditions. These tests pin every branch of the decision ladder:
     --squash`` iff the keystone refuses on that same path
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, MergeableNotified, Task
+from teatree.core.models import AutoReviewDispatch, BotPing, MergeableNotified, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
-from teatree.loop.scanners.pr_sweep import CheckResult, PrSummary, PrSweepScanner
+from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
     AutoReviewTaskDispatcher,
     NullMergeNotifier,
     SlackMergeNotifier,
     _decode_pr,
 )
+from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
+from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _non_substrate_changed_paths():
+    """Default the solo-overlay substrate gate to a non-substrate diff.
+
+    The solo-overlay no-CLEAR bypass classifies the PR's changed paths live
+    (Finding 2). With no real PR behind the fake ``gh``, an unmocked fetch
+    returns ``[]`` and the FAIL-SAFE gate holds — so every existing
+    merge-path test would now hold. Default the fetch to a known
+    non-substrate path; the substrate / fail-safe cases override it with
+    their own ``with patch(...)``.
+    """
+    with patch(
+        "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
+        return_value=["src/teatree/loop/scanners/pr_sweep.py"],
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #1773 untrusted-public-author rung is exercised by
+    # TestUntrustedAuthorPublicRepo; the pre-#1773 decision-ladder tests treat
+    # the repo as internal so the author gate is a no-op for them (no live
+    # ``gh`` visibility probe in the test path).
+    monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
+
+
+@pytest.fixture(autouse=True)
+def _required_test_3_13(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #12: the sweep's CI gate scopes to the branch-protection required set instead
+    # of hardcoding ``test (3.13)``. Default the required set to just that one check
+    # so the green-path fixtures (a single green ``test (3.13)``) merge; a case that
+    # needs another check to gate declares it via ``with _required(...)``.
+    monkeypatch.setattr(
+        "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
+        lambda *a, **k: {"test (3.13)"},
+    )
 
 
 SLUG = "souliane/teatree"
@@ -45,22 +89,48 @@ STALE = "deadbeef00000000000000000000000000000000"
 MAIN_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 SELF_LOGIN = "souliane"
 COLLEAGUE_LOGIN = "a-teammate"
+_T0 = "2026-06-19T10:00:00Z"
+_T1 = "2026-06-19T10:05:00Z"
 
 
-def _green_required() -> CheckResult:
-    return CheckResult(name="test (3.13)", conclusion="SUCCESS", status="COMPLETED")
+def _check(name: str, *, conclusion: str = "SUCCESS", status: str = "COMPLETED") -> RawAPIDict:
+    """A raw ``statusCheckRollup`` CheckRun entry — the shape the sweep now carries."""
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "startedAt": _T0,
+        "completedAt": _T1,
+    }
 
 
-def _red_uv_audit() -> CheckResult:
-    return CheckResult(name="uv-audit", conclusion="FAILURE", status="COMPLETED")
+def _green_required() -> RawAPIDict:
+    return _check("test (3.13)")
 
 
-def _red_lint() -> CheckResult:
-    return CheckResult(name="lint", conclusion="FAILURE", status="COMPLETED")
+def _red_uv_audit() -> RawAPIDict:
+    return _check("uv-audit", conclusion="FAILURE")
 
 
-def _red_blueprint_cross_pr() -> CheckResult:
-    return CheckResult(name="blueprint-cross-pr", conclusion="FAILURE", status="COMPLETED")
+def _red_lint() -> RawAPIDict:
+    return _check("lint", conclusion="FAILURE")
+
+
+def _red_blueprint_cross_pr() -> RawAPIDict:
+    return _check("blueprint-cross-pr", conclusion="FAILURE")
+
+
+@contextmanager
+def _required(*names: str) -> Iterator[None]:
+    """Stub the branch-protection required set the sweep's CI gate scopes to (#12).
+
+    The autouse default is ``{"test (3.13)"}``; a case that expects a red/pending
+    on another check to gate a merge declares that check required here (a check
+    NOT in the set is advisory and can never block — the anti-vacuity core of #12).
+    """
+    with patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", return_value=set(names)):
+        yield
 
 
 def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
@@ -76,6 +146,19 @@ def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
     )
 
 
+def _issue_substrate_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
+    return MergeClear.issue(
+        ClearRequest(
+            pr_id=pr_id,
+            slug=SLUG,
+            reviewed_sha=sha,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="substrate",
+        )
+    )
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSummary field the cases vary.
     *,
@@ -83,9 +166,10 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
     head: str = HEAD,
     is_draft: bool = False,
     changes_requested: bool = False,
-    checks: tuple[CheckResult, ...] = (),
+    checks: tuple[RawAPIDict, ...] = (),
     behind_main: bool = False,
     author: str = SELF_LOGIN,
+    same_repo: bool | None = None,
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -93,15 +177,16 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
         head_sha=head,
         is_draft=is_draft,
         has_changes_requested=changes_requested,
-        checks=checks or (_green_required(),),
+        rollup=checks or (_green_required(),),
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
         behind_main=behind_main,
         author=author,
+        same_repo=same_repo,
     )
 
 
-def _conflicted_pr(*, pr_id: int = 6230, checks: tuple[CheckResult, ...] = ()) -> PrSummary:
+def _conflicted_pr(*, pr_id: int = 6230, checks: tuple[RawAPIDict, ...] = ()) -> PrSummary:
     base = _open_pr(pr_id=pr_id, checks=checks)
     return replace(base, is_conflicted=True)
 
@@ -125,8 +210,13 @@ class FakePrApiClient:
     fallback_succeeds: bool = True
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
+    #: F5.8: slugs whose ``list_open_prs`` raises a recoverable ScannerError
+    #: (auth / rate-limit), used to prove the sweep records-and-continues.
+    scanner_error_slugs: frozenset[str] = frozenset()
 
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
+        if slug in self.scanner_error_slugs:
+            raise ScannerError(scanner="pr_sweep", error_class=ScannerErrorClass.AUTH, detail=f"401 on {slug}")
         return list(self.prs_by_slug.get(slug, ()))
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
@@ -145,11 +235,26 @@ class FakeKeystone:
     merged: bool = True
     merged_sha: str = MAIN_SHA
     error: str = ""
+    escalation_kind: str = ""
+    standing_delegation_by: str = ""
     calls: list[int] = field(default_factory=list)
+    #: (clear_id, presented human_authorized) per call — #3413 pins what the sweep presents.
+    authorized_calls: list[tuple[int, str]] = field(default_factory=list)
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+    def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
         self.calls.append(clear_id)
-        return self.merged, self.merged_sha, self.error
+        self.authorized_calls.append((clear_id, human_authorized))
+        return self.merged, self.merged_sha, self.error, self.escalation_kind, self.standing_delegation_by
+
+
+@dataclass(slots=True)
+class FakeSubstratePinger:
+    """Mock ``SubstratePinger`` — records every (text, idempotency_key) ping."""
+
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def ping(self, *, text: str, idempotency_key: str) -> None:
+        self.calls.append((text, idempotency_key))
 
 
 @dataclass(slots=True)
@@ -175,6 +280,8 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
     auto_review_dispatch: bool = False,
     dispatcher: FakeReviewDispatcher | None = None,
     self_identities: tuple[str, ...] = (SELF_LOGIN,),
+    substrate_pinger: FakeSubstratePinger | None = None,
+    substrate_standing_authorizer: str = "",
 ) -> tuple[PrSweepScanner, NullMergeNotifier]:
     notifier = notifier or NullMergeNotifier()
     return (
@@ -188,6 +295,8 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
             auto_review_dispatch=auto_review_dispatch,
             review_dispatcher=dispatcher,
             self_identities=self_identities,
+            substrate_pinger=substrate_pinger,
+            substrate_standing_authorizer=substrate_standing_authorizer,
         ),
         notifier,
     )
@@ -219,6 +328,129 @@ class TestGreenAndClean:
 
         assert signals[0].payload["slug"] == SLUG
         assert signals[0].payload["pr_id"] == 6230
+
+
+class TestUntrustedAuthorPublicRepo:
+    """The #1773 rung: an untrusted author on a PUBLIC repo never auto-merges."""
+
+    def test_untrusted_author_skips_before_clear_and_never_merges(self) -> None:
+        # An actionable CLEAR exists, CI is green — yet the untrusted-author
+        # rung fires BEFORE the CLEAR lookup, so the keystone is never called.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="evilhacker")]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "untrusted_author_public_repo"
+
+    def test_empty_author_on_public_repo_is_untrusted(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="")]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "untrusted_author_public_repo"
+
+    def test_solo_overlay_fallback_bypass_is_closed_for_untrusted_author(self) -> None:
+        # The solo-overlay no-CLEAR fallback merges via ``merge_pr_squash_bound``
+        # OUTSIDE the keystone author gate. The #1773 rung fires first, so an
+        # untrusted public author can never reach that fallback even with a
+        # recorded independent cold review.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="evilhacker")]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "untrusted_author_public_repo"
+
+    def test_trusted_author_merges_normally_on_public_repo(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="github", handle=SELF_LOGIN)
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=SELF_LOGIN)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].payload["reason"] == "all_green"
+
+
+class TestForkAlwaysHolds:
+    """The #3244 rung: a FORK PR always holds for a human, even a trusted author."""
+
+    def test_trusted_author_fork_skips_before_clear_and_never_merges(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        # The author IS trusted and an actionable CLEAR exists — yet the fork
+        # provenance rung fires first, so the keystone is never called. This is
+        # the model change: on the old author gate this same PR would merge.
+        TrustedIdentity.objects.get_or_create(platform="github", handle=SELF_LOGIN)
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=SELF_LOGIN, same_repo=False)]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "fork_requires_human_approval"
+
+    def test_same_repo_bot_passes_the_rung_and_arms_review(self) -> None:
+        # A same-repo bot PR (not an operator identity) is trusted provenance, so
+        # the solo cold-review arm covers it — else it never gains the merge_safe
+        # verdict the sweep merges on.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="app/github-actions", same_repo=True)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(
+            api=api,
+            keystone=keystone,
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, f"https://github.com/{SLUG}/pull/6230", "teatree")]
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        assert signals[0].payload["review_dispatched"] is True
+
+    def test_same_repo_bot_with_merge_safe_verdict_merges(self) -> None:
+        # Provenance trusted (same-repo) + a recorded independent merge_safe verdict
+        # at the live head ⇒ the solo bypass merges the bot PR.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="app/github-actions", same_repo=True)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
 
 
 class TestSkipPaths:
@@ -283,14 +515,15 @@ class TestSkipPaths:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
 
     def test_required_check_not_green_blocks_merge(self) -> None:
         _issue_clear()
-        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        red_required = _check("test (3.13)", conclusion="FAILURE")
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,))]})
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
@@ -299,6 +532,43 @@ class TestSkipPaths:
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
+
+    def test_failed_non_required_check_does_not_block_merge(self) -> None:
+        # #12 anti-vacuity (RED before the fix): a FAILED advisory check that is
+        # NOT in the branch-protection required set (`eval`) must NOT block — the
+        # pre-fix `classify_checks` counted every red and skipped on `ci_red`.
+        # Required set is the default `{"test (3.13)"}`; `eval` is advisory.
+        clear = _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _check("eval", conclusion="FAILURE")))]},
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["reason"] == "all_green"
+
+    def test_stale_failure_superseded_by_newer_success_does_not_block(self) -> None:
+        # #12 anti-vacuity (RED before the fix): the sweep now dedupes newest-per-
+        # name like the keystone (#2583). A stale FAILURE for the required
+        # `test (3.13)` superseded by a newer SUCCESS must NOT block; the pre-fix
+        # sweep had no dedupe and skipped on the stale red.
+        clear = _issue_clear()
+        stale = _check("test (3.13)", conclusion="FAILURE")
+        stale["startedAt"] = "2026-06-19T09:00:00Z"
+        stale["completedAt"] = "2026-06-19T09:05:00Z"
+        fresh = _green_required()  # startedAt/completedAt at _T0/_T1 (newer)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(stale, fresh))]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].kind == "pr_sweep.merged"
 
 
 class TestUvAuditFallback:
@@ -311,7 +581,8 @@ class TestUvAuditFallback:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert notifier.calls == []
@@ -326,7 +597,8 @@ class TestUvAuditFallback:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert keystone.calls == [int(clear.pk)]
         assert api.merge_pr_calls == []  # keystone took it; no gh fallback
@@ -343,7 +615,8 @@ class TestUvAuditFallback:
         keystone = FakeKeystone(merged=False, error="uv-audit failing", merged_sha="")
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]
@@ -385,7 +658,8 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "blueprint-cross-pr"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].kind == "pr_sweep.needs_branch_update"
@@ -402,21 +676,23 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["decision"] == "needs_branch_update"
 
     def test_genuine_test_failure_still_classifies_ci_red_not_branch_update(self) -> None:
         _issue_clear()
-        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        red_required = _check("test (3.13)", conclusion="FAILURE")
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(red_required, _red_blueprint_cross_pr()), behind_main=True)]},
         )
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "blueprint-cross-pr"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
@@ -430,7 +706,8 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "blueprint-cross-pr"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
@@ -444,7 +721,8 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
@@ -461,7 +739,7 @@ class TestMultiRepo:
             head_sha=HEAD,
             is_draft=True,
             has_changes_requested=False,
-            checks=(_green_required(),),
+            rollup=(_green_required(),),
         )
         api = FakePrApiClient(prs_by_slug={SLUG: [pr_a], other: [pr_b]})
         keystone = FakeKeystone()
@@ -473,6 +751,34 @@ class TestMultiRepo:
         assert kinds == ["pr_sweep.merged", "pr_sweep.skip"]
         assert signals[1].payload["slug"] == other
         assert signals[1].payload["reason"] == "draft"
+
+    def test_scanner_error_mid_pass_preserves_earlier_merge_signals(self) -> None:
+        # F5.8: repo A merges a PR (producing a signal with a real side effect),
+        # then repo B's list hits an auth failure. The pass must NOT re-raise and
+        # discard repo A's merge signal — the merge already happened.
+        other = "example-org/example-repo"
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr()]},
+            scanner_error_slugs=frozenset({other}),
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, repos=(SLUG, other))
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert keystone.calls  # the merge for repo A actually ran
+
+    def test_scanner_error_with_no_signals_still_raises_for_dispatcher(self) -> None:
+        # F5.8: when the pass produced NO signals, the recoverable error must still
+        # surface to the dispatcher (#1287) so a sustained auth failure is recorded.
+        api = FakePrApiClient(scanner_error_slugs=frozenset({SLUG}))
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, repos=(SLUG,))
+
+        with pytest.raises(ScannerError):
+            scanner.scan()
 
 
 class TestSoloOverlayBypassesClearGate:
@@ -531,7 +837,8 @@ class TestSoloOverlayBypassesClearGate:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert api.merge_pr_calls == []
@@ -740,7 +1047,7 @@ class TestAutoReviewDispatch:
 
     def test_red_ci_suppresses_dispatch(self) -> None:
         # A red required check skips before the cold-review gate — no review task.
-        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        red_required = _check("test (3.13)", conclusion="FAILURE")
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,))]})
         scanner, _ = _scanner(
@@ -1145,7 +1452,8 @@ class TestMergeableAwaitingReviewFlag:
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]})
         scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert notifier.flag_calls == []
         assert signals[0].kind == "pr_sweep.skip"
@@ -1196,53 +1504,61 @@ class TestGhConflictDecode:
 class TestSlackMergeNotifier:
     """The Slack DM notifier posts on a merge and on a flag-level signal."""
 
-    @dataclass(slots=True)
-    class _Backend:
-        posts: list[tuple[str, str]] = field(default_factory=list)
+    @staticmethod
+    def _backend() -> MagicMock:
+        b = MagicMock()
+        b.open_dm.return_value = "D-USER"
+        b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
+        b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
+        return b
 
-        def post_dm(self, *, channel: str, text: str) -> None:
-            self.posts.append((channel, text))
+    def test_announce_dms_the_owner_once_per_merge(self) -> None:
+        backend = self._backend()
+        notifier = SlackMergeNotifier(backend=backend, user_id="U1")
+        notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
+        # A second announce of the SAME merge is an idempotent no-op (once per SHA).
+        notifier.announce(slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False)
 
-    def test_announce_posts_merge_dm(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").announce(
-            slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False
-        )
-        assert backend.posts == [("U1", f"merged {SLUG}#42 @ {MAIN_SHA[:8]}")]
+        backend.post_message.assert_called_once()
+        assert f"merged {SLUG}#42 @ {MAIN_SHA[:8]}" in backend.post_message.call_args.kwargs["text"]
+        row = BotPing.objects.get(idempotency_key=f"merge-announce:{SLUG}#42:{MAIN_SHA}")
+        assert row.status == BotPing.Status.SENT
+        assert row.audience == "owner_delivery"
 
     def test_announce_marks_uv_audit_fallback(self) -> None:
-        backend = self._Backend()
+        backend = self._backend()
         SlackMergeNotifier(backend=backend, user_id="U1").announce(slug=SLUG, pr_id=42, merged_sha="", fallback=True)
-        assert backend.posts == [("U1", f"merged (uv-audit fallback) {SLUG}#42 @ ?")]
+        assert f"merged (uv-audit fallback) {SLUG}#42 @ ?" in backend.post_message.call_args.kwargs["text"]
 
-    def test_flag_posts_clickable_url(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+    def test_two_flag_calls_send_zero_owner_dms(self) -> None:
+        backend = self._backend()
+        notifier = SlackMergeNotifier(backend=backend, user_id="U1")
+        notifier.flag(slug=SLUG, pr_id=42, reason="no_independent_review", url="")
+        notifier.flag(slug=SLUG, pr_id=42, reason="no_independent_review", url="")
+
+        backend.open_dm.assert_not_called()
+        backend.post_message.assert_not_called()
+        # The flag is INTERNAL: logged once (idempotent), never DM'd.
+        rows = BotPing.objects.filter(idempotency_key=f"pr-sweep-flag:{SLUG}#42:no_independent_review")
+        assert rows.count() == 1
+        assert rows.first().status == BotPing.Status.LOGGED
+        assert rows.first().audience == "internal"
+
+    def test_flag_records_a_logged_row_never_a_dm(self) -> None:
+        SlackMergeNotifier(backend=self._backend(), user_id="U1").flag(
             slug=SLUG, pr_id=42, reason="conflict", url="https://github.com/x/pull/42"
         )
-        assert backend.posts == [("U1", "flag (conflict) https://github.com/x/pull/42")]
+        row = BotPing.objects.get(idempotency_key=f"pr-sweep-flag:{SLUG}#42:conflict")
+        assert row.status == BotPing.Status.LOGGED
+        assert "flag (conflict) https://github.com/x/pull/42" in row.text
 
-    def test_flag_falls_back_to_slug_when_url_missing(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").flag(
-            slug=SLUG, pr_id=42, reason="no_independent_review", url=""
-        )
-        assert backend.posts == [("U1", f"flag (no_independent_review) {SLUG}#42")]
-
-    def test_mergeable_flag_posts_ready_to_request_review_message(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+    def test_mergeable_flag_is_internal_log_only(self) -> None:
+        SlackMergeNotifier(backend=self._backend(), user_id="U1").flag(
             slug=SLUG, pr_id=42, reason="mergeable_awaiting_review", url="https://github.com/x/pull/42"
         )
-        assert backend.posts == [("U1", "mergeable, ready to request review https://github.com/x/pull/42")]
-
-    def test_no_user_id_posts_nothing(self) -> None:
-        backend = self._Backend()
-        SlackMergeNotifier(backend=backend, user_id="").flag(slug=SLUG, pr_id=42, reason="conflict", url="")
-        assert backend.posts == []
-
-    def test_backend_without_post_method_is_silent(self) -> None:
-        SlackMergeNotifier(backend=object(), user_id="U1").flag(slug=SLUG, pr_id=42, reason="conflict", url="")
+        row = BotPing.objects.get(idempotency_key=f"pr-sweep-flag:{SLUG}#42:mergeable_awaiting_review")
+        assert row.status == BotPing.Status.LOGGED
+        assert "mergeable, ready to request review https://github.com/x/pull/42" in row.text
 
 
 class TestErrorIsolation:
@@ -1288,13 +1604,13 @@ class TestErrorIsolation:
         class _BoomFirstKeystone:
             calls: list[int] = field(default_factory=list)
 
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+            def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
                 self.calls.append(clear_id)
                 if not self.calls or (self.calls == [clear_id] and len(self.calls) == 1):
                     # First call: inject a fault to simulate a merge conflict / DB error
                     msg = "simulated keystone failure"
                     raise RuntimeError(msg)
-                return True, MAIN_SHA, ""  # pragma: no cover
+                return True, MAIN_SHA, "", "", ""  # pragma: no cover
 
         # Issue a CLEAR for both PRs so _evaluate reaches _merge for each.
         _issue_clear(pr_id=6230)
@@ -1315,7 +1631,7 @@ class TestErrorIsolation:
 
         @dataclass(slots=True)
         class _AuthErrorKeystone:
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+            def merge_clear(self, *, clear_id: int, human_authorized: str = "") -> tuple[bool, str, str, str, str]:
                 raise ScannerError(
                     scanner="pr_sweep",
                     error_class=ScannerErrorClass.AUTH,
@@ -1411,3 +1727,308 @@ class TestEvaluateOne:
         assert attempt.merged is False
         assert attempt.decision == "flag_no_review"
         assert api.merge_pr_calls == []
+
+
+class TestSubstrateHoldPing:
+    """A HELD substrate merge pings the owner ONCE per diff (ping-and-hold, #3.1)."""
+
+    def test_substrate_hold_pings_once_with_per_diff_key(self) -> None:
+        # The anti-vacuity test (a): a substrate refusal from the keystone fires
+        # exactly one notify ping with the per-diff idempotency key. Before the
+        # fix the held substrate clear was swallowed silently with no ping.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+        text, key = pinger.calls[0]
+        assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
+        assert f"{SLUG}#6230" in text
+
+    def test_non_substrate_block_does_not_ping(self) -> None:
+        # The anti-vacuity twin (b-adjacent): a NON-substrate keystone refusal
+        # never pings — the loop pings ONLY on substrate.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="some other refusal", escalation_kind="")
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        scanner.scan()
+
+        assert pinger.calls == []
+
+    def test_substrate_hold_without_pinger_does_not_crash(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held", escalation_kind="substrate")
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=None)
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["decision"] == "blocked"
+
+    def test_substrate_clear_in_uv_audit_fallback_holds_and_pings_no_raw_merge(self) -> None:
+        # Finding 1 (fail-open): a SUBSTRATE CLEAR whose only red check is uv-audit
+        # (and main is also uv-audit-red) lands on the keystone fallback path. When
+        # the keystone refuses (substrate hold), the legacy code raw-merged via
+        # ``merge_pr_squash_bound`` BEFORE the substrate-ping check — silently
+        # bypassing the hold. The fix gates the raw-merge on the CLEAR not being
+        # substrate, so a substrate PR HOLDS + pings instead.
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=True,
+        )
+        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the raw gh fallback was NOT fired for substrate
+        assert notifier.calls == []  # no merge announcement
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+        _, key = pinger.calls[0]
+        assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
+
+    def test_non_substrate_uv_audit_fallback_still_raw_merges_on_keystone_refusal(self) -> None:
+        # Anti-vacuity twin: the NON-substrate uv-audit fallback escalation is
+        # unchanged — a logic-class CLEAR whose keystone refuses still raw-merges
+        # via gh and never pings. Guards against over-gating Finding 1.
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=True,
+        )
+        keystone = FakeKeystone(merged=False, error="uv-audit failing", escalation_kind="")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # non-substrate still escalates
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]
+        assert signals[0].payload["reason"] == "fallback_uv_audit_gh"
+        assert pinger.calls == []
+
+    def test_substrate_hold_sends_no_owner_dm_and_logs_once(self) -> None:
+        # F3: a substrate hold is INTERNAL — logged, NEVER DM'd — so a held diff
+        # can never redeliver a stale merge DM to the owner. Uses the REAL
+        # NotifyWithFallbackSubstratePinger; the (unused) Slack boundary is faked
+        # to prove no post is attempted across two ticks.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held: substrate", escalation_kind="substrate")
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=NotifyWithFallbackSubstratePinger())
+
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-USER"
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000100"}
+
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            scanner.scan()
+            scanner.scan()
+
+        key = f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
+        # No owner DM at all, and the internal signal is logged exactly once.
+        backend.post_message.assert_not_called()
+        assert BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.LOGGED).count() == 1
+
+
+class TestSoloOverlaySubstrateHold:
+    """Finding 2 (fail-open): the solo-overlay no-CLEAR bypass must hold substrate.
+
+    The bypass raw-merges a green+clean+cold-reviewed own PR via
+    ``merge_pr_squash_bound`` when no CLEAR exists — with ZERO substrate gating.
+    A substrate PR on a solo overlay (cold-review, no CLEAR) would therefore
+    auto-merge with no hold and no ping, bypassing the keystone substrate
+    guarantee. The fix classifies the PR's changed paths before the direct
+    merge; a substrate diff (or an unfetchable one — fail-safe) HOLDS + pings
+    instead of merging.
+    """
+
+    def test_solo_overlay_substrate_pr_holds_and_pings_no_raw_merge(self) -> None:
+        # Cold-review recorded, no CLEAR, CI green — the bypass would merge — but
+        # the diff touches a substrate path, so it HOLDS + pings instead.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
+            return_value=["src/teatree/core/merge/authorization.py"],
+        ):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the raw gh merge was NOT fired for substrate
+        assert notifier.calls == []  # no merge announcement
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+        _, key = pinger.calls[0]
+        assert key == f"substrate-hold:{SLUG}#6230:{HEAD}"
+
+    def test_solo_overlay_non_substrate_pr_still_merges_via_gh_fallback(self) -> None:
+        # Anti-vacuity twin: a NON-substrate diff on the solo overlay still merges
+        # via the direct gh fallback. Guards against over-gating Finding 2.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
+            return_value=["src/teatree/loop/scanners/pr_sweep.py"],
+        ):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # non-substrate still merges
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        assert pinger.calls == []
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+
+    def test_solo_overlay_unfetchable_paths_fail_safe_holds(self) -> None:
+        # FAIL-SAFE: a real PR always changes >=1 file, so an empty changed-paths
+        # list signals the forge fetch failed. The bypass must treat the can't-tell
+        # case conservatively — HOLD + ping, never widen to a silent merge.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths", return_value=[]):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the can't-tell case held, did not merge
+        assert notifier.calls == []
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+
+    def test_solo_overlay_paths_fetch_raises_fail_safe_holds(self) -> None:
+        # FAIL-SAFE: a forge exception during the changed-paths fetch must also hold,
+        # never crash the sweep into the silent-merge branch.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths",
+            side_effect=RuntimeError("forge down"),
+        ):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+
+
+class TestSubstrateStandingDelegation:
+    """#3413: the sweep presents the owner's config-sourced standing substrate authorizer.
+
+    Empty (the default) presents nothing — the keystone holds substrate and the
+    sweep pings-and-holds (byte-identical to before). When configured, the sweep
+    re-presents the id as ``--human-authorized`` ONLY for a substrate-labeled CLEAR
+    (so the interactive non-substrate refusal guard is never tripped), and posts the
+    "informed, not asked" DM only when the keystone confirms the merge was
+    authorized by that standing delegation.
+    """
+
+    _AUTHORIZER = "owner:standing"
+
+    def test_no_config_presents_no_authorizer_and_holds(self) -> None:
+        # Default (unset): even a substrate CLEAR is presented with an EMPTY
+        # authorizer, so the keystone holds and the sweep pings-and-holds.
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        signals = scanner.scan()
+
+        assert keystone.authorized_calls == [(int(clear.pk), "")]
+        assert signals[0].payload["decision"] == "blocked"
+        # The hold ping fired; no auto-merge notification.
+        assert len(pinger.calls) == 1
+        assert pinger.calls[0][1].startswith("substrate-hold:")
+
+    def test_config_presents_authorizer_for_substrate_clear(self) -> None:
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True, standing_delegation_by=self._AUTHORIZER)
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(
+            api=api, keystone=keystone, substrate_pinger=pinger, substrate_standing_authorizer=self._AUTHORIZER
+        )
+
+        scanner.scan()
+
+        assert keystone.authorized_calls == [(int(clear.pk), self._AUTHORIZER)]
+
+    def test_config_does_not_present_authorizer_for_non_substrate_clear(self) -> None:
+        # A logic/docs CLEAR must NOT receive the substrate authorizer — presenting
+        # ``--human-authorized`` on a non-substrate CLEAR would be refused outright.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True)
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_standing_authorizer=self._AUTHORIZER)
+
+        scanner.scan()
+
+        assert keystone.authorized_calls == [(int(clear.pk), "")]
+
+    def test_standing_delegation_merge_posts_informed_notification(self) -> None:
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True, merged_sha=MAIN_SHA, standing_delegation_by=self._AUTHORIZER)
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(
+            api=api, keystone=keystone, substrate_pinger=pinger, substrate_standing_authorizer=self._AUTHORIZER
+        )
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["merged"] is True
+        # The ordinary merge announcement still fires...
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        # ...plus the "informed, not asked" substrate DM (PR #, CLEAR id, SHA, authorizer).
+        assert len(pinger.calls) == 1
+        text, key = pinger.calls[0]
+        assert key == f"substrate-auto-merged:{SLUG}#6230:{MAIN_SHA}"
+        assert f"{SLUG}#6230" in text
+        assert f"CLEAR #{clear.pk}" in text
+        assert self._AUTHORIZER in text
+
+    def test_ordinary_merge_does_not_post_substrate_notification(self) -> None:
+        # A non-delegated merge (keystone returns empty standing_delegation_by) posts
+        # only the ordinary announcement — never the substrate auto-merge DM.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=True, standing_delegation_by="")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        scanner.scan()
+
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        assert pinger.calls == []

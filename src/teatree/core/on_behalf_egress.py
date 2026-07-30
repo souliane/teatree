@@ -48,6 +48,7 @@ import logging
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -70,12 +71,12 @@ class OnBehalfSlackEgress:
         Reuses the single #1750 destination test rather than inventing a
         second classifier: the on-behalf carve-out boundary and the
         token-routing boundary are the same line of truth, so a colleague's
-        ``D…`` id can never be mistaken for self. Fail-closed: a backend
-        with no ``route_token`` accessor (a fake / Noop with no #1750
-        router) is treated as a colleague surface — an unclassifiable
-        destination fires the gate rather than slipping past it.
+        ``D…`` id can never be mistaken for self. Fail-closed: unknown
+        surface (no ``route_token`` accessor) is treated as colleague surface
+        with explicit logging of the surface name to aid debugging.
         """
         if getattr(self._messaging, "route_token", None) is None:
+            logger.warning("unclassifiable surface (no route_token): %s — treating as colleague surface", channel)
             return False
         return bool(self._messaging._is_self_dm(channel))  # type: ignore[attr-defined]  # noqa: SLF001
 
@@ -103,6 +104,7 @@ class OnBehalfSlackEgress:
         """
         if self._is_self_dm(channel):
             return self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
+        _route_colleague_send(channel=channel, payload=f":{emoji}:", action=action, target=target)
         response = require_on_behalf_approval(
             target=target,
             action=action,
@@ -152,11 +154,12 @@ class OnBehalfSlackEgress:
         so callers keep inspecting ``ok`` / ``error`` / ``ts``.
         """
         if self._is_self_dm(channel):
-            from teatree.core.speak import deliver_user_dm  # noqa: PLC0415
+            from teatree.core.speak import deliver_user_dm  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
             response = deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
             _retire_threaded_answer(thread_ts)
             return response
+        text = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
         response = require_on_behalf_approval(
             target=target,
             action=action,
@@ -171,6 +174,30 @@ class OnBehalfSlackEgress:
                 summary=summary or text[:120],
             )
         return response
+
+
+def _route_colleague_send(*, channel: str, payload: str, action: str, target: str) -> str:
+    """Route a colleague-surface Slack send through the #117 send-proxy.
+
+    Returns the (possibly redacted, in ``enforce`` mode) payload to post. Raises
+    :class:`~teatree.core.send_proxy.SendBlockedError` when the proxy refuses the
+    destination (``enforce`` mode, destination absent from the allowlist) — a
+    pre-wire block that composes with the on-behalf gate below it. On the ``warn``
+    ship default the proxy always allows and returns the payload unchanged, so
+    this is an audit-only pass.
+    """
+    verdict = route_send(
+        SendRequest(
+            channel=SendChannel.SLACK,
+            destination=channel,
+            payload=payload,
+            action=action,
+            target=target,
+        ),
+    )
+    if not verdict.allowed:
+        raise SendBlockedError(verdict)
+    return verdict.payload
 
 
 def _retire_threaded_answer(thread_ts: str) -> None:
@@ -190,7 +217,7 @@ def _retire_threaded_answer(thread_ts: str) -> None:
     """
     if not thread_ts:
         return
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
         PendingChatInjection.retire_answered_in_thread(thread_ts)

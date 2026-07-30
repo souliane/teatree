@@ -1,8 +1,10 @@
-"""Review mini-loop — reviewer-PR / Slack-review-intent / broadcast / codex / sweep wiring.
+"""Review mini-loop — the single review intake (self + colleague PRs) + broadcasts.
 
-Five-minute default cadence. Reviewer-PR work is event-bursty (a
-colleague pushes a new SHA, the loop fires once, the work is done) so
-sub-minute polling buys nothing.
+Five-minute default cadence. Both the owner's OWN open PRs (always) and colleague
+requested-reviewer PRs (when ``admit_colleague_prs_to_board`` is on) feed the same
+``reviewing`` → ``t3:reviewer`` gate; the author distinction lives upstream in the
+intake (#3569). Review work is event-bursty (a new SHA, the loop fires once, the
+work is done) so sub-minute polling buys nothing.
 """
 
 from typing import TYPE_CHECKING
@@ -22,9 +24,9 @@ def _build_jobs(
     **_: object,
 ) -> "list[_ScannerJob]":
     """Build per-overlay reviewer-PR + companion review-related scanners."""
-    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
-    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
-    from teatree.loop.scanners import ReviewerPrsScanner  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.loop.scanners import ReviewerPrsScanner  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     if backends:
         all_backends = tuple(backends)

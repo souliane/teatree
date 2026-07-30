@@ -59,11 +59,7 @@ def _http_404() -> httpx.HTTPStatusError:
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
     # ``on_behalf_post_mode`` is DB-home (#1775): it resolves only from the
-    # ``ConfigSetting`` store, so staging it via TOML would be a no-op on read.
-    # An empty config file keeps the active-config path pinned to ``tmp_path``.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    # ``ConfigSetting`` store.
     ConfigSetting.objects.set_value("on_behalf_post_mode", mode.value)
 
 

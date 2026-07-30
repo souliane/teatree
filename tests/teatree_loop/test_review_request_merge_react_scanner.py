@@ -86,7 +86,6 @@ class _SeedMixin:
             "channel": "C_REVIEW",
             "thread_ts": "1700000000.001",
             "days_old": 0.1,
-            "last_nag_step": 0,
             "done_at": None,
         }
         spec.update(overrides)
@@ -96,7 +95,6 @@ class _SeedMixin:
             slack_channel_id=spec["channel"],
             slack_thread_ts=spec["thread_ts"],
             created_at=created_at,
-            last_nag_step=spec["last_nag_step"],
             done_at=spec["done_at"],
         )
 

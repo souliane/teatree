@@ -4,8 +4,9 @@ from unittest.mock import MagicMock
 
 from django.test import TestCase
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import OutboundClaim
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:
@@ -23,6 +24,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
             "tests passing on s-1019",
             kind=NotifyKind.INFO,
             idempotency_key="sess=a;turn=1",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -43,6 +45,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
             "won't post",
             kind=NotifyKind.INFO,
             idempotency_key="failed-key",
+            audience=NotifyAudience.OWNER_DELIVERY,
             backend=backend,
             user_id="U_ME",
         )
@@ -55,13 +58,14 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
         fake_settings = MagicMock()
         fake_settings.notify_user_via_bot = False
         # `notify_user` lives in `teatree.core.notify` since #1009 — the
-        # top-level `teatree.notify` is a thin re-export. Patch where the
+        # top-level `teatree.core.notify` is a thin re-export. Patch where the
         # real `get_effective_settings` is bound.
         with patch("teatree.core.notify.get_effective_settings", return_value=fake_settings):
             notify_user(
                 "shh",
                 kind=NotifyKind.INFO,
                 idempotency_key="disabled-key",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=backend,
                 user_id="U_ME",
             )
@@ -80,6 +84,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "tests passing",
                 kind=NotifyKind.INFO,
                 idempotency_key="sess=z;turn=1",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=_backend(),
                 user_id="U_ME",
             )
@@ -104,6 +109,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
                 "tests passing",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-error-key",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 backend=_backend(),
                 user_id="U_ME",
             )

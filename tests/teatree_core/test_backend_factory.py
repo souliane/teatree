@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,17 +13,26 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
+from teatree.backends.notion import NotionClient
+from teatree.backends.sentry import SentryClient
+from teatree.backends.sharepoint import SharePointClient
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.types import Service
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     ci_service_from_overlay,
     code_host_for_repo_from_overlay,
     code_host_from_overlay,
+    configured_messaging_from_overlay,
     messaging_from_overlay,
+    notion_client_from_overlay,
     reset_backend_caches,
+    sentry_client_from_overlay,
+    sharepoint_client_from_overlay,
 )
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.backend_protocols import BackendResolutionError, MessagingBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +122,91 @@ def test_messaging_from_overlay_returns_none_when_overlay_not_configured() -> No
         assert messaging_from_overlay() is None
 
 
+class _NotionConfig(OverlayConfig):
+    def get_notion_token(self) -> str:
+        return "ntn_secret"
+
+
+class _NotionOverlay(OverlayBase):
+    config = _NotionConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+def test_notion_client_from_overlay_returns_none_when_no_token() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert notion_client_from_overlay() is None
+
+
+def test_notion_client_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(overlay_loader_mod, "_discover_overlays", return_value={}):
+        assert notion_client_from_overlay() is None
+
+
+def test_notion_client_from_overlay_builds_client_when_token_present() -> None:
+    with _patch_overlay(_NotionOverlay):
+        assert isinstance(notion_client_from_overlay(), NotionClient)
+
+
+class _SentryOverlay(OverlayBase):
+    config = OverlayConfig(sentry_org="acme", sentry_url="https://sentry.example.com")
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+def test_sentry_client_from_overlay_returns_none_when_no_org() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert sentry_client_from_overlay() is None
+
+
+def test_sentry_client_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(overlay_loader_mod, "_discover_overlays", return_value={}):
+        assert sentry_client_from_overlay() is None
+
+
+def test_sentry_client_from_overlay_builds_client_through_provider_when_org_present() -> None:
+    with _patch_overlay(_SentryOverlay):
+        client = sentry_client_from_overlay()
+
+    assert isinstance(client, SentryClient)
+    assert client.org == "acme"
+    assert client.base_url == "https://sentry.example.com"
+
+
+_SHAREPOINT_ENV = {
+    "TEATREE_SHAREPOINT_REMOTE": "sp:",
+    "TEATREE_SHAREPOINT_ROOT": "Shared Documents",
+    "TEATREE_SHAREPOINT_CONFIG": "/enc/rclone.conf",
+    "TEATREE_SHAREPOINT_PASSWORD_COMMAND": "pass rclone-config",
+    "TEATREE_SHAREPOINT_SITE_URL": "https://tenant.sharepoint.com/sites/Team",
+}
+
+
+def test_sharepoint_client_from_overlay_returns_none_when_remote_env_unset() -> None:
+    with patch.dict(os.environ, {"TEATREE_SHAREPOINT_REMOTE": ""}, clear=False):
+        assert sharepoint_client_from_overlay() is None
+
+
+def test_sharepoint_client_from_overlay_builds_client_through_provider_from_env() -> None:
+    with patch.dict(os.environ, _SHAREPOINT_ENV, clear=False):
+        client = sharepoint_client_from_overlay()
+
+    assert isinstance(client, SharePointClient)
+    assert client.remote == "sp:"
+    assert client.root == "Shared Documents"
+    assert client.config_path == "/enc/rclone.conf"
+    assert client.password_command == "pass rclone-config"
+    assert client.site_url == "https://tenant.sharepoint.com/sites/Team"
+
+
 def test_messaging_from_overlay_delegates_to_loader() -> None:
     with (
         _patch_overlay(_NoTokenOverlay),
@@ -122,6 +216,59 @@ def test_messaging_from_overlay_delegates_to_loader() -> None:
 
     assert result == "sentinel"
     get_messaging_mock.assert_called_once()
+
+
+class _SlackOverlay(OverlayBase):
+    config = OverlayConfig(messaging_backend="slack", required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class _NoopSlackOverlay(OverlayBase):
+    """Declares Service.SLACK but defaults ``messaging_backend`` to noop (#3299)."""
+
+    config = OverlayConfig(required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestConfiguredMessagingFromOverlay:
+    """`configured_messaging_from_overlay` honours the MCP resolver contract (#3299).
+
+    ``messaging_from_overlay`` returns a truthy ``NoopMessagingBackend`` for a
+    noop overlay, which the declaring-overlay resolver wrongly accepts; the
+    configured seam returns ``None`` there so the resolver keeps searching.
+    """
+
+    def test_returns_none_when_overlay_messaging_is_noop(self) -> None:
+        with _patch_overlay(_NoopSlackOverlay):
+            assert configured_messaging_from_overlay("test") is None
+
+    def test_returns_backend_when_overlay_declares_slack(self) -> None:
+        with (
+            _patch_overlay(_SlackOverlay),
+            patch("teatree.backends.loader.get_messaging", return_value="sentinel"),
+        ):
+            assert configured_messaging_from_overlay("test") == "sentinel"
+
+    def test_resolver_reaches_second_overlay_past_a_noop_slack_declarer(self) -> None:
+        overlays = {"noop-first": _NoopSlackOverlay(), "real-second": _SlackOverlay()}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlays),
+            patch("teatree.backends.loader.get_messaging", return_value="real-slack"),
+        ):
+            client = resolve_declaring_overlay_client(
+                Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
+            )
+        assert client == "real-slack"
 
 
 def test_reset_backend_caches_clears_all_caches() -> None:
@@ -463,3 +610,110 @@ class TestActiveOverlayName:
         env = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
         with patch.dict(os.environ, env, clear=True):
             assert backend_factory._active_overlay_name(None) == ""
+
+
+# --- F4.5: a transient None must not be cached for the process lifetime -------
+
+
+def test_transient_none_code_host_is_not_cached_permanently(monkeypatch) -> None:
+    # A one-tick None (credentials momentarily unresolved) must not disable the
+    # code host until restart — the next call past the short TTL re-resolves.
+    monkeypatch.setattr(backend_factory, "_ERROR_NONE_TTL_SECONDS", 0.0)
+    real = GitHubCodeHost(token="tok")
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None, real]) as build:
+        assert code_host_from_overlay("x") is None
+        assert code_host_from_overlay("x") is real
+    assert build.call_count == 2
+
+
+def test_none_code_host_is_served_from_the_short_ttl_window() -> None:
+    # Within the TTL the None is reused — the factory does not rebuild every call.
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None]) as build:
+        assert code_host_from_overlay("y") is None
+        assert code_host_from_overlay("y") is None
+    assert build.call_count == 1
+
+
+def test_resolved_code_host_is_cached_for_the_process_life() -> None:
+    real = GitHubCodeHost(token="tok")
+    with patch.object(backend_factory, "_build_code_host", side_effect=[real]) as build:
+        assert code_host_from_overlay("z") is real
+        assert code_host_from_overlay("z") is real
+    assert build.call_count == 1
+
+
+def test_transient_none_messaging_is_not_cached_permanently(monkeypatch) -> None:
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.core.backend_protocols import MessagingBackend  # noqa: PLC0415
+
+    monkeypatch.setattr(backend_factory, "_ERROR_NONE_TTL_SECONDS", 0.0)
+    real = MagicMock(spec=MessagingBackend)
+    with patch.object(backend_factory, "_build_messaging", side_effect=[None, real]) as build:
+        assert messaging_from_overlay("mx") is None
+        assert messaging_from_overlay("mx") is real
+    assert build.call_count == 2
+
+
+def test_reset_clears_the_none_ttl_maps() -> None:
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None, GitHubCodeHost(token="t")]):
+        assert code_host_from_overlay("r") is None
+        reset_backend_caches()
+        # After a reset the stale-None window is gone — the next call rebuilds.
+        assert code_host_from_overlay("r") is not None
+
+
+# --- Account-switch self-heal: a /login switch must reset the caches ----------
+
+
+class TestAccountSwitchSelfHeal:
+    """A Claude ``/login`` switch self-resets the caches in long-lived processes.
+
+    The MCP server and loop worker never re-run the SessionStart switch detector,
+    so before this guard they kept serving the backend resolved under the *old*
+    account and dropped every owner DM silently. The cache-read path now
+    re-resolves the moment the live account fingerprint diverges from the one the
+    cache was populated under — no restart needed.
+    """
+
+    def test_messaging_re_resolves_after_account_switch(self) -> None:
+        fingerprint = {"value": "acct-A"}
+        first = MagicMock(spec=MessagingBackend)
+        second = MagicMock(spec=MessagingBackend)
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_messaging", side_effect=[first, second]) as build,
+        ):
+            assert messaging_from_overlay("acct") is first
+            assert messaging_from_overlay("acct") is first  # same account → served from cache, no rebuild
+            fingerprint["value"] = "acct-B"
+            assert messaging_from_overlay("acct") is second  # switch → cache reset → re-resolved
+        assert build.call_count == 2
+
+    def test_code_host_re_resolves_after_account_switch(self) -> None:
+        fingerprint = {"value": "acct-A"}
+        first = GitHubCodeHost(token="tok-A")
+        second = GitHubCodeHost(token="tok-B")
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_code_host", side_effect=[first, second]) as build,
+        ):
+            assert code_host_from_overlay("acct") is first
+            fingerprint["value"] = "acct-B"
+            assert code_host_from_overlay("acct") is second
+        assert build.call_count == 2
+
+    def test_unreadable_fingerprint_never_wipes_a_healthy_cache(self) -> None:
+        # An empty fingerprint means "cannot tell" (unreadable ~/.claude.json) and
+        # must never reset a working cache — otherwise a transient read failure
+        # would rebuild the backend on every call.
+        fingerprint = {"value": "acct-A"}
+        real = MagicMock(spec=MessagingBackend)
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_messaging", side_effect=[real]) as build,
+        ):
+            assert messaging_from_overlay("acct") is real
+            fingerprint["value"] = ""  # cannot tell
+            assert messaging_from_overlay("acct") is real  # cache held, not rebuilt
+        assert build.call_count == 1

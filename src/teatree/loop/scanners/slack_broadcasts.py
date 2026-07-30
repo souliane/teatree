@@ -30,9 +30,16 @@ Idempotency
 -----------
 
 The :class:`ScannedBroadcast` ledger key ``(channel, slack_ts)`` makes
-re-scanning safe. A re-classification (pending → all_merged once the
-last open MR closes) updates the row and re-reacts; an unchanged
-classification is a no-op.
+re-scanning safe: one row per broadcast, whatever the tick count. A
+re-classification (pending → all_merged once the last open MR closes)
+updates the row and re-reacts.
+
+Emission is gated separately, on
+:attr:`~teatree.core.models.ScannedBroadcast.awaiting_reviewer_dispatch` —
+a pending broadcast no reviewer task covers is emitted again, so a dispatch
+lost to a dead worker or an exhausted budget is recoverable rather than
+unreachable forever. Duplicate work is prevented downstream, where
+``persist_agent_actions`` reuses the existing Ticket + open reviewing Task.
 
 Channel-list and MR-state lookup are dependency-injected
 -------------------------------------------------------
@@ -41,17 +48,16 @@ Both the per-channel message fetcher and the MR-state classifier are
 function parameters on the scanner, not protocol methods on the
 backend. This keeps the scanner unit-testable without expanding the
 :class:`MessagingBackend` protocol or shelling out to ``glab`` in tests.
-The production wiring (channel-history fetcher on the Slack backend,
-``glab mr view`` based classifier) lands in follow-up #1131-wiring once
-the overlay extension point ``get_review_broadcast_channels()`` is
-designed and merged.
+The production wiring is :class:`BackendChannelHistoryFetcher` (delegating
+to :meth:`MessagingBackend.fetch_channel_history`) and
+:class:`teatree.loop.scanners.slack_broadcast_mr_classifier.GlabGhMrStateClassifier`
+(``glab mr view`` / ``gh pr view``); the tick-jobs builder resolves the
+overlay's broadcast channel list and passes it in, keeping the scanner
+overlay-agnostic.
 """
 
-import json
 import logging
-import os
 import re
-import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -61,16 +67,18 @@ from django.db import OperationalError, ProgrammingError
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.review_candidate import eyes_reacted_by_other
+from teatree.core.review.author_trust import classify_author
+from teatree.core.review.review_candidate import eyes_reacted_by_other
 from teatree.loop.review_claim_signals import (
     filter_review_intent_signals,
     reaction_already_present,
     record_reaction_claim,
 )
 from teatree.loop.review_request_tracker import record_review_request_post
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.types import RawAPIDict
-from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
+from teatree.url_classify import find_pr_urls
+from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +92,21 @@ _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
 class ConnectChannelBotRestrictedError(RuntimeError):
     """Raised when a broadcast in a Slack-Connect channel cannot be reacted to.
 
-    The bot token is rejected on Connect channels and the dual-token
-    fallback (post via the user ``xoxp``) is tracked in #1209 — until
-    that lands, the scanner must hard-fail loudly rather than silently
-    swallow the failed reaction. The error carries the channel id so
-    callers can surface a single actionable message.
+    A Connect channel rejects the bot token, so
+    :func:`teatree.backends.slack.token_policy.channel_token` already routes every
+    WRITE there to the personal ``xoxp``. Reaching this error therefore means that
+    routed token failed too — no user token is configured (the policy falls back to
+    the rejected bot token), or the user token lacks ``reactions:write`` or
+    membership of the partner channel. The scanner hard-fails rather than silently
+    swallowing the dropped reaction; the error carries the channel id so callers can
+    surface a single actionable message.
     """
 
     def __init__(self, channel: str) -> None:
         super().__init__(
-            f"Slack-Connect channel {channel!r} rejected the bot reaction "
-            "and the user-token fallback is not wired (tracked in #1209). "
+            f"Slack-Connect channel {channel!r} rejected the reaction under the routed "
+            "token. Provision the personal token with `t3 setup slack-user-token` and "
+            "confirm it carries reactions:write and membership of the channel. "
             "Scanner is failing loudly per #1131 to avoid silent drops.",
         )
         self.channel = channel
@@ -113,12 +125,23 @@ class MrState:
     ``author.username`` / GitHub ``user.login``) so the scanner can skip
     the ``:eyes:`` review reaction on the user's own MR broadcasts (#1384).
     Empty when the classifier could not read it — treated as "not mine".
+
+    ``head_sha`` carries the MR's current head commit so the review-intent
+    signal can seed ``Ticket.extra["reviewed_sha"]`` the same way the
+    forge-assignment path does. Without it the whole at-head dedup chain
+    (``_already_reviewed_at_head``, ``mark_reviewed_externally``'s stamp,
+    ``ReviewedPrHeadScanner``) has nothing to key on and a broadcast MR is
+    reviewed exactly once, forever — the 2026-07-22 incident. The classifier
+    already fetches the full forge JSON, so this costs no extra I/O. Empty
+    when the classifier could not read it — a fail-open "unknown head", never
+    treated as a moved head.
     """
 
     url: str
     merged: bool
     approved: bool
     author_username: str = ""
+    head_sha: str = ""
 
 
 MrStateClassifier = Callable[[Sequence[str]], list[MrState]]
@@ -189,8 +212,8 @@ def _seed_review_request_posts(
     point for any colleague- or author-broadcast.
 
     Idempotent on ``mr_url`` via ``record_review_request_post``: a re-scan
-    refreshes the channel/thread reference but preserves ``last_nag_step``
-    and ``done_at`` so the nag state machine is not reset. Merged URLs are
+    refreshes the channel/thread reference but preserves ``last_nag_at`` and
+    ``done_at`` so the nag state is not reset. Merged URLs are
     skipped — only open MRs need nagging.
     """
     for state in _open_subset(states):
@@ -236,7 +259,19 @@ class SlackBroadcastsScanner:
         signals: list[ScanSignal] = []
         try:
             for channel in self.channels:
-                signals.extend(self._scan_channel(channel))
+                # F5.5: isolate each channel — one channel's fetch/handle failure
+                # must not starve the channels queued after it. ScannerError
+                # (auth / rate-limit from the classifier) and the DB-not-migrated
+                # OperationalError/ProgrammingError still propagate: they are
+                # not per-channel faults and belong to the dispatcher's #1287
+                # error surface / the pre-migration skip below.
+                try:
+                    signals.extend(self._scan_channel(channel))
+                except (ConnectChannelBotRestrictedError, ScannerError, OperationalError, ProgrammingError):
+                    raise
+                except Exception:
+                    logger.exception("SlackBroadcastsScanner failed on channel %s", channel)
+                    continue
         except (OperationalError, ProgrammingError):
             # ``ScannedBroadcast`` lives in core migration 0028; an
             # install that hasn't run migrations yet raises "no such
@@ -261,7 +296,11 @@ class SlackBroadcastsScanner:
             ts = message.get("ts", "<unknown>")
             try:
                 signals.extend(self._handle_message(channel, message))
-            except ConnectChannelBotRestrictedError:
+            except (ConnectChannelBotRestrictedError, ScannerError):
+                # F5.3: a classifier auth / rate-limit failure is a recoverable
+                # scanner-wide error, not a per-message parse fault — surface it
+                # to the dispatcher (#1287) instead of masking it as a skipped
+                # message. Connect-restriction is likewise loud (#1131).
                 raise
             except Exception:
                 logger.exception("SlackBroadcastsScanner failed on message %s in %s", ts, channel)
@@ -381,23 +420,33 @@ class SlackBroadcastsScanner:
         # posts the outcome reaction). #79: a review-intent dispatch is the
         # work-queue signal; when the review loop is stopped it must not fire.
         return filter_review_intent_signals(
-            _signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states
+            _signal_for_pending_mr(state, row, overlay=self.overlay) for state in open_states
         )
 
     def _user_id(self) -> str:
         return getattr(self.backend, "user_id", "") or self.user_slack_id
 
     def _all_authored_by_me(self, open_states: Sequence[MrState]) -> bool:
-        """True when every open MR in the broadcast is authored by the current user (#1384).
+        """True when every open MR is authored by a trusted identity (#1384, #1773).
 
-        Returns ``False`` when the filter is disabled (no
-        ``current_gitlab_username`` configured) or there are no open MRs, so
-        the legacy react-on-every-pending behaviour is preserved for callers
-        that don't supply the username.
+        The own-author exclusion is a trusted-SET check: an MR by any of the
+        user's identities (DB rows, config fallback, or the configured
+        ``current_gitlab_username``) is their own work, so eyes/dispatch skip.
         """
-        if not self.current_gitlab_username or not open_states:
+        if not open_states:
             return False
-        return all(state.author_username == self.current_gitlab_username for state in open_states)
+        return all(self._author_is_trusted(state) for state in open_states)
+
+    def _author_is_trusted(self, state: MrState) -> bool:
+        author = state.author_username
+        if not author:
+            return False
+        if self.current_gitlab_username and author == self.current_gitlab_username:
+            return True
+        ref = pr_ref_from_url(state.url)
+        if ref is None:
+            return False
+        return classify_author(ref.slug, author, host_kind=ref.host_kind).trusted
 
     def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
         """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).
@@ -456,11 +505,10 @@ class SlackBroadcastsScanner:
         except ConnectChannelBotRestrictedError:
             raise
         except Exception as exc:
-            # A Slack-Connect channel rejecting the bot token is the
-            # specific failure #1131 must surface loudly until #1209
-            # lands; the backend reports it as a generic exception, so
-            # we lift it here. Any other reaction failure is logged
-            # and left to the next tick.
+            # A Connect channel rejecting the reaction is the specific failure
+            # #1131 must surface loudly; the backend reports it as a generic
+            # exception, so we lift it here. Any other reaction failure is
+            # logged and left to the next tick.
             if _looks_like_connect_restriction(exc):
                 raise ConnectChannelBotRestrictedError(channel) from exc
             logger.exception("Failed to react :%s: on %s/%s", emoji, channel, ts)
@@ -469,14 +517,15 @@ class SlackBroadcastsScanner:
 
 
 def _looks_like_connect_restriction(exc: BaseException) -> bool:
-    """Heuristic for the Slack-Connect bot-restricted error shape.
+    """Heuristic for the Slack-Connect restricted-reaction error shape.
 
-    Slack's API returns ``not_in_channel`` / ``channel_not_found`` /
-    ``is_archived`` for the Connect-bot-restricted case. The backend
-    wraps the response in a generic exception with the error code in
-    the message, so the scanner matches on the string. Once #1209
-    introduces typed errors on the backend the heuristic moves to an
-    ``isinstance`` check.
+    Slack returns ``not_in_channel`` / ``channel_not_found`` / ``is_ext_shared``
+    for the Connect-restricted case. ``SlackBotBackend.react`` posts
+    ``reactions.add`` through the transport directly rather than through
+    :mod:`teatree.backends.slack.reactions`, so the typed
+    :class:`~teatree.backends.slack.react_errors.SlackReactionError` never reaches
+    this scanner — the error code arrives only inside a generic exception's
+    message, which is what the match below reads.
     """
     message = str(exc)
     return any(token in message for token in ("not_in_channel", "channel_not_found", "is_ext_shared"))
@@ -499,126 +548,37 @@ class BackendChannelHistoryFetcher:
         return self.backend.fetch_channel_history(channel=channel, limit=self.limit)
 
 
-@dataclass(slots=True)
-class GlabGhMrStateClassifier:
-    """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
-
-    Each URL is dispatched by host: ``glab mr view <url> -F json`` for
-    GitLab merge requests, ``gh pr view <url> --json …`` for GitHub
-    pulls. The classifier reads ``state`` (merged-or-not) and a coarse
-    approval flag (GitLab ``upvotes > 0``, GitHub
-    ``reviewDecision == APPROVED``). Any URL that fails to parse or
-    whose subprocess returns non-zero is treated as
-    ``merged=False, approved=False`` so the scanner falls through to
-    "open MR — please review" — the safe default for a broadcast we
-    couldn't confirm.
-
-    Tokens are optional: when set they're exported as ``GITLAB_TOKEN`` /
-    ``GH_TOKEN`` for each subprocess so a private-repo overlay can
-    classify on behalf of its own PAT.
-    """
-
-    glab_token: str = ""
-    github_token: str = ""
-
-    def __call__(self, urls: Sequence[str]) -> list[MrState]:
-        return [self._classify_one(url) for url in urls]
-
-    def _classify_one(self, url: str) -> MrState:
-        forge = forge_of(url)
-        if forge is Forge.GITLAB:
-            return self._classify_gitlab(url)
-        if forge is Forge.GITHUB:
-            return self._classify_github(url)
-        return MrState(url=url, merged=False, approved=False)
-
-    def _classify_gitlab(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
-
-        parsed = repo_and_iid(url)
-        if parsed is None:
-            return MrState(url=url, merged=False, approved=False)
-        project, iid_num = parsed
-        iid = str(iid_num)
-        glab = shutil.which("glab") or "glab"
-        env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
-        try:
-            # ``-R <project>`` makes glab resolve the MR against an explicit
-            # project path instead of the current cwd's git remote — the
-            # scanner runs from the loop process which has no repo cwd, so
-            # ``glab mr view <url>`` (URL-only) silently exits non-zero and
-            # every broadcast is dropped. With ``-R`` + numeric IID glab
-            # routes the API call directly.
-            result = run_allowed_to_fail(
-                [glab, "mr", "view", "-R", project, iid, "-F", "json"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError:
-            return MrState(url=url, merged=False, approved=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return MrState(url=url, merged=False, approved=False)
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return MrState(url=url, merged=False, approved=False)
-        if not isinstance(data, dict):
-            return MrState(url=url, merged=False, approved=False)
-        state = str(data.get("state", "")).lower()
-        merged = state in {"merged", "closed_as_merged"}
-        upvotes = int(data.get("upvotes", 0) or 0)
-        approved = upvotes > 0 or merged
-        author = data.get("author")
-        author_username = str(author.get("username", "")) if isinstance(author, dict) else ""
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
-
-    def _classify_github(self, url: str) -> MrState:
-        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
-
-        gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
-        try:
-            result = run_allowed_to_fail(
-                [gh, "pr", "view", url, "--json", "state,reviewDecision,author"],
-                expected_codes=None,
-                env=env,
-            )
-        except FileNotFoundError:
-            return MrState(url=url, merged=False, approved=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return MrState(url=url, merged=False, approved=False)
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return MrState(url=url, merged=False, approved=False)
-        if not isinstance(data, dict):
-            return MrState(url=url, merged=False, approved=False)
-        state = str(data.get("state", "")).upper()
-        review_decision = str(data.get("reviewDecision", "")).upper()
-        merged = state == "MERGED"
-        approved = review_decision == "APPROVED" or merged
-        author = data.get("author")
-        author_username = str(author.get("login", "")) if isinstance(author, dict) else ""
-        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
-
-
-def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:
+def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:
     """Build the ``slack.review_intent`` signal for one open MR in a broadcast.
 
     Reuses the existing signal shape so the dispatcher routes through
     ``review_request_dispatch`` to the ``t3:reviewer`` agent — no new
-    signal kind, no parallel dispatch path.
+    signal kind, no parallel dispatch path. An untrusted author on a PUBLIC
+    repo flags the signal ADVERSARIAL (#1773) so the reviewer treats it as a
+    potential malicious actor rather than a colleague MR.
+
+    ``head_sha`` rides the payload so ``persistence._handle_reviewer`` seeds
+    ``Ticket.extra["reviewed_sha"]`` — the key every downstream at-head check
+    reads. Before this the broadcast path was the ONLY discovery route that
+    recorded no SHA, which is why a broadcast-discovered MR was reviewed once
+    and then invisible to a colleague's later push (2026-07-22 incident).
     """
+    mr_url = state.url
+    ref = pr_ref_from_url(mr_url)
+    untrusted = ref is not None and classify_author(ref.slug, state.author_username, host_kind=ref.host_kind).untrusted
     return ScanSignal(
         kind="slack.review_intent",
         summary=f"Review intent (broadcast): {mr_url}",
         payload={
             "url": mr_url,
             "mr_url": mr_url,
+            "head_sha": state.head_sha,
             "channel": row.channel,
             "ts": row.slack_ts,
             "trigger": "broadcast",
             "overlay": overlay,
             "broadcast_id": row.pk,
+            "adversarial": untrusted,
+            "requires_human_authorization": untrusted,
         },
     )

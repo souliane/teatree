@@ -20,8 +20,8 @@ Patterns are split into ``HIGH`` (refuse publish) and ``MEDIUM`` (warn
 but allow). Both severities log to a JSONL ledger so cold review can
 reconstruct what the gate saw.
 
-The blocklist file at ``$T3_DATA_DIR/quote-blocklist.txt`` (default
-``~/.teatree/quote-blocklist.txt``) is a *regex* list, not a quote
+The blocklist file at ``$T3_DATA_DIR/quote-blocklist.txt`` (under the
+XDG data dir by default) is a *regex* list, not a quote
 archive. Each non-blank, non-``#``-prefixed line is compiled with
 ``re.IGNORECASE``. The spec is explicit: blocklists must not embed
 the raw quotes they protect against.
@@ -34,20 +34,22 @@ checks and is itself logged for audit.
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final, Literal, TypedDict
 
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks._hook_state import hook_state_root, note_env_override_once
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
 
 _QUOTE_OK_ENV = "QUOTE_OK"
 
-Severity = str  # "high" | "medium"
+type Severity = Literal["high", "medium"]
 
 
 class ToolInput(TypedDict, total=False):
@@ -69,6 +71,12 @@ class ToolInput(TypedDict, total=False):
 
 HIGH: Final[Severity] = "high"
 MEDIUM: Final[Severity] = "medium"
+
+# Name of the HIGH finding :func:`scan_text` injects when the parser could not
+# resolve a body source (an unreadable file, a ``$VAR`` / stdin body). It is a
+# fail-closed marker, NOT a real verbatim-quote content match — the gate never
+# actually saw a user quote, only that the body was unreadable.
+FAIL_CLOSED_FINDING_NAME: Final[str] = "fail-closed-sentinel"
 
 
 @dataclass(frozen=True)
@@ -191,24 +199,24 @@ _BUILTIN_PATTERNS: Final[tuple[Pattern, ...]] = (
 
 
 def _blocklist_path() -> Path:
-    base = os.environ.get("T3_DATA_DIR")
-    if base:
-        return Path(base) / "quote-blocklist.txt"
-    return Path.home() / ".teatree" / "quote-blocklist.txt"
+    return hook_state_root() / "quote-blocklist.txt"
 
 
-def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
-    """Compile regexes from the on-disk blocklist file.
+# Compiled-blocklist cache keyed by resolved path -> (mtime_ns, size, patterns).
+# The file is user-editable and rarely changes, so a single compile per (mtime,
+# size) generation avoids re-parsing every ``scan_text`` call.
+_BLOCKLIST_CACHE: dict[Path, tuple[int, int, list[Pattern]]] = {}
 
-    The file is a list of REGEX patterns (one per line) — never raw
-    quotes. Blank lines and ``#``-prefixed comments are skipped. Each
-    line is compiled with ``re.IGNORECASE``. Any line that fails to
-    compile is reported via ``ValueError`` so a bad regex shows up
-    immediately rather than silently disabling a rule.
+
+def _compile_blocklist(target: Path) -> list[Pattern]:
+    """Compile every valid regex line, SKIPPING (never raising on) a bad one.
+
+    A single malformed line must never disable the whole gate: the sole caller
+    (``hook_router.handle_quote_scanner_pretool``) swallows exceptions and fails
+    OPEN, so a raised ``re.error`` would turn the entire #1213 leak gate into a
+    silent no-op on every publish. Each bad line is skipped with a one-line
+    stderr NOTE naming the file+line so a typo is visible, not silent.
     """
-    target = path if path is not None else _blocklist_path()
-    if not target.is_file():
-        return []
     patterns: list[Pattern] = []
     for idx, raw in enumerate(target.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
@@ -217,10 +225,48 @@ def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
         try:
             compiled = re.compile(line, re.IGNORECASE)
         except re.error as exc:
-            msg = f"invalid regex in {target}:{idx} — {exc}"
-            raise ValueError(msg) from exc
+            sys.stderr.write(f"NOTE: quote-scanner skipped invalid blocklist regex in {target}:{idx} — {exc}\n")
+            continue
         patterns.append(Pattern(name=f"blocklist:{idx}", severity=HIGH, regex=compiled))
     return patterns
+
+
+def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
+    """Return the compiled blocklist patterns, mtime-cached per resolved path.
+
+    The file is a list of REGEX patterns (one per line) — never raw quotes.
+    Blank lines and ``#``-prefixed comments are skipped; each remaining line is
+    compiled with ``re.IGNORECASE``. A line that fails to compile is skipped
+    (:func:`_compile_blocklist`) rather than raised, so one bad regex never
+    fails the gate open. The result is cached by ``(mtime_ns, size)`` so an
+    unchanged file is compiled once, not on every scan.
+    """
+    target = path if path is not None else _blocklist_path()
+    if not target.is_file():
+        return []
+    try:
+        stat = target.stat()
+    except OSError:
+        return []
+    cached = _BLOCKLIST_CACHE.get(target)
+    if cached is not None and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+        return cached[2]
+    patterns = _compile_blocklist(target)
+    _BLOCKLIST_CACHE[target] = (stat.st_mtime_ns, stat.st_size, patterns)
+    return patterns
+
+
+def reset_blocklist_cache() -> None:
+    """Clear the compiled-blocklist memo (test isolation; TSH-2/TSH-7).
+
+    The memo is keyed by resolved path and validated by ``(mtime_ns, size)``, so
+    a changed file self-invalidates in production. Across tests the SAME resolved
+    path (a fixed ``hook_state_root()`` root, or a re-created temp path) can be
+    rewritten within one mtime-granularity tick at an identical size, which would
+    return the earlier generation's patterns. The conftest roster clears it around
+    every test so a blocklist written by one test can never leak into another.
+    """
+    _BLOCKLIST_CACHE.clear()
 
 
 # Unicode smart-quote variants normalised to their ASCII equivalents before
@@ -254,6 +300,58 @@ def _normalize_quotes(text: str) -> str:
     return text.translate(_SMART_QUOTE_TRANSLATIONS)
 
 
+# ── HIGH shape patterns that require adjacent quote evidence (#3240) ──
+
+# The two attribution SHAPES that fire on agent paraphrase as readily as on a
+# verbatim quote: ``## User mandate`` / ``the user said:`` announce that a user
+# spoke, but say nothing about whether what follows is word-for-word. They stay
+# HIGH only when a verbatim quotation of meaningful length sits in the adjacent
+# paragraph; otherwise they downgrade to MEDIUM warn-allow like the rest of
+# ``_ATTRIBUTION_PATTERNS`` (a motivation heading or a requirement summary is
+# author-voice paraphrase, not the verbatim leak #1213 blocks). The explicit
+# ``(verbatim`` heading/bold patterns and the real quote shapes
+# (``blockquote-attributed``/``italic-quote-long``/blocklist/fail-closed
+# sentinel) keep HIGH unconditionally — they structurally announce word-for-word
+# content.
+_QUOTE_EVIDENCE_REQUIRED: Final[frozenset[str]] = frozenset({"the-user-said-colon", "heading-user-mandate"})
+
+# A double-quoted span of 20+ chars — the same length threshold
+# ``italic-quote-long`` uses to distinguish a real verbatim block from an
+# incidental short quote.
+_LONG_QUOTE_RE: Final[re.Pattern[str]] = re.compile(r'"[^"]{20,}"')
+
+
+def _adjacent_region(text: str, match: re.Match[str]) -> str:
+    r"""Return the match's own paragraph plus the paragraph immediately after it.
+
+    Paragraphs are blank-line (``\n\n``) separated. A ``the user said:`` colon
+    attribution carries its quote on the same line (its own paragraph); a
+    ``## User mandate`` heading carries the verbatim block in the section right
+    below it (the next paragraph) — so the adjacency window spans both. A quote
+    two or more paragraphs away is NOT adjacent and does not keep the shape HIGH.
+    """
+    para_start = text.rfind("\n\n", 0, match.start())
+    start = 0 if para_start == -1 else para_start + 2
+    first_break = text.find("\n\n", match.end())
+    if first_break == -1:
+        return text[start:]
+    second_break = text.find("\n\n", first_break + 2)
+    return text[start:] if second_break == -1 else text[start:second_break]
+
+
+def _resolved_severity(pattern: Pattern, text: str, match: re.Match[str]) -> Severity:
+    """Return ``pattern``'s severity for ``match``, downgrading a shape-only attribution.
+
+    A pattern in :data:`_QUOTE_EVIDENCE_REQUIRED` stays HIGH only when a 20+-char
+    double-quoted span sits in the adjacent paragraph (:func:`_adjacent_region`);
+    absent that evidence it downgrades to :data:`MEDIUM` (#3240). Every other
+    pattern keeps its declared severity.
+    """
+    if pattern.name in _QUOTE_EVIDENCE_REQUIRED and _LONG_QUOTE_RE.search(_adjacent_region(text, match)) is None:
+        return MEDIUM
+    return pattern.severity
+
+
 def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     """Match every built-in pattern and every blocklist regex against ``text``.
 
@@ -276,7 +374,7 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     if not text:
         return result
     if _is_fail_closed_sentinel(text):
-        result.findings.append(Finding(name="fail-closed-sentinel", severity=HIGH, excerpt="unresolved body source"))
+        result.findings.append(Finding(name=FAIL_CLOSED_FINDING_NAME, severity=HIGH, excerpt="unresolved body source"))
         text = "\n".join(line for line in text.split("\n") if line.strip() != _FAIL_CLOSED_SENTINEL)
         if not text.strip():
             return result
@@ -286,7 +384,8 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
         if match is None:
             continue
         excerpt = match.group(0)[:120]
-        result.findings.append(Finding(name=pattern.name, severity=pattern.severity, excerpt=excerpt))
+        severity = _resolved_severity(pattern, normalized, match)
+        result.findings.append(Finding(name=pattern.name, severity=severity, excerpt=excerpt))
     return result
 
 
@@ -339,7 +438,7 @@ def _extract_slack_mcp_payload(tool_name: str, tool_input: ToolInput) -> str | N
     return ""
 
 
-def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | None = None) -> str | None:
     """Return the text-to-scan from a tool invocation, or ``None`` if not a publish.
 
     The ``None`` return is the gate's pass-through signal — the
@@ -350,12 +449,19 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     detection substring matcher and the body-extractor see the same
     logical token stream bash itself would execute (codex round-2 #2/#3,
     round-3 #1/#2/#3/#4).
+
+    ``cwd`` is the harness-provided working directory, threaded into the body
+    extractor so a ``gh pr edit --body-file <relpath>`` / ``--body "$(cat
+    <relpath>)"`` body is RESOLVED against the dir the command actually runs in
+    and SCANNED — instead of fail-closing on an unreadable relative path from the
+    cold hook's reset cwd (#1213). Mirrors the banned-terms gate, which already
+    threads it.
     """
     if tool_name == "Bash":
         raw_command = tool_input.get("command", "")
         if not _is_publish_command(raw_command):
             return None
-        return _extract_bash_payload(raw_command)
+        return _extract_bash_payload(raw_command, cwd=cwd)
 
     return _extract_slack_mcp_payload(tool_name, tool_input)
 
@@ -460,6 +566,7 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     if tool_name == "Bash" and _publish_segment_carries_override(tool_input.get("command", "")):
         return True
     if os.environ.get(_QUOTE_OK_ENV, "").strip() == "1":
+        note_env_override_once(_QUOTE_OK_ENV)
         return True
     env = tool_input.get("env") or {}
     return env.get(_QUOTE_OK_ENV, "").strip() == "1"
@@ -489,9 +596,7 @@ def dispatch_quote_ok_reason(text: str) -> str | None:
 
 
 def _ledger_path() -> Path:
-    base = os.environ.get("T3_DATA_DIR")
-    root = Path(base) if base else Path.home() / ".teatree"
-    return root / "quote-scanner.jsonl"
+    return hook_state_root() / "quote-scanner.jsonl"
 
 
 def log_decision(

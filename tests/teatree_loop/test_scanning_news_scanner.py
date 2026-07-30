@@ -28,6 +28,7 @@ from django.utils import timezone
 from teatree.config import UserSettings
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.news_sources import NEWS_SOURCES
 from teatree.loop.scanners.scanning_news import SCANNING_NEWS_PHASE, ScanningNewsScanner
 
 #: Test overlay anchor — a non-legacy name distinct from any literal the
@@ -65,9 +66,10 @@ def _last_news_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
 def _backdate_task(task: Task, *, hours: int) -> None:
     """Move a Task's bookkeeping into the past so the cadence math triggers.
 
-    ``Task`` has no ``created_at`` column, so the scanner derives the
-    last-run timestamp from its ``Session.started_at`` (auto_now_add),
-    which we can backdate via ``update()``.
+    ``Task`` now has a ``created_at`` (migration 0004), but the scanner
+    intentionally keys on ``Session.started_at`` (auto_now_add) as the queue
+    time, so we derive the last-run timestamp from there and backdate the
+    Session row via ``update()``.
     """
     Session.objects.filter(pk=task.session_id).update(
         started_at=timezone.now() - timedelta(hours=hours),
@@ -348,6 +350,44 @@ class ScanningNewsWiringTests(TestCase):
         assert scanner is not None
         assert scanner.overlay_name == "t3-teatree"
 
+    def test_undispatchable_deploy_dirname_never_reaches_ticket(self) -> None:
+        """Deploy-dirname leak — an undispatchable discovered overlay is canonicalized before persistence.
+
+        On a box whose deploy dir is ``teatree-deploy`` (matching no registered
+        entry point), ``discover_active_overlay`` pre-fix returned that raw name
+        and the wiring stamped it onto the scanning-news ticket, creating the
+        poison-pill ``scanning-news://teatree-deploy`` row (ticket 6, stuck
+        ``not_started``). The write-site now canonicalizes through
+        ``resolve_overlay_name`` and falls back to the sole registered overlay,
+        so the undispatchable name is never persisted onto a ticket.
+        """
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
+
+        leaked = OverlayEntry(name="teatree-deploy", overlay_class="")
+        with (
+            patch(
+                "teatree.loop.global_scanner_factories.load_config",
+                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            ),
+            patch(
+                "teatree.loop.global_scanner_factories.discover_active_overlay",
+                return_value=leaked,
+            ),
+        ):
+            scanner = _scanning_news_scanner()
+            assert scanner is not None
+            signals = scanner.scan()
+
+        assert scanner.overlay_name == "t3-teatree"
+        assert len(signals) == 1
+        assert signals[0].payload["overlay"] == "t3-teatree"
+        # The undispatchable deploy dirname must never be persisted onto a ticket.
+        assert not Ticket.objects.filter(overlay="teatree-deploy").exists()
+        assert not Ticket.objects.filter(issue_url="scanning-news://teatree-deploy").exists()
+        assert Ticket.objects.filter(issue_url="scanning-news://t3-teatree").exists()
+
     def test_wiring_falls_back_to_canonical_when_no_overlay_discovered(self) -> None:
         """Defensive default — no installed overlay still queues against the canonical name."""
         from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
@@ -366,3 +406,24 @@ class ScanningNewsWiringTests(TestCase):
         assert scanner is not None
         # Canonical post-0027 fallback — no bare legacy "teatree".
         assert scanner.overlay_name == "t3-teatree"
+
+
+class TestMergedSourceDirective(TestCase):
+    """The dispatched task carries the merged source table (#3669)."""
+
+    def test_directive_names_every_merged_source(self) -> None:
+        ScanningNewsScanner(overlay_name="t3-teatree").scan()
+
+        reason = Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason
+        assert all(source.label in reason for source in NEWS_SOURCES)
+
+    def test_directive_keeps_the_teatree_relevance_instruction(self) -> None:
+        ScanningNewsScanner(overlay_name="t3-teatree").scan()
+
+        reason = Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason
+        assert "teatree-relevance" in reason
+
+    def test_directive_still_carries_the_ask_gate(self) -> None:
+        ScanningNewsScanner(overlay_name="t3-teatree").scan()
+
+        assert "ASK-GATE" in Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason

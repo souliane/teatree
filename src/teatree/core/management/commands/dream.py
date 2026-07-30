@@ -6,8 +6,11 @@ file-side phases 4-6 (cross-link / re-index / decay) after it:
 
 ``run`` is the manual escape hatch: it runs a pass NOW regardless of cadence,
 with an optional ``--since`` window bound and a ``--dry-run`` no-write mode.
-``tick`` is the cron entry point: it runs a pass only when the ``dream``
-cadence has elapsed (``MiniLoopMarker``), bumping the cadence ledger on a fire.
+``tick`` is the off-live-tick entry the worker's ``drive_off_live_tick_loops`` chain
+fires: it runs a pass only when the ``dream`` Loop
+row is due (``Loop.is_due`` / ``last_run_at`` — the ONE cadence ledger) and the
+single enable verdict (``Loop.enabled`` + ``LoopState``) admits it, bumping
+``last_run_at`` on a successful fire.
 
 Both acquire the in-flight ``LoopLease`` (``dream-tick``) first so two passes
 never overlap — the loser SKIPs (the #786 WS2 CAS, correct on the prod SQLite
@@ -22,22 +25,18 @@ here via ``call_command``.
 
 import datetime as dt
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 
 import typer
-from django.apps import apps
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from teatree.core.backend_protocols import CodeHostBackend
-    from teatree.core.models import ConsolidatedMemory
-    from teatree.loops.dream.decay import ArchivedMemory
+    from teatree.loops.dream.engine import ConsolidationExtract
+    from teatree.loops.dream.phase_runner import MemoryPhaseRunner
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,9 +115,17 @@ class Command(TyperCommand):
         propose_evals`` toml kill-switch disables it (see
         :func:`teatree.loops.dream.loop.propose_evals_enabled`).
         """
-        from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
+
+    @command(name="compliance")
+    def compliance(self) -> None:
+        """Print the latest instruction-compliance snapshot — read-only (#2663)."""
+        from teatree.loops.dream.compliance import render_compliance_show  # noqa: PLC0415 — lazy command import
+
+        for line in render_compliance_show():
+            self.stdout.write(line)
 
     def _run_pass(
         self,
@@ -129,20 +136,30 @@ class Command(TyperCommand):
         propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
     ) -> None:
-        import os  # noqa: PLC0415
+        import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-        from teatree.core.models import DreamRunMarker, LoopLease, MiniLoopMarker  # noqa: PLC0415
-        from teatree.loops.config import LoopsConfig  # noqa: PLC0415
-        from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, MINI_LOOP  # noqa: PLC0415
-        from teatree.loops.gating import elapsed_and_enabled  # noqa: PLC0415
+        from teatree.core.models import DreamRunMarker, Loop, LoopLease  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: keeps command import light
+            DREAM_LEASE_NAME,
+            DREAM_LEASE_SECONDS,
+            MINI_LOOP,
+        )
 
         now = timezone.now()
         if enforce_cadence:
-            decision = elapsed_and_enabled(LoopsConfig.load(), MINI_LOOP, now)
-            if not decision.should_fire:
-                self.stdout.write(f"SKIP  dream cadence not elapsed ({decision.skip_reason}).")
+            # The ONE cadence ledger: the dream Loop row's is_due / last_run_at, gated
+            # by the single enable verdict (Loop.enabled + LoopState) — never a second
+            # cadence ledger. dream is off_live_tick, so the live tick never bumps
+            # this row; t3 dream tick owns its last_run_at alone.
+            row = Loop.objects.filter(name=MINI_LOOP.name).first()
+            if row is None or not loop_enabled(MINI_LOOP.name):
+                self.stdout.write("SKIP  dream loop disabled (no enabled Loop row / LoopState hold).")
+                return
+            if not row.is_due(now):
+                self.stdout.write("SKIP  dream cadence not elapsed.")
                 return
 
         owner = f"pid-{os.getpid()}"
@@ -159,7 +176,7 @@ class Command(TyperCommand):
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
         if enforce_cadence and succeeded:
-            MiniLoopMarker.objects.mark_fired(MINI_LOOP.name, now)
+            Loop.objects.mark_run(MINI_LOOP.name, now)
 
         # Re-read confirmation so a stamped success can be cited (resilience #7).
         if not dry_run:
@@ -176,14 +193,14 @@ class Command(TyperCommand):
         propose_evals: bool,
         mode: PipelineMode = _DEFAULT_MODE,
     ) -> bool:
-        from teatree.core.models import DreamRunMarker  # noqa: PLC0415
-        from teatree.loops.dream import engine  # noqa: PLC0415
-        from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415
+        from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loops.dream import engine  # noqa: PLC0415 — deferred: keeps command import light
+        from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415 — lazy command import
 
         request = EvalProposalRequest() if propose_evals else None
         try:
             result = engine.run_consolidation(overlay="", since=since, dry_run=dry_run, eval_proposals=request)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — a dream pass failure is marked attempted + reported, never crashes the command
             if not dry_run:
                 DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
@@ -195,10 +212,15 @@ class Command(TyperCommand):
             if result.empty_batches
             else ""
         )
+        distilled = f"; distilled {result.snippets_distilled} snippet(s)" if result.snippets_distilled else ""
+        rejected = (
+            f"; WARN {result.clusters_rejected} ungrounded cluster(s) rejected" if result.clusters_rejected else ""
+        )
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
-                f"from {result.members_replayed} member(s){evals}{empty}; no rows or marker written.",
+                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}; "
+                "no rows or marker written.",
             )
             return False
 
@@ -223,6 +245,18 @@ class Command(TyperCommand):
             force_all_phases=mode.force_all_phases,
             validate_live=mode.validate_live,
         )
+        # Phase 3c (#2663) runs BEFORE the gates so gate (g) reads the just-persisted
+        # compliance records (a recurrence remediated with a memory FAILS the pass).
+        # Measurement is the root KPI — it runs on EVERY pass (default ON) and reuses the
+        # extract the engine already built; escalation is the --full-gated other half.
+        compliance = self._run_compliance_measurement(
+            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases
+        )
+        # Phase 3d (#2663) — the "improve-with-new-stuff" sibling: promote recurring
+        # automatable user asks to a fix-and-merge under the same standing umbrella.
+        automation_asks = self._run_automation_asks_phase(
+            extract=result.extract, dry_run=dry_run, force_all_phases=mode.force_all_phases
+        )
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
         )
@@ -235,18 +269,98 @@ class Command(TyperCommand):
             DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
-                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
-                f"{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped succeeded.",
+                f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
+                f"{promoted}{compliance}{automation_asks}"
+                f"{memory_phases}{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped "
+                f"succeeded.",
             )
             return False
 
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
-            f"{memory_promote}{gates_summary}.",
+            f"from {result.members_replayed} member(s){distilled}{evals}{empty}{rejected}"
+            f"{promoted}{compliance}{automation_asks}"
+            f"{memory_phases}{memory_promote}{gates_summary}.",
         )
         return True
+
+    def _run_compliance_measurement(
+        self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool
+    ) -> str:
+        """Phase 3c — MEASURE compliance every pass, ESCALATE only under --full+toggle (never raises).
+
+        Measurement is the root KPI: it runs on EVERY pass when the default-ON
+        ``compliance_measure`` toggle admits it, reusing the extract the engine already
+        built (no re-enumeration) and PERSISTING a snapshot (never files). Escalation —
+        the default-OFF ticket-filing half — runs only when ``--full`` AND the
+        ``compliance_escalate`` toggle both admit it, driving each recurrence onto the
+        standing umbrella. The work lives in
+        :func:`teatree.loops.dream.compliance.run_compliance_measurement` /
+        ``run_compliance_escalation``; this wires the gating + resolved host and
+        fault-isolates the phase.
+        """
+        if extract is None:
+            return ""
+        try:
+            from teatree.loops.dream import compliance  # noqa: PLC0415 — deferred: keeps command import light
+            from teatree.loops.dream.loop import (  # noqa: PLC0415 — deferred: breaks the loop->command import cycle
+                compliance_escalate_enabled,
+                compliance_measure_enabled,
+            )
+
+            if not compliance_measure_enabled():
+                return ""
+            measurement = compliance.run_compliance_measurement(extract=extract, dry_run=dry_run)
+            summary = measurement.summary
+            if force_all_phases and compliance_escalate_enabled():
+                host, _repo = self._teatree_backlog_host()
+                summary += compliance.run_compliance_escalation(
+                    snapshot=measurement.snapshot, findings=measurement.findings, host=host, dry_run=dry_run
+                )
+        except Exception as exc:  # noqa: BLE001 — a compliance-phase failure degrades to a WARN clause, never aborts the dream
+            return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
+        return summary
+
+    def _run_automation_asks_phase(
+        self, *, extract: "ConsolidationExtract | None", dry_run: bool, force_all_phases: bool
+    ) -> str:
+        """Phase 3d — promote recurring automatable user asks to a fix-and-merge (#2663; never raises).
+
+        The "improve-with-new-stuff" sibling of the compliance accountant. Gated by an
+        OR (``if not force_all_phases and not automation_asks_enabled()``): it runs when
+        the ``--full`` pipeline is requested OR the default-OFF ``automation_asks`` toggle
+        is on (env / toml). ``--full`` alone therefore triggers it — UNLIKE the compliance
+        escalation's AND-gate, which additionally requires its own toggle even under
+        ``--full``. It PROMOTES fixes (a checkbox + scheduled coding task under the standing
+        umbrella). The detect → classify → promote work lives in
+        :func:`teatree.loops.dream.automation_ask.run_automation_asks_phase`; this reuses
+        the bounded extract the engine already built (for the grounding guard), wires the
+        resolved backlog host, and fault-isolates the phase.
+        """
+        from teatree.loops.dream.loop import automation_asks_enabled  # noqa: PLC0415 — deferred: lazy command import
+
+        if not force_all_phases and not automation_asks_enabled():
+            return ""
+        if extract is None:
+            return ""
+        try:
+            from teatree.loops.dream import automation_ask  # noqa: PLC0415 — deferred: phase-only import
+
+            host, _repo = self._teatree_backlog_host()
+            if host is None:
+                return "; WARN automatable-ask promotion skipped — no teatree code host resolved"
+            umbrella = self._automation_umbrella_url()
+            return automation_ask.run_automation_asks_phase(extract, host, umbrella_url=umbrella, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001 — an automatable-ask-phase failure degrades to a WARN clause
+            return f"; WARN automatable-ask phase raised: {type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _automation_umbrella_url() -> str:
+        """The standing umbrella issue every grounded dream gap rides (#2663)."""
+        from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL  # noqa: PLC0415 — lazy command import
+
+        return UMBRELLA_ISSUE_URL
 
     def _promote_candidates(
         self, *, propose_evals: bool, dry_run: bool, force_all_phases: bool = False, validate_live: bool = False
@@ -267,14 +381,14 @@ class Command(TyperCommand):
         if not propose_evals:
             return ""
         try:
-            from teatree.loops.dream import promote  # noqa: PLC0415
-            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
+            from teatree.loops.dream import promote  # noqa: PLC0415 — deferred: keeps command import light
+            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
             validator = promote.build_live_validator() if validate_live else None
             outcomes = promote.promote_proposals_file(
                 _default_proposals_path(), dry_run=dry_run, live_gate=promote.LiveGate(validator=validator)
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — an eval-promotion failure degrades to a WARN clause
             return f"; WARN eval promotion raised: {type(exc).__name__}: {exc}"
         promoted = sum(1 for o in outcomes if o.promoted)
         withheld = len(outcomes) - promoted
@@ -291,16 +405,16 @@ class Command(TyperCommand):
         and STAGED for a human/maker to ratify via a PR — never auto-committed to the
         live suite. A failure is reported in the summary line, never crashing the pass.
         """
-        from teatree.loops.dream.loop import derive_evals_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import derive_evals_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         if not force_all_phases and not derive_evals_enabled():
             return ""
         try:
-            from teatree.loops.dream import llm_eval_proposer  # noqa: PLC0415
-            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
+            from teatree.loops.dream import llm_eval_proposer  # noqa: PLC0415 — deferred: keeps command import light
+            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415 — lazy command import
 
             outcomes = llm_eval_proposer.stage_proposals_file(_default_proposals_path(), dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — an eval-derivation failure degrades to a WARN clause
             return f"; WARN eval derivation raised: {type(exc).__name__}: {exc}"
         if not outcomes:
             return ""
@@ -308,32 +422,36 @@ class Command(TyperCommand):
         return f"; staged {staged} derived eval(s) for review, dropped {len(outcomes) - staged}"
 
     def _run_memory_promotion(self, *, dry_run: bool, force_all_phases: bool = False) -> str:
-        """Pass 2 — triage the ledger, ticket each core-gap, retire resolved memories (#2426).
+        """Pass 2 — drive each core gap to a fix-and-merge under the umbrella (#2663).
 
         Runs only when the default-OFF ``memory_promote`` toggle is on, because it
-        FILES backlog tickets. Resolves the teatree backlog code host, triages every
-        untriaged ``ConsolidatedMemory`` row, files a deduped ``needs-triage`` ticket
-        for each core-generic gap, and retires any TICKETED memory whose linked ticket
-        has closed. A failure is reported in the summary line, never crashing the pass.
+        schedules fixes. Resolves the teatree backlog code host, triages every
+        untriaged ``ConsolidatedMemory`` row, and PROMOTES each core-generic gap to a
+        fix: a checkbox is upserted under the standing umbrella issue and a coding task
+        is scheduled (instead of a fresh ``needs-triage`` issue that piles up). Then it
+        RECONCILES — every gap whose fix Ticket merged has its umbrella checkbox checked
+        and its memory retired. A failure is reported in the summary line, never
+        crashing the pass.
         """
-        from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415
+        from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415 — deferred: lazy command import
 
         if not force_all_phases and not memory_promote_enabled():
             return ""
         try:
-            from teatree.loops.dream import promote_memory  # noqa: PLC0415
+            from teatree.loops.dream import promote_memory, umbrella_ledger  # noqa: PLC0415 — lazy command import
 
-            host, repo = self._teatree_backlog_host()
+            host, _repo = self._teatree_backlog_host()
             if host is None:
                 return "; WARN memory promotion skipped — no teatree code host resolved"
-            filed = promote_memory.file_core_gap_tickets(host, repo=repo, dry_run=dry_run)
-            retired = [] if dry_run else promote_memory.retire_resolved_memories(host)
-        except Exception as exc:  # noqa: BLE001
+            umbrella = promote_memory.UMBRELLA_ISSUE_URL
+            promoted = promote_memory.file_core_gap_tickets(host, umbrella_url=umbrella, dry_run=dry_run)
+            reconciled = [] if dry_run else umbrella_ledger.reconcile_merged_gaps(host, umbrella_url=umbrella)
+        except Exception as exc:  # noqa: BLE001 — a memory-promotion failure degrades to a WARN clause
             return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"
-        new_tickets = sum(1 for o in filed if o.filed)
-        if not filed and not retired:
+        new_fixes = sum(1 for o in promoted if o.filed)
+        if not promoted and not reconciled:
             return ""
-        return f"; ticketed {new_tickets} core-gap memory(ies), retired {len(retired)}"
+        return f"; promoted {new_fixes} core-gap fix(es), reconciled {len(reconciled)} merged"
 
     @staticmethod
     def _teatree_backlog_host() -> "tuple[CodeHostBackend | None, str]":
@@ -346,197 +464,34 @@ class Command(TyperCommand):
                 return host, repo
         return None, repo
 
+    def _phase_runner(self) -> "MemoryPhaseRunner":
+        """The composed file-side phase runner, wired to the backlog host resolver."""
+        from teatree.loops.dream.phase_runner import MemoryPhaseRunner  # noqa: PLC0415 — deferred: lazy command import
+
+        return MemoryPhaseRunner(backlog_host_resolver=self._teatree_backlog_host)
+
     def _run_memory_phases(self, *, dry_run: bool) -> str:
-        """Run the memory-file phases 4-6 over every discovered memory dir, fault-isolated.
-
-        Phases 4 (cross-link), 5 (re-index), and 6 (decay/archive) each run LIVE by
-        default behind their own ``[loops.dream]`` / ``T3_DREAM_*`` kill-switch and
-        each in its own try/except, so one phase (or one memory dir) failing never
-        crashes the tick or stops the other phases. Operates only on the discovered
-        ``~/.claude`` memory dirs (engine reuse); the units under test inject a tmp
-        dir directly into the phase functions, never the real one.
-        """
-        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
-
-        memory_dirs = discover_memory_dirs()
-        if not memory_dirs:
-            return ""
-        phases: list[tuple[str, Callable[..., int]]] = [
-            ("cross-link", self._cross_link_dirs),
-            ("re-index", self._reindex_dirs),
-            ("decay", self._decay_dirs),
-        ]
-        parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run)[0] for label, runner in phases]
-        return "".join(part for part in parts if part)
+        """Run phases 4-6 over every discovered memory dir (quiet-night path, no gates)."""
+        return self._phase_runner().run_memory_phases(dry_run=dry_run)
 
     def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
-        """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545).
-
-        Snapshots every discovered memory dir BEFORE the phases mutate it, runs the
-        phases (capturing what decay archived per dir), snapshots AFTER, then runs the
-        six acceptance gates per dir (:func:`teatree.loops.dream.gates.run_acceptance_pass`),
-        which also populates the ``DreamQaProbe`` corpus. Returns
-        ``(phase_summary, all_gates_passed, gate_summary)`` — a failing gate makes the
-        caller stamp the pass attempted-not-succeeded (staleness keeps firing) rather
-        than laundering a lossy consolidation into a success.
-
-        Fault-isolated: a gate-evaluation failure for one dir is reported in the
-        summary, defaults that dir's verdict to PASS (the gate machinery, not the
-        consolidation, broke), and never crashes the tick.
-        """
-        from teatree.loops.dream import gates  # noqa: PLC0415
-        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
-
-        memory_dirs = discover_memory_dirs()
-        if not memory_dirs:
-            return "", True, ""
-
-        before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
-        schema_before = self._ledger_schema_count()
-        phase_summary, archived_by_dir, maintenance_performed = self._run_phases(memory_dirs, dry_run=dry_run)
-        schema_after = self._ledger_schema_count()
-
-        all_passed = True
-        clauses: list[str] = []
-        for d in memory_dirs:
-            try:
-                report = gates.run_acceptance_pass(
-                    before[d],
-                    gates.snapshot_memory_dir(d),
-                    overlay="",
-                    archived=archived_by_dir.get(d, ()),
-                    schema_before=schema_before,
-                    schema_after=schema_after,
-                    clusters_recorded=clusters_recorded,
-                    maintenance_performed=maintenance_performed,
-                    persist=not dry_run,
-                )
-            except Exception as exc:  # noqa: BLE001
-                clauses.append(f"WARN gates raised: {type(exc).__name__}: {exc}")
-                continue
-            all_passed = all_passed and report.passed
-            if not report.passed:
-                failed = ", ".join(g.name for g in report.gate_results if not g.passed)
-                clauses.append(f"gates FAILED ({failed})")
-        gate_summary = f"; {'; '.join(clauses)}" if clauses else "; all acceptance gates passed"
-        return phase_summary, all_passed, gate_summary
-
-    def _run_phases(
-        self, memory_dirs: list[Path], *, dry_run: bool
-    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]], bool]":
-        """Run phases 4 (cross-link) + 5 (re-index) then decay.
-
-        Returns the summary clause, decay's archives per dir, and a
-        ``maintenance_performed`` flag — True when ANY file-side phase did real
-        work (cross-link edges added, MEMORY.md re-indexed, or stale memories
-        archived). The gate uses that flag to count a quiet 0-cluster maintenance
-        pass as genuine consolidation (#2626).
-        """
-        cross_link_summary, links_added = self._phase_summary(
-            "cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run
-        )
-        reindex_summary, reindexed = self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run)
-        decay_summary, archived_by_dir = self._decay_dirs_with_archives(memory_dirs, dry_run=dry_run)
-        archived = sum(len(a) for a in archived_by_dir.values())
-        maintenance_performed = links_added > 0 or reindexed > 0 or archived > 0
-        parts = [cross_link_summary, reindex_summary, decay_summary]
-        return "".join(part for part in parts if part), archived_by_dir, maintenance_performed
-
-    @staticmethod
-    def _ledger_schema_count() -> int:
-        """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
-        consolidated_memory_model = cast("type[ConsolidatedMemory]", apps.get_model("core", "ConsolidatedMemory"))
-        return consolidated_memory_model.objects.count()
-
-    def _decay_dirs_with_archives(
-        self, memory_dirs: list[Path], *, dry_run: bool
-    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
-        """Run phase-6 decay per dir under fault isolation, returning its summary + archives."""
-        from teatree.loops.dream import decay  # noqa: PLC0415
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
-
-        archived_by_dir: dict[Path, tuple[ArchivedMemory, ...]] = {}
-        if not decay_enabled():
-            return "", archived_by_dir
-        total = 0
-        for d in memory_dirs:
-            try:
-                result = decay.decay_memories(d, dry_run=dry_run)
-            except Exception as exc:  # noqa: BLE001
-                return f"; WARN decay raised: {type(exc).__name__}: {exc}", archived_by_dir
-            archived_by_dir[d] = result.archived
-            total += result.archived_count
-        return (f"; archived {total} stale memory(ies)" if total else ""), archived_by_dir
-
-    def _phase_summary(
-        self,
-        label: str,
-        runner: "Callable[..., int]",
-        memory_dirs: list[Path],
-        *,
-        dry_run: bool,
-    ) -> tuple[str, int]:
-        """Run one phase's per-dir runner under fault isolation.
-
-        Returns ``(summary_clause, work_count)`` — the work count is the phase's
-        own unit (edges added / MEMORY.md re-indexed / memories archived) and feeds
-        the ``maintenance_performed`` gate signal. A fault-isolated failure returns
-        a WARN clause and a 0 count (the phase did no provable work).
-        """
-        try:
-            count = runner(memory_dirs, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
-            return f"; WARN {label} raised: {type(exc).__name__}: {exc}", 0
-        clause = self._phase_clause(label, count)
-        return (f"; {clause}" if clause else ""), count
-
-    @staticmethod
-    def _phase_clause(label: str, count: int) -> str:
-        if not count:
-            return ""
-        return {
-            "cross-link": f"cross-linked {count} memory edge(s)",
-            "re-index": f"re-indexed {count} MEMORY.md",
-            "decay": f"archived {count} stale memory(ies)",
-        }[label]
-
-    def _cross_link_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import cross_link  # noqa: PLC0415
-        from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415
-
-        if not cross_link_enabled():
-            return 0
-        return sum(cross_link.cross_link_memories(d, dry_run=dry_run).links_added for d in memory_dirs)
-
-    def _reindex_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import reindex  # noqa: PLC0415
-        from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415
-
-        if not reindex_enabled():
-            return 0
-        return sum(1 for d in memory_dirs if reindex.reindex_memory(d, dry_run=dry_run).changed)
-
-    def _decay_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import decay  # noqa: PLC0415
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
-
-        if not decay_enabled():
-            return 0
-        return sum(decay.decay_memories(d, dry_run=dry_run).archived_count for d in memory_dirs)
+        """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545)."""
+        return self._phase_runner().run_memory_phases_and_gates(clusters_recorded=clusters_recorded, dry_run=dry_run)
 
 
 def _env_propose_evals() -> bool:
-    """Read the ``T3_DREAM_PROPOSE_EVALS`` opt-in env for the manual ``run`` path.
+    """Resolve the ``dream_propose_evals`` opt-in for the manual ``run`` path.
 
     The manual ``run`` enables the eval phase when ``--propose-evals`` is given OR
-    this env is truthy (``1``/``true``/``yes``, case-insensitive). The cadence-
-    driven ``tick`` path does NOT route through here — it resolves the seam (LIVE
-    by default, env/toml kill-switch) via
+    this setting is on. DB-home (#1775): resolved via the effective-settings tier
+    (set with ``t3 <overlay> config_setting set dream_propose_evals true``). The
+    cadence-driven ``tick`` path does NOT route through here — it resolves the
+    seam (LIVE by default, env/toml kill-switch) via
     :func:`teatree.loops.dream.loop.propose_evals_enabled`.
     """
-    import os  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps command import light
 
-    return os.environ.get("T3_DREAM_PROPOSE_EVALS", "").strip().lower() in {"1", "true", "yes"}
+    return get_effective_settings().dream_propose_evals
 
 
 def _parse_since(raw: str) -> dt.datetime | None:
@@ -546,8 +501,8 @@ def _parse_since(raw: str) -> dt.datetime | None:
     timezone so the ``USE_TZ`` engine never compares naive against aware. A
     malformed value raises ``CommandError`` instead of a raw traceback.
     """
-    from django.core.management.base import CommandError  # noqa: PLC0415
-    from django.utils import timezone  # noqa: PLC0415
+    from django.core.management.base import CommandError  # noqa: PLC0415 — deferred: Django import at call time
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     value = raw.strip()
     if not value:

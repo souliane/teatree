@@ -20,6 +20,7 @@ from teatree.eval.report import (
 _TASK_BRANCH = Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="pytest")
 _BG_BASH_BRANCH = Matcher(kind="positive", tool="Bash", arg_path="run_in_background", operator="~", value="(?i)true")
 _ANY_OF = AnyOf(alternatives=(_TASK_BRANCH, _BG_BASH_BRANCH))
+_NEG_CONTAINS = Matcher(kind="negative", tool="Bash", arg_path="command", operator="contains", value="--no-verify")
 
 
 def _spec(
@@ -214,6 +215,47 @@ class TestVerdict:
         run = _run(
             tool_calls=(EvalToolCall(name="Bash", input={"command": "x"}, turn=1),),
         )
+        with pytest.raises(NotImplementedError):
+            evaluate(spec, run)
+
+
+class TestNegativeContainsMatcherDispatch:
+    """A negative+contains matcher grades through ``_dispatch`` (was NotImplementedError).
+
+    The loader accepts ``contains`` for a ``no_tool_call_matching`` line, so a
+    negative+contains matcher is loadable; but ``_dispatch`` had no branch for it
+    and fell through to ``NotImplementedError``, crashing the grader (and the
+    ``llm_eval_proposer`` teeth_check on any synthesized spec using one). The pair
+    below proves teeth: FAIL when the forbidden drift is present, PASS when absent.
+    """
+
+    def test_fails_when_forbidden_substring_present(self) -> None:
+        spec = _spec(matchers=(_NEG_CONTAINS,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "git commit --no-verify -m x"}, turn=1),))
+        result = evaluate(spec, run)
+        assert result.passed is False
+        assert "--no-verify" in result.matcher_results[0].message
+
+    def test_passes_when_forbidden_substring_absent(self) -> None:
+        spec = _spec(matchers=(_NEG_CONTAINS,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "git commit -m x"}, turn=1),))
+        result = evaluate(spec, run)
+        assert result.passed is True
+
+    def test_does_not_raise_not_implemented_error(self) -> None:
+        # The regression: negative+contains used to fall through to
+        # NotImplementedError. ``evaluate`` only catches ``AssertionError``, so an
+        # ungraded combo would propagate here rather than grade.
+        spec = _spec(matchers=(_NEG_CONTAINS,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "ls"}, turn=1),))
+        assert evaluate(spec, run).passed is True
+
+    def test_unsupported_negative_operator_still_raises_not_implemented(self) -> None:
+        # The fallback for a genuinely-unsupported combo is intact (not removed).
+        spec = _spec(
+            matchers=(Matcher(kind="negative", tool="Bash", arg_path="command", operator="??", value="x"),),
+        )
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "x"}, turn=1),))
         with pytest.raises(NotImplementedError):
             evaluate(spec, run)
 
@@ -536,6 +578,30 @@ class TestJudgeIntegration:
         assert result.passed is False
         assert result.judge is not None
         assert result.judge.passed is False
+
+    def test_judge_only_spec_without_grader_is_skipped_not_a_vacuous_pass(self) -> None:
+        # A judge-only spec (a judge block, NO matchers) graded on a lane that
+        # injects no grader has no gating evidence — it must SKIP (needs-setup),
+        # never read a permanent green (#3313).
+        spec = dataclasses.replace(_spec(matchers=()), judge=JudgeSpec(rubric="faithful"))
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL))
+        assert result.skipped is True
+        assert "judge-only spec" in result.run.terminal_reason
+
+    def test_judge_only_result_never_reads_pass_when_ungraded(self) -> None:
+        # Defense in depth: even a directly-built non-skipped judge-only result
+        # with no judge outcome must not pass.
+        spec = dataclasses.replace(_spec(matchers=()), judge=JudgeSpec(rubric="faithful"))
+        result = ScenarioResult(spec=spec, run=_run(tool_calls=_PASS_CALL), matcher_results=(), skipped=False)
+        assert result.passed is False
+
+    def test_matchers_still_gate_a_judge_spec_on_a_grader_less_lane(self) -> None:
+        # A spec with BOTH matchers and a judge still grades its matchers when no
+        # grader is injected (only the pure judge-only case skips).
+        spec = _judged_spec()
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL))
+        assert result.skipped is False
+        assert result.passed is True
 
     def test_judge_pass_with_matchers_pass_is_pass(self) -> None:
         spec = _judged_spec()

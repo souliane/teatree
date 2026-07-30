@@ -8,12 +8,40 @@ test can pin or stub the seam without touching the routing tables, and so the
 dispatcher module stays focused on the consult order.
 """
 
+import logging
+
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.loop.dispatch_reducer import slack_pr_url, task_pr_url
 from teatree.loop.dispatch_tables import STATUSLINE_ZONE_BY_KIND, ActionPayload, DispatchAction
 from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.pr_payload import head_sha as _extract_head_sha
+
+logger = logging.getLogger(__name__)
+
+#: The display marker an untyped/empty spawn degrades to in :func:`spawn_display_name`.
+#: A real phase agent is always ``t3:<type>``, so this never names a live phase agent.
+GENERAL_PURPOSE_SUBAGENT = "general-purpose"
+
+#: Head-SHA placeholder for a red PR whose real sha the scanner never carried.
+#: The claim is keyed on ``(pr_url, sentinel)`` so at most ONE fix dispatches for
+#: that PR until a real sha appears — replacing the old blank-sha fail-OPEN
+#: (``return True`` forever) that let the same red PR re-dispatch every tick (#7).
+_BLANK_SHA_SENTINEL = "sha-unavailable"
+
+
+def spawn_display_name(subagent: str, task_id: int) -> str:
+    """The ``t3-<type>-<id>`` display name a dispatched sub-agent must carry (PR-12).
+
+    Every spawn is named after its phase agent type and the task it serves, so a
+    spawned agent is attributable at a glance (``t3-coder-42``) and never an
+    anonymous ``general-purpose`` one. The ``t3:`` namespace is folded to the
+    ``t3-`` display prefix; an untyped/empty *subagent* degrades to the explicit
+    ``general-purpose`` marker rather than an empty name.
+    """
+    agent_type = subagent.removeprefix("t3:").strip() or GENERAL_PURPOSE_SUBAGENT
+    return f"t3-{agent_type}-{task_id}"
 
 
 def review_target_is_dead(pr_url: str) -> bool:
@@ -23,7 +51,7 @@ def review_target_is_dead(pr_url: str) -> bool:
     MERGED/CLOSED target is dead. Fail-OPEN: anything indefinite still
     dispatches — see :func:`teatree.backends.loader.pr_is_merged_or_closed`.
     """
-    from teatree.backends.loader import pr_is_merged_or_closed  # noqa: PLC0415
+    from teatree.backends.loader import pr_is_merged_or_closed  # noqa: PLC0415 — deferred: loaded at tick time
 
     return pr_is_merged_or_closed(pr_url)
 
@@ -44,7 +72,7 @@ def dispatch_answering(signal: ScanSignal) -> list[DispatchAction]:
     fallback — auto ticket creation from inbound chat is a separate
     decision pass (see ``IncomingEventsScanner``).
     """
-    # NOTE(#963): a bot→user Slack notification channel (`teatree.notify.notify_user`,
+    # NOTE(#963): a bot→user Slack notification channel (`teatree.core.notify.notify_user`,
     # setting `notify_user_via_bot`) is slated so agent answers / questions / important
     # info also reach the user's configured Slack via the bot. See souliane/teatree#963.
     require_approval = get_effective_settings().require_human_approval_to_answer
@@ -144,32 +172,56 @@ def review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAct
     ]
 
 
-def claim_red_mr_fix(signal: ScanSignal) -> bool:
-    """Idempotency gate for capability D's ``my_pr.failed`` dispatch.
+def claim_red_mr_fix(payload: ActionPayload) -> bool:
+    """Idempotency claim for capability D's ``my_pr.failed`` fix dispatch.
 
-    Returns True when the ``(pr_url, head_sha)`` pair was not seen on a
-    previous tick — the caller proceeds to dispatch the agent. Returns
-    False when the same failing SHA already has a recorded attempt —
-    the statusline mirror still emits so the user sees the red MR but
-    the agent does not re-run. Best-effort: any DB issue defaults to
-    True so the fix-attempt path is not silently dropped on a missing
-    migration; the statusline always fires.
+    Called at PERSIST time (``persistence._handle_debug``, #1 blocker fix), not
+    at dispatch time: the claim rides the same ``transaction.atomic`` block that
+    creates the debugging Task, so a dropped/failed persist rolls the claim back
+    and the next tick retries — the marker can no longer be burned before the
+    action lands.
+
+    Returns True when the ``(pr_url, head_sha)`` pair was not seen on a previous
+    tick — the caller proceeds to create the Task. Returns False when the same
+    failing SHA already has a recorded attempt — the statusline mirror still
+    emitted at dispatch so the user sees the red MR, but no new Task is created.
+
+    SIG-2 (#7) hardens WHAT is claimed: the real head sha is recovered from
+    ``payload['raw']`` via the shared dual-forge helper when the top-level
+    ``head_sha`` is blank; a still-blank sha claims the :data:`_BLANK_SHA_SENTINEL`
+    keyed on ``pr_url`` (at most one dispatch per PR) and logs the instrumentation
+    gap — replacing the old fail-OPEN that re-dispatched forever. A ``DatabaseError``
+    still fails open (a missing migration must not silently drop the fix path) but
+    now logs at WARNING with the ``pr_url`` so the fail-open is visible and bounded.
     """
-    from django.db import DatabaseError  # noqa: PLC0415
+    from django.db import DatabaseError  # noqa: PLC0415 — deferred: Django import at call time
 
-    pr_url = str(signal.payload.get("pr_url") or signal.payload.get("url") or "")
-    head_sha = str(signal.payload.get("head_sha", ""))
-    if not pr_url or not head_sha:
+    pr_url = str(payload.get("pr_url") or payload.get("url") or "")
+    if not pr_url:
         return True
+    sha = str(payload.get("head_sha") or "") or _sha_from_raw(payload)
+    if not sha:
+        logger.warning(
+            "claim_red_mr_fix: no head sha for red PR %s — claiming sentinel (one dispatch, gap surfaced)",
+            pr_url,
+        )
+        sha = _BLANK_SHA_SENTINEL
     try:
-        from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415
+        from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         row = RedMrFixAttempt.claim(
             pr_url=pr_url,
-            head_sha=head_sha,
-            overlay=str(signal.payload.get("overlay", "")),
-            worktree_hint=str(signal.payload.get("worktree_hint", "")),
+            head_sha=sha,
+            overlay=str(payload.get("overlay", "")),
+            worktree_hint=str(payload.get("worktree_hint", "")),
         )
     except DatabaseError:
+        logger.warning("claim_red_mr_fix: DB error claiming %s — failing open (bounded)", pr_url)
         return True
     return row is not None
+
+
+def _sha_from_raw(payload: ActionPayload) -> str:
+    """Recover the head sha from the raw forge PR dict on the payload, or ``""``."""
+    raw = payload.get("raw")
+    return _extract_head_sha(raw) if isinstance(raw, dict) else ""

@@ -1,1 +1,1 @@
-"""Review mini-loop — reviewer PRs, Slack review intent, broadcasts, codex, review nag."""
+"""Review mini-loop — the single review intake (self + colleague PRs), broadcasts."""

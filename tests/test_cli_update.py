@@ -9,7 +9,9 @@ host machine and are out of scope for the git-sync behaviour under test.
 The stubs are recording callables, not ``Mock()`` assertions on call_args.
 """
 
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +22,6 @@ import typer
 import teatree.cli.setup as setup_mod
 import teatree.config as config_mod
 from teatree.cli import update as update_mod
-from teatree.cli._update_reconcile import _cherry_not_upstream, _merge_commits_in_range
 from teatree.cli.update import (
     ReinstallResult,
     RepoUpdate,
@@ -31,6 +32,7 @@ from teatree.cli.update import (
     _reinstall_and_resetup,
     update_repo,
 )
+from teatree.core.worktree.branch_classification import content_equivalence_blockers
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -172,6 +174,7 @@ class TestUpdateRepoSkips:
 
         assert result.status is UpdateStatus.SKIPPED
         assert "tracked" in result.reason.lower()
+        assert result.stale_kind == "dirty"
         assert result.is_error is False
         # Never clobbered — the local edit survives.
         assert (clone / "f.txt").read_text() == "local uncommitted work\n"
@@ -191,6 +194,7 @@ class TestUpdateRepoSkips:
 
         assert result.status is UpdateStatus.SKIPPED
         assert "branch" in result.reason.lower()
+        assert result.stale_kind == "off_default"
         assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "feature/wip"
 
     def test_non_default_branch_with_upstream_skips(self, tmp_path: Path) -> None:
@@ -455,7 +459,7 @@ class TestCollectRepos:
         ovl_bare = _make_remote(tmp_path, "ovl")
         ovl = _clone(tmp_path, ovl_bare, "ovl-clone")
 
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: core)
+        monkeypatch.setattr(setup_mod, "find_main_clone", lambda: core)
         monkeypatch.setattr(
             config_mod,
             "discover_overlays",
@@ -478,7 +482,7 @@ class TestCollectRepos:
         ovl_bare = _make_remote(tmp_path, "ovl")
         ovl = _clone(tmp_path, ovl_bare, "ovl-clone")
 
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: None)
+        monkeypatch.setattr(setup_mod, "find_main_clone", lambda: None)
         monkeypatch.setattr(update_mod, "_running_clone", lambda: None)
         monkeypatch.setattr(config_mod, "discover_overlays", lambda: [_Result("ovl", ovl)])
 
@@ -491,7 +495,7 @@ class TestCollectRepos:
     ) -> None:
         """A worktree-anchored entrypoint is audited for currency (#1507).
 
-        ``_find_main_clone`` reports the *configured* main clone (cwd/T3_REPO),
+        ``find_main_clone`` reports the *configured* main clone (cwd/T3_REPO),
         but the editable ``.pth`` can be anchored to a worktree the interpreter
         actually imports from. Unless the running clone is collected, a stale
         worktree-anchored install sails past the #948 clone-currency gate.
@@ -501,7 +505,7 @@ class TestCollectRepos:
         running_bare = _make_remote(tmp_path, "running")
         running = _clone(tmp_path, running_bare, "running-clone").resolve()
 
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: core)
+        monkeypatch.setattr(setup_mod, "find_main_clone", lambda: core)
         monkeypatch.setattr(config_mod, "discover_overlays", list)
         monkeypatch.setattr(update_mod, "_running_clone", lambda: running)
 
@@ -961,25 +965,19 @@ class TestUpdateReconcilesSquashMergedClone:
 class TestContentGateFailsSafe:
     """An inconclusive content check must REFUSE the reset, never authorize it.
 
-    Both gate probes (``git cherry`` and ``git rev-list --merges``) fail safe:
-    a non-zero git exit (a corrupt ref, a missing target) is inconclusive, so
-    the helper reports an opaque genuine "sha" and the caller keeps the
-    conservative refuse — ambiguity never reaps real work.
+    The shared :func:`content_equivalence_blockers` gate (``git cherry`` patch-id
+    + a merge-commit check) fails CLOSED: an unresolvable target makes both probes
+    exit non-zero (inconclusive), so the helper reports an opaque blocker and the
+    caller keeps the conservative refuse — ambiguity never reaps real work. This is
+    the SAME helper the clean-all force-delete path consumes (#2609).
     """
 
-    def test_cherry_failure_reports_a_genuine_blocker(self, tmp_path: Path) -> None:
+    def test_inconclusive_probe_reports_a_blocker(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
         # An unresolvable target makes `git cherry` exit non-zero (rc 128).
-        blockers = _cherry_not_upstream(clone, "origin/does-not-exist")
-        assert blockers, "an inconclusive git cherry must report a blocker, not an empty pass"
-        assert "inconclusive" in blockers[0]
-
-    def test_rev_list_merges_failure_reports_a_genuine_blocker(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        blockers = _merge_commits_in_range(clone, "origin/does-not-exist")
-        assert blockers, "an inconclusive git rev-list --merges must report a blocker, not an empty pass"
+        blockers = content_equivalence_blockers(str(clone), "main", "origin/does-not-exist")
+        assert blockers, "an inconclusive content probe must report a blocker, not an empty pass"
         assert "inconclusive" in blockers[0]
 
 
@@ -1045,6 +1043,129 @@ class TestRunUpdateEndToEnd:
         update_mod._run_update()
 
         assert "+3 commits" in capsys.readouterr().out
+
+
+class TestStaleCloneNotice:
+    """``_run_update`` emits a DURABLE notice for a dirty/off-default skip (#2836)."""
+
+    def _stub_side_effects(self, monkeypatch: pytest.MonkeyPatch, clone: Path) -> None:
+        monkeypatch.setattr(update_mod, "_collect_repos", lambda: [("clone", clone)])
+        monkeypatch.setattr(update_mod, "_reinstall_and_resetup", lambda _r: None)
+        monkeypatch.setattr(update_mod, "ensure_self_db_migrated", lambda: False)
+
+    def test_dirty_skip_emits_durable_notice(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare)
+        (clone / "f.txt").write_text("local uncommitted work\n")
+        self._stub_side_effects(monkeypatch, clone)
+
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
+            update_mod._run_update()
+
+        spy.assert_called_once()
+        skip = spy.call_args.args[0]
+        assert skip.reason.value == "dirty"
+        assert skip.repo_path == str(clone)
+
+    def test_healthy_run_emits_no_notice(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare)
+        self._stub_side_effects(monkeypatch, clone)
+
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
+            update_mod._run_update()
+
+        spy.assert_not_called()
+
+
+# Regression for #2844: the stale-clone notice writes a ``BotPing`` through
+# ``teatree.core.notify``, whose module-scope ``teatree.core.models`` import
+# needs a configured Django. ``t3 update`` is a top-level typer command that
+# never bootstraps Django, so the notify import raised ``ImproperlyConfigured``
+# at IMPORT time — before ``notify_stale_clone_skip``'s own try/except could
+# catch it — aborting the whole run whenever any tracked repo was stale.
+_STALE_NOTICE_SUBPROCESS = """
+import sys
+from pathlib import Path
+
+from django.conf import settings
+
+# Mirror the real `t3 update` process: Django is NOT bootstrapped here.
+assert not settings.configured, "precondition: Django must be unconfigured"
+
+from teatree.cli.update import RepoUpdate, UpdateStatus, _notify_if_stale
+
+result = RepoUpdate(
+    "clone", UpdateStatus.SKIPPED, old_sha="abc1234", reason="tracked dirty", stale_kind="dirty"
+)
+_notify_if_stale(result, repo=Path(sys.argv[1]))
+
+# The fix bootstraps Django before touching the ORM-backed notify path.
+assert settings.configured, "ensure_django() must run before the notify import"
+print("STALE-NOTICE-OK")
+"""
+
+
+class TestStaleNoticeNeverCrashesUpdate:
+    """``_notify_if_stale`` must survive a process where Django was never set up (#2844)."""
+
+    def test_stale_notice_does_not_crash_unconfigured_django_process(self, tmp_path: Path) -> None:
+        """Faithful reproduction: run the stale path in a fresh, Django-unconfigured process.
+
+        In-process, pytest has already configured Django, so the crash can only
+        be reproduced in a subprocess that mirrors the real ``t3 update`` runtime
+        (no ``django.setup()``). RED before the fix: the subprocess dies with
+        ``ImproperlyConfigured`` (non-zero exit). GREEN after: it bootstraps
+        Django and exits 0.
+        """
+        repo = tmp_path / "stale-clone"  # an existing dir → `_default_branch` degrades to None, not a crash
+        repo.mkdir()
+        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+        env["XDG_DATA_HOME"] = str(tmp_path / "xdg")  # isolate the self-DB from the real one
+
+        proc = subprocess.run(
+            [sys.executable, "-c", _STALE_NOTICE_SUBPROCESS, str(repo)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert proc.returncode == 0, f"`t3 update` stale path crashed:\n{proc.stderr}"
+        assert "STALE-NOTICE-OK" in proc.stdout
+        assert "ImproperlyConfigured" not in proc.stderr
+
+    def test_notify_failure_degrades_to_a_warning_never_propagates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A failing notify path must degrade to a plain warning, not abort the update.
+
+        RED before the fix: ``notify_stale_clone_skip`` raising propagates out of
+        ``_notify_if_stale`` (no surrounding try/except). GREEN after: it is
+        caught and surfaced as a ``WARN`` line naming the stale repo path.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        result = update_mod.RepoUpdate(
+            "clone", update_mod.UpdateStatus.SKIPPED, old_sha="abc1234", reason="tracked dirty", stale_kind="dirty"
+        )
+
+        with patch(
+            "teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip",
+            side_effect=RuntimeError("notify backend down"),
+        ):
+            update_mod._notify_if_stale(result, repo=tmp_path)  # must NOT raise
+
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert str(tmp_path) in out
+        assert "re-run `t3 update`" in out
 
 
 if __name__ == "__main__":

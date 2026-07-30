@@ -1,11 +1,60 @@
+import socket
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
-from teatree.core.management.commands._e2e_discovery import resolve_linked_worktree
+from teatree.core.management.commands._e2e_discovery import detect_local_port, resolve_linked_worktree
 from teatree.core.management.commands.e2e import _ticket_frontend_projects
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
+
+
+class LocalPortDetectionTests(SimpleTestCase):
+    """The local-port scan must see a listener on either loopback family."""
+
+    @staticmethod
+    def _listener(family: int, address: str) -> socket.socket:
+        """An OS-assigned listening socket bound to *address* only.
+
+        Closed on a failed bind/listen: a host with no IPv6 loopback raises from
+        ``bind``, and the caller's ``except OSError: skipTest`` never sees the
+        half-built socket. Leaked, it surfaces much later as a ResourceWarning that
+        pytest raises as ``PytestUnraisableExceptionWarning`` against whatever
+        unrelated test happens to be running when the GC finalizes it.
+        """
+        server = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            server.bind((address, 0))
+            server.listen(1)
+        except OSError:
+            server.close()
+            raise
+        return server
+
+    def test_detects_ipv6_only_listener(self) -> None:
+        # `nx serve` binds ::1 only on an IPv6-preferring host, so an
+        # IPv4-only probe aborts `e2e external` with "Frontend not running"
+        # while the dev server is happily serving on [::1]:4200.
+        if not socket.has_ipv6:
+            self.skipTest("interpreter built without IPv6 support")
+        try:
+            server = self._listener(socket.AF_INET6, "::1")
+        except OSError:
+            self.skipTest("host has no IPv6 loopback")
+        with server:
+            port = server.getsockname()[1]
+            assert detect_local_port(port) == port
+
+    def test_detects_ipv4_only_listener(self) -> None:
+        with self._listener(socket.AF_INET, "127.0.0.1") as server:
+            port = server.getsockname()[1]
+            assert detect_local_port(port) == port
+
+    def test_returns_none_when_nothing_listens(self) -> None:
+        with self._listener(socket.AF_INET, "127.0.0.1") as server:
+            port = server.getsockname()[1]
+        # The listener is closed now, so its port is free again.
+        assert detect_local_port(port) is None
 
 
 class TicketFrontendProjectsTests(TestCase):
@@ -20,14 +69,14 @@ class TicketFrontendProjectsTests(TestCase):
         # compose project, never the sibling app worktree hosting the frontend.
         projects = _ticket_frontend_projects(self.test_repo_wt)
 
-        assert projects[0] == "e2e-tests-wt147"
-        assert "webapp-wt147" in projects
+        assert projects[0] == f"e2e-tests-wt{self.ticket.pk}"
+        assert f"webapp-wt{self.ticket.pk}" in projects
 
     def test_resolved_worktree_is_probed_first(self) -> None:
         projects = _ticket_frontend_projects(self.app_repo_wt)
 
-        assert projects[0] == "webapp-wt147"
-        assert "e2e-tests-wt147" in projects
+        assert projects[0] == f"webapp-wt{self.ticket.pk}"
+        assert f"e2e-tests-wt{self.ticket.pk}" in projects
 
     def test_no_duplicate_projects(self) -> None:
         projects = _ticket_frontend_projects(self.test_repo_wt)
@@ -65,7 +114,7 @@ class TicketFrontendProjectsTests(TestCase):
 
         assert compose_project(backend_wt) in projects
         # The resolved-worktree ticket's siblings are bypassed when a link is given.
-        assert "webapp-wt147" not in projects
+        assert f"webapp-wt{self.ticket.pk}" not in projects
 
 
 class ResolveLinkedWorktreeTests(TestCase):
@@ -100,13 +149,13 @@ class ResolveLinkedWorktreeTests(TestCase):
         )
 
     def _overlay_with_backend(self, backend_repo_path: str):
-        def get_compose_file(worktree: Worktree) -> str:
+        def _compose_file(worktree: Worktree) -> str:
             return "/ws/1322/backend-repo/docker-compose.yml" if worktree.repo_path == backend_repo_path else ""
 
         from unittest.mock import MagicMock  # noqa: PLC0415
 
         overlay = MagicMock()
-        overlay.get_compose_file.side_effect = get_compose_file
+        overlay.provisioning.compose_file.side_effect = _compose_file
         return overlay
 
     def test_prefers_backend_stack_owner_over_first_pk(self) -> None:
@@ -144,12 +193,12 @@ class ResolveLinkedWorktreeTests(TestCase):
 
     def test_falls_back_when_overlay_hook_raises(self) -> None:
         # A misbehaving overlay hook must not break routing — the resolver
-        # treats a raising ``get_compose_file`` as "not the backend" and falls
+        # treats a raising ``provisioning.compose_file`` as "not the backend" and falls
         # back to the first stored-path sibling.
         from unittest.mock import MagicMock  # noqa: PLC0415
 
         overlay = MagicMock()
-        overlay.get_compose_file.side_effect = RuntimeError("overlay boom")
+        overlay.provisioning.compose_file.side_effect = RuntimeError("overlay boom")
         with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
             resolved = resolve_linked_worktree(self.ticket)
 

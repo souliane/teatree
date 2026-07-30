@@ -3,7 +3,7 @@
 The metered AI lane loads ONLY the scenario's ``agent_path`` SKILL.md as the
 system prompt (the clean-room lane sets empty ``setting_sources`` — CLAUDE.md /
 auto-memory auto-discovery finds nothing, see
-``teatree.eval.sdk_runner`` module docstring). So a behaviour the grader checks
+``teatree.eval.api_runner`` module docstring). So a behaviour the grader checks
 must be driven by prose **in that skill file**: if the rule lives only in the
 root ``CLAUDE.md`` the model never sees it and the scenario fails on every model.
 
@@ -19,17 +19,30 @@ token the grader regex keys on (or, for ``any_of`` scenarios, every documented
 escape). The token is read straight off the scenario's matcher, so this is the
 deterministic mirror of the metered behaviour: the prose must name what the
 matcher demands.
-"""
 
-from pathlib import Path
+The prose is resolved through the SAME loader the metered lane uses
+(:func:`~teatree.eval.api_runner.load_agent_definition`), honouring the
+scenario's ``agent_sections``. A scenario that loads only one ``##`` section
+shows the model only that section, so a whole-file check would go green on a
+token sitting in some *other* section the model never sees — the false-green
+mirror of the very impossible-matcher class this guard exists to catch.
+"""
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from teatree.eval.api_runner import load_agent_definition
+from teatree.eval.discovery import find_spec
 
 
-def _read(skill_rel_path: str) -> str:
-    return (_REPO_ROOT / skill_rel_path).read_text(encoding="utf-8")
+def _loaded_prose(scenario: str, skill_rel_path: str) -> str:
+    """The exact system prompt the metered lane builds for *scenario*."""
+    spec = find_spec(scenario)
+    assert spec is not None, f"scenario {scenario!r} not discovered — check evals/scenarios/"
+    assert spec.agent_path == skill_rel_path, (
+        f"scenario {scenario!r} loads {spec.agent_path!r}, but this guard pins {skill_rel_path!r} — "
+        "the row is checking prose the model is never shown."
+    )
+    return load_agent_definition(skill_rel_path, tuple(spec.agent_sections or ()))
 
 
 #: (scenario, agent_path skill, [tokens the skill prose MUST contain]). The
@@ -82,7 +95,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # raise alone would have masked).
     (
         "full_speed_fans_out_parallel_workers_not_serial",
-        "skills/speed/SKILL.md",
+        "skills/wip/SKILL.md",
         (
             "never stall a wave to ask for issue URLs",
             "the WORKER resolves its own worktree",
@@ -115,20 +128,6 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "an empty post-dispatch turn is the correct shape",
         ),
     ),
-    # team_mate REDESIGNED for the headless SDK lane (#2596): the per-teammate model
-    # tier is a HOST capability the SDK lane cannot control/verify, so the SDK lane
-    # now grades the DELEGATION essence — dispatch the heavy standing-role unit to a
-    # sub-agent, never do the heavy doc work inline in the main agent. The prose must
-    # name that delegate-don't-do-it-inline rule (the opus-floor stays as host-runtime
-    # prose, not the SDK-lane gate).
-    (
-        "team_mate_spawned_opus_never_sonnet",
-        "skills/speed/SKILL.md",
-        (
-            "Delegate the heavy standing-role unit to a sub-agent",
-            "never do the heavy work inline in the main agent",
-        ),
-    ),
     # read-canonical drifted by reading the canonical file FIRST (correct) then path-
     # hunting with find/grep/git-rev-parse/echo. The prose must name the one-Read-
     # then-stop rule AND that the STOP is symmetric (no path-hunting AFTER the read),
@@ -153,6 +152,19 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "STOP and wait for the answer",
         ),
     ),
+    # colleague-channel post was the impossible-matcher class, section-scoped: the
+    # loaded section named `notify post` ONLY as a parenthetical NEGATION of the
+    # self-DM CLI ("not `notify post` (which is the … colleague/channel path)") and
+    # never as a runnable shape. Both metered trials duly failed for want of the
+    # command — one burned its budget on `t3 --help`, the other issued no tool call
+    # at all — while the two sibling scenarios keying on `notify send` passed,
+    # because THAT shape is spelled out runnable in the same section. The prose must
+    # carry the positive colleague-post shape the matcher demands.
+    (
+        "on_behalf_colleague_message_uses_personal_token",
+        "skills/rules/SKILL.md",
+        ("notify post --channel", "--text"),
+    ),
 )
 
 
@@ -164,7 +176,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 def test_metered_scenario_skill_names_its_canonical_action(
     scenario: str, skill_path: str, tokens: tuple[str, ...]
 ) -> None:
-    prose = _read(skill_path)
+    prose = _loaded_prose(scenario, skill_path)
     missing = [token for token in tokens if token not in prose]
     assert not missing, (
         f"{skill_path} (the system prompt the metered scenario {scenario!r} loads) "

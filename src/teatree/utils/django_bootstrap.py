@@ -23,7 +23,7 @@ def ensure_django() -> None:
     ``django.setup()`` is a no-op after the first call, so repeated invocation
     across nested command dispatch is safe.
     """
-    import django  # noqa: PLC0415
+    import django  # noqa: PLC0415 — deferred: Django import at call time
 
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", _SETTINGS_MODULE)
     django.setup()

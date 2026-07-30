@@ -8,7 +8,7 @@ Two coupled contracts:
     :class:`~teatree.core.models.LoopLease` set), so the word was redundant
     with the tick token. The line now leads with the first loop chunk.
 
-2.  ``hooks/scripts/statusline.sh`` PREPENDS the per-session ``loop-owner:``
+2.  ``hooks/scripts/statusline.sh`` PREPENDS the per-session ``t3-master:``
     badge to the front of the loop line (and to a stand-alone line when no
     loop line is present), so the user reads ownership first.
 """
@@ -27,8 +27,7 @@ class TestLoopRunningTokenDropped:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -47,22 +46,21 @@ class TestLoopRunningTokenDropped:
                 "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("dispatch", now + timedelta(seconds=120), 600)],
             ),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
-        assert lines == ["dispatch 2m"], lines
+        assert lines == ["due: dispatch 2m"], lines
 
     def test_waiting_clause_still_appended(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=2),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=2),
         ):
             lines = live_loops_anchor()
-        assert lines == ["tick 10m · waiting: 2 questions"], lines
+        # #3494: ``N waiting`` spelled out; infra leases kept at the tail.
+        assert lines == ["2 waiting · tick 10m"], lines
 
     def test_still_empty_when_no_loops_live(self) -> None:
         with (

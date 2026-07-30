@@ -12,6 +12,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 
@@ -100,17 +101,17 @@ class TestNoStrayContainerAfterReap(TestCase):
     """
 
     def test_stop_path_downs_whole_project(self) -> None:
-        from teatree.core.worktree_env import compose_project  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import compose_project  # noqa: PLC0415
 
         wt = _worktree(ticket_number="810", state=Worktree.State.SERVICES_UP)
         expected_project = compose_project(wt)
         with (
             patch("teatree.loop.mechanical_local_stack.reapable_worktrees", return_value=[wt]),
-            patch("teatree.core.worktree_tasks.docker_compose_down") as down,
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down,
         ):
             reap_idle_stack({"worktree_id": wt.pk, "overlay": "t3-heavy"})
             # Run the enqueued on_commit worker synchronously to exercise the down.
-            from teatree.core.worktree_tasks import execute_worktree_stop  # noqa: PLC0415
+            from teatree.core.worktree.worktree_tasks import execute_worktree_stop  # noqa: PLC0415
 
             execute_worktree_stop.call(wt.pk)
         down.assert_called_once()
@@ -146,6 +147,24 @@ class TestDrainStackQueueItemHandler(TestCase):
         assert item.status == LocalStackQueueItem.Status.RETRYING
         assert item.attempt_count == 1
         assert item.next_attempt_at is not None
+        assert wt.state == Worktree.State.PROVISIONED
+
+    def test_ram_over_ceiling_backs_off_even_with_a_free_slot(self) -> None:
+        """#2949: a queued item is held (backoff) while host RAM is over the ceiling."""
+        wt = _worktree(ticket_number="822", state=Worktree.State.PROVISIONED)
+        item = LocalStackQueueItem.objects.create(overlay="t3-heavy", worktree=wt)
+        with (
+            patch("teatree.loop.mechanical_local_stack.resolve_max_concurrent_local_stacks", return_value=1),
+            patch("teatree.loop.mechanical_local_stack.check_local_stack_limit"),  # slot free
+            patch(
+                "teatree.loop.mechanical_local_stack.check_provision_admission",
+                return_value=ProvisionAdmissionVerdict.hold("ram_pressure"),
+            ),
+        ):
+            drain_stack_queue_item({"queue_item_id": item.pk, "worktree_id": wt.pk, "overlay": "t3-heavy"})
+        item.refresh_from_db()
+        wt.refresh_from_db()
+        assert item.status == LocalStackQueueItem.Status.RETRYING
         assert wt.state == Worktree.State.PROVISIONED
 
     def test_never_tears_down_another_tickets_stack(self) -> None:
@@ -204,7 +223,7 @@ class TestRunCommandsHelper(TestCase):
 
         wt = _worktree(ticket_number="859", state=Worktree.State.PROVISIONED)
         overlay = MagicMock()
-        overlay.get_run_commands.return_value = ["backend", "frontend"]
+        overlay.runtime.run_commands.return_value = ["backend", "frontend"]
         with patch("teatree.core.overlay_loader.get_overlay_for_worktree", return_value=overlay):
             assert _run_commands(wt) == ["backend", "frontend"]
 

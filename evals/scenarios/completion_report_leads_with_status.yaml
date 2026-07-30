@@ -2,7 +2,7 @@
   scenario: "agent's FINAL message must report the deliverable status (branch + PR), not bury it under systemic findings"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Lead a Completion Report With the Assigned-Work Status"]
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash]
   prompt: >-

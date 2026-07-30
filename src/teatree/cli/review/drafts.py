@@ -75,9 +75,9 @@ def _delete_draft_note(
     note_id: int = typer.Argument(help="Draft note ID to delete"),
 ) -> None:
     """Delete a draft note from a GitLab MR."""
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.delete_draft_note(repo, mr, note_id)
     typer.echo(msg)
     if code:
@@ -94,12 +94,12 @@ def _delete_discussion(
     Use to clean up a published general comment that should have
     been inline, or any other published note that needs removal.
     Distinct from `delete-draft-note`, which removes a user's own
-    pre-publication draft. Respects the `ask_before_post_on_behalf`
+    pre-publication draft. Respects the `on_behalf_post_mode`
     pre-gate (souliane/teatree#960).
     """
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.delete_discussion(repo, mr, note_id)
     typer.echo(msg)
     if code:
@@ -124,9 +124,9 @@ def _delete_issue_note(
     `t3 review approve-on-behalf <repo>#<issue> delete_issue_note
     --approver <user-id>`).
     """
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.delete_issue_note(repo, issue_iid, note_id)
     typer.echo(msg)
     if code:
@@ -138,9 +138,9 @@ def _publish_draft_notes(
     mr: int = typer.Argument(help="Merge request IID"),
 ) -> None:
     """Publish all draft notes on a GitLab MR (bulk submit)."""
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.publish_draft_notes(repo, mr)
     typer.echo(msg)
     if code:
@@ -152,9 +152,9 @@ def _list_draft_notes(
     mr: int = typer.Argument(help="Merge request IID"),
 ) -> None:
     """List draft notes on a GitLab MR."""
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, _code = service.list_draft_notes(repo, mr)
     typer.echo(msg)
 
@@ -166,9 +166,9 @@ def _update_note(
     body: str = typer.Argument(help="New comment body (markdown)"),
 ) -> None:
     """Update a note on a GitLab MR — auto-detects draft vs published."""
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.update_note(repo, mr, note_id, body)
     typer.echo(msg)
     if code:
@@ -183,9 +183,9 @@ def _resolve_discussion(
     resolved: bool = typer.Option(True, "--resolved/--no-resolved", help="Mark resolved (default) or re-open."),
 ) -> None:
     """Mark a GitLab MR discussion thread resolved or unresolved."""
-    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415 — deferred: breaks drafts ↔ commands cycle
 
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.resolve_discussion(repo, mr, discussion_id, resolved=resolved)
     typer.echo(msg)
     if code:

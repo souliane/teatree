@@ -19,8 +19,9 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -31,6 +32,30 @@ _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 #: isolated sibling DB instead — the #779 cross-DB mismatch. Public so the
 #: lifecycle/ship guard can name it in the refusal message.
 TRUE_CANONICAL_DB = _TRUE_CANONICAL_DATA_DIR / "db.sqlite3"
+
+# A repo root that is definitionally NOT a worktree (no ``.git`` file), so
+# ``ControlDb.for_repo`` takes its primary branch. Lets ``ControlDb.primary``
+# reuse the one seam instead of re-deriving the env precedence.
+_PRIMARY_CLONE_SENTINEL = Path("/nonexistent-primary-clone")
+
+
+class ControlDbResolution(NamedTuple):
+    """Which control DB this entry point talks to, and whether it was isolated.
+
+    THE single resolution seam (#3514). Subcommands used to disagree about the
+    answer — the Django/ORM path auto-isolates a worktree onto a per-worktree DB
+    while the pre-Django cold path always resolves the PRIMARY one — with no shared
+    implementation of the env precedence and no signal when the two diverged, so a
+    ticket written by one subcommand was invisible to the next. Every path derives
+    from here now, and :meth:`ControlDb.divergence_message` turns the remaining,
+    deliberate divergence into a stated fact.
+
+    *reason* names why this answer was reached, so a diagnostic can quote it.
+    """
+
+    path: Path
+    isolated: bool
+    reason: str
 
 
 class ResolvedDataDir(NamedTuple):
@@ -70,7 +95,7 @@ def resolve_main_clone(repo_root: Path) -> Path | None:
     resolves back to the main clone the pointer names. Returns ``None`` when
     ``.git`` is neither, or the pointer cannot be parsed back to a ``.git``
     dir. The single source of truth mirrored by ``cli/setup.py`` and
-    ``cli/_doctor_plugin_repair.py`` (#1507).
+    ``cli/doctor/plugin_repair.py`` (#1507).
     """
     git = repo_root / ".git"
     if git.is_dir():
@@ -113,6 +138,72 @@ def auto_isolated_worktrees_dir() -> Path:
     return _worktree_isolation_root(Path.home())
 
 
+#: Written inside each auto-isolated env dir, naming the checkout that owns it.
+#: :func:`isolated_slug` is a one-way hash, so the resolver's checkout -> dir
+#: mapping cannot be walked backwards: a reaper holding only the dir can at best
+#: INFER which checkouts are still alive and hope its inference covers the same
+#: population the resolver mints for. The stamp closes that by recording the
+#: owner on the way in, so liveness becomes a fact the dir carries (#3852).
+OWNER_STAMP_NAME = "owner-checkout.path"
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedEnvDir:
+    """One auto-isolated per-worktree env dir, and the owner stamp naming its checkout.
+
+    The stamp is what makes the slug mapping invertible. Without it a reaper can
+    only ask "is this slug in the set of checkouts I know about?" — an answer that
+    is wrong whenever its population is narrower than the resolver's, which is the
+    defect #3852 fixes. With it the dir answers "this exact checkout owns me", and
+    liveness is a one-line existence check needing no population agreement at all.
+    """
+
+    path: Path
+
+    @property
+    def owner(self) -> Path | None:
+        """The checkout stamped into this dir, or ``None`` when unstamped/unreadable.
+
+        ``None`` is "predates the stamp or could not be read", never "no owner" — a
+        caller must fall back to its other evidence rather than read the absence as
+        proof the dir is dead.
+        """
+        try:
+            raw = (self.path / OWNER_STAMP_NAME).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return Path(raw) if raw else None
+
+    def open_for(self, repo_root: Path) -> None:
+        """Bring this dir into existence owned by *repo_root*, stamped at birth (#3872).
+
+        THE birth seam: an auto-isolated env dir comes into existence here, so the
+        stamp is written BEFORE the dir holds anything else and no code path can mint
+        an unstamped one. Ordering is the whole point — seeding copies a
+        multi-gigabyte control DB, and a startup that died mid-copy left a dir on disk
+        that a reaper could only judge by inference. The dir's owner is not evidence a
+        later pass has to rediscover: it is a fact the dir carries from its first byte.
+        """
+        self.stamp_owner(repo_root)
+        seed_isolated_db(self.path)
+
+    def stamp_owner(self, repo_root: Path) -> None:
+        """Record *repo_root* as this dir's owning checkout.
+
+        Idempotent and crash-proof: an unchanged stamp is left alone, and any write
+        error is swallowed — this runs at settings import, where a read-only or full
+        filesystem must never turn a diagnostic aid into a failure to start.
+        """
+        stamp = self.path / OWNER_STAMP_NAME
+        try:
+            if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == str(repo_root):
+                return
+            self.path.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(f"{repo_root}\n", encoding="utf-8")
+        except OSError:
+            return
+
+
 def isolated_slug(repo_root: Path) -> str:
     """The deterministic child-dir name an auto-isolated worktree env gets.
 
@@ -149,6 +240,92 @@ def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> Res
     return ResolvedDataDir(_worktree_isolation_root(home) / isolated_slug(repo_root), auto_isolated=True)
 
 
+@dataclass(frozen=True, slots=True)
+class ControlDb:
+    """Which control DB an entry point talks to, under one ``env`` + ``home`` (#3514).
+
+    Composes the three answers that were separate module functions each repeating the
+    same ``(env, home)`` pair: :meth:`for_repo` (this entry point's DB), :meth:`primary`
+    (the DB the installed ``t3`` and the live loop use), and :meth:`divergence_message`
+    (what to say when the two differ).
+
+    ``home=None`` defers to the running process's ``Path.home()``, and does so LAZILY —
+    only on the branch that actually needs it. An explicit ``T3_CONFIG_DB`` already
+    fixes the answer, so resolving it must not touch the home tree at all: eagerly
+    computing the default made every cold read a home-tree read, which is exactly the
+    coupling ``tests/test_no_agent_memory_dependency.py`` forbids.
+    """
+
+    env: Mapping[str, str]
+    home: Path | None = None
+
+    def for_repo(self, repo_root: Path) -> ControlDbResolution:
+        """THE control-DB answer for code resident in *repo_root*.
+
+        First match wins: an explicit ``T3_CONFIG_DB`` (which collapses every path onto
+        one DB, the escape hatch for a subcommand that must join the primary), then
+        :func:`resolve_data_dir`'s own precedence (``XDG_DATA_HOME``, else the
+        auto-isolated per-worktree dir for worktree code, else the canonical dir). Pure
+        for an explicit ``home``: it then reads only its own state, so a caller can
+        resolve any entry point's answer — including one it is not itself running as —
+        which is what makes the divergence describable.
+        """
+        override = self.env.get("T3_CONFIG_DB")
+        if override:
+            return ControlDbResolution(Path(override), isolated=False, reason="T3_CONFIG_DB is set explicitly")
+        resolved = resolve_data_dir(
+            env=dict(self.env),
+            home=self.home if self.home is not None else Path.home(),
+            repo_root=repo_root,
+        )
+        reason = (
+            "worktree code with no explicit XDG_DATA_HOME is auto-isolated onto its own DB"
+            if resolved.auto_isolated
+            else "the primary data dir"
+        )
+        return ControlDbResolution(resolved.path / "db.sqlite3", isolated=resolved.auto_isolated, reason=reason)
+
+    def primary(self) -> Path:
+        """The PRIMARY control DB — the same answer a main clone resolves to.
+
+        The worktree-isolation branch is deliberately not taken: the pre-Django cold
+        readers must reach the DB the installed ``t3`` and the live loop operate on,
+        even when the code they are embedded in lives in a worktree. Derived from
+        :meth:`for_repo` against a synthetic primary-clone root so the env precedence
+        has ONE implementation, never a second copy that can drift.
+        """
+        return self.for_repo(_PRIMARY_CLONE_SENTINEL).path
+
+    def primary_data_dir(self) -> Path:
+        """The dir the PRIMARY control DB lives in — home to every INSTALL-WIDE artifact.
+
+        Deliberately NOT the auto-isolated per-worktree :data:`DATA_DIR`: an artifact
+        describing the *operator* rather than a checkout (the live-presence heartbeat)
+        has exactly one instance, and giving one keyboard two heartbeats is how a fast
+        path and a Django path come to disagree about the same fact.
+        """
+        return self.primary().parent
+
+    def divergence_message(self, repo_root: Path) -> str | None:
+        """The message naming both DBs when *repo_root*'s answer is not the primary.
+
+        ``None`` when they agree — the ordinary case, and nothing to say. Otherwise the
+        isolation is real and intended (worktree code must never migrate the canonical
+        DB), so the message states both paths and the remedy rather than pretending it
+        away: a stranded ticket is what happens when this stays unsaid.
+        """
+        mine = self.for_repo(repo_root)
+        primary = self.primary()
+        if mine.path == primary:
+            return None
+        return (
+            f"This entry point resolves the control DB at {mine.path} ({mine.reason}), while the "
+            f"installed `t3` and the live loop use {primary}. A ticket written here is NOT visible "
+            f"there. Run `t3 <overlay> worktree provision` to provision this worktree, or set "
+            f"T3_CONFIG_DB to join a specific DB deliberately."
+        )
+
+
 @contextmanager
 def _exclusive_lock(lock_path: Path) -> Iterator[None]:
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -164,7 +341,7 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
     """Consistent point-in-time copy even if a live writer holds ``src``.
 
     ``?immutable=1`` (not ``?mode=ro``) opens the source: a WAL-mode DB whose
-    ``-shm``/``-wal`` companions are absent needs to (re)create the ``-shm``
+    ``-shm``/``-wal`` sidecar files are absent needs to (re)create the ``-shm``
     shared-memory file, which a ``mode=ro`` open cannot do — it fails with
     ``OperationalError: unable to open database file``. ``immutable=1`` opens
     without a ``-shm`` and snapshots correctly.
@@ -224,7 +401,11 @@ def seed_isolated_db(data_dir: Path) -> None:
     )
 
 
-_RESOLVED = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=_code_repo_root())
+#: The repo root the running teatree code lives in — the checkout that owns its
+#: env dir, and so the value stamped into it.
+CODE_REPO_ROOT = _code_repo_root()
+
+_RESOLVED = resolve_data_dir(env=dict(os.environ), home=Path.home(), repo_root=CODE_REPO_ROOT)
 DATA_DIR = _RESOLVED.path
 DATA_DIR_AUTO_ISOLATED = _RESOLVED.auto_isolated
 CANONICAL_DB = DATA_DIR / "db.sqlite3"

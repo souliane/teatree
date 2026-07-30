@@ -1,6 +1,16 @@
+from pathlib import Path
+
+import teatree
+
 SECRET_KEY = "teatree-tests"
 USE_TZ = True
 ROOT_URLCONF = "teatree.urls"
+STATIC_URL = "/static/"
+
+# The project templates dir (holds the /admin/ re-skin's base_site.html). Mirrors
+# ``teatree.settings`` so the admin snapshot renders identically here and in the
+# generate-dashboard-snapshot hook.
+_PROJECT_TEMPLATES = Path(teatree.__file__).resolve().parent / "templates"
 
 DATABASES = {
     "default": {
@@ -22,6 +32,7 @@ INSTALLED_APPS = [
     "teatree.core",
     "teatree.agents",
     "teatree.backends",
+    "teatree.dash",
     "teatree.contrib.t3_teatree",
 ]
 
@@ -30,13 +41,16 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Carried over from the project settings so the dashboard query-count pins
+    # measure the plan production actually runs, memo included.
+    "teatree.core.middleware.RequestScopedReadCacheMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
 
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [str(_PROJECT_TEMPLATES)],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -51,6 +65,9 @@ TEMPLATES = [
 TASKS = {
     "default": {
         "BACKEND": "django_tasks.backends.dummy.DummyBackend",
+        # Mirror the production ``teatree.settings`` allowlist: "loops" is the
+        # dedicated queue the self-rescheduling loop-timer chains ride (parity-tested).
+        "QUEUES": ["default", "loops"],
     },
 }
 

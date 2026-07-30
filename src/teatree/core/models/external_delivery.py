@@ -1,7 +1,7 @@
 """Delivery-ownership lease for hand-dispatched external delivery (#2104).
 
 A unit delivered out-of-band by a hand-dispatched delivery agent (per
-``/teatree-batch``) is implemented directly with no planning phase and no
+``/t3:wip``) is implemented directly with no planning phase and no
 loop-armed reviewer, so the loop must not re-derive that lifecycle work each
 tick. The single delivery-ownership predicate is :func:`under_external_delivery`,
 true while a TTL'd ``external_delivery`` lease (stamped on ``Ticket.extra`` via
@@ -30,7 +30,7 @@ unit-level "is this unit already being delivered by someone else?".
 
 These live at module scope (not on ``Ticket``) to keep the model under the
 project's module-health LOC cap; semantically they are siblings of
-``ticket.schedule_external_review`` and friends.
+``schedule_external_review`` and friends.
 """
 
 from datetime import datetime, timedelta

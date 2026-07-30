@@ -3,19 +3,22 @@
 import datetime as dt
 import logging
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.mechanical import (
     HANDLERS,
     assign_gitlab_reviewer,
     complete_ticket,
     ignore_disposed_ticket,
+    payload_author_untrusted_public,
     reopen_ticket,
     reviewer_task_orphaned,
+    reviewer_task_self_authored,
 )
 from teatree.loop.tick import TickReport
 from teatree.loop.tick_recovery import _execute_mechanical
@@ -91,6 +94,37 @@ class TestCompleteTicket(TestCase):
         complete_ticket(_payload())
 
 
+class TestCompleteTicketMidChainRefusal(TestCase):
+    """The loop completion path must survive a mid-chain FSM/gate refusal.
+
+    Pre-fix, ``complete_ticket`` cascaded ``request_review`` → ``mark_merged`` →
+    ``retrospect`` with no ``atomic()`` per step and no refusal handling. A
+    ``shipped`` ticket whose issue is done but which lacks merged-SHA evidence
+    committed the ``request_review`` advance, then the merge-evidence gate on
+    ``mark_merged`` raised ``NoMergeEvidenceError``. That escape landed in
+    ``report.errors`` + an ERROR log on EVERY tick, on top of the already-persisted
+    ``in_review`` partial state. Routed through ``Ticket.advance_to_delivered`` the
+    refusal is now caught: the partial progress persists (as the CLI sweep does),
+    but no exception escapes the tick.
+    """
+
+    def setUp(self) -> None:
+        # The merge-evidence gate must bite so ``mark_merged`` genuinely refuses.
+        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+
+    def test_mid_chain_gate_refusal_does_not_escape_the_tick(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/9", state="shipped")
+
+        with self.assertNoLogs("teatree.loop.tick_recovery", level="ERROR"):
+            report = _run_mechanical("ticket_completion", ticket_id=ticket.pk)
+
+        assert report.errors == {}
+        ticket.refresh_from_db()
+        # request_review committed its own atomic step (partial progress);
+        # mark_merged was gate-refused and rolled back — the walk stopped clean.
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+
 class TestReopenTicket(TestCase):
     def test_transitions_shipped_ticket_back_to_started(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/1", state="shipped")
@@ -162,6 +196,45 @@ class TestReviewerTaskOrphaned(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
+
+
+class TestReviewerTaskSelfAuthoredAuthorTrust(TestCase):
+    """#1773: an untrusted public-repo author never gets the 'no self-review' skip."""
+
+    def _make_reviewer_ticket_with_pending_task(self, url: str) -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+        return ticket, task
+
+    def test_untrusted_public_author_does_not_close_reviewing_task(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/4242"
+        ticket, task = self._make_reviewer_ticket_with_pending_task(url)
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            reviewer_task_self_authored(_payload(ticket_id=ticket.pk, url=url, author="evilhacker"))
+        task.refresh_from_db()
+        assert task.status != Task.Status.COMPLETED
+
+    def test_no_author_payload_keeps_legacy_self_authored_close(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/4243"
+        ticket, task = self._make_reviewer_ticket_with_pending_task(url)
+        reviewer_task_self_authored(_payload(ticket_id=ticket.pk, url=url))
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_classifier_helper_matches_shared_seam(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/1"
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
+            assert payload_author_untrusted_public({"url": url, "author": "evilhacker"}) is True
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=True):
+            assert payload_author_untrusted_public({"url": url, "author": "evilhacker"}) is False
+        assert payload_author_untrusted_public({"author": "evilhacker"}) is False
 
 
 class TestAssignGitlabReviewer:

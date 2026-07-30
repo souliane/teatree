@@ -18,7 +18,7 @@ from django.core.management import call_command
 
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.notify import _resurface_text
+from teatree.core.notify_question_drains import _resurface_text
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -139,7 +139,10 @@ class TestResurfaceText:
         assert "Ship?" in text
         assert "Yes — go" in text
         assert "No" in text
-        assert f"questions answer {row.pk}" in text
+        # Still guarantees the message says HOW to answer, and now also that a TYPED
+        # reply is the recorded one — an emoji reaction on the question reaches no consumer.
+        assert "Reply in this thread" in text
+        assert "typed reply" in text
 
     def test_malformed_options_json_is_tolerated(self) -> None:
         row = DeferredQuestion.record("Broken?", options_json="{not json", session_id="s-1")

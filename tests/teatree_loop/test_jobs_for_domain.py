@@ -101,7 +101,17 @@ class JobsForDomainPartitionTestCase(TestCase):
         backend = self._backend()
         dispatch_jobs = jobs_for_domain(Domain.DISPATCH, backend)
         names = {job.scanner.name for job in dispatch_jobs}
-        assert names == {"pending_tasks", "incoming_events", "outbound_audit", "undelivered_notify"}
+        assert names == {
+            "pending_tasks",
+            "pending_pr_drain",
+            "incoming_events",
+            "outbound_audit",
+            "undelivered_notify",
+            "deferred_question_poster",
+            "question_backlog_nag",
+            "waiting_digest",
+            "work_state",
+        }
         assert all(job.overlay == "" for job in dispatch_jobs)
 
     def test_dispatch_excluded_from_per_overlay_domains(self) -> None:
@@ -112,11 +122,11 @@ class JobsForDomainPartitionTestCase(TestCase):
             jobs_for_domain(Domain.TICKETS, None)
 
 
-class JobsForDomainTodoSweepTestCase(TestCase):
-    """``todo_sweep`` — emitted by the legacy per-overlay builder — is owned by a domain (#1482).
+class JobsForDomainTaskSweepTestCase(TestCase):
+    """``task_sweep`` — emitted by the legacy per-overlay builder — is owned by a domain (#1482).
 
-    The pre-seam mini-loops dropped ``todo_sweep`` (no mini-loop reproduced
-    :func:`teatree.loop.scanner_factories._todo_sweep_scanner_for`). The exhaustive
+    The pre-seam mini-loops dropped ``task_sweep`` (no mini-loop reproduced
+    :func:`teatree.loop.scanner_factories._task_sweep_scanner_for`). The exhaustive
     partition assigns it to ``Domain.TICKETS`` (it verifies overlay-scoped Task
     rows, the same surface as the active/stale ticket scanners).
     """
@@ -135,19 +145,107 @@ class JobsForDomainTodoSweepTestCase(TestCase):
             overlay=overlay,
         )
 
-    def test_todo_sweep_owned_by_tickets_domain(self) -> None:
+    def test_task_sweep_owned_by_tickets_domain(self) -> None:
         backend = self._backend_with_python_overlay()
         tickets_names = {job.scanner.name for job in jobs_for_domain(Domain.TICKETS, backend)}
-        assert "todo_sweep" in tickets_names
+        assert "task_sweep" in tickets_names
+
+
+class PrSweepShipDomainTestCase(TestCase):
+    """The auto-merge PR-sweep is owned by SHIP, not REVIEW (#3244).
+
+    The review loop is ``colleague_facing`` and is skipped under
+    ``autonomous_away``; ship is not. Moving the sweep to ship keeps the merge
+    path alive when the operator is away. A REVIEW-domain sweep would starve it.
+    """
+
+    @staticmethod
+    def _backend_with_sweep() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.config.get_review_channel.return_value = ("", "")
+        overlay.metadata.get_followup_repos.return_value = ["souliane/teatree"]
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="t3-teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=("ready",),
+            overlay=overlay,
+        )
+
+    @staticmethod
+    def _scanner_type_names(jobs: list[Any]) -> set[str]:
+        return {type(job.scanner).__name__ for job in jobs}
+
+    def test_ship_domain_owns_the_pr_sweep(self) -> None:
+        backend = self._backend_with_sweep()
+        ship = self._scanner_type_names(jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,)))
+        assert "PrSweepScanner" in ship
+
+    def test_review_domain_does_not_own_the_pr_sweep(self) -> None:
+        backend = self._backend_with_sweep()
+        review = self._scanner_type_names(jobs_for_domain(Domain.REVIEW, backend, all_backends=(backend,)))
+        assert "PrSweepScanner" not in review
 
 
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
+class ReviewDomainUnifiedIntakeTestCase(TestCase):
+    """``Domain.REVIEW`` is the SINGLE review intake — self + colleague (#3569).
+
+    Self-authored PRs are ALWAYS admitted (the ``ClaudeSelfPrReviewScanner``);
+    colleague PRs are admitted only when ``admit_colleague_prs_to_board`` is ON
+    (the ``ReviewerPrsScanner``). Both feed the SAME ``reviewing`` → ``t3:reviewer``
+    gate. There is no separate self_review domain and codex is not wired here.
+    """
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_github_token.return_value = ""
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.config.get_review_channel.return_value = ("", "")
+        overlay.metadata.get_followup_repos.return_value = ["souliane/teatree"]
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="t3-teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=("ready",),
+            overlay=overlay,
+        )
+
+    def _review_names(self, backend: OverlayBackends) -> set[str]:
+        return {job.scanner.name for job in jobs_for_domain(Domain.REVIEW, backend, all_backends=(backend,))}
+
+    def test_self_pr_scanner_always_admitted_even_when_colleague_off(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)):
+            names = self._review_names(backend)
+        assert "self_pr_review" in names
+
+    def test_colleague_scanner_admitted_only_when_setting_on(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=True)):
+            assert "reviewer_prs" in self._review_names(backend)
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=False)):
+            assert "reviewer_prs" not in self._review_names(backend)
+
+    def test_codex_scanner_never_wired_into_review(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(admit_colleague_prs_to_board=True)):
+            assert "codex_review" not in self._review_names(backend)
+
+    def test_no_separate_self_review_domain(self) -> None:
+        assert not hasattr(Domain, "SELF_REVIEW")
+
+
 class IssueImplementerDomainPartitionTestCase(TestCase):
     """``ISSUE_IMPLEMENTER`` joins the partition without breaking it (#1553).
 
-    The domain is default-OFF: :func:`_issue_implementer_scanner_for`
+    The domain is default-OFF: :func:`_issue_intake_scanner_for`
     returns ``None`` unless an overlay opts in, so the per-overlay sum stays
     byte-for-byte equal to the legacy builder by default (the parity
     invariant). When enabled it owns exactly the one scanner the partition
@@ -178,7 +276,7 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
             legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
         assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
 
-    def test_enabled_slice_owns_exactly_the_issue_implementer_scanner(self) -> None:
+    def test_enabled_slice_owns_exactly_the_issue_intake_scanner(self) -> None:
         backend = self._backend()
         with patch(
             _SETTINGS_PATCH_TARGET,
@@ -186,10 +284,10 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
         ):
             slice_jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend)
             legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
-        assert [job.scanner.name for job in slice_jobs] == ["issue_implementer"]
+        assert [job.scanner.name for job in slice_jobs] == ["issue_intake"]
         # Enabled, the legacy aggregator carries exactly the one slice scanner —
         # both fan-out paths derive from this same partition slice (no divergence).
-        legacy_ii = [j for j in legacy if j.scanner.name == "issue_implementer"]
+        legacy_ii = [j for j in legacy if j.scanner.name == "issue_intake"]
         assert len(legacy_ii) == 1
         assert _signature(legacy_ii[0]) == _signature(slice_jobs[0])
 
@@ -204,3 +302,47 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
                 for job in jobs_for_domain(domain, backend, all_backends=(backend,)):
                     counts[_signature(job)] += 1
         assert not {sig for sig, n in counts.items() if n > 1}
+
+
+class TriageAssessorDomainPartitionTestCase(TestCase):
+    """``TRIAGE_ASSESSOR`` joins the partition without breaking it.
+
+    Default-OFF: :func:`_triage_assessor_scanner_for` returns ``None`` unless an
+    overlay opts in, so the per-overlay sum stays byte-for-byte equal to the legacy
+    builder by default. When enabled it owns exactly the one scanner the partition
+    seam emits — the single source both fan-out paths consume.
+    """
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        host = MagicMock(spec=CodeHostBackend)
+        return OverlayBackends(
+            name="teatree",
+            hosts=(host,),
+            messaging=MagicMock(spec=MessagingBackend),
+            ready_labels=("ready",),
+            identities=("alice",),
+        )
+
+    def test_member_of_per_overlay_partition(self) -> None:
+        assert Domain.TRIAGE_ASSESSOR in PER_OVERLAY_DOMAINS
+
+    def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings()):
+            assert jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend) == []
+            partitioned: list[Any] = []
+            for domain in PER_OVERLAY_DOMAINS:
+                partitioned.extend(jobs_for_domain(domain, backend, all_backends=(backend,)))
+            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
+
+    def test_enabled_slice_owns_exactly_the_triage_assessor_scanner(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(triage_assessor_enabled=True)):
+            slice_jobs = jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend)
+            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        assert [job.scanner.name for job in slice_jobs] == ["triage_assessor"]
+        legacy_ta = [j for j in legacy if j.scanner.name == "triage_assessor"]
+        assert len(legacy_ta) == 1
+        assert _signature(legacy_ta[0]) == _signature(slice_jobs[0])

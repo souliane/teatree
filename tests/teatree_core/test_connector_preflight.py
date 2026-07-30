@@ -14,9 +14,11 @@ from django.test import TestCase
 
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core.connector_preflight import assert_slack_scope, run_connector_preflight
+from teatree.core.connector_manifest import ConnectorRequirement, OverlayManifest
+from teatree.core.connector_preflight import assert_required_connectors, assert_slack_scope, run_connector_preflight
+from teatree.core.mcp_connectivity import McpServerStatus
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 
 
 def _fake_auth_test_post(header_value: str | None):
@@ -70,15 +72,8 @@ class _NoOpOverlay(OverlayBase):
         return []
 
 
-class _SlackDownOverlay(OverlayBase):
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        _ = worktree
-        return []
-
-    def get_connector_preflight(self) -> list:
+class _SlackDownOverlayConnectors(OverlayConnectors):
+    def preflight(self) -> list:
         def _probe() -> None:
             msg = "Slack auth.test failed: missing_scope"
             raise RuntimeError(msg)
@@ -86,9 +81,34 @@ class _SlackDownOverlay(OverlayBase):
         return [_probe]
 
 
+class _SlackDownOverlay(OverlayBase):
+    connectors = _SlackDownOverlayConnectors()
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        _ = worktree
+        return []
+
+
 class TestOverlayBaseConnectorPreflightDefault(TestCase):
     def test_default_is_empty(self) -> None:
-        assert _NoOpOverlay().get_connector_preflight() == []
+        # An overlay that declares nothing keeps its previous no-probe behaviour.
+        assert _NoOpOverlay().connectors.preflight() == []
+
+    def test_declaring_expectations_yields_standard_probes(self) -> None:
+        # Flipping the default (#3333): a declared MCP expectation now produces a
+        # live probe for free, with no bespoke preflight override.
+        class _DeclaringConnectors(OverlayConnectors):
+            def manifest(self) -> list[ConnectorRequirement]:
+                return [ConnectorRequirement(name="slack", required=True)]
+
+            def mcp_provider_expectations(self) -> dict[str, str]:
+                return {"slack": "slack"}
+
+        probes = _DeclaringConnectors().preflight()
+        assert len(probes) == 1
 
 
 class TestRunConnectorPreflight(TestCase):
@@ -141,3 +161,63 @@ class TestRunConnectorPreflight(TestCase):
             return_value={"acme": _SlackDownOverlay()},
         ):
             assert run_connector_preflight("does-not-exist") is None
+
+
+class _ManifestOverlayConnectors(OverlayConnectors):
+    def manifest(self) -> list[ConnectorRequirement]:
+        return [ConnectorRequirement("claude.ai Slack", required=True)]
+
+
+class _ManifestOverlay(OverlayBase):
+    connectors = _ManifestOverlayConnectors()
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        _ = worktree
+        return []
+
+
+class TestManifestRequiredConnectorGate(TestCase):
+    def test_required_declared_connector_down_refuses_the_loop(self) -> None:
+        with (
+            patch(
+                "teatree.core.connector_preflight.get_all_overlays",
+                return_value={"acme": _ManifestOverlay()},
+            ),
+            patch(
+                "teatree.core.connector_manifest.probe_mcp_servers",
+                return_value=[McpServerStatus("claude.ai Slack", "", connected=False)],
+            ),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            run_connector_preflight()
+        assert "claude.ai Slack" in str(excinfo.value)
+
+    def test_required_declared_connector_connected_passes(self) -> None:
+        with (
+            patch(
+                "teatree.core.connector_preflight.get_all_overlays",
+                return_value={"acme": _ManifestOverlay()},
+            ),
+            patch(
+                "teatree.core.connector_manifest.probe_mcp_servers",
+                return_value=[McpServerStatus("claude.ai Slack", "", connected=True)],
+            ),
+        ):
+            assert run_connector_preflight() is None
+
+
+class TestAssertRequiredConnectors(TestCase):
+    def test_down_required_connector_raises(self) -> None:
+        manifests = [OverlayManifest("ov", [ConnectorRequirement("claude.ai Slack", required=True)])]
+        with pytest.raises(RuntimeError, match="not connected"):
+            assert_required_connectors(
+                manifests,
+                probe=lambda: [McpServerStatus("claude.ai Slack", "", connected=False)],
+            )
+
+    def test_empty_manifest_is_a_noop_without_probing(self) -> None:
+        # No probe callable supplied and none run — the empty manifest short-circuits.
+        assert assert_required_connectors([]) is None

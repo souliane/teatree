@@ -31,7 +31,7 @@ import re
 import sys
 from pathlib import Path
 
-from django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -54,7 +54,7 @@ def _unknown_repo_push_gate_enabled() -> bool:
     kill-switch. The gate is ALSO inert whenever no overlay declared
     ``owned_repos``, so this switch only matters once an overlay opts in.
     """
-    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
 
     return _teatree_bool_setting("unknown_repo_push_gate_enabled", default=True)
 
@@ -92,7 +92,7 @@ def _classify_push_for_cwd(cwd: Path) -> str:
     if not bootstrap_teatree_django():
         return "allow"
     try:
-        from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415
+        from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415 — cold-hook import
 
         return str(classify_active_push(cwd))
     except Exception:  # noqa: BLE001 — fail OPEN; a broken resolver must not wedge a push.
@@ -151,7 +151,7 @@ def handle_block_unknown_repo_push(data: dict) -> bool:
     through :func:`_fail_open_or_deny` so the self-rescue allowlist + master
     fail-open switch + circuit breaker all apply (never-lockout).
     """
-    from hook_router import _fail_open_or_deny, _resolve_cwd_repo  # noqa: PLC0415, PLC2701
+    from hooks.scripts.hook_router import _fail_open_or_deny, _resolve_cwd_repo  # noqa: PLC0415 deferred back-import
 
     if not _unknown_repo_push_is_in_scope(data):
         return False

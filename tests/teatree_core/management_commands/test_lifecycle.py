@@ -9,13 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.core.management.base import OutputWrapper
 from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
+import teatree.core.gates.local_stack_gate as local_stack_gate_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.skill_cache as startup_mod
+import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.db as db_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Ticket, Worktree
@@ -70,7 +70,8 @@ class TestLifecycleSetup(TestCase):
                 reset_called = True
 
             overlay = import_string(FULL_OVERLAY)()
-            overlay.get_reset_passwords_command = lambda wt: ProvisionStep(name="reset", callable=_track_reset)
+            overlay.provisioning = type(overlay.provisioning)()
+            overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(name="reset", callable=_track_reset)
 
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
@@ -161,12 +162,13 @@ class TestLifecycleSetup(TestCase):
                 )
 
             worktree = Worktree.objects.get(pk=worktree_id)
-            assert worktree.db_name == "wt_91_acmebank"
+            # db_name keys on the unique Ticket pk, not the derived ticket_number.
+            assert worktree.db_name == f"wt_{worktree.ticket_id}_acmebank"
 
-            cache_file = tmp_path / ".t3-cache" / ".t3-env.cache"
+            cache_file = tmp_path / ".t3-cache" / wt_dir.name / ".t3-env.cache"
             cache_body = cache_file.read_text(encoding="utf-8")
             assert "WT_VARIANT=acmebank" in cache_body
-            assert "WT_DB_NAME=wt_91_acmebank" in cache_body
+            assert f"WT_DB_NAME=wt_{worktree.ticket_id}_acmebank" in cache_body
 
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
@@ -201,7 +203,7 @@ class TestLifecycleSetup(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_post_db_steps(self) -> None:
-        """Setup runs post-DB steps from the overlay via the step runner."""
+        """Setup runs post-DB steps then the reset step, in that order."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -216,15 +218,29 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            # FullOverlay.get_reset_passwords_command returns a step with callable=lambda: None.
-            # The step runner invokes callables directly (no subprocess).
-            # Verify setup completes without error — the step runner handles execution.
-            call_command("worktree", "provision", path=str(wt_dir))
+            ran: list[str] = []
+            overlay = import_string(FULL_OVERLAY)()
+            overlay.provisioning = type(overlay.provisioning)()
+            overlay.provisioning.post_db_steps = lambda wt: [
+                ProvisionStep(name="migrate", callable=lambda: ran.append("migrate")),
+            ]
+            overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(
+                name="reset", callable=lambda: ran.append("reset")
+            )
+
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+                patch.object(utils_run_mod, "subprocess"),
+            ):
+                call_command("worktree", "provision", path=str(wt_dir))
+
+            # The reset step is appended after post-DB steps by the runner.
+            assert ran == ["migrate", "reset"]
 
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_post_db_steps_with_commands(self) -> None:
-        """Setup iterates post-DB steps and runs their callables via the step runner."""
+        """Setup iterates every post-DB step and invokes each callable in order."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -239,14 +255,26 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            # PostDbStepsOverlay returns named callable steps.
-            # The step runner invokes each callable and tracks results.
-            call_command("worktree", "provision", path=str(wt_dir))
+            ran: list[str] = []
+            overlay = import_string(POST_DB_OVERLAY)()
+            overlay.provisioning = type(overlay.provisioning)()
+            overlay.provisioning.post_db_steps = lambda wt: [
+                ProvisionStep(name="run-migrations", callable=lambda: ran.append("run-migrations")),
+                ProvisionStep(name="collectstatic", callable=lambda: ran.append("collectstatic")),
+            ]
+
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+                patch.object(utils_run_mod, "subprocess"),
+            ):
+                call_command("worktree", "provision", path=str(wt_dir))
+
+            assert ran == ["run-migrations", "collectstatic"]
 
     @_patch_overlays(PRE_RUN_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_pre_run_steps_for_all_services(self) -> None:
-        """Setup calls get_pre_run_steps for every service from get_run_commands."""
+        """Setup calls runtime.pre_run_steps for every service from runtime.run_commands."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -263,37 +291,14 @@ class TestLifecycleSetup(TestCase):
 
             call_command("worktree", "provision", path=str(wt_dir))
 
-            # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
+            # PreRunOverlay.runtime.run_commands returns backend, frontend, build-frontend
             wt.refresh_from_db()
             assert sorted((wt.extra or {}).get("pre_run_log", [])) == ["backend", "build-frontend", "frontend"]
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_writes_skill_metadata_cache(self) -> None:
-        """Setup writes the overlay skill metadata to DATA_DIR/skill-metadata.json."""
-        pytest.skip(
-            "skill-metadata cache is now written on Django startup, "
-            "not during worktree provision — needs rewrite to assert startup behavior",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            wt_dir = tmp_path / "backend"
-            wt_dir.mkdir()
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/63")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="/tmp/backend",
-                branch="feature",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            with patch.object(startup_mod, "DATA_DIR", tmp_path):
-                call_command("worktree", "provision", path=str(wt_dir))
-
-            cache_file = tmp_path / "skill-metadata.json"
-            assert cache_file.exists()
+    # NOTE: the former ``test_writes_skill_metadata_cache`` was removed — worktree
+    # provision no longer writes the skill-metadata cache (it is written by
+    # ``t3 config write-skill-cache`` / the loop tick). Its replacement lives in
+    # ``tests/teatree_core/test_skill_cache.py::TestWriteSkillMetadataCache``.
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -350,10 +355,10 @@ class TestLifecycleSetup(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_envrc_lines.return_value = ["export USE_UV=1"]
+            mock_overlay.provisioning.envrc_lines.return_value = ["export USE_UV=1"]
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = ""
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -396,10 +401,10 @@ class TestLifecycleSetup(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = ""
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -414,8 +419,8 @@ class TestLifecycleSetup(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_envfile_message_when_no_path(self) -> None:
-        """Setup skips 'Written:' message when write_env_cache returns None."""
+    def test_skips_wrote_cache_log_when_render_returns_none(self) -> None:
+        """The 'Wrote env cache' log is skipped when write_env_cache returns None."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -433,66 +438,29 @@ class TestLifecycleSetup(TestCase):
 
             mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = ""
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = ""
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
                 patch.object(worktree_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch("teatree.core.runners.worktree_provision.write_env_cache", return_value=None),
+                patch.object(worktree_provision_mod, "write_env_cache", return_value=None) as mock_write,
+                patch.object(worktree_provision_mod, "logger") as mock_logger,
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 call_command("worktree", "provision", path=str(wt_path))
 
-    @override_settings(**SETTINGS)
-    def test_prints_diagnostic_summary(self) -> None:
-        """_print_diagnostics outputs a structured checklist with [OK]/[FAIL] markers."""
-        pytest.skip(
-            "_print_diagnostics removed in worktree FSM refactor — "
-            "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite",
-        )
-        from teatree.core.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
+            mock_write.assert_called_once()
+            wrote_cache_logs = [c for c in mock_logger.info.call_args_list if "Wrote env cache" in str(c.args)]
+            assert wrote_cache_logs == []
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            wt_dir = tmp_path / "backend"
-            wt_dir.mkdir()
-            # Create env cache in parent (ticket dir)
-            cache_dir = tmp_path / ".t3-cache"
-            cache_dir.mkdir()
-            (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=test\n")
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/115")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature-115",
-                extra={"worktree_path": str(wt_dir)},
-                db_name="wt_115",
-            )
-
-            report = ProvisionReport(
-                steps=[
-                    StepResult(name="migrations", success=True, duration=1.0),
-                    StepResult(name="docker-up", success=False, duration=0.5, error="exit 1"),
-                ],
-            )
-
-            buf = StringIO()
-            cmd = worktree_mod.Command()
-            cmd.stdout = OutputWrapper(buf)
-            cmd._print_diagnostics(wt, report)
-
-            output = buf.getvalue()
-            assert "[OK] worktree dir" in output
-            assert "[OK] .t3-env.cache" in output
-            assert "[OK] DB name" in output
-            assert "[OK] migrations" in output
-            assert "[FAIL] docker-up" in output
-            assert "4/5 checks passed" in output
+    # NOTE: the former ``test_prints_diagnostic_summary`` was removed — the
+    # ``Command._print_diagnostics`` helper is gone; the structured health
+    # checklist is now the ``t3 worktree diagnose`` subcommand, covered
+    # end-to-end by ``TestLifecycleDiagnose`` (below) and at the render layer by
+    # ``tests/teatree_core/management_commands/test_worktree.py::test_render_diagnose_writes_checklist``.
 
 
 class TestLifecycleSetupHelpers(TestCase):
@@ -505,14 +473,14 @@ class TestLifecycleSetupHelpers(TestCase):
         mock_overlay = MagicMock()
         # Empty path — should return early without calling anything
         _setup_worktree_dir("", MagicMock(), mock_overlay)
-        mock_overlay.get_envrc_lines.assert_not_called()
+        mock_overlay.provisioning.envrc_lines.assert_not_called()
         # Non-existent path
         _setup_worktree_dir("/tmp/does-not-exist-xyz", MagicMock(), mock_overlay)
-        mock_overlay.get_envrc_lines.assert_not_called()
+        mock_overlay.provisioning.envrc_lines.assert_not_called()
 
     def test_write_env_cache_returns_none_without_path(self) -> None:
         """write_env_cache returns None when worktree has no worktree_path."""
-        from teatree.core.worktree_env import write_env_cache  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import write_env_cache  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/250")
         wt = Worktree.objects.create(
@@ -526,6 +494,16 @@ class TestLifecycleSetupHelpers(TestCase):
 
 
 class TestLifecycleStart(TestCase):
+    def setUp(self) -> None:
+        # These tests exercise the default (unbounded) overlay's start path, where
+        # #2949's resource-aware admission never consults RAM. The shared test DB
+        # carries a bounded cap, so pin it to 0 to keep the normal-path assertions
+        # (SERVICES_UP + compose up) deterministic.
+        super().setUp()
+        patcher = patch.object(local_stack_gate_mod, "resolve_max_concurrent_local_stacks", return_value=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_starts_docker_compose_and_transitions(self) -> None:
@@ -548,14 +526,14 @@ class TestLifecycleStart(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
+            mock_overlay.runtime.pre_run_steps.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.health_checks.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = None
+            mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
@@ -596,14 +574,14 @@ class TestLifecycleStart(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.runtime.pre_run_steps.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = ""
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.health_checks.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = None
+            mock_overlay.provisioning.compose_file.return_value = ""
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
@@ -640,14 +618,14 @@ class TestLifecycleStart(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {"backend": "run-backend"}
+            mock_overlay.runtime.pre_run_steps.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.health_checks.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = None
+            mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
@@ -687,6 +665,14 @@ class TestImagePreflight(TestCase):
     a real Docker daemon.
     """
 
+    def setUp(self) -> None:
+        # Default (unbounded) overlay path — pin the cap to 0 so #2949's RAM
+        # admission never holds the start in the shared bounded test DB.
+        super().setUp()
+        patcher = patch.object(local_stack_gate_mod, "resolve_max_concurrent_local_stacks", return_value=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _setup(self, tmp_path: Path) -> tuple[Path, "MagicMock", "MagicMock"]:
         wt_path = tmp_path / "worktree"
         wt_path.mkdir()
@@ -706,14 +692,14 @@ class TestImagePreflight(TestCase):
         )
 
         mock_overlay = env_safe_mock_overlay()
-        mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
-        mock_overlay.get_pre_run_steps.return_value = []
-        mock_overlay.get_envrc_lines.return_value = []
+        mock_overlay.runtime.run_commands.return_value = {"backend": "run-backend"}
+        mock_overlay.runtime.pre_run_steps.return_value = []
+        mock_overlay.provisioning.envrc_lines.return_value = []
         mock_overlay.get_provision_steps.return_value = []
-        mock_overlay.get_post_db_steps.return_value = []
-        mock_overlay.get_health_checks.return_value = []
-        mock_overlay.get_reset_passwords_command.return_value = None
-        mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+        mock_overlay.provisioning.post_db_steps.return_value = []
+        mock_overlay.provisioning.health_checks.return_value = []
+        mock_overlay.provisioning.reset_passwords_command.return_value = None
+        mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
         mock_config = MagicMock()
         mock_config.user.workspace_dir = tmp_path
@@ -918,8 +904,8 @@ class TestLifecycleClean(TestCase):
 
             dropdb_cmds = [c for c in commands_run if "dropdb" in c]
             assert len(dropdb_cmds) == 1
-            # provision() generates db_name as wt_{ticket_number}
-            assert f"wt_{ticket.ticket_number}" in " ".join(dropdb_cmds[0])
+            # provision() generates db_name as wt_{ticket.pk}
+            assert f"wt_{wt.ticket_id}" in " ".join(dropdb_cmds[0])
 
 
 class TestLifecycleStatus(TestCase):
@@ -936,8 +922,8 @@ class TestLifecycleDiagnose(TestCase):
             wt_dir.mkdir()
             # .git file marks this as a worktree (not a main clone)
             (wt_dir / ".git").write_text("gitdir: /tmp/.git/worktrees/backend")
-            cache_dir = tmp_path / ".t3-cache"
-            cache_dir.mkdir()
+            cache_dir = tmp_path / ".t3-cache" / wt_dir.name
+            cache_dir.mkdir(parents=True)
             (cache_dir / ".t3-env.cache").write_text("WT_DB_NAME=wt_120\n")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/120")
@@ -959,7 +945,8 @@ class TestLifecycleDiagnose(TestCase):
 
             assert result["worktree_dir"] is True
             assert result["env_cache"] is True
-            assert result["db_name"] == "wt_120"
+            # provision() recomputes db_name from the unique Ticket pk.
+            assert result["db_name"] == f"wt_{wt.ticket_id}"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1088,7 +1075,7 @@ class TestLifecycleDiagram(TestCase):
 
         assert "stateDiagram-v2" in result
         assert "[*] --> created" in result
-        assert "provision()" in result
+        assert "created --> provisioned : provision" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1097,7 +1084,7 @@ class TestLifecycleDiagram(TestCase):
 
         assert "stateDiagram-v2" in result
         assert "[*] --> not_started" in result
-        assert "scope()" in result
+        assert "not_started --> scoped : scope" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1197,39 +1184,46 @@ class TestLifecycleVisitPhase(TestCase):
         assert "reviewing" in session.visited_phases
 
 
-# ── Repo discovery in worktree provision ──────────────────────────────
+# ── Provision scope: no sibling-repo auto-discovery ───────────────────
+#
+# The worktree FSM refactor removed the old ``_register_new_repos`` auto-
+# discovery (and the ``_print_diagnostics`` per-ticket bulk walk). The five
+# ``TestLifecycleRepoDiscovery`` skips and the three ``_register_*`` skips that
+# lived here all pinned that removed behaviour; they are replaced by the single
+# live guard below. Bulk per-ticket provisioning is now ``t3 workspace`` —
+# covered by ``test_workspace.py::test_creates_ticket_and_worktrees``.
 
 
-class TestLifecycleRepoDiscovery(TestCase):
+class TestLifecycleProvisionScope(TestCase):
+    """``worktree provision`` is single-worktree scoped — it never scans the ticket dir."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_discovers_new_repo_in_ticket_dir(self) -> None:
-        """A git worktree added manually to the ticket dir gets auto-registered."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
+    def test_provision_does_not_auto_register_sibling_repos(self) -> None:
+        """Provisioning one worktree leaves a git-worktree-shaped sibling unregistered.
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_skips_main_clones(self) -> None:
-        """Directories with .git as a directory (main clones) are not registered."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
+        Locks the removal of the old ticket-dir auto-discovery: turns RED if the
+        per-worktree command ever regrows sibling-repo scanning.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
+            ticket_dir = Path(tmp)
 
-            ticket_dir = tmp_path / "ticket-456"
-            ticket_dir.mkdir()
+            backend = ticket_dir / "backend"
+            backend.mkdir()
 
-            existing = ticket_dir / "backend"
-            existing.mkdir()
-
-            main_clone = ticket_dir / "main-repo"
-            main_clone.mkdir()
-            (main_clone / ".git").mkdir()  # directory, not file = main clone
+            # A sibling git-worktree-shaped dir the removed auto-discovery WOULD
+            # have registered — real on disk so the assertion is non-vacuous.
+            sibling = ticket_dir / "frontend"
+            sibling.mkdir()
+            (sibling / ".git").write_text("gitdir: /some/path/.git/worktrees/frontend", encoding="utf-8")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/96")
             Worktree.objects.create(
@@ -1237,135 +1231,13 @@ class TestLifecycleRepoDiscovery(TestCase):
                 ticket=ticket,
                 repo_path="backend",
                 branch="feature",
-                extra={"worktree_path": str(existing)},
-            )
-
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(existing))
-
-            assert ticket.worktrees.count() == 1
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_skips_non_git_directories(self) -> None:
-        """Non-git subdirectories (logs, etc.) are not registered."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            ticket_dir = tmp_path / "ticket-789"
-            ticket_dir.mkdir()
-
-            existing = ticket_dir / "backend"
-            existing.mkdir()
-
-            (ticket_dir / "logs").mkdir()
-            (ticket_dir / "notes.txt").touch()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/97")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                extra={"worktree_path": str(existing)},
-            )
-
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(existing))
-
-            assert ticket.worktrees.count() == 1
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_idempotent_does_not_duplicate(self) -> None:
-        """Running setup twice doesn't create duplicate Worktree records."""
-        pytest.skip(
-            "Auto-discovery of sibling repos removed in worktree FSM refactor — "
-            "the per-worktree command no longer scans the ticket dir",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            ticket_dir = tmp_path / "ticket-idem"
-            ticket_dir.mkdir()
-
-            existing = ticket_dir / "backend"
-            existing.mkdir()
-
-            new_repo = ticket_dir / "frontend"
-            new_repo.mkdir()
-            (new_repo / ".git").write_text("gitdir: /some/path")
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/98")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
-                extra={"worktree_path": str(existing)},
-            )
-
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(existing))
-                call_command("worktree", "provision", path=str(existing))
-
-            assert ticket.worktrees.count() == 2
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_provisions_all_ticket_worktrees(self) -> None:
-        """Setup provisions all worktrees for the ticket, not just the resolved one."""
-        pytest.skip(
-            "Bulk per-ticket provisioning moved to t3 workspace provision — "
-            "needs rewrite as call_command('workspace', 'provision', ...) test",
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            ticket_dir = tmp_path / "ticket-all"
-            ticket_dir.mkdir()
-
-            backend = ticket_dir / "backend"
-            backend.mkdir()
-            frontend = ticket_dir / "frontend"
-            frontend.mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="feature",
                 extra={"worktree_path": str(backend)},
             )
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="frontend",
-                branch="feature",
-                extra={"worktree_path": str(frontend)},
-            )
 
-            with patch.object(utils_run_mod.subprocess, "run"):
-                call_command("worktree", "provision", path=str(backend))
+            call_command("worktree", "provision", path=str(backend))
 
-            # Both worktrees should be provisioned
-            for wt in ticket.worktrees.all():
-                wt.refresh_from_db()
-                assert wt.state == Worktree.State.PROVISIONED
-
-    def test_register_skips_when_no_ticket(self) -> None:
-        """_register_new_repos returns early when worktree has no ticket."""
-        pytest.skip("_register_new_repos removed in worktree FSM refactor — needs rewrite")
-
-    def test_register_skips_when_no_worktree_path(self) -> None:
-        """_register_new_repos returns early when extra has no worktree_path."""
-        pytest.skip("_register_new_repos removed in worktree FSM refactor — needs rewrite")
-
-    def test_register_skips_when_ticket_dir_missing(self) -> None:
-        """_register_new_repos returns early when ticket directory doesn't exist."""
-        pytest.skip("_register_new_repos removed in worktree FSM refactor — needs rewrite")
+            # Setup is valid: the sibling really is a git-worktree marker on disk…
+            assert (sibling / ".git").is_file()
+            # …yet provision stayed scoped to the single worktree it was pointed at.
+            assert ticket.worktrees.count() == 1
+            assert not ticket.worktrees.filter(repo_path="frontend").exists()

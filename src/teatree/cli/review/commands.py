@@ -18,18 +18,29 @@ if TYPE_CHECKING:
     from teatree.cli.review.evidence_gate import FindingEvidence
 
 
-def _require_token() -> ReviewService:
+def _require_token(repo: str) -> ReviewService:
+    """Build the service for *repo*, or refuse naming the cause the operator can act on.
+
+    The token is resolved from the overlay that owns *repo* (souliane/teatree#3793), so
+    the service is bound to the target the command named. A FAILED read and an ABSENT
+    token get different messages: only the second is a login problem, and reporting the
+    first as one sends the operator to a re-login that changes nothing
+    (souliane/teatree#3794).
+    """
     # Bootstrap Django (idempotent) before the on-behalf pre-gate (#960)
     # touches the ORM. CLI module stays Django-free at import time so
     # typer can render --help / discover commands; mirrors cli/loop.py.
     # See souliane/teatree#1003.
     ensure_django()
 
-    token = ReviewService.get_gitlab_token()
-    if not token:
+    outcome = ReviewService.read_gitlab_token(repo)
+    if outcome.failed:
+        typer.echo(f"Could not resolve the review target for {repo}: {outcome.error}")
+        raise typer.Exit(code=1)
+    if not outcome.value:
         typer.echo("No GitLab token found. Run: glab auth login")
         raise typer.Exit(code=1)
-    return ReviewService(token)
+    return ReviewService(outcome.value, repo=repo)
 
 
 _EVIDENCE_JSON_HELP = (
@@ -65,10 +76,18 @@ _FORCE_GENERAL_HELP = (
     "ONLY for a genuinely MR-wide note (a verdict-only summary with no per-line findings)."
 )
 
+_ALLOW_BLOAT_HELP = (
+    "Escape the comment-bloat gate (souliane/teatree#2663) for ONE post — the documented "
+    "over-deny escape (#126). A note longer than a small sentence cap, or one that "
+    "references project chatter (a ticket/PR id like #1234/!567, an @handle, or a Slack "
+    "timestamp) is refused by default — a review comment is about the diff, not the "
+    "tracker. Use ONLY for a genuinely justified long nit or a load-bearing reference."
+)
+
 
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
     """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
-    from teatree.cli.review.evidence_gate import FindingEvidence  # noqa: PLC0415
+    from teatree.cli.review.evidence_gate import FindingEvidence  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     if not raw:
         return None
@@ -109,6 +128,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
     allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
     force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
+    allow_bloat: bool = typer.Option(False, "--allow-bloat", help=_ALLOW_BLOAT_HELP),
 ) -> None:
     """Post a draft note on a GitLab MR (inline or general).
 
@@ -128,9 +148,9 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     — post each one inline instead. Pass ``--force-general`` to override
     for a genuinely MR-wide (verdict-only) note.
     """
-    import sys  # noqa: PLC0415
+    import sys  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.review.drafts import validate_inline_or_general  # noqa: PLC0415
+    from teatree.cli.review.drafts import validate_inline_or_general  # noqa: PLC0415 — deferred: lazy CLI import
 
     sys.stderr.write(
         "DeprecationWarning: `t3 review post-draft-note` is deprecated (#1207). "
@@ -138,7 +158,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         "This subcommand routes through the same draft path and will be removed in a "
         "follow-up.\n"
     )
-    service = _require_token()
+    service = _require_token(repo)
     validate_inline_or_general(file=file, line=line, general=general)
     evidence = _parse_evidence(evidence_json)
     msg, code = service.post_draft_note(
@@ -151,6 +171,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         allow_long_review=allow_long_review,
         allow_todo_blocker=allow_todo_blocker,
         force_general=force_general,
+        allow_bloat=allow_bloat,
     )
     typer.echo(msg)
     if code:
@@ -199,6 +220,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
     allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
     force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
+    allow_bloat: bool = typer.Option(False, "--allow-bloat", help=_ALLOW_BLOAT_HELP),
 ) -> None:
     """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
@@ -224,14 +246,14 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     per-file finding list) is refused by default — post each one inline
     instead, or pass ``--force-general`` for a genuinely MR-wide note.
     """
-    from teatree.cli.review.body_source import PostBodyError, resolve_post_body  # noqa: PLC0415
+    from teatree.cli.review.body_source import PostBodyError, resolve_post_body  # noqa: PLC0415 — lazy CLI import
 
     try:
         resolved_note = resolve_post_body(note=note, body=body, body_file=body_file)
     except PostBodyError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=2) from exc
-    service = _require_token()
+    service = _require_token(repo)
     evidence = _parse_evidence(evidence_json)
     msg, code = service.post_comment(
         repo,
@@ -244,6 +266,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
         allow_long_review=allow_long_review,
         allow_todo_blocker=allow_todo_blocker,
         force_general=force_general,
+        allow_bloat=allow_bloat,
     )
     typer.echo(msg)
     if code:
@@ -258,7 +281,7 @@ def reply_to_discussion(
     body: str = typer.Argument(help="Reply body (markdown)"),
 ) -> None:
     """Reply to a GitLab MR discussion thread (immediate, not draft)."""
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.reply_to_discussion(repo, mr, discussion_id, body)
     typer.echo(msg)
     if code:
@@ -280,7 +303,7 @@ def approve(
     <user-id>`` to satisfy the gate without switching mode to
     `immediate`.
     """
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.approve(repo, mr)
     typer.echo(msg)
     if code:
@@ -301,16 +324,18 @@ def unapprove(
     <user-id>`` to satisfy the gate without switching mode to
     `immediate`.
     """
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.unapprove(repo, mr)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
 
 
-# `review_run` (#1206) registers its own command on `review_app` at import time.
+# `review_checkout` and `review_run` (#1206) register their own commands on
+# `review_app` at import time.
 # Loaded here, alongside the other typer command bindings, so the review.py
 # LOC ceiling (`scripts/hooks/check_module_health.py`) stays satisfied.
+from teatree.cli.review import checkout as _review_checkout  # noqa: E402, F401 — registration side-effect
 from teatree.cli.review import run as _review_run  # noqa: E402, F401 — registration side-effect
 
 __all__ = ["approve", "post_comment", "post_draft_note", "reply_to_discussion", "unapprove"]

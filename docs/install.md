@@ -114,11 +114,11 @@ t3 overlay install <overlay-name>                    # e.g. t3-acme
 
 This creates a sibling `git worktree` for the overlay (matching the teatree branch when it exists, otherwise the overlay's default branch) and installs it editable into the teatree worktree's `.venv`. The worktree's `t3` shadows the global install while you're inside it, so any agents use that branch's code.
 
-Configure the overlay's main clone path in `~/.teatree.toml`:
+The overlay's main clone path is recorded in the DB `overlays` registry row (one
+JSON-dict `ConfigSetting` row keyed by overlay name):
 
-```toml
-[overlays.t3-acme]
-path = "~/workspace/t3-acme"
+```json
+{"t3-acme": {"path": "~/workspace/t3-acme"}}
 ```
 
 Undo and inspect:
@@ -140,8 +140,8 @@ t3 setup slack-bot --overlay <name>
 ```
 
 This walks through Slack app creation, generates a manifest, stores
-`xoxb-` (bot) and `xapp-` (app-level) tokens in `pass`, and writes the
-config to `~/.teatree.toml`. The bot needs Socket Mode enabled
+`xoxb-` (bot) and `xapp-` (app-level) tokens in `pass`, and records the
+config in the DB `overlays` registry row. The bot needs Socket Mode enabled
 (`connections:write` scope on the app-level token).
 
 Start the event listener (runs in foreground, one WebSocket per overlay):
@@ -152,18 +152,15 @@ t3 slack listen --overlay <name>   # single overlay
 t3 slack status                    # check if the listener is running
 ```
 
-The listener writes inbound events to a JSONL queue. The fat loop tick
-(`t3 loop tick`) drains the queue and surfaces mentions/DMs in the
+The listener writes inbound events to a JSONL queue. The drain-queue loop
+(`t3 loop drain-queue run`) drains the queue and surfaces mentions/DMs in the
 statusline. The Claude Code hook mirrors `AskUserQuestion` prompts to
 Slack DM so you can answer from your phone.
 
-Config lives in `~/.teatree.toml`:
+Config lives in the DB `overlays` registry row (keyed by overlay name):
 
-```toml
-[overlays.<name>]
-messaging_backend = "slack"
-slack_user_id = "U..."          # your Slack member ID
-slack_token_ref = "teatree/<name>/slack"  # pass entry prefix
+```json
+{"<name>": {"messaging_backend": "slack", "slack_user_id": "U...", "slack_token_ref": "teatree/<name>/slack"}}
 ```
 
 ## Overlay discovery

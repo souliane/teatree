@@ -16,20 +16,63 @@ can never carry — issuance refuses a non-green CLEAR) is recorded directly via
 ``review record``. Both share ``MergeClear``'s validation primitives
 (``is_commit_sha``, blast/verify normalisation) so the two contracts cannot
 drift apart.
+
+Recording a verdict also resolves the PR's :class:`~teatree.core.models.mr_review_lock.MRReviewLock`
+(#1405), in the same transaction as the row insert: whether the verdict is
+``merge_safe`` or ``hold``, the in-flight review it concludes is no longer
+"dispatched" — the MR's lock clears so a later push can dispatch a fresh
+review, and the merge decision point's lock consult stops refusing the MR
+this same verdict just vouched for (or held).
 """
 
+import enum
 from dataclasses import dataclass
 from typing import ClassVar, TypedDict
 
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha, is_non_reviewer_role
+from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.ticket import Ticket
+
+
+def normalize_reviewer_identity(identity: str) -> str:
+    """The canonical, idempotency-keyed form of a free-text reviewer identity (F8).
+
+    The recorded ``reviewer_identity`` is free text — 187 distinct values on the
+    live box, with the SAME logical reviewer spelled many ways ("Codex", "codex ",
+    "codex"). That made "has this sha been reviewed by this identity?" unanswerable
+    by query and let the dispatcher re-review one sha 17 times. The normalized form
+    collapses the case-and-whitespace noise only — ``strip`` + internal-whitespace
+    runs to one space + ``casefold`` — so equivalent spellings key to ONE row while
+    genuinely distinct identities stay distinct (no role-prefix stripping, which
+    would over-merge two real reviewers). It is the canonical key at both boundaries:
+    the record write and the uniqueness constraint.
+    """
+    return " ".join(identity.split()).casefold()
 
 
 class ReviewVerdictError(ValueError):
     """A ``ReviewVerdict`` was rejected at record time — the contract failed."""
+
+
+class HeadVerdictState(enum.Enum):
+    """The effective (newest-wins) verdict state among a PR's non-stale verdicts at a head.
+
+    The merge gate's three outcomes (#2829): ``NO_MERGE_SAFE`` fails closed
+    (requirement a — no recorded independent merge_safe vouches for the live
+    head); ``HOLD`` re-blocks (requirement b — the most-recent non-stale
+    verdict is a HOLD not superseded by a later merge_safe); ``MERGE_SAFE``
+    allows (the latest verdict at the head is merge_safe). The "newest-wins"
+    rule is the user-chosen semantic: a later PASS overrides an earlier HOLD,
+    an even-later HOLD re-blocks.
+    """
+
+    NO_MERGE_SAFE = "no_merge_safe"
+    HOLD = "hold"
+    MERGE_SAFE = "merge_safe"
 
 
 class FindingDict(TypedDict):
@@ -104,6 +147,36 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         """
         return self.for_pr(slug, pr_id).first()
 
+    def effective_state_at(self, *, slug: str, pr_id: int, head_sha: str) -> "HeadVerdictState":
+        """The newest-wins verdict state among the NON-STALE verdicts at *head_sha* (#2829).
+
+        The effective verdict is the most-recent non-stale verdict by its
+        recorded timestamp: ALLOW iff a non-stale ``merge_safe`` exists whose
+        timestamp is STRICTLY greater than every non-stale ``hold``'s (a later
+        PASS overrides an earlier HOLD; an even-later HOLD re-blocks). A
+        same-timestamp tie resolves to HOLD — the safe direction: a HOLD recorded
+        in the same instant as a PASS must not be silently overridden. *head_sha*
+        is normalised the way :meth:`ReviewVerdict.is_stale_at` stores it.
+
+        Returns :attr:`HeadVerdictState.NO_MERGE_SAFE` when no non-stale
+        merge_safe exists (fail closed), :attr:`HeadVerdictState.HOLD` when the
+        latest non-stale verdict is a HOLD, else
+        :attr:`HeadVerdictState.MERGE_SAFE`. Shared by the merge-time gate
+        (:func:`teatree.core.merge.authorization.assert_review_verdict_gate`)
+        and the solo-sweep predicate
+        (:func:`teatree.loop.scanners.pr_sweep_decision.has_independent_cold_review`)
+        so the two cannot drift.
+        """
+        head = head_sha.strip().lower()
+        non_stale = [verdict for verdict in self.for_pr(slug, pr_id) if not verdict.is_stale_at(head)]
+        merge_safe_times = [verdict.recorded_at for verdict in non_stale if verdict.is_merge_safe()]
+        if not merge_safe_times:
+            return HeadVerdictState.NO_MERGE_SAFE
+        hold_times = [verdict.recorded_at for verdict in non_stale if not verdict.is_merge_safe()]
+        if hold_times and max(hold_times) >= max(merge_safe_times):
+            return HeadVerdictState.HOLD
+        return HeadVerdictState.MERGE_SAFE
+
 
 class ReviewVerdict(models.Model):
     """One recorded cold-review judgment for a PR at an exact reviewed tree.
@@ -144,6 +217,11 @@ class ReviewVerdict(models.Model):
     reviewed_sha = models.CharField(max_length=64)
     verdict = models.CharField(max_length=16, choices=Verdict.choices)
     reviewer_identity = models.CharField(max_length=255)
+    #: The idempotency key for "who reviewed this sha" (F8). The free-text
+    #: ``reviewer_identity`` normalised via :func:`normalize_reviewer_identity`;
+    #: a UniqueConstraint on ``(slug, pr_id, reviewed_sha, this)`` makes a
+    #: same-identity re-review of one head a single row, not the 66%-duplicate pile.
+    reviewer_identity_normalized = models.CharField(max_length=255, blank=True, default="", db_index=True)
     blast_class = models.CharField(max_length=16, choices=MergeClear.BlastClass.choices)
     gh_verify_result = models.CharField(max_length=32, choices=MergeClear.VerifyResult.choices)
     findings = models.JSONField(default=list, blank=True)
@@ -155,6 +233,12 @@ class ReviewVerdict(models.Model):
         db_table = "teatree_review_verdict"
         ordering: ClassVar = ["-recorded_at"]
         indexes: ClassVar = [models.Index(fields=["slug", "pr_id", "reviewed_sha"])]
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=["slug", "pr_id", "reviewed_sha", "reviewer_identity_normalized"],
+                name="uniq_review_verdict_slug_pr_sha_reviewer",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"review-verdict<{self.slug}#{self.pr_id}@{self.reviewed_sha[:8]} {self.verdict}>"
@@ -173,6 +257,8 @@ class ReviewVerdict(models.Model):
         blast_class: str = MergeClear.BlastClass.LOGIC,
         gh_verify_result: str = MergeClear.VerifyResult.GREEN,
         ticket: Ticket | None = None,
+        expedited: bool = False,
+        lock_holder: str = "",
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -182,10 +268,12 @@ class ReviewVerdict(models.Model):
         a non-empty ``reviewer_identity``; a full 40-char hex ``reviewed_sha``
         (same bind-to-the-exact-tree rule ``MergeClear.issue`` enforces, so the
         live-head equality check in :meth:`is_stale_at` cannot silently fail).
-        A ``merge_safe`` verdict must carry a green ``gh_verify_result`` — the
-        same maker≠checker invariant that forbids a non-green CLEAR (§17.8
-        clause 3): a recorded HOLD on red checks can never be promoted to
-        merge-safe by a later live re-check.
+        A ``merge_safe`` verdict must NOT carry a FAILED ``gh_verify_result`` — the
+        same maker≠checker invariant that refuses a FAILED CLEAR (§17.8 clause 3):
+        a recorded HOLD on red checks can never be promoted to merge-safe by a
+        later live re-check. A PENDING snapshot is accepted on a ``merge_safe``
+        verdict ONLY when ``expedited`` is set (the sibling record of the
+        human-authorized, SHA-bound expedite waiver ``MergeClear.issue`` records).
         """
         normalized_verdict = verdict.strip().lower()
         valid_verdict = {choice.value for choice in cls.Verdict}
@@ -204,13 +292,23 @@ class ReviewVerdict(models.Model):
         if normalized_verify not in valid_verify:
             msg = f"Unknown gh_verify_result {gh_verify_result!r}; valid: {sorted(valid_verify)}"
             raise ReviewVerdictError(msg)
-        if normalized_verdict == cls.Verdict.MERGE_SAFE and normalized_verify != MergeClear.VerifyResult.GREEN:
-            msg = (
-                f"a merge_safe verdict requires gh_verify_result=green (got {normalized_verify!r}) — "
-                f"a recorded HOLD on non-green checks can never be promoted to merge-safe by a later "
-                f"live re-check (§17.8 clause 3; mirrors MergeClear.issue refusing a non-green CLEAR)"
-            )
-            raise ReviewVerdictError(msg)
+        if normalized_verdict == cls.Verdict.MERGE_SAFE:
+            if normalized_verify == MergeClear.VerifyResult.FAILED:
+                msg = (
+                    f"a merge_safe verdict can never carry gh_verify_result=failed (got "
+                    f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
+                    f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
+                    f"a failed CLEAR)"
+                )
+                raise ReviewVerdictError(msg)
+            if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
+                msg = (
+                    f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
+                    f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
+                    f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
+                    f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
+                )
+                raise ReviewVerdictError(msg)
 
         reviewer = reviewer_identity.strip()
         if not reviewer:
@@ -235,17 +333,68 @@ class ReviewVerdict(models.Model):
             raise ReviewVerdictError(msg)
 
         with transaction.atomic():
-            return cls.objects.create(
-                ticket=ticket,
-                pr_id=pr_id,
+            # Idempotent on the normalized-identity key (F8): a re-review of the
+            # SAME head by the SAME identity UPDATES its one row (newest verdict
+            # wins) instead of stacking a duplicate — the 66%-duplicate-verdict
+            # pile the free-text identity produced. A different identity, or a
+            # moved head, is a distinct key and records a fresh row, so the
+            # cross-reviewer / cross-head newest-wins aggregation is preserved.
+            recorded, _ = cls.objects.update_or_create(
                 slug=slug.strip(),
+                pr_id=pr_id,
                 reviewed_sha=reviewed_sha.strip().lower(),
-                verdict=normalized_verdict,
-                reviewer_identity=reviewer,
-                blast_class=normalized_blast,
-                gh_verify_result=normalized_verify,
-                findings=[finding.as_dict() for finding in (findings or [])],
+                reviewer_identity_normalized=normalize_reviewer_identity(reviewer),
+                defaults={
+                    "ticket": ticket,
+                    "verdict": normalized_verdict,
+                    "reviewer_identity": reviewer,
+                    "blast_class": normalized_blast,
+                    "gh_verify_result": normalized_verify,
+                    "findings": [finding.as_dict() for finding in (findings or [])],
+                    "recorded_at": timezone.now(),
+                },
             )
+            # Both claims this verdict concludes, retired in the same transaction
+            # that records it. The per-HEAD dispatch claim is spent outright — a
+            # verdict covers this exact tree, so re-arming it would be churn. The
+            # per-MR lock is released too, UNLESS *lock_holder* names a lock
+            # identity that is not the one holding it: a self-identifying verdict
+            # from a path that took no lock must not free a still-running
+            # reviewer's lock. An absent *lock_holder* is ignorance of the
+            # dispatcher's identity, not a claim of holding nothing, and still
+            # releases — a concluded review may never strand a lock (#3920). See
+            # MRReviewLock.resolve for the full asymmetry.
+            AutoReviewDispatch.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+            MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
+            return recorded
+
+    def carry_forward(self, *, reviewed_sha: str) -> "ReviewVerdict":
+        """Re-record this verdict at *reviewed_sha*, preserving the expedite waiver.
+
+        A carry-forward is a fresh row at the new tree keeping the ORIGINAL
+        reviewer identity and every snapshot field — the reusable primitive both
+        the conflict-only rebind (§17.4) and a superseding sibling-CLEAR use so
+        neither hand-rolls a divergent verdict-copy path. The waiver is
+        re-passed (``expedited=`` derived from the source's PENDING snapshot)
+        because :meth:`record` refuses a merge_safe verdict on PENDING checks
+        without it: a PENDING merge_safe row can only ever have been persisted
+        under the human-authorized, SHA-bound waiver (§17.8 clause 3), so
+        re-asserting it here re-binds the existing clearance, never grants a new
+        one. :class:`ReviewVerdictError` propagates on a genuinely-unwaivable
+        source row so the caller can refuse cleanly rather than crash.
+        """
+        return self.record(
+            pr_id=self.pr_id,
+            slug=self.slug,
+            reviewed_sha=reviewed_sha,
+            verdict=self.verdict,
+            reviewer_identity=self.reviewer_identity,
+            findings=self.structured_findings,
+            blast_class=self.blast_class,
+            gh_verify_result=self.gh_verify_result,
+            ticket=self.ticket,
+            expedited=(self.gh_verify_result == MergeClear.VerifyResult.PENDING),
+        )
 
     @property
     def structured_findings(self) -> list[Finding]:

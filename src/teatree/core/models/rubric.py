@@ -5,8 +5,8 @@ a durable, mechanical record instead of vibes. Each ticket carries a :class:`Rub
 of N :class:`RubricCriterion` rows; an independent verifier (the grader, ``!= maker``)
 records a per-criterion PASS/FAIL bound to the reviewed tree's SHA. The rubric is
 "satisfied" only when EVERY criterion is PASS by a non-maker grader at the current
-head — :meth:`Rubric.is_fully_passed_at`. It is the highest-value lever from the
-Fable-5 loop-design thread: a verifier sub-agent grading a checklist beats
+head — :meth:`Rubric.is_fully_passed_at`. It is the highest-value lever identified
+in an earlier loop-design retro: a verifier sub-agent grading a checklist beats
 self-critique.
 
 The record follows the durable, compaction-surviving pattern of
@@ -30,6 +30,7 @@ from django.utils import timezone
 
 from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha, is_non_reviewer_role
 from teatree.core.models.ticket import Ticket
+from teatree.quality.falsifiable_criteria import falsifiability_violation
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -96,11 +97,20 @@ class Rubric(models.Model):
         population time). Replacing the criteria resets every grade to PENDING, so a
         re-stated rubric must be re-graded — a stale PASS can never carry over to a
         changed checklist.
+
+        A checklist whose criteria are ALL satisfiable by inaction ("X stays
+        unchanged", "the suite passes unmodified") is refused for the same reason
+        emptiness is (#3762): no state of the world makes it FAIL, so a correct
+        verifier grading it PASS certifies nothing — which is how a silently
+        skipped implementation phase gets certified as a success.
         """
         cleaned = [text.strip() for text in criteria if text.strip()]
         if not cleaned:
             msg = "a rubric needs at least one non-empty criterion — an empty rubric passes the gate vacuously"
             raise RubricError(msg)
+        violation = falsifiability_violation(cleaned)
+        if violation:
+            raise RubricError(violation)
         with transaction.atomic():
             rubric, _ = cls.objects.get_or_create(ticket=ticket)
             rubric.criteria.delete()

@@ -1,7 +1,7 @@
 - name: answerer_draft_and_dm_before_posting
   scenario: "in default draft mode the answer is DM'd to the user for approval, never posted directly to the thread"
   agent_path: skills/answerer/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

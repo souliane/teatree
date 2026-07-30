@@ -6,14 +6,14 @@ assembles it and posts each channel's message through the overlay's
 messaging backend.
 
 The command is a thin wrapper: assembly + repo→channel routing live in
-:mod:`teatree.core.mr_reminder` (pure, deterministic). The only external
+:mod:`teatree.core.review.mr_reminder` (pure, deterministic). The only external
 boundary is the per-channel post, routed + gated through the on-behalf
 egress chokepoint (``OnBehalfSlackEgress.post``) like every colleague-
 surface egress — a reminder channel is a colleague surface, so it is
 subject to the on-behalf approval gate, never a raw backend call.
-Channels come from the ``[mr_reminder]`` config table; identities from the
-user's configured ``user_identity_aliases`` so cross-forge work surfaces
-under one reminder.
+Channels come from the DB-home ``mr_reminder`` config (#1775; set with
+``config_setting set mr_reminder``); identities from the user's configured
+``user_identity_aliases`` so cross-forge work surfaces under one reminder.
 """
 
 import os
@@ -24,8 +24,9 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
-from teatree.core.mr_reminder import ChannelMessage, MrReminder, build_mr_reminder
+from teatree.core.management.commands._shared_code_host import NO_CODE_HOST_MESSAGE
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.review.mr_reminder import ChannelMessage, MrReminder, build_mr_reminder
 
 
 class ChannelPreview(TypedDict):
@@ -63,11 +64,11 @@ def _build(overlay: str) -> tuple[MrReminder | None, str]:
     """Return the assembled reminder, or ``(None, error)`` when prerequisites are missing."""
     host = code_host_from_overlay(overlay or None)
     if host is None:
-        return None, "No code host configured (check overlay tokens)"
+        return None, NO_CODE_HOST_MESSAGE
     settings = get_effective_settings(overlay or None)
     config = settings.mr_reminder
     if not config.channels and not config.default_channel:
-        return None, "No [mr_reminder] channel map configured in ~/.teatree.toml"
+        return None, "No mr_reminder channel map configured — set one with `config_setting set mr_reminder`"
     reminder = build_mr_reminder(
         host,
         config=config,

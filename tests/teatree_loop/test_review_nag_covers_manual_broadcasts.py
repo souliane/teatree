@@ -65,6 +65,10 @@ class FakeSlack:
         _ = (channel, ts)
         return {}
 
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = (channel, thread_ts)
+        return []
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
         return {"ok": True, "ts": f"reply.{len(self.posts)}"}
@@ -157,17 +161,17 @@ class TestReviewNagCoversBothPaths(TestCase):
             "manually-broadcast MR — the nag scanner is blind to it (#1256)."
         )
 
-        # --- 3. Both rows are now > 24h old ---
-        old = timezone.now() - dt.timedelta(days=1, hours=2)
+        # --- 3. Both rows are now idle for > 2 days ---
+        old = timezone.now() - dt.timedelta(days=3)
         ReviewRequestPost.objects.filter(mr_url__in=[MR_BOT, MR_MANUAL]).update(created_at=old)
 
-        # --- 4. The nag scanner must fire on BOTH ---
+        # --- 4. The nag scanner must fire on BOTH threads ---
         nag_slack = FakeSlack()
-        signals = ReviewNagScanner(messaging=nag_slack, user_slack_id="U_ME").scan()
+        signals = ReviewNagScanner(messaging=nag_slack).scan()
 
-        assert any(MR_BOT in p["text"] for p in nag_slack.posts), "ReviewNagScanner did not nag the bot-tracked MR"
-        assert any(MR_MANUAL in p["text"] for p in nag_slack.posts), (
-            "ReviewNagScanner did not nag the manually-broadcast MR (#1256)"
-        )
+        pinged_threads = {p["thread_ts"] for p in nag_slack.posts}
+        assert BOT_THREAD_TS in pinged_threads, "ReviewNagScanner did not nag the bot-tracked MR thread"
+        assert MANUAL_TS in pinged_threads, "ReviewNagScanner did not nag the manually-broadcast MR thread (#1256)"
+        assert all(p["text"].endswith(":pray:") for p in nag_slack.posts)
         kinds = [s.kind for s in signals]
         assert kinds.count("review_nag.ping") == 2, f"expected two pings, got {kinds}"

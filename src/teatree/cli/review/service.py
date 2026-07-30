@@ -27,27 +27,30 @@ scoped to ``(<repo>!<mr>, <method_name>)`` — the next matching
 invocation publishes and consumes the row.
 """
 
-from collections.abc import Callable
 from http import HTTPStatus
+from typing import TYPE_CHECKING
 
 import typer
 
 from teatree.cli.review.approval import identity_has_reviewed
+from teatree.cli.review.audit import gitlab_mr_url
 from teatree.cli.review.diff import find_added_line, resolve_inline_position
 from teatree.cli.review.drafts import register as _register_drafts
-from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence
-from teatree.cli.review.general_inline_gate import check_general_inline_findings
+from teatree.cli.review.evidence_gate import FindingEvidence
+from teatree.cli.review.forge_target import read_token, resolve_base_url
 from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
     on_behalf_gate_active,
-    publish_on_behalf,
-    publish_on_behalf_issue,
+    publish_or_blocked,
+    publish_or_blocked_issue,
 )
 from teatree.cli.review.on_behalf import register as _register_on_behalf
+from teatree.cli.review.send_routing import route_forge_send
 from teatree.cli.review.shape_gate import check_review_shape
-from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor
-from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.cli.review.guarded_read import ReadOutcome
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
 # after extraction to :mod:`teatree.cli.review.diff` /
@@ -61,7 +64,6 @@ _on_behalf_gate_active = on_behalf_gate_active
 _resolve_inline_position = resolve_inline_position
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
-_TOKEN_PARTS_COUNT = 2
 
 
 class ReviewService:
@@ -71,99 +73,38 @@ class ReviewService:
     publish drafts, reply, resolve, update note, approve, unapprove,
     delete discussion) is wrapped by the recorded-approval on-behalf
     pre-gate. See module docstring for the full contract.
+
+    ``repo`` is the target the service was built for; both forge coordinates
+    (base URL, API token) derive from the overlay that owns it — see
+    :mod:`teatree.cli.review.forge_target`.
     """
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, repo: str = "") -> None:
         self.token = token
+        self.repo = repo
 
     @staticmethod
-    def get_gitlab_token() -> str:
-        """Extract GitLab token from glab auth or GITLAB_TOKEN env var."""
-        import os  # noqa: PLC0415
+    def read_gitlab_token(repo: str = "") -> "ReadOutcome[str]":
+        """The API token for the forge that owns *repo*, with a failed read kept distinct."""
+        return read_token(repo)
 
-        token = os.environ.get("GITLAB_TOKEN", "")
-        if token:
-            return token
-        result = run_allowed_to_fail(["glab", "auth", "status", "-t"], expected_codes=None)
-        for line in result.stderr.splitlines():
-            if "Token" in line and ":" in line:
-                token_value = line.rsplit(":", 1)[-1].strip()
-                if token_value:
-                    return token_value
-        return ""
+    @staticmethod
+    def get_gitlab_token(repo: str = "") -> str:
+        """The API token for the forge that owns *repo*, or ``""`` when it cannot be read."""
+        return read_token(repo).value
 
-    def _get_api(self):  # noqa: ANN202
-        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
+    def _get_api(self):  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
 
-    @staticmethod
-    def _publish_or_blocked(
-        repo: str,
-        mr: int,
-        action: str,
-        body: Callable[[], tuple[str, int]],
-    ) -> tuple[str, int]:
-        """Run *body* (the GitLab post) atomically with the on-behalf consume + audit (#1879).
-
-        ``check_on_behalf`` already peeked non-consuming; here the approval is
-        consumed in the same ``transaction.atomic`` as the post, so a failed
-        post rolls back the consume (no burn) and writes no lying audit. A
-        BLOCK racing in after the peek is surfaced as ``(message, 1)``.
-
-        A verify-after-post failure (#2081) raises
-        :class:`ReviewArtifactNotVerifiedError` from *inside* ``body``, so it
-        propagates through the same ``transaction.atomic`` and rolls back the
-        consume + audit exactly like a post failure — then it is surfaced here
-        as ``(message, 1)`` instead of the phantom "posted" claim. A non-404
-        transport error on the read-back is NOT caught here: it propagates so a
-        flaky GET surfaces as ``api_unavailable``, never a false post-failure.
-        """
-        return ReviewService._surface(lambda: publish_on_behalf(repo, mr, action, body))
-
-    @staticmethod
-    def _publish_or_blocked_issue(
-        repo: str,
-        issue_iid: int,
-        action: str,
-        body: Callable[[], tuple[str, int]],
-    ) -> tuple[str, int]:
-        """Issue/work-item twin of :meth:`_publish_or_blocked` — same atomic consume + audit, issue-scoped gate.
-
-        Routes *body* through :func:`publish_on_behalf_issue` so the recorded
-        approval the gate consumes is scoped to ``(<repo>#<issue>, <action>)``,
-        never an MR. Surfaces a BLOCK / verify-after-delete failure identically.
-        """
-        return ReviewService._surface(lambda: publish_on_behalf_issue(repo, issue_iid, action, body))
-
-    @staticmethod
-    def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
-        """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``."""
-        from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415
-        from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415
-
-        try:
-            return run()
-        except OnBehalfPostBlockedError as blocked:
-            return str(blocked), 1
-        except ReviewArtifactNotVerifiedError as unverified:
-            return str(unverified), 1
-
-    @staticmethod
-    def _resolve_base_url() -> str:
-        """Resolve GitLab API base URL from overlay config or env, defaulting to gitlab.com."""
-        import os  # noqa: PLC0415
-
-        try:
-            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-
-            return get_overlay().config.gitlab_url
-        except Exception:  # noqa: BLE001
-            return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
+    def _resolve_base_url(self) -> str:
+        """The GitLab API base URL this service's posts are addressed to."""
+        return resolve_base_url(self.repo)
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""
-        from teatree.cli.review.post_impl import post_draft_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import post_draft_note_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
@@ -180,6 +121,7 @@ class ReviewService:
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
         force_general: bool = False,
+        allow_bloat: bool = False,
     ) -> tuple[str, int]:
         """Post a draft note. Returns (message, exit_code).
 
@@ -194,11 +136,9 @@ class ReviewService:
         it never needs approval. Under ASK / DRAFT_OR_ASK the gate resolves
         to AUTO_DRAFT (publish + DM the user the publish/delete commands);
         under IMMEDIATE it publishes with no DM. The remaining pre-publish
-        gates in :meth:`_run_pre_publish_gates` still apply: colleague-MR
-        shape (#1114), multi-finding general-note (#72), TODO-anchor
-        (#1186), and structured-evidence (#1280). ``allow_long_review`` /
-        ``allow_todo_blocker`` / ``force_general`` are the #126 per-call
-        escapes for the shape, TODO-anchor, and general-note gates.
+        gates in :meth:`_run_pre_publish_gates` still apply (shape, bloat,
+        general-note, TODO-anchor, evidence); the ``allow_*`` / ``force_*``
+        kwargs are the #126 per-call escapes documented there.
         """
         refusal = self._run_pre_publish_gates(
             repo=repo,
@@ -211,15 +151,16 @@ class ReviewService:
             allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
             force_general=force_general,
+            allow_bloat=allow_bloat,
         )
         if refusal:
             return refusal, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "post_draft_note", lambda: self._post_draft_note_impl(repo, mr, note, file=file, line=line)
         )
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def _run_pre_publish_gates(  # noqa: PLR0913
+    def _run_pre_publish_gates(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         *,
         repo: str,
@@ -232,44 +173,35 @@ class ReviewService:
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
         force_general: bool = False,
+        allow_bloat: bool = False,
     ) -> str:
         """Run the pre-publish gate chain; return the first refusal or ``""``.
 
-        Order: on-behalf (#960) → shape (#1114) → general-inline (#72) →
-        TODO-anchor (#1186) → evidence (#1280). ``allow_long_review`` /
-        ``allow_todo_blocker`` / ``force_general`` are the #126 per-call
-        escapes for the shape, TODO-anchor, and multi-finding general-note
-        gates respectively; none relaxes the on-behalf or evidence gates.
+        Thin delegator to :func:`teatree.cli.review.pre_publish_gates.run_pre_publish_gates`
+        — that module owns the chain order (on-behalf → shape → bloat →
+        general-inline → TODO-anchor → evidence) and the per-call escape
+        semantics; service.py stays under the module-health LOC ceiling.
         """
-        blocked = check_on_behalf(repo, mr, action)
-        if blocked:
-            return blocked
-        encoded = repo.replace("/", "%2F")
-        api = self._get_api()
-        inline = bool(file and line)
-        shape_error = check_review_shape(
-            api=api, encoded_repo=encoded, mr=mr, body=note, inline=inline, allow_long_review=allow_long_review
-        )
-        if shape_error:
-            return shape_error
-        general_inline_error = check_general_inline_findings(body=note, inline=inline, force_general=force_general)
-        if general_inline_error:
-            return general_inline_error
-        todo_error = check_todo_anchor(
-            api=api,
-            encoded_repo=encoded,
+        from teatree.cli.review.pre_publish_gates import run_pre_publish_gates  # noqa: PLC0415 — lazy CLI import
+
+        return run_pre_publish_gates(
+            self,
+            repo=repo,
             mr=mr,
-            body=note,
-            anchor=InlineAnchor(file=file, line=line),
+            note=note,
+            file=file,
+            line=line,
+            action=action,
+            evidence=evidence,
+            allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
+            allow_bloat=allow_bloat,
         )
-        if todo_error:
-            return todo_error
-        return check_finding_evidence(body=note, evidence=evidence)
 
     def _post_comment_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_comment` (extracted to :mod:`review_post_impl`)."""
-        from teatree.cli.review.post_impl import post_comment_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import post_comment_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         return post_comment_impl(self, repo, mr, note, file=file, line=line)
 
@@ -287,6 +219,7 @@ class ReviewService:
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
         force_general: bool = False,
+        allow_bloat: bool = False,
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
@@ -302,12 +235,16 @@ class ReviewService:
         ``evidence`` kwarg must carry a verified
         :class:`~teatree.cli.review.evidence_gate.FindingEvidence` record.
 
-        ``allow_long_review`` / ``allow_todo_blocker`` / ``force_general``
-        are the #126 per-call escapes for the colleague-MR shape, the
-        TODO-anchor, and the multi-finding general-note (#72) gates.
+        The ``allow_*`` / ``force_*`` kwargs are the #126 per-call escapes
+        for the shape, TODO-anchor, general-note, and comment-bloat gates,
+        documented in :meth:`_run_pre_publish_gates`.
         """
-        from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415
-        from teatree.cli.review.default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
+        from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415 — deferred: lazy CLI import
+        from teatree.cli.review.default_draft import (  # noqa: PLC0415 — lazy: monkeypatchable + defers ORM
+            check_live_post,
+            notify_draft_created,
+            resolve_reviewed_head_sha,
+        )
 
         if not live:
             msg, code = self.post_draft_note(
@@ -320,9 +257,15 @@ class ReviewService:
                 allow_long_review=allow_long_review,
                 allow_todo_blocker=allow_todo_blocker,
                 force_general=force_general,
+                allow_bloat=allow_bloat,
             )
             if code == 0:
-                notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
+                notify_draft_created(
+                    repo=repo,
+                    mr=mr,
+                    mr_url=gitlab_mr_url(self._resolve_base_url(), repo, mr),
+                    reviewed_head_sha=resolve_reviewed_head_sha(self._get_api(), repo, mr),
+                )
             return msg, code
         # One-step authorization gate (#126): a single ``t3 review authorize``
         # is the satisfier. Surface the unified refusal naming that one
@@ -342,13 +285,17 @@ class ReviewService:
             allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
             force_general=force_general,
+            allow_bloat=allow_bloat,
         )
         if refusal:
             return refusal, 1
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1
-        return self._publish_or_blocked(
+        note, send_refusal = route_forge_send(repo=repo, mr=mr, action="post_comment", note=note)
+        if send_refusal:
+            return send_refusal, 1
+        return publish_or_blocked(
             repo, mr, "post_comment", lambda: self._post_comment_impl(repo, mr, note, file=file, line=line)
         )
 
@@ -372,10 +319,10 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "publish_draft_notes")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "publish_draft_notes", lambda: publish_draft_notes_impl(self, repo, mr, encoded=encoded)
         )
 
@@ -389,7 +336,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "reply_to_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -398,7 +345,7 @@ class ReviewService:
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=True)
         if shape_error:
             return shape_error, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo,
             mr,
             "reply_to_discussion",
@@ -415,10 +362,10 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "resolve_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo,
             mr,
             "resolve_discussion",
@@ -438,7 +385,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "update_note")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import update_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import update_note_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -448,7 +395,7 @@ class ReviewService:
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=False)
         if shape_error:
             return shape_error, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "update_note", lambda: update_note_impl(self, repo, mr, note_id, body, encoded=encoded)
         )
 
@@ -461,17 +408,17 @@ class ReviewService:
         own unpublished draft — that is not a colleague-visible mutation
         and stays ungated; this one is.
 
-        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        Gated by ``on_behalf_post_mode`` (#960): the call is refused
         without any GitLab side effect when the gate is on and no recorded
         :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "delete_discussion")``.
         """
         blocked = check_on_behalf(repo, mr, "delete_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "delete_discussion", lambda: delete_discussion_impl(self, repo, mr, note_id, encoded=encoded)
         )
 
@@ -494,10 +441,10 @@ class ReviewService:
         blocked = check_on_behalf_issue(repo, issue_iid, "delete_issue_note")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415 — deferred: lazy CLI import
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked_issue(
+        return publish_or_blocked_issue(
             repo,
             issue_iid,
             "delete_issue_note",
@@ -533,7 +480,7 @@ class ReviewService:
         the approve-on-review doctrine: an approval cannot be recorded
         without a prior reviewing footprint from the same identity.
 
-        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an approval is
+        Gated by ``on_behalf_post_mode`` (#960/#1013): an approval is
         an outward post on the user's identity, so it routes through the
         same recorded-approval gate every other on-behalf method uses. Gate
         ON + no recorded :class:`OnBehalfApproval` matching
@@ -554,9 +501,9 @@ class ReviewService:
                 "`post-draft-note`) first, then approve."
             )
             return msg, 1
-        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-        return self._publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
+        return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
         """Revoke this identity's approval on an MR. Returns (message, exit_code).
@@ -564,7 +511,7 @@ class ReviewService:
         No review-first precondition — removing an approval is the safe
         direction and must always be reachable.
 
-        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an unapproval
+        Gated by ``on_behalf_post_mode`` (#960/#1013): an unapproval
         is still a colleague-visible post on the user's identity, so it
         routes through the same recorded-approval gate as ``approve`` (and
         every other on-behalf method). The recorded row scopes to
@@ -573,10 +520,10 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "unapprove")
         if blocked:
             return blocked, 1
-        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
+        return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
 
 
 # Register sibling-module typer commands. Kept out of this file so the
@@ -588,7 +535,7 @@ from teatree.cli.review import commands as _review_commands  # noqa: E402 — re
 from teatree.cli.review.authorize import register as _register_authorize  # noqa: E402 — late, after typer app
 from teatree.cli.review.commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
 from teatree.cli.review.live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
-from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402
+from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402 — late import
 
 _register_on_behalf(review_app)
 _register_drafts(review_app)

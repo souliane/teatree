@@ -55,7 +55,7 @@ class Command(TyperCommand):
         ] = "",
     ) -> None:
         """Read ``text`` aloud synchronously through the local speakers per [teatree.speak]."""
-        from teatree.core.speak import speak  # noqa: PLC0415
+        from teatree.core.speak import speak  # noqa: PLC0415 — deferred: keeps command import light
 
         body = sys.stdin.read() if text == "-" else text
         with _overlay_env(overlay):

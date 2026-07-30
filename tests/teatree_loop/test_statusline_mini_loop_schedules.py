@@ -4,10 +4,10 @@ After the #2513 cutover :func:`teatree.loops.schedule.mini_loop_schedules`
 derives its ``(name, next_fire_at, cadence_seconds)`` tuples from the DB
 ``Loop`` table (each row's ``enabled`` / cadence / ``last_run_at`` →
 ``next_run_at``) — the SAME live snapshot ``t3 loop list`` renders — so the
-statusline's next-fire numbers stay in lockstep with the orchestrator's own
-cadence gate (:func:`teatree.loops.gating.elapsed_and_enabled`). Also covers
-the injection seam that bridges this up-stack reader into the statusline
-without violating the tach module graph.
+statusline's next-fire numbers stay in lockstep with the loop tick's own
+cadence gate (:meth:`teatree.core.models.Loop.is_due`). Also covers the
+injection seam that bridges this up-stack reader into the statusline without
+violating the tach module graph.
 
 The seeded production loops (migration 0078) live in the test DB, so the tests
 that assert an exact schedule / chunk set clear the table first and create only
@@ -15,14 +15,12 @@ their own rows.
 """
 
 import datetime as dt
-from pathlib import Path
 
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loop.statusline import mini_loops_anchor, set_mini_loop_schedules_reader
-from teatree.loops.config import LoopsConfig
 from teatree.loops.schedule import mini_loop_schedules
 
 
@@ -76,6 +74,50 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         names = [name for name, _, _ in mini_loop_schedules()]
         assert names == ["audit", "inbox", "ship"]
 
+    def test_paused_loop_is_excluded(self) -> None:
+        # A PAUSED loop keeps Loop.enabled=True with a live cadence anchor, so
+        # the pre-fix `if entry.enabled` filter kept it in the statusline
+        # schedule with a countdown — masking that the tick skips it. The
+        # schedule must mirror the tick's `loop_enabled` verdict.
+        Loop.objects.all().delete()
+        _make_loop("dispatch", 300, last_run_at=timezone.now())
+        _make_loop("review", 300, last_run_at=timezone.now())
+        LoopState.objects.pause("review")
+        names = [name for name, _, _ in mini_loop_schedules()]
+        assert "review" not in names
+        # The peer loop proves the schedule is non-empty (not a blanket exclude).
+        assert "dispatch" in names
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
+    """The statusline countdown mirrors the #3159 preset mask, not just enabled+held.
+
+    A preset-masked-off loop must NOT show a live countdown for a tick that skips
+    it; a preset-forced-ON (base-disabled) loop MUST appear because the tick fires
+    it. Before this fix the ``enabled and not held`` filter got both wrong.
+    """
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name)
+
+    def test_preset_masked_off_loop_is_excluded(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("dispatch", 300, last_run_at=timezone.now())
+        _make_loop("review", 300, last_run_at=timezone.now())
+        self._activate("heads-down", {"review": False})
+        names = [name for name, _, _ in mini_loop_schedules()]
+        assert "review" not in names
+        assert "dispatch" in names
+
+    def test_preset_forced_on_base_disabled_loop_is_included(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
+        self._activate("engaged", {"audit": True})
+        names = [name for name, _, _ in mini_loop_schedules()]
+        assert "audit" in names
+
 
 @django.test.override_settings(USE_TZ=True)
 class TestSeamRendersMiniLoopsOnStatusline(django.test.TestCase):
@@ -105,41 +147,25 @@ class TestSeamRendersMiniLoopsOnStatusline(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
-class TestMiniLoopCadenceMatchesGate(django.test.TestCase):
-    """The statusline next-fire stays in lockstep with the orchestrator gate.
+class TestMiniLoopCadenceMatchesMasterGate(django.test.TestCase):
+    """The statusline next-fire stays in lockstep with the loop tick gate.
 
-    The same ``last_run + cadence`` boundary the orchestrator gate uses to
-    decide ``should_fire`` is the boundary the statusline counts down to: when
-    the gate would fire (boundary in the past) the statusline reads ``due``.
-    The orchestrator gate still reads the :class:`MiniLoopMarker` ledger; the
-    statusline now reads the ``Loop`` row — so this seeds the same
-    ``last_fired + cadence`` boundary in both to prove they agree.
+    The same ``last_run + cadence`` boundary :meth:`Loop.is_due` uses to decide
+    whether the master fires a loop is the boundary the statusline counts down to:
+    when the master would fire (boundary in the past) the statusline reads ``due``.
+    Both read the ONE ledger — the ``Loop`` row's ``last_run_at`` — so they agree
+    by construction.
     """
 
     def setUp(self) -> None:
         self.addCleanup(set_mini_loop_schedules_reader, None)
 
-    def test_due_when_gate_would_fire(self) -> None:
-        from teatree.core.models.mini_loop_marker import MiniLoopMarker  # noqa: PLC0415
-        from teatree.loops.base import MiniLoop  # noqa: PLC0415
-        from teatree.loops.gating import elapsed_and_enabled  # noqa: PLC0415
-
+    def test_due_when_master_gate_would_fire(self) -> None:
         Loop.objects.all().delete()
-        loop = MiniLoop(name="ship", default_cadence_seconds=300, build_jobs=lambda **_: [])
         now = timezone.now()
         fired_at = now - dt.timedelta(seconds=400)
-        # Orchestrator-gate side: the cadence ledger boundary the gate reads.
-        MiniLoopMarker.objects.mark_fired("ship", fired_at)
-        decision = elapsed_and_enabled(LoopsConfig(), loop, now)
-        # Statusline side: the same boundary expressed as the Loop row anchor.
-        _make_loop("ship", 300, last_run_at=fired_at)
+        row = _make_loop("ship", 300, last_run_at=fired_at)
         set_mini_loop_schedules_reader(mini_loop_schedules)
         chunks = mini_loops_anchor()
-        assert decision.should_fire is True
+        assert row.is_due(now) is True
         assert chunks == ["ship due"], chunks
-
-
-def test_config_loader_degrades_to_defaults_on_missing_file(tmp_path: Path) -> None:
-    """Sanity guard: the config loader degrades to defaults on a missing file."""
-    cfg = LoopsConfig.load(path=tmp_path / "absent.toml")
-    assert cfg.enabled is True

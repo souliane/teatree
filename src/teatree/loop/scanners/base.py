@@ -5,6 +5,7 @@ Each scanner returns a list of ``ScanSignal``s. The dispatcher reads the
 note, webhook trigger) or hand off to a phase agent.
 """
 
+import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -17,9 +18,26 @@ __all__ = [
     "ScannerErrorClass",
     "SignalPayload",
     "classify_gh_stderr",
+    "hours_since",
 ]
 
 type SignalPayload = dict[str, Any]
+
+
+def hours_since(earlier: dt.datetime, *, now: dt.datetime) -> float:
+    """Fractional hours from *earlier* to *now*.
+
+    The shared cadence-gate primitive for the once-per-N-hours scanners
+    (``backlog_sweep``, ``eval_local``, ``provision_smoke``,
+    ``architectural_review``, ``scanning_news``): each guards its own never-run
+    ``bootstrap`` case with a plain ``last_run_at is None`` check — which also
+    narrows the nullable ``Max("session__started_at")`` aggregate to a concrete
+    ``datetime`` — then calls this for the elapsed measurement. That replaces
+    five copy-pasted ``(now - earlier).total_seconds() / 3600.0`` sites, each of
+    which carried a ``# type: ignore[operator]`` only because the un-narrowed
+    ``object``-typed operand defeated the subtraction's type check.
+    """
+    return (now - earlier).total_seconds() / 3600.0
 
 
 def classify_gh_stderr(stderr: str) -> ScannerErrorClass:

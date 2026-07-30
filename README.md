@@ -46,7 +46,7 @@ graph TB
     direction LR
     skills["lifecycle skills"]
     hooks["hooks<br/>routing, guards, tracking"]
-    companions["companion skills<br/>superpowers, ac-*"]
+    required["required skills<br/>superpowers, ac-*"]
   end
 
   scanners -->|"feed signals to"| dispatch
@@ -115,10 +115,10 @@ agent harnesses assume a TTY: when the agent has a question, the run blocks
 until someone is in front of a terminal to answer. That makes long autonomous
 sessions impossible — every clarifying question becomes a hard stop.
 
-Teatree resolves an availability mode (`present` / `away` / `auto`). In `away`
-mode, structured questions become durable `DeferredQuestion` rows instead of
-blocking; the user answers them later from Slack, via `t3 teatree questions
-answer`. The agent keeps working on whatever it can in the meantime. Replies
+Teatree resolves one operating mode whose posture says whether the user is
+reachable. Under a deferring posture, structured questions become durable
+`DeferredQuestion` rows instead of blocking; the user answers them later from
+Slack, via `t3 teatree questions answer`. The agent keeps working on whatever it can in the meantime. Replies
 and prompts the user receives all happen in Slack DMs; no shared dashboard,
 no shared SaaS, no DevOps onboarding.
 
@@ -177,26 +177,123 @@ in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
 
 **Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases
 (ticket → code → test → review → ship) drive corresponding ticket states. The
-full `Ticket.State` set is `not_started → scoped → started → coded → tested →
+full `Ticket.State` set is `not_started → scoped → started → planned → coded → tested →
 reviewed → shipped → in_review → merged → retrospected → delivered`, plus
-`ignored` for work that is consciously skipped.
+`ignored` for work that is consciously skipped. This diagram is generated from
+the `Ticket` model's `@transition` decorators; edit the model, not the diagram
+(`scripts/hooks/generate_fsm_diagrams.py`).
 
-**Worktree** — one repo checkout inside a ticket's workspace.
-
+<!-- BEGIN GENERATED: ticket-fsm -->
 ```mermaid
 stateDiagram-v2
-  [*] --> created
-  created --> provisioned: provision
-  provisioned --> services_up: start
-  services_up --> ready: verify
-  ready --> provisioned: db_refresh
-  services_up --> provisioned: db_refresh
-  ready --> created: teardown
-  services_up --> created: teardown
-  provisioned --> created: teardown
+    [*] --> not_started
+    not_started --> scoped : scope
+    not_started --> coded : code_direct
+    not_started --> reviewed : reconcile_reviewed
+    not_started --> merged : reconcile_merged
+    not_started --> review_posted : mark_review_no_action
+    not_started --> review_posted : mark_reviewed_externally
+    not_started --> ignored : ignore
+    scoped --> started : start
+    scoped --> coded : code_direct
+    scoped --> reviewed : reconcile_reviewed
+    scoped --> merged : reconcile_merged
+    scoped --> review_posted : mark_review_no_action
+    scoped --> review_posted : mark_reviewed_externally
+    scoped --> ignored : ignore
+    started --> started : start
+    started --> planned : plan
+    started --> coded : code_direct
+    started --> reviewed : reconcile_reviewed
+    started --> merged : reconcile_merged
+    started --> review_posted : mark_review_no_action
+    started --> review_posted : mark_reviewed_externally
+    started --> ignored : ignore
+    planned --> coded : code
+    planned --> reviewed : reconcile_reviewed
+    planned --> merged : reconcile_merged
+    planned --> review_posted : mark_review_no_action
+    planned --> review_posted : mark_reviewed_externally
+    planned --> ignored : ignore
+    coded --> started : rework
+    coded --> tested : test
+    coded --> reviewed : reconcile_reviewed
+    coded --> merged : reconcile_merged
+    coded --> review_posted : mark_review_no_action
+    coded --> review_posted : mark_reviewed_externally
+    coded --> ignored : ignore
+    tested --> started : rework
+    tested --> reviewed : reconcile_reviewed
+    tested --> reviewed : review
+    tested --> merged : reconcile_merged
+    tested --> review_posted : mark_review_no_action
+    tested --> review_posted : mark_reviewed_externally
+    tested --> ignored : ignore
+    reviewed --> started : rework
+    reviewed --> reviewed : reconcile_reviewed
+    reviewed --> shipped : ship
+    reviewed --> merged : reconcile_merged
+    reviewed --> review_posted : mark_review_no_action
+    reviewed --> review_posted : mark_reviewed_externally
+    reviewed --> ignored : ignore
+    shipped --> started : reopen
+    shipped --> shipped : ship
+    shipped --> in_review : request_review
+    shipped --> merged : reconcile_merged
+    shipped --> ignored : ignore
+    in_review --> started : reopen
+    in_review --> reviewed : reconcile_reviewed
+    in_review --> merged : mark_merged
+    in_review --> merged : reconcile_merged
+    in_review --> ignored : ignore
+    merged --> started : reopen
+    merged --> reviewed : reopen_for_followup
+    merged --> merged : mark_merged
+    merged --> merged : reconcile_merged
+    merged --> retrospected : retrospect
+    merged --> ignored : ignore
+    retrospected --> started : reopen
+    retrospected --> reviewed : reconcile_reviewed
+    retrospected --> retrospected : retrospect
+    retrospected --> delivered : mark_delivered
+    retrospected --> ignored : ignore
+    delivered --> reviewed : reopen_for_followup
+    review_posted --> review_posted : mark_review_no_action
+    review_posted --> review_posted : mark_reviewed_externally
 ```
+<!-- END GENERATED: ticket-fsm -->
 
-**Task** — claimable work unit with lease and heartbeat.
+**Worktree** — one repo checkout inside a ticket's workspace. This diagram is
+generated from the `Worktree` model's `@transition` decorators; edit the model,
+not the diagram (`scripts/hooks/generate_fsm_diagrams.py`).
+
+<!-- BEGIN GENERATED: worktree-fsm -->
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> created : teardown
+    created --> provisioned : provision
+    provisioned --> created : teardown
+    provisioned --> provisioned : db_refresh
+    provisioned --> provisioned : provision
+    provisioned --> services_up : start_services
+    services_up --> created : teardown
+    services_up --> provisioned : db_refresh
+    services_up --> provisioned : stop_services
+    services_up --> services_up : start_services
+    services_up --> ready : verify
+    ready --> created : teardown
+    ready --> provisioned : db_refresh
+    ready --> provisioned : stop_services
+    ready --> services_up : start_services
+    ready --> ready : verify
+```
+<!-- END GENERATED: worktree-fsm -->
+
+**Task** — claimable work unit with lease and heartbeat. Unlike the others,
+`Task` advances through guarded methods (`claim`, `complete`, `fail`, `reopen`)
+that take a row lock and a lease rather than `@transition` decorators, so this
+diagram is illustrative and maintained by hand, not generated.
 
 ```mermaid
 stateDiagram-v2
@@ -207,15 +304,34 @@ stateDiagram-v2
   claimed --> pending: lease_expired
 ```
 
-**PullRequest** — tracks delivery state on the code host.
+**PullRequest** — tracks delivery state on the code host. This diagram is
+generated from the `PullRequest` model's `@transition` decorators; edit the
+model, not the diagram (`scripts/hooks/generate_fsm_diagrams.py`).
 
+<!-- BEGIN GENERATED: pull-request-fsm -->
 ```mermaid
 stateDiagram-v2
-  [*] --> open
-  open --> review_requested: request_review
-  review_requested --> approved: approve
-  approved --> merged: merge
+    [*] --> open
+    open --> review_requested : request_review
+    open --> merged : mark_merged
+    review_requested --> approved : approve
+    review_requested --> merged : mark_merged
+    approved --> merged : mark_merged
 ```
+<!-- END GENERATED: pull-request-fsm -->
+
+These models are surfaced in a small Django admin dashboard. A rendered HTML
+snapshot of that dashboard is generated through Django's test client and
+drift-checked in CI, so it stays an always-fresh "screenshot":
+[docs/generated/dashboard/admin-index.html](docs/generated/dashboard/admin-index.html)
+(`scripts/hooks/generate_dashboard_snapshot.py`).
+
+The CLI gets the same treatment: the rendered output of the canonical `t3`
+commands (`t3 --help`, `t3 loop --help`) is captured deterministically and
+drift-checked, an always-fresh fixture that complements the exhaustive CLI
+reference:
+[docs/generated/cli/representative-output.md](docs/generated/cli/representative-output.md)
+(`scripts/hooks/generate_cli_output_snapshot.py`).
 
 Every state change goes through a method with code behind it. `Ticket`,
 `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
@@ -254,14 +370,26 @@ t3 teatree workspace ticket     # create multi-repo worktrees from a ticket URL
 t3 teatree db refresh           # restore a database dump
 t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
-t3 cost                         # cycle-to-date SDK-equivalent spend vs the monthly credit
+t3 goal set/list/clear          # register / list / clear a standing verified-green goal (a Stop-gate blocks a loop turn ending "as done" while the goal's check command is red)
+t3 cost                         # cycle-to-date SDK-equivalent spend + effective-token (ET) totals, split by subscription/metered lane
+t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
 t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
+t3 fast-push [-m msg] [--remaining txt]  # leak-gated escape hatch for session hand-offs: stage → in-process leak gates (banned-terms, secret-scan, overlay-leak, public-repo author-identity; fail-closed) → commit → push → create-or-update the PR; skips every non-leak gate; any finding refuses the push
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
+t3 hook run <name> [args...]    # run a packaged portable repo-quality gate by name (module-health, no-silent-skip, broad-except, test-shape, test-path-mirror, refuse-main-clone-commit) — no teatree.__file__ shim; `t3 hook list` names them. A consuming repo wires them via `entry: t3 hook run <name>` or pins `repo: <teatree-url>` against the root .pre-commit-hooks.yaml
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
-t3 admin                        # run the Django admin for the teatree project on a local dev server
+t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
+t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
+                                 # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
-t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
+t3 dream tick                   # cadence-gated pass (~04:00 slot); the worker's off-live-tick driver chain fires it, decoupled from the live loop
+t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)
+t3 outer tick                   # cadence-gated step the worker's off-live-tick driver chain fires (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
+t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
+t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
+t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships quadruple-OFF)
+t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
@@ -272,33 +400,46 @@ the full `t3` command tree (core plus every installed overlay). It is in the
 optional `ui` dependency group — install it with `uv sync --group ui` before the
 first run.
 
-`t3 admin` runs the Django admin for the teatree project on a local dev server
-(`http://127.0.0.1:8000/admin/` by default). It applies migrations, ensures a
-superuser exists — creating one non-interactively when absent and printing its
-generated password (override via `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and
-opens the browser at `/admin/` (`--no-browser` to skip; `--host` / `--port` to
-override). The admin binds to the same teatree database every other `t3` command
-reads, so no overlay context is needed.
+`t3 admin` runs the Django admin for the teatree project under a local gunicorn
+server (`teatree.wsgi:application`, a production WSGI server — not Django's dev
+`runserver`; `http://127.0.0.1:8000/admin/` by default). It applies migrations,
+collects static into `STATIC_ROOT` (so WhiteNoise serves the admin and dashboard
+assets with DEBUG off), ensures a superuser exists — creating one
+non-interactively when absent and printing its generated password (override via
+`T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and opens the browser at `/admin/`
+(`--no-browser` to skip; `--host` / `--port` to override). The admin binds to the
+same teatree database every other `t3` command reads, so no overlay context is
+needed.
 
 ### 2. Loop & Statusline
 
-A long-running `/loop` slot in the interactive Claude Code session drives the
-day. Every ~12 minutes the loop runs `t3 loop tick`, which fans out to
-scanners that watch assigned issues, open PRs, PRs assigned for review, Slack
-mentions, the Notion → GitLab bridge, and the local task queue. Findings render
-to `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones:
-anchors / action needed / in flight). The Claude Code statusline hook `cat`s
-that file in <10ms, so live status sits at the top of every session without
-polling.
+The singleton `t3 worker` drives the day (#1796 / PR-28, default ON): it drains one
+self-rescheduling `loop_timer` chain per enabled DB `Loop` row, each firing
+`t3 loops tick --loop <name>` on its own cadence, so the loops run with no Claude
+Code session open. Those ticks fan out to scanners that watch assigned issues, open
+PRs, PRs assigned for review, Slack mentions, the Notion → GitLab bridge, and the
+local task queue. Findings render to
+`${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones: anchors /
+action needed / in flight). The Claude Code statusline hook `cat`s that file in
+<10ms, so live status sits at the top of every session without polling.
 
 ```bash
-# Spawn a Claude Code session with the loop pre-registered:
+# Run the worker (the cadence owner). Bare `t3 worker` is the run alias:
+t3 worker
+
+# Check the worker: live flock holder, resolved loop_runner_enabled + source, timer counts:
+t3 worker status            # --json for a machine-readable payload
+# Ensure one is running (spawns a detached worker iff enabled AND the flock is free):
+t3 worker ensure            # refuses (with the reason) when OFF or already running
+
+# Spawn a Claude Code session (registers the reactive infra loops: self-improve/slack-answer/drain-queue):
 t3 loop start
 
-# Or, from inside an existing session, register manually:
-/loop 12m !t3 loop tick
+# Enable/disable an individual loop (the reconciler adds/prunes its timer at once):
+t3 loop enable <name>
+t3 loop disable <name>
 
-# Out of band, run one tick or read the last-rendered statusline:
+# Out of band, run one by-hand full-scan tick or read the last-rendered statusline:
 t3 loop tick
 t3 loop status
 
@@ -307,8 +448,12 @@ t3 loops list
 ```
 
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
-`loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`). To stop
-the loop, run `/loop unregister t3-loop` in the Claude Code session.
+`loop_cadence_seconds` in the teatree DB (`t3 <overlay> config_setting set
+loop_cadence_seconds 720`; env wins; default `720`).
+`loop_runner_enabled` is the kill-switch — set it `false` to stop the loops
+entirely (there is no fallback plane; PR-28 retired the native `/loop` cron mirror).
+On a headless box with no Claude session ever opening, start `t3 worker` once from a
+login profile.
 
 **Wire up the Claude Code statusline hook** so the rendered file actually shows
 in the bottom bar. This is a top-level `statusLine` key in
@@ -333,8 +478,8 @@ Skills and hooks that drive AI-assisted development. Each skill covers one phase
 of the development lifecycle — ticket intake, coding, testing, review, shipping
 — and contains the methodology, guardrails, and domain knowledge the agent needs
 to do the work well: TDD discipline, debugging process, review checklists, retro
-learning, verification rules. Skills declare dependencies (`requires:`) and
-optional companion skills (`companions:`) from third-party packages like
+learning, verification rules. Skills declare dependencies (`requires:`,
+transitive) — including methodology skills from third-party packages like
 [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill
 routing, branch protection, and session tracking.
 
@@ -367,6 +512,17 @@ one prevents a specific class of failure that has bitten a real session:
   surface form (plain, quoted, attribute access, subscript, CamelCase
   variants, sibling repos) and confirms zero hits before claiming the rename
   is complete.
+- **A PUBLIC-repo PR never auto-merges unless its author is trusted.** On a
+  public repo anyone who is not the user is a potential malicious actor, so the
+  merge keystone refuses to auto-merge a PR whose author is not one of the
+  user's known identities (fail-closed: an unknown, empty, or unfetchable
+  author is refused; an unresolvable repo visibility is treated as public).
+  Private/internal repos skip the check entirely — the user owns access
+  control there. The trusted set lives in the DB; manage it with
+  `t3 identities {seed,add,list,remove}` (the configured `user_identity_aliases`
+  is the fallback during the config-to-DB migration window). The same trust
+  classifier flags an untrusted public-repo PR as adversarial across the
+  reviewing scanners, so a malicious PR is never treated like a colleague's.
 
 These rules live in the `ship`, `review`, `code`, and `rules` skills. The CLI
 enforces what it can mechanically (gate checks, transition predicates); the
@@ -389,6 +545,13 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 
 `uv tool install` puts `t3` in `~/.local/bin/`. If that directory is not on your
 `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
+
+Installing the plugin does **not** force teatree on. By default a fresh Claude
+session does not auto-engage teatree — no skill auto-suggest, no load-block, no
+loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
+`t3:` skill) to engage teatree for that session, or set `autoload` in the teatree
+DB (`t3 <overlay> config_setting set autoload true`; env `T3_AUTOLOAD=1`) to
+auto-engage every session.
 
 ### For contributors
 
@@ -446,20 +609,23 @@ graph LR
 <!-- BEGIN SKILLS -->
 | Skill | Phase |
 |-------|-------|
+| `ac-reviewing-codebase` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
-| `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants — BEFORE any code is written. |
-| `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |
-| `backlog-sweep` | Periodic evidence-gated triage of the issue backlog — for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "superseded by merged PR #X" class), posting a one-line reason on every close |
-| `checking` | A SHORT "what did I miss" report when the user checks in mid-loop — terse, grouped, clickable; then answer the pending deferred questions in-band |
+| `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written. |
+| `checking` | The check-in surface — a SHORT "what did I miss" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders) |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
-| `dreaming` | Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → file a needs-triage teatree ticket, and promote/stage eval candidates |
+| `directive` | Submit a plain-English directive about how teatree itself should behave — captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline |
+| `dogfooding` | Dogfooding teatree's own CLI, loop, and statusline — two modes sharing one mechanics section for reading a tick and the rendered statusline. "Verify a change" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. "Hunt for bugs" is proactive self-QA — dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees |
+| `dreaming` | Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates |
 | `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate |
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
-| `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
-| `loops` | Show t3 loop status and trigger DB-configured loops — which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a master tick |
+| `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |
+| `interactive` | ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that no work-bearing state is terminal. Loading this skill — or any skill declaring `requires: interactive` — writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged, by design. Also holds teatree's Claude Code harness wiring: how skills are selected, how plugin hooks are registered, and which output belongs to the headless pipeline. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. Teatree's own architecture and coding rules are `/t3:internals`; the dogfooding procedure is `/t3:dogfooding`. |
+| `internals` | How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`. |
+| `mode` | The operating mode — one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms. |
 | `prompts` | Trigger and manage reusable prompts — list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history |
@@ -467,59 +633,49 @@ graph LR
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
 | `review-request` | Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
-| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
-| `scanning-news` | Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, queues each concrete t3-improvement candidate behind an ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and posts a terse Slack DM summary |
+| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — model-free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
+| `scanning-news` | Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
-| `speed` | The parallel-work throughput dial — slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency |
+| `slack-formatting` | Rendering tables and formatting messages for Slack — the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack. |
 | `sweeping-prs` | Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
-| `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
-| `teatree-batch` | Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions |
-| `teatree-bughunt` | Self-QA variant of batch mode — dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees |
-| `teatree-dogfood` | Dogfooding checklist for teatree CLI, loop, and statusline changes — verify fresh behavior by running the command yourself, exercising the full task lifecycle, and watching the rendered statusline before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation. |
-| `teatree-plan` | Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns |
+| `sweeping-tickets` | Evidence-gated ticket/issue consolidation and triage — classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging — never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "shipped by merged PR #X" class), posting a one-line reason on every close |
+| `sweeping-worktrees` | Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`) |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
-| `todos` | List the current session's tasks/todos — terse, grouped pending / in_progress / completed, with clickable refs |
+| `triaging-issues` | Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row |
 | `update` | WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so |
+| `wip` | The bounded-WIP throughput dial — slow / medium / full / boost — plus the WRITE-parallel / MERGE-serial phase split and the per-ticket unattended delivery cycle. `boost` keeps `boost_concurrency = N` workers live; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency |
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
 <!-- END SKILLS -->
 
 ### Extended `SKILL.md` frontmatter
 
 Teatree adds a small schema on top of Claude Code's standard `SKILL.md`
-frontmatter so skills can declare *when* they should load and *what* they need
-alongside them:
+frontmatter so a skill can declare *what* it needs loaded alongside it:
 
 ```yaml
 ---
 name: ship
-triggers:
-  priority: 20
-  keywords: ['\b(commit|push|ship)\b']
-  exclude: '\breview\b'
-  end_of_session: true
-requires: [rules, platforms]
-companions: [verification-before-completion]
-search_hints: [deliver, merge request, PR]
+requires: [rules, platforms, verification-before-completion]
 ---
 ```
 
-- `triggers` — deterministic auto-load rules (keywords, URLs, priority, exclude,
-  end-of-session phrases)
-- `requires` — hard dependencies, resolved transitively with cycle detection
-- `companions` — optional third-party skills (e.g. from
+- `requires` — the single skill-dependency edge, resolved transitively in
+  topological order with cycle detection. A required skill with no `SKILL.md`
+  in this repo (an external methodology skill from
   [obra/superpowers](https://github.com/obra/superpowers), installed via
-  [APM](https://github.com/microsoft/apm), never modified by teatree)
-- `search_hints` — keyword synonyms used to route headless tasks to the right
-  skill
+  [APM](https://github.com/microsoft/apm), never modified by teatree) passes
+  through so the `Skill` tool still loads it.
 
-The `UserPromptSubmit` hook matches the prompt against a cached trigger index
-and injects `LOAD THESE SKILLS NOW: ...`. `PreToolUse` blocks edits until the
-injected skills are loaded. Matching is regex, not the model — skill loading
-is no longer the agent's decision.
+Skill loading is fully explicit — slash commands (`/t3:ship`), phase mapping
+(`t3 agent --phase shipping`), ticket status, the `requires` chain, and
+cwd/overlay context. There is no free-text scan of the prompt: the
+`UserPromptSubmit` hook surfaces only the framework / overlay / companion
+skills a prompt's cwd context implies, and `PreToolUse` blocks Python code
+edits until those load.
 
-See [docs/skill-triggers.md](docs/skill-triggers.md) for the full schema and
+See `BLUEPRINT.md` § 11.5 for the explicit-loading model and
 [docs/claude-code-internals.md](docs/claude-code-internals.md) for how the
 hooks wire into Claude Code.
 
@@ -555,55 +711,47 @@ extension point is what any other consumer would use.
 
 ## Configuration
 
-Teatree reads its config from `~/.teatree.toml`. Every key is optional; the
+Teatree stores its config in the teatree DB — the `ConfigSetting` store, set with
+`t3 <overlay> config_setting set <key> <json>` (add `--overlay <name>` to scope a
+value to one overlay, omit it for the global default). Every key is optional; the
 table below lists the ones most users touch. The full set and their defaults
-live in `UserSettings` in `src/teatree/config.py`.
+live in `UserSettings` in `src/teatree/config/settings.py`. Overlays register via
+`teatree.overlays` entry points plus the DB `overlays` registry row.
 
-```toml
-[teatree]
-workspace_dir = "~/workspace"            # where ticket workspaces are created
-branch_prefix = "dev"                     # prefix for worktree branches
-mode = "interactive"                      # "interactive" (default) | "auto"
-privacy = ""                              # privacy-scan profile name
-contribute = false                        # enable skill self-improvement
-excluded_skills = ["my-custom-skill"]     # extra skills to exclude
-loop_cadence_seconds = 720                # /loop tick interval (default 12 min)
-require_human_approval_to_merge = true    # auto mode: still gate merge on a 👍 / /merge
-require_human_approval_to_answer = true   # gate t3:answerer behind a DM confirmation
-agent_signature = false                   # append an AI signature to posts (default off)
-
-[teams]
-enabled = false                           # master agent-teams off switch (default)
-
-[overlays.my-overlay]
-path = "~/workspace/my-overlay"
+```bash
+t3 <overlay> config_setting set mode interactive                       # "interactive" (default) | "auto"
+t3 <overlay> config_setting set privacy '""'                           # privacy-scan profile name
+t3 <overlay> config_setting set contribute false                       # enable skill self-improvement
+t3 <overlay> config_setting set excluded_skills '["my-custom-skill"]'  # extra skills to exclude
+t3 <overlay> config_setting set loop_cadence_seconds 720               # loop tick interval (default 12 min)
+t3 <overlay> config_setting set require_human_approval_to_merge true   # auto mode: still gate merge on a 👍 / /merge
+t3 <overlay> config_setting set require_human_approval_to_answer true  # gate t3:answerer behind a DM confirmation
+t3 <overlay> config_setting set agent_signature false                  # append an AI signature to posts (default off)
 ```
 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `workspace_dir` | `~/workspace` | Root for per-ticket workspace directories |
-| `branch_prefix` | `""` | Prefix prepended to worktree branch names |
 | `mode` | `interactive` | `interactive` confirms before publishing; `auto` is end-to-end |
 | `privacy` | `""` | Named privacy-scan profile applied before pushes |
 | `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
 | `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
-| `loop_cadence_seconds` | `720` | Seconds between `t3 loop tick` runs |
+| `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
 | `require_human_approval_to_answer` | `true` | `t3:answerer` drafts a reply and DMs for approval |
 | `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
-| `teams.enabled` | `false` | Master agent-teams off switch — `false` (default) keeps the classic in-session sub-agent fan-out; toggle with `t3 teams on` / `t3 teams off` (`t3 teams status` to read) |
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
 (default `false`), not a TOML key — it exists as a deliberate stop for
 privacy review before any skill improvement leaves the machine.
 
-Run `t3 setup` after editing `~/.teatree.toml` to apply changes to skill
+Run `t3 setup` after changing config to apply changes to skill
 symlinks and caches.
 
 ### Operating mode
 
-`teatree.mode` (or the `T3_MODE` env var) controls how much autonomy the agent
-has for publishing actions:
+`mode` (a DB-home setting, or the `T3_MODE` env var) controls how much autonomy
+the agent has for publishing actions:
 
 - `interactive` *(default, conservative on security)* — the agent pauses for
   explicit approval before push, MR create, MR merge, Slack posts, or any other
@@ -619,31 +767,27 @@ has for publishing actions:
 Unknown values raise an error — a typo in `mode` will never silently downgrade
 to a less-safe mode.
 
-A subset of `[teatree]` keys can be **overridden per-overlay** in
-`[overlays.<name>]`. The overridable set lives in
-`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config.py`: `mode`,
-`branch_prefix`, `privacy`, `contribute`, `excluded_skills`,
-`loop_cadence_seconds`, `require_human_approval_to_merge`, and
-`require_human_approval_to_answer`. For example, run `auto` mode on a personal
+`mode` lives in the teatree DB `ConfigSetting` store — there is no TOML key for
+it (a `[teatree] mode` / `[overlays.<name>] mode` value is ignored on read and
+warned about). Set it globally or per-overlay, so you can run `auto` on a personal
 dogfooding overlay while keeping `interactive` on a client project:
 
-```toml
-[teatree]
-mode = "interactive"
-
-[overlays.my-project]
-mode = "auto"
+```bash
+t3 <overlay> config_setting set mode interactive                 # global default
+t3 <overlay> config_setting set mode auto --overlay my-project   # per-overlay override
 ```
 
-The resolution chain is, first match wins: `T3_*` env var → active overlay's
-`[overlays.<name>]` override → global `[teatree]` value → `UserSettings`
-default. See `BLUEPRINT.md` § 10.1.1 for the full details.
+The resolution chain is, first match wins: `T3_MODE` env var → the active
+overlay's per-overlay DB row → the global DB row → the `UserSettings` default
+(`interactive`). `mode` is one of the per-overlay-overridable keys; the full
+registry is `OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`.
+See `BLUEPRINT.md` § 10.1.1 for the full details.
 
 ## Contributing & Self-Improvement
 
 After every non-trivial session, the `retro` skill runs a retrospective,
 extracts what went wrong, and writes fixes back into skill files. When
-contributors enable this (`contribute = true` in `~/.teatree.toml`),
+contributors enable this (`t3 <overlay> config_setting set contribute true`),
 improvements flow back upstream through a fork-based model.
 
 **Where improvements go:**
@@ -667,9 +811,9 @@ prek run --all-files         # ruff, codespell, banned-terms
 
 ### E2E Tests
 
-E2E tests run via `t3 <overlay> e2e run`, which dispatches to the in-repo
-pytest-playwright runner or an external playwright repo based on
-`OverlayBase.get_e2e_config()`. Overlays declare `"runner": "project"` or
+E2E tests run via `t3 <overlay> e2e run`, which dispatches to an in-repo
+pytest-playwright runner or an external playwright repo based on the overlay's
+`overlay.metadata.get_e2e_config()`. Overlays declare `"runner": "project"` or
 `"runner": "external"`; the runner is overlay-agnostic from the call site:
 
 ```bash
@@ -678,19 +822,11 @@ t3 <overlay> e2e run --headed                 # interactive debug
 t3 <overlay> e2e run --update-snapshots       # accept new snapshots
 ```
 
-**Failure triage artifacts** (git-ignored, mounted writable into the e2e
-container):
-
-- `e2e/.logs/server-<ISO>-<worker>.log` — captured stdout/stderr from the
-  live ASGI server. Path is printed on every test failure via
-  `pytest_runtest_makereport`.
-- `e2e/.videos/<test-name>/<rand>.webm` — Playwright video recording. Only
-  retained for **failing** tests (passing tests delete their video on teardown
-  to keep CI artifact size small).
-
-In CI, attach the `e2e/.logs/` and `e2e/.videos/` directories as job artifacts
-and link them from the failed run summary so reviewers can replay the failure
-without rerunning the suite.
+Teatree itself ships no in-repo E2E suite — the top-level `e2e/` directory holds
+only the `/t3:e2e`-skill conventions doc. Each overlay owns its own specs, runner
+configuration, and failure-triage artifacts (Playwright videos, traces, server
+logs); where those artifacts land and how CI attaches them is the overlay
+runner's concern, driven by its own pytest-playwright / playwright config.
 
 ## Security Considerations
 
@@ -715,7 +851,7 @@ non-zero with the offending `file:line` list. Its matcher is
 underscore-tolerant — `wt_777_<brand>` and `<brand>_x` are caught where the
 diff gate's word-boundary matcher misses them — while common-word entries keep
 strict boundaries (no substring noise) and the email carve-out is preserved.
-The brand list comes from `[teatree].banned_brands` in `~/.teatree.toml` or the
+The brand list comes from the `banned_brands` setting in the teatree DB or the
 `$TEATREE_BANNED_BRANDS` environment variable; it is a curated high-confidence
 subset (brand-only — common words stay in `banned_terms` so the
 underscore-tolerant tree scan never substring-matches them). The public repo

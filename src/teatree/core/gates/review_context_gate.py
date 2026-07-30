@@ -46,9 +46,14 @@ class ReviewContextError(RuntimeError):
     """A ``reviewing`` attestation lacked recorded referenced-context retrieval."""
 
 
-def review_context_required() -> bool:
-    """Whether the deep-retrieval gate is in force (overlay -> global)."""
-    return get_effective_settings().require_review_context
+def review_context_required(overlay: str | None = None) -> bool:
+    """Whether the deep-retrieval gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
+    resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_review_context
 
 
 def recorded_review_context(ticket: "Ticket") -> ReviewContext:
@@ -79,7 +84,7 @@ def check_review_context(ticket: "Ticket") -> None:
     Otherwise the durable ``review_context`` artifact must name the fetched
     work item, list a downloaded reference, and record its analysis.
     """
-    if not review_context_required():
+    if not review_context_required(ticket.overlay or None):
         return
     if is_complete(recorded_review_context(ticket)):
         return
@@ -102,7 +107,7 @@ def review_context_satisfied(ticket: "Ticket") -> bool:
     ``require_review_context`` knob is off, else true only when a complete
     ``review_context`` artifact is recorded.
     """
-    if not review_context_required():
+    if not review_context_required(ticket.overlay or None):
         return True
     return is_complete(recorded_review_context(ticket))
 

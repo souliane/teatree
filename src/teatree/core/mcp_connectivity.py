@@ -21,7 +21,7 @@ production probe is :func:`probe_mcp_servers`, and the unit test injects a stub
 so the check runs with no subprocess and no network.
 
 The overlay declares the EXPECTED provider per server name via
-``OverlayBase.get_mcp_provider_expectations()`` (default ``{}``). Teatree's own
+``OverlayBase.connectors.mcp_provider_expectations()`` (default ``{}``). Teatree's own
 default is empty; the real per-server values live in the overlay repo
 (souliane/teatree#251) — this module supplies only the validation logic and the
 extension point.
@@ -188,6 +188,31 @@ def read_enabled_mcp_servers(*, home: Path | None = None, cwd: Path | None = Non
     ]
 
 
+def read_ever_connected(*, home: Path | None = None) -> set[str]:
+    """The set of claude.ai connector names that have EVER connected on this machine.
+
+    Reads ``claudeAiMcpEverConnected`` from ``~/.claude.json`` (network-free,
+    error-tolerant). This is the ground-truth signal that distinguishes the two
+    connector-failure modes the recovery guidance branches on (PR-19): a declared
+    connector that is NOT in this set has never been connected → a first-install
+    case (add it in claude.ai Settings → Connectors); one that IS in the set but
+    is now down → a post-account-switch case (reconnect it). A missing or
+    malformed config is an empty set, never an error.
+    """
+    home = home if home is not None else Path.home()
+    config_path = home / ".claude.json"
+    if not config_path.is_file():
+        return set()
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    ever = data.get("claudeAiMcpEverConnected")
+    return {name for name in ever if isinstance(name, str)} if isinstance(ever, list) else set()
+
+
 def has_enabled_mcp_servers(*, home: Path | None = None, cwd: Path | None = None) -> bool:
     """Whether any MCP server is enabled — a cheap, network-free ``~/.claude.json`` read.
 
@@ -243,10 +268,10 @@ def overlay_provider_expectations() -> dict[str, str]:
     """The merged ``{server_name: expected_provider}`` map from every overlay.
 
     Each registered overlay declares its expectations via
-    ``OverlayBase.get_mcp_provider_expectations()``. Teatree's own default is
+    ``OverlayBase.connectors.mcp_provider_expectations()``. Teatree's own default is
     empty; the real values live in the overlay repo (souliane/teatree#251).
     """
-    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415
+    from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415 — deferred: call-time import
 
     merged: dict[str, str] = {}
     for backend in iter_overlay_backends():
@@ -254,9 +279,9 @@ def overlay_provider_expectations() -> dict[str, str]:
         if overlay is None:
             continue
         try:
-            expectations = overlay.get_mcp_provider_expectations()
+            expectations = overlay.connectors.mcp_provider_expectations()
         except Exception:
-            logger.debug("overlay %s raised in get_mcp_provider_expectations", overlay, exc_info=True)
+            logger.debug("overlay %s raised in connectors.mcp_provider_expectations", overlay, exc_info=True)
             continue
         if isinstance(expectations, dict):
             merged.update(expectations)
@@ -318,5 +343,6 @@ __all__ = [
     "parse_mcp_list_output",
     "probe_mcp_servers",
     "read_enabled_mcp_servers",
+    "read_ever_connected",
     "resolve_provider",
 ]

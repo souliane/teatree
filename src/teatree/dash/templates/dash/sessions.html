@@ -1,0 +1,36 @@
+{% extends "dash/base.html" %}
+{% block title %}Sessions{% endblock %}
+{% block heading %}Agent sessions{% endblock %}
+{% block content %}
+  <section class="band">
+    <table class="dash">
+      <thead>
+        <tr>
+          <th>session</th><th>ticket</th><th>phase</th><th>model</th>
+          <th>lane / target</th><th>outcome</th><th>started</th><th>duration</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+          <tr>
+            <td><a class="chip mono" href="{% url 'dash:transcript' s.agent_session_id %}">{{ s.agent_session_id }}</a></td>
+            <td>
+              {% if s.ticket_id %}
+                <a href="{% url 'dash:board' %}#card-{{ s.ticket_id }}">#{{ s.ticket_number }}</a>
+                <span class="muted small">{{ s.short_description }}</span>
+              {% endif %}
+            </td>
+            <td>{{ s.phase|default:"—" }}</td>
+            <td class="mono">{{ s.model|default:"—" }}</td>
+            <td>{{ s.lane|default:"—" }} · {{ s.execution_target }}</td>
+            <td>{{ s.outcome|default:"—" }}</td>
+            <td>{{ s.started_at }}</td>
+            <td>{{ s.duration|default:"—" }}</td>
+          </tr>
+        {% empty %}
+          <tr class="empty-row"><td colspan="8">No agent sessions recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

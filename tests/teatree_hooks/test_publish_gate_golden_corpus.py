@@ -22,21 +22,62 @@ Synthetic namespaces / banned terms only (``acme-internal``, ``internalcorp``,
 ``acmecorp``, ``acmewidget``, and the genuinely-public ``souliane/teatree``);
 the real allowlist lives in the user's private config, never in the source or
 tests, and the fixture config is injected so the test NEVER reads the real
-``~/.teatree.toml``.
+DB-home config store (legacy file tier removed).
 """
 
+import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from teatree.hooks import _repo_visibility, banned_terms_scanner, publish_destination, publish_surface
+from teatree.hooks import _repo_visibility, banned_terms_scanner, public_visibility, publish_surface
 
 # A high-confidence fake secret (never a real credential): a GitHub PAT shape.
 _FAKE_SECRET = "ghp_" + "A" * 40
+
+
+def _seed_config_db(tmp_path: Path, **rows: object) -> Path:
+    """Seed a cold config DB (``config_path`` is a DB path the cold reader reads)."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+@pytest.fixture(autouse=True)
+def _public_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the genuinely-public ``souliane/teatree`` as PUBLIC; delegate the rest.
+
+    The leak gate enforces ONLY on an affirmatively-public target, so the
+    public rows need the probe to CONFIRM ``souliane/teatree`` public. Every
+    other slug delegates to the real probe so a per-test ``gh``/``glab`` shim (a
+    PRIVATE/PUBLIC verdict) or an explicit probe mock still governs its own
+    target. The cache dir is isolated so no real on-disk verdict leaks in.
+    """
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+    real_probe = _repo_visibility.probe_visibility
+    monkeypatch.setattr(
+        _repo_visibility,
+        "probe_visibility",
+        lambda slug: "PUBLIC" if "souliane/teatree" in slug else real_probe(slug),
+    )
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -91,15 +132,12 @@ def config(tmp_path: Path) -> Path:
     # publish_namespaces`` is what the first-segment-only skip consulted (so
     # the chained / substitution leaks fail RED on the pre-fix code), and
     # ``private_repos`` exercises the carve-out / commit path.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        "[teatree]\n"
-        'private_repos = ["acme-internal", "internalcorp"]\n'
-        'internal_publish_namespaces = ["acme-internal", "internalcorp"]\n'
-        'banned_terms = ["acmecorp", "acmewidget"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        private_repos=["acme-internal", "internalcorp"],
+        internal_publish_namespaces=["acme-internal", "internalcorp"],
+        banned_terms=["acmecorp", "acmewidget"],
     )
-    return cfg
 
 
 @pytest.fixture
@@ -107,12 +145,11 @@ def private_repos_only_config(tmp_path: Path) -> Path:
     # Fix 3: the user's CURRENT config has only ``private_repos`` (no
     # ``internal_publish_namespaces`` key). The destination skip must still
     # fire for those namespaces by reusing the existing allowlist.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        '[teatree]\nprivate_repos = ["acme-internal", "internalcorp"]\nbanned_terms = ["acmecorp", "acmewidget"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        private_repos=["acme-internal", "internalcorp"],
+        banned_terms=["acmecorp", "acmewidget"],
     )
-    return cfg
 
 
 @pytest.fixture
@@ -121,12 +158,11 @@ def host_qualified_config(tmp_path: Path) -> Path:
     # form the carve-out doc states and ``slug_for_cwd`` emits), while
     # ``gh pr create --repo`` supplies a BARE ``owner/repo`` slug. The carve-out
     # must recognise the bare flag slug as the same private repo.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        '[teatree]\nprivate_repos = ["github.com/internalcorp/private-svc"]\nbanned_terms = ["acmecorp"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        private_repos=["github.com/internalcorp/private-svc"],
+        banned_terms=["acmecorp"],
     )
-    return cfg
 
 
 def _verdict(command: str, cwd: Path | None, config_path: Path) -> str:
@@ -135,11 +171,11 @@ def _verdict(command: str, cwd: Path | None, config_path: Path) -> str:
     Mirrors ``hook_router._run_banned_terms_pretool``: a secret on ANY surface
     (body, title, short ``-t`` flag, ``gh api`` field, ``git -C`` commit
     subject) always blocks, checked BEFORE the payload-None early-return; the
-    destination gate skips a PROVABLY-private target (offline allowlist or live
-    probe, resolved from the COMMAND target -- so the leak gate enforces on
-    PUBLIC targets only); otherwise the payload is scanned and a banned-term
-    match (or a fail-closed sentinel) blocks unless the private-repo commit
-    carve-out downgrades it.
+    visibility scope skips every target that is NOT affirmatively public
+    (private/internal/unknown/unresolvable, resolved from the COMMAND target --
+    so the leak gate enforces on affirmatively-PUBLIC targets only); otherwise
+    the payload is scanned and a banned-term match (or a fail-closed sentinel)
+    blocks unless the private-repo commit carve-out downgrades it.
     """
     tool_input = {"command": command}
     if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text("Bash", tool_input)):
@@ -147,7 +183,7 @@ def _verdict(command: str, cwd: Path | None, config_path: Path) -> str:
     payload = banned_terms_scanner.extract_publish_payload("Bash", tool_input)
     if payload is None:
         return "allow"
-    skipped = banned_terms_scanner.has_override("Bash", tool_input) or publish_destination.gate_skips_destination(
+    skipped = banned_terms_scanner.has_override("Bash", tool_input) or public_visibility.gate_skips_for_visibility(
         command, cwd, config_path=config_path
     )
     if skipped or banned_terms_scanner.scan_text(payload, config_path=config_path) is None:
@@ -364,7 +400,7 @@ class TestMustDeny:
         # safety boundary the scanner-visible ``_verdict`` cannot reach (it never
         # sees the wrapper's opaque recipe), so the gate is asserted directly.
         cmd = f"glab mr create -R acme-internal/x --title ok && {wrapper}"
-        assert publish_destination.gate_skips_destination(cmd, None, config_path=config) is False
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=config) is False
 
     def test_raw_rest_with_interspersed_persistent_flag(self, config: Path) -> None:
         # Vector 2: an interspersed ``--hostname`` broke the contiguous ``gh api ``
@@ -472,6 +508,11 @@ _LEAK_SPELLINGS: list[tuple[str, str]] = [
     # unread (pre-fix, ``gh -F`` reached the api-field walker, the path matched
     # no ``field=value`` assignment, and the post was ALLOWED unscanned).
     ("gh short body-file unreadable", "gh pr create -R souliane/teatree --title x -F /nonexistent/body.md"),
+    # ``glab`` uses ``-d`` for the MR description on ``create`` and ``update``;
+    # pre-fix the parser recognised only the long ``--description``, so a body
+    # passed as ``-d`` extracted empty, scanned clean, and posted UNSCANNED.
+    ("glab short description -d create", 'glab mr create -R souliane/teatree -d "acmecorp"'),
+    ("glab short description -d update", 'glab mr update 7 -R souliane/teatree -d "acmecorp"'),
     ("interpreter sh -c forge", f'{_INTERNAL_LEAD}sh -c "{_PUBLIC_POST}"'),
     ("interpreter bash -c forge", f'{_INTERNAL_LEAD}bash -c "{_PUBLIC_POST}"'),
     ("interpreter eval forge", f'{_INTERNAL_LEAD}eval "{_PUBLIC_POST}"'),
@@ -529,9 +570,7 @@ class TestProbeResolvedTargetVisibility:
     def empty_allowlist_config(self, tmp_path: Path) -> Path:
         # No private_repos / internal_publish_namespaces entry: a target is
         # provably private ONLY through the live probe, never the allowlist.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acmecorp", "acmewidget"]\n', encoding="utf-8")
-        return cfg
+        return _seed_config_db(tmp_path, banned_terms=["acmecorp", "acmewidget"])
 
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -581,15 +620,15 @@ class TestProbeResolvedTargetVisibility:
         cmd = 'gh issue comment 5 --repo someowner/open-svc --body "acmecorp domain note"'
         assert _verdict(cmd, cwd, empty_allowlist_config) == "block"
 
-    def test_unresolvable_target_fails_closed_blocks(
+    def test_probe_error_target_fails_closed_and_blocks(
         self, empty_allowlist_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # must-DENY (fail-closed): when the probe cannot prove the target private
-        # (probe returns the UNKNOWN ``None`` -- tool absent in-hook or auth
-        # differs) and the allowlist does not name it, the target is PUBLIC and
-        # the term blocks. Detection failure never opens. The probe is stubbed to
-        # the deterministic UNKNOWN verdict rather than relying on a flaky network
-        # call to a non-existent repo.
+        # must-DENY (#3442 fail closed): when the probe cannot confirm the target's
+        # visibility (returns the UNKNOWN ``None`` -- tool absent in-hook or auth
+        # differs) and the allowlist does not name it, the target is NOT provably
+        # non-public, so the gate SCANS and the banned term BLOCKS -- mirroring the
+        # bash pre-push gate. A genuinely-private repo declares itself in the
+        # offline ``private_repos`` allowlist to stay skip-eligible.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         monkeypatch.delenv("GH_REPO", raising=False)
         cwd = self._public_cwd(tmp_path)
@@ -621,29 +660,25 @@ class TestProbeResolvedTargetVisibility:
 
 
 class TestLeakGateEnforcesOnPublicTargetsOnly:
-    """The leak gate enforces on PUBLIC targets ONLY (the user's explicit rule).
+    """The leak gate skips ONLY a PROVABLY non-public target (the user's rule + #3442).
 
-    A customer/banned term is blocked when -- and only when -- the COMMAND's
-    resolved target is PUBLIC (or its visibility cannot be determined, which
-    fails closed to strict). On ANY private target -- the user's OWN private
-    overlay repo AND a customer's own (colleague) private repo -- the gate does
-    NOT block: the destination skip resolves the real target from the command
-    and skips the scan. SYNTHETIC namespaces only; the private ones are proven
-    private via the allowlist and via the live ``gh`` probe shim.
+    A customer/banned term is allowed only when the COMMAND's resolved target is
+    PROVABLY non-public -- the user's OWN private overlay repo or a customer's own
+    (colleague) private repo, proven via the offline allowlist or the live ``gh``
+    probe. On an affirmatively-PUBLIC target it BLOCKS, and on a resolvable target
+    whose probe cannot confirm visibility it now FAILS CLOSED and BLOCKS too
+    (#3442 -- a probe error is not a skip). SYNTHETIC namespaces only.
     """
 
     @pytest.fixture
     def allowlist_config(self, tmp_path: Path) -> Path:
         # Both a private OWN overlay namespace and a private COLLEAGUE namespace
         # are declared private offline; ``souliane/teatree`` stays public.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            "[teatree]\n"
-            'private_repos = ["ownoverlay-org", "customer-org"]\n'
-            'banned_terms = ["customercorp", "customerwidget"]\n',
-            encoding="utf-8",
+        return _seed_config_db(
+            tmp_path,
+            private_repos=["ownoverlay-org", "customer-org"],
+            banned_terms=["customercorp", "customerwidget"],
         )
-        return cfg
 
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -696,11 +731,13 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
         cmd = 'gh pr create --title "feat: x" --body "customercorp here"'
         assert _verdict(cmd, worktree, allowlist_config) == "allow"
 
-    def test_customer_term_to_unresolvable_target_fails_closed(
+    def test_customer_term_to_probe_error_target_fails_closed(
         self, allowlist_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # fail-closed: an undeclared target whose visibility cannot be determined
-        # (probe returns the UNKNOWN None) is treated as PUBLIC/strict and blocks.
+        # #3442 fail closed: an undeclared target whose visibility cannot be
+        # confirmed (probe returns the UNKNOWN None) is NOT provably non-public, so
+        # the gate SCANS and BLOCKS -- a probe error must never route a leak out
+        # unscanned. A genuinely-private repo is declared in ``private_repos``.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         cwd = self._public_cwd(tmp_path)
         cmd = 'gh issue comment 5 --repo unknown/mystery --body "customercorp note"'
@@ -712,8 +749,7 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
         # must-ALLOW: a colleague repo NOT in the offline allowlist, proven
         # private ONLY by the live probe, still skips -- the visibility is
         # resolved from the command target via the probe.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["customercorp"]\n', encoding="utf-8")
+        cfg = _seed_config_db(tmp_path, banned_terms=["customercorp"])
         bin_dir = tmp_path / "bin"
         _make_gh_shim(bin_dir, "PRIVATE")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")

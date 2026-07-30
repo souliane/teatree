@@ -1,151 +1,66 @@
 """Workspace management: create ticket worktrees, finalize, clean stale branches."""
 
-import os
-from collections.abc import Callable
-from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, TypedDict, cast
+from typing import IO, Annotated, cast
 
 import typer
 from django.db import transaction
 from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
-from teatree.config import load_config
+from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
-from teatree.core.gates.orphan_guard import find_orphans_in_workspace
-from teatree.core.management.commands import _workspace_helpers as _wh
-from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
-from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift, clean_merged_worktrees
-from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
-from teatree.core.management.commands._workspace_finalize import refuse_finalize_on_main_clone_default
-from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
-from teatree.core.management.commands._workspace_ticket_intake import (
+from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
+from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
+from teatree.core.machine_output import emit
+from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace.anchor import resolve_workspace_ticket
+from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
+from teatree.core.management.commands._workspace.cleanup import _die
+from teatree.core.management.commands._workspace.dead_rows import build_dead_row_report, write_dead_row_lines
+from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace.drift_report import run_drift_report
+from teatree.core.management.commands._workspace.finalize import run_finalize
+from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
+from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace.owner_stamps import backfill_owner_stamps
+from teatree.core.management.commands._workspace.provision_parallel import (
+    provision_worktree_subprocess,
+    render_worktree_report,
+    run_worktree_provisions_in_parallel,
+)
+from teatree.core.management.commands._workspace.relocate import RelocateIO, active_overlay_name, run_relocate
+from teatree.core.management.commands._workspace.salvage import emit_records_json, run_salvage
+from teatree.core.management.commands._workspace.stamp_identity import StampResult, run_stamp_identity
+from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
+    InvalidTicketKindError,
     RawTicketInputs,
+    adopt_preflight_refusal,
     build_intake,
     build_ticket,
+    finalize_ticket_provision,
+    resolve_adopt_context,
 )
 from teatree.core.models import Ticket, Worktree
-from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
-from teatree.core.readiness import run_and_report_probes
-from teatree.core.reconcile import reconcile_all, reconcile_ticket
-from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
-from teatree.core.runners import (
-    WorktreeProvisioner,
-    WorktreeProvisionRunner,
-    WorktreeStartRunner,
-    WorktreeTeardownRunner,
-)
+from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
+from teatree.core.worktree.dead_row_release import release_dead_rows
+from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError
-
-if TYPE_CHECKING:
-    from teatree.core.models.types import TicketExtra
-    from teatree.core.overlay import OverlayBase
 
 
-class OrphanEntry(TypedDict):
-    repo: str
-    branch: str
-    status: str
-    ahead_count: int
-
-
-def _warn_orphans(write: Callable[[str], None]) -> None:
-    orphans = find_orphans_in_workspace()
-    if not orphans:
-        return
-    preview = orphans[:5]
-    write(f"WARNING: {len(orphans)} orphan branch(es) in the workspace:")
-    for r in preview:
-        write(f"  - {r.repo} ({r.branch}, {r.ahead_count} ahead, {r.status.value})")
-    if len(orphans) > len(preview):
-        write(f"  - …and {len(orphans) - len(preview)} more")
-    write(
-        "Run `t3 <overlay> pr ensure-pr --branch <name>` to track them, "
-        "or `t3 <overlay> workspace clean-all` to reap synced ones.",
-    )
-
-
-def _workspace_dir() -> Path:
-    return load_config().user.workspace_dir
-
-
-def _resolve_workspace_ticket(path: str) -> Ticket:
-    """Resolve the ticket for a workspace-scoped command.
-
-    Workspace commands (provision/start/ready/teardown) act on *every*
-    worktree in a ticket, so they should be runnable both from inside a
-    worktree subdir and from the ticket workspace root that holds those
-    subdirs. First try the normal worktree resolution; if that fails
-    because we're at the workspace root, match child worktree dirs back
-    to their ticket.
-    """
-    try:
-        anchor = resolve_worktree(path)
-        return Ticket.objects.get(pk=anchor.ticket.pk)
-    except WorktreeNotFoundError:
-        base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
-        ticket_pks: set[int] = set()
-        for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
-            wt_path = (wt.extra or {}).get("worktree_path", "")
-            if wt_path and Path(wt_path).resolve().parent == base:
-                ticket_pks.add(wt.ticket_id)
-        if len(ticket_pks) == 1:
-            return Ticket.objects.get(pk=ticket_pks.pop())
-        if len(ticket_pks) > 1:
-            msg = (
-                f"{base} holds worktrees from multiple tickets ({sorted(ticket_pks)}).\n"
-                "Run the command from a specific worktree subdir."
-            )
-            raise WorktreeNotFoundError(msg) from None
-        raise
-
-
-def _report_worktree_probes(
-    worktrees: list[Worktree],
-    overlay: "OverlayBase",
-    write: Callable[[str], None],
-    *,
-    note_empty: bool,
-) -> tuple[int, int]:
-    """Run each worktree's readiness probes; return ``(total, failures)``.
-
-    Shared by ``start`` (probe only the worktrees that started) and
-    ``ready`` (probe every worktree). ``note_empty`` reports a worktree
-    with no probes explicitly (``ready``) or skips it silently (``start``).
-    """
-    total = 0
-    total_failures = 0
-    for wt in worktrees:
-        probes = overlay.get_readiness_probes(wt)
-        if not probes:
-            if note_empty:
-                write(f"  {wt.repo_path}: no probes")
-            continue
-        write(f"  {wt.repo_path}:")
-        summary = run_and_report_probes(probes, write_line=write, indent="    ")
-        total += summary.total
-        total_failures += summary.failures
-    return total, total_failures
-
-
-def _branch_prefix() -> str:
-    prefix = os.environ.get("T3_BRANCH_PREFIX", "")
-    if not prefix:
-        name = git.run(args=["config", "user.name"])
-        if name:
-            prefix = "".join(word[0].lower() for word in name.split() if word)
-    return prefix or "dev"
+def _worktree_root() -> Path:
+    # The per-overlay WORKTREE root (env → DB ConfigSetting → default) where NEW
+    # ticket worktrees land — NOT the CLONE root (``config.clone_root()``,
+    # ``~/workspace``) where source clones are discovered.
+    return _config_worktree_root()
 
 
 class Command(TyperCommand):
     @command()
-    def ticket(
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def ticket(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a CLI flag; the arg list IS the public `workspace ticket` surface, not an internal design smell.
         self,
         issue_url: str,
         variant: str = "",
@@ -159,6 +74,31 @@ class Command(TyperCommand):
                 help="Proceed even when another worktree dir for this issue already exists (#2217).",
             ),
         ] = False,
+        adopt: Annotated[
+            bool,
+            typer.Option(
+                "--adopt",
+                help="Adopt the branch checked out in the current git worktree (auto-detect), "
+                "registering Ticket + Worktree rows against it instead of deriving <number>-<slug> (#2275).",
+            ),
+        ] = False,
+        adopt_branch: Annotated[
+            str,
+            typer.Option(
+                "--adopt-branch",
+                help="Adopt this EXISTING branch (implies --adopt). Omit to auto-detect from the current git worktree.",
+            ),
+        ] = "",
+        adopt_closed: Annotated[
+            bool,
+            typer.Option(
+                "--adopt-closed",
+                help="Override the --adopt guard that refuses a CLOSED/nonexistent target issue/PR URL.",
+            ),
+        ] = False,
+        kind: Annotated[
+            str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
+        ] = "",
     ) -> int:
         """Create or update a ticket and trigger worktree provisioning.
 
@@ -178,86 +118,93 @@ class Command(TyperCommand):
         already exists (someone may already be on it) unless ``--take-over`` is
         passed. Re-provisioning the ticket's own existing dir is always allowed.
         """
-        _warn_orphans(self.stderr.write)
+        _wh.warn_orphans(self.stderr.write)
         # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
         # used to die on the ambiguous ``get_overlay()`` call here.
         # Infer from the issue URL whose workspace repos own it; the
         # default ``get_overlay()`` env-var path still wins when set.
         overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
-        raw = RawTicketInputs(issue_url, repos, variant, description, take_over)
-        intake = build_intake(overlay, raw)
+        # Refuse/canonicalize a non-URL arg (a bare ``3274``) BEFORE it can be
+        # persisted as a malformed ``issue_url`` — resolve it to the overlay's
+        # full issue URL or reject it.
         try:
-            ticket = build_ticket(self.stderr.write, overlay, intake, _workspace_dir())
+            issue_url = canonicalize_issue_ref(overlay, issue_url)
+        except InvalidIssueRefError as exc:
+            self.stderr.write(f"  Refused: {exc}")
+            return 0
+        adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
+        adopt_refusal = adopt_preflight_refusal(overlay, issue_url, adopt_ctx, allow_closed=adopt_closed)
+        if adopt_refusal is not None:
+            self.stderr.write(adopt_refusal)
+            return 0
+        raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx, kind=kind)
+        try:
+            intake = build_intake(overlay, raw)
+            ticket = build_ticket(self.stderr.write, overlay, intake, _worktree_root())
+        except InvalidTicketKindError as exc:
+            self.stderr.write(f"  Refused: {exc}")
+            return 0
         except ForeignIssueWorktreeRefusedError:
             return 0
 
-        branch = cast("TicketExtra", ticket.extra)["branch"]
-        ticket_dir = _workspace_dir() / branch
-
-        # Run the provisioner synchronously so the CLI gives immediate feedback;
-        # the worker that ``start()`` enqueued is idempotent and no-ops when it
-        # finds the worktrees already in place. Single source of truth: the runner.
-        result = WorktreeProvisioner(ticket).run()
-        if not result.ok and not ticket.worktrees.exists():  # ty: ignore[unresolved-attribute]
-            self.stderr.write(f"  Provisioning failed: {result.detail}")
-            # #748: only discard the ticket if it carries NO phase
-            # attestation. ``get_or_create`` may have resolved an
-            # existing loop/coordinator-built ticket whose sessions hold
-            # genuinely-completed-work phase records; ``Session.ticket``
-            # is ``on_delete=CASCADE``, so ``ticket.delete()`` here would
-            # cascade-reap that attestation (the observed session-reaper).
-            # A failed provision must never destroy attested work — leave
-            # the ticket + sessions intact and just report the failure.
-            visited, _ = ticket.aggregate_phase_records()
-            if not visited:
-                ticket.delete()
-                with suppress(OSError):
-                    ticket_dir.rmdir()
-            return 0
-        if not result.ok:
-            self.stderr.write(f"  WARNING: {result.detail}")
-        self.stdout.write(format_intake_summary(ticket, str(ticket_dir), branch))
-        return int(ticket.pk)
+        return finalize_ticket_provision(
+            self.stdout.write,
+            self.stderr.write,
+            ticket,
+            adopt_ctx,
+            _worktree_root(),
+        )
 
     @command()
     def provision(
         self,
         ticket_id: int = typer.Argument(0, help="Optional ticket id (alias for PWD auto-detect; #941)."),
         path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
-        slow_import: bool = typer.Option(default=False, help="Allow slow DB fallbacks."),  # noqa: FBT001
+        slow_import: bool = typer.Option(default=False, help="Allow slow DB fallbacks."),  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
+        report: bool = typer.Option(  # noqa: FBT001 — typer CLI boolean flag; the bool parameter is typer's option idiom
+            default=False,
+            help="Print each worktree's per-step provision-report table (total + slowest step).",
+        ),
     ) -> int:
-        """Provision every worktree in the current ticket workspace.
+        """Provision every worktree in the current ticket workspace, in parallel.
 
-        Iterates ``ticket.worktrees`` and fires ``Worktree.provision()``
-        for each. Stops at the first failure so the operator can fix
-        the offending worktree before retrying. #941: an optional
-        positional ``ticket_id`` is a no-op alias for PWD auto-detect
-        (agents typed ``provision <id>`` from habit; typer used to reject it with rc=1).
+        Each worktree's ENTIRE provision (FSM transition + steps) runs as its
+        OWN subprocess under a bounded, RAM-admitted pool (souliane/teatree#2949)
+        instead of one serial ``for`` loop. Every worktree is attempted
+        regardless of an earlier one's failure; failures are reported by name
+        at the end. #941: a positional ``ticket_id`` is a no-op PWD-auto-detect
+        alias (typer used to reject it with rc=1).
         """
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
-            ticket = _resolve_workspace_ticket(path)
+            ticket = resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` so multi-overlay
         # installs don't die on ambiguous ``get_overlay()`` when
         # ``T3_OVERLAY_NAME`` env var is missing (a real path when a
         # caller bypasses the CLI bridge or the env is lost).
-        overlay = get_overlay(ticket.overlay or None)
+        overlay_name = ticket.overlay
+        get_overlay(overlay_name or None)  # fail fast on an unresolvable overlay before spawning subprocesses
 
         # #2207: free abandoned unowned stacks (age-guarded) before the heavy
         # provisioning work competes with them for host CPU/RAM.
         reap_stale_local_stacks(self.stdout.write)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
-        for wt in worktrees:
-            self.stdout.write(f"  Provisioning {wt.repo_path}…")
-            with transaction.atomic():
-                if wt.state in {Worktree.State.CREATED, Worktree.State.PROVISIONED}:
-                    wt.provision()
-                    wt.save()
-            result = WorktreeProvisionRunner(wt, overlay=overlay, slow_import=slow_import).run()
-            self.stdout.write(f"    {result.detail}")
-            if not result.ok:
-                _die(self.stderr.write, f"  Stopped: {wt.repo_path} failed — fix and re-run.")
+        worktrees = list(Worktree.objects.for_ticket(ticket))
+        to_provision = [wt for wt in worktrees if wt.state in {Worktree.State.CREATED, Worktree.State.PROVISIONED}]
+        results = run_worktree_provisions_in_parallel(
+            to_provision,
+            executor=lambda wt: provision_worktree_subprocess(wt, overlay_name=overlay_name, slow_import=slow_import),
+            write=self.stdout.write,
+        )
+        if report:
+            for wt in to_provision:
+                wt.refresh_from_db()
+                self.stdout.write(render_worktree_report(wt))
+
+        failures = [r for r in results if not r.ok]
+        if failures:
+            names = ", ".join(f"{r.repo_path} ({r.detail})" for r in failures)
+            _die(self.stderr.write, f"  Stopped: {names} — fix and re-run.")
         return len(worktrees)
 
     @command()
@@ -274,11 +221,11 @@ class Command(TyperCommand):
         After every worktree starts, runs each overlay's readiness probes —
         exits 1 if any probe fails.
         """
-        ticket = _resolve_workspace_ticket(path)
+        ticket = resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        worktrees = list(Worktree.objects.for_ticket(ticket))
         started: list[Worktree] = []
         failures: list[str] = []
         # #2207: abandoned unowned stacks (age-guarded) are reaped first so
@@ -306,7 +253,7 @@ class Command(TyperCommand):
             if _wh.heal_db_or_record_failure(wt, overlay, failures, self.stdout.write):
                 continue
             self.stdout.write(f"  Starting {wt.repo_path}…")
-            commands = list(overlay.get_run_commands(wt))
+            commands = list(overlay.runtime.run_commands(wt))
             with transaction.atomic():
                 wt.start_services(services=commands)
                 wt.save()
@@ -318,7 +265,7 @@ class Command(TyperCommand):
         if failures:
             _die(self.stderr.write, f"  Failed: {', '.join(failures)}")
 
-        total, total_failures = _report_worktree_probes(started, overlay, self.stdout.write, note_empty=False)
+        total, total_failures = _wh.report_worktree_probes(started, overlay, self.stdout.write, note_empty=False)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return f"started {len(worktrees)} worktree(s)"
@@ -332,15 +279,15 @@ class Command(TyperCommand):
 
         Strict: exits 0 iff every probe across every worktree passes. No
         per-worktree skip flag and no env-var escape — if a probe doesn't
-        apply to a variant, the overlay's ``get_readiness_probes`` returns
+        apply to a variant, the overlay's ``runtime.readiness_probes`` returns
         an empty list (or omits that probe) for that worktree.
         """
-        ticket = _resolve_workspace_ticket(path)
+        ticket = resolve_workspace_ticket(path)
         # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
         overlay = get_overlay(ticket.overlay or None)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
-        total, total_failures = _report_worktree_probes(worktrees, overlay, self.stdout.write, note_empty=True)
+        worktrees = list(Worktree.objects.for_ticket(ticket))
+        total, total_failures = _wh.report_worktree_probes(worktrees, overlay, self.stdout.write, note_empty=True)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return "ok"
@@ -354,6 +301,10 @@ class Command(TyperCommand):
             default=False,
             help="Tear down even when a branch has commits not on any remote (data loss).",
         ),
+        allow_open_prs: bool = typer.Option(
+            default=False,
+            help="Reclaim the workspace even while one of the ticket's PRs/MRs is still open.",
+        ),
     ) -> str:
         """Tear down every worktree in the current ticket workspace.
 
@@ -361,26 +312,29 @@ class Command(TyperCommand):
         per-worktree failures to maximise cleanup; surfaces them in the
         final summary. Refuses to remove a worktree whose branch carries
         unpushed commits unless ``--force`` is passed.
-        """
-        ticket = _resolve_workspace_ticket(path)
 
-        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        Teardown is TICKET-scoped: it reclaims EVERY worktree of the resolved
+        ticket, siblings included. That scope is only safe once the ticket is
+        actually done, so the command is gated on the forge state of the
+        ticket's PRs/MRs — a ticket carrying an open one is refused before any
+        worktree is touched, and a sibling worktree whose branch backs a
+        still-open MR is never reclaimed as collateral. ``--allow-open-prs`` is
+        the explicit override, deliberately separate from ``--force``.
+        """
+        ticket = resolve_workspace_ticket(path)
+
+        worktrees = list(Worktree.objects.for_ticket(ticket))
+        check_no_open_prs(ticket, worktrees, read_pr_state=read_live_pr_state, allow_open_prs=allow_open_prs)
         labels: list[str] = []
         failures: list[str] = []
         for wt in worktrees:
             repo = wt.repo_path
-            # Snapshot before the transition body resets db_name/extra
-            snapshot_db_name = wt.db_name
-            snapshot_extra = wt.get_extra()
+            # teardown() keeps db_name/extra on the row (recovery pointers), so the
+            # runner reads them straight off the live row — no snapshot to capture.
             with transaction.atomic():
                 wt.teardown()
                 wt.save()
-            result = WorktreeTeardownRunner(
-                wt,
-                force=force,
-                snapshot_db_name=snapshot_db_name,
-                snapshot_extra=snapshot_extra,
-            ).run()
+            result = WorktreeTeardownRunner(wt, force=force).run()
             if result.ok:
                 labels.append(result.detail)
             else:
@@ -397,56 +351,19 @@ class Command(TyperCommand):
     def finalize(self, ticket_id: int, *, message: str = "") -> str:
         """Squash worktree commits into one, then rebase on the default branch."""
         ticket = Ticket.objects.get(pk=ticket_id)
-        results: list[str] = []
-        for worktree in ticket.worktrees.all():
-            repo = worktree.repo_path
-            repo_dir = (worktree.extra or {}).get("worktree_path") or repo
-            default_br = git.default_branch(repo)
-            try:
-                status = git.status_porcelain(repo_dir)
-                if status:
-                    results.append(f"{repo}: SKIPPED — uncommitted changes:\n{status}")
-                    continue
-
-                refuse_finalize_on_main_clone_default(repo_dir, default_br)
-
-                git.fetch(repo_dir, "origin", default_br)
-
-                base = git.merge_base(repo_dir, f"origin/{default_br}")
-                count = git.rev_count(repo_dir, f"{base}..HEAD")
-                log = git.log_oneline(repo_dir, f"{base}..HEAD")
-                if log:
-                    self.stdout.write(f"  {repo} commits ({count}):\n    " + "\n    ".join(log.splitlines()))
-
-                if count > 1:
-                    message = message or (log.splitlines()[0] if log else f"Squash {count} commits")
-                    git.soft_reset(repo_dir, base)
-                    git.commit(repo_dir, message)
-                    results.append(f"{repo}: squashed {count} commits")
-                else:
-                    results.append(f"{repo}: single commit, no squash needed")
-
-                git.rebase(repo_dir, f"origin/{default_br}")
-                results.append(f"{repo}: rebased on {default_br}")
-            except CommandFailedError as exc:
-                results.extend(
-                    [
-                        f"{repo}: rebase failed — {exc}",
-                        f"  To abort: git -C {repo_dir} rebase --abort",
-                        f"  To resolve: fix conflicts, git add, then: git -C {repo_dir} rebase --continue",
-                    ]
-                )
-        return "\n".join(results)
+        return run_finalize(ticket, message=message, write=self.stdout.write)
 
     @command(name="clean-merged")
     def clean_merged(self) -> list[str]:
-        """Tear down every worktree whose ticket is already MERGED.
+        """Tear down every done worktree (analyze-then-wipe) on demand.
 
-        On-demand reconciler for the daily followup sync. Use when merged-PR
-        cleanup silently failed and stale docker containers, branches, or
-        databases linger. Errors are surfaced inline — no suppression.
+        On-demand reconciler for the daily followup sync — the same consolidated
+        done+redundant reaper ``clean-all`` and the FSM teardown use. Use when
+        merged-PR cleanup silently failed and stale docker stacks, branches, or
+        databases linger. A not-done or potentially-needed worktree is KEPT with a
+        reported reason; nothing unproven is destroyed.
         """
-        return clean_merged_worktrees()
+        return reap_done_worktrees(_worktree_root(), dry_run=False)
 
     @command()
     def doctor(
@@ -457,63 +374,33 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Detect state drift across every store; optionally fix it.
 
-        Checks Django ↔ git worktrees, Postgres DBs, docker containers,
-        env cache files.  Without ``--fix`` prints drift; with
-        ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
-        missing env caches, and prunes stale worktree dirs.  Every action
-        uses :func:`run_checked` — no silent swallow.
+        Checks Django ↔ git worktrees, Postgres DBs, docker containers, env cache
+        files. Without ``--fix`` prints drift; with ``--fix`` cleans orphan
+        containers, drops orphan DBs, regenerates missing env caches, and prunes
+        stale worktree dirs. Thin wrapper over :func:`run_drift_report`.
         """
-        if ticket:
-            drifts = {ticket: reconcile_ticket(Ticket.objects.get(pk=ticket))}
-            if not drifts[ticket].has_drift:
-                drifts = {}
-        else:
-            drifts = reconcile_all()
-
-        if not drifts:
-            return ["No drift detected."]
-
-        lines: list[str] = []
-        for ticket_pk, drift in sorted(drifts.items()):
-            lines.append(f"Ticket #{ticket_pk}:")
-            lines.extend(f"  {finding}" for finding in drift.format().splitlines())
-            if fix:
-                lines.extend(f"  [fix] {msg}" for msg in _fix_drift(drift))
-        if not fix:
-            lines.extend(("", "Rerun with --fix to apply fixes."))
-        return lines
+        return run_drift_report(ticket_pk=ticket, fix=fix)
 
     @command(name="stamp-identity")
     def stamp_identity(self, repo: str = ".") -> StampResult:
-        """Stamp the scoped noreply git identity onto an existing souliane clone (#762).
+        """Stamp the scoped noreply git identity onto an existing public GitHub clone (#762).
 
-        Fixes public souliane/* clones/worktrees created before the
-        provisioner source-fix (new worktrees are stamped at creation).
-        Idempotent. Refuses non-souliane / private remotes so the private overlay's
-        legitimate real-identity attribution is never touched.
+        Fixes public clones/worktrees created before the provisioner source-fix (new
+        worktrees are stamped at creation). Thin wrapper over
+        :func:`run_stamp_identity` — see it for the idempotence and refusal doctrine.
         """
-        slug = git.remote_slug(repo)
-        if not is_public_github_remote(slug):
-            return StampResult(
-                stamped=False,
-                reason=f"not a public GitHub remote (slug={slug!r}) — noreply-identity stamping not required",
-            )
-        set_local_noreply_identity(repo)
-        return StampResult(stamped=True, repo=repo, slug=slug)
+        return run_stamp_identity(repo)
 
     @command(name="list-orphans")
-    def list_orphans(self) -> list[OrphanEntry]:
+    def list_orphans(self) -> list[_wh.OrphanEntry]:
         """List orphan branches (commits ahead of origin/main AND no open PR) across the workspace.
 
         Used by the session-end hook and the ``workspace ticket`` warning to
         surface work that would otherwise be lost when a session closes or a
         new worktree is created. Emits a JSON-serialisable list — one entry
-        per orphan.
+        per orphan (the mapping lives in :func:`_wh.list_orphan_entries`).
         """
-        return [
-            OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
-            for r in find_orphans_in_workspace()
-        ]
+        return _wh.list_orphan_entries()
 
     @command()
     def landscape(self) -> LandscapeReport:
@@ -522,13 +409,14 @@ class Command(TyperCommand):
         The intake landscape survey the ``/t3:ticket`` step runs and the planner
         consumes: the operator's open PRs/MRs, the local worktrees carrying
         uncommitted or unpushed work, and a per-issue close/merge/supersede
-        recommendation against the in-flight PR landscape. Forge or git probes
-        that cannot complete degrade to ``warnings`` rather than aborting — a
-        missed in-flight branch is worse than a noisy warning. Emits a
+        recommendation against the in-flight PR landscape. A missing code host
+        degrades to a local-git-only survey with a warning; a CONFIGURED forge
+        whose read errors FAILS LOUD (``LandscapeForgeReadError``) rather than
+        laundering the outage into a confidently-empty survey. Emits a
         JSON-serialisable survey so the planner plans against reality instead of
         re-deriving it.
         """
-        return run_landscape(_workspace_dir())
+        return run_landscape(_worktree_root())
 
     @command(name="reap-stale")
     def reap_stale(
@@ -557,44 +445,147 @@ class Command(TyperCommand):
         """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246)."""
         return reclaim_disk(dry_run=dry_run).render()
 
+    @command(name="stamp-owners")
+    def stamp_owners(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the stamping report as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> None:
+        """Record which checkout owns each auto-isolated env dir THIS venue can see (#3872).
+
+        Deletes nothing. Run it in EVERY venue that sees checkouts — host and container
+        both — because neither sees them all; engine:
+        :func:`~teatree.core.management.commands._workspace.owner_stamps.backfill_owner_stamps`.
+        """
+        report = backfill_owner_stamps(_worktree_root())
+        self.print_result = False
+        emit(
+            report,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(report),
+        )
+
     @command(name="clean-all")
     def clean_all(
         self,
         keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
-        reap_unsynced: str = typer.Option(
-            "keep",
-            "--reap-unsynced",
-            help="Disposition for orphaned RAW worktrees with unpushed work (#2361): "
-            "'keep' (default, safe — leave them) or 'snapshot' (write a recovery artifact, THEN reap).",
-        ),
         *,
-        interactive: bool = typer.Option(
+        dry_run: bool = typer.Option(
             default=False,
-            help="Prompt push/abandon/skip per worktree with unsynced work (#2361). "
-            "Default is fully unattended — uncertain worktrees are kept with a warning, never prompted.",
+            help="Preview only: every pass reports what it WOULD do — each worktree that "
+            "would WIPE (with its done-signal source) or be KEPT, plus the branch, stash, "
+            "orphan DB/docker/env-root, raw-worktree and DSLR candidates — removing nothing.",
         ),
     ) -> list[str]:
-        """Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots.
+        """Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR.
 
-        Unattended by default (#2361): never blocks on stdin; an uncertain worktree
-        is kept with a warning, not prompted. ``--interactive`` opts into the
-        per-worktree push/abandon/skip prompt, gated on a real TTY (so a pipe or
-        loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
-        the deterministic squash signal are unchanged.
+        The consolidated done-worktree reaper runs first: a worktree is wiped only
+        when its ticket is done (MERGED/DELIVERED/IGNORED, or a forge squash-merge)
+        AND every unpushed commit and uncommitted change is PROVEN redundant. A
+        not-done or potentially-needed worktree is KEPT with a reported reason — the
+        #706 data-loss guard, surfaced as the primary analyze-before-wipe step.
+        There is no recovery snapshot: unproven work is kept, never destroyed.
 
-        Orphaned RAW worktrees (#2361): a ``git worktree`` with no teatree
-        ``Worktree`` row (created by a sub-agent's bare ``git worktree add``) is
-        discovered and disposed of. A merged/gone orphan is reaped; one with
-        unpushed work is reaped only under ``--reap-unsynced=snapshot`` AND only
-        after a recovery artifact is captured — ``keep`` (default) leaves it.
+        Fully unattended (#2361 / CORRECTION 3): never blocks on stdin and never
+        prompts — an uncertain worktree is kept with a warning, salvage is the
+        separate explicit ``t3 <overlay> pr create``. ``--dry-run`` previews the
+        reaper (would-wipe/keep) and removes nothing.
 
         The ordered passes live in :func:`run_clean_all`; this method is the thin
         CLI wrapper that supplies the worktree dir and the command's IO sinks.
         """
         return run_clean_all(
-            _workspace_dir(),
+            _worktree_root(),
             CleanAllIO(write_out=self.stdout.write, write_err=self.stderr.write),
             keep_dslr=keep_dslr,
-            reap_unsynced=reap_unsynced,
-            interactive=interactive,
+            dry_run=dry_run,
         )
+
+    @command(name="release-dead-rows")
+    def release_dead_rows_cmd(
+        self,
+        *,
+        apply: bool = typer.Option(default=False, help="Actually release the rows. Without it, this is a dry run."),
+        json_output: Annotated[bool, typer.Option("--json", help="Per-row dispositions as JSON.")] = False,
+    ) -> None:
+        """Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply).
+
+        The narrow alternative to ``clean-all`` for the doctor's "registered
+        worktree ... is not a git checkout" finding: the SAME #706 classifier and
+        freshness precondition, deleting the ``Worktree`` row and nothing else.
+        Which rows are KEPT, and why, is :mod:`teatree.core.worktree.dead_row_release`.
+        """
+        outcome = release_dead_rows(_worktree_root(), dry_run=not apply)
+        self.print_result = False
+        emit(
+            build_dead_row_report(outcome),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: write_dead_row_lines(outcome, stream),
+        )
+
+    @command()
+    def relocate(
+        self,
+        dry_run: bool = typer.Option(default=False, help="List the moves without moving anything."),  # noqa: FBT001 — CLI flag
+    ) -> list[str]:
+        """Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup).
+
+        Thin wrapper supplying the resolved overlay + per-overlay WORKTREE root
+        (``config.worktree_root()``) to :func:`run_relocate` (the engine, with the
+        full locked/dirty/active skip doctrine + idempotency + ``--dry-run``); see
+        ``/t3:workspace``.
+        """
+        io = RelocateIO(write_out=self.stdout.write, write_err=self.stderr.write)
+        return run_relocate(active_overlay_name(), _config_worktree_root(), io, dry_run=dry_run).render()
+
+    @command(name="emit")
+    def emit(self) -> str:
+        """Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763).
+
+        The read-only structured EMIT the judgment skill consumes: a JSON array of
+        records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
+        content_verified, verdict_source, banned_terms_status, liveness,
+        last_commit_date, owner — schema in ``teatree.core.cleanup.cleanup_emit``).
+        Removes nothing — ``clean-all`` does the auto-deletion of provably-redundant
+        items; this surfaces the rest for the skill to route (superseded /
+        salvage-to-fresh-PR / defer-live). A record whose ``content_verified`` is
+        ``false`` was never probed, so its empty ``unique_commit_shas`` is silence,
+        not proof — the skill keeps it.
+        """
+        # Return the JSON string only — django-typer serializes the return onto
+        # stdout exactly once. A manual ``self.stdout.write(rendered)`` here (the
+        # pre-PR-30 double-emit, #2763) printed it a SECOND time, so `json.loads`
+        # failed with "Extra data" at the midpoint of the machine handoff.
+        return emit_records_json(_worktree_root())
+
+    @command(name="salvage")
+    def salvage(
+        self,
+        source_ref: str,
+        *,
+        salvage_branch: str = typer.Option("", help="Fresh branch to capture onto (default: salvage/<source_ref>)."),
+        target: str = typer.Option("origin/main", help="Base the salvage PR opens against."),
+        allow_banned: bool = typer.Option(
+            default=False, help="Skip the final banned-terms safety gate (the skill cleaned the content)."
+        ),
+    ) -> str:
+        """Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763).
+
+        The salvage primitive the judgment skill calls once it has decided an
+        emitted item is worth keeping and cleaned any banned terms. Fail-safe: the
+        source branch is deleted ONLY after the forge confirms the PR — a failed
+        push / open / verify leaves it intact. Operates on the current repo (cwd).
+        """
+        line = run_salvage(source_ref, salvage_branch=salvage_branch, target=target, allow_banned=allow_banned)
+        # Emit the human outcome ONCE: `print_result = False` stops django-typer
+        # repr'ing the return a second time (#2763's `workspace emit` double-emit).
+        self.print_result = False
+        self.stdout.write(line)
+        return line

@@ -18,7 +18,7 @@ from django.test import TestCase
 from teatree.core.management.commands import _pr_preview
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.models import Ticket
-from teatree.core.mr_metadata import DEFAULT_MR_TITLE_REGEX
+from teatree.core.review.mr_metadata import DEFAULT_MR_TITLE_REGEX
 
 from ._shared import _MOCK_OVERLAY, _shippable_ticket
 

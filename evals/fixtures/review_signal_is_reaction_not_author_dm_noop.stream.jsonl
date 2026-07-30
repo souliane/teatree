@@ -1,3 +1,0 @@
-{"type": "system", "subtype": "init", "session_id": "fixt-review_signal_is_reaction_not_author_dm-noop", "model": "claude-sonnet-4-6"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Thinking about how to signal the verdict; no tool calls yet."}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

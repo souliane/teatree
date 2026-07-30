@@ -95,7 +95,7 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
     def _build_and_scan(self, backend: OverlayBackends) -> list[ScanSignal]:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.loop.scanners.slack_broadcasts import GlabGhMrStateClassifier  # noqa: PLC0415
+        from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier  # noqa: PLC0415
 
         def _classify(_self: GlabGhMrStateClassifier, urls: list[str]) -> list[MrState]:
             return [MrState(url=url, merged=False, approved=False, author_username=OWN_AUTHOR) for url in urls]
@@ -138,7 +138,7 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
 
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.loop.scanners.slack_broadcasts import GlabGhMrStateClassifier  # noqa: PLC0415
+        from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier  # noqa: PLC0415
 
         def _classify(_self: GlabGhMrStateClassifier, urls: list[str]) -> list[MrState]:
             return [MrState(url=url, merged=False, approved=False, author_username=OWN_AUTHOR) for url in urls]

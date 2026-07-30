@@ -39,7 +39,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Force the teatree opt-in marker AND the #256 auto-load opt-in active:
     # these cover the snapshot / compact-recovery mechanism, not the opt-in gates.
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
 
 
 def _snapshot_for(session_id: str) -> Path:
@@ -67,8 +67,8 @@ class TestPreCompactSnapshotFromDurableState:
         body = snapshot.read_text(encoding="utf-8")
         assert "agent-abc-123" in body
         # #786 WS3: tick-owner snapshot — no roster name, no spawn brief.
-        assert "loop-tick OWNER" in body
-        assert "t3 loop tick" in body
+        assert "loop OWNER" in body
+        assert "t3 loops tick" in body
         assert "t3 loop claim-next" in body
 
     def test_snapshot_does_not_consume_spawn_brief(self) -> None:
@@ -226,7 +226,7 @@ class TestPreCompactSessionStartRoundTrip:
         # #1452: recovery context lives under hookSpecificOutput, not at top level.
         ctx = output["hookSpecificOutput"]["additionalContext"]
         assert "xrev-7" in ctx
-        assert "loop-tick OWNER" in ctx
+        assert "loop OWNER" in ctx
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
 
 

@@ -12,16 +12,17 @@ don't race the daemon thread.
 """
 
 import logging
+import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.core import availability
+import pytest
+from django.test import TestCase
+
+from teatree.core import presence, speak_cleaning
 from teatree.core import speak as speak_mod
 from teatree.types import LocalPlayback, SpeakConfig
-
-
-def _resolution(mode: str) -> availability.Resolution:
-    return availability.Resolution(mode=mode, source="override")
 
 
 class TestBinaryGate:
@@ -57,11 +58,12 @@ class TestResolveSpeak:
     """``resolve_speak()`` returns the user's config unchanged — availability is not consulted."""
 
     def test_away_does_not_mutate_local(self) -> None:
+        # resolve_speak returns the user's config unchanged — it never consults the
+        # operating mode at all (the away gate lives at the playback call site).
         configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
         with (
             patch.object(speak_mod, "binary_available", return_value=True),
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
         ):
             resolved = speak_mod.resolve_speak()
         assert resolved.local is LocalPlayback.ALL, "away must not mutate the configured local value"
@@ -72,18 +74,6 @@ class TestResolveSpeak:
         with (
             patch.object(speak_mod, "binary_available", return_value=True),
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
-        ):
-            resolved = speak_mod.resolve_speak()
-        assert resolved.local is LocalPlayback.ALL
-        assert resolved.slack is True
-
-    def test_availability_raising_returns_configured(self) -> None:
-        configured = SpeakConfig(local=LocalPlayback.ALL, slack=True)
-        with (
-            patch.object(speak_mod, "binary_available", return_value=True),
-            patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
-            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
         ):
             resolved = speak_mod.resolve_speak()
         assert resolved.local is LocalPlayback.ALL
@@ -102,7 +92,7 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
+            patch.object(speak_mod, "_is_away", return_value=True),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello while away")
@@ -112,7 +102,8 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello while present")
@@ -122,7 +113,8 @@ class TestAwayGateAtPlayback:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
-            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
+            patch("teatree.core.mode_resolution.resolve_active_mode", side_effect=RuntimeError("boom")),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello when resolution failed")
@@ -142,6 +134,63 @@ class TestAwayGateAtPlayback:
         thread_cls.assert_called_once()
 
 
+class TestMeetingGateAtPlayback:
+    """Meeting-aware mute lives in ``_speak_local`` (#2171), beside the away gate.
+
+    Anti-vacuous: revert the ``_in_meeting()`` check in ``_speak_local`` and
+    ``test_in_meeting_skips_say_call`` goes RED (``run_allowed_to_fail`` IS
+    called while in a meeting, though ``speak.local = all``).
+    """
+
+    def test_in_meeting_skips_say_call(self, tmp_path: Path) -> None:
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
+            patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            speak_mod._speak_local("hello while in a meeting")
+        run.assert_not_called()
+
+    def test_free_plays(self, tmp_path: Path) -> None:
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
+            patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(presence, "current_presence", return_value=presence.Presence.FREE),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            speak_mod._speak_local("hello while free")
+        run.assert_called_once()
+
+    def test_unknown_does_not_suppress(self, tmp_path: Path) -> None:
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
+            patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(presence, "current_presence", return_value=presence.Presence.UNKNOWN),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            speak_mod._speak_local("hello unknown presence")
+        run.assert_called_once()
+
+    def test_in_meeting_still_attaches_slack_audio(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+            patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        # Slack audio arm is never gated by presence — the phone still gets audio.
+        backend.post_audio_dm.assert_called_once()
+        thread_cls.assert_called_once()
+
+
 class TestCleanForSpeech:
     def test_drops_code_fences(self) -> None:
         out = speak_mod.clean_for_speech("before ```python\nx = 1\n``` after")
@@ -156,7 +205,7 @@ class TestCleanForSpeech:
 
     def test_caps_length_on_word_boundary(self) -> None:
         out = speak_mod.clean_for_speech("word " * 400)
-        assert len(out) <= speak_mod._MAX_SPEAK_CHARS + 1
+        assert len(out) <= speak_cleaning._MAX_SPEAK_CHARS + 1
         assert out.endswith("…")
 
     def test_blank_after_strip(self) -> None:
@@ -477,6 +526,54 @@ class TestDeliverUserDmAttachAudio:
             assert "spokentext" not in name.lower()
 
 
+class TestDeliverUserDmSidecarInitialComment:
+    """F4.4: the sidecar attaches audio to an ALREADY-delivered DM.
+
+    ``initial_comment`` controls the text posted alongside the audio: ``None``
+    (default) reuses ``text`` (the ``t3 speak-dm`` standalone path), while ``""``
+    posts NO comment so the notify path — which already delivered the text via
+    ``post_message`` — does not send the body a second time. The audio is
+    always synthesised from the full ``text`` either way.
+    """
+
+    def test_default_reuses_text_as_initial_comment(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+        ):
+            speak_mod.deliver_user_dm_sidecar(backend, channel="D-USER", text="hi there", thread_ts="T1")
+        backend.post_audio_dm.assert_called_once()
+        kwargs = backend.post_audio_dm.call_args.kwargs
+        assert kwargs["text"] == "hi there"
+        assert kwargs["thread_ts"] == "T1"
+        # A sidecar never posts a standalone text message — that is the caller's job.
+        backend.post_message.assert_not_called()
+
+    def test_empty_initial_comment_attaches_audio_without_repeating_text(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        synth = MagicMock(return_value=audio)
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
+            patch.object(speak_mod, "synthesise", synth),
+        ):
+            speak_mod.deliver_user_dm_sidecar(
+                backend, channel="D-USER", text="tests are green", thread_ts="1700.5", initial_comment=""
+            )
+        # Audio still synthesised from the FULL text (post-clean) ...
+        assert "tests are green" in synth.call_args.args[0]
+        backend.post_audio_dm.assert_called_once()
+        kwargs = backend.post_audio_dm.call_args.kwargs
+        # ... but posted with an EMPTY comment, threaded under the delivered ts.
+        assert kwargs["text"] == ""
+        assert kwargs["thread_ts"] == "1700.5"
+        backend.post_message.assert_not_called()
+
+
 class TestSpeakLocal:
     # Each test pins its own per-test lockfile so the bounded wait never races a
     # concurrent holder on the shared real lockfile — these assert the
@@ -486,6 +583,7 @@ class TestSpeakLocal:
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello")
@@ -498,6 +596,7 @@ class TestSpeakLocal:
             patch.object(speak_mod.shutil, "which", return_value=None),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello")
@@ -508,9 +607,27 @@ class TestSpeakLocal:
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail", side_effect=OSError("nope")),
         ):
             speak_mod._speak_local("hello")  # must not raise
+
+
+class TestMeetingGateResolution:
+    """``_in_meeting`` maps the presence verdict; the read is Django-free (#2171)."""
+
+    def test_in_meeting_true_only_for_meeting_verdict(self) -> None:
+        with patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING):
+            assert speak_mod._in_meeting() is True
+
+    def test_free_and_unknown_do_not_mute(self) -> None:
+        for verdict in (presence.Presence.FREE, presence.Presence.UNKNOWN):
+            with patch.object(presence, "current_presence", return_value=verdict):
+                assert speak_mod._in_meeting() is False
+
+    def test_presence_error_does_not_mute(self) -> None:
+        with patch.object(presence, "current_presence", side_effect=RuntimeError("boom")):
+            assert speak_mod._in_meeting() is False
 
 
 class TestSynthesise:
@@ -571,3 +688,48 @@ class TestSurfaceUploadFailure:
     def test_notify_failure_is_swallowed(self) -> None:
         with patch("teatree.core.notify.notify_user", side_effect=RuntimeError("boom")):
             speak_mod._surface_upload_failure("missing_scope")  # must not raise
+
+
+class TestLocalPlaybackThreadConnectionHygiene(TestCase):
+    """The TTS daemon thread must not strand its DB handle.
+
+    ``speak(block=False)`` and ``_maybe_speak_local`` dispatch playback onto a
+    daemon thread, and the away gate resolves the active mode from the
+    ``ConfigSetting`` store — an ORM read on that thread, which therefore gets
+    its OWN Django connection. ``close()`` is a documented no-op on the
+    in-memory test database, so the raw handle is closed directly; a stranded
+    one is finalized at a later GC as a ``ResourceWarning: unclosed database``
+    charged to an unrelated test.
+    """
+
+    def test_playback_thread_closes_its_raw_handle(self) -> None:
+        raws: list[sqlite3.Connection] = []
+
+        def _touch_the_orm(_text: str) -> None:
+            from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
+
+            connection.ensure_connection()
+            raws.append(connection.connection)
+
+        thread = threading.Thread(target=speak_mod._speak_local_closing_connections, args=("hello",))
+        with patch.object(speak_mod, "_speak_local", _touch_the_orm):
+            thread.start()
+            thread.join()
+
+        assert raws, "the playback thread never opened a connection"
+        with pytest.raises(sqlite3.ProgrammingError):
+            raws[0].execute("SELECT 1")
+
+    def test_speak_dispatches_the_closing_wrapper_not_the_bare_target(self) -> None:
+        """Pins the wiring: the daemon thread's target is the closing wrapper."""
+        with (
+            patch.object(
+                speak_mod,
+                "resolve_speak",
+                return_value=SpeakConfig(local=LocalPlayback.ALL, slack=False),
+            ),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.speak("hello")
+
+        assert thread_cls.call_args.kwargs["target"] is speak_mod._speak_local_closing_connections

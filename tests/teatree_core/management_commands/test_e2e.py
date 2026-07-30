@@ -1,10 +1,13 @@
 """Tests for the e2e management command."""
 
+import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -12,7 +15,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
-from django.utils.module_loading import import_string
 
 import teatree.config as config_mod
 import teatree.core.backend_factory as backend_factory_mod
@@ -26,12 +28,14 @@ from tests.teatree_core.management_commands._overlays import (
     _INFER_EXTERNAL_OVERLAY,
     _INFER_PROJECT_OVERLAY,
     _OVERLAY_REPO_OVERLAY,
+    _PLAYWRIGHT_ARGS_OVERLAY,
     _PROJECT_RUNNER_OVERLAY,
     _UNCONFIGURED_OVERLAY,
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
     PROVENANCE_OVERLAY,
     SETTINGS,
+    FullE2E,
     _patch_overlays,
 )
 
@@ -40,6 +44,23 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 _GIT = shutil.which("git") or "git"
+
+
+def _seed_config(db: Path, key: str, value: object, scope: str = "") -> None:
+    """Seed a ``teatree_config_setting`` row the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _popen_for(result: MagicMock) -> MagicMock:
@@ -235,6 +256,16 @@ class TestE2eRunWorkItem(TestCase):
     provenance on the durable recipe.
     """
 
+    def setUp(self) -> None:
+        # ``run_work_item`` sets ``os.environ["T3_ORIG_CWD"]`` as a live-process
+        # side effect (fine for the short-lived CLI, a cross-test leak under
+        # pytest). Snapshot + restore the whole environment around each test so
+        # the addition is stripped afterwards and never pollutes a shared shard.
+        super().setUp()
+        env_patch = patch.dict(os.environ, clear=False)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
     def _git(self, path: Path, *args: str) -> None:
         subprocess.run([_GIT, "-C", str(path), *args], check=True, capture_output=True, text=True)
 
@@ -274,7 +305,7 @@ class TestE2eRunWorkItem(TestCase):
 
         assert "passed" in result.lower()
         run_existing.assert_called_once()
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -324,7 +355,7 @@ class TestE2eRunWorkItem(TestCase):
             call_command("e2e", "run", "77")
 
         assert exc.value.code == 3
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -352,7 +383,7 @@ class TestE2eRunWorkItem(TestCase):
         with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
             call_command("e2e", "run", "88")
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -382,7 +413,7 @@ class TestE2eRunWorkItem(TestCase):
         with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
             call_command("e2e", "run", "272", test_path=spec)
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -402,7 +433,7 @@ class TestE2eRunWorkItem(TestCase):
         ):
             call_command("e2e", "run", "273", test_path=spec)
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -419,7 +450,7 @@ class TestE2eRunWorkItem(TestCase):
         with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
             call_command("e2e", "run", "274", test_path=spec)
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -436,12 +467,9 @@ class TestE2eExternal(TestCase):
         Regression for #932: returning the message exited 0, so an
         unconfigured E2E external run looked green.
         """
-        with (
-            patch.dict("os.environ", {}, clear=False),
-            patch.object(config_mod, "load_config") as mock_cfg,
-        ):
-            mock_cfg.return_value.raw = {}
+        with patch.dict("os.environ", {}, clear=False):
             os.environ.pop("T3_PRIVATE_TESTS", None)
+            os.environ.pop("T3_CONFIG_DB", None)  # no DB private_tests row → unconfigured
             with pytest.raises(SystemExit) as exc_info:
                 call_command("e2e", "external")
         assert exc_info.value.code == 1
@@ -468,13 +496,15 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_config_fallback(self) -> None:
+    def test_db_config_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
             private_dir = tmp_path / "private"
             private_dir.mkdir()
+            db = tmp_path / "db.sqlite3"
+            _seed_config(db, "private_tests", str(private_dir))
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/cfg")
             Worktree.objects.create(
@@ -488,12 +518,10 @@ class TestE2eExternal(TestCase):
 
             mock_result = MagicMock(returncode=0)
             with (
-                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}, clear=False),
-                patch.object(config_mod, "load_config") as mock_cfg,
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir), "T3_CONFIG_DB": str(db)}, clear=False),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             ):
-                mock_cfg.return_value.raw = {"teatree": {"private_tests": str(private_dir)}}
                 os.environ.pop("T3_PRIVATE_TESTS", None)
                 result = cast("str", call_command("e2e", "external"))
             assert "passed" in result
@@ -516,7 +544,12 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             wt_dir = tmp_path / "worktree"
             wt_dir.mkdir()
-            (wt_dir / ".t3-env.cache").write_text(f"WT_VARIANT=acme\nTICKET_DIR={tmp_path}\n", encoding="utf-8")
+            # The env cache lives out-of-repo under the ticket dir's .t3-cache/
+            # sibling, per repo, never inside the repo working tree
+            # (souliane/teatree#3097).
+            cache_dir = wt_dir.parent / ".t3-cache" / wt_dir.name
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / ".t3-env.cache").write_text(f"WT_VARIANT=acme\nTICKET_DIR={tmp_path}\n", encoding="utf-8")
             private_dir = tmp_path / "private"
             private_dir.mkdir()
 
@@ -545,6 +578,84 @@ class TestE2eExternal(TestCase):
             assert env["BASE_URL"] == "http://localhost:5555"
             assert env["CUSTOMER"] == "acme"
             assert env["CI"] == "1"
+
+    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_playwright_args_select_config_per_spec(self) -> None:
+        """An overlay maps a spec lane to its Playwright config (``-c <config>``).
+
+        A multi-config Playwright suite needs the right ``-c`` per lane; the
+        overlay knows the lane->config mapping. The external runner must thread
+        ``e2e.playwright_args(spec)`` into the ``npx playwright test``
+        command — without it, an api-flow spec runs under the wrong default
+        config (the UI-login one) and fails.
+        """
+        spec = "playwright/api-flow/agent-portal/tests/api-tests/acme.spec.ts"
+        with self._external_run(spec) as mock_run:
+            cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["npx", "playwright", "test"]
+        assert "-c" in cmd
+        assert cmd[cmd.index("-c") + 1] == "api.config.ts"
+        assert spec in cmd
+
+    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_playwright_args_empty_for_other_lanes(self) -> None:
+        """A spec the overlay does not map adds no Playwright args (default-empty)."""
+        spec = "playwright/contrib/acme/loan-request/child-allowance.spec.ts"
+        with self._external_run(spec) as mock_run:
+            cmd = mock_run.call_args[0][0]
+        assert "-c" not in cmd
+        assert spec in cmd
+
+    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_playwright_args_are_shlex_split_keeping_quoted_values_intact(self) -> None:
+        """``--playwright-args`` is shlex-split, so a quoted value stays ONE arg (F3.6).
+
+        ``str.split`` fractured ``--grep "smoke test"`` into ``--grep``, ``"smoke``,
+        ``test"`` — three broken tokens Playwright can't parse. ``shlex.split``
+        keeps the quoted value as a single argument.
+        """
+        spec = "playwright/contrib/acme/loan-request/child-allowance.spec.ts"
+        with self._external_run(spec, playwright_args='--grep "smoke test"') as mock_run:
+            cmd = mock_run.call_args[0][0]
+        assert "--grep" in cmd
+        assert "smoke test" in cmd
+        # The naive split would have produced these fractured tokens.
+        assert '"smoke' not in cmd
+        assert 'test"' not in cmd
+
+    @contextmanager
+    def _external_run(self, spec: str, *, playwright_args: str = "") -> Iterator[MagicMock]:
+        """Run ``e2e external <spec> --target local`` against a provisioned worktree.
+
+        Yields the ``Popen`` mock so the caller can assert the built command.
+        ``playwright_args`` threads the ``--playwright-args`` flag through.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "worktree"
+            wt_dir.mkdir()
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/pwargs")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+            ):
+                call_command("e2e", "external", test_path=spec, target="local", playwright_args=playwright_args)
+                yield mock_run
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -589,7 +700,7 @@ class TestE2eExternal(TestCase):
                 result = cast("str", call_command("e2e", "external", target="local"))
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
-            assert env["COMPOSE_PROJECT_NAME"] == f"backend-wt{ticket.ticket_number}"
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-wt{ticket.pk}"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -609,7 +720,7 @@ class TestE2eExternal(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             captured_env_caches: list[dict[str, str]] = []
 
-            def get_e2e_env_extras(self: object, env_cache: dict[str, str]) -> dict[str, str]:
+            def _e2e_env_extras(self: object, env_cache: dict[str, str], **_kwargs: object) -> dict[str, str]:
                 _ = self
                 captured_env_caches.append(dict(env_cache))
                 return {
@@ -620,9 +731,13 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             backend_wt_dir = tmp_path / "backend-worktree"
             backend_wt_dir.mkdir()
-            # The env cache lives on the linked backend worktree — overlay
-            # extras (CUSTOMER, app credentials) are sourced from there.
-            (backend_wt_dir / ".t3-env.cache").write_text(
+            # The env cache lives in the linked backend ticket's out-of-repo
+            # .t3-cache/ sibling, per repo, never inside the repo working tree
+            # (souliane/teatree#3097) — overlay extras (CUSTOMER, app
+            # credentials) are sourced from there.
+            cache_dir = backend_wt_dir.parent / ".t3-cache" / backend_wt_dir.name
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / ".t3-env.cache").write_text(
                 f"WT_VARIANT=tenant-child\nTICKET_DIR={backend_wt_dir.parent}\n",
                 encoding="utf-8",
             )
@@ -668,7 +783,7 @@ class TestE2eExternal(TestCase):
                     clear=False,
                 ),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=62674),
-                patch.object(import_string(FULL_OVERLAY), "get_e2e_env_extras", get_e2e_env_extras),
+                patch.object(FullE2E, "env_extras", _e2e_env_extras),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 os.environ.pop("BASE_URL", None)
@@ -696,8 +811,8 @@ class TestE2eExternal(TestCase):
             assert env["BASE_URL"] == "http://localhost:62674"
             # COMPOSE_PROJECT_NAME points at the backend worktree's project,
             # not the e2e cache worktree's.
-            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.ticket_number}"
-            # Defect 2: the env-cache that feeds get_e2e_env_extras must be
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.pk}"
+            # Defect 2: the env-cache that feeds e2e.env_extras must be
             # the linked backend worktree's, so overlay-derived extras (e.g.
             # CUSTOMER=<variant>) reach the spec.
             assert env["CUSTOMER"] == "tenant-child"
@@ -718,7 +833,12 @@ class TestE2eExternal(TestCase):
             tmp_path = Path(tmp)
             backend_wt_dir = tmp_path / "backend-worktree"
             backend_wt_dir.mkdir()
-            (backend_wt_dir / ".t3-env.cache").write_text(
+            # The env cache lives out-of-repo under the ticket dir's .t3-cache/
+            # sibling, per repo, never inside the repo working tree
+            # (souliane/teatree#3097).
+            cache_dir = backend_wt_dir.parent / ".t3-cache" / backend_wt_dir.name
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / ".t3-env.cache").write_text(
                 f"WT_VARIANT=acme\nTICKET_DIR={backend_wt_dir.parent}\n",
                 encoding="utf-8",
             )
@@ -763,7 +883,7 @@ class TestE2eExternal(TestCase):
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
             assert env["BASE_URL"] == "http://localhost:4202"
-            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.ticket_number}"
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.pk}"
             assert env["CUSTOMER"] == "acme"
 
     @_patch_overlays(FULL_OVERLAY)
@@ -963,7 +1083,7 @@ class TestE2eExternal(TestCase):
 
 
 class TestE2eExternalPreflight(TestCase):
-    """``e2e external`` invokes ``overlay.get_e2e_preflight()`` before launching Playwright."""
+    """``e2e external`` invokes ``overlay.e2e.preflight()`` before launching Playwright."""
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -989,7 +1109,7 @@ class TestE2eExternalPreflight(TestCase):
                     },
                     clear=False,
                 ),
-                patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_record),
+                patch.object(FullE2E, "preflight", new=_record),
                 patch.object(e2e_mod, "_discover_frontend_port"),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             ):
@@ -1023,7 +1143,7 @@ class TestE2eExternalPreflight(TestCase):
                     },
                     clear=False,
                 ),
-                patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_failing),
+                patch.object(FullE2E, "preflight", new=_failing),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
                 patch.object(e2e_mod, "_discover_frontend_port"),
                 pytest.raises(SystemExit) as exc_info,
@@ -1642,7 +1762,7 @@ class TestE2EResolveTarget(TestCase):
             patch.object(e2e_runners_mod, "get_overlay") as get_overlay,
             patch.object(e2e_runners_mod, "_find_env_cache", return_value=None),
         ):
-            get_overlay.return_value.get_e2e_env_extras.return_value = {}
+            get_overlay.return_value.e2e.env_extras.return_value = {}
             env = e2e_mod._build_e2e_env("https://tenant-qa.example.com", headed=False, target="qa")
         assert env["T3_E2E_TARGET"] == "qa"
         assert env["BASE_URL"] == "https://tenant-qa.example.com"

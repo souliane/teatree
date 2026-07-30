@@ -25,6 +25,7 @@ both already legal ``teatree.core`` edges, so no new tach edge.
 """
 
 from teatree.config import get_effective_settings
+from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
 def notify_user_on_behalf_post(
@@ -43,7 +44,11 @@ def notify_user_on_behalf_post(
     ``destination`` is the human-readable place the post landed (a review
     channel, an ``org/repo!7`` ref). ``artifact_url`` is the clickable
     permalink/URL of the post; ``notify_user``'s ``maybe_linkify``
-    converts the ``[label](url)`` form to Slack ``<url|label>``.
+    converts the ``[label](url)`` form to Slack ``<url|label>``. A
+    non-URL ``artifact_url`` (a raw Slack channel id, or an internal
+    note/discussion/line id) carries NO clickable link — the receipt
+    names the destination plainly rather than emitting a dead
+    ``[id](id)`` link that both breaks and leaks the internal id.
     ``summary`` is the one-line description of what was posted.
 
     Suppressed (early return, no DM) only when BOTH the user-facing
@@ -64,12 +69,17 @@ def notify_user_on_behalf_post(
     if not (settings.notify_on_post_on_behalf or settings.notify_on_behalf):
         return
 
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    short = artifact_url.rsplit("/", 1)[-1] or artifact_url
-    text = f"Posted under your identity to {destination}.\n[{short}]({artifact_url})\n{summary}"
+    if artifact_url.startswith("http"):
+        short = artifact_url.rsplit("/", 1)[-1] or artifact_url
+        link_line = f"[{short}]({artifact_url})\n"
+    else:
+        link_line = ""
+    text = f"Posted under your identity to {destination}.\n{link_line}{summary}"
     notify_user(
         text,
         kind=NotifyKind.INFO,
         idempotency_key=f"on_behalf_post:{target}:{action}",
+        audience=NotifyAudience.COLLEAGUE_ACTION,
     )

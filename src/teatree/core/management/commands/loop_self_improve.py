@@ -1,6 +1,6 @@
 """``manage.py loop_self_improve`` — one schedule cycle of the self-improve monitor.
 
-Mirrors the shape of ``loop_tick``: acquires a dedicated ``LoopLease``
+Mirrors the shape of ``loops_tick``: acquires a dedicated ``LoopLease``
 (``loop-self-improve``) so a long self-improve cycle never blocks a fast
 regular tick, refuses to run when this session is not the loop owner,
 runs the tier dispatcher, and prints a one-line summary (or the JSON
@@ -11,10 +11,14 @@ import datetime as dt
 import json
 import os
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from django_typer.management import TyperCommand
+
+from teatree.core.machine_output import emit
+from teatree.core.session_identity import session_id_from_env
+from teatree.utils.hook_registry import loop_registry_dir
 
 if TYPE_CHECKING:
     from teatree.loop.self_improve.schedule import TierResult
@@ -50,14 +54,14 @@ def _non_owner_session_id() -> str | None:
 
     Mirrors ``hook_router._session_owns_loop``: when teatree is not
     running inside a session at all (e.g. a manual CLI invocation), the
-    env var is missing and the loop-owner gate skips its check rather
+    env var is missing and the t3-master gate skips its check rather
     than refusing every CLI call.
     """
-    return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("T3_LOOP_SESSION_ID")
+    return session_id_from_env()
 
 
 def _session_owns_loop(session_id: str | None) -> bool:
-    """Loop-owner gate; ``None`` session ⇒ assume owner (CLI/manual use).
+    """t3-master gate; ``None`` session ⇒ assume owner (CLI/manual use).
 
     Inside a Claude Code session the env var is set; outside (tests,
     direct CLI) it isn't and the gate is bypassed — same shape as the
@@ -68,12 +72,7 @@ def _session_owns_loop(session_id: str | None) -> bool:
     """
     if not session_id:
         return True
-    import json  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
-
-    base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"
-    registry_path = base / "loop-registry.json"
+    registry_path = loop_registry_dir() / "loop-registry.json"
     if not registry_path.is_file():
         return True
     try:
@@ -94,63 +93,67 @@ class Command(TyperCommand):
         *,
         tier: Annotated[
             str,
-            typer.Option("--tier", help="Cost tier (cheap/medium/expensive/all). Default: cheap."),
+            typer.Option(
+                "--tier",
+                help="Cost tier: cheap|all (default: cheap). medium/expensive have no detectors and are refused.",
+            ),
         ] = "cheap",
         json_output: Annotated[
             bool,
             typer.Option("--json", help="Emit the cycle report as JSON."),
         ] = False,
     ) -> None:
-        from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.loop.self_improve.schedule import (  # noqa: PLC0415 — deferred: keeps command import light
+            UnimplementedTierError,
+            require_implemented_tier,
+            run_tier,
+        )
 
+        out = cast("IO[str]", self.stdout)
+        err = cast("IO[str]", self.stderr)
+        try:
+            require_implemented_tier(tier)
+        except UnimplementedTierError as exc:
+            err.write(f"REFUSE  {exc}\n")
+            raise SystemExit(2) from exc
         session_id = _non_owner_session_id()
         if not _session_owns_loop(session_id):
             now = dt.datetime.now(tz=dt.UTC)
-            if json_output:
-                self.stdout.write(
-                    json.dumps(
-                        {
-                            "tier": tier,
-                            "skipped": True,
-                            "skipped_reason": "non-owner session",
-                            "started_at": now.isoformat(),
-                        },
-                        indent=2,
-                    )
-                )
-            else:
-                self.stdout.write("SKIP  this session is not the loop owner — skipping self-improve cycle.")
+            emit(
+                {"tier": tier, "skipped": True, "skipped_reason": "non-owner session", "started_at": now.isoformat()},
+                json_output=json_output,
+                out=out,
+                err=err,
+                human="SKIP  this session is not the loop owner — skipping self-improve cycle.",
+            )
             return
 
         owner = f"pid-{os.getpid()}"
         if not LoopLease.objects.acquire("loop-self-improve", owner=owner):
             now = dt.datetime.now(tz=dt.UTC)
-            if json_output:
-                self.stdout.write(
-                    json.dumps(
-                        {
-                            "tier": tier,
-                            "skipped": True,
-                            "skipped_reason": "another self-improve cycle is already running",
-                            "started_at": now.isoformat(),
-                        },
-                        indent=2,
-                    )
-                )
-            else:
-                self.stdout.write("SKIP  loop-self-improve lease held — another cycle is running.")
+            emit(
+                {
+                    "tier": tier,
+                    "skipped": True,
+                    "skipped_reason": "another self-improve cycle is already running",
+                    "started_at": now.isoformat(),
+                },
+                json_output=json_output,
+                out=out,
+                err=err,
+                human="SKIP  loop-self-improve lease held — another cycle is running.",
+            )
             return
         try:
-            result = run_tier(tier)
+            result = run_tier(tier, auto_fix_callable=self_improve_rerender)
         finally:
             LoopLease.objects.release("loop-self-improve", owner=owner)
 
         report = _result_to_dict(result)
-        if json_output:
-            self.stdout.write(json.dumps(report, indent=2, default=str))
-            return
         if result.skipped:
-            self.stdout.write(f"SKIP  budget gate: {result.budget.reason}")
-            return
-        self.stdout.write(f"OK    tier={result.tier} reports={len(result.reports)} actions={len(result.actions)}")
+            human = f"SKIP  budget gate: {result.budget.reason}"
+        else:
+            human = f"OK    tier={result.tier} reports={len(result.reports)} actions={len(result.actions)}"
+        emit(report, json_output=json_output, out=out, err=err, human=human)

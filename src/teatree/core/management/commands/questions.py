@@ -20,22 +20,46 @@ own pace; the agent reads pending questions back via the same model
 on its next turn.
 """
 
-from typing import Annotated
+import io
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django.db import transaction
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
-from teatree.core.notify import drain_deferred_questions
+from teatree.core.models.task_handoff import schedule_headless_resume
+from teatree.core.notify_question_drains import drain_deferred_questions
+from teatree.core.table_output import print_table
 
 
-def _format_row(row: DeferredQuestion) -> str:
-    age = row.created_at.isoformat() if row.created_at is not None else "?"
-    return f"  #{row.pk} [{row.status}] {age}\n     {row.question}"
+class DeferredQuestionRow(TypedDict):
+    """One row of ``t3 <overlay> questions list --json``."""
+
+    id: int
+    status: str
+    question: str
+    created_at: str | None
 
 
-class Command(TyperCommand):
+def _render_questions_table(rows: list[DeferredQuestion]) -> str:
+    buffer = io.StringIO()
+    table_rows = [
+        [row.pk, row.status, row.created_at.isoformat() if row.created_at is not None else "?", row.question]
+        for row in rows
+    ]
+    print_table(
+        ["ID", "Status", "Created", "Question"],
+        table_rows,
+        title=f"{len(rows)} deferred question(s)",
+        stream=buffer,
+        justify=["right", "left", "left", "left"],
+    )
+    return buffer.getvalue()
+
+
+class Command(MachineOutputCommand):
     @initialize()
     def init(self) -> None:
         """``t3 teatree questions`` group root."""
@@ -72,14 +96,31 @@ class Command(TyperCommand):
             bool,
             typer.Option("--all/--pending", help="Include answered/dismissed rows."),
         ] = False,
-    ) -> str:
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the deferred questions as JSON instead of the human view."),
+        ] = False,
+    ) -> list[DeferredQuestionRow]:
         """List pending deferred questions, oldest first."""
         rows = list(DeferredQuestion.objects.order_by("-created_at")) if all_rows else list(DeferredQuestion.pending())
-        if not rows:
-            return "no deferred questions."
-        lines = [f"{len(rows)} deferred question(s):"]
-        lines.extend(_format_row(row) for row in rows)
-        return "\n".join(lines)
+        payload: list[DeferredQuestionRow] = [
+            {
+                "id": row.pk,
+                "status": row.status,
+                "question": row.question,
+                "created_at": row.created_at.isoformat() if row.created_at is not None else None,
+            }
+            for row in rows
+        ]
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_questions_table(rows) if rows else "no deferred questions.",
+        )
+        return payload
 
     @command()
     def answer(
@@ -91,7 +132,7 @@ class Command(TyperCommand):
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
         ] = "",
     ) -> str:
-        """Resolve a pending question with a user answer."""
+        """Resolve a pending question with a user answer (resumes a parked headless task)."""
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
@@ -109,6 +150,8 @@ class Command(TyperCommand):
                     answer_text=text,
                     resolver_id=resolver_id,
                 )
+                if row.parked_task is not None:
+                    schedule_headless_resume(row.parked_task, answer=text)
         except DeferredQuestionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(2) from exc
@@ -163,7 +206,7 @@ class Command(TyperCommand):
         """Re-post the pending backlog to the user's Slack DM (away→present drain).
 
         Manual / idempotent entry point to the same
-        :func:`teatree.core.notify.drain_deferred_questions` egress the
+        :func:`teatree.core.notify_question_drains.drain_deferred_questions` egress the
         ``write_override(MODE_PRESENT)`` away→present transition auto-fires,
         so a re-run never double-posts (the ``BotPing`` ledger dedupes).
         """

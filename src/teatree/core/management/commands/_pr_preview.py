@@ -2,7 +2,7 @@
 
 Pure, command-class-free helpers that derive the PR title/description from the
 ticket's last commit and validate them against the overlay's metadata rules.
-Kept as a sibling module (same pattern as ``_ship_fsm.py``) so ``pr.py`` stays
+Kept as a sibling module (same pattern as ``_ship/fsm.py``) so ``pr.py`` stays
 within the module-health LOC budget and the "ship preview" concern is named
 by its own file (self-documenting hierarchy).
 
@@ -15,8 +15,8 @@ is exactly what blocks the release-notes pipeline.
 from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.ship import (
     PrTitleInputs,
     overlay_pr_labels,

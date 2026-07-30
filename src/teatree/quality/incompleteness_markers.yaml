@@ -1,0 +1,124 @@
+# Incompleteness-marker registry -- source of truth for the tree-wide ratchet in
+# tests/quality/test_incompleteness_marker_ratchet.py and its closed-issue
+# sub-gate. See incompleteness_markers.py for why the phrases live in YAML.
+#
+# Every family is precision-tuned: this list feeds a per-file peg ledger someone
+# has to read, so each pairs its trigger with an implementation-scoped qualifier.
+# Bare words that read as an incompleteness claim in isolation -- "stub",
+# "placeholder", "reserved", "a future X", "not yet", "will be" -- are absent on
+# purpose. Measured whole-tree they are dominated by test-double vocabulary,
+# template text, and prose about RUNTIME state ("the review has not landed"),
+# which is a different claim from prose about IMPLEMENTATION state.
+#
+# The same list drives the closed-issue sub-gate, which fires on a marker whose
+# adjacent `#N` resolves to a closed issue. A broader word list was measured for
+# that gate and rejected: in this tree 42 of 44 referenced issues are closed and
+# `#N` beside deferral vocabulary is overwhelmingly a provenance citation
+# ("(#1084 follow-up)" = the issue this shipped code answers), so breadth there
+# buys noise rather than recall.
+
+markers:
+  - id: author-marker
+    name: Author-marked deferral marker
+    concern: >
+      A conventional TODO / FIXME / XXX / HACK marker: the author recording work
+      the change did not do. Matched in MARKER form only (followed by a colon, an
+      open paren, or an issue ref) because this repo also uses TODO as a domain
+      noun (the harness TODO list) and as an id namespace (TODO-7).
+    pattern: '\b(?:TODO|FIXME)\b(?=\s*[:(]|\s+#\d)|\b(?:XXX|HACK)\b\s*[:(]'
+    # The only family where case is load-bearing: a marker is an uppercase
+    # convention, and "a hack:" / "todo:" in ordinary prose is not one.
+    case_sensitive: true
+    triggers: [TODO, FIXME, XXX, HACK]
+    remedy: Do the work, or delete the marker. A marker is not a tracked promise.
+
+  - id: not-wired
+    name: Declared as unwired
+    concern: >
+      A component that exists but is stated not to be connected to the thing that
+      would make it take effect -- the exact shape of the failure this gate was
+      built for: a config tier shipped and documented as not reaching its
+      resolver.
+    pattern: '\bnot (?:yet |currently )?(?:wired|hooked up|plumbed|enforced|honou?red)\b'
+    triggers: [wired, hooked up, plumbed, enforced, honoured, honored]
+    remedy: Wire it, or delete the component and the prose describing it.
+
+  - id: retained-but-empty
+    name: Carve-out retained but empty
+    concern: >
+      A structure kept in the tree with nothing in it, awaiting a phase that has
+      not shipped. The second half of the same historical failure.
+    pattern: '\b(?:retained|kept|left|preserved) but (?:currently |deliberately )?empty\b'
+    triggers: [but empty, but currently empty, but deliberately empty]
+    remedy: Delete the empty carve-out, or fill it in this change.
+
+  - id: reserved-for-later
+    name: Reserved for an unshipped phase
+    concern: >
+      A field, parameter, or enum member declared as held for work that has not
+      happened. The future/later/follow-up qualifier is required: a "reserved
+      word" or a "reserved lock" is unrelated vocabulary.
+    pattern: '\breserved (?:for|but)\b[^.\n]{0,50}?\b(?:future|later|follow[- ]?up|not yet)\b'
+    triggers: [reserved]
+    remedy: Ship the thing it is held for, or drop the reservation.
+
+  - id: deferred-to-followup
+    name: Deferred to a follow-up
+    concern: >
+      Work the change consciously did not do, pointed at an unspecified later
+      unit. A "later tick"/"later sweep"/"later run" is runtime retry semantics
+      rather than a deferral, so those nouns are excluded. The copular
+      alternative ("X is the follow-up") is what separates an OWED follow-up
+      from the far commoner provenance citation "(#1084 follow-up)", which names
+      the issue this shipped code answers.
+    pattern: '\bdeferr(?:ed|al) to\b[^.\n]{0,40}?\b(?:follow[- ]?up|later|future|phase|PR)\b|\bdeferred follow[- ]?up\b|\bleft (?:as|for|to) (?:a |the )?(?:follow[- ]?up|later|future)\b(?![^.\n]{0,20}\b(?:tick|sweep|run|pass|poll|cycle|revision)\b)|\b(?:is|are|remains?|stays?) (?:the|a) [^.\n]{0,60}?\bfollow[- ]up\b(?!\s+(?:tick|sweep|run|pass|poll|cycle))'
+    triggers: [deferr, follow-up, follow up, left as, left for, left to]
+    remedy: Do it now, or state that the scope is closed rather than owed.
+
+  - id: later-phase
+    name: Owed to a later phase
+    concern: >
+      A named subsequent phase or PR the current change leans on for its stated
+      behaviour to be true. Runtime nouns (a later tick/sweep) are excluded.
+    pattern: '\b(?:a|the|another) (?:later|future|subsequent|second) (?:phase|PR|change)\b|\bin a later\b(?![^.\n]{0,20}\b(?:tick|sweep|run|poll|cycle|pass)\b)'
+    triggers: [later, future, subsequent, second]
+    remedy: Land the phase, or stop claiming the behaviour it would provide.
+
+  - id: future-work
+    name: Named as future work
+    concern: A requirement the prose acknowledges the tree does not meet.
+    pattern: '\b(?:future work|remains future|still to (?:come|do|build))\b'
+    triggers: [future work, remains future, still to]
+    remedy: Meet the requirement, or delete the claim that it is owed.
+
+  - id: pending-landing
+    name: Behaviour conditioned on something landing
+    concern: >
+      Prose whose stated behaviour holds only until, or only once, some other
+      change lands -- a promise with the current code on the wrong side of it.
+    pattern: '\b(?:until|once)\b(?:(?!\b(?:review|fix|run|pass|push|answer|PRs?|tick|sweep|cycle|poll)\b)[^.\n]){0,45}?\blands?\b'
+    triggers: [land]
+    remedy: Land it, or describe the behaviour the code has unconditionally.
+
+  - id: aspirational
+    name: Self-declared aspiration
+    concern: A statement that the described behaviour is a goal rather than the code.
+    pattern: '(?<!not )\baspirational\b'
+    triggers: [aspirational]
+    remedy: Make it true, or describe what the code actually does.
+
+  - id: for-now
+    name: Provisional by the author's own account
+    concern: >
+      Prose framing the current behaviour as temporary. Read literally it is a
+      promise to change it, with nothing tracking the change.
+    pattern: '\bfor now\b'
+    triggers: [for now]
+    remedy: Make the choice permanent and say why, or finish the intended version.
+
+  - id: not-there-yet
+    name: Declared absent
+    concern: Prose stating the capability is unbuilt or arriving later.
+    pattern: '\bcoming soon\b|\bnot (?:there|ready|available) yet\b|\bwill be (?:wired|implemented|added|hooked|plumbed|enforced)\b'
+    triggers: [coming soon, yet, will be]
+    remedy: Build it in this change, or delete the claim that it is coming.

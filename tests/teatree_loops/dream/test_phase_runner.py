@@ -1,0 +1,163 @@
+"""File-side memory-phase runner for the dream cron (#2723).
+
+The runner drives phases 4 / 4b / 5 / 6 and the §4 acceptance gates over the
+discovered memory dirs, fault-isolated. These tests inject a TMP memory dir via
+``discover_memory_dirs`` (the real ``~/.claude`` is never touched) and a fake
+backlog-host resolver, exercising the fault-isolation and toggle paths directly.
+"""
+
+import tempfile
+from contextlib import AbstractContextManager
+from pathlib import Path
+from unittest.mock import patch
+
+from django.test import TestCase
+
+from teatree.loops.dream.phase_runner import MemoryPhaseRunner
+
+
+def _no_host() -> tuple[None, str]:
+    return None, "souliane/teatree"
+
+
+class MemoryPhaseRunnerTestCase(TestCase):
+    def setUp(self) -> None:
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        self.runner = MemoryPhaseRunner(backlog_host_resolver=_no_host)
+
+    def _patch_dirs(self) -> AbstractContextManager[object]:
+        return patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir])
+
+    def test_no_memory_dirs_is_a_clean_noop(self) -> None:
+        with patch("teatree.memory_audit.discover_memory_dirs", return_value=[]):
+            assert self.runner.run_memory_phases(dry_run=False) == ""
+            summary, passed, gate_summary = self.runner.run_memory_phases_and_gates(clusters_recorded=0, dry_run=False)
+        assert (summary, passed, gate_summary) == ("", True, "")
+
+    def test_quiet_night_path_runs_all_phases(self) -> None:
+        with self._patch_dirs(), patch.dict("os.environ", {}, clear=False):
+            for env in ("T3_DREAM_CROSS_LINK", "T3_DREAM_MERGE", "T3_DREAM_REINDEX", "T3_DREAM_DECAY"):
+                __import__("os").environ.pop(env, None)
+            out = self.runner.run_memory_phases(dry_run=False)
+        assert "cross-linked" in out
+        assert "re-indexed" in out
+
+    def test_quiet_night_grades_the_gates_on_a_file_mutation(self) -> None:
+        # F6.2: the quiet-night path was ungated — its decay/merge could lose a lesson
+        # with no §4 gate to catch it. It now grades the acceptance gates on ANY
+        # non-dry-run file mutation (cross-link/re-index here do real work), persisting
+        # the DreamQaProbe corpus and riding the gate clause on the summary.
+        from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+
+        with self._patch_dirs():
+            out = self.runner.run_memory_phases(dry_run=False)
+        assert "gate" in out.lower()  # the gate clause is appended
+        assert DreamQaProbe.objects.count() > 0  # gates ran and populated the corpus
+
+    def test_quiet_night_dry_run_neither_grades_nor_persists(self) -> None:
+        # A preview mutates nothing, so there is nothing to grade and no probe is persisted.
+        from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+
+        with self._patch_dirs():
+            out = self.runner.run_memory_phases(dry_run=True)
+        assert "gate" not in out.lower()
+        assert DreamQaProbe.objects.count() == 0
+
+    def test_decay_failure_is_warned_not_fatal(self) -> None:
+        with (
+            self._patch_dirs(),
+            patch("teatree.loops.dream.decay.decay_memories", side_effect=RuntimeError("decay boom")),
+        ):
+            summary, _passed, _gate_summary = self.runner.run_memory_phases_and_gates(
+                clusters_recorded=1, dry_run=False
+            )
+        # The phase failure is warned per-dir in the summary, not raised — the run continues.
+        assert "WARN decay raised for" in summary
+        assert "RuntimeError: decay boom" in summary
+
+    def test_gate_evaluation_failure_is_warned_and_fails_closed(self) -> None:
+        with (
+            self._patch_dirs(),
+            patch(
+                "teatree.loops.dream.acceptance.run_acceptance_pass",
+                side_effect=RuntimeError("gate boom"),
+            ),
+        ):
+            _summary, passed, gate_summary = self.runner.run_memory_phases_and_gates(clusters_recorded=1, dry_run=False)
+        assert "WARN gates raised (verdict FAIL): RuntimeError" in gate_summary
+        # A gate-machinery failure FAILS CLOSED — a raised gate is a failed gate, never
+        # laundered into an accepted pass (the gate exists to catch lossy consolidation).
+        assert passed is False
+
+    def test_prior_archived_pointer_is_homed_not_a_false_loss(self) -> None:
+        # Root-cause regression (#2545 sibling of the reworded-pointer #2619 fix): a
+        # memory was archived in a PRIOR pass (it lives in archive/, lesson preserved
+        # + recall-able), but the on-disk MEMORY.md still carried a stale pointer to it.
+        # This pass re-indexes (drops the stale pointer) — real maintenance, 0 NEW
+        # clusters. The consolidation gate (c) must NOT flag that pruned pointer as an
+        # unhomed loss: the file is durably homed in the archive/ cold store. Before the
+        # fix run_acceptance_pass homed only THIS pass's archives, so gate (c) FAILED and
+        # the success marker was starved on every quiet maintenance night.
+        import os  # noqa: PLC0415
+
+        archive = self.memdir / "archive"
+        archive.mkdir()
+        (archive / "feedback_gamma.md").write_text(
+            "ARCHIVED 2026-06-29\n---\ndescription: a gamma lesson archived a prior pass\n---\nbody gamma\n",
+            encoding="utf-8",
+        )
+        (self.memdir / "MEMORY.md").write_text(
+            "# Auto Memory — Index\n\n"
+            "> Generated by the dream re-index phase. One line per memory; detail lives in the topic file. "
+            "Do not move content into this index.\n\n"
+            "- mem_a.md — a topic\n- mem_b.md — a topic session\n"
+            "- feedback_gamma.md — a gamma lesson archived a prior pass\n",
+            encoding="utf-8",
+        )
+        with self._patch_dirs(), patch.dict("os.environ", {}, clear=False):
+            os.environ["T3_DREAM_CROSS_LINK"] = "0"
+            os.environ["T3_DREAM_MERGE"] = "0"
+            os.environ["T3_DREAM_DECAY"] = "0"
+            os.environ.pop("T3_DREAM_REINDEX", None)  # re-index ON: drops the stale pointer
+            _summary, passed, gate_summary = self.runner.run_memory_phases_and_gates(clusters_recorded=0, dry_run=False)
+        assert "gates FAILED" not in gate_summary
+        assert passed is True
+
+    def test_genuinely_lost_pointer_with_no_cold_home_still_fails(self) -> None:
+        # Teeth for the fix above: a pointer whose target is NEITHER on disk NOR in the
+        # archive/ cold store (a genuine deletion, lesson nowhere) must STILL fail gate
+        # (c) — the fix homes only files that are actually preserved, never a real loss.
+        import os  # noqa: PLC0415
+
+        (self.memdir / "MEMORY.md").write_text(
+            "# Auto Memory — Index\n\n"
+            "> Generated by the dream re-index phase. One line per memory; detail lives in the topic file. "
+            "Do not move content into this index.\n\n"
+            "- mem_a.md — a topic\n- mem_b.md — a topic session\n"
+            "- feedback_lost.md — a lesson with no durable home anywhere\n",
+            encoding="utf-8",
+        )  # feedback_lost.md is neither on disk nor in archive/ — a real loss
+        with self._patch_dirs(), patch.dict("os.environ", {}, clear=False):
+            os.environ["T3_DREAM_CROSS_LINK"] = "0"
+            os.environ["T3_DREAM_MERGE"] = "0"
+            os.environ["T3_DREAM_DECAY"] = "0"
+            os.environ.pop("T3_DREAM_REINDEX", None)
+            _summary, passed, gate_summary = self.runner.run_memory_phases_and_gates(clusters_recorded=0, dry_run=False)
+        assert "gates FAILED (consolidation)" in gate_summary
+        assert passed is False
+
+    def test_decay_toggle_off_archives_nothing(self) -> None:
+        import os  # noqa: PLC0415
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        old = (datetime.now(tz=UTC) - timedelta(days=90)).timestamp()
+        stale = self.memdir / "mem_old.md"
+        stale.write_text("name: mem_old\nan old unreferenced lesson\n", encoding="utf-8")
+        os.utime(stale, (old, old))
+        with self._patch_dirs(), patch.dict("os.environ", {"T3_DREAM_DECAY": "0"}):
+            out = self.runner.run_memory_phases(dry_run=False)
+        assert "archived" not in out
+        assert stale.exists()

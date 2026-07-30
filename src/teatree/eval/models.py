@@ -2,8 +2,9 @@
 
 import dataclasses
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
 
 #: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
@@ -20,7 +21,7 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: sub-agent-spawning scenarios (delegate/spawn trajectories need many turns), so
 #: a truncated run measured the cap, not behaviour. Raised generously; a scenario
 #: still declares its own lower value, and the lane reads an optional global
-#: override (:func:`teatree.eval.sdk_runner.resolve_max_turns_override`,
+#: override (:func:`teatree.eval.api_runner.resolve_max_turns_override`,
 #: ``T3_EVAL_MAX_TURNS``) that otherwise defers to this per-scenario budget.
 DEFAULT_MAX_TURNS = 30
 
@@ -62,6 +63,17 @@ CLEAN_ROOM_LANE = "clean_room"
 UNDER_LOAD_LANE = "under_load"
 PERMITTED_LANES: frozenset[str] = frozenset({CLEAN_ROOM_LANE, UNDER_LOAD_LANE})
 
+#: The question/answer SURFACE a scenario grades — an axis orthogonal to ``lane``
+#: (which selects the harness mode). ``headless`` is the default and the BLOCKING
+#: surface: the contract teatree must guarantee is that a question REACHES the user
+#: and an answer comes back, over Slack with a ``DeferredQuestion`` as the durable
+#: record. ``interactive`` marks a scenario that grades the Claude-interactive
+#: ``AskUserQuestion`` TOOL-CALL rendering — still run and still reported, but
+#: ADVISORY, so a bundled-CLI rendering change reds nothing that gates.
+HEADLESS_SURFACE = "headless"
+INTERACTIVE_SURFACE = "interactive"
+PERMITTED_SURFACES: frozenset[str] = frozenset({HEADLESS_SURFACE, INTERACTIVE_SURFACE})
+
 
 @dataclasses.dataclass(frozen=True)
 class Matcher:
@@ -70,13 +82,30 @@ class Matcher:
     ``kind`` is ``"positive"`` (a matching tool call must exist) or
     ``"negative"`` (no matching tool call may exist). ``operator`` is
     ``"contains"`` (substring) or ``"~"`` (regex).
+
+    A negative matcher may carry an optional ORDER guard (the ``guard_*`` fields,
+    parsed from the YAML ``before_first`` sibling key): when set, the forbidden
+    call reds the run ONLY when it occurs at a turn STRICTLY BEFORE the first
+    call matching the guard (or when no guard call exists at all). This expresses
+    "X must not happen BEFORE Y" — e.g. "no MR-diff read before the overlay skill
+    loads" — where a plain order-agnostic negative wrongly reds the correct
+    load-skill-THEN-read trajectory. Empty guard fields (the default) leave the
+    negative order-agnostic, so every existing matcher is byte-identical.
     """
 
-    kind: str
+    kind: Literal["positive", "negative"]
     tool: str
     arg_path: str
     operator: str
     value: str
+    guard_tool: str = ""
+    guard_arg_path: str = ""
+    guard_operator: str = ""
+    guard_value: str = ""
+
+    @property
+    def has_order_guard(self) -> bool:
+        return bool(self.guard_tool)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -113,9 +142,25 @@ class FinalStateMatcher:
 # assertion about the run's final assistant message (the end state).
 ExpectItem = Matcher | AnyOf | FinalStateMatcher
 
+#: The SINGLE SOURCE OF TRUTH for the matcher grammar, read by every place that has
+#: to agree on it: the loader compiles ``_OP_PATTERN`` from ``MATCHER_OPERATORS`` and
+#: keys its ``expect``-entry dispatch on ``MATCHER_KINDS``; the grader
+#: (``report._dispatch``) branches on the same operators; and the dream eval
+#: synthesizer prompt (``llm_eval_proposer``) enumerates BOTH so it can never tell
+#: the model to emit a shape the loader rejects. Hand-duplicating the grammar into
+#: the prompt is exactly what dropped every derived candidate in #2646 — these
+#: constants make a future operator/kind change touch one place and fan out, instead
+#: of silently re-opening the drift.
+#:
+#: ``MATCHER_OPERATORS`` are the operator tokens an ``op "value"`` expression may use
+#: (``contains`` substring / ``~`` regex). ``MATCHER_KINDS`` are the four
+#: ``expect``-entry kinds, ordered as the synthesizer prompt teaches them.
+MATCHER_OPERATORS: tuple[str, ...] = ("contains", "~")
+MATCHER_KINDS: tuple[str, ...] = ("tool_call", "no_tool_call_matching", "any_of", "final_state")
+
 #: Case aliases mapping a tool name's lowercase form to its canonical name. The
 #: single source of truth so the grader (``report._canonicalize_tool``) and the
-#: metered runner's toolset restriction (``sdk_runner.compute_disallowed_tools``)
+#: metered runner's toolset restriction (``api_runner.compute_disallowed_tools``)
 #: canonicalize identically.
 #:
 #: ``task`` -> ``Agent`` because the bundled ``claude`` CLI names the SUB-AGENT
@@ -157,13 +202,45 @@ class JudgeSpec:
     Present only when a scenario's pass/fail is not cleanly matcher-gradeable
     (e.g. "the explanation is faithful to the diff", "the tone is non-blaming").
     A judge model reads the captured transcript and the ``rubric`` and returns
-    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the Sonnet run
-    tier) and ``max_output_tokens`` caps the judge's reply — both cost controls.
+    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the mid run
+    tier) — the per-scenario cost control, alongside the per-call
+    ``JUDGE_DEFAULT_BUDGET_USD`` cap and the process-wide ``JudgeBudget``.
     """
 
     rubric: str
-    model: str = "claude-sonnet-4-6"
-    max_output_tokens: int = 512
+    #: DERIVED from the tier catalog (the conservative mid tier), never pinned —
+    #: a hardcoded id would leave the judge a generation behind the runs it grades.
+    model: str = TIER_MODELS[DEFAULT_TIER]
+
+
+@dataclasses.dataclass(frozen=True)
+class GateEvent:
+    """One production-hook lifecycle event captured from a ``production_hooks`` run.
+
+    Synthesized from the SDK ``HookEventMessage`` (only ``hook_response`` — a hook
+    that COMPLETED; ``hook_started`` is lifecycle noise the mapper drops).
+    ``outcome``/``output_snippet`` come from the CLI's ``hook_response`` ``data``.
+
+    It is a REPORT-ANNOTATION + fail-loud channel, never a per-scenario pass
+    condition: :attr:`is_stop_block` tells the report whether a #807-class Stop
+    *block* carried a pass (rendered ``pass (gate-assisted)``), and the runner's
+    zero-hook-events fail-loud uses the PRESENCE of any hook event to prove the
+    shipped hook chain registered under the eval wiring.
+    """
+
+    hook_event_name: str
+    outcome: str
+    output_snippet: str
+
+    @property
+    def is_block(self) -> bool:
+        """Whether this event's outcome/output signals a hook BLOCK decision."""
+        return "block" in f"{self.outcome}\n{self.output_snippet}".lower()
+
+    @property
+    def is_stop_block(self) -> bool:
+        """A #807-class Stop-gate block — the gate that carries a gate-assisted pass."""
+        return self.hook_event_name == "Stop" and self.is_block
 
 
 @dataclasses.dataclass(frozen=True)
@@ -182,6 +259,15 @@ class EvalSpec:
     ``context_preamble`` (an 8k-20k-token polluted prefix) is folded into the
     user prompt text. The SDK ``query`` is user-turns-only, so the pollution
     lives in the prompt text — never as pre-seeded assistant/tool-result turns.
+
+    Model resolution is by ABSTRACT TIER, not a concrete model id. A scenario
+    declares ``tier`` (``frontier`` / ``balanced`` / ``cheap``) or ``phase`` (a
+    teatree FSM phase name) instead of pinning a model; the runner resolves
+    these through the single :data:`teatree.agents.model_tiering.TIER_MODELS`
+    constant. ``model`` is the escape hatch for a deliberate concrete-id pin and
+    wins when set; ``model`` is ``""`` (unset) on a tier/phase scenario. The
+    resolution precedence, highest first: ``model`` > ``tier`` > ``phase`` >
+    :data:`teatree.agents.model_tiering.DEFAULT_TIER`.
     """
 
     name: str
@@ -190,12 +276,76 @@ class EvalSpec:
     prompt: str
     matchers: tuple[ExpectItem, ...]
     source_path: Path
-    model: str = "claude-sonnet-4-6"
+    #: A deliberate concrete-model-id pin (the escape hatch). ``""`` (the default)
+    #: means unset — resolution falls through to ``tier`` / ``phase`` / the
+    #: default tier. A non-empty value is an explicit ``model[@effort]`` pin that
+    #: WINS over ``tier``/``phase``.
+    model: str = ""
+    #: Abstract model tier (``frontier`` / ``balanced`` / ``cheap``). Resolved to a
+    #: concrete model id through ``TIER_MODELS``. Wins over ``phase`` and the
+    #: default; loses to an explicit ``model``.
+    tier: str = ""
+    #: A teatree FSM phase name (``planning`` / ``coding`` / …). Resolved to its
+    #: tier via ``DEFAULT_PHASE_MODELS`` then to a model. Loses to ``model`` and
+    #: ``tier``; wins over the default tier.
+    phase: str = ""
     max_turns: int = DEFAULT_MAX_TURNS
     tools: tuple[str, ...] = ("Bash",)
+    #: Skill names to widen the clean-room's simulated Skill-tool catalog with, on
+    #: top of whatever the CLI discovers on its own. Empty (the default) leaves the
+    #: SDK ``skills``/``plugins`` options untouched, so every existing scenario is
+    #: byte-identical to before this field existed. A scenario whose prompt
+    #: references a skill name core does not itself ship — a placeholder overlay's
+    #: workspace/legal-entity skill, a companion language bible (``ac-django`` /
+    #: ``ac-python``), or the review skill named without a leading slash — declares
+    #: the referenced names here so the runner registers the eval-only fixture
+    #: plugin (``evals/fixtures/skill_catalog``) and lists exactly this set: the
+    #: agent's own "only invoke a listed name" refusal rule is real and must stay
+    #: intact, so the fix widens what is listed rather than bypassing the rule. See
+    #: ``teatree.eval.api_runner.build_sdk_options``.
+    available_skills: tuple[str, ...] = ()
+    #: Opt-in throwaway sandbox fixture (``""`` = the neutral empty cwd). A scenario
+    #: whose prompt presupposes a working tree (staged changes, commits to squash)
+    #: declares ``fixture: git_repo`` so the runner provisions a real repo whose
+    #: state matches the prompt — otherwise the agent's first ``git`` returns nothing
+    #: and it investigates the mismatch instead of firing the command. See
+    #: :func:`teatree.eval.git_fixture.provision_git_fixture`.
+    fixture: str = ""
+    #: Opt-in inert CLI stubs (``t3`` / ``gh`` / ``glab``). A single-action probe
+    #: whose CORRECT command is ``t3 <overlay> notify send …`` (or a forge diff)
+    #: runs in a sandbox with no wired CLI, so that command ERRORS and the agent
+    #: wanders into a ``max_turns`` cap-taint even though the matcher already
+    #: matched the correct call. Declaring ``cli_stubs: [t3]`` prepends a throwaway
+    #: ``bin/`` of inert success-printing stubs to the child's ``PATH`` so the
+    #: command succeeds and the agent stops. The stubs print but hold no state, so
+    #: the matchers grade the CALL (negatives keep full teeth). A SEPARATE lever
+    #: from :attr:`fixture` — the two compose. Empty (the default) leaves ``PATH``
+    #: untouched, so every existing scenario is byte-identical. See
+    #: :mod:`teatree.eval.cli_stub_fixture`.
+    cli_stubs: tuple[str, ...] = ()
+    #: First-action probe (#2192 carve-out): a cap is not a taint once every matcher passed; needs >=1 positive anchor.
+    single_action: bool = False
+    #: Register the shipped teatree plugin (``hooks/hooks.json``) into the SDK
+    #: child so the scenario measures the model+hook SYSTEM that ships, not the raw
+    #: model with hooks stripped. The clean-room personal-context isolation
+    #: (``setting_sources=[]``, redirected HOME, empty user-level ``settings``
+    #: hooks) is unchanged — only the shipped PLUGIN hook chain is added, plus the
+    #: sandbox-local redirection of the loop/hook state roots so the #807 Stop gate
+    #: sees a fresh owner-less registry and fires. Empty (the default) leaves the
+    #: SDK ``plugins``/``include_hook_events`` untouched, so every existing scenario
+    #: is byte-identical to before this field existed. See
+    #: :func:`teatree.eval.api_runner.build_sdk_options`.
+    production_hooks: bool = False
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
     lane: str = CLEAN_ROOM_LANE
+    #: Which question/answer surface the scenario grades. ``headless`` (the default,
+    #: every surface-agnostic spec) BLOCKS. ``interactive`` is the opt-in advisory
+    #: label for a scenario that hard-requires the Claude-interactive
+    #: ``AskUserQuestion`` tool-call rendering: it is still run and still reported,
+    #: but its failure never flips a lane verdict, so the headless question contract
+    #: is the one whose failure gates. See :mod:`teatree.eval.surface`.
+    surface: str = HEADLESS_SURFACE
     context_preamble: str = ""
     #: Per-scenario USD budget ceiling, overriding the run-level
     #: ``max_budget_usd``. ``None`` defers to the run default. A delegation scenario
@@ -300,3 +450,53 @@ class EvalRun:
     #: per-model ``model_usage`` token counts (all-zero when unobservable).
     main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
     aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    #: Production-hook lifecycle events captured on a ``production_hooks`` run
+    #: (empty on every other run, incl. every recorded-transcript replay — those
+    #: carry no hook stream). Additive: the report reads it to annotate a
+    #: gate-assisted pass; grading never consults it.
+    gate_events: tuple[GateEvent, ...] = ()
+    #: Count of transient-throttle retries this run rode out before it completed
+    #: (0 on a run that hit no rate limit). The AIMD concurrency governor
+    #: (``parallel.py``) reads it as the throttle signal: ``>0`` multiplicatively
+    #: shrinks the shared permit count, ``0``-and-clean grows it back — so a
+    #: throttled suite backs its parallel load off the single shared OAuth token.
+    throttle_retries: int = 0
+
+    @classmethod
+    def skipped(cls, spec_name: str, reason: str) -> "EvalRun":
+        """A skip-shaped run for an un-provisioned lane — no transcript, not an error.
+
+        Every fresh-run backend shares this shape when its provisioning gate is
+        unmet (no ``claude`` binary, no ``ANTHROPIC_API_KEY``, …): the terminal
+        reason is stamped ``skipped: <reason>`` so the report renders a clean SKIP,
+        and ``is_error`` stays False — a skip is not a failure.
+        """
+        return cls(
+            spec_name=spec_name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=f"skipped: {reason}",
+            is_error=False,
+            raw_stdout="",
+            raw_stderr="",
+        )
+
+    @classmethod
+    def terminal(cls, spec_name: str, *, terminal_reason: str, cost_usd: float = 0.0) -> "EvalRun":
+        """An error-shaped run that never produced a transcript (timeout / budget cap).
+
+        No captured tool calls or text, ``is_error=True``, and a ``terminal_reason``
+        that grades the cell to a FAIL signal rather than crashing the run. The
+        optional ``cost_usd`` carries a budget-exceeded cap's floored cost (``0.0``
+        for a timeout, which paid nothing).
+        """
+        return cls(
+            spec_name=spec_name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=terminal_reason,
+            is_error=True,
+            raw_stdout="",
+            raw_stderr="",
+            cost_usd=cost_usd,
+        )

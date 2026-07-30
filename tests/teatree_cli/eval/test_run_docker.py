@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from teatree.cli.eval.docker import ARTIFACTS_MOUNT
 from teatree.cli.eval.run_docker import RunDockerArgs
@@ -21,6 +22,7 @@ def _args(**overrides: object) -> RunDockerArgs:
     base: dict[str, object] = {
         "name": None,
         "lane": None,
+        "surface": None,
         "shard": None,
         "output_format": "text",
         "max_turns": None,
@@ -29,7 +31,7 @@ def _args(**overrides: object) -> RunDockerArgs:
         "trials": 3,
         "require": "any",
         "models": None,
-        "backend": "sdk",
+        "backend": "api",
         "require_executed": True,
         "parallel": 1,
     }
@@ -53,6 +55,93 @@ class TestTranscriptHtmlPassthrough:
         assert "--no-persist" in _args(transcript_html=Path("/tmp/x.html")).passthrough()
 
 
+class TestCatalogSlicePassthrough:
+    """``--lane`` / ``--surface`` / ``--shard`` all SLICE the catalog, so all three cross.
+
+    Every metered workflow passes ``--docker``, so a slice flag dropped here does not
+    error — it silently runs the FULL catalog in-container on metered spend (#3855).
+    """
+
+    def test_forwards_the_surface_slice_into_the_container(self) -> None:
+        passthrough = _args(surface="headless").passthrough()
+        index = passthrough.index("--surface")
+        assert passthrough[index + 1] == "headless"
+
+    def test_omits_the_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
+        assert "--surface" not in _args(surface=None).passthrough()
+
+    def test_forwards_lane_surface_and_shard_together(self) -> None:
+        passthrough = _args(lane="clean_room", surface="interactive", shard="1/2").passthrough()
+        assert passthrough[passthrough.index("--lane") + 1] == "clean_room"
+        assert passthrough[passthrough.index("--surface") + 1] == "interactive"
+        assert passthrough[passthrough.index("--shard") + 1] == "1/2"
+
+
+class TestEscalationPassthrough:
+    def test_forwards_escalate_on_fail_with_trials_into_the_container(self) -> None:
+        # The PR lane's single trial runs in --docker, so the escalation flags must
+        # cross the container boundary or the in-container run reds immediately on
+        # the first failure instead of escalating.
+        passthrough = _args(trials=1, escalate_on_fail=True, escalate_trials=3).passthrough()
+        assert "--escalate-on-fail" in passthrough
+        index = passthrough.index("--escalate-trials")
+        assert passthrough[index + 1] == "3"
+
+    def test_omits_the_flag_when_escalation_is_off(self) -> None:
+        assert "--escalate-on-fail" not in _args(trials=1, escalate_on_fail=False).passthrough()
+
+
+class TestSummaryMdPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(summary_md=Path("/home/runner/_temp/step-summary.md"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--summary-md")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/step-summary.md"
+
+    def test_omits_the_flag_when_no_summary_requested(self) -> None:
+        assert "--summary-md" not in _args(summary_md=None).passthrough()
+
+    def test_container_summary_path_is_empty_when_no_summary_requested(self) -> None:
+        # The in-container redirect resolves to "" when no --summary-md was asked
+        # for — the no-artifact branch of the path translation.
+        assert _args(summary_md=None)._container_summary_path() == ""
+
+    def test_container_summary_path_redirects_to_the_mount_when_requested(self) -> None:
+        translated = _args(summary_md=Path("/runner/_temp/dash.md"))._container_summary_path()
+        assert translated == f"{ARTIFACTS_MOUNT}/dash.md"
+
+    def test_summary_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
+        # The summary-md path's PARENT is the writable bind-mount even when no
+        # transcript-html is requested — the summary-only lane must still mount it.
+        host = tmp_path / "step-summary.md"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+
+
+class TestSummaryJsonPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(summary_json=Path("/home/runner/_temp/eval-heal.json"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--summary-json")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/eval-heal.json"
+
+    def test_omits_the_flag_when_no_json_requested(self) -> None:
+        assert "--summary-json" not in _args(summary_json=None).passthrough()
+
+    def test_json_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
+        host = tmp_path / "eval-heal.json"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=None, summary_json=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+
+
 class TestDispatchMountsHostParentDir:
     def test_dispatch_passes_the_host_parent_dir_as_artifacts_dir(self, tmp_path: Path) -> None:
         host = tmp_path / "eval-transcripts.html"
@@ -68,5 +157,33 @@ class TestDispatchMountsHostParentDir:
             patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
             pytest.raises(typer.Exit),
         ):
-            _args(transcript_html=None).dispatch()
+            _args(transcript_html=None, summary_md=None).dispatch()
         assert run_in_docker.call_args.kwargs["artifacts_dir"] is None
+
+
+class TestTheCliWiresSurfaceIntoTheContainer:
+    """``t3 eval run --surface … --docker`` end to end through the typer command.
+
+    ``RunDockerArgs`` carrying the field is only half of it — ``app.py`` has to hand
+    it over. Without this the flag is accepted, the slice is applied to the HOST
+    selection that is then thrown away, and the container runs the whole catalog.
+    """
+
+    def _forwarded_args(self, argv: list[str]) -> list[str]:
+        from teatree.cli import app  # noqa: PLC0415 — the CLI app is expensive to import at module scope.
+
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": ""}, clear=False),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+        ):
+            CliRunner().invoke(app, argv)
+        assert run_in_docker.called, "the run was not routed into the container"
+        return list(run_in_docker.call_args.args[0])
+
+    def test_surface_reaches_the_in_container_invocation(self) -> None:
+        forwarded = self._forwarded_args(["eval", "run", "--surface", "headless", "--docker"])
+        assert "--surface" in forwarded, f"--surface was dropped: {forwarded}"
+        assert forwarded[forwarded.index("--surface") + 1] == "headless"
+
+    def test_no_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
+        assert "--surface" not in self._forwarded_args(["eval", "run", "--docker"])

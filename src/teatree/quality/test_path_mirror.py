@@ -4,9 +4,11 @@ The repo bar (``CLAUDE.md`` + ``/ac-python``): *tests mirror production code* �
 a test for ``src/teatree/<pkg>/<sub>/foo.py`` lives at
 ``tests/teatree_<pkg>/<sub>/test_foo.py``. The convention is that the top-level
 ``teatree_`` prefix replaces ``src/teatree/`` and intermediate directories
-mirror exactly. ~205 existing files predate the convention (loose at the
-``tests/`` root, or mis-pathed across packages); this gate freezes that floor so
-the upcoming relocation sweep can only ever shrink it, never regress.
+mirror exactly. ~191 existing files predate the convention (loose at the
+``tests/`` root, or mis-pathed across packages); this gate grandfathers that
+floor as an explicit per-path LEDGER so the upcoming relocation sweep can only
+ever shrink it, never regress — and, unlike a single count baseline, two
+disjoint PRs never collide because a path list merges as a git set-union.
 
 The checker is pure-AST: for a test file it parses its top-level first-party
 imports (``from teatree.<dotted> import ...`` / ``import teatree.<dotted>``)
@@ -34,10 +36,13 @@ definitions under the top-level ``evals/`` tree (``evals/scenarios``,
 mirrored to the ``teatree.eval`` package, exactly as ``tests/integration/`` and
 ``tests/conformance/`` organize by purpose rather than by src package.
 
-Verdict (mirrors :class:`teatree.quality.mutation_run.BaselineRatchet`): the
-live violation count may only ever shrink. ``live_violations > baseline`` ⇒
-regression (exit 1); ``<= baseline`` ⇒ exit 0. ``--update-baseline`` rewrites
-the floor to the current count but REFUSES to write a HIGHER number without
+Verdict (a per-path ledger, not a scalar): the gate is RED when any LIVE
+violation is NOT in the committed grandfathered set (a NEW mis-pathed file,
+named) AND RED when any grandfathered entry no longer violates (forced banking —
+the stale entry must be removed, which kills the old count-baseline's headroom
+hole where unbanked reductions let new mis-pathed files ride in green).
+``--update-baseline`` rewrites the ledger to the exact live violation set but
+REFUSES to ADD an entry (a path not already grandfathered) without
 ``--allow-regression``.
 
 Self-contained (stdlib + ``tomllib`` only): ``teatree.quality`` declares no
@@ -98,18 +103,35 @@ class MirrorReport:
     __test__: ClassVar[bool] = False
 
     violations: tuple[MirrorViolation, ...]
-    baseline: int
+    grandfathered: frozenset[str]
 
     @property
     def live_count(self) -> int:
         return len(self.violations)
 
     @property
-    def exceeds_baseline(self) -> bool:
-        return self.live_count > self.baseline
+    def live_paths(self) -> frozenset[str]:
+        return frozenset(violation.path for violation in self.violations)
+
+    @property
+    def unknown_violations(self) -> tuple[MirrorViolation, ...]:
+        """Live violations not grandfathered — NEW mis-pathed files the gate names."""
+        return tuple(v for v in self.violations if v.path not in self.grandfathered)
+
+    @property
+    def stale_entries(self) -> tuple[str, ...]:
+        """Grandfathered paths that no longer violate — forced banking demands their removal."""
+        return tuple(sorted(self.grandfathered - self.live_paths))
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.unknown_violations or self.stale_entries)
 
     def summary_lines(self) -> list[str]:
-        return [f"  - {violation.message}" for violation in self.violations]
+        return [f"  - {violation.message}" for violation in self.unknown_violations]
+
+    def stale_lines(self) -> list[str]:
+        return [f"  - {path} (no longer mis-pathed — remove it from the ledger)" for path in self.stale_entries]
 
 
 def _is_test_file(path: Path) -> bool:
@@ -255,14 +277,55 @@ class MirrorConfig:
     __test__: ClassVar[bool] = False
 
     mode: str = "warn"
-    baseline: int = 0
+    grandfathered: frozenset[str] = frozenset()
+
+
+class Ledger:
+    """The committed grandfathered-path file: resolve it, read it, rewrite it.
+
+    A per-path list keyed off ``[tool.teatree.test_path_mirror] baseline_file``.
+    Deterministic sorted output makes it a git set-union — two disjoint PRs adding
+    different paths never collide.
+    """
+
+    _HEADER: ClassVar[str] = (
+        "# Grandfathered mis-pathed test files -- the test-path-mirror ledger (per-item, set-union mergeable).\n"
+        "# Each line is a test file that does not yet mirror its src/teatree/<pkg>/... module path as\n"
+        "# tests/teatree_<pkg>/... . The gate is RED on any LIVE violation not listed here (a NEW mis-pathed\n"
+        "# file, named) and RED on any listed path that no longer violates (forced banking -- remove it).\n"
+        "# Two disjoint PRs never collide: git unions independent line additions. Regenerate the exact live\n"
+        "# set with: t3 tool test-path-mirror --update-baseline (adds are refused without --allow-regression).\n"
+    )
+
+    @staticmethod
+    def path_for(pyproject: Path) -> Path | None:
+        """Resolve ``[tool.teatree.test_path_mirror] baseline_file`` relative to *pyproject*."""
+        raw = _read_table(pyproject)
+        if "baseline_file" not in raw:
+            return None
+        return pyproject.parent / str(raw["baseline_file"])
+
+    @staticmethod
+    def load(ledger: Path) -> frozenset[str]:
+        """Parse the ledger file into a set of grandfathered paths (blank lines and ``#`` comments ignored)."""
+        if not ledger.is_file():
+            return frozenset()
+        lines = ledger.read_text(encoding="utf-8").splitlines()
+        return frozenset(stripped for line in lines if (stripped := line.strip()) and not stripped.startswith("#"))
+
+    @classmethod
+    def write(cls, ledger: Path, paths: Iterable[str]) -> None:
+        """Rewrite the ledger to the fixed header plus *paths* sorted (deterministic, mergeable)."""
+        body = "".join(f"{path}\n" for path in sorted(set(paths)))
+        ledger.write_text(cls._HEADER + body, encoding="utf-8")
 
 
 def load_config(pyproject: Path) -> MirrorConfig:
     raw = _read_table(pyproject)
     mode = str(raw["mode"]) if "mode" in raw else "warn"
-    baseline = int(str(raw["baseline"])) if "baseline" in raw else 0
-    return MirrorConfig(mode=mode, baseline=baseline)
+    ledger = Ledger.path_for(pyproject)
+    grandfathered = Ledger.load(ledger) if ledger is not None else frozenset()
+    return MirrorConfig(mode=mode, grandfathered=grandfathered)
 
 
 def _read_table(pyproject: Path) -> Mapping[str, Any]:
@@ -276,16 +339,4 @@ def _read_table(pyproject: Path) -> Mapping[str, Any]:
 
 
 def build_report(*, root: Path, config: MirrorConfig) -> MirrorReport:
-    return MirrorReport(violations=tuple(find_violations(root)), baseline=config.baseline)
-
-
-def loosens_baseline(*, measured: int, baseline: int) -> bool:
-    """True when re-baselining to *measured* would record a HIGHER floor than *baseline*.
-
-    The ratchet only moves down. An update that raises the committed count is a
-    silent loosening that makes the gate vacuous (a regression "fixed" by
-    re-baselining to the regressed value), so the CLI refuses it unless the rise
-    is explicitly authorised. An update at or below the committed count tightens
-    (or holds) the ratchet and is always allowed.
-    """
-    return measured > baseline
+    return MirrorReport(violations=tuple(find_violations(root)), grandfathered=config.grandfathered)

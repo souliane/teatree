@@ -1,10 +1,11 @@
-"""Tests for the advisory ``code_comment_density`` density pass.
+"""Tests for the advisory ``code_comment_density`` diff pass.
 
-This is the commit-side half of the near-zero-comments rule (the dispatch-side
-half lives in the sub-agent prompt preambles). The detector is content-blind:
-it flags a file whose added diff lines are either comment-heavy (ratio above a
-conservative threshold) or carry a block of consecutive comment-only lines past
-the warn threshold in non-test code.
+This is the commit-side half of the comments-as-code rule (the dispatch-side
+half lives in the sub-agent prompt preambles). The detector is content-aware:
+beyond a conservative comment:code ratio and a consecutive comment-only run, it
+flags a comment whose words merely restate the next code line and a docstring
+opening that merely echoes the signature, while leaving a genuine
+non-obvious-why comment and a justified multi-line docstring allowed.
 
 The check is **advisory** and deliberately NOT one of ``privacy_scan.py``'s
 blocking diff detectors — a comment-dense diff is a code-quality nudge, not a
@@ -308,6 +309,159 @@ class TestDetectorUnit:
             "+# SPDX-License-Identifier: Apache-2.0\n"
             "+# Licensed under the Apache License, Version 2.0\n"
             "+import os\n"
+        )
+        assert report_diff(diff) == []
+
+
+class TestRestatingCommentDetection:
+    """Content-aware: a comment that merely restates the next code line is flagged.
+
+    The pure line-count density pass misses a SINGLE restating comment below the
+    consecutive-run threshold (the verbose-inline-comment style trimmed in real
+    review). A comment whose content-words are a subset of the following code
+    line's identifier tokens carries no non-obvious why — it restates the code —
+    and is flagged regardless of run length.
+    """
+
+    def test_single_restating_comment_above_code_is_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def to_eur(cents):",
+            "    # divide the cents by one hundred",
+            "    return cents / 100",
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+    def test_inline_comment_restating_the_update_call_is_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def backfill(model):",
+            "    # update the model rows with the metadata",
+            "    model.objects.update(**metadata)",
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+    def test_non_obvious_why_comment_is_not_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def render(value):",
+            "    # SandboxedEnvironment blocks attribute-access SSTI",
+            "    env = SandboxedEnvironment()",
+            "    return env.from_string(value).render()",
+        )
+        assert report_diff(diff) == []
+
+    def test_comment_with_rationale_words_not_in_code_is_not_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def backfill(model):",
+            "    # back-fill pre-existing rows created before this shipped",
+            "    model.objects.update(**metadata)",
+        )
+        assert report_diff(diff) == []
+
+    def test_restating_comment_at_end_of_hunk_is_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "    total = a + b",
+            "    # return the total",
+            "    return total",
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+    def test_restating_comment_resolves_against_an_unchanged_context_line(self) -> None:
+        diff = (
+            "diff --git a/src/teatree/x.py b/src/teatree/x.py\n"
+            "--- a/src/teatree/x.py\n"
+            "+++ b/src/teatree/x.py\n"
+            "@@ -3,2 +3,3 @@\n"
+            "     total = a + b\n"
+            "+    # return the total\n"
+            "     return total\n"
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+
+class TestSignatureEchoDocstring:
+    """A docstring that merely echoes the signature is flagged; a real one is not.
+
+    A genuine multi-line docstring carrying a non-obvious why stays ALLOWED — the
+    target is the vacuous docstring that repeats the function/class name and adds
+    nothing (the verbose-docstring style trimmed in real review).
+    """
+
+    def test_docstring_echoing_the_function_name_is_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def add_feature_flag(apps, schema_editor):",
+            '    """Add the feature flag."""',
+            "    apps.get_model('shared', 'FeatureFlag').objects.create()",
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+    def test_multiline_docstring_restating_the_code_is_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def remove_feature_flag(apps, schema_editor):",
+            '    """Remove the feature flag.',
+            "",
+            "    Removes the feature flag row from the database.",
+            "    Deletes the feature flag for every customer.",
+            '    """',
+            "    Flag.objects.filter(name=NAME).delete()",
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+    def test_genuine_docstring_with_non_obvious_why_is_not_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def add_feature_flag(apps, schema_editor):",
+            '    """Seed the platform-messages flag, OFF by default.',
+            "",
+            "    The endpoint reports zero messages while OFF so the feature",
+            "    stays dark per tenant until each environment opts in.",
+            '    """',
+            "    Flag.objects.get_or_create(name=NAME, defaults={'value': False})",
+        )
+        assert report_diff(diff) == []
+
+    def test_class_docstring_echoing_the_class_name_is_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "class PaymentProcessor:",
+            '    """Process the payment."""',
+            "    def run(self):",
+            "        return self.gateway.charge()",
+        )
+        assert _paths(diff) == ["src/teatree/x.py"]
+
+    def test_module_docstring_is_not_treated_as_signature_echo(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            '"""Money formatting helpers."""',
+            "",
+            "def to_eur(cents: int) -> str:",
+            "    euros, rest = divmod(cents, 100)",
+            "    return f'{euros},{rest:02d} EUR'",
+        )
+        assert report_diff(diff) == []
+
+    def test_one_word_docstring_is_too_short_to_count_as_echo(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def add_feature_flag(apps, schema_editor):",
+            '    """Idempotent."""',
+            "    Flag.objects.get_or_create(name=NAME, defaults={'value': False})",
+        )
+        assert report_diff(diff) == []
+
+    def test_symbol_only_comment_carries_no_content_words(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "def handle(value):",
+            "    counter = value + 1",
+            "    # ----------------------------",
+            "    return counter",
         )
         assert report_diff(diff) == []
 

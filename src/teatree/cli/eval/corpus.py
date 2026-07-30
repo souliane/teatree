@@ -4,13 +4,13 @@ Thin readers over the committed corpus engine — the modules own the behaviour
 (:mod:`teatree.eval.corpus_loader` discovers and validates labels,
 :mod:`teatree.eval.corpus_grade` grades a captured session through the same
 ``report.evaluate`` path a scenario uses); the commands here only coordinate.
-``grade`` is free and deterministic under the ``--no-judge`` default: a
+``grade`` is model-free and deterministic under the ``--no-judge`` default: a
 judge-oracle entry SKIPs with a visible note (never a silent vacuous pass) and
 a ``both`` entry grades its matcher part. The anti-circular guard
 (:func:`~teatree.eval.corpus_grade.assert_independent_oracle`) is enforced on
 every graded entry — a circular oracle is a FAIL row, so the grade exit code
 catches it. :func:`grade_shipped_corpus` is the same deterministic body the
-free ``corpus-grade`` lane in ``t3 eval`` runs.
+model-free ``corpus-grade`` lane in ``t3 eval`` runs.
 
 ``show`` is privacy-safe by construction: it prints the label's own committed
 fields plus DERIVED session counts — never a tool input, prompt text, or any
@@ -59,13 +59,13 @@ def grade_corpus_rows(labels: list[CorpusLabel], *, directory: Path, judge: Judg
 
     The anti-circular oracle guard runs first (a circular entry is a FAIL row);
     with no ``judge`` a judge-oracle entry SKIPs and a ``both`` entry grades its
-    matcher part — free and deterministic.
+    matcher part — model-free and deterministic.
     """
     return [_grade_row(label, directory=directory, judge=judge) for label in labels]
 
 
 def grade_shipped_corpus() -> list[CorpusGradeRow]:
-    """Grade the shipped corpus deterministically (no judge) — the free-lane body for ``t3 eval``."""
+    """Grade the shipped corpus deterministically (no judge) — the model-free-lane body for ``t3 eval``."""
     return grade_corpus_rows(discover_corpus(), directory=CORPUS_DIR, judge=None)
 
 
@@ -79,7 +79,7 @@ CORPUS_NO_GRADED_HINT = (
 
 
 def corpus_grade_lane(rows: list[CorpusGradeRow]) -> LaneResult:
-    """Fold graded rows into the free ``corpus-grade`` lane for ``t3 eval``.
+    """Fold graded rows into the model-free ``corpus-grade`` lane for ``t3 eval``.
 
     ``graded == 0`` (every entry judge-skipped, or an empty corpus) is NOT a
     green pass — there is nothing deterministically validated, so a green row
@@ -94,7 +94,7 @@ def corpus_grade_lane(rows: list[CorpusGradeRow]) -> LaneResult:
     if graded == 0:
         return LaneResult(
             name="corpus-grade",
-            cost="free",
+            cost="model-free",
             passed=True,
             skipped=True,
             detail=detail,
@@ -102,7 +102,7 @@ def corpus_grade_lane(rows: list[CorpusGradeRow]) -> LaneResult:
         )
     return LaneResult(
         name="corpus-grade",
-        cost="free",
+        cost="model-free",
         passed=failed == 0,
         skipped=False,
         detail=detail,
@@ -141,7 +141,7 @@ def grade_entries(
         False,
         "--judge/--no-judge",
         help=(
-            "Grade judge-oracle entries with the LLM judge (metered). The --no-judge default is free "
+            "Grade judge-oracle entries with the LLM judge (metered). The --no-judge default is model-free "
             "and deterministic: judge entries SKIP with a note; `both` entries grade their matcher part."
         ),
     ),
@@ -173,7 +173,7 @@ def grade_entries(
             typer.echo(
                 f"--judge requested and {len(eligible)} judge-oracle entr(y/ies) ran, but the judge graded "
                 "0 of them — every judge call skipped (likely `claude` not on PATH). This fails loud rather "
-                "than reporting a vacuous green; provision claude/CLAUDE_CODE_OAUTH_TOKEN or drop --judge.",
+                "than reporting a vacuous green; provision claude/ANTHROPIC_API_KEY or drop --judge.",
                 err=True,
             )
             sys.exit(1)

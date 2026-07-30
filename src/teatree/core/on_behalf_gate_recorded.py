@@ -81,7 +81,37 @@ eager ORM import here would defeat the lazy chain and crash the CLI with
 
 from collections.abc import Callable
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
+
+
+def format_on_behalf_block_message(target: str, action: str) -> str:
+    """The exact on-behalf BLOCK message (``target``/``action`` interpolated).
+
+    Pure, ORM-free, side-effect-free — the SINGLE SOURCE OF TRUTH for both
+    :class:`OnBehalfPostBlockedError`'s message and the eval harness's gate-aware
+    ``t3@on_behalf_ask`` CLI stub, so the stub's refusal text can never drift from
+    the production block message (vendored-by-derivation + a parity test, per
+    ``/t3:rules`` § "Read the Canonical Source Before Fixing a Conformance Bug").
+
+    The message names BOTH **solution-oriented** ways to clear the gate — enable
+    the setting durably, or approve just this once — and never the wrong
+    "bypass the gate or do it yourself" pair (``/t3:rules`` § "Anticipate a
+    Predictable Gate"). Best used *proactively*: a caller that can foresee the
+    block via :func:`teatree.on_behalf_gate.on_behalf_post_will_block` surfaces
+    this choice to the owner BEFORE attempting the post, so the reactive raise is
+    rarely reached.
+    """
+    return (
+        f"on-behalf post blocked by on_behalf_post_mode (#960): "
+        f"{action} on {target!r} needs explicit user approval first. "
+        f"Offer the owner the solution-oriented choice — never bypass-or-DIY:\n"
+        f"  1. Enable the setting durably: "
+        f"t3 <overlay> config_setting set on_behalf_post_mode immediate\n"
+        f"  2. Approve just this once (no terminal required): "
+        f"t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
+        f"then the agent re-runs this post. Never publish unattended."
+    )
 
 
 class OnBehalfPostBlockedError(RuntimeError):
@@ -95,13 +125,7 @@ class OnBehalfPostBlockedError(RuntimeError):
     def __init__(self, target: str, action: str) -> None:
         self.target = target
         self.action = action
-        super().__init__(
-            f"on-behalf post blocked by on_behalf_post_mode (#960): "
-            f"{action} on {target!r} needs explicit user approval first. "
-            f"The user records it (no terminal required) with:\n"
-            f"    t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
-            f"then the agent re-runs this post. Never publish unattended."
-        )
+        super().__init__(format_on_behalf_block_message(target, action))
 
 
 def require_on_behalf_approval[PublishResult](
@@ -109,6 +133,7 @@ def require_on_behalf_approval[PublishResult](
     target: str,
     action: str,
     publish: Callable[[], PublishResult],
+    taint: str | None = None,
 ) -> PublishResult:
     """Gate one on-behalf post against the tri-state mode and run it atomically.
 
@@ -127,9 +152,17 @@ def require_on_behalf_approval[PublishResult](
         consume the approval, run ``publish``, write the audit, return the
         result. A ``publish`` that raises rolls back the consume and the
         audit (#1879) — the approval survives for a retry, no audit lies.
-    *   BLOCK + no approval → raise :class:`OnBehalfPostBlockedError` before
-        ``publish`` runs.
+    *   BLOCK + no recorded approval, but the #119 dial GRADUATED the
+        ``on_behalf_post`` class for an owner-taint post — record a single-use
+        ``policy`` approval, consume it, publish, and audit exactly as the
+        recorded-approval path. ``taint`` is the content's provenance
+        (default OWNER, matching ``SendRequest.provenance``); a caller relaying
+        untrusted content passes ``Provenance.PUBLIC`` to invoke the floor.
+    *   BLOCK + no approval + no graduation → raise
+        :class:`OnBehalfPostBlockedError` before ``publish`` runs.
     """
+    if taint is None:
+        taint = _default_owner_taint()
     verdict = resolve_on_behalf_verdict(action)
     if verdict is OnBehalfVerdict.PROCEED:
         return publish()
@@ -137,12 +170,15 @@ def require_on_behalf_approval[PublishResult](
         _notify_on_behalf_autodraft(target=target, action=action)
         return publish()
 
-    from django.db import transaction  # noqa: PLC0415
+    from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415 — lazy ORM
 
     with transaction.atomic():
         consumed = OnBehalfApproval.consume(target, action)
+        if consumed is None and _policy_grants_on_behalf(taint):
+            OnBehalfApproval.record(target, action, _POLICY_APPROVER)
+            consumed = OnBehalfApproval.consume(target, action)
         if consumed is None:
             raise OnBehalfPostBlockedError(target, action)
         result = publish()
@@ -155,7 +191,7 @@ def require_on_behalf_approval[PublishResult](
         return result
 
 
-def on_behalf_block_message(target: str, action: str) -> str:
+def on_behalf_block_message(target: str, action: str, *, taint: str | None = None) -> str:
     """Return the blocked-post message, or ``""`` when the post may proceed.
 
     The *non-consuming* peek: it never consumes an approval, writes an audit,
@@ -167,18 +203,60 @@ def on_behalf_block_message(target: str, action: str) -> str:
 
     PROCEED / AUTO_DRAFT → ``""`` (the post may proceed; the autodraft DM is
     deferred to the atomic publish so a peek never DMs). BLOCK + an
-    unconsumed matching approval → ``""``. BLOCK + no approval → the
-    actionable :class:`OnBehalfPostBlockedError` message.
+    unconsumed matching approval → ``""``. BLOCK + the #119 dial graduated the
+    class for this *taint* → ``""`` (the real publish grants it by policy).
+    BLOCK + no approval + no graduation → the actionable
+    :class:`OnBehalfPostBlockedError` message.
     """
+    if taint is None:
+        taint = _default_owner_taint()
     verdict = resolve_on_behalf_verdict(action)
     if verdict is not OnBehalfVerdict.BLOCK:
         return ""
 
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
-    if OnBehalfApproval.has_unconsumed(target, action):
+    if OnBehalfApproval.has_unconsumed(target, action) or _policy_grants_on_behalf(taint):
         return ""
     return str(OnBehalfPostBlockedError(target, action))
+
+
+#: The approver id an on-behalf post graduated by the #119 dial is recorded under —
+#: a non-agent authority (``is_non_reviewer_role`` passes it), so the audit names the
+#: standing operator dial config, not the executing agent self-authorizing.
+_POLICY_APPROVER = "policy"
+
+
+def _default_owner_taint() -> str:
+    """The default on-behalf ``taint`` — ``Provenance.OWNER`` (the operator's own post).
+
+    Deferred like :func:`teatree.core.send_proxy._default_provenance`: the
+    ``Provenance`` enum lives in the ORM model package whose ``__init__`` eager-
+    loads every model, so importing it at module scope would drag the registry in
+    pre-``django.setup()`` and crash the CLI bootstrap (souliane/teatree#1003).
+    """
+    from teatree.core.models.provenance import Provenance  # noqa: PLC0415 — deferred: ORM model pkg, pre-app-registry
+
+    return Provenance.OWNER.value
+
+
+def _policy_grants_on_behalf(taint: str) -> bool:
+    """True iff the #119 dial AUTO-approves an ``on_behalf_post`` at content *taint*.
+
+    Fail-closed: any error resolving the dial (or an untrusted *taint* hitting the
+    floor) returns ``False`` — the gate then BLOCKs exactly as before.
+    """
+    from teatree.core.models.approval_dial import policy_dial  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.models.approval_policy import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        ON_BEHALF_POST,
+        Decision,
+        approval_policy,
+    )
+
+    try:
+        return approval_policy(ON_BEHALF_POST, taint, dial=policy_dial) is Decision.AUTO_APPROVE
+    except Exception:  # noqa: BLE001 — an unreadable dial fails CLOSED to BLOCK.
+        return False
 
 
 def _notify_on_behalf_autodraft(*, target: str, action: str) -> None:
@@ -195,7 +273,7 @@ def _notify_on_behalf_autodraft(*, target: str, action: str) -> None:
     ``False``. A misconfigured Slack backend must never block a
     legitimate autonomous draft-note publish.
     """
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     text = (
         f"Posted a draft note autonomously under your identity ({action} on `{target}`). "
@@ -208,4 +286,5 @@ def _notify_on_behalf_autodraft(*, target: str, action: str) -> None:
         text,
         kind=NotifyKind.INFO,
         idempotency_key=f"on_behalf_autodraft:{target}:{action}",
+        audience=NotifyAudience.COLLEAGUE_ACTION,
     )

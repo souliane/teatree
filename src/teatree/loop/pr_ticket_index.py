@@ -17,26 +17,16 @@ Three sources, cheapest first:
     under its ticket instead of orphaning detached at the tail.
 """
 
-import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from teatree.loop.dispatch_tables import DispatchAction
+from teatree.utils.close_keywords import parse_closes_ticket
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
 type Payload = Mapping[str, Any]
-
-# Matches ``Closes #123`` / ``Fixes: #456`` / ``Resolves #789`` (and the
-# plural/past-tense variants the platforms recognise — ``closed``, ``fixed``,
-# ``resolved``). Broader than ``sanitize_close_keywords`` in ship.py because
-# the parser must accept anything GitHub/GitLab auto-link, not just the
-# subset we emit. Anchored at a word boundary so ``preCloses#`` doesn't match.
-_CLOSE_KEYWORD_RE = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[\s:]*#(\d+)",
-    re.IGNORECASE,
-)
 
 
 def _description_from_payload(payload: Payload) -> str:
@@ -47,15 +37,6 @@ def _description_from_payload(payload: Payload) -> str:
             if isinstance(value, str):
                 return value
     return ""
-
-
-def _parse_closes_ticket(description: str) -> str:
-    """Return the first ``#N`` mentioned after a Closes/Fixes/Resolves keyword.
-
-    Returns an empty string if no close-keyword is found.
-    """
-    match = _CLOSE_KEYWORD_RE.search(description)
-    return match.group(1) if match else ""
 
 
 def _mr_url_payloads(actions: Iterable[DispatchAction]) -> dict[str, Payload]:
@@ -83,10 +64,10 @@ def _lookup_pr_tickets(urls: Iterable[str]) -> dict[str, str]:
     if not url_list:
         return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         pr_model = apps.get_model("core", "PullRequest")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping, never breaks the tick
         return {}
     result: dict[str, str] = {}
     try:
@@ -102,7 +83,7 @@ def _lookup_pr_tickets(urls: Iterable[str]) -> dict[str, str]:
             number = ticket.ticket_number
             if number:
                 result[row.url] = number
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     return result
 
@@ -121,10 +102,10 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
     if not url_set:
         return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         ticket_model = apps.get_model("core", "Ticket")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     result: dict[str, str] = {}
     try:
@@ -140,7 +121,7 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
             for pr_url in prs:
                 if isinstance(pr_url, str) and pr_url in url_set and pr_url not in result:
                     result[pr_url] = number
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an index-build failure degrades to no mapping
         return {}
     return result
 
@@ -148,40 +129,18 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
 def resolve_author_ticket(*, slug: str, pr_id: int, pr_url: str) -> "Ticket | None":
     """Return the AUTHOR/delivery ticket that owns the PR, or ``None`` (#2104).
 
-    The PR is owned by the author ticket the ship pipeline links it to — NOT
-    by a ticket whose ``issue_url`` happens to equal the PR URL (that shape is
-    the reviewer-role ticket ``AutoReviewDispatch._create_reviewing_task``
-    mints, which never carries the delivery lease). Reuses the existing
-    PR→author-ticket linkage, cheapest first — the ``PullRequest`` FK keyed on
-    ``(repo=slug, iid=pr_id)`` (authoritative, persisted by ``ship``; the same
-    key ``reference_linkifier._db_pull_request_url`` resolves on), then the
-    ``Ticket.extra["prs"][<pr_url>]`` fallback :func:`_lookup_ticket_extra_prs`
-    walks for a manually-opened PR with no FK row.
-
-    Best-effort: a DB error or app-not-ready degrades to ``None`` so the
-    caller treats the PR as unowned (arms the review as before).
+    Best-effort wrapper over the canonical core resolution
+    :meth:`teatree.core.models.pull_request.PullRequestQuerySet.owning_ticket`: a DB
+    error or app-not-ready degrades to ``None`` so the caller treats the PR as
+    unowned (arms the review as before).
     """
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         pr_model = apps.get_model("core", "PullRequest")
-        ticket_model = apps.get_model("core", "Ticket")
-    except Exception:  # noqa: BLE001
+        return pr_model.objects.owning_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
+    except Exception:  # noqa: BLE001 — a lookup failure degrades to no ticket
         return None
-    try:
-        row = pr_model.objects.filter(repo=slug, iid=str(pr_id)).select_related("ticket").order_by("-id").first()
-        if row is not None and row.ticket is not None:
-            return row.ticket
-        if not pr_url:
-            return None
-        for ticket in ticket_model.objects.exclude(extra={}).only("issue_url", "extra", "id"):
-            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-            prs = extra.get("prs") if isinstance(extra, dict) else None
-            if isinstance(prs, dict) and pr_url in prs:
-                return ticket
-    except Exception:  # noqa: BLE001
-        return None
-    return None
 
 
 def build_ticket_index(actions: Iterable[DispatchAction]) -> dict[str, str]:
@@ -205,7 +164,7 @@ def build_ticket_index(actions: Iterable[DispatchAction]) -> dict[str, str]:
     for url, payload in payloads.items():
         if url in index:
             continue
-        ticket_number = _parse_closes_ticket(_description_from_payload(payload))
+        ticket_number = parse_closes_ticket(_description_from_payload(payload))
         if ticket_number:
             index[url] = ticket_number
     unresolved = [url for url in payloads if url not in index]

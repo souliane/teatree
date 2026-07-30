@@ -325,18 +325,18 @@ def _resolve_github_token() -> str:
     credential gap (which on private repos would otherwise surface as a
     404 indistinguishable from a missing comment).
     """
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only on this code path
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
     if token:
         return token
     try:
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    except Exception:  # noqa: BLE001 — credential resolution is best-effort; degrade to no token
         return ""
     try:
         return read_pass("github/token") or read_pass("github/pat") or ""
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — credential resolution is best-effort; degrade to no token
         return ""
 
 

@@ -102,8 +102,10 @@ class TicketCompletionScannerTests(TestCase):
         )
 
     def _patch_host(self, host: _Host):
+        # The scanner resolves the host through the shared ``issue_is_done`` seam
+        # in ``teatree.backends.loader``, so patch the host resolver there.
         return patch(
-            "teatree.loop.scanners.ticket_completion.get_code_host_for_url",
+            "teatree.backends.loader.get_code_host_for_url",
             return_value=host,
         )
 
@@ -217,6 +219,31 @@ class TicketCompletionScannerTests(TestCase):
         assert signals[0].payload["ticket_id"] == ticket.pk
         assert signals[0].payload["ticket_state"] == "merged"
         assert signals[0].payload["issue_url"] == self.URL
+
+    def test_draft_pr_reopens_instead_of_completing(self) -> None:
+        # A completable ticket whose recorded PR is still a DRAFT must reopen,
+        # not walk to terminal DELIVERED — even when the upstream issue is done.
+        ticket = self._ticket(state=Ticket.State.SHIPPED)
+        ticket.extra = {"prs": {"https://example.com/prs/1": {"draft": True}}}
+        ticket.save(update_fields=["extra"])
+        host = _Host(issues_by_url={self.URL: {"state": "closed"}})
+        with self._patch_host(host):
+            signals = self._scanner(host).scan()
+        assert len(signals) == 1
+        assert signals[0].kind == "ticket.reopen_needed"
+        assert signals[0].payload["ticket_id"] == ticket.pk
+
+    def test_non_draft_pr_completes(self) -> None:
+        # A recorded PR that is NOT a draft leaves the completion path intact.
+        self._ticket(state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.get(issue_url=self.URL)
+        ticket.extra = {"prs": {"https://example.com/prs/1": {"draft": False}}}
+        ticket.save(update_fields=["extra"])
+        host = _Host(issues_by_url={self.URL: {"state": "closed"}})
+        with self._patch_host(host):
+            signals = self._scanner(host).scan()
+        assert len(signals) == 1
+        assert signals[0].kind == "ticket.completion_detected"
 
 
 class DispatchCompletionTests(TestCase):

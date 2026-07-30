@@ -22,17 +22,17 @@ from django.test import SimpleTestCase, TestCase
 
 from teatree.core.models import DreamQaProbe
 from teatree.loops.dream import gates, reindex
+from teatree.loops.dream.acceptance import persist_probe_results, run_acceptance_pass
 from teatree.loops.dream.decay import ArchivedMemory
 from teatree.loops.dream.gates import (
+    ComplianceRemediationView,
     DreamQaReport,
     Gate,
     MemorySnapshot,
     QaProbe,
     derive_probes,
     evaluate_gates,
-    persist_probe_results,
     probe_answerable,
-    run_acceptance_pass,
     snapshot_memory_dir,
 )
 
@@ -87,6 +87,44 @@ class TestDeriveAndReplay(SimpleTestCase):
         probe = QaProbe(question="q", expected_answer="the load-bearing lesson A", source_name="mem_a.md")
         snap = _snapshot({}, index="- the load-bearing lesson A — see topic file")
         assert probe_answerable(probe, snap) is True
+
+
+class TestSignatureIsDescriptionAware(SimpleTestCase):
+    """``gates._signature_line`` delegates to the frontmatter-aware extractor (#2746 nit-4).
+
+    The old inline scanner returned the body ``node_type: memory`` line for a
+    node-typed memory, near-vacuating its retention probe. The signature now
+    prefers the frontmatter ``description:`` so the hot index, the cold index, and
+    the probe all carry the SAME real lesson.
+    """
+
+    _NODE_TYPED = (
+        "---\nname: feedback_x\n"
+        "description: the lease guard rejects an empty owner address\n"
+        "metadata:\n  type: feedback\n---\n"
+        "node_type: memory\ntrailing body\n"
+    )
+
+    def test_signature_line_returns_description_not_node_type(self) -> None:
+        signature = gates._signature_line(self._NODE_TYPED)
+        assert signature == "the lease guard rejects an empty owner address"
+        assert "node_type" not in signature
+
+    def test_signature_line_agrees_with_reindex_signature_text(self) -> None:
+        # ONE extractor: hot index (reindex) and cold/probe (gates) must agree.
+        assert gates._signature_line(self._NODE_TYPED) == reindex.signature_text(self._NODE_TYPED)
+
+    def test_derive_probes_expected_answer_is_the_description(self) -> None:
+        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
+        probes = derive_probes(snap)
+        assert len(probes) == 1
+        assert probes[0].expected_answer == "the lease guard rejects an empty owner address"
+
+    def test_probe_for_node_typed_memory_stays_answerable(self) -> None:
+        # The description is a substring of the body, so retention stays green.
+        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
+        probes = derive_probes(snap)
+        assert probe_answerable(probes[0], snap) is True
 
 
 class TestGateA(SimpleTestCase):
@@ -169,6 +207,45 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # consolidation happened but a pruned line is orphaned
 
+    def test_homes_a_pruned_line_whose_memory_the_decay_phase_archived(self) -> None:
+        # souliane/teatree#3467: phase 6 deliberately archives a decayed memory, and
+        # the re-index correctly drops its index line. Gate (c) counted that as an
+        # unhomed prune because the file is gone from the AFTER snapshot — so a
+        # healthy pass (6 clusters recorded) failed the acceptance gate and never
+        # stamped the marker. The archive IS the durable home, and gate (f)
+        # independently proves it is restorable, so this must not fail (c).
+        archive = self.enterContext(tempfile.TemporaryDirectory())
+        destination = Path(archive) / "stale.md"
+        destination.write_text("archived body", encoding="utf-8")
+        before = _snapshot({"a.md": "x" * 100, "stale.md": "y" * 100}, index="- a\n- [stale.md](stale.md)\n")
+        after = _snapshot({"a.md": "x" * 100}, index="- a\n")
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=6,
+            archived_names={"stale.md"},
+        )
+        assert result.passed, result.detail
+
+    def test_an_unarchived_pruned_line_still_fails(self) -> None:
+        # The narrowing must not leak: a line pruned with no home AND no archive
+        # entry is still the lost-lesson case gate (c) exists to catch.
+        before = _snapshot({"a.md": "x" * 100}, index="- a\n- [lost.md](lost.md)\n")
+        after = _snapshot({"a.md": "x" * 100}, index="- a\n")
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=6,
+            archived_names={"other.md"},
+        )
+        assert not result.passed
+
     def test_homes_a_reworded_pointer_to_a_surviving_memory(self) -> None:
         # Re-index (phase 5) clips a long curated summary to <=200 chars: the index
         # LINE text changes, but feedback_x.md still exists and is still pointed at —
@@ -242,6 +319,15 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # maintenance happened but a pruned line is orphaned
 
+    def test_archived_entry_pruned_line_is_homed_via_archived_names(self) -> None:
+        # #2723: an archived entry's pruned hot line points at a .md that LEFT `memories`
+        # for the cold archive/ — a RESTORABLE durable home. The shared _line_targets homes
+        # it when the line's pointer is in the archived set; an empty set leaves it unhomed
+        # (teeth — the homing is real, not always-true).
+        line = "- feedback_low_signal.md — a stale low-signal lesson"
+        assert gates._line_targets(line, {"feedback_low_signal.md"})
+        assert not gates._line_targets(line, set())
+
     def test_summary_name_dropping_a_live_memory_does_not_home_a_gone_target(self) -> None:
         # The pruned line's link TARGET (gone_x.md) vanished, but its free-text summary
         # mentions a DIFFERENT, surviving memory's filename. Homing keys on the link
@@ -257,6 +343,60 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # gone_x.md is gone; the summary's mention of a live file must not home it
 
+    def test_line_targets_reads_a_curated_title_link_target_not_just_leading_pointer(self) -> None:
+        # The real hand-curated MEMORY.md writes each line as `- [Human Title](name.md)`,
+        # where the memory filename lives in the markdown link TARGET and the bracket holds
+        # a HUMAN TITLE (not the filename) — plus optional cluster aliases `[alias](x.md)`.
+        # Homing must read those link targets, else the leading-pointer-only regex extracts
+        # nothing and every curated line reads as a lost lesson.
+        line = "- [Took over = do ALL the work](feedback_took_over.md); [ask](feedback_ask.md)"
+        assert gates._line_targets(line, {"feedback_took_over.md"})  # primary link target homes it
+        assert gates._line_targets(line, {"feedback_ask.md"})  # a cluster alias target homes it too
+        # teeth: a title-link whose target is GONE stays unhomed (fix homes on survival, not format)
+        assert not gates._line_targets(line, {"unrelated.md"})
+        # teeth: a bare `.md` name-dropped in prose (no `](...)` link) must NOT home the line
+        assert not gates._line_targets("- [Title](gone.md) — see also survivor.md", {"survivor.md"})
+
+    def test_homes_a_curated_title_link_index_reformatted_to_pointer_form(self) -> None:
+        # The real staleness defect: the on-disk curated index uses `- [Human Title](name.md)`
+        # link-title lines; re-index (phase 5) reformats every one to the auto
+        # `- name.md — summary` pointer form, so the ENTIRE curated index is "pruned" while
+        # every memory SURVIVES. Homing must read each pruned line's link target — else a
+        # LOSSLESS reformat is flagged as N unhomed lost lessons and the marker never stamps
+        # (observed live: "87 pruned index line(s) have no confirmed durable home").
+        memories = {
+            "feedback_took_over.md": "body one",
+            "feedback_blocked.md": "body two",
+            "feedback_ask.md": "body three",
+        }
+        curated = (
+            "- [Took over = do ALL the work](feedback_took_over.md)\n"
+            "- [Blockers: stop and ask](feedback_blocked.md); [ask](feedback_ask.md)\n"
+        )
+        reformatted = (
+            "- feedback_took_over.md — took over means do all the work\n"
+            "- feedback_blocked.md — stop and ask\n"
+            "- feedback_ask.md — ask first\n"
+        )
+        before = _snapshot(memories, index=curated)
+        after = _snapshot(memories, index=reformatted)
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert result.passed  # every curated line's link target survives -> homed, not a lost lesson
+
+    def test_curated_title_link_to_a_vanished_memory_is_still_unhomed(self) -> None:
+        # Teeth for the reformat fix: a curated `- [Title](name.md)` line whose target is
+        # GENUINELY GONE (archived/deleted, not findable elsewhere) must stay unhomed, so the
+        # link-target reading never launders a real loss into a pass.
+        curated = "- [A real lesson](feedback_gone.md)\n- [Kept](feedback_kept.md)\n"
+        before = _snapshot({"feedback_gone.md": "lost body", "feedback_kept.md": "kept body"}, index=curated)
+        after = _snapshot({"feedback_kept.md": "kept body"}, index="- feedback_kept.md — kept\n")
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert not result.passed  # feedback_gone.md vanished -> its curated line is a genuine unhomed prune
+
 
 class TestGateD(SimpleTestCase):
     def test_passes_under_budget(self) -> None:
@@ -264,16 +404,65 @@ class TestGateD(SimpleTestCase):
         result = Gate.index_budget(after)
         assert result.passed
 
-    def test_fails_over_line_budget(self) -> None:
-        big_index = "\n".join(f"- line {i}" for i in range(gates.INDEX_LINE_BUDGET + 5))
+    def test_many_short_lines_under_byte_budget_passes(self) -> None:
+        # #2755 core behavioral win: an index of MANY short lines (300, FAR over the
+        # retired 150-line cap) that totals WELL under 24 KB now PASSES. The old line cap
+        # FAILED this needlessly; bytes are the only constraint. Anti-vacuous —
+        # reintroduce a 150-line cap and this goes RED.
+        big_index = "\n".join(f"- m{i}.md — s" for i in range(300))
         after = _snapshot({}, index=big_index)
+        assert after.index_line_count == 300  # well over the retired 150-line cap
+        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET  # ... yet under the byte budget
         result = Gate.index_budget(after)
-        assert not result.passed
+        assert result.passed
 
     def test_fails_over_byte_budget(self) -> None:
         after = _snapshot({}, index="- " + "x" * (gates.INDEX_BYTE_BUDGET + 10))
         result = Gate.index_budget(after)
         assert not result.passed
+
+    def test_budget_tracks_the_real_session_load_byte_limit(self) -> None:
+        # #2723/#2755: the budget tracks the ~24 KB session-load BYTE truncation point,
+        # not a line cap or a 10x regression alarm. Pin the byte load limit explicitly so
+        # a future widening past loadability fails here.
+        assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
+
+
+class TestGateDLoadability(SimpleTestCase):
+    """#2723 anti-vacuous: a real over-budget corpus index FAILS, a small one passes.
+
+    The 2026-06-25 live index was 682 files / ~196KB — 8x the ~24KB load budget —
+    yet the dream pass stamped "all gates passed". This pins that a real corpus of
+    that size renders an index gate (d) REFUSES, while a handful of memories pass.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write_corpus(self, count: int) -> None:
+        for i in range(count):
+            (self.dir / f"feedback_lesson_{i:04d}.md").write_text(
+                f"---\nname: feedback_lesson_{i:04d}\n"
+                f"summary: a recurring lesson about subsystem {i} the agent keeps relearning\n"
+                f"---\nthe load-bearing body for lesson {i}\n",
+                encoding="utf-8",
+            )
+
+    def test_large_real_corpus_index_fails_the_budget(self) -> None:
+        # The bare-pointer index is compact, so it takes ~1000 pointers to exceed the
+        # ~24 KB byte budget — gate (d) must still catch a genuinely over-budget index.
+        self._write_corpus(1000)
+        rendered = reindex.render_index(self.dir)
+        after = _snapshot({}, index=rendered)
+        result = Gate.index_budget(after)
+        assert not result.passed, "a 1000-pointer index exceeds the session-load budget and must FAIL gate (d)"
+
+    def test_small_corpus_index_passes_the_budget(self) -> None:
+        self._write_corpus(20)
+        rendered = reindex.render_index(self.dir)
+        after = _snapshot({}, index=rendered)
+        result = Gate.index_budget(after)
+        assert result.passed
 
 
 class TestGateE(SimpleTestCase):
@@ -310,6 +499,38 @@ class TestGateF(SimpleTestCase):
 
     def test_empty_archive_is_a_clean_pass(self) -> None:
         assert Gate.no_loss_audit([]).passed
+
+
+class TestGateG(SimpleTestCase):
+    """(g) compliance-non-regression: a recurrence remediated with a memory FAILS the pass."""
+
+    def test_passes_when_no_recurrence_was_observed(self) -> None:
+        result = Gate.compliance_non_regression([])
+        assert result.passed
+
+    def test_passes_when_a_recurrence_was_escalated(self) -> None:
+        # A recurrence remediated correctly (a gate/eval was filed) is the right move.
+        escalated = ComplianceRemediationView(
+            rule_identity="feedback_x", is_recurrence=True, remediated_with_memory=False
+        )
+        result = Gate.compliance_non_regression([escalated])
+        assert result.passed
+
+    def test_fails_when_a_recurrence_was_remediated_with_a_memory(self) -> None:
+        # The forbidden non-fix: a recurrence got ANOTHER memory instead of a gate/eval.
+        memory_remediated = ComplianceRemediationView(
+            rule_identity="feedback_x", is_recurrence=True, remediated_with_memory=True
+        )
+        result = Gate.compliance_non_regression([memory_remediated])
+        assert not result.passed
+        assert "feedback_x" in result.regressions
+
+    def test_a_first_occurrence_memory_is_not_a_regression(self) -> None:
+        # A first-occurrence violation legitimately stays a memory; only a RECURRENCE
+        # remediated with a memory regresses.
+        first = ComplianceRemediationView(rule_identity="directive_y", is_recurrence=False, remediated_with_memory=True)
+        result = Gate.compliance_non_regression([first])
+        assert result.passed
 
 
 class TestEvaluateGates(SimpleTestCase):
@@ -361,7 +582,7 @@ class TestPersistProbeResults(TestCase):
             QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md"),
             QaProbe(question="q2", expected_answer="fact MISSING", source_name="m.md"),
         ]
-        persist_probe_results(probes, after, overlay="acme")
+        persist_probe_results(probes, after, scope="acme")
 
         assert DreamQaProbe.objects.current_corpus("acme").count() == 2
         q1 = DreamQaProbe.objects.get(question="q1")
@@ -373,8 +594,8 @@ class TestPersistProbeResults(TestCase):
         after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
         probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
 
-        persist_probe_results(probes, after, overlay="acme")
-        persist_probe_results(probes, after, overlay="acme")
+        persist_probe_results(probes, after, scope="acme")
+        persist_probe_results(probes, after, scope="acme")
 
         assert DreamQaProbe.objects.count() == 1
         row = DreamQaProbe.objects.get(question="q1")
@@ -384,9 +605,21 @@ class TestPersistProbeResults(TestCase):
     def test_marks_prior_session_on_re_record(self) -> None:
         after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
         probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
-        persist_probe_results(probes, after, overlay="acme")
-        persist_probe_results(probes, after, overlay="acme")
+        persist_probe_results(probes, after, scope="acme")
+        persist_probe_results(probes, after, scope="acme")
         assert DreamQaProbe.objects.prior_session_probes("acme").count() == 1
+
+    def test_same_question_in_two_scopes_does_not_collide(self) -> None:
+        # Two memory dirs holding a same-named memory produce the SAME question. The
+        # scope is folded into probe_key, so each dir gets its own row instead of
+        # sharing (and cross-contaminating) one — the per-dir corpus isolation.
+        after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
+        probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
+        persist_probe_results(probes, after, scope="/home/a/.claude/memory")
+        persist_probe_results(probes, after, scope="/home/b/.claude/memory")
+        assert DreamQaProbe.objects.count() == 2
+        assert DreamQaProbe.objects.current_corpus("/home/a/.claude/memory").count() == 1
+        assert DreamQaProbe.objects.current_corpus("/home/b/.claude/memory").count() == 1
 
 
 class TestRunAcceptancePass(TestCase):
@@ -427,6 +660,31 @@ class TestRunAcceptancePass(TestCase):
         run_acceptance_pass(snap, snap, overlay="acme", archived=[], schema_before=0, schema_after=1, persist=False)
         assert DreamQaProbe.objects.count() == 0
 
+    def test_interference_replays_the_recorded_prior_probe_set_distinct_from_monotonicity(self) -> None:
+        # F6.3: gate (b) interference replays the ACTUAL recorded prior-session probe
+        # SET against the AFTER snapshot — not the current derived probes — so a
+        # regression of an OLD answer is caught even when the current corpus changed and
+        # the current-probe monotonicity is fine. This restores the two gates from
+        # collapsing onto one predicate that never replayed the persisted corpus.
+        old = _snapshot({"old.md": "name: old\nthe OLD durable fact\n"}, index="- the OLD durable fact\n")
+        # Two recordings mark the 'old.md' probe is_prior_session, so it becomes the
+        # replayed prior corpus for later passes.
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=0, schema_after=1)
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=1, schema_after=2)
+        assert DreamQaProbe.objects.prior_session_probes("acme").count() == 1
+
+        # A later pass over a DIFFERENT current corpus whose AFTER snapshot no longer
+        # holds the OLD fact: the current probe (new.md) is retained (retention +
+        # monotonicity pass), but the REPLAYED prior set regresses -> interference fails.
+        new = _snapshot({"new.md": "name: new\na FRESH unrelated lesson\n"}, index="- a FRESH unrelated lesson\n")
+        report = run_acceptance_pass(
+            new, new, overlay="acme", archived=[], schema_before=2, schema_after=3, clusters_recorded=1
+        )
+        failed = {g.name for g in report.gate_results if not g.passed}
+        assert "interference" in failed
+        assert "monotonicity" not in failed  # distinct predicate: current-probe rate did not regress
+        assert "retention" not in failed  # the current probe is retained
+
     def test_reindex_clipping_a_long_curated_summary_still_passes(self) -> None:
         # End-to-end #2545 staleness defect: re-index (phase 5) clips a >200-char
         # curated MEMORY.md summary, the gate flagged the old long line as an unhomed
@@ -448,6 +706,58 @@ class TestRunAcceptancePass(TestCase):
             before, after, overlay="acme", archived=[], schema_before=0, schema_after=0, clusters_recorded=3
         )
         assert report.passed, [g.detail for g in report.gate_results if not g.passed]
+
+    def test_pruned_pointer_to_a_cold_archived_file_is_homed(self) -> None:
+        # A memory archived in a PRIOR pass lives in archive/ (lesson preserved). The
+        # before-index still pointed at it; this pass re-indexed and dropped the stale
+        # pointer. `archived` is EMPTY (nothing archived THIS pass), so the cold-store
+        # residency (archive_dir) is what homes the pruned line — a confirmed durable
+        # home, not a loss. Without the archive_dir homing the pass falsely failed gate
+        # (c) and the success marker was starved on every quiet maintenance night.
+        d = Path(tempfile.mkdtemp()) / "memory"
+        (d / "archive").mkdir(parents=True)
+        (d / "archive" / "feedback_gamma.md").write_text("archived gamma body", encoding="utf-8")
+        before = _snapshot(
+            {"feedback_live.md": "x" * 50},
+            index="- feedback_live.md — live\n- feedback_gamma.md — gamma archived a prior pass\n",
+        )
+        after = _snapshot({"feedback_live.md": "x" * 50}, index="- feedback_live.md — live\n")
+        report = run_acceptance_pass(
+            before,
+            after,
+            overlay="acme",
+            archived=[],
+            schema_before=0,
+            schema_after=0,
+            maintenance_performed=True,
+            archive_dir=d / "archive",
+        )
+        consolidation = next(g for g in report.gate_results if g.name == "consolidation")
+        assert consolidation.passed, consolidation.detail
+
+    def test_pruned_pointer_to_a_genuinely_lost_file_stays_unhomed(self) -> None:
+        # Teeth: the same shape but feedback_gamma.md is NOT in the cold store (a real
+        # deletion, lesson nowhere). The consolidation gate must STILL fail — the fix
+        # homes only files actually preserved in archive/, never a genuine loss.
+        d = Path(tempfile.mkdtemp()) / "memory"
+        (d / "archive").mkdir(parents=True)  # cold store exists but is EMPTY
+        before = _snapshot(
+            {"feedback_live.md": "x" * 50},
+            index="- feedback_live.md — live\n- feedback_gamma.md — gamma lost with no durable home\n",
+        )
+        after = _snapshot({"feedback_live.md": "x" * 50}, index="- feedback_live.md — live\n")
+        report = run_acceptance_pass(
+            before,
+            after,
+            overlay="acme",
+            archived=[],
+            schema_before=0,
+            schema_after=0,
+            maintenance_performed=True,
+            archive_dir=d / "archive",
+        )
+        consolidation = next(g for g in report.gate_results if g.name == "consolidation")
+        assert not consolidation.passed  # a real loss is never laundered into a pass
 
 
 class TestReportRender(SimpleTestCase):

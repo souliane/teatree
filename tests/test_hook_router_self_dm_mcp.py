@@ -20,13 +20,14 @@ other channel pass through untouched.
 
 Fail direction (user decision): FAIL-CLOSED. The hook cannot self-identify the
 author config-free (no token/network, schema text not in the input), so an
-unreadable/missing/malformed config DENIES with an error naming the toml
-problem and the fix. A readable config with no ids stays ALLOW (genuinely-empty
+unreadable/missing config store DENIES with an error naming the config-store
+problem and the fix. A readable store with no ids stays ALLOW (genuinely-empty
 is a real state, not an error). The ``[teatree] self_dm_gate_enabled`` kill-switch
 is the sanctioned explicit disable.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -34,47 +35,44 @@ import pytest
 import hooks.scripts.hook_router as router
 
 
-class _FakeHomePath:
-    def __init__(self, home: Path) -> None:
-        self._home = home
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the self-DM gate resolves."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
-    def __call__(self, *args: object, **kwargs: object) -> Path:
-        return Path(*args, **kwargs)
 
-    def home(self) -> Path:
-        return self._home
+_ROWS_WITH_DM_CHANNELS: dict[str, object] = {
+    "overlays": {
+        "t3-acme": {
+            "messaging_backend": "slack",
+            "slack_user_id": "U0AAAAAAAAA",
+            "slack_dm_channel_id": "D0BFIRSTDM01",
+        },
+        "t3-widget": {
+            "messaging_backend": "slack",
+            "slack_user_id": "U0AAAAAAAAA",
+            "slack_dm_channel_id": "D0BSECONDDM2",
+        },
+    },
+}
 
+_ROWS_NO_DM_CHANNELS: dict[str, object] = {"overlays": {"t3-acme": {"messaging_backend": "slack"}}}
 
-_CONFIG_WITH_DM_CHANNELS = """
-[teatree]
-mode = "auto"
-
-[overlays.t3-acme]
-messaging_backend = "slack"
-slack_user_id = "U0AAAAAAAAA"
-slack_dm_channel_id = "D0BFIRSTDM01"
-
-[overlays.t3-widget]
-messaging_backend = "slack"
-slack_user_id = "U0AAAAAAAAA"
-slack_dm_channel_id = "D0BSECONDDM2"
-"""
-
-_CONFIG_NO_DM_CHANNELS = """
-[teatree]
-mode = "auto"
-
-[overlays.t3-acme]
-messaging_backend = "slack"
-"""
-
-# No overlay table at all — only the global [teatree] slack_user_id. The U-form
-# must still deny via the global fallback (mirrors notify.resolve_user_id).
-_CONFIG_GLOBAL_USER_ONLY = """
-[teatree]
-mode = "auto"
-slack_user_id = "U0GLOBALUSER"
-"""
+# No overlay ids at all — only the global slack_user_id. The U-form must still
+# deny via the global fallback (mirrors notify.resolve_user_id).
+_ROWS_GLOBAL_USER_ONLY: dict[str, object] = {"slack_user_id": "U0GLOBALUSER"}
 
 _USER_ID = "U0AAAAAAAAA"
 _DM_CHANNEL = "D0BFIRSTDM01"
@@ -85,11 +83,10 @@ _SCHEDULE = "mcp__claude_ai_Slack__slack_schedule_message"
 _DRAFT = "mcp__claude_ai_Slack__slack_send_message_draft"
 
 
-def _patch_home(home: Path, body: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
-    home.mkdir(exist_ok=True)
-    if body is not None:
-        (home / ".teatree.toml").write_text(body, encoding="utf-8")
-    monkeypatch.setattr(router, "Path", _FakeHomePath(home))
+def _point_at_seeded_db(db: Path, rows: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_config_db(db, rows)
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
 
 def _event(tool_name: str, tool_input: dict, *, session_id: str) -> dict:
@@ -103,8 +100,8 @@ def _parse_deny(capsys: pytest.CaptureFixture[str]) -> dict | None:
 
 class TestDeniesSelfDmWrites:
     @pytest.fixture(autouse=True)
-    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _CONFIG_WITH_DM_CHANNELS, monkeypatch)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
 
     @pytest.mark.parametrize(
         ("tool_name", "tool_input"),
@@ -139,9 +136,9 @@ class TestDeniesSelfDmWrites:
     def test_global_user_id_fallback_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # No overlay table — only the global [teatree] slack_user_id. The U-form
-        # must still deny (mirrors notify.resolve_user_id overlay→global order).
-        _patch_home(tmp_path / "home2", _CONFIG_GLOBAL_USER_ONLY, monkeypatch)
+        # No overlay ids — only the global slack_user_id. The U-form must still
+        # deny (mirrors notify.resolve_user_id overlay→global order).
+        _point_at_seeded_db(tmp_path / "db2.sqlite3", _ROWS_GLOBAL_USER_ONLY, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "U0GLOBALUSER", "text": "report"}, session_id="s1g")
         )
@@ -153,8 +150,8 @@ class TestDeniesSelfDmWrites:
 
 class TestPassesThroughColleagueAndUnrelated:
     @pytest.fixture(autouse=True)
-    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _CONFIG_WITH_DM_CHANNELS, monkeypatch)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
 
     @pytest.mark.parametrize(
         ("tool_name", "tool_input"),
@@ -198,7 +195,8 @@ class TestFailsClosedOnUnresolvableConfig:
     def test_missing_config_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _patch_home(tmp_path / "home", None, monkeypatch)
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s4")
         )
@@ -208,21 +206,25 @@ class TestFailsClosedOnUnresolvableConfig:
         assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
 
     @pytest.mark.parametrize(
-        "body",
+        "rows",
         [
-            _CONFIG_NO_DM_CHANNELS,
-            '[teatree]\nmode = "auto"\n',
+            _ROWS_NO_DM_CHANNELS,
+            {"mode": "auto"},
             # A non-table overlay value (overlays.name = "string") is skipped, not crashed.
-            '[teatree]\nmode = "auto"\n[overlays]\nbroken = "not-a-table"\n',
+            {"overlays": {"broken": "not-a-table"}},
         ],
     )
     def test_readable_config_without_ids_allows_silently(
-        self, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self,
+        rows: dict[str, object],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # Readable config but no self-DM ids to match (an overlay without the
-        # keys, no overlays table, OR a malformed non-table overlay) → ALLOW, no
-        # warn. Genuinely-empty is a real state, NOT an error → not fail-closed.
-        _patch_home(tmp_path / "home", body, monkeypatch)
+        # Readable store but no self-DM ids to match (an overlay without the keys,
+        # no overlays row, OR a malformed non-table overlay) → ALLOW, no warn.
+        # Genuinely-empty is a real state, NOT an error → not fail-closed.
+        _point_at_seeded_db(tmp_path / "db.sqlite3", rows, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s5")
         )
@@ -232,10 +234,10 @@ class TestFailsClosedOnUnresolvableConfig:
     def test_unreadable_config_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        home = tmp_path / "home"
-        home.mkdir(exist_ok=True)
-        (home / ".teatree.toml").write_text("this is = not valid toml [[[", encoding="utf-8")
-        monkeypatch.setattr(router, "Path", _FakeHomePath(home))
+        corrupt = tmp_path / "db.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database at all")
+        monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s6")
         )
@@ -247,8 +249,8 @@ class TestFailsClosedOnUnresolvableConfig:
 
 class TestMalformedToolInputPassesThrough:
     @pytest.fixture(autouse=True)
-    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _CONFIG_WITH_DM_CHANNELS, monkeypatch)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
 
     @pytest.mark.parametrize("tool_input", ["not-a-dict", None, ["channel", "D0BFIRSTDM01"]])
     def test_non_dict_tool_input_passes_through(self, tool_input: object, capsys: pytest.CaptureFixture[str]) -> None:
@@ -263,8 +265,8 @@ class TestKillSwitch:
     def test_disabled_setting_allows_a_self_dm_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        body = _CONFIG_WITH_DM_CHANNELS.replace('mode = "auto"', 'mode = "auto"\nself_dm_gate_enabled = false')
-        _patch_home(tmp_path / "home", body, monkeypatch)
+        rows = {**_ROWS_WITH_DM_CHANNELS, "self_dm_gate_enabled": False}
+        _point_at_seeded_db(tmp_path / "db.sqlite3", rows, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": _DM_CHANNEL, "text": "report"}, session_id="sk1")
         )
@@ -275,7 +277,7 @@ class TestKillSwitch:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # No explicit flag → default ON → still denies (kill-switch is opt-out).
-        _patch_home(tmp_path / "home", _CONFIG_WITH_DM_CHANNELS, monkeypatch)
+        _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": _DM_CHANNEL, "text": "report"}, session_id="sk2")
         )

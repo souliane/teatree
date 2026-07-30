@@ -52,11 +52,14 @@ def require_approval(prompt: str, scope: ApprovalScope, *, stdin: TextIO, stdout
 
     When ``scope.user_authorized`` is given, look for a valid unconsumed
     :class:`~teatree.core.models.db_approval.DbApproval` scoped to exactly
-    this ``scope.op``+``scope.tenant`` (channel 2, #953). If one exists it
+    this ``scope.op``+``scope.tenant`` AND recorded by exactly the presented
+    ``scope.user_authorized`` approver (channel 2, #953). If one exists it
     is consumed single-use, a :class:`~teatree.core.models.db_approval.DbAudit`
     row is written, and execution is allowed even with no TTY — the recorded
-    user approval *is* the approval. The recorded approver could never be the
-    executing agent: a maker/coding-agent/loop id is refused at
+    user approval *is* the approval. A non-empty ``--user-authorized`` token
+    that is NOT the recorded approver never consumes it (so an arbitrary token
+    can no longer unlock the op); the recorded approver could never be the
+    executing agent either: a maker/coding-agent/loop id is refused at
     ``DbApproval.record`` time.
 
     With no ``user_authorized``, or when no valid recorded approval matches
@@ -72,7 +75,7 @@ def require_approval(prompt: str, scope: ApprovalScope, *, stdin: TextIO, stdout
     strictly to op+tenant.
     """
     if scope.user_authorized.strip():
-        consumed = DbApproval.consume(scope.op, scope.tenant)
+        consumed = DbApproval.consume(scope.op, scope.tenant, scope.user_authorized)
         if consumed is not None:
             DbAudit.objects.create(
                 approval=consumed,

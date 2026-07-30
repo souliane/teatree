@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils.singleton import AlreadyRunningError, default_pid_path, pid_alive, read_pid, singleton
+from teatree.utils.singleton import AlreadyRunningError, default_pid_path, flock_is_held, pid_alive, read_pid, singleton
 
 
 def _hold_lock(lock_path: str, ready_path: str, release_path: str) -> None:
@@ -31,17 +31,19 @@ class TestReadPid:
     def test_missing_file_returns_none(self, tmp_path: Path) -> None:
         assert read_pid(tmp_path / "absent.pid") is None
 
-    def test_dead_pid_is_cleaned(self, tmp_path: Path) -> None:
+    def test_dead_pid_returns_none_but_preserves_the_lock_file(self, tmp_path: Path) -> None:
+        # The lock file is the flock anchor — unlinking it orphans a live holder's
+        # kernel lock (the inode), so read_pid never removes it (#3617).
         path = tmp_path / "dead.pid"
         path.write_text("999999999\n", encoding="utf-8")
         assert read_pid(path) is None
-        assert not path.is_file()
+        assert path.is_file()
 
-    def test_garbled_pid_is_cleaned(self, tmp_path: Path) -> None:
+    def test_garbled_pid_returns_none_but_preserves_the_lock_file(self, tmp_path: Path) -> None:
         path = tmp_path / "garbled.pid"
         path.write_text("not-a-number\n", encoding="utf-8")
         assert read_pid(path) is None
-        assert not path.is_file()
+        assert path.is_file()
 
     def test_live_pid_is_returned(self, tmp_path: Path) -> None:
         path = tmp_path / "alive.pid"
@@ -113,3 +115,32 @@ class TestSingleton:
     def test_default_path_uses_data_dir(self) -> None:
         path = default_pid_path("worker")
         assert path.name == "worker.pid"
+
+
+class TestFlockIsHeld:
+    def test_free_when_no_holder(self, tmp_path: Path) -> None:
+        assert flock_is_held("t", pid_path=tmp_path / "t.pid") is False
+
+    def test_held_while_a_singleton_is_active(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.pid"
+        with singleton("t", pid_path=path):
+            assert flock_is_held("t", pid_path=path) is True
+
+    def test_ignores_a_recycled_live_pid_with_no_flock(self, tmp_path: Path) -> None:
+        # A live pid recorded in the file but NO flock held: the probe reads the
+        # kernel lock (free), never the recyclable pid (which would read "held").
+        path = tmp_path / "t.pid"
+        path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        assert flock_is_held("t", pid_path=path) is False
+
+    def test_stays_visible_after_a_stale_pid_read(self, tmp_path: Path) -> None:
+        # A live worker holds the flock while its lock file records a dead pid (a
+        # clobber, or the truncate-write window). A diagnostic `read_pid` reap must
+        # not unlink the file — doing so orphans the flock's inode and every later
+        # probe opens a fresh inode reading "free", spawning a duplicate worker (#3617).
+        path = tmp_path / "t.pid"
+        with singleton("t", pid_path=path):
+            path.write_text("999999999\n", encoding="utf-8")
+            assert read_pid(path) is None
+            assert path.is_file()
+            assert flock_is_held("t", pid_path=path) is True

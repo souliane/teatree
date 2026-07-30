@@ -16,7 +16,12 @@ import json
 import re
 from typing import Any
 
-from teatree.eval.models import EvalToolCall, TokenUsage
+from teatree.agents.model_aliases import family_alias_models
+from teatree.eval.models import EvalToolCall, GateEvent, TokenUsage
+
+#: Cap on the captured ``output`` snippet of a hook_response event — enough to
+#: read the block reason, bounded so a verbose hook payload never bloats the run.
+_GATE_OUTPUT_SNIPPET_CAP = 500
 
 #: The four ``ResultMessage.usage`` keys the API bills on, mapped onto the
 #: :class:`TokenUsage` fields. The mapping is the single place a future SDK
@@ -41,41 +46,32 @@ _MODEL_USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
 _MODEL_COST_KEY = "costUSD"
 
 #: A model id may carry a trailing ``-YYYYMMDD`` date suffix (``model_usage`` keys
-#: are dated, the requested tag usually is not). The base id is the comparison key
-#: for fallback detection and the cost split.
+#: are dated, the requested tag usually is not) and a ``[1m]`` long-context suffix
+#: (the same model, a wider window). The base id is the comparison key for fallback
+#: detection and the cost split.
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
-
-#: The documented short aliases (`--models opus,sonnet,haiku`, README/app.py) map
-#: onto their full base ids. A requested tag may arrive as a short alias, so it is
-#: normalized UP to the canonical full id at the same chokepoint a dated
-#: ``model_usage`` key is normalized DOWN — otherwise ``opus`` never matches the
-#: ``claude-opus-4-8`` usage key and fallback detection / the cost split break.
-#:
-#: GENERATION BUMP: these full ids are the current model generation and will
-#: stale on the next generation. They are the same ids the sibling eval-layer
-#: defaults carry — ``eval.loader.DEFAULT_MODEL`` / ``DEFAULT_JUDGE_MODEL``,
-#: ``eval.sdk_runner.FALLBACK_MODEL``, and ``eval.models.EvalSpec.model`` /
-#: ``JudgeSpec.model``. Bump all of those together; ``core.cost.PRICE_TABLE``
-#: keys on the short tier name (``opus``), so it prices a dated bump correctly
-#: without a new entry and is NOT part of this set.
-_SHORT_ALIAS_TO_BASE: dict[str, str] = {
-    "opus": "claude-opus-4-8",
-    "sonnet": "claude-sonnet-4-6",
-    "haiku": "claude-haiku-4-5",
-}
+_LONG_CONTEXT_SUFFIX = "[1m]"
 
 
 def _base_model_id(model: str) -> str:
-    """Normalize a model id to its base form: short alias, ``@effort`` tag, and ``-YYYYMMDD`` date suffix.
+    """Normalize a model id to its base form: short alias, ``@effort``, ``[1m]``, and ``-YYYYMMDD`` suffixes.
 
     The requested tag is ``model[@effort]`` (effort is not a model) and may be a
-    documented short alias (``opus``/``sonnet``/``haiku``); a ``model_usage`` key
-    is the dated full model id. Both sides normalize through here — short aliases
-    are mapped UP to the canonical full id, the date suffix is stripped — so a
-    short-alias or dated request matches the full ``model_usage`` key.
+    documented short FAMILY alias (``opus``/``sonnet``/``haiku``); a ``model_usage``
+    key is the dated full model id, optionally ``[1m]``-suffixed. Both sides
+    normalize through here — aliases mapped UP to the concrete id, the date and
+    long-context suffixes stripped — so a short-alias / dated / long-context
+    request matches the ``model_usage`` key.
+
+    The alias map is DERIVED from the tier catalog
+    (:func:`teatree.agents.model_aliases.family_alias_models`) rather than pinned
+    here: a stale copy would make ``--models opus`` REQUEST the previous
+    generation while the transcript REPORTS the current one, silently zeroing
+    :func:`extract_model_cost_split`'s MAIN bucket and reporting a phantom
+    fallback out of :func:`requested_model_present`.
     """
-    base = _DATE_SUFFIX_RE.sub("", model.split("@", 1)[0])
-    return _SHORT_ALIAS_TO_BASE.get(base, base)
+    base = _DATE_SUFFIX_RE.sub("", model.split("@", 1)[0].removesuffix(_LONG_CONTEXT_SUFFIX))
+    return family_alias_models().get(base, base)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,6 +80,25 @@ class StreamJsonEvent:
     type: str
     subtype: str | None
     raw: dict[str, Any]
+
+    @classmethod
+    def from_obj(cls, line_no: int, obj: dict[str, Any]) -> "StreamJsonEvent | None":
+        """Fold one already-parsed event dict into a :class:`StreamJsonEvent`.
+
+        The shared alternative constructor both the on-disk transcript parser
+        (:func:`parse_stream_json`) and the typed-message mapper
+        (:mod:`teatree.eval.message_mapping`) fold through, so a synthesized fresh-run
+        stream and a replayed transcript reach the extractors as the identical event
+        shape — the typed lane skips the JSON string round-trip it used to pay
+        (serialize each event only to re-parse it). Returns ``None`` for a dict with no
+        string ``type``.
+        """
+        event_type = obj.get("type")
+        if not isinstance(event_type, str):
+            return None
+        subtype_value = obj.get("subtype")
+        subtype = subtype_value if isinstance(subtype_value, str) else None
+        return cls(line_no=line_no, type=event_type, subtype=subtype, raw=obj)
 
 
 def parse_stream_json(stdout: str) -> list[StreamJsonEvent]:
@@ -98,12 +113,9 @@ def parse_stream_json(stdout: str) -> list[StreamJsonEvent]:
             continue
         if not isinstance(obj, dict):
             continue
-        event_type = obj.get("type")
-        if not isinstance(event_type, str):
-            continue
-        subtype_value = obj.get("subtype")
-        subtype = subtype_value if isinstance(subtype_value, str) else None
-        events.append(StreamJsonEvent(line_no=line_no, type=event_type, subtype=subtype, raw=obj))
+        event = StreamJsonEvent.from_obj(line_no, obj)
+        if event is not None:
+            events.append(event)
     return events
 
 
@@ -164,6 +176,41 @@ def extract_tool_calls(events: list[StreamJsonEvent]) -> list[EvalToolCall]:
                 ),
             )
     return tool_calls
+
+
+def extract_gate_events(events: list[StreamJsonEvent]) -> list[GateEvent]:
+    """Production-hook lifecycle events the runner synthesized into the stream.
+
+    Only ``hook_response`` system events (a hook that COMPLETED) carry
+    outcome/output; ``hook_started`` is dropped upstream by the message mapper.
+    Returns one :class:`~teatree.eval.models.GateEvent` per response so the report
+    can annotate a gate-assisted pass and the fail-loud / canary checks can confirm
+    the shipped hooks fired under the eval wiring. A recorded-transcript replay
+    carries no such events, so this returns ``[]`` there — the additive default.
+    """
+    gate_events: list[GateEvent] = []
+    for event in events:
+        if event.type != "system" or event.subtype != "hook_response":
+            continue
+        raw = event.raw
+        name = raw.get("hook_event") or raw.get("hook_event_name") or ""
+        gate_events.append(
+            GateEvent(
+                hook_event_name=str(name),
+                outcome=_stringify(raw.get("outcome")),
+                output_snippet=_stringify(raw.get("output"))[:_GATE_OUTPUT_SNIPPET_CAP],
+            )
+        )
+    return gate_events
+
+
+def _stringify(value: object) -> str:
+    """A hook ``outcome``/``output`` may arrive as a str, dict, or None — render it flat."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
 
 
 def extract_text_blocks(events: list[StreamJsonEvent]) -> list[str]:
@@ -264,8 +311,8 @@ def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
 def requested_model_present(events: list[StreamJsonEvent], requested: str) -> bool | None:
     """Return whether the REQUESTED main model is present in ``model_usage`` — the fallback signal.
 
-    Claude Code ALWAYS runs ``claude-haiku-4-5`` as a cheap auxiliary model
-    alongside the requested main model, so an auxiliary key in ``model_usage`` is
+    Claude Code ALWAYS runs a cheap Haiku auxiliary model alongside the requested
+    main model, so an auxiliary key in ``model_usage`` is
     NORMAL — it is not a fallback. A fallback is the requested main model being
     SUBSTITUTED away: present here means absent from the ``model_usage`` keys.
 
@@ -293,7 +340,7 @@ class ModelCostSplit:
 
     The MAIN model is the requested base model (the comparison number the
     benchmark cares about); AUXILIARY is the sum of every other ``model_usage``
-    entry (Claude Code's background ``claude-haiku-4-5``). Both default to zero,
+    entry (Claude Code's background Haiku model). Both default to zero,
     so a non-metered / unobservable run yields an all-zero split, never a raise.
     """
 
@@ -308,7 +355,7 @@ def extract_model_cost_split(events: list[StreamJsonEvent], requested: str) -> M
 
     Each ``model_usage`` entry carries a per-model ``costUSD`` and camelCase token
     counts. The requested base model's entry is the MAIN split; every other entry
-    sums into the AUXILIARY split (the background ``claude-haiku-4-5``). A missing
+    sums into the AUXILIARY split (the background Haiku model). A missing
     or malformed map yields an all-zero split — never a raise.
     """
     for event in reversed(events):

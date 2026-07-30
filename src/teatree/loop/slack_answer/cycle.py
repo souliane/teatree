@@ -2,9 +2,10 @@
 
 The reactive, token-cheap complement to the inbound drain: where
 ``slack_dm_inbound`` only records user DMs and the prompt-drain surfaces
-them in-band, this cycle *answers* them out-of-band on a tight cadence so
-a quick ack / status question gets a reply in seconds, not at the next
-720s fat tick — and at near-zero token cost.
+them in-band, this cycle *answers* them out-of-band — event-driven off the
+inbound-event wake (~1s), with a 5m fallback timer — so a quick ack / status
+question gets a reply in seconds, not at the next slower per-loop tick, and at
+near-zero token cost.
 
 It is **complementary to the drain, not a double-answer**: ``consume()``
 stamps ``consumed_at`` (prompt-drain), this cycle stamps
@@ -25,7 +26,7 @@ even across cycle re-runs. Then a route via the zero-token classifier:
     readback-verify, only THEN ``mark_loop_replied("simple")``. A post or
     readback failure leaves the row loop-unreplied for retry.
 - ``NEEDS_WORK`` (or Stage B sentinel / budget-closed) → create ONE
-    PENDING ``t3:answerer`` Task (the fat loop's ``claim-next`` spawns
+    PENDING ``t3:answerer`` Task (the loop's ``claim-next`` spawns
     the bounded sub-agent — no new spawn path), ``mark_loop_replied(
     "delegated")``. No prose ack is posted (#1155): the :eyes: receipt
     fired earlier is the only acknowledgement; a second arrival with
@@ -138,7 +139,7 @@ class SlackAnswerReport:
 
 
 def _default_resolver(overlay: str) -> MessagingBackend | None:
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: loaded at tick time
 
     return messaging_from_overlay(overlay or None)
 
@@ -260,7 +261,7 @@ def _delegate_needs_work(backend: MessagingBackend, unit: _Unit) -> bool:
     The lead's CAS ``mark_loop_replied("delegated")`` is the idempotency
     boundary: the Task is created only by the cycle whose CAS wins, so a
     re-run (or a concurrent cycle) never enqueues a second answerer Task
-    for the same logical turn. The loop has no Agent tool — the fat loop's
+    for the same logical turn. The loop has no Agent tool — the loop's
     atomic ``t3 loop claim-next`` (now routing ``(author, answering)`` →
     ``t3:answerer``) spawns the bounded sub-agent; no new spawn path. The
     sub-agent receives the FULL coalesced question, not a fragment.

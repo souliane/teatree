@@ -90,7 +90,6 @@ class TestSpawnModelBackCompat:
     with no config changes nothing about the model a spawn resolves to.
     """
 
-    _ABSENT = Path("/nonexistent-teatree-config.toml")
     _PHASES = (
         "planning",
         "reviewing",
@@ -106,15 +105,11 @@ class TestSpawnModelBackCompat:
 
     @pytest.mark.parametrize("phase", _PHASES)
     def test_matches_phase_model_with_no_skills(self, phase: str) -> None:
-        assert resolve_spawn_model(phase, skills=[], config_path=self._ABSENT) == resolve_phase_model(
-            phase, config_path=self._ABSENT
-        )
+        assert resolve_spawn_model(phase, skills=[]) == resolve_phase_model(phase)
 
     @pytest.mark.parametrize("phase", _PHASES)
     def test_matches_phase_model_even_with_skills_when_no_floors(self, phase: str) -> None:
         # With no skill_models table, the loaded skills contribute no floor, so
         # the result is still exactly the phase model — back-compat holds even
         # when a bundle is present.
-        assert resolve_spawn_model(
-            phase, skills=["code-review", "architecture-design"], config_path=self._ABSENT
-        ) == resolve_phase_model(phase, config_path=self._ABSENT)
+        assert resolve_spawn_model(phase, skills=["code-review", "architecture-design"]) == resolve_phase_model(phase)

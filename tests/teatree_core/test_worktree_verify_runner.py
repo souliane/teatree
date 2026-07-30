@@ -18,7 +18,7 @@ class _Check:
 
 def test_all_checks_pass() -> None:
     overlay = MagicMock()
-    overlay.get_health_checks.return_value = [_Check("db"), _Check("redis")]
+    overlay.provisioning.health_checks.return_value = [_Check("db"), _Check("redis")]
     runner = WorktreeVerifyRunner(worktree=MagicMock(), overlay=overlay)
     result = runner.run()
     assert result.ok
@@ -27,7 +27,7 @@ def test_all_checks_pass() -> None:
 
 def test_failing_check_reported() -> None:
     overlay = MagicMock()
-    overlay.get_health_checks.return_value = [_Check("db", passes=False)]
+    overlay.provisioning.health_checks.return_value = [_Check("db", passes=False)]
     runner = WorktreeVerifyRunner(worktree=MagicMock(), overlay=overlay)
     result = runner.run()
     assert not result.ok
@@ -39,7 +39,7 @@ def test_exception_in_check_caught() -> None:
     bad_check.name = "boom"
     bad_check.check.side_effect = RuntimeError("exploded")
     overlay = MagicMock()
-    overlay.get_health_checks.return_value = [bad_check]
+    overlay.provisioning.health_checks.return_value = [bad_check]
     runner = WorktreeVerifyRunner(worktree=MagicMock(), overlay=overlay)
     result = runner.run()
     assert not result.ok

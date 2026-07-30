@@ -7,13 +7,8 @@ from ``teatree.core.merge`` while each symbol keeps an explicit defining module
 ``mock.patch`` targets name the defining submodule, never this facade.
 """
 
-from teatree.core.merge.authorization import MergePrecheck, _assert_clear_authorized
-from teatree.core.merge.ci_rollup import (
-    fetch_live_head_sha,
-    fetch_pr_is_draft,
-    fetch_pr_merge_state,
-    fetch_required_checks_status,
-)
+from teatree.core.merge.authorization import MergePrecheck, PresentedApprovals, _assert_clear_authorized
+from teatree.core.merge.ci_rollup import CodeHostQuery, classify_required_rollup, failing_required_names
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.execution import (
     MergeOutcome,
@@ -23,26 +18,34 @@ from teatree.core.merge.execution import (
     record_merge_and_advance,
 )
 from teatree.core.merge.head_guard import restore_caller_branch
-from teatree.core.merge.pr_slug_resolution import _GIT_BRANCH_PREFIXES, _looks_like_owner_repo, resolve_pr_repo_slug
+from teatree.core.merge.pr_slug_resolution import (
+    _GIT_BRANCH_PREFIXES,
+    _looks_like_owner_repo,
+    normalize_repo_slug,
+    resolve_pr_repo_slug,
+    resolved_repo_slug,
+)
 
 __all__ = [
     "_GIT_BRANCH_PREFIXES",
+    "CodeHostQuery",
     "MergeHeadMovedError",
     "MergeOutcome",
     "MergePrecheck",
     "MergePreconditionError",
     "MergeReplayError",
     "MergeTransientError",
+    "PresentedApprovals",
     "_assert_clear_authorized",
     "_looks_like_owner_repo",
     "assert_merge_preconditions",
+    "classify_required_rollup",
     "execute_bound_merge",
-    "fetch_live_head_sha",
-    "fetch_pr_is_draft",
-    "fetch_pr_merge_state",
-    "fetch_required_checks_status",
+    "failing_required_names",
     "merge_ticket_pr",
+    "normalize_repo_slug",
     "record_merge_and_advance",
     "resolve_pr_repo_slug",
+    "resolved_repo_slug",
     "restore_caller_branch",
 ]

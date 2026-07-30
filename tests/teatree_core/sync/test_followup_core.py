@@ -16,6 +16,7 @@ from teatree.core.sync import sync_followup
 from teatree.types import LAST_SYNC_CACHE_KEY
 from tests.teatree_core.sync._overlays import (
     _MR_WITH_ISSUE,
+    _MR_WITH_WORK_ITEM,
     _MR_WITHOUT_ISSUE,
     SyncOverlay,
     _make_mock_client,
@@ -108,6 +109,34 @@ class TestSyncFollowup(TestCase):
         assert "repo" in ticket.repos
         assert "old-repo" in ticket.repos
         assert _MR_WITH_ISSUE["web_url"] in ticket.extra["prs"]
+
+    def test_sync_updates_existing_issue_ticket_across_url_alias(self) -> None:
+        """An MR referencing an already-synced issue under a sibling URL alias updates it, never collides.
+
+        The stored ticket is keyed by ``/-/issues/200``; the MR links the same
+        issue as ``/-/work_items/200``. Both derive the one ``repo_namespaced_key``
+        ``org/repo#200``, so an ``issue_url``-only dedup would miss the row, INSERT
+        a duplicate, and trip ``unique_nonempty_repo_namespaced_key`` — aborting
+        the whole sync with ``prs_found`` reset to 0. The upsert must reuse the
+        existing ticket instead.
+        """
+        existing = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/200",
+            repos=["repo"],
+            extra={"issue_title": "Some issue"},
+        )
+
+        mock_client = _make_mock_client([_MR_WITH_WORK_ITEM])
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
+
+        result = sync_followup()
+
+        assert result.errors == []
+        assert result.prs_found == 1
+        assert Ticket.objects.count() == 1
+        existing.refresh_from_db()
+        assert _MR_WITH_WORK_ITEM["web_url"] in existing.extra["prs"]
 
     def test_returns_error_when_token_missing(self) -> None:
         overlay = SyncOverlay(gitlab_token="")
@@ -338,15 +367,14 @@ class TestSyncFollowup(TestCase):
             extra={},
         )
 
-        original_filter = Ticket.objects.filter
+        original_matching = Ticket.objects.matching_issue
 
-        def patched_filter(**kwargs):
-            qs = original_filter(**kwargs)
-            if kwargs.get("issue_url") == "https://gitlab.com/org/repo/-/issues/100":
+        def patched_matching(issue_url):
+            if issue_url == "https://gitlab.com/org/repo/-/issues/100":
                 return Ticket.objects.filter(pk__in=[ticket_a.pk, dup_b.pk, dup_c.pk]).order_by("pk")
-            return qs
+            return original_matching(issue_url)
 
-        self._monkeypatch.setattr(Ticket.objects, "filter", patched_filter)
+        self._monkeypatch.setattr(Ticket.objects, "matching_issue", patched_matching)
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)

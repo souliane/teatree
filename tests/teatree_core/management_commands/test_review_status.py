@@ -28,7 +28,6 @@ pytestmark = pytest.mark.django_db
 _REVIEWED = "a" * 40
 _MOVED = "b" * 40
 _URL = "https://github.com/souliane/teatree/pull/1680"
-_REVIEW_MOD = "teatree.core.management.commands.review"
 
 
 def _record(**overrides: object) -> dict[str, object]:
@@ -48,8 +47,8 @@ def _record(**overrides: object) -> dict[str, object]:
 
 def _status(*, head: str, checks: str = "green") -> dict[str, object]:
     with (
-        patch(f"{_REVIEW_MOD}.fetch_live_head_sha", return_value=head),
-        patch(f"{_REVIEW_MOD}.fetch_required_checks_status", return_value=checks),
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.live_head_sha", return_value=head),
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value=checks),
     ):
         return cast("dict[str, object]", call_command("review", "status", _URL))
 
@@ -68,9 +67,10 @@ class TestRecordCommand(TestCase):
             call_command("review", "record", "1680", "souliane/teatree", reviewer_identity="r")
 
     def test_record_merge_safe_on_red_checks_is_refused(self) -> None:
+        # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result (even expedited).
         result = _record(gh_verify_result="failed")
         assert not result["recorded"]
-        assert "green" in cast("str", result["error"]).lower()
+        assert "never carry gh_verify_result=failed" in cast("str", result["error"])
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_invalid_findings_json_is_refused(self) -> None:

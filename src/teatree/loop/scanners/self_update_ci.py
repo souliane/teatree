@@ -65,7 +65,7 @@ class GhMainCiStatus:
         return _classify_check_runs(out)
 
     def _check_runs(self, *, slug: str, branch: str) -> tuple[int, str]:
-        import shutil  # noqa: PLC0415
+        import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
 
         gh = shutil.which("gh") or "gh"
         argv = [gh, "api", f"repos/{slug}/commits/{branch}/check-runs", "--jq", _CHECK_RUNS_JQ]
@@ -98,7 +98,7 @@ def _default_branch(repo: Path) -> str:
 def _merged_env(extra: dict[str, str] | None) -> dict[str, str] | None:
     if extra is None:
         return None
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only on this code path
 
     return {**os.environ, **extra}
 

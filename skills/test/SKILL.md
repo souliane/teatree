@@ -68,6 +68,39 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - To run only the tests for a specific file or directory, append the path after `--`: `t3 <overlay> run tests -- path/to/test_file.py` (extra args after `--` are forwarded to pytest). This scopes verification to the changed module instead of firing the whole suite locally.
 - **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it.
 
+### Fast Local Test Selection (opt-in, #113)
+
+`t3 tool affected-tests` selects only the pytest tests a diff affects, for a fast local inner loop on the teatree repo. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. It is **opt-in local tooling** — the whole-tree 12-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
+
+```bash
+t3 tool affected-tests                 # human report: SCOPED (tach plugin + force-keep) or FULL + reason
+t3 tool affected-tests --pytest-args   # emit the pytest invocation (the --tach flags + force-keep plugin)
+t3 tool affected-tests --json          # machine-readable selection
+t3 tool affected-tests --explain all   # trace why each test is force-kept over the plugin
+t3 tool affected-tests --explain tests/teatree_core/test_x.py   # trace one test
+
+bash dev/test-affected.sh              # select + run the fast lane (--full to force whole suite)
+```
+
+How it selects (#3672): the **tach pytest plugin** is the impact engine — `--tach --tach-base origin/main` walks the reverse-import graph natively and deselects the tests a diff cannot reach, in one session. `t3 tool affected-tests` decides FULL-vs-scoped from the escalation policy and, on a scoped run, layers our **force-keep** plugin (`-p teatree.quality.force_keep_plugin`) over the deselection: the always-run floor (`tests/quality`, `tests/integration`, `tests/conformance`), the reference-reader tests for a changed non-imported path (a doc, or a `dev/` lane runner — #3817), the mirror-convention test path, and the changed test files themselves are kept regardless of what the graph says. A change to the lane's OWN selection machinery (`SELECTION_DEFINING_PATHS`: the `quality` classifier modules, `cli/affected_tests_tools.py`, `dev/test-affected.sh`) forces FULL — a selection cannot validate its own change; bound `PYTEST_XDIST_AUTO_NUM_WORKERS` on a memory-tight host rather than skip the run. The changed src modules run under `--doctest-modules` to match the CI shard flags. Zero test runs twice.
+
+Degrades to a whole-tree FULL run with the plugin OFF (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; or a dirty merge-base. When the report says FULL, run the whole suite.
+
+**Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, the coverage gate is still `bash dev/ci-parity.sh` and CI's sharded `test (3.13)` lane.
+
+**A hand-picked directory list is not a substitute.** `pytest tests/teatree_core tests/teatree_loop …` skips the always-run floor above, so a `tests/conformance` break — a new `ScanSignal` kind with no dispatch/statusline route — survives it. That reached CI twice ([#3787](https://github.com/souliane/teatree/pull/3787), [#3788](https://github.com/souliane/teatree/pull/3788)). Use `bash dev/test-affected.sh`, which force-keeps the floor; `tests/conformance` also runs unconditionally in `dev/push-gate.sh`, so it cannot be pushed red either way.
+
+### Order-Dependence (Shuffle) Lane
+
+```bash
+bash dev/test-shuffle.sh              # seed 7 — the recorded #2359 Class B reproducer
+bash dev/test-shuffle.sh 7 1 13 100   # CI's full matrix, serially
+```
+
+The local twin of CI's `test-shuffle` job: the curated order-safe directory set run serially (`-n0`) under shuffled collection, so a test that leaks process-global state and the victim it breaks land in a failing relative order.
+
+**Never hand-roll it.** `pytest-randomly` is deliberately out of the default `dev` group, so `uv run pytest -p randomly … | tail -5` on a plain env raises `ImportError: Error importing plugin "randomly"` **and still exits 0** — a shell pipeline reports its LAST stage's status, so a lane that collected nothing reads green to anything gating on the exit code. The runner installs `--group shuffle`, preflights `import pytest_randomly` and fails loud, passes `-o required_plugins=pytest-randomly`, and never pipes pytest. `tests/test_ci_shuffle_lane_scope.py` pins each of those guards plus directory parity with the CI job.
+
 ### Frontend Lint
 
 - Run the project's frontend lint command (extension point: `wt_lint_frontend`).
@@ -138,7 +171,7 @@ Analyze PR changes and produce a manual test plan. Use when the user says "test 
 
 ### 1. Gather Context
 
-- Read PR description via the issue tracker CLI (e.g., `glab mr view`, `gh pr view`)
+- Read the PR/MR state and description via the `mcp__teatree__github_pr_get` / `mcp__teatree__gitlab_pr_get` MCP tool (structured JSON; fall back to the issue tracker CLI — `glab mr view`, `gh pr view` — when the MCP server isn't connected)
 - Read the diff (`git diff main...HEAD` or via the CLI)
 - Read any linked ticket/specs for intended behavior
 

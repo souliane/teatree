@@ -7,6 +7,10 @@ running concurrently with N fix-agents writing the same DB) a momentary lock
 can still surface as ``OperationalError: database is locked`` and abort the
 merge keystone mid-flight.
 
+:func:`is_locked_error` and :func:`is_missing_table_error` are the shared
+classification of a ``DatabaseError``: a transient lock, a pre-migration missing
+relation, or a real failure that must surface.
+
 :func:`retry_on_locked` wraps a DB-write callable in a small bounded retry with
 exponential backoff. Only a transient ``database is locked`` is retried — a
 non-transient ``OperationalError`` (``no such table``, ``malformed``, …) and a
@@ -20,7 +24,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from django.db import OperationalError
+from django.db import DatabaseError, OperationalError, ProgrammingError
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +32,26 @@ DEFAULT_ATTEMPTS = 5
 DEFAULT_BASE_DELAY = 0.05
 
 _LOCKED_MARKER = "database is locked"
+_MISSING_TABLE_MARKERS = ("no such table", "does not exist", "doesn't exist", "undefined table")
 
 
 def is_locked_error(exc: OperationalError) -> bool:
     """True iff *exc* is the transient SQLite ``database is locked`` (SQLITE_BUSY)."""
     return _LOCKED_MARKER in str(exc).lower()
+
+
+def is_missing_table_error(exc: DatabaseError) -> bool:
+    """True iff *exc* is a pre-migration missing relation, not a live-DB failure.
+
+    A ``ProgrammingError`` is the schema class by construction; an
+    ``OperationalError`` is the same class only when it names the missing
+    relation (SQLite reports it there, and so a busy or corrupt DB stays
+    distinguishable from an unmigrated one).
+    """
+    if isinstance(exc, ProgrammingError):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _MISSING_TABLE_MARKERS)
 
 
 def retry_on_locked[T](

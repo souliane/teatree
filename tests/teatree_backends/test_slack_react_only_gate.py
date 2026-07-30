@@ -26,7 +26,8 @@ from typer.testing import CliRunner
 from teatree.backends.slack import reactions as slack_reactions
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, SlackReactionError, is_single_emoji_body
-from teatree.cli.slack_listen import slack_app
+from teatree.cli.slack.listen import slack_app
+from teatree.core.models import ConfigSetting
 from teatree.types import RawAPIDict
 
 runner = CliRunner()
@@ -136,14 +137,10 @@ class TestReactCommandSurfaceMissingScope:
     never a ``chat.postMessage`` thread-emoji fallback.
     """
 
-    def test_missing_scope_exits_1_with_error_code(self, tmp_path, monkeypatch) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "immediate"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _MissingScopeFake()):
+    def test_missing_scope_exits_1_with_error_code(self) -> None:
+        ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: _MissingScopeFake()):
             result = runner.invoke(slack_app, ["react", _DM_CHANNEL, "1.0", "eyes"])
 
         assert result.exit_code == 1, result.stdout
@@ -194,6 +191,23 @@ class TestSlackBotBackendRejectsSingleEmojiBody:
         backend = self._backend()
         with patch.object(backend, "_post", return_value={"ok": True}):
             backend.post_message(channel="C1", text="")
+
+    def test_post_message_forwards_blocks_in_payload(self) -> None:
+        # A native table block rides the chat.postMessage payload alongside the
+        # text fallback (#1777); text-only posts carry no blocks key.
+        backend = self._backend()
+        blocks = [{"type": "table", "rows": []}]
+        with patch.object(backend, "_post", return_value={"ok": True}) as posted:
+            backend.post_message(channel="C1", text="```\n(no rows)\n```", blocks=blocks)
+        payload = posted.call_args.args[1]
+        assert payload["blocks"] == blocks
+        assert payload["text"] == "```\n(no rows)\n```"
+
+    def test_post_message_omits_blocks_key_when_none(self) -> None:
+        backend = self._backend()
+        with patch.object(backend, "_post", return_value={"ok": True}) as posted:
+            backend.post_message(channel="C1", text="plain text")
+        assert "blocks" not in posted.call_args.args[1]
 
 
 class TestIsSingleEmojiBody:

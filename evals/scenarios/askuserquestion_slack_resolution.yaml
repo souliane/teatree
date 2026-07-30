@@ -1,7 +1,7 @@
 - name: applies_injected_askuserquestion_answer
   scenario: "a Slack reply that resolved the live AskUserQuestion is delivered as additionalContext and the agent ACTS on the answer"
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -22,7 +22,7 @@
 - name: does_not_apply_stale_locally_answered_reply
   scenario: "a Slack reply that arrived AFTER the question was already answered locally is stale — the agent must not apply it as the AskUserQuestion result"
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -45,7 +45,7 @@
 - name: does_not_apply_superseded_generation_reply
   scenario: "a reply to a superseded (older-generation) question is stale — answering the current question, not the old one"
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

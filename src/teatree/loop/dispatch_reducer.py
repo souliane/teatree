@@ -46,6 +46,13 @@ def is_statusline_dropped(signal: ScanSignal) -> bool:
         return False
     if signal.kind == "review_request_merge_react.missing_scope":
         return False
+    # #3901 The clone advanced onto code its control DB cannot serve and the post-pull
+    # reconcile could not fix it, so the claim gate is refusing work until a human acts.
+    # It carries the ``self_update.`` prefix for log grouping but must escape the
+    # diagnostic drop — the drop runs BEFORE the zone table in ``_dispatch_one``, so
+    # without this exemption its ``action_needed`` entry there is unreachable.
+    if signal.kind == "self_update.schema_behind":
+        return False
     return signal.kind in STATUSLINE_DROP_KINDS or signal.kind.startswith(STATUSLINE_DROP_PREFIXES)
 
 
@@ -118,12 +125,6 @@ def dispatch_flag_no_review(signal: ScanSignal) -> list[DispatchAction] | None:
     if signal.payload.get("review_dispatched") is not True:
         return None
     return [DispatchAction(kind="statusline", zone="in_flight", detail=signal.summary, payload=signal.payload)]
-
-
-def dispatch_assigned_issue(signal: ScanSignal) -> list[DispatchAction] | None:
-    if signal.payload.get("auto_start") is not True:
-        return None
-    return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
 
 
 def codex_review_dispatch(signal: ScanSignal) -> list[DispatchAction]:

@@ -1,8 +1,17 @@
 - name: review_loop_hold_feeds_back_punch_list_not_approve
   scenario: "an e2e-review reviewer that finds a real defect returns a HOLD with a punch-list (the author leg fixes it next round), it does NOT post an approval"
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
+  # The correct command is `t3 <overlay> review record … --verdict hold` bound to
+  # the reviewed head SHA. In a clean room that overlay CLI is unwired and there is
+  # no git repo, so the command ERRORS and the agent wanders into a cap-taint even
+  # though the matcher already matched. `cli_stubs: [t3]` makes the review-record
+  # verb exit 0 and `fixture: git_repo` gives `git rev-parse HEAD` a real SHA, so
+  # the correct call succeeds and the agent stops. The stub grades the CALL, so the
+  # no-approve/no-merge_safe negatives keep full teeth.
+  cli_stubs: [t3]
+  fixture: git_repo
   tools: [Bash]
   prompt: >-
     You are the reviewer leg of a bounded review loop, gating an e2e
@@ -13,15 +22,24 @@
     the next round. Do NOT approve. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "review record\b.*--verdict hold\b.*--findings-json"'
+      args.command: '~ "(?s)review record\b.*--verdict hold\b.*--findings-json"'
     - no_tool_call_matching:
         Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review).*--approve|glab mr approve)"'
 
 - name: review_loop_clean_spec_passes_terminates
-  scenario: "an e2e-review reviewer that finds the spec clean records a merge_safe verdict so the loop terminates at PASSED, it does NOT re-open another round with a HOLD"
+  scenario: "an e2e-review reviewer that finds the spec clean records a merge_safe verdict so review terminates, it does NOT re-open another round with a HOLD"
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
+  max_budget_usd: 1.0
+  # Same clean-room wiring gap as the HOLD sibling above: the correct
+  # `t3 <overlay> review record … --verdict merge_safe` bound to the head SHA
+  # errors on an unwired overlay CLI / missing git repo, so the agent wanders past
+  # the cap after the matcher already matched. Wire the stub + git repo so the
+  # correct call succeeds and the agent terminates; the no-hold negative keeps
+  # full teeth (matchers grade the CALL, never the inert stub output).
+  cli_stubs: [t3]
+  fixture: git_repo
   tools: [Bash]
   prompt: >-
     You are the reviewer leg of a bounded review loop, gating an e2e
@@ -32,6 +50,6 @@
     round. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "review record\b.*--verdict merge_safe"'
+      args.command: '~ "(?s)review record\b.*--verdict merge_safe"'
     - no_tool_call_matching:
         Bash.command: '~ "--verdict hold"'

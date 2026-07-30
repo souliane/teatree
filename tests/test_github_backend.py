@@ -1,18 +1,123 @@
 """Tests for teatree.backends.github — GitHub API helpers and GitHubCodeHost."""
 
 import json
+import logging
 import subprocess
+from contextlib import AbstractContextManager
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import teatree.backends.github.api as github_api_mod
 import teatree.backends.github.client as github_mod
+import teatree.backends.github.pr_reads as github_pr_reads_mod
 import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
-from teatree.backends.github.client import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
+from teatree.backends.github.api import (
+    _FORGE_READ_TIMEOUT_SECONDS,
+    _gh_api_get,
+    _gh_api_get_paginated,
+    _gh_api_patch,
+    _gh_api_post,
+    _gh_api_search_paginated,
+    _run_gh,
+    gh_ambient_auth_available,
+)
 from teatree.backends.github.projects import _gh_graphql
 from teatree.core.backend_protocols import PullRequestSpec
+
+
+def _reviewthreads_stdout(*, unresolved: int = 0, resolved: int = 0) -> str:
+    nodes = [{"isResolved": False}] * unresolved + [{"isResolved": True}] * resolved
+    return json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": nodes}}}}})
+
+
+class TestGetMrApprovals:
+    """GitHub aggregate ``reviewDecision`` mapped to an ``ApprovalState`` (#8, F8.3)."""
+
+    def _run_gh_routing(self, *, decision_stdout: str, threads_stdout: str) -> AbstractContextManager[MagicMock]:
+        """Route the two ``gh`` calls get_mr_approvals now makes.
+
+        ``get_mr_approvals`` reads ``reviewDecision`` (``gh pr view``) AND the
+        unresolved review-thread count (``gh api graphql``); a single fixed
+        return value can't serve both, so route by whether ``graphql`` is in argv.
+        """
+
+        def _route(*args: str, **_: object) -> subprocess.CompletedProcess[str]:
+            stdout = threads_stdout if "graphql" in args else decision_stdout
+            return subprocess.CompletedProcess([], 0, stdout, "")
+
+        return patch.object(github_pr_reads_mod, "_run_gh", side_effect=_route)
+
+    def _run_gh_returning(self, stdout: str) -> AbstractContextManager[MagicMock]:
+        return self._run_gh_routing(decision_stdout=stdout, threads_stdout=_reviewthreads_stdout())
+
+    def test_approved_decision_is_zero_approvals_left(self) -> None:
+        with self._run_gh_returning(json.dumps({"reviewDecision": "APPROVED"})) as mock_run:
+            state = GitHubCodeHost(token="tok").get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 0
+        # The FIRST call is the reviewDecision read (the graphql thread read follows).
+        first_args = mock_run.call_args_list[0].args
+        assert first_args[:4] == ("gh", "pr", "view", "9")
+        assert "reviewDecision" in first_args
+
+    def test_non_approved_decision_is_positive_approvals_left(self) -> None:
+        with self._run_gh_returning(json.dumps({"reviewDecision": "REVIEW_REQUIRED"})):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 1
+
+    def test_null_decision_is_not_approved(self) -> None:
+        # A PR requiring no review returns ``reviewDecision: null`` — never
+        # mis-read as merge-authorised.
+        with self._run_gh_returning(json.dumps({"reviewDecision": None})):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 1
+
+    def test_unresolved_review_threads_are_surfaced(self) -> None:
+        # F8.3: GitHub DOES gate merge on conversation resolution — the count of
+        # open review threads must reach the M7 waiting lane, not be hard-coded 0.
+        with self._run_gh_routing(
+            decision_stdout=json.dumps({"reviewDecision": "APPROVED"}),
+            threads_stdout=_reviewthreads_stdout(unresolved=2, resolved=1),
+        ):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 0
+        assert state["unresolved_resolvable"] == 2
+
+    def test_all_threads_resolved_reports_zero_unresolved(self) -> None:
+        with self._run_gh_routing(
+            decision_stdout=json.dumps({"reviewDecision": "APPROVED"}),
+            threads_stdout=_reviewthreads_stdout(resolved=3),
+        ):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["unresolved_resolvable"] == 0
+
+    def test_unreadable_review_threads_fail_closed(self) -> None:
+        # F8.3: an indeterminate thread read must not authorise a merge — fail
+        # closed to one unresolved thread rather than a fabricated zero.
+        with self._run_gh_routing(
+            decision_stdout=json.dumps({"reviewDecision": "APPROVED"}),
+            threads_stdout="not json",
+        ):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["unresolved_resolvable"] == 1
+
+    def test_thread_read_subprocess_failure_fails_closed(self) -> None:
+        def _route(*args: str, **_: object) -> subprocess.CompletedProcess[str]:
+            if "graphql" in args:
+                raise utils_run_mod.CommandFailedError(["gh"], 1, "", "HTTP 502")
+            return subprocess.CompletedProcess([], 0, json.dumps({"reviewDecision": "APPROVED"}), "")
+
+        with patch.object(github_pr_reads_mod, "_run_gh", side_effect=_route):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["unresolved_resolvable"] == 1
+
+    def test_unparsable_decision_is_not_approved(self) -> None:
+        with self._run_gh_routing(decision_stdout="not json", threads_stdout=_reviewthreads_stdout()):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 1
+        assert state["unresolved_resolvable"] == 0
 
 
 class TestIssueRepoShort:
@@ -58,24 +163,47 @@ class TestRunGh:
         assert env is None or "GH_TOKEN" not in env
 
 
+class TestGhAmbientAuthAvailable:
+    def test_true_when_gh_auth_status_succeeds(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(["gh", "auth", "status"], 0, "", "")
+            assert gh_ambient_auth_available() is True
+        assert mock_run.call_args.args[0] == ["gh", "auth", "status"]
+
+    def test_false_when_gh_auth_status_fails(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(["gh", "auth", "status"], 1, "", "not logged in")
+            assert gh_ambient_auth_available() is False
+
+    def test_false_when_gh_not_installed(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run", side_effect=FileNotFoundError):
+            assert gh_ambient_auth_available() is False
+
+
 class TestGhApiGet:
     def test_returns_parsed_json(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout='{"key": "value"}')
             result = _gh_api_get("/repos/test/issues")
         assert result == {"key": "value"}
 
     def test_passes_token(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="{}")
             _gh_api_get("/test", token="tok")
         assert mock_run.call_args[1]["token"] == "tok"
+
+    def test_bounds_the_read_with_a_timeout(self) -> None:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="{}")
+            _gh_api_get("/test")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
 
 
 class TestGhApiGetPaginated:
     def test_flattens_slurped_pages(self) -> None:
         pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=json.dumps(pages))
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments?per_page=100")
         argv = mock_run.call_args.args
@@ -85,13 +213,19 @@ class TestGhApiGetPaginated:
         assert result == [{"id": 1}, {"id": 2}, {"id": 3}]
 
     def test_passes_token(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]")
             _gh_api_get_paginated("repos/o/r/issues/5/comments", token="tok")
         assert mock_run.call_args.kwargs["token"] == "tok"
 
+    def test_bounds_the_read_with_a_timeout(self) -> None:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
+            _gh_api_get_paginated("repos/o/r/issues/5/comments")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
     def test_empty_pages_return_empty_list(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]")
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == []
@@ -99,16 +233,58 @@ class TestGhApiGetPaginated:
     def test_non_array_outer_payload_returns_empty_list(self) -> None:
         # A single-object endpoint accidentally passed here must not explode;
         # ``--slurp`` always yields an outer array, but guard defensively.
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout='{"message": "Not Found"}')
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == []
 
     def test_skips_non_list_pages(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=json.dumps([[{"id": 1}], {"oops": True}]))
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == [{"id": 1}]
+
+
+class TestGhApiSearchPaginated:
+    def test_flattens_items_across_pages(self) -> None:
+        pages = [{"items": [{"number": 1}, {"number": 2}]}, {"items": [{"number": 3}]}]
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=json.dumps(pages))
+            result = _gh_api_search_paginated("search/issues?q=is:pr")
+        assert result == [{"number": 1}, {"number": 2}, {"number": 3}]
+
+    def test_bounds_the_read_with_a_timeout(self) -> None:
+        # A stalled forge must degrade (TimeoutExpired -> caller fail-open), not
+        # hang the ship indefinitely — the GitHub search read carries a bound.
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
+            _gh_api_search_paginated("search/issues?q=is:pr")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
+    def test_non_list_payload_returns_empty(self) -> None:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout='{"message": "Not Found"}')
+            assert _gh_api_search_paginated("search/issues?q=is:pr") == []
+
+    def test_skips_non_dict_pages_and_missing_items(self) -> None:
+        pages = ["oops", {"total_count": 0}, {"items": [{"number": 5}]}]
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=json.dumps(pages))
+            assert _gh_api_search_paginated("search/issues?q=is:pr") == [{"number": 5}]
+
+
+class TestRunGhTimeout:
+    def test_threads_timeout_into_subprocess(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            _run_gh("gh", "api", "x", timeout=12.5)
+        assert mock_run.call_args.kwargs["timeout"] == pytest.approx(12.5)
+
+    def test_default_leaves_the_subprocess_unbounded(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+            _run_gh("gh", "version")
+        assert mock_run.call_args.kwargs["timeout"] is None
 
 
 class TestGhApiPost:
@@ -120,12 +296,19 @@ class TestGhApiPost:
         call_kwargs = mock_run.call_args[1]
         assert json.loads(call_kwargs["input"]) == {"body": "hello"}
 
-    def test_includes_token(self) -> None:
+    def test_passes_token_via_env_not_argv(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_api_post("/test", {}, token="tok")
         args = mock_run.call_args[0][0]
-        assert "Authorization: Bearer tok" in args
+        assert not any("Authorization" in arg for arg in args)
+        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
+
+    def test_bounds_timeout(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
+            _gh_api_post("/test", {}, token="tok")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
 
 
 class TestGhApiPatch:
@@ -138,12 +321,13 @@ class TestGhApiPatch:
         assert "--method" in args
         assert "PATCH" in args
 
-    def test_includes_token(self) -> None:
+    def test_passes_token_via_env_not_argv(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_api_patch("/test", {}, token="tok")
         args = mock_run.call_args[0][0]
-        assert "Authorization: Bearer tok" in args
+        assert not any("Authorization" in arg for arg in args)
+        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
 
 
 class TestGhGraphql:
@@ -155,12 +339,13 @@ class TestGhGraphql:
         args = mock_run.call_args[0][0]
         assert "graphql" in args
 
-    def test_includes_token(self) -> None:
+    def test_passes_token_via_env_not_argv(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "{}", "")
             _gh_graphql("{ test }", token="tok")
         args = mock_run.call_args[0][0]
-        assert "Authorization: Bearer tok" in args
+        assert not any("Authorization" in arg for arg in args)
+        assert mock_run.call_args.kwargs["env"]["GH_TOKEN"] == "tok"
 
 
 class TestFetchProjectItems:
@@ -493,7 +678,13 @@ class TestGitHubCodeHost:
             {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
             {"number": 2, "title": "second", "html_url": "https://github.com/org/other/pull/2"},
         ]
-        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
+        enrich_stdout = json.dumps(
+            {"headRefOid": "abc123", "statusCheckRollup": [], "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}
+        )
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search,
+            patch.object(github_pr_reads_mod, "_run_gh", return_value=MagicMock(stdout=enrich_stdout)),
+        ):
             host = GitHubCodeHost(token="tok")
             result = host.list_my_prs(author="alice")
         assert len(result) == 2
@@ -508,13 +699,29 @@ class TestGitHubCodeHost:
             host = GitHubCodeHost()
             assert host.list_my_prs(author="alice") == []
 
+    def test_list_my_prs_survives_enrichment_when_gh_absent(self) -> None:
+        # A missing ``gh`` binary makes the per-hit pipeline enrichment raise
+        # FileNotFoundError; the scan must still return the un-enriched rows
+        # (the my_pr.failed lane warns on the missing pipeline fields) rather
+        # than crashing the whole list.
+        items = [{"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"}]
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=items),
+            patch.object(github_pr_reads_mod, "_run_gh", side_effect=FileNotFoundError("gh")),
+        ):
+            host = GitHubCodeHost(token="tok")
+            result = host.list_my_prs(author="alice")
+        assert len(result) == 1
+        assert result[0]["number"] == 1
+        assert "status_check_rollup" not in result[0]
+
     def test_list_my_prs_paginates_beyond_first_page(self) -> None:
         # A factory with >100 open PRs hits GitHub search's 100-item cap; items
         # on page 2 are silently dropped, breaking the PR-sweep/followup scanners.
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.list_my_prs(author="alice")
@@ -544,7 +751,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.list_review_requested_prs(reviewer="alice")
@@ -573,7 +780,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.list_assigned_issues(assignee="alice")
@@ -581,6 +788,56 @@ class TestGitHubCodeHost:
         assert {"number": 100} in result
         argv = mock_run.call_args_list[0].args
         assert "--paginate" in argv
+
+    def test_list_authored_issues_searches_by_author(self) -> None:
+        """#3235 — the author-scoped intake query: issues the trusted human FILED."""
+        items = [{"number": 11, "title": "feature request"}]
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            result = host.list_authored_issues(author="souliane")
+        assert len(result) == 1
+        mock_search.assert_called_once_with(
+            "search/issues?q=is%3Aissue+is%3Aopen+author%3Asouliane&per_page=100",
+            token="tok",
+        )
+
+    def test_list_authored_issues_scopes_search_to_repo_slugs(self) -> None:
+        """repo_slugs AND OR-ed ``repo:owner/name`` qualifiers into the search — the cross-repo firehose fix."""
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            host.list_authored_issues(
+                author="souliane",
+                repo_slugs=("souliane/teatree", "souliane/other"),
+            )
+        query = mock_search.call_args.args[0]
+        assert "repo%3Asouliane%2Fteatree" in query
+        assert "repo%3Asouliane%2Fother" in query
+        assert "author%3Asouliane" in query
+
+    def test_list_authored_issues_without_repo_slugs_is_unscoped(self) -> None:
+        """Empty repo_slugs keeps today's global author query (back-compat)."""
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            host.list_authored_issues(author="souliane")
+        query = mock_search.call_args.args[0]
+        assert "repo%3A" not in query
+
+    def test_list_authored_issues_returns_empty_when_no_results(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
+            host = GitHubCodeHost()
+            assert host.list_authored_issues(author="souliane") == []
+
+    def test_list_authored_issues_paginates_beyond_first_page(self) -> None:
+        page_one = [{"number": i} for i in range(100)]
+        page_two = [{"number": 100}]
+        slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
+            host = GitHubCodeHost()
+            result = host.list_authored_issues(author="souliane")
+        assert len(result) == 101
+        assert {"number": 100} in result
+        assert "--paginate" in mock_run.call_args_list[0].args
 
     def test_create_issue_posts_payload_with_labels(self) -> None:
         created = {"html_url": "https://github.com/org/repo/issues/9", "number": 9}
@@ -617,7 +874,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
@@ -651,6 +908,24 @@ class TestGitHubCodeHost:
     def test_close_issue_rejects_non_issue_url(self) -> None:
         with patch.object(github_mod, "_gh_api_patch") as mock_patch:
             result = GitHubCodeHost().close_issue(issue_url="https://example.com/not/an/issue")
+        assert "error" in result
+        mock_patch.assert_not_called()
+
+    def test_update_issue_patches_the_body(self) -> None:
+        url = "https://github.com/org/repo/issues/9"
+        with patch.object(github_mod, "_gh_api_patch", return_value={"number": 9}) as mock_patch:
+            host = GitHubCodeHost(token="tok")
+            result = host.update_issue(issue_url=url, body="new umbrella body")
+        assert result == {"number": 9}
+        mock_patch.assert_called_once_with(
+            "repos/org/repo/issues/9",
+            {"body": "new umbrella body"},
+            token="tok",
+        )
+
+    def test_update_issue_rejects_non_issue_url(self) -> None:
+        with patch.object(github_mod, "_gh_api_patch") as mock_patch:
+            result = GitHubCodeHost().update_issue(issue_url="https://example.com/not/an/issue", body="x")
         assert "error" in result
         mock_patch.assert_not_called()
 
@@ -709,7 +984,7 @@ class TestGitHubCodeHost:
         page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
         page_two = [{"id": 100, "body": "## Test Plan"}]
         slurped_pages = json.dumps([page_one, page_two])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped_pages)
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
@@ -721,7 +996,7 @@ class TestGitHubCodeHost:
 
     def test_list_pr_comments_returns_empty_when_slurp_yields_no_pages(self) -> None:
         # No comments → ``--slurp`` emits ``[]`` (zero pages) → empty result.
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]")
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
@@ -747,7 +1022,7 @@ class TestGitHubCodeHost:
         page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
         page_two = [{"id": 100, "body": "## Test Plan"}]
         slurped_pages = json.dumps([page_one, page_two])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped_pages)
             host = GitHubCodeHost()
             result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
@@ -891,7 +1166,7 @@ class TestGitHubCodeHost:
         page_one = [{"user": {"login": "alice"}, "state": "APPROVED"}] * 100
         page_two = [{"user": {"login": "alice"}, "state": "DISMISSED"}]
         slurped = json.dumps([page_one, page_two])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice")
@@ -903,7 +1178,7 @@ class TestGitHubCodeHost:
     def test_get_pr_open_state_maps_open_to_open(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}) as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "open"}) as mock_get:
             host = GitHubCodeHost(token="tok")
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.OPEN
         mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
@@ -911,35 +1186,35 @@ class TestGitHubCodeHost:
     def test_get_pr_open_state_maps_merged_true_to_merged(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": True}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "closed", "merged": True}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.MERGED
 
     def test_get_pr_open_state_maps_closed_unmerged_to_closed(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": False}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "closed", "merged": False}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.CLOSED
 
     def test_get_pr_open_state_unrecognised_payload_is_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "draft"}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "draft"}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_open_state_non_dict_payload_is_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_open_state_unparsable_url_is_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get") as mock_get:
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://gitlab.com/o/r/-/merge_requests/7") == PrOpenState.UNKNOWN
         mock_get.assert_not_called()
@@ -947,34 +1222,34 @@ class TestGitHubCodeHost:
     def test_get_pr_open_state_any_exception_fails_open_to_unknown(self) -> None:
         from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_author_returns_login(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"user": {"login": "souliane"}}) as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"user": {"login": "souliane"}}) as mock_get:
             host = GitHubCodeHost(token="tok")
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == "souliane"
         mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
 
     def test_get_pr_author_author_less_payload_is_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value={"state": "open"}):
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
 
     def test_get_pr_author_non_dict_payload_is_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
 
     def test_get_pr_author_unparsable_url_is_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
+        with patch.object(github_pr_reads_mod, "_gh_api_get") as mock_get:
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://gitlab.com/o/r/-/merge_requests/7") == ""
         mock_get.assert_not_called()
 
     def test_get_pr_author_any_exception_fails_safe_to_empty(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
+        with patch.object(github_pr_reads_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
             host = GitHubCodeHost()
             assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
 
@@ -1085,3 +1360,252 @@ class TestGitHubCommentOutboundClaim:
             # The publish succeeded — the swallow happens inside _record_github_note_claim.
             result = host.post_pr_comment(repo="org/repo", pr_iid=1, body="hi")
         assert result == {"id": 5}
+
+
+class TestGitHubWave2Reads:
+    """Wave-2 forge READ methods — pr list/diff/commits + repo metadata."""
+
+    def test_list_prs_builds_repo_state_author_search(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[{"number": 5}]) as mock_search:
+            result = GitHubCodeHost(token="tok").list_prs(repo="org/repo", state="open", author="alice")
+        assert result == [{"number": 5}]
+        mock_search.assert_called_once_with(
+            "search/issues?q=repo%3Aorg%2Frepo+is%3Apr+is%3Aopen+author%3Aalice&per_page=100",
+            token="tok",
+        )
+
+    def test_list_prs_omits_empty_state_and_author(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            GitHubCodeHost().list_prs(repo="org/repo")
+        mock_search.assert_called_once_with(
+            "search/issues?q=repo%3Aorg%2Frepo+is%3Apr&per_page=100",
+            token="",
+        )
+
+    def test_get_pr_diff_returns_changed_files(self) -> None:
+        files = [{"filename": "a.py", "additions": 3, "patch": "@@"}]
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=files) as mock_get:
+            result = GitHubCodeHost(token="tok").get_pr_diff(repo="org/repo", pr_iid=42)
+        assert result == files
+        mock_get.assert_called_once_with("repos/org/repo/pulls/42/files?per_page=100", token="tok")
+
+    def test_get_pr_diff_unknown_pr_returns_empty(self) -> None:
+        with patch.object(
+            github_mod,
+            "_gh_api_get_paginated",
+            side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "gh: Not Found (HTTP 404)"),
+        ):
+            assert GitHubCodeHost().get_pr_diff(repo="org/repo", pr_iid=99) == []
+
+    def test_get_pr_diff_reraises_non_404_error(self) -> None:
+        # F8.5: an auth/rate-limit/network failure must NOT read as an empty diff —
+        # a reviewer signing off on "this PR touches nothing" would be a lie.
+        with (
+            patch.object(
+                github_mod,
+                "_gh_api_get_paginated",
+                side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "gh: Bad credentials (HTTP 401)"),
+            ),
+            pytest.raises(utils_run_mod.CommandFailedError),
+        ):
+            GitHubCodeHost().get_pr_diff(repo="org/repo", pr_iid=99)
+
+    def test_list_pr_commits_returns_commits(self) -> None:
+        commits = [{"sha": "abc", "commit": {"message": "fix"}}]
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=commits) as mock_get:
+            result = GitHubCodeHost().list_pr_commits(repo="org/repo", pr_iid=7)
+        assert result == commits
+        mock_get.assert_called_once_with("repos/org/repo/pulls/7/commits?per_page=100", token="")
+
+    def test_list_pr_commits_unknown_pr_returns_empty(self) -> None:
+        with patch.object(
+            github_mod,
+            "_gh_api_get_paginated",
+            side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "gh: Not Found (HTTP 404)"),
+        ):
+            assert GitHubCodeHost().list_pr_commits(repo="org/repo", pr_iid=99) == []
+
+    def test_list_pr_commits_reraises_non_404_error(self) -> None:
+        with (
+            patch.object(
+                github_mod,
+                "_gh_api_get_paginated",
+                side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "gh: rate limit exceeded (HTTP 403)"),
+            ),
+            pytest.raises(utils_run_mod.CommandFailedError),
+        ):
+            GitHubCodeHost().list_pr_commits(repo="org/repo", pr_iid=99)
+
+    def test_get_repo_returns_metadata(self) -> None:
+        payload = {"default_branch": "main", "full_name": "org/repo"}
+        with patch.object(github_mod, "_gh_api_get", return_value=payload) as mock_get:
+            result = GitHubCodeHost(token="tok").get_repo(repo="org/repo")
+        assert result == payload
+        mock_get.assert_called_once_with("repos/org/repo", token="tok")
+
+    def test_get_repo_unknown_repo_returns_structured_error(self) -> None:
+        with patch.object(
+            github_mod, "_gh_api_get", side_effect=utils_run_mod.CommandFailedError(["gh"], 1, "", "404")
+        ):
+            assert GitHubCodeHost().get_repo(repo="org/missing") == {"error": "Could not resolve repo: org/missing"}
+
+    def test_get_repo_non_dict_payload_is_structured_error(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=["unexpected"]):
+            assert GitHubCodeHost().get_repo(repo="org/repo") == {"error": "Repo not found: org/repo"}
+
+
+def _completed(stdout: str, *, returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], returncode, stdout, "")
+
+
+class TestRollupState:
+    """F5.1 — aggregate a GitHub statusCheckRollup list into one my_prs word."""
+
+    def test_empty_or_non_list_is_blank(self) -> None:
+        assert github_pr_reads_mod.rollup_state([]) == ""
+        assert github_pr_reads_mod.rollup_state(None) == ""
+
+    def test_all_success_is_success(self) -> None:
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "StatusContext", "state": "SUCCESS"},
+        ]
+        assert github_pr_reads_mod.rollup_state(rollup) == "success"
+
+    def test_any_failure_dominates(self) -> None:
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        assert github_pr_reads_mod.rollup_state(rollup) == "failure"
+
+    def test_in_progress_without_failure_is_pending(self) -> None:
+        rollup = [
+            {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None},
+            {"__typename": "StatusContext", "state": "SUCCESS"},
+        ]
+        assert github_pr_reads_mod.rollup_state(rollup) == "pending"
+
+    def test_neutral_and_skipped_count_as_passing(self) -> None:
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"},
+        ]
+        assert github_pr_reads_mod.rollup_state(rollup) == "success"
+
+
+class TestListMyPrsEnrichment:
+    """F5.1 — list_my_prs enriches each search hit with head SHA + CI rollup."""
+
+    def _search_hit(self, number: int = 9) -> dict[str, object]:
+        return {"number": number, "title": "Fix", "html_url": f"https://github.com/o/r/pull/{number}"}
+
+    def test_enriches_hit_with_head_sha_and_rollup(self) -> None:
+        detail = json.dumps(
+            {
+                "headRefOid": "cafef00d",
+                "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}],
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "BLOCKED",
+            }
+        )
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=[self._search_hit()]),
+            patch.object(github_pr_reads_mod, "_run_gh", return_value=_completed(detail)) as mock_run,
+        ):
+            prs = GitHubCodeHost(token="tok").list_my_prs(author="alice")
+        assert prs[0]["sha"] == "cafef00d"
+        assert prs[0]["status_check_rollup"] == {"state": "failure"}
+        # The enrichment read is timeout-bounded.
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
+    def test_enriched_pr_drives_the_failed_lane_via_scanner(self) -> None:
+        from teatree.loop.scanners.my_prs import MyPrsScanner  # noqa: PLC0415
+
+        detail = json.dumps(
+            {"headRefOid": "abc", "statusCheckRollup": [{"__typename": "StatusContext", "state": "FAILURE"}]}
+        )
+
+        class _Host:
+            def current_user(self) -> str:
+                return "alice"
+
+            def list_my_prs(self, *, author: str, updated_after: str | None = None):
+                del updated_after
+                hit = {"number": 9, "title": "x", "html_url": "https://github.com/o/r/pull/9"}
+                with (
+                    patch.object(github_mod, "_gh_api_search_paginated", return_value=[hit]),
+                    patch.object(github_pr_reads_mod, "_run_gh", return_value=_completed(detail)),
+                ):
+                    return GitHubCodeHost().list_my_prs(author=author)
+
+        signals = MyPrsScanner(host=_Host()).scan()
+        assert [s.kind for s in signals] == ["my_pr.failed"]
+
+    def test_enrichment_failure_leaves_hit_unenriched(self) -> None:
+        boom = utils_run_mod.CommandFailedError(["gh"], 1, "", "boom")
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=[self._search_hit()]),
+            patch.object(github_pr_reads_mod, "_run_gh", side_effect=boom),
+        ):
+            prs = GitHubCodeHost().list_my_prs(author="alice")
+        # Unenriched — no fabricated pipeline field, so the scanner surfaces the gap.
+        assert "status_check_rollup" not in prs[0]
+        assert "sha" not in prs[0]
+
+    def test_unparseable_html_url_is_left_unenriched(self) -> None:
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=[{"number": 1, "html_url": "not-a-url"}]),
+            patch.object(github_pr_reads_mod, "_run_gh") as mock_run,
+        ):
+            prs = GitHubCodeHost().list_my_prs(author="alice")
+        mock_run.assert_not_called()
+        assert "status_check_rollup" not in prs[0]
+
+
+class TestListMyMergedPrsCap:
+    """F8.8 — an uncut merged-PR search warns about the 1000-result cap."""
+
+    def test_warns_without_cutoff(self, caplog) -> None:
+        from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
+
+        reset_throttle()
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="teatree.backends.github.client"),
+        ):
+            GitHubCodeHost().list_my_merged_prs(author="alice")
+        assert any("caps at 1000" in r.message for r in caplog.records)
+
+    def test_no_warning_with_cutoff(self, caplog) -> None:
+        from teatree.utils.throttled_log import reset_throttle  # noqa: PLC0415
+
+        reset_throttle()
+        with (
+            patch.object(github_mod, "_gh_api_search_paginated", return_value=[]),
+            caplog.at_level(logging.WARNING, logger="teatree.backends.github.client"),
+        ):
+            GitHubCodeHost().list_my_merged_prs(author="alice", updated_after="2026-01-01T00:00:00Z")
+        assert not any("caps at 1000" in r.message for r in caplog.records)
+
+
+class TestDirectRunGhTimeouts:
+    """F8.4 — direct _run_gh calls on the host bound their subprocess."""
+
+    def test_is_assignable_bounds_timeout(self) -> None:
+        with (
+            patch("teatree.utils.git.remote_slug", return_value="o/r"),
+            patch.object(github_mod, "_run_gh", return_value=_completed("")) as mock_run,
+        ):
+            GitHubCodeHost(token="t").is_assignable(repo="o/r", login="alice")
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
+    def test_delete_issue_comment_bounds_timeout(self) -> None:
+        with patch.object(github_mod, "_run_gh", return_value=_completed("")) as mock_run:
+            GitHubCodeHost().delete_issue_comment(issue_url="https://github.com/o/r/issues/3", comment_id=5)
+        assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
+
+
+def test_logging_import_present() -> None:
+    # `logging` is imported at module top for the caplog-based tests above.
+    assert logging.getLogger("teatree.backends.github.client") is not None

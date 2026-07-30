@@ -7,7 +7,7 @@ from ._filters import _overlay_q
 from ._helpers import _humanize_duration
 from ._types import DashboardTaskRow
 
-_HIDDEN_STATUSES = (Task.Status.COMPLETED, Task.Status.FAILED)
+_HIDDEN_STATUSES = Task.Status.terminal()
 
 
 def _last_error_for_tasks(task_ids: list[int]) -> dict[int, str]:
@@ -46,7 +46,12 @@ def _build_task_queue(
     pending_only: bool = False,
     overlay: str | None = None,
 ) -> list[DashboardTaskRow]:
-    Task.objects.reap_stale_claims()
+    # A dashboard read is NON-DESTRUCTIVE: it never reaps or reclaims. Failing a
+    # stale CLAIMED task here (a bare ``reap_stale_claims`` with no preceding
+    # ``reclaim_orphaned_claims``) would terminally FAIL a recoverable crashed-session
+    # task and bypass the rescue-before-fail ordering. The boot/tick
+    # ``run_boot_sweeps`` owns that lifecycle; the queue just displays current
+    # state (``heartbeat_age`` reveals staleness).
     qs = Task.objects.filter(execution_target=target).select_related("ticket", "session")
     if overlay:
         qs = qs.filter(_overlay_q(overlay))

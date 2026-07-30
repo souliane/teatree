@@ -14,7 +14,35 @@ updates:
       python-deps:
         patterns:
           - "*"
+    # `claude-agent-sdk` is watched here like any other dependency. It used to carry an
+    # `ignore` entry because a bundled claude CLI at/after 2.1.204 renders an
+    # `AskUserQuestion` call as a markdown chip rather than a `tool_use` block, which
+    # redded every scenario matching on that tool call. Freezing a whole dependency
+    # defended the wrong asset: the contract teatree owns is the headless Slack round
+    # trip, not one CLI's rendering. Those scenarios now carry `surface: interactive`
+    # and are ADVISORY, enforced by tests/eval_replay/test_question_surface.py, so a
+    # bump can no longer red a gating lane (souliane/teatree#3855). That holds only
+    # because the exemption reaches EVERY verdict — including `t3 eval green-proof`
+    # over the merged artifact, the eval-ci-heal combine job's second gate
+    # (souliane/teatree#3921). The verdicts are enumerated by name in
+    # teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS and resolved by
+    # tests/conformance/test_advisory_verdict_points.py; if that list ever stops
+    # covering a gating lane, this `ignore`-free entry must be reconsidered with it.
+    # The pin stays EXACT
+    # for an unrelated reason: tests/test_claude_cli_pin.py derives the eval/test image's
+    # `claude` CLI generation from it, and reds on a bump until the bundled version is
+    # re-derived from the new wheel.
 
+  # There is deliberately NO `npm` ecosystem for the pinned `@anthropic-ai/claude-code`
+  # (and `pyright`) installs. Dependabot's npm ecosystem reads a package.json/lockfile,
+  # and its docker ecosystem reads `FROM` lines — neither can see a bare `npm install -g`
+  # in a Dockerfile `RUN` or a workflow `run:` block, so adding the ecosystem would watch
+  # nothing. Manufacturing a package.json just to give the bot a manifest would not update
+  # those strings either. The pins are instead held by tests/test_claude_cli_pin.py, which
+  # reds when a site drifts or a new one appears unclassified (souliane/teatree#3748) —
+  # including on an SDK bump, which forces the eval/test tier's bundled generation to be
+  # re-derived from the new wheel.
+  #
   # SHA-pinned actions are kept current by Dependabot: it reads the `# vN`
   # comment tag and proposes a PR when a new release resolves to a different SHA.
   - package-ecosystem: "github-actions"

@@ -6,7 +6,7 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 
 The standing rule is "**declare done only on a verified, full-spec outcome**." The recurring failure it guards against: a ticket reaches MERGED while its acceptance criteria are unverified — "declared done on a 2xx / a partial subset / an unrun test." That rule lived only in prose and personal memory; nothing mechanically refused the merge when the work was not actually done per spec.
 
-This gate makes "done" objective and audited. Each ticket carries a **rubric** of N checkable acceptance criteria, and an **independent verifier sub-agent (≠ the maker)** grades the maker's output against every criterion. ALL must pass; the gate **fails closed** if any criterion is ungraded or unevaluable. It is the highest-value lever from the Fable-5 loop-design thread (a verifier sub-agent grading a checklist beats self-critique) and the structured form of acceptance criteria — it reinforces teatree's maker≠checker thesis, pushing it from the merge-safety gate down to "is the work actually done per spec."
+This gate makes "done" objective and audited. Each ticket carries a **rubric** of N checkable acceptance criteria, and an **independent verifier sub-agent (≠ the maker)** grades the maker's output against every criterion. ALL must pass; the gate **fails closed** if any criterion is ungraded or unevaluable. It is the highest-value lever identified in an earlier loop-design retro (a verifier sub-agent grading a checklist beats self-critique) and the structured form of acceptance criteria — it reinforces teatree's maker≠checker thesis, pushing it from the merge-safety gate down to "is the work actually done per spec."
 
 ## §17.4.3 precondition placement
 
@@ -46,14 +46,11 @@ The gate **fails loud, never skip-as-pass**: a rubric that cannot be confirmed f
 
 ## Configuration
 
-`require_rubric_verification` (default `False` = NO-OP, purely additive — matches every other opt-in gate). Registered in `OVERLAY_OVERRIDABLE_SETTINGS`, so it is per-overlay overridable:
+`require_rubric_verification` (default `False` = NO-OP, purely additive — matches every other opt-in gate). Registered in `OVERLAY_OVERRIDABLE_SETTINGS`, so it is DB-home and per-overlay overridable — set it in the `ConfigSetting` store:
 
-```toml
-[teatree]
-# global default stays off
-
-[overlays.t3-teatree]
-require_rubric_verification = true   # dogfood the gate on this overlay only
+```bash
+# global default stays off; dogfood the gate on one overlay only:
+t3 <overlay> config_setting set require_rubric_verification true --overlay t3-teatree
 ```
 
 ## CLI seams
@@ -65,5 +62,5 @@ require_rubric_verification = true   # dogfood the gate on this overlay only
 
 - Auto-deriving the rubric from `/plan` → [#2240](https://github.com/souliane/teatree/issues/2240) (this MR accepts explicit criteria only).
 - Automating WHO dispatches the verifier sub-agent — this MR records a verdict; orchestration can reuse the existing review-dispatch machinery later.
-- SDK-cutover of the eval grader (`eval/judge.py`'s `ClaudeJudge.grade`, currently `claude -p`). The LLM-grader prior art is kept SEPARATE from this DB-record path on purpose: extracting a shared grader would couple the metered-LLM path to the durable-record path and pull the SDK cutover into scope.
+- Sharing a grader with the eval LLM-judge (`eval/judge.py`'s `ClaudeJudge.grade`, an in-process `claude-agent-sdk` call). The two are kept SEPARATE on purpose: extracting a shared grader would couple the metered-LLM path to this durable-record path.
 - Re-pending rubric grades on `reopen()` — out of scope for this first MR; the SHA-bind already invalidates stale grades when a new workstream moves the head.

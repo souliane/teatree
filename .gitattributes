@@ -1,0 +1,11 @@
+# Generated docs collide on nearly every CLI-touching PR (two PRs each adding a
+# `t3` subcommand touch adjacent lines of the same generated list). Resolve those
+# conflicts by REGENERATING, never by textual 3-way merge: the `generated` merge
+# driver (scripts/hooks/git_merge_generated.py) discards both sides and re-runs the
+# file's generator. The driver is registered per-clone by `t3 setup` and worktree
+# provisioning (`git config merge.generated.driver …`); a clone without it falls
+# back to a normal textual merge. See souliane/teatree#3582.
+docs/generated/cli-reference.md merge=generated
+docs/generated/antipattern-catalog.md merge=generated
+docs/generated/management-commands.md merge=generated
+evals/README.md merge=generated

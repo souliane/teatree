@@ -19,7 +19,8 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.review_findings import find_bare_references
+from teatree.core.review.review_findings import find_bare_references
+from teatree.eval.api_runner import ApiRunnerParams
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _parse_spec, load_eval_yaml
 from teatree.eval.models import EvalSpec
@@ -502,6 +503,24 @@ class ExtractedModulesTestCase(TestCase):
         # the LiveValidator shape — never invoke it (no model call in the suite).
         validator: LiveValidator = build_live_validator()
         assert callable(validator)
+
+    def test_validator_builds_the_metered_runner_and_aggregates_pass_at_k(self) -> None:
+        # Drive the returned ``_validate`` body with the metered runner construction
+        # and pass@k aggregation faked, so the validator's real body is covered
+        # without a model call: it builds an ApiInProcessRunner(ApiRunnerParams(require_executed=True))
+        # and returns the pass@k verdict's ``.ok``. The validator's lazy imports bind
+        # at build time, so build it INSIDE the patch context.
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        spec = promote._candidate_spec(dict(_GROUNDED_CANDIDATE))
+        with (
+            patch("teatree.eval.api_runner.ApiInProcessRunner") as runner_cls,
+            patch("teatree.eval.pass_at_k.run_pass_at_k", return_value=MagicMock(ok=True)) as run_k,
+        ):
+            validator: LiveValidator = build_live_validator()
+            assert validator(spec, trials=3, require="any") is True
+        runner_cls.assert_called_once_with(ApiRunnerParams(require_executed=True))
+        assert run_k.call_args.kwargs == {"k": 3, "require": "any"}
 
     def test_synthetic_transcripts_round_trip_through_run_from_transcript(self) -> None:
         fail_run = run_from_transcript("probe", fail_transcript("probe", "the cited rule"))

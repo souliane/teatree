@@ -9,6 +9,10 @@ x-base: &base
   build:
     context: ..
     dockerfile: dev/Dockerfile.test
+    # The Dockerfile is multi-stage (a `lint` stage bakes prek's hook envs FROM
+    # base); pin the target explicitly so an untargeted build never silently
+    # produces the LAST stage instead.
+    target: base
   volumes:
     - ..:/app:ro
   environment:

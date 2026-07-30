@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.e2e_workitem import (
+from teatree.core.intake.e2e_workitem import (
     E2ERecipe,
     RepoEntry,
     RunProvenance,
@@ -295,6 +295,25 @@ class ProvenanceTests(TestCase):
         assert recipe.last_run is not None
         assert "spec_path" not in recipe.last_run
         assert "manifest_entry" not in recipe.last_run
+
+    def test_artifacts_dir_provenance_is_recorded(self) -> None:
+        record_run(
+            self.ticket,
+            result="green",
+            per_repo_shas={"r": "s"},
+            provenance=RunProvenance(spec_path="e2e/x.spec.ts", artifacts_dir="/tk/.t3-cache/artifacts"),
+        )
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert recipe.last_run["artifacts_dir"] == "/tk/.t3-cache/artifacts"
+
+    def test_empty_artifacts_dir_is_not_recorded(self) -> None:
+        record_run(self.ticket, result="green", per_repo_shas={"r": "s"}, provenance=RunProvenance())
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert "artifacts_dir" not in recipe.last_run
 
 
 class GitHelpersTests(TestCase):

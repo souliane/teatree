@@ -6,7 +6,8 @@ module (``client`` / ``projects`` / ``sync`` …). ``mock.patch`` targets name t
 defining submodule, never this facade.
 """
 
-from teatree.backends.github.client import GitHubCodeHost, issue_repo_short
+from teatree.backends.github.client import GitHubCodeHost
+from teatree.backends.github.pr_reads import issue_repo_short
 from teatree.backends.github.projects import ProjectItem, fetch_project_items
 
 __all__ = ["GitHubCodeHost", "ProjectItem", "fetch_project_items", "issue_repo_short"]

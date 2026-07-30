@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-harness_canary_cli_stub_succeeds-noop", "model": "claude-haiku-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I would record a merge_safe verdict via the t3 review CLI."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

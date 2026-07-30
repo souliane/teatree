@@ -8,7 +8,7 @@ could not be bound by ``t3 <overlay> ticket merge``: the candidate set never
 contained that repo, so the probe found no candidate carrying the reviewed SHA
 and the merge escalated "PR head moved / no candidate carries that SHA".
 
-The fix adds an optional ``OverlayBase.get_merge_candidate_repo_slugs()`` hook
+The fix adds an optional ``OverlayBase.review.merge_candidate_repo_slugs()`` hook
 (default ``[]``) declaring an overlay's working-repos as ``owner/repo`` slugs;
 ``_iter_candidate_repo_slugs`` appends them to the candidate set (normalizing
 SSH / HTTPS / host-alias URL forms up to ``owner/repo``), preserving the
@@ -35,10 +35,19 @@ from django.test import TestCase
 from teatree.config import OverlayEntry
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr, pr_slug_resolution
 from teatree.core.models import MergeClear
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayReview
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these pre-date it and target other concerns, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+
 
 _RIGHT_SHA = "a" * 40  # the reviewed SHA on the working-repo PR
 _WRONG_SHA = "b" * 40  # the unrelated same-numbered PR on the clone origin
@@ -52,12 +61,19 @@ _WORKING_REPO_SLUG = "downstream-org/downstream-overlay-e2e"
 _WORKING_REPO_SSH = f"git@github.com-alias:{_WORKING_REPO_SLUG}.git"
 
 
+class _WorkingRepoOverlayReview(OverlayReview):
+    @override
+    def merge_candidate_repo_slugs(self) -> list[str]:
+        return [_WORKING_REPO_SSH]
+
+
 class _WorkingRepoOverlay(OverlayBase):
+    review = _WorkingRepoOverlayReview()
     """A minimal overlay declaring one working-repo via the new merge hook.
 
     ``get_repos`` / ``get_provision_steps`` satisfy the ABC but are irrelevant
     to candidate enumeration; the working-repo is declared ONLY through
-    :meth:`get_merge_candidate_repo_slugs`, in its host-alias SSH URL form, so
+    :meth:`review.merge_candidate_repo_slugs`, in its host-alias SSH URL form, so
     the test proves the enumeration normalizes it up to ``owner/repo``.
     """
 
@@ -69,12 +85,16 @@ class _WorkingRepoOverlay(OverlayBase):
     def get_provision_steps(self, worktree: object) -> list:
         return []
 
+
+class _ExplodingOverlayReview(OverlayReview):
     @override
-    def get_merge_candidate_repo_slugs(self) -> list[str]:
-        return [_WORKING_REPO_SSH]
+    def merge_candidate_repo_slugs(self) -> list[str]:
+        msg = "overlay enumeration blew up"
+        raise RuntimeError(msg)
 
 
 class _ExplodingOverlay(OverlayBase):
+    review = _ExplodingOverlayReview()
     """An overlay whose merge-candidate hook RAISES — must be swallowed."""
 
     @override
@@ -84,11 +104,6 @@ class _ExplodingOverlay(OverlayBase):
     @override
     def get_provision_steps(self, worktree: object) -> list:
         return []
-
-    @override
-    def get_merge_candidate_repo_slugs(self) -> list[str]:
-        msg = "overlay enumeration blew up"
-        raise RuntimeError(msg)
 
 
 def _working_repo_clear() -> MergeClear:
@@ -109,6 +124,23 @@ def _working_repo_clear() -> MergeClear:
     )
 
 
+def _read_probe(joined: str, *, head: str) -> tuple[int, str, str] | None:
+    """The §17.4.3 read-only probes (head / draft / checks / branch-protection).
+
+    The branch-protection required-context set is empty (no gate) so a green
+    rollup stays green; returns ``None`` when *joined* is none of the probes.
+    """
+    if "headRefOid" in joined:
+        return (0, head, "")
+    if "isDraft" in joined:
+        return (0, "false", "")
+    if "statusCheckRollup" in joined:
+        return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
+    return None
+
+
 def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str):
     """``gh`` stub keyed by ``--repo`` — only *right_repo*'s PR head matches."""
 
@@ -117,12 +149,8 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str):
         joined = " ".join(argv)
         repo = argv[argv.index("--repo") + 1] if "--repo" in argv else ""
         head = _RIGHT_SHA if repo == right_repo else _WRONG_SHA
-        if "headRefOid" in joined:
-            return (0, head, "")
-        if "isDraft" in joined:
-            return (0, "false", "")
-        if "statusCheckRollup" in joined:
-            return (0, _GREEN, "")
+        if (probe := _read_probe(joined, head=head)) is not None:
+            return probe
         if "state,mergeCommit" in joined:
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:
@@ -168,6 +196,8 @@ class TestWorkingRepoCandidateEnumeration(TestCase):
     def test_probe_finds_working_repo_when_clone_origin_pr_is_unrelated(self) -> None:
         """End-to-end: a working-repo PR at the reviewed SHA merges via the probe."""
         clear = _working_repo_clear()
+        # The merge resolves to the working repo; seed the #2829 verdict there.
+        seed_merge_safe_verdict(slug=_WORKING_REPO_SLUG, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
 
         with (
@@ -252,7 +282,7 @@ class TestWorkingRepoCandidateEnumeration(TestCase):
     def test_per_overlay_enumeration_failure_is_swallowed(self) -> None:
         """A hook that raises must not poison the candidate set (best-effort).
 
-        With one overlay's ``get_merge_candidate_repo_slugs`` raising and a
+        With one overlay's ``review.merge_candidate_repo_slugs`` raising and a
         second declaring a real working-repo, the enumeration swallows the
         failure and still yields the clone origin + the healthy overlay's slug.
         """

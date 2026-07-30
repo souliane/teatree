@@ -1,6 +1,11 @@
 import pytest
 
 from teatree.backends.gitlab import api as gitlab_api
+
+# The REST transport (and its ``httpx`` handle) lives in ``http_client`` since the
+# api.py transport/domain split; ``api`` is the domain layer on top of it.
+from teatree.backends.gitlab import http_client as gitlab_http
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.utils import git
 
 
@@ -70,14 +75,17 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
 
         return Response()
 
-    monkeypatch.setattr(gitlab_api.httpx, "get", fake_get)
-    monkeypatch.setattr(gitlab_api.httpx, "post", fake_post)
+    monkeypatch.setattr(gitlab_http.httpx, "get", fake_get)
+    monkeypatch.setattr(gitlab_http.httpx, "post", fake_post)
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
     monkeypatch.setattr(git, "remote_url", lambda **kwargs: "")
     monkeypatch.setattr(git, "current_branch", lambda **kwargs: "")
 
     client = gitlab_api.GitLabAPI(token="")
-    assert client.get_json("projects/x") is None
-    assert client.post_json("projects/x") is None
+    with pytest.raises(BackendResolutionError):
+        client.get_json("projects/x")
+    with pytest.raises(BackendResolutionError):
+        client.post_json("projects/x")
 
     client = gitlab_api.GitLabAPI(token="test-token")
     assert client.resolve_project("acme/platform") == client.resolve_project("acme/platform")
@@ -121,7 +129,7 @@ def test_gitlab_api_graphql_sends_post_request(monkeypatch: pytest.MonkeyPatch) 
 
         return Response()
 
-    monkeypatch.setattr(gitlab_api.httpx, "post", fake_post)
+    monkeypatch.setattr(gitlab_http.httpx, "post", fake_post)
 
     client = gitlab_api.GitLabAPI(token="test-token")
     result = client.graphql("query { project { id } }", {"projectPath": "org/repo"})
@@ -131,12 +139,12 @@ def test_gitlab_api_graphql_sends_post_request(monkeypatch: pytest.MonkeyPatch) 
     assert posted[0]["url"] == "https://gitlab.com/api/graphql"
 
 
-def test_gitlab_api_graphql_returns_none_without_token() -> None:
+def test_gitlab_api_graphql_raises_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
     client = gitlab_api.GitLabAPI(token="")
 
-    result = client.graphql("query { project { id } }")
-
-    assert result is None
+    with pytest.raises(BackendResolutionError):
+        client.graphql("query { project { id } }")
 
 
 def test_get_work_item_status_returns_status_name(monkeypatch: pytest.MonkeyPatch) -> None:

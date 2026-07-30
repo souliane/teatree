@@ -10,20 +10,18 @@ Each corpus entry calls the same real gate function the PreToolUse hook uses:
 ``_extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing),
 ``handle_block_out_of_band_merge`` (raw merge on managed repos),
 ``handle_enforce_skill_loading`` (skill-loading lockout vs bypass dimension),
-``handle_enforce_loop_registration`` (the #1677 incident gate's four
-never-lockout escapes), and ``_apply_deny_circuit_breaker`` (the UX-gate
-auto-relax that breaks a token-burning deny loop). No matchers are
-re-implemented in this test.
+and ``_apply_deny_circuit_breaker`` (the UX-gate auto-relax that breaks a
+token-burning deny loop). No matchers are re-implemented in this test.
 
-The loop-registration and circuit-breaker rows are the behavioral pin
-complementing the static AST never-lockout contract
-(``test_gate_never_lockout_contract.py``): the contract proves a deny gate
-*routes through* the escapes structurally; this corpus proves each escape
-*actually relaxes the deny* at runtime.
+The circuit-breaker rows are the behavioral pin complementing the static AST
+never-lockout contract (``test_gate_never_lockout_contract.py``): the contract
+proves a deny gate *routes through* the escapes structurally; this corpus proves
+each escape *actually relaxes the deny* at runtime.
 """
 
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -36,36 +34,36 @@ from hooks.scripts.hook_router import (
     _extract_bash_ai_sig_payload,
     handle_block_out_of_band_merge,
     handle_dispatch_prompt_quote_scanner_on_task_create,
-    handle_enforce_loop_registration,
     handle_enforce_orchestrator_boundary,
     handle_enforce_skill_loading,
     handle_quote_scanner_pretool,
+    handle_user_prompt_submit,
     handle_validate_mr_metadata,
 )
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 
-class _FakeHomePath:
-    """Pin ``router.Path.home()`` to a tmp dir for managed-repo slug resolution."""
-
-    def __init__(self, home: Path) -> None:
-        self._home = home
-
-    def __call__(self, *args: object, **kwargs: object) -> Path:
-        return Path(*args, **kwargs)
-
-    def home(self) -> Path:
-        return self._home
+def _seed_config_db(path: Path, rows: dict[str, object], scope: str = "") -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
 
 
 def _write_managed_config(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home.mkdir(exist_ok=True)
-    (home / ".teatree.toml").write_text(
-        '[overlays.example]\nworkspace_repos = ["example-org/repo"]\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(router, "Path", _FakeHomePath(home))
+    db = home / "config.sqlite3"
+    _seed_config_db(db, {"overlays": {"example": {"workspace_repos": ["example-org/repo"]}}})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -435,7 +433,7 @@ class TestSkillLoadingLockoutDimension:
 class TestSkillLoadingGateExemptDuringLoopBootstrap:
     """The skill-load gate must NOT fire during a loop-registration bootstrap turn (#1918).
 
-    When the loop-registration / loop-owner bootstrap turn surfaces a resolvable
+    When the loop-registration / t3-master bootstrap turn surfaces a resolvable
     intent skill (the bare word ``loops`` is a hard intent trigger), it lands in
     ``<session>.pending``. The very next genuine code-work call in the same turn
     (``uv run pytest``, ``manage.py``, a ``.py`` edit — routine during teatree's
@@ -489,6 +487,43 @@ class TestSkillLoadingGateExemptDuringLoopBootstrap:
             "DEADLOCK regression (#1918) — code work during a loop-registration bootstrap turn "
             "(loop-pending marker present) was blocked demanding an unrelated skill load."
         )
+
+
+class TestDefaultOffSessionNeverHardBlocks:
+    """#256: a default-off (not-engaged) session never hard-blocks Bash/Edit/Write.
+
+    With the DB-home ``autoload`` switch unset and no teatree/``t3:`` skill loaded,
+    ``handle_user_prompt_submit`` suppresses the suggester and writes an EMPTY
+    ``<session>.pending``. The PreToolUse skill-loading gate then has nothing to
+    demand, so a plain ``.py`` Edit and a Python-tooling Bash both pass. A
+    regression that wrote a non-empty pending for a default-off session — or that
+    blocked here — would brick a fresh install on its first code-touching call.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = tmp_path / "state"
+        state.mkdir()
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        # Hermetic, default-OFF: clean HOME (no autoload override) and no env opt-in.
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
+
+    def test_default_off_prompt_then_py_edit_not_blocked(self, tmp_path: Path) -> None:
+        handle_user_prompt_submit({"session_id": "off-edit", "prompt": "fix the bug in foo.py and run ruff check"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "off-edit", "tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "wk" / "x.py")}}
+        )
+        assert blocked is False, "LOCKOUT regression (#256) — a default-off session hard-blocked a .py Edit."
+
+    def test_default_off_prompt_then_bash_not_blocked(self) -> None:
+        handle_user_prompt_submit({"session_id": "off-bash", "prompt": "please run the test suite"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "off-bash", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is False, "LOCKOUT regression (#256) — a default-off session hard-blocked a Bash command."
 
 
 class TestMustDenyMerge:
@@ -557,14 +592,14 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
-        self._home_dir = home
+        monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
+        self._db = home / "config.sqlite3"
 
-    def _write_toml(self, body: str) -> None:
-        (self._home_dir / ".teatree.toml").write_text(body, encoding="utf-8")
+    def _enable(self, key: str) -> None:
+        _seed_config_db(self._db, {key: True})
 
     def test_clean_slack_mcp_send_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Default-ON Slack-MCP arm + a clean body (no verbatim quote) must pass.
-        self._write_toml("[teatree]\nmcp_privacy_gate_enabled = true\n")
+        self._enable("mcp_privacy_gate_enabled")
         data = {
             "session_id": "sess-corpus",
             "tool_name": "mcp__claude_ai_Slack__slack_send_message",
@@ -575,8 +610,7 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         assert capsys.readouterr().out.strip() == ""
 
     def test_clean_fanout_task_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Flag enabled + a clean fan-out brief (no verbatim quote) must pass.
-        self._write_toml("[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n")
+        self._enable("dispatch_quote_gate_on_task_create_enabled")
         data = {
             "session_id": "sess-corpus",
             "task_subject": "implement the export endpoint",
@@ -639,19 +673,14 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
         home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
         monkeypatch.setenv("HOME", str(home))
-        self._home_dir = home
+        monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
+        self._db = home / "config.sqlite3"
 
     def _enable(self) -> None:
-        # The gate is default-ON; writing the flag explicitly is a no-op for the
-        # verdict but documents intent at the call site.
-        (self._home_dir / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
-        )
+        _seed_config_db(self._db, {"orchestrator_boundary_agent_gate_enabled": True})
 
     def _disable(self) -> None:
-        (self._home_dir / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
-        )
+        _seed_config_db(self._db, {"orchestrator_boundary_agent_gate_enabled": False})
 
     def _agent(self, *, run_in_background: bool = False, prompt: str = "implement", agent_id: str = "") -> dict:
         data: dict = {
@@ -742,87 +771,6 @@ class TestValidateMrMetadataMcpArm:
         verdict = handle_validate_mr_metadata(data)
         assert verdict is True, "BYPASS regression — malformed glab-MR MCP metadata was allowed."
         assert capsys.readouterr().out.strip(), "a deny must emit a hookSpecificOutput payload"
-
-
-class TestLoopRegistrationGateNeverLockout:
-    """The #1677 incident gate's four never-lockout escapes, pinned behaviorally.
-
-    ``handle_enforce_loop_registration`` hard-locked the whole factory several
-    times — the worst recurring incident. It denied every Bash/Edit/Write until
-    the loop cron was registered, with no escape for the agents that could not
-    register one. The fix layered four NEVER-LOCKOUT escapes; the static AST
-    contract (``test_gate_never_lockout_contract.py``) proves the gate *routes
-    through* them structurally. This corpus proves each escape *actually relaxes
-    the deny at runtime*:
-
-    1. sub-agent exemption — a sub-agent has no ``CronCreate``, so a deny is an
-        unrecoverable lockout that killed every spawned coder/reviewer;
-    2. the durable ``loop_registration_gate_enabled = false`` kill-switch;
-    3. ``_fail_open_or_deny`` routing — a self-rescue command is never denied;
-    4. ``_fail_open_or_deny`` routing — the master ``danger_gate_fail_open`` switch
-        relaxes the deny.
-
-    The must-DENY anchor (main session, gate on, no escape → blocked) is the
-    proof the must-ALLOW rows are escapes, not a gate that never fires.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        state = tmp_path / "state"
-        state.mkdir()
-        monkeypatch.setattr(router, "STATE_DIR", state)
-        monkeypatch.setattr(router, "_teatree_active", lambda _session_id: True)
-        monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
-        monkeypatch.setattr(router, "_session_drives_loop", lambda _session_id: True)
-
-    def _pending(self, session_id: str) -> None:
-        (router.STATE_DIR / f"{session_id}.loop-pending").write_text("1", encoding="utf-8")
-
-    def _event(self, session_id: str, *, command: str = "", agent_id: str = "") -> dict:
-        data: dict = {"session_id": session_id, "tool_name": "Bash", "tool_input": {"command": command}}
-        if agent_id:
-            data["agent_id"] = agent_id
-        return data
-
-    def test_must_deny_main_session_with_pending_marker(self, capsys: pytest.CaptureFixture[str]) -> None:
-        self._pending("anchor")
-        assert handle_enforce_loop_registration(self._event("anchor")) is True, (
-            "ANCHOR regression — the loop-registration nudge no longer fires for a main session "
-            "with a pending marker; the must-ALLOW rows below would then be vacuous."
-        )
-        assert "LOOP REGISTRATION" in capsys.readouterr().out
-
-    def test_must_allow_subagent_dispatch(self) -> None:
-        self._pending("sub")
-        assert handle_enforce_loop_registration(self._event("sub", agent_id="sub-1")) is False, (
-            "LOCKOUT regression (escape 1) — a sub-agent (no CronCreate tool) was nudge-blocked; "
-            "this is the unrecoverable lockout that killed every spawned coder/reviewer."
-        )
-
-    def test_must_allow_when_kill_switch_disables_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        (Path.home() / ".teatree.toml").write_text(
-            "[teatree]\nloop_registration_gate_enabled = false\n", encoding="utf-8"
-        )
-        self._pending("off")
-        assert handle_enforce_loop_registration(self._event("off")) is False, (
-            "LOCKOUT regression (escape 2) — the durable loop_registration_gate_enabled=false "
-            "kill-switch no longer disables the nudge."
-        )
-
-    def test_must_allow_self_rescue_command(self) -> None:
-        self._pending("rescue")
-        assert handle_enforce_loop_registration(self._event("rescue", command="t3 teatree gate disable")) is False, (
-            "LOCKOUT regression (escape 3) — a self-rescue command was nudge-blocked; the gate must "
-            "never block the very commands that rescue a lockout."
-        )
-
-    def test_must_allow_when_master_fail_open_enabled(self) -> None:
-        (Path.home() / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = true\n", encoding="utf-8")
-        self._pending("failopen")
-        assert handle_enforce_loop_registration(self._event("failopen")) is False, (
-            "LOCKOUT regression (escape 4) — the master danger_gate_fail_open switch no longer relaxes the "
-            "loop-registration deny via _fail_open_or_deny."
-        )
 
 
 class TestCircuitBreakerRelaxesUxGate:

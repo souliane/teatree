@@ -1,10 +1,13 @@
 """Tests for ``manage.py ticket_short_describe`` (#1156).
 
-The command drives one in-process ``claude_agent_sdk.query`` turn in
-production (#2204 cutover — no ``claude -p`` subprocess). These tests
-inject a fake summary (via ``shutil.which`` and ``_describe`` patches)
-so the suite never invokes a real LLM, and pin that NO claude-binary
-subprocess is ever spawned on the describe path.
+The command drives one clean-room, cheap-tier turn through the shared
+one-shot seam (:func:`teatree.agents.one_shot.run_one_shot`) — so the summary
+follows a swapped tier-model DB row and works off-Claude, with no
+``teatree.eval`` import on the production path. These tests inject a fake
+summary by patching ``run_one_shot`` so the suite never invokes a real LLM,
+and pin that NO subprocess is ever spawned on the describe path. The seam's
+own clean-room + failure contract is proved in
+``tests/teatree_agents/test_one_shot.py``.
 """
 
 from unittest.mock import patch
@@ -12,16 +15,17 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-import teatree.core.management.commands.ticket_short_describe as describe_mod
-from teatree.core.management.commands.ticket_short_describe import (
+from teatree.agents.ticket_short_description import (
     _FALLBACK_LEN,
-    _claude_summarize,
-    _describe_all_missing,
-    _describe_one,
-    _generate_short_description,
+    _summarize,
     _truncation_fallback,
+    generate_short_description,
 )
+from teatree.core.management.commands.ticket_short_describe import _describe_all_missing, describe_ticket
 from teatree.core.models import Ticket
+
+_SUMMARIZE = "teatree.agents.ticket_short_description._summarize"
+_RUN_ONE_SHOT = "teatree.agents.ticket_short_description.run_one_shot"
 
 
 class TestTruncationFallback:
@@ -47,121 +51,86 @@ class TestTruncationFallback:
 
 class TestGenerateShortDescription:
     def test_blank_title_returns_empty(self) -> None:
-        assert _generate_short_description("") == ""
-        assert _generate_short_description("   ") == ""
+        assert generate_short_description("") == ""
+        assert generate_short_description("   ") == ""
 
-    def test_summary_from_claude_is_truncated_to_eighty(self) -> None:
+    def test_summary_from_model_is_truncated_to_eighty(self) -> None:
         long_summary = "x" * 200
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            return_value=long_summary,
-        ):
-            result = _generate_short_description("Some ticket title")
+        with patch(_SUMMARIZE, return_value=long_summary):
+            result = generate_short_description("Some ticket title")
         assert len(result) == 80
         assert result == "x" * 80
 
-    def test_falls_back_to_truncation_when_claude_returns_empty(self) -> None:
+    def test_falls_back_to_truncation_when_model_returns_empty(self) -> None:
         title = "z" * 100
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            return_value="",
-        ):
-            result = _generate_short_description(title)
+        with patch(_SUMMARIZE, return_value=""):
+            result = generate_short_description(title)
         assert result.endswith("…")
         assert len(result) == _FALLBACK_LEN
 
-    def test_short_title_with_failed_claude_returns_title_as_is(self) -> None:
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            return_value="",
-        ):
-            assert _generate_short_description("hi") == "hi"
+    def test_short_title_with_failed_model_returns_title_as_is(self) -> None:
+        with patch(_SUMMARIZE, return_value=""):
+            assert generate_short_description("hi") == "hi"
 
 
-class TestClaudeSummarizer:
-    """The summary path is the in-process Agent SDK — never a ``claude -p`` subprocess (#2204)."""
+class TestSummarize:
+    """The summary path is the shared one-shot seam — cheap tier, no hardcoded model id."""
 
-    def test_missing_binary_returns_empty(self) -> None:
-        with patch.object(describe_mod.shutil, "which", return_value=None):
-            assert _claude_summarize("anything") == ""
+    def test_seam_failure_returns_empty(self) -> None:
+        # The seam returns None on ANY failure (missing binary, credential
+        # problem, timeout, backend error) → the caller degrades to truncation.
+        with patch(_RUN_ONE_SHOT, return_value=None):
+            assert _summarize("anything") == ""
 
-    def test_sdk_failure_returns_empty(self) -> None:
-        """A crash inside the SDK turn falls through to empty (not raise)."""
-        with (
-            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
-            patch.object(describe_mod, "_describe", side_effect=RuntimeError("sdk boom")),
-        ):
-            assert _claude_summarize("anything") == ""
-
-    def test_timeout_returns_empty(self) -> None:
-        with (
-            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
-            patch.object(describe_mod, "_describe", side_effect=TimeoutError),
-        ):
-            assert _claude_summarize("title") == ""
+    def test_turn_rides_the_cheap_tier(self) -> None:
+        # Anti-hardcode pin: the summary resolves the CHEAP tier through the
+        # seam rather than naming a concrete model id.
+        with patch(_RUN_ONE_SHOT, return_value="ok") as one_shot:
+            assert _summarize("title") == "ok"
+        (_prompt, spec), _kwargs = one_shot.call_args
+        assert spec.tier == "cheap"
+        assert spec.max_turns == 1
 
     def test_returns_last_non_blank_line_stripped(self) -> None:
-        with (
-            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
-            patch.object(describe_mod, "_describe", return_value='preamble\n"Final summary"\n'),
-        ):
-            assert _claude_summarize("title") == "Final summary"
+        with patch(_RUN_ONE_SHOT, return_value='preamble\n"Final summary"'):
+            assert _summarize("title") == "Final summary"
 
-    def test_empty_output_returns_empty(self) -> None:
-        with (
-            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
-            patch.object(describe_mod, "_describe", return_value=""),
-        ):
-            assert _claude_summarize("title") == ""
+    def test_summary_path_never_spawns_a_subprocess(self) -> None:
+        """The describe path never shells a subprocess — the seam is the one runner.
 
-    def test_summary_path_never_spawns_a_claude_subprocess(self) -> None:
-        """RED before the #2204 cutover: assert NO ``claude -p`` subprocess is launched.
-
-        The describe path drives the in-process SDK only. We record the two
-        ``subprocess`` egress *primitives* (``subprocess.Popen`` /
-        ``subprocess.run``) rather than the ``teatree.utils.run`` wrappers,
-        and that placement is what makes the guard real: every teatree wrapper
-        bottoms out in one of these primitives — ``spawn`` calls
-        ``subprocess.Popen`` at the module level (``run.py``), so a
-        reintroduced ``spawn(["claude", "-p", …])`` is recorded here.
-        Recording ``teatree.utils.run.spawn`` instead would be a no-op, since
-        the pre-cutover call site imported it by name
-        (``from teatree.utils.run import spawn``) — a binding a wrapper-level
-        patch can't reach. The SDK boundary (``_describe``) is stubbed to a
-        canned summary; a healthy run returns it and touches neither primitive.
+        With ``run_one_shot`` stubbed to a canned summary, a healthy run touches
+        neither ``subprocess`` egress primitive (``Popen`` / ``run``), so a
+        reintroduced ``spawn(["claude", "-p", …])`` on this path would be caught.
         """
         spawn_calls: list[object] = []
 
-        def _record(*args: object, **kwargs: object) -> object:
+        def _record(*args: object, **_kwargs: object) -> object:
             spawn_calls.append(args)
             return None
 
         with (
-            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
-            patch.object(describe_mod, "_describe", return_value="dogfood smoke scanner"),
+            patch(_RUN_ONE_SHOT, return_value="dogfood smoke scanner"),
             patch("subprocess.Popen", side_effect=_record),
             patch("subprocess.run", side_effect=_record),
         ):
-            result = _claude_summarize("implement the dogfood smoke scanner")
+            result = _summarize("implement the dogfood smoke scanner")
 
         assert result == "dogfood smoke scanner"
         assert spawn_calls == []
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
 class TestDescribeOne(TestCase):
     def test_missing_ticket_emits_noop_and_exits_one(self) -> None:
         captured: list[str] = []
         with pytest.raises(SystemExit) as excinfo:
-            _describe_one(99999, stdout_write=captured.append)
+            describe_ticket(99999, stdout_write=captured.append)
         assert excinfo.value.code == 1
         assert any("no ticket with id=99999" in line for line in captured)
 
     def test_ticket_without_title_is_noop(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", extra={})
         captured: list[str] = []
-        _describe_one(ticket.pk, stdout_write=captured.append)
+        describe_ticket(ticket.pk, stdout_write=captured.append)
         assert any("has no extra['issue_title']" in line for line in captured)
         ticket.refresh_from_db()
         assert ticket.short_description == ""
@@ -172,17 +141,12 @@ class TestDescribeOne(TestCase):
             extra={"issue_title": "implement the dogfood smoke scanner"},
         )
         captured: list[str] = []
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            return_value="dogfood smoke scanner",
-        ):
-            _describe_one(ticket.pk, stdout_write=captured.append)
+        with patch(_SUMMARIZE, return_value="dogfood smoke scanner"):
+            describe_ticket(ticket.pk, stdout_write=captured.append)
         ticket.refresh_from_db()
         assert ticket.short_description == "dogfood smoke scanner"
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
 class TestDescribeAllMissing(TestCase):
     def test_skips_tickets_without_title(self) -> None:
         Ticket.objects.create(overlay="t3-teatree", extra={})
@@ -200,10 +164,7 @@ class TestDescribeAllMissing(TestCase):
             overlay="t3-teatree",
             extra={"issue_title": "merge clear keystone"},
         )
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            side_effect=["provision smoke", "merge clear"],
-        ):
+        with patch(_SUMMARIZE, side_effect=["provision smoke", "merge clear"]):
             captured: list[str] = []
             _describe_all_missing(stdout_write=captured.append)
         ticket_a.refresh_from_db()
@@ -213,8 +174,6 @@ class TestDescribeAllMissing(TestCase):
         assert any("DONE  described 2 ticket(s)" in line for line in captured)
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
 class TestCommandDescribeMethod(TestCase):
     """Cover the ``Command.describe`` argument-validation branches directly."""
 
@@ -235,16 +194,13 @@ class TestCommandDescribeMethod(TestCase):
             cmd.describe(ticket_id=0, all_missing=False)
         assert excinfo.value.code == 2
 
-    def test_describe_with_ticket_id_calls_describe_one(self) -> None:
+    def test_describe_with_ticket_id_calls_describe_ticket(self) -> None:
         cmd = self._command()
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             extra={"issue_title": "test ticket"},
         )
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            return_value="test ticket",
-        ):
+        with patch(_SUMMARIZE, return_value="test ticket"):
             cmd.describe(ticket_id=ticket.pk, all_missing=False)
         ticket.refresh_from_db()
         assert ticket.short_description == "test ticket"
@@ -255,8 +211,5 @@ class TestCommandDescribeMethod(TestCase):
             overlay="t3-teatree",
             extra={"issue_title": "backfill candidate"},
         )
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe._claude_summarize",
-            return_value="backfilled",
-        ):
+        with patch(_SUMMARIZE, return_value="backfilled"):
             cmd.describe(ticket_id=0, all_missing=True)

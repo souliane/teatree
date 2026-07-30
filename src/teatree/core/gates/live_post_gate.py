@@ -62,7 +62,7 @@ def require_live_post_approval(*, mr_url: str) -> None:
     TTL window) or raises :class:`LivePostBlockedError` — never a silent
     drop, never an unattended live publish.
     """
-    from teatree.core.models.live_post_approval import LivePostApproval  # noqa: PLC0415
+    from teatree.core.models.live_post_approval import LivePostApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
     consumed = LivePostApproval.consume(mr_url=mr_url)
     if consumed is None:

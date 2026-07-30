@@ -1,4 +1,4 @@
-"""Tests for teatree.core.worktree_env — env cache generation."""
+"""Tests for teatree.core.worktree.worktree_env — env cache generation."""
 
 import stat
 import tempfile
@@ -9,13 +9,14 @@ import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.worktree_env as worktree_env_mod
+import teatree.core.worktree.worktree_env as worktree_env_mod
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
-from teatree.core.overlay import OverlayBase, ProvisionStep
-from teatree.core.worktree_env import (
+from teatree.core.overlay import OverlayBase, OverlayProvisioning, ProvisionStep
+from teatree.core.worktree.worktree_env import (
     CACHE_DIRNAME,
     CACHE_FILENAME,
     detect_drift,
+    env_cache_path,
     load_overrides,
     render_env_cache,
     set_override,
@@ -40,19 +41,13 @@ class TestDockerHostAddress(TestCase):
             assert worktree_env_mod._docker_host_address() == "172.17.0.1"
 
 
-class SharedPostgresOverlay(OverlayBase):
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
+class _SharedPostgresOverlayProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return DbImportStrategy(shared_postgres=True)
 
 
-class EnvExtraOverrideOverlay(OverlayBase):
-    """Overlay whose get_env_extra collides with a core key."""
+class SharedPostgresOverlay(OverlayBase):
+    provisioning = _SharedPostgresOverlayProvisioning()
 
     def get_repos(self) -> list[str]:
         return ["backend"]
@@ -60,14 +55,36 @@ class EnvExtraOverrideOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+
+class _EnvExtraOverrideOverlayProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {"WT_DB_NAME": "custom_db", "EXTRA_KEY": "extra_value"}
 
     def declared_env_keys(self) -> set[str]:
         return {"WT_DB_NAME", "EXTRA_KEY"}
 
 
+class EnvExtraOverrideOverlay(OverlayBase):
+    provisioning = _EnvExtraOverrideOverlayProvisioning()
+    """Overlay whose provisioning.env_extra collides with a core key."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+
+class _ExtraOnlyOverlayProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"EXTRA_KEY": "extra_value"}
+
+    def declared_env_keys(self) -> set[str]:
+        return {"EXTRA_KEY"}
+
+
 class ExtraOnlyOverlay(OverlayBase):
+    provisioning = _ExtraOnlyOverlayProvisioning()
     """Overlay that declares a non-colliding extra key."""
 
     def get_repos(self) -> list[str]:
@@ -76,14 +93,17 @@ class ExtraOnlyOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"EXTRA_KEY": "extra_value"}
+
+class _PostgresPasswordOverlayProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_PASSWORD": "s3cr3t-pw", "EXTRA_KEY": "extra_value"}
 
     def declared_env_keys(self) -> set[str]:
-        return {"EXTRA_KEY"}
+        return {"POSTGRES_PASSWORD", "EXTRA_KEY"}
 
 
 class PostgresPasswordOverlay(OverlayBase):
+    provisioning = _PostgresPasswordOverlayProvisioning()
     """Overlay that returns POSTGRES_PASSWORD without declaring it secret."""
 
     def get_repos(self) -> list[str]:
@@ -92,23 +112,9 @@ class PostgresPasswordOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"POSTGRES_PASSWORD": "s3cr3t-pw", "EXTRA_KEY": "extra_value"}
 
-    def declared_env_keys(self) -> set[str]:
-        return {"POSTGRES_PASSWORD", "EXTRA_KEY"}
-
-
-class SecretOverlay(OverlayBase):
-    """Overlay whose get_env_extra includes both public and secret keys."""
-
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+class _SecretOverlayProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {
             "PUBLIC_KEY": "public_value",
             "SECRET_PASSWORD": "s3cr3t",
@@ -122,12 +128,9 @@ class SecretOverlay(OverlayBase):
         return {"SECRET_PASSWORD", "DATABASE_URL"}
 
 
-class BaseImageOverlay(OverlayBase):
-    """Overlay that declares a base image — tag should land in env cache."""
-
-    def __init__(self, context: Path) -> None:
-        super().__init__()
-        self._context = context
+class SecretOverlay(OverlayBase):
+    provisioning = _SecretOverlayProvisioning()
+    """Overlay whose provisioning.env_extra includes both public and secret keys."""
 
     def get_repos(self) -> list[str]:
         return ["backend"]
@@ -135,16 +138,36 @@ class BaseImageOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_base_images(self, worktree: Worktree) -> list[BaseImageConfig]:
+
+class _BaseImageOverlayProvisioning(OverlayProvisioning):
+    def __init__(self, overlay: "BaseImageOverlay") -> None:
+        self._overlay = overlay
+
+    def base_images(self, worktree: Worktree) -> list[BaseImageConfig]:
         return [
             BaseImageConfig(
                 image_name="myapp-local",
                 dockerfile="Dockerfile-local",
                 lockfile="Pipfile.lock",
-                build_context=self._context,
+                build_context=self._overlay._context,
                 env_var="MYAPP_BASE_IMAGE",
             )
         ]
+
+
+class BaseImageOverlay(OverlayBase):
+    """Overlay that declares a base image — tag should land in env cache."""
+
+    def __init__(self, context: Path) -> None:
+        super().__init__()
+        self._context = context
+        self.provisioning = _BaseImageOverlayProvisioning(self)
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
 
 
 _SHARED_PG = {"test": SharedPostgresOverlay()}
@@ -243,7 +266,9 @@ class TestWriteEnvCache(TestCase):
 
             assert spec is not None
             assert spec.path.name == CACHE_FILENAME
-            assert spec.path.parent.name == CACHE_DIRNAME
+            # Per repo, under the out-of-repo .t3-cache/ sibling.
+            assert spec.path.parent.name == wt_path.name
+            assert spec.path.parent.parent.name == CACHE_DIRNAME
             content = spec.path.read_text(encoding="utf-8")
             assert "# GENERATED" in content
             assert "WT_VARIANT=acme" in content
@@ -253,13 +278,9 @@ class TestWriteEnvCache(TestCase):
             mode = stat.S_IMODE(spec.path.stat().st_mode)
             assert mode == 0o444
 
-            # Real file in repo — not a symlink (#1313). A symlink would dangle
-            # inside a bind-mounted container because the target is a host-only
-            # absolute path.
-            repo_copy = wt_path / CACHE_FILENAME
-            assert not repo_copy.is_symlink()
-            assert repo_copy.is_file()
-            assert repo_copy.read_text(encoding="utf-8") == spec.path.read_text(encoding="utf-8")
+            # No copy inside the repo working tree (#3097) — the cache is the
+            # sole out-of-repo file under ``.t3-cache/``.
+            assert not (wt_path / CACHE_FILENAME).exists()
 
     def test_shared_postgres_adds_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,48 +327,113 @@ class TestWriteEnvCache(TestCase):
             assert "MYAPP_BASE_IMAGE=myapp-local:base" in spec.content
 
 
-class TestRepoCopyNotSymlink(TestCase):
-    """Regression for #1313 — the in-worktree copy must be a real file.
+class TestNoRepoWorkingTreeCopy(TestCase):
+    """Regression for #3097 — the cache must not be copied into a repo tree.
 
-    A symlink at ``<wt_path>/.t3-env.cache`` pointing at the host-absolute
-    cache path dangles inside a bind-mounted container, breaking any
-    in-container reader of the env file (pipenv, dotenv, plain ``stat``)
-    with errno 22.
+    A generated file inside a repo working tree surfaces as untracked in any
+    sibling repo whose ignore file does not list it, and an agent staging
+    everything can commit it onto a merge request. The single copy lives in
+    the out-of-repo ``.t3-cache/`` sibling of the worktree (the #3096
+    principle); consumers read it from there.
     """
 
-    def test_repo_copy_is_regular_file(self) -> None:
+    def test_cache_not_written_inside_repo_working_tree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(tmp, ticket_name="t-r1", ticket_url="https://ex.com/r1", db_name="wt_r1")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
                 spec = write_env_cache(wt)
             assert spec is not None
-            repo_copy = wt_path / CACHE_FILENAME
-            assert not repo_copy.is_symlink()
-            assert repo_copy.is_file()
+            assert not (wt_path / CACHE_FILENAME).exists()
+            assert list(wt_path.iterdir()) == []
 
-    def test_repo_copy_content_equals_source(self) -> None:
+    def test_canonical_cache_lives_outside_the_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(tmp, ticket_name="t-r2", ticket_url="https://ex.com/r2", db_name="wt_r2")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
                 spec = write_env_cache(wt)
             assert spec is not None
-            repo_copy = wt_path / CACHE_FILENAME
-            assert repo_copy.read_text(encoding="utf-8") == spec.path.read_text(encoding="utf-8")
+            assert wt_path not in spec.path.parents
+            assert spec.path == wt_path.parent / CACHE_DIRNAME / wt_path.name / CACHE_FILENAME
+            assert spec.path.is_file()
 
-    def test_repo_copy_survives_source_deletion(self) -> None:
-        """A real file is independent of the source — symlinks would dangle."""
+    def test_stale_in_worktree_copy_is_removed_on_regenerate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, wt_path = _make_worktree(tmp, ticket_name="t-r3", ticket_url="https://ex.com/r3", db_name="wt_r3")
+            stale = wt_path / CACHE_FILENAME
+            stale.write_text("leftover from a pre-#3097 provision\n", encoding="utf-8")
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                spec = write_env_cache(wt)
-            assert spec is not None
-            repo_copy = wt_path / CACHE_FILENAME
-            expected = spec.path.read_text(encoding="utf-8")
-            spec.path.chmod(stat.S_IWUSR | stat.S_IRUSR)
-            spec.path.unlink()
-            assert repo_copy.is_file()
-            assert not repo_copy.is_symlink()
-            assert repo_copy.read_text(encoding="utf-8") == expected
+                write_env_cache(wt)
+            assert not stale.exists()
+
+
+def _make_sibling_worktree(ticket: Ticket, ticket_dir: Path, repo: str, db_name: str) -> tuple[Worktree, Path]:
+    wt_path = ticket_dir / repo
+    wt_path.mkdir()
+    wt = Worktree.objects.create(
+        overlay="test",
+        ticket=ticket,
+        repo_path=repo,
+        branch="feature",
+        db_name=db_name,
+        extra={"worktree_path": str(wt_path)},
+    )
+    return wt, wt_path
+
+
+class TestPerRepoEnvCache(TestCase):
+    """Sibling repos of one ticket each get their own env cache (#3097 follow-up).
+
+    #3097 moved the cache out of every repo working tree, but derived its
+    path from ``ticket_dir`` alone — identical for every repo sharing the
+    ticket dir (the standard multi-repo layout ``ticket_dir/backend``,
+    ``ticket_dir/frontend``). The second repo's write then clobbered the
+    first, so the non-last-writer's direnv/shell sourced the wrong repo's
+    ``COMPOSE_PROJECT_NAME``. The cache must be per repo AND out of every
+    repo tree.
+
+    RED before the fix: both repos resolve to one shared path, so the
+    backend cache carries the frontend's ``COMPOSE_PROJECT_NAME``.
+    """
+
+    def test_sibling_repos_get_distinct_cache_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_dir = Path(tmp) / "ac-42-ticket"
+            ticket_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://ex.com/42")
+            backend, backend_path = _make_sibling_worktree(ticket, ticket_dir, "backend", "wt_be")
+            frontend, frontend_path = _make_sibling_worktree(ticket, ticket_dir, "frontend", "wt_fe")
+
+            be_cache = env_cache_path(backend)
+            fe_cache = env_cache_path(frontend)
+
+            assert be_cache != fe_cache
+            # Out of every repo working tree (the #3097 guarantee).
+            assert backend_path not in be_cache.parents
+            assert frontend_path not in fe_cache.parents
+            # Both under the one shared out-of-repo .t3-cache/ sibling.
+            assert be_cache.parents[1] == ticket_dir / CACHE_DIRNAME
+            assert fe_cache.parents[1] == ticket_dir / CACHE_DIRNAME
+
+    def test_each_repo_cache_holds_its_own_compose_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket_dir = Path(tmp) / "ac-42-ticket"
+            ticket_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://ex.com/42")
+            backend, _ = _make_sibling_worktree(ticket, ticket_dir, "backend", "wt_be")
+            frontend, _ = _make_sibling_worktree(ticket, ticket_dir, "frontend", "wt_fe")
+
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                write_env_cache(backend)
+                # Provisioning the sibling second must NOT clobber the first.
+                write_env_cache(frontend)
+
+            be_content = env_cache_path(backend).read_text(encoding="utf-8")
+            fe_content = env_cache_path(frontend).read_text(encoding="utf-8")
+
+            assert f"COMPOSE_PROJECT_NAME=backend-wt{ticket.pk}" in be_content
+            assert f"COMPOSE_PROJECT_NAME=frontend-wt{ticket.pk}" in fe_content
+            # The last writer never leaks its project into the sibling's cache.
+            assert f"COMPOSE_PROJECT_NAME=frontend-wt{ticket.pk}" not in be_content
 
 
 class TestDetectDrift(TestCase):
@@ -429,7 +515,13 @@ class TestOverrides(TestCase):
             assert "leak" not in spec.content
 
 
+class _PgUserOverlayProvisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "db.internal", "POSTGRES_PORT": "5544"}
+
+
 class _PgUserOverlay(OverlayBase):
+    provisioning = _PgUserOverlayProvisioning()
     """Overlay that connects to postgres as a non-default role + custom port."""
 
     def get_repos(self) -> list[str]:
@@ -437,9 +529,6 @@ class _PgUserOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "db.internal", "POSTGRES_PORT": "5544"}
 
 
 _PG_USER = {"test": _PgUserOverlay()}
@@ -462,3 +551,22 @@ class TestWorktreePgConnection(TestCase):
         )
         user, host, env = worktree_pg_connection(wt)
         assert (user, host, env) == ("", "", {})
+
+
+class TestOrmImportsAreDeferred(TestCase):
+    """The CLI cold-path refactor keeps ORM/model imports function-level.
+
+    worktree_env must be importable before ``django.setup()`` (bare ``t3``),
+    so the model imports are deferred inside the functions rather than bound at
+    module top level. A regression that re-binds them at import time silently
+    breaks the cold path this refactor exists to protect.
+    """
+
+    def test_model_names_are_not_bound_at_module_top_level(self) -> None:
+        assert not hasattr(worktree_env_mod, "WorktreeEnvOverride")
+        assert not hasattr(worktree_env_mod, "Worktree")
+
+    def test_public_helpers_stay_module_level_callables(self) -> None:
+        for fn in (render_env_cache, write_env_cache, detect_drift, env_cache_path, load_overrides, set_override):
+            assert callable(fn)
+            assert fn.__module__ == "teatree.core.worktree.worktree_env"

@@ -1,12 +1,21 @@
 """Transitive dependency resolution for skill ``requires`` fields.
 
-Builds a dependency graph from the trigger index and resolves skills
-in topological order — dependencies before dependents.  Cycle detection
-uses DFS gray/black colouring.
+Builds a dependency graph from the skill index and resolves skills in
+topological order — dependencies before dependents.  Cycle detection uses
+DFS gray/black colouring.
+
+``requires`` is the hard skill-dependency edge: always transitive, always
+topologically ordered. A required skill with no SKILL.md (an external
+framework skill such as ``test-driven-development``) passes through unchanged
+so the ``Skill`` tool still loads it; the loading policy warns about it.
+
+``companions`` is the SOFT counterpart handled by :func:`companion_suggestions`:
+surfaced but never enforced, and deliberately NOT transitive — a companion is a
+suggestion, not a dependency, so it is not folded into the hard requires chain.
 """
 
-# Trigger index entries are dicts with ``skill``, ``requires``, ``companions``, etc.
-type TriggerIndex = list[dict[str, object]]
+# Skill index entries are dicts with ``skill``, ``requires``, and optional ``companions``.
+type SkillIndex = list[dict[str, object]]
 
 # Gray = currently being visited (cycle if re-entered), Black = fully resolved.
 _GRAY, _BLACK = 1, 2
@@ -14,17 +23,17 @@ _GRAY, _BLACK = 1, 2
 
 def resolve_requires(
     skills: list[str],
-    trigger_index: TriggerIndex,
+    skill_index: SkillIndex,
 ) -> list[str]:
     """Return *skills* expanded with transitive ``requires`` in topological order.
 
-    Unknown skills (not in *trigger_index*) pass through unchanged — they
-    may be framework skills (``ac-django``, ``ac-python``) that have no
-    trigger entry.
+    Unknown skills (not in *skill_index*) pass through unchanged — they may be
+    framework skills (``ac-django``, ``ac-python``) or external methodology
+    skills (``test-driven-development``) that have no index entry.
 
     Raises ``ValueError`` on dependency cycles.
     """
-    requires_map = _build_requires_map(trigger_index)
+    requires_map = _build_requires_map(skill_index)
     order: list[str] = []
     state: dict[str, int] = {}
 
@@ -34,54 +43,16 @@ def resolve_requires(
     return order
 
 
-def resolve_companions(
-    skills: list[str],
-    trigger_index: TriggerIndex,
-) -> tuple[list[str], list[str]]:
-    """Return *skills* expanded with ``companions`` and transitive ``requires``.
-
-    Returns ``(all_resolved_skills, missing_companions)``.  Missing companions
-    are those declared in a skill's ``companions`` list but not present in the
-    *trigger_index*.  They are silently dropped from the resolved output.
-    """
-    companions_map = _build_companions_map(trigger_index)
-    known = {str(e.get("skill", "")) for e in trigger_index if e.get("skill")}
-
-    companion_skills: list[str] = []
-    missing: list[str] = []
-
-    for skill in skills:
-        for comp in companions_map.get(skill, []):
-            if comp in known:
-                companion_skills.append(comp)
-            else:
-                missing.append(comp)
-
-    # Resolve the full list (original + companions) through requires
-    full = [*skills, *companion_skills]
-    resolved = resolve_requires(full, trigger_index)
-
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for s in resolved:
-        if s not in seen:
-            seen.add(s)
-            deduped.append(s)
-
-    return deduped, missing
-
-
-def resolve_all(trigger_index: TriggerIndex) -> dict[str, list[str]]:
-    """Pre-compute resolved dependencies for every skill in *trigger_index*.
+def resolve_all(skill_index: SkillIndex) -> dict[str, list[str]]:
+    """Pre-compute resolved dependencies for every skill in *skill_index*.
 
     Returns ``{skill_name: [dep1, dep2, ..., skill_name]}`` — each value
     is the full topologically-sorted load order including the skill itself.
     """
-    requires_map = _build_requires_map(trigger_index)
+    requires_map = _build_requires_map(skill_index)
     result: dict[str, list[str]] = {}
 
-    for entry in trigger_index:
+    for entry in skill_index:
         skill = str(entry.get("skill", ""))
         if not skill:
             continue
@@ -97,15 +68,39 @@ def resolve_all(trigger_index: TriggerIndex) -> dict[str, list[str]]:
     return result
 
 
-def _build_requires_map(trigger_index: TriggerIndex) -> dict[str, list[str]]:
+def companion_suggestions(resolved: list[str], skill_index: SkillIndex) -> list[str]:
+    """Soft companion suggestions for an already-resolved (hard) skill set.
+
+    Unlike ``requires`` (the hard, transitive edge in :func:`resolve_requires`),
+    ``companions`` are surfaced but never enforced: this returns every skill named
+    in a resolved skill's ``companions`` list, in first-seen order, excluding any
+    skill already hard-resolved. It is deliberately NOT transitive — a companion's
+    own ``requires``/``companions`` are not pulled in.
+    """
+    companion_map = _build_list_field_map(skill_index, "companions")
+    already_resolved = set(resolved)
+    seen: set[str] = set()
+    suggestions: list[str] = []
+    for skill in resolved:
+        for companion in companion_map.get(skill, []):
+            if companion and companion not in already_resolved and companion not in seen:
+                seen.add(companion)
+                suggestions.append(companion)
+    return suggestions
+
+
+def _build_requires_map(skill_index: SkillIndex) -> dict[str, list[str]]:
+    return _build_list_field_map(skill_index, "requires")
+
+
+def _build_list_field_map(skill_index: SkillIndex, field_name: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
-    for entry in trigger_index:
+    for entry in skill_index:
         skill = str(entry.get("skill", ""))
         if not skill:
             continue
-        raw = entry.get("requires", [])
-        requires = [str(r) for r in raw] if isinstance(raw, list) else []
-        result[skill] = requires
+        raw = entry.get(field_name, [])
+        result[skill] = [str(item) for item in raw] if isinstance(raw, list) else []
     return result
 
 
@@ -128,15 +123,3 @@ def _visit(
 
     state[skill] = _BLACK
     order.append(skill)
-
-
-def _build_companions_map(trigger_index: TriggerIndex) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {}
-    for entry in trigger_index:
-        skill = str(entry.get("skill", ""))
-        if not skill:
-            continue
-        raw = entry.get("companions", [])
-        companions = [str(c) for c in raw] if isinstance(raw, list) else []
-        result[skill] = companions
-    return result

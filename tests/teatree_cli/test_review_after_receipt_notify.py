@@ -16,6 +16,8 @@ run for real. The on-behalf pre-gate is set to ``immediate`` via the
 test config so these tests isolate the after-receipt behaviour.
 """
 
+import json
+import sqlite3
 from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,16 +32,30 @@ from teatree.core.models import BotPing, ConfigSetting
 pytestmark = pytest.mark.django_db
 
 
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: str) -> None:
-    # ``slack_user_id`` is raw non-UserSettings config and keeps its TOML home;
-    # ``on_behalf_post_mode`` is DB-home (#1775) so it resolves only from the
-    # ``ConfigSetting`` store — staging it via TOML would be a no-op on read.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        '[teatree]\nslack_user_id = "U-OPERATOR"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
+    # config-store sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
+    # is ORM-resolved, staged in the ``ConfigSetting`` store.
+    _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
     ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
 
 

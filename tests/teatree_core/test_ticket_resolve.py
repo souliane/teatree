@@ -58,3 +58,25 @@ class TestTicketResolve(TestCase):
     def test_raises_does_not_exist_for_unknown_number(self) -> None:
         with pytest.raises(Ticket.DoesNotExist):
             Ticket.objects.resolve("87654")
+
+    def test_resolves_by_repo_namespaced_key(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/acme-eng/bugs/issues/2242")
+        resolved = Ticket.objects.resolve("acme-eng/bugs#2242")
+        assert resolved.pk == ticket.pk
+
+    def test_repo_namespaced_key_never_collides_across_repos(self) -> None:
+        """The #2293 regression.
+
+        A bare-number lookup is ambiguous; the repo-namespaced key is
+        not — passing the full repo path resolves the exact ticket even
+        when another repo shares the issue number.
+        """
+        bugs = Ticket.objects.create(overlay="test", issue_url="https://github.com/acme-eng/bugs/issues/2242")
+        Ticket.objects.create(overlay="test", issue_url="https://github.com/acme-product/repo/issues/2242")
+
+        assert Ticket.objects.resolve("acme-eng/bugs#2242").pk == bugs.pk
+        assert Ticket.objects.resolve("acme-product/repo#2242").pk != bugs.pk
+
+    def test_raises_does_not_exist_for_unknown_repo_namespaced_key(self) -> None:
+        with pytest.raises(Ticket.DoesNotExist):
+            Ticket.objects.resolve("acme-eng/bugs#99999")

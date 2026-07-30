@@ -2,6 +2,10 @@ from typing import TypedDict
 
 type Ports = dict[str, int]
 
+# An arbitrary JSON object stored under a ``extra`` key (heterogeneous, open
+# shape — e.g. ``pr_url_by_branch``), so a fixed TypedDict does not fit.
+type JSONObject = dict[str, object]
+
 
 class VisualQAPageError(TypedDict):
     kind: str
@@ -22,6 +26,33 @@ class VisualQASummary(TypedDict, total=False):
     details: list[VisualQAPageDetail]
 
 
+class PRApprovalsSerialized(TypedDict, total=False):
+    """The approval tally denormalized onto a ``PREntrySerialized`` (F1.7).
+
+    ``count`` is how many approvals the PR currently carries; ``required`` is
+    the threshold the forge enforces (defaults to 1 when absent). Read by the
+    dashboard ``_check_pr`` selector to raise a ``needs_approval`` action item
+    while ``count < required``.
+    """
+
+    count: int
+    required: int
+
+
+class PRDiscussionSerialized(TypedDict, total=False):
+    """One denormalized review-thread entry on a ``PREntrySerialized`` (F1.7).
+
+    ``status`` is the thread's resolution state (``waiting_reviewer`` /
+    ``needs_reply`` / ``addressed``); ``detail`` is the short human-readable
+    summary the dashboard surfaces. Structurally mirrors the read-model
+    ``selectors._types.DiscussionData`` but is declared here so ``core.models``
+    keeps no backwards edge onto ``core.selectors``.
+    """
+
+    status: str
+    detail: str
+
+
 class PREntrySerialized(TypedDict, total=False):
     url: str
     title: str
@@ -35,6 +66,16 @@ class PREntrySerialized(TypedDict, total=False):
     reviewer_names: list[str]
     head_sha: str
     last_reviewed_sha: str
+    # Denormalized action-required inputs read by the dashboard ``_check_pr``
+    # selector (F1.7): the forge lifecycle state, the review Slack permalink,
+    # the approval tally, the review-thread entries, and the pending-draft
+    # review-comment signals.
+    state: str
+    review_permalink: str
+    approvals: PRApprovalsSerialized
+    discussions: list[PRDiscussionSerialized]
+    draft_comments_pending: bool
+    draft_comments_count: int
 
 
 class TicketExtra(TypedDict, total=False):
@@ -44,6 +85,13 @@ class TicketExtra(TypedDict, total=False):
     # ship can tell whether the *current* invoking branch's PR exists,
     # without short-circuiting on the truthiness of the shared ``pr_urls``.
     pr_url_by_branch: dict[str, str]
+    # ARBITER (F1.3): the ``PullRequest`` rows are the system of record for PR
+    # facts (their FSM ``state`` is the authority). This ``prs`` map is a
+    # DENORMALIZED SYNC CACHE — a JSON snapshot the dashboard read-model
+    # (``selectors.automation._check_pr``) consumes so it need not re-query the
+    # forge. When the two disagree, the ``PullRequest`` row wins; a stale entry
+    # here is a cache-refresh gap, never a source of truth. Read-path
+    # unification onto the rows is deferred.
     prs: dict[str, PREntrySerialized]
     pr_title_override: str
     ship_invoking_branch: str
@@ -56,13 +104,20 @@ class TicketExtra(TypedDict, total=False):
     # single ticket-dir name so every repo provisions as a SIBLING in one dir.
     # Repos absent from the map fall back to ``branch``.
     branches: dict[str, str]
+    # #2275 adopt: repo -> existing on-disk worktree_path for an outside branch
+    # registered via ``workspace ticket --adopt``; the provisioner records the
+    # path verbatim instead of ``git worktree add``.
+    adopt: dict[str, str]
     description: str
     provision: dict[str, str]
     shipping_skipped: str
     tracker_status: str
+    # Notion status-sync: the tracked page URL (input) and the last status read
+    # from it via the direct Notion API (``core.sync.fetch_notion_statuses``).
+    notion_url: str
+    notion_status: str
     issue_title: str
     labels: list[str]
-    auto_started: bool
     reviewed_sha: str
     last_review_state: str
     retro_scheduled: bool
@@ -104,6 +159,10 @@ class TicketExtra(TypedDict, total=False):
     # escape hatch (a ``reason`` for an AC-less ticket).
     spec_coverage: "SpecCoverageManifest"
     spec_coverage_override: "SpecCoverageOverride"
+    # PR-08 audited escape hatch for the cross-repo integration-review gate: a
+    # ``reason`` for a ≥2-repo ticket exempt from the combined-changeset review;
+    # read by ``integration_review_gate`` at ``mark_delivered``.
+    integration_review_override: "IntegrationReviewOverride"
     # #2104 delivery-ownership lease: stamped when a hand-dispatched delivery
     # agent (``workspace ticket``) takes the unit, so the loop's scheduling
     # chokepoints skip the auto-planner / duplicate review-arm / global dispatch
@@ -117,6 +176,60 @@ class TicketExtra(TypedDict, total=False):
     # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
     # ``TrivialPlanSkip``.
     trivial_plan_skip: "TrivialPlanSkip"
+    # Plan-skipped issue-implementer direct-coding marker: stamped by
+    # ``persistence._handle_orchestrator`` when it schedules a ``coding`` task
+    # directly on a fresh NOT_STARTED author ticket (no scope/plan phase). Read
+    # by ``auto_implement.is_auto_implement`` — the ``Ticket.code_direct``
+    # condition that lets a coding-completion advance the FSM from an early
+    # state without weakening the normal author flow's plan gate.
+    auto_implement: bool
+    # #2663 dream-promote = fix-and-merge: a Ticket scheduled to fix a grounded
+    # dream gap. ``dream_gap_key`` is the stable gap identity (also the umbrella
+    # checkbox marker); ``dream_memory_cluster_key`` links back to the
+    # ``ConsolidatedMemory`` row to retire on merge; ``dream_umbrella_url`` is the
+    # standing umbrella issue whose checkbox is checked when the fix merges. See
+    # ``teatree.loops.dream.umbrella_ledger``.
+    dream_gap_key: str
+    dream_memory_cluster_key: str
+    dream_umbrella_url: str
+    # #2886: durable pydantic_ai harness conversation store for cached-resume
+    # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
+    # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the
+    # ``parent_task`` chain for), each value the JSON-mode dump of a
+    # ``pydantic_ai`` ``list[ModelMessage]``. Single-use: a resume consumes
+    # (pops) its entry, so the map never accumulates stale threads. See
+    # ``teatree.agents.pydantic_ai_resume``.
+    pydantic_ai_threads: dict[str, list[object]]
+    # #1 dispatch-zone executor contract: metadata the revived correction-zone
+    # persistence handlers stamp so the dispatched agent has its context.
+    # Codex auto-review: the resolved ``/codex:*`` variant on a reviewer ticket.
+    codex_variant: str
+    # #3569 Claude self-PR review: the resolved ``claude:*`` variant on a reviewer
+    # ticket (the codex fallback path — same shape as ``codex_variant``).
+    self_pr_review_variant: str
+    # RED CARD corrective action: the ``RedCardSignal`` row + surfaces so the
+    # agent can file the enforcement issue and record it via ``link_issue``.
+    red_card_signal_id: int
+    red_card_signal_kind: str
+    red_card_signal_text: str
+    red_card_offending_text: str
+    # Failed-E2E fix: the spec + test title the fix targets.
+    e2e_spec: str
+    e2e_test_title: str
+    # Skill-drift fix: the drifted repo/file + the finding fingerprint.
+    drift_repo: str
+    drift_file: str
+    drift_fingerprint: str
+    # Answerer: the inbound event id + the question detail.
+    answer_event_id: int
+    answer_detail: str
+    # Per-phase attempt budget for scanner-enqueued phases whose deliverable is a
+    # field on THIS row (``short_describe`` -> ``short_description``). Such a
+    # scanner dedups on the artifact, not on a terminal task, so a phase that
+    # never manages to write its field would otherwise re-enqueue every tick
+    # forever. ``Ticket.consume_phase_attempt`` bumps the phase's counter on each
+    # enqueue and refuses past the ceiling, making the give-up terminal.
+    phase_attempts: dict[str, int]
 
 
 class ReviewSkillRun(TypedDict, total=False):
@@ -154,6 +267,59 @@ class ReviewContext(TypedDict, total=False):
     documents: list[str]
     analysis: str
     at: str
+
+
+class AdequacySection(TypedDict, total=False):
+    """One section of a :class:`PlanAdequacy` manifest — substantive OR explicitly-negated.
+
+    ``content`` is the substantive claim (free text for ``design``/``test_strategy``,
+    a list of items for ``integration_seams``/``edge_cases``). ``none_reason`` is the
+    explicit reasoned negative — the ``no_new_tests`` shape from
+    ``anti_vacuity_gate``: a section that genuinely has nothing to declare must SAY
+    so with a reason, so silence (both empty) can never pass as "none to declare".
+    """
+
+    content: str | list[str]
+    none_reason: str
+
+
+class PlanAdequacy(TypedDict, total=False):
+    """A four-section plan-adequacy manifest recorded on a ``PlanArtifact`` (SELFCATCH-3).
+
+    The structural substitute for judging whether a plan is a real plan or a thin
+    scope+acceptance spec. Each of the four sections must be substantive OR carry an
+    explicit reasoned negative (:class:`AdequacySection`) — a scope+acceptance-only
+    spec has no seams/edge-cases/test-strategy claims to make, so it structurally
+    fails ``plan_adequacy.is_adequate``. ``integration_seams.content`` is the list of
+    registries/contracts/sibling-paths the change touches; the plan-currency gate
+    reads it to decide when a moved target HEAD renders the plan stale.
+    """
+
+    design: AdequacySection
+    integration_seams: AdequacySection
+    edge_cases: AdequacySection
+    test_strategy: AdequacySection
+    # North-star PR-3 debt-delta waivers: the audited escape the ``debt_delta_gate``
+    # honours. Each entry (:class:`ApprovedDebt`) names a suppression pattern the
+    # plan explicitly approves plus the reason it is acceptable — so a net-new
+    # ``noqa`` / ``type-ignore`` / lowered floor ships only against a recorded,
+    # reasoned approval, never silently. Absent/empty on a plan that introduces no
+    # debt (the common case); it does NOT participate in the four-section
+    # :func:`plan_adequacy.is_adequate` check.
+    approved_debt: list["ApprovedDebt"]
+
+
+class ApprovedDebt(TypedDict, total=False):
+    """One plan-manifest debt waiver — the audited ``debt_delta_gate`` escape.
+
+    ``pattern`` is matched (case-insensitive substring) against a scanned debt
+    introduction's offending line, its signal kind, or its file path; ``reason``
+    is the non-empty justification the operator recorded at plan/ratify time. A
+    waiver with a blank reason covers nothing — an audited escape must say why.
+    """
+
+    pattern: str
+    reason: str
 
 
 class AntiVacuityAttestation(TypedDict, total=False):
@@ -212,6 +378,28 @@ class SpecCoverageManifest(TypedDict, total=False):
     acceptance_criteria: list[AcceptanceCriterion]
 
 
+def ac_label(ac: AcceptanceCriterion) -> str:
+    """The human label for an AC: its ``id`` if present, else its ``description``."""
+    return str(ac.get("id") or ac.get("description") or "<unnamed-ac>").strip()
+
+
+def spec_coverage_criteria(extra: dict | None) -> list[AcceptanceCriterion]:
+    """The declared acceptance criteria carried in *extra*, or an empty list.
+
+    The one parse shared by the gate that READS the manifest and the ticket
+    method that WRITES it, so producer and consumer can never drift. A missing,
+    non-mapping, or non-list manifest all yield ``[]`` — there is no partial
+    parse; non-mapping entries inside the list are dropped.
+    """
+    manifest = (extra or {}).get("spec_coverage")
+    if not isinstance(manifest, dict):
+        return []
+    criteria = manifest.get("acceptance_criteria")
+    if not isinstance(criteria, list):
+        return []
+    return [ac for ac in criteria if isinstance(ac, dict)]
+
+
 class SpecCoverageOverride(TypedDict, total=False):
     """Audited escape hatch for an AC-less ticket (#2232).
 
@@ -219,6 +407,18 @@ class SpecCoverageOverride(TypedDict, total=False):
     the spec-coverage gate pass-and-log — for a genuinely AC-less ticket (a pure
     refactor, a docs-only change) the heuristic must not hard-trap a legitimate
     delivery.
+    """
+
+    reason: str
+
+
+class IntegrationReviewOverride(TypedDict, total=False):
+    """Audited escape hatch for the cross-repo integration-review gate (PR-08).
+
+    ``Ticket.extra['integration_review_override']`` with a non-empty ``reason``
+    makes the integration-review gate pass-and-log — for a ≥2-repo ticket whose
+    combined changeset was genuinely reviewed out of band (a coordinated hotfix),
+    the gate must not hard-trap a legitimate close.
     """
 
     reason: str
@@ -336,6 +536,12 @@ class E2ELastRunSerialized(TypedDict, total=False):
     # indistinguishable from a pre-#272 row.
     spec_path: str
     manifest_entry: str
+    # The out-of-repo artifacts root the runner exported as
+    # ``T3_E2E_ARTIFACTS_DIR`` for this run (#3331). Recorded so
+    # ``post-test-plan --from-seams`` (#3329) can default the artifacts dir to
+    # the run's after the workspace is cleaned, instead of the overlay
+    # re-deriving it. Absent on rows recorded before the runner owned the path.
+    artifacts_dir: str
 
 
 class E2ERecipeSerialized(TypedDict, total=False):
@@ -362,6 +568,7 @@ class TicketSiblingFields(TypedDict, total=False):
     state: str
     repos: list[str]
     variant: str
+    short_description: str
 
 
 _TICKET_EXTRA_KEYS = frozenset(TicketExtra.__annotations__)

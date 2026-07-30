@@ -18,8 +18,8 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
-from teatree.core.worktree_env import _declared_core_keys, render_env_cache
+from teatree.core.overlay import OverlayBase, OverlayProvisioning, ProvisionStep
+from teatree.core.worktree.worktree_env import _declared_core_keys, render_env_cache
 from teatree.types import DbImportStrategy
 from teatree.utils.compose_contract import ComposeVarRef, check_contract, extract_refs, unproduced_declared_keys
 
@@ -145,11 +145,14 @@ class _ProducerOverlay(OverlayBase):
         return []
 
 
-class _SharedPostgresProducerOverlay(_ProducerOverlay):
-    """Same, but requests the shared-postgres branch (produces POSTGRES_HOST)."""
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
+class _SharedPostgresProducerOverlayProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return DbImportStrategy(shared_postgres=True)
+
+
+class _SharedPostgresProducerOverlay(_ProducerOverlay):
+    provisioning = _SharedPostgresProducerOverlayProvisioning()
+    """Same, but requests the shared-postgres branch (produces POSTGRES_HOST)."""
 
 
 _DEDICATED_PG = {"test": _ProducerOverlay()}

@@ -1,6 +1,6 @@
 """Tests for ``t3 <overlay> notify send`` management command (#1030).
 
-Wraps :func:`teatree.notify.notify_user` so sub-agent identities can DM
+Wraps :func:`teatree.core.notify.notify_user` so sub-agent identities can DM
 the user directly from the shell instead of relaying through the parent
 turn. Only the unstoppable Slack HTTP boundary
 (:func:`messaging_from_overlay`) is mocked — the rest of the notify path
@@ -13,11 +13,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import CommandError, call_command
+from django.test import TestCase
 
 from teatree.core.models import BotPing
-
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
 
 
 def _backend() -> MagicMock:
@@ -38,7 +36,7 @@ def _call(*args: str) -> tuple[str, int]:
     return buf.getvalue(), code
 
 
-class TestNotifySendSubcommand:
+class TestNotifySendSubcommand(TestCase):
     def test_send_invokes_notify_path_and_records_audit(self) -> None:
         backend = _backend()
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
@@ -151,8 +149,9 @@ class TestNotifySendSubcommand:
         assert code == 1
         message = err.getvalue()
         assert "k-reason" in message
-        # The NOOP reason recorded on the BotPing row is echoed verbatim.
-        assert "no messaging backend or user_id configured" in message
+        # The NOOP reason recorded on the BotPing row is echoed verbatim — the
+        # typed NotifyReason names itself instead of the old conflated string.
+        assert "no_messaging_backend" in message
 
     def test_missing_idempotency_key_is_required(self) -> None:
         with pytest.raises((SystemExit, CommandError)):

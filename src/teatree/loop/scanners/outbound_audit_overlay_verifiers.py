@@ -54,11 +54,11 @@ def slack_dm_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     can't be constructed — the scanner emits ``outbound.audit_skipped``
     rather than treating that as drift.
     """
-    from teatree.loop.scanners.outbound_audit import VerifyResult  # noqa: PLC0415
+    from teatree.loop.scanners.outbound_audit import VerifyResult  # noqa: PLC0415 — deferred: import cycle
 
     try:
-        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: loaded at tick time
+    except Exception:  # noqa: BLE001 — backend construction is best-effort; degrade to no verifier
         return None
     backend = messaging_from_overlay(overlay_name=overlay_name or None)
     if backend is None:
@@ -91,18 +91,20 @@ def gitlab_api_for_overlay(overlay_name: str) -> object | None:
     the process-global env/pass fallback.
     """
     try:
-        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    except Exception:  # noqa: BLE001 — a GitLabAPI import failure degrades to no verifier
         return None
     token, base_url = _overlay_gitlab_credentials(overlay_name)
     try:
-        if token:
-            return GitLabAPI(token=token, base_url=base_url)
-        # Legacy fallback: empty overlay or unregistered overlay name —
-        # use the process-global default resolver (same shape pre-#1275).
-        return GitLabAPI()
-    except Exception:  # noqa: BLE001
+        # Legacy fallback: an empty/unregistered overlay uses the process-global
+        # default resolver (env/pass), same shape pre-#1275.
+        client = GitLabAPI(token=token, base_url=base_url) if token else GitLabAPI()
+    except Exception:  # noqa: BLE001 — a failed GitLabAPI construction yields no verifier
         return None
+    # Resolve-or-skip: a client with no resolved token would raise
+    # BackendResolutionError on first use (the fail-loud transport boundary), so
+    # skip verification cleanly rather than hand back a client that cannot call.
+    return client if getattr(client, "token", "") else None
 
 
 def _overlay_gitlab_credentials(overlay_name: str) -> tuple[str, str]:
@@ -117,17 +119,17 @@ def _overlay_gitlab_credentials(overlay_name: str) -> tuple[str, str]:
     if not overlay_name:
         return ("", "")
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    except Exception:  # noqa: BLE001 — overlay loader unavailable degrades to the legacy default
         return ("", "")
     try:
         overlay = get_overlay(overlay_name)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a TOML-only overlay (no Python class) falls back to the raw config table
         # TOML overlay (no Python class) — try the raw config table.
         return _overlay_gitlab_credentials_from_toml(overlay_name)
     try:
         token = overlay.config.get_gitlab_token()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreadable token degrades to empty
         token = ""
     base_url = getattr(overlay.config, "gitlab_url", "https://gitlab.com/api/v4")
     return (token or "", base_url or "https://gitlab.com/api/v4")
@@ -137,13 +139,13 @@ def _overlay_gitlab_credentials_from_toml(overlay_name: str) -> tuple[str, str]:
     """Resolve a TOML-only overlay's ``gitlab_token_ref`` via ``pass``.
 
     Path-only overlays (no Python class, opted in via
-    ``[overlays.<name>]`` in ``~/.teatree.toml``) keep their credentials
-    in the TOML table, mirroring ``backend_factory._hosts_from_toml``.
+    ``[overlays.<name>]`` in the DB overlays registry) keep their credentials
+    in that config table, mirroring ``backend_factory._hosts_from_toml``.
     """
     try:
-        from teatree.config import load_config  # noqa: PLC0415
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    except Exception:  # noqa: BLE001 — config/secrets unavailable degrades to no credentials
         return ("", "")
     overlays = load_config().raw.get("overlays") or {}
     cfg = overlays.get(overlay_name)
@@ -157,14 +159,17 @@ def _overlay_gitlab_credentials_from_toml(overlay_name: str) -> tuple[str, str]:
         base_url = f"{base_url}/api/v4"
     try:
         token = read_pass(token_ref)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreadable secret degrades to empty token
         token = ""
     return (token or "", base_url)
 
 
 def gitlab_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     """Build a GitLab-note verifier from the named overlay's GitLab token."""
-    from teatree.loop.scanners.outbound_audit import VerifyResult, _gitlab_api_for_overlay  # noqa: PLC0415
+    from teatree.loop.scanners.outbound_audit import (  # noqa: PLC0415 — deferred: breaks outbound_audit_overlay_verifiers ↔ outbound_audit cycle
+        VerifyResult,
+        _gitlab_api_for_overlay,
+    )
 
     api = _gitlab_api_for_overlay(overlay_name)
     if api is None:
@@ -194,7 +199,7 @@ def gitlab_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
 
 def gitlab_approve_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     """Build a GitLab-approve verifier from the named overlay's credentials."""
-    from teatree.loop.scanners.outbound_audit import (  # noqa: PLC0415
+    from teatree.loop.scanners.outbound_audit import (  # noqa: PLC0415 — deferred: import cycle
         VerifyResult,
         _gitlab_api_for_overlay,
         _usernames_from_approvers,
@@ -205,7 +210,7 @@ def gitlab_approve_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
         return None
     try:
         my_username = api.current_username()  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreachable API degrades to no verifier
         return None
     if not my_username:
         return None
@@ -249,7 +254,7 @@ def resolve_github_token_for_overlay(overlay_name: str) -> str:
     precedence — this is the credential pipeline that #1275 binds
     verifiers to.
     """
-    from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
+    from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415 — deferred: import cycle
 
     if not overlay_name:
         return _resolve_github_token()
@@ -265,14 +270,14 @@ def resolve_github_token_for_overlay(overlay_name: str) -> str:
 def _github_token_from_registered_overlay(overlay_name: str) -> str:
     """Read the GitHub token off a Python-class-registered overlay."""
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         overlay = get_overlay(overlay_name)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unresolvable overlay degrades to no token
         return ""
     try:
         return overlay.config.get_github_token() or ""
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreadable token degrades to empty
         return ""
 
 
@@ -283,9 +288,9 @@ def _github_token_from_toml_overlay(overlay_name: str) -> str:
     keep one credential pipeline shared with the loop's host scanners.
     """
     try:
-        from teatree.config import load_config  # noqa: PLC0415
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    except Exception:  # noqa: BLE001 — config/secrets unavailable degrades to no token
         return ""
     overlays = load_config().raw.get("overlays") or {}
     cfg = overlays.get(overlay_name)
@@ -296,7 +301,7 @@ def _github_token_from_toml_overlay(overlay_name: str) -> str:
         return ""
     try:
         return read_pass(token_ref) or ""
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — an unreadable secret degrades to empty token
         return ""
 
 
@@ -310,7 +315,7 @@ def github_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     unauthenticated 404 on a private repo is ambiguous and must not
     become a false alert).
     """
-    from teatree.loop.scanners.outbound_audit import (  # noqa: PLC0415
+    from teatree.loop.scanners.outbound_audit import (  # noqa: PLC0415 — deferred: import cycle
         VerifyResult,
         _hash_body,
         _is_github_not_found,
@@ -318,8 +323,8 @@ def github_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     )
 
     try:
-        from teatree.backends.github.client import _gh_api_get  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.backends.github.client import _gh_api_get  # noqa: PLC0415 — deferred: loaded at tick time
+    except Exception:  # noqa: BLE001 — a client import failure degrades to no verifier
         return None
     token = _resolve_github_token_for_overlay(overlay_name)
     if not token:

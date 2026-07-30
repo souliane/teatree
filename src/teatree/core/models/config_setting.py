@@ -26,14 +26,28 @@ a global DB row exactly as a per-overlay TOML override beats the global TOML
 value. Uniqueness is the ``(scope, key)`` pair, so a global and an overlay row
 for the same key coexist and the manager upserts within a scope.
 
+**Seed provenance (#3435).** A row carries ``seeded_by`` (the seeder that owns
+it — :data:`ENTRYPOINT_SEEDER` for a deploy seed, ``""`` for an operator/runtime
+write) and ``seed_value`` (the exact value that seeder last wrote). Together they
+let a redeploy tell a value the operator has pinned apart from one the deploy
+seeded and the operator never touched: :meth:`ConfigSettingManager.seed` re-seeds
+only a row it still owns (``seeded_by`` matches AND ``value == seed_value``),
+never creates a row equal to the code default (which would only FREEZE a future
+default change), and preserves any operator override. An explicit
+:meth:`ConfigSettingManager.set_value` is an operator/runtime write, so it clears
+the provenance — the row becomes operator-owned and no later deploy or doctor
+autofix may touch it.
+
 Bootstrap-readable settings (``DATABASE_URL`` / data-dir /
 ``DJANGO_SETTINGS_MODULE`` / the offline ``private_repos`` allowlist) are
 explicitly out of scope — they must be readable before Django starts, so they can
 never live here (#1775).
 """
 
+from enum import StrEnum
 from typing import ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 # Any TOML/JSON-shaped value a setting may hold. Recursive in principle
@@ -47,6 +61,27 @@ type ConfigValue = bool | int | float | str | list[object] | dict[str, object]
 # string applies to every overlay (the original #1775 single-tier behaviour). A
 # non-empty ``scope`` is an overlay name that scopes the row to that overlay.
 GLOBAL_SCOPE = ""
+
+# The provenance marker :func:`deploy/entrypoint.sh`'s seed step stamps on a row
+# it created, so a later redeploy re-seed and the ``t3 doctor --repair``
+# concurrency autofix can tell a deploy-seeded row from an operator override.
+ENTRYPOINT_SEEDER = "entrypoint"
+
+
+def scope_label(scope: str) -> str:
+    """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
+    return "global" if not scope else f"overlay {scope!r}"
+
+
+class SeedOutcome(StrEnum):
+    """What :meth:`ConfigSettingManager.seed` did to the row (for operator logs)."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+    PRESERVED = "preserved-operator-override"
+    REMOVED = "removed-equals-default"
+    SKIPPED_DEFAULT = "skipped-equals-default"
 
 
 class ConfigSettingManager(models.Manager["ConfigSetting"]):
@@ -72,6 +107,32 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         row = self.filter(scope=scope, key=key).first()
         return row.value if row is not None else None
 
+    def reject_inconsistent_cross_key(self, key: str, value: ConfigValue, scope: str) -> None:
+        """Raise :class:`ValidationError` when this write would land an inconsistent coupled pair (#3688).
+
+        Delegates to the config-layer :func:`~teatree.config.cross_key_consistency.validate_cross_key_write`,
+        resolving the paired key's current effective value from the DB tier
+        (overlay-scope row, then global-scope row) so the RESULTING pair — not
+        just the value in hand — is judged. A no-op for any key in no coupled
+        pair. Imported lazily to keep the model module's cold-import cheap.
+
+        Called by :meth:`set_value` (every programmatic write) and by
+        :meth:`ConfigSetting.clean` (every ``ModelForm`` write, so the Django
+        admin shows a field error instead of landing the bad pair).
+        """
+        from teatree.config.cross_key_consistency import (  # noqa: PLC0415 — deferred: heavy config import
+            validate_cross_key_write,
+        )
+
+        def resolve_other(other_key: str) -> ConfigValue | None:
+            stored = self.get_effective(other_key, scope=scope)
+            if stored is None and scope != GLOBAL_SCOPE:
+                stored = self.get_effective(other_key, GLOBAL_SCOPE)
+            return stored
+
+        if reason := validate_cross_key_write(key, value, resolve_other):
+            raise ValidationError(reason)
+
     def set_value(self, key: str, value: ConfigValue, scope: str = GLOBAL_SCOPE) -> "ConfigSetting":
         """Upsert the override row for *key* in *scope* to *value* (admin path).
 
@@ -79,9 +140,77 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         setting the same key in the same scope twice updates the one row rather
         than creating a duplicate. A global and an overlay-scoped row for the
         same key are distinct rows.
+
+        An explicit ``set_value`` is an operator/runtime write, so it CLEARS any
+        seed provenance (``seeded_by`` → ``""``, ``seed_value`` → ``None``): the
+        row becomes operator-owned, and no later deploy re-seed or ``t3 doctor
+        --repair`` autofix may overwrite or delete it (#3435 / #3434).
+
+        Raises :class:`~django.core.exceptions.ValidationError` when the write
+        would land an INCONSISTENT coupled-key pair (#3688) — e.g. an
+        ``agent_harness_provider`` that no harness the resulting ``agent_harness``
+        names would accept at dispatch. Rejecting at write time turns one bad
+        config into one loud error, not a fleet-wide repair-halt flood on every
+        later dispatch. The store is left untouched on rejection.
         """
-        row, _ = self.update_or_create(scope=scope, key=key, defaults={"value": value})
+        self.reject_inconsistent_cross_key(key, value, scope)
+        row, _ = self.update_or_create(
+            scope=scope,
+            key=key,
+            defaults={"value": value, "seeded_by": "", "seed_value": None},
+        )
         return row
+
+    def seed(
+        self,
+        key: str,
+        value: ConfigValue,
+        *,
+        code_default: object,
+        seeded_by: str = ENTRYPOINT_SEEDER,
+        scope: str = GLOBAL_SCOPE,
+    ) -> SeedOutcome:
+        """Provenance-aware deploy seed of *key* → *value* in *scope* (#3435).
+
+        The idempotent policy a redeploy needs so a changed shipped default
+        reaches existing boxes without ever clobbering an operator's pin:
+
+        * **value == code_default** → never create a row (a code-default seed
+            is a no-op that would only FREEZE a future default change). If a row
+            this seeder still owns already holds that value, DELETE it so the
+            live code default flows through again.
+        * **no row** → create it, recording provenance (``seeded_by`` +
+            ``seed_value = value``).
+        * **row this seeder no longer owns** (a different ``seeded_by``, or
+            ``value != seed_value`` because an operator edited it) → PRESERVE
+            it untouched.
+        * **row this seeder still owns** (``seeded_by`` matches AND
+            ``value == seed_value``) → UPDATE it when the shipped seed changed,
+            else no-op.
+
+        *code_default* is the pure code default (the ``UserSettings`` field
+        default with no env/DB layer). Pass a sentinel that never equals a real
+        value for a non-``UserSettings`` key, so such a seed is always written.
+        """
+        row = self.filter(scope=scope, key=key).first()
+        equals_default = value == code_default
+        if row is None:
+            if equals_default:
+                return SeedOutcome.SKIPPED_DEFAULT
+            self.create(scope=scope, key=key, value=value, seeded_by=seeded_by, seed_value=value)
+            return SeedOutcome.CREATED
+        if row.seeded_by != seeded_by or row.value != row.seed_value:
+            return SeedOutcome.PRESERVED
+        if equals_default:
+            row.delete()
+            return SeedOutcome.REMOVED
+        if row.value == value:
+            return SeedOutcome.UNCHANGED
+        row.value = value
+        row.seed_value = value
+        row.seeded_by = seeded_by
+        row.save(update_fields=["value", "seed_value", "seeded_by", "updated_at"])
+        return SeedOutcome.UPDATED
 
     def clear(self, key: str, scope: str = GLOBAL_SCOPE) -> bool:
         """Delete the override row for *key* in *scope*; return whether one was removed.
@@ -115,11 +244,20 @@ class ConfigSetting(models.Model):
     stored as JSON so any TOML-shaped value round-trips. The ``(scope, key)``
     pair is unique so the manager's ``set_value`` is a clean per-scope upsert
     and a global + overlay row for one key can coexist.
+
+    ``seeded_by`` / ``seed_value`` carry the seed provenance (#3435):
+    ``seeded_by`` names the seeder that owns the row (:data:`ENTRYPOINT_SEEDER`
+    for a deploy seed, ``""`` for an operator/runtime write) and ``seed_value``
+    is the value that seeder last wrote. A redeploy re-seeds only a row it still
+    owns, and the ``t3 doctor --repair`` concurrency autofix clears only an
+    entrypoint-seeded pin — never an operator's deliberate one.
     """
 
     scope = models.CharField(max_length=255, default=GLOBAL_SCOPE, blank=True)
     key = models.CharField(max_length=255)
-    value = models.JSONField()
+    value = models.JSONField(blank=True)
+    seeded_by = models.CharField(max_length=255, default="", blank=True)
+    seed_value = models.JSONField(null=True, blank=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -133,5 +271,36 @@ class ConfigSetting(models.Model):
         ]
 
     def __str__(self) -> str:
+        """Identify the row by coordinate ONLY — a value here would leak a stored secret.
+
+        ``__str__`` reaches log lines, tracebacks, and the Django admin's object
+        labels (the changelist action checkbox, the change-form breadcrumb), none of
+        which consult the secret taxonomy. The coordinate is what identifies a row;
+        reading its value is the settings surfaces' job, and they mask it.
+        """
         where = "global" if self.scope == GLOBAL_SCOPE else f"overlay:{self.scope}"
-        return f"config-setting<{where} {self.key}={self.value!r}>"
+        return f"config-setting<{where} {self.key}>"
+
+    def clean(self) -> None:
+        """Refuse a JSON ``null`` value and any inconsistent coupled pair (#3688).
+
+        ``ModelForm`` validation runs this, so the Django admin refuses the same
+        writes ``set_value`` refuses instead of landing them via ``Model.save()``.
+
+        ``value`` is ``blank=True`` because ``[]`` / ``{}`` / ``""`` are all
+        legitimate overrides (``statusline_chain = []`` means "override the
+        shipped non-empty default with nothing"), and a generic key/value store
+        cannot know any per-key arity — that belongs in the coercion layer.
+        Django's required check keys on ``Field.empty_values``
+        (``[None, "", [], (), {}]``), so ``blank=False`` is an all-or-nothing
+        switch that rejects those legitimate values along with ``None``.
+
+        ``blank=True`` alone is unsafe: an empty admin textarea cleans to
+        ``None``, ``Model.clean_fields`` skips a blank-allowed empty value, and
+        ``None`` reaches a NOT NULL column as a 500 rather than a form error.
+        ``None`` is also the resolver's "no row, use the default" sentinel, so
+        it is never a storable value — clear the row instead.
+        """
+        if self.value is None:
+            raise ValidationError({"value": "Enter a JSON value — use [] or {} for an empty list or object."})
+        ConfigSetting.objects.reject_inconsistent_cross_key(self.key, self.value, self.scope)

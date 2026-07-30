@@ -8,7 +8,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.service_launch import ServiceLauncher
-from teatree.core.worktree_env import compose_project, write_env_cache
+from teatree.core.worktree.worktree_env import compose_project, write_env_cache
 from teatree.timeouts import DOCKER_COMPOSE_BUILD, DOCKER_COMPOSE_DOWN, DOCKER_COMPOSE_UP, TimeoutConfig, load_timeouts
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
@@ -24,21 +24,25 @@ def _compose_files(compose_file: str) -> list[str]:
     return flags
 
 
-def docker_compose_down(project: str, *, timeout: int | None = 30) -> None:
+def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volumes: bool = False) -> None:
     """Stop and remove containers for the compose project.
+
+    ``remove_volumes`` adds ``--volumes`` so the project's named/anonymous volumes
+    are torn down too — the done-worktree wipe passes it (a reaped worktree owns
+    its docker volumes, and leaving them behind is a slow disk leak). The
+    start-time reset leaves it off, so a restart never wipes a volume holding the
+    worktree's state.
 
     Tolerant of an unavailable docker binary (CI sandboxes, hermetic test
     environments): a ``FileNotFoundError`` / ``PermissionError`` from
-    ``subprocess.run`` is logged and swallowed so cleanup paths that
-    funnel through here (#1306) don't break when there's no docker to
-    talk to in the first place.
+    ``subprocess.run`` is logged and swallowed so cleanup paths that funnel
+    through here (#1306) don't break when there's no docker to talk to.
     """
+    cmd = ["docker", "compose", "-p", project, "down", "--remove-orphans"]
+    if remove_volumes:
+        cmd.append("--volumes")
     try:
-        result = run_allowed_to_fail(
-            ["docker", "compose", "-p", project, "down", "--remove-orphans"],
-            expected_codes=None,
-            timeout=timeout,
-        )
+        result = run_allowed_to_fail(cmd, expected_codes=None, timeout=timeout)
         if result.returncode != 0:
             logger.warning("docker compose down: %s", result.stderr.strip()[:300])
     except TimeoutExpired:
@@ -71,20 +75,24 @@ class WorktreeStartRunner(RunnerBase):
     def run(self) -> RunnerResult:
         worktree = self.worktree
         overlay = self.overlay
+        # Fail loud BEFORE any docker call: if another live, foreign-ticket worktree
+        # already owns this compose project, the `down` below would tear down ITS
+        # running stack — never clobber a foreign stack (#2774 follow-up).
+        worktree.assert_compose_project_unclaimed()
         project = compose_project(worktree)
 
         docker_compose_down(project, timeout=self.timeouts.get(DOCKER_COMPOSE_DOWN))
 
-        commands = overlay.get_run_commands(worktree)
+        commands = overlay.runtime.run_commands(worktree)
         ServiceLauncher.prepare_all(worktree, list(commands), overlay=overlay)
 
         write_env_cache(worktree, overlay=overlay)
 
-        compose_file = overlay.get_compose_file(worktree)
+        compose_file = overlay.provisioning.compose_file(worktree)
         if not compose_file:
             return RunnerResult(ok=True, detail=f"no compose file for {worktree.repo_path}")
 
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         ok, reason = self._docker_compose_up(project, compose_file, env)
         if not ok:

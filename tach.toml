@@ -18,6 +18,14 @@
 # primitives keeps the graph acyclic under forbid_circular_dependencies (else
 # gitlab/github <-> parent would cycle).
 # tests/quality/test_backends_explicit_coupling.py pins the explicit edge.
+#
+# depends_on is NOT an exhaustive import list. In tach's layered mode a module
+# may import any module in a LOWER layer without declaring it, so only
+# SAME-layer edges bind here. teatree.mcp (integration), for example, also
+# imports teatree.config (platform), teatree.backends.types (domain), and broad
+# teatree.core.* (domain) -- all downward cross-layer edges, permitted
+# implicitly -- so its minimal depends_on list is not an understatement of its
+# real surface.
 
 interfaces = []
 forbid_circular_dependencies = true
@@ -44,7 +52,17 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.request_cache"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.project"
+layer = "foundation"
+depends_on = ["teatree.paths"]
+
+[[modules]]
+path = "teatree.live_presence"
 layer = "foundation"
 depends_on = ["teatree.paths"]
 
@@ -59,29 +77,34 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
-path = "teatree.teams"
+path = "teatree.verification"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
+path = "teatree.llm"
+layer = "foundation"
+depends_on = ["teatree.utils"]
+
+[[modules]]
+path = "teatree.credential_config"
 layer = "domain"
-depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
+depends_on = ["teatree.config", "teatree.core.models", "teatree.llm", "teatree.utils"]
+
+[[modules]]
+path = "teatree.token_report"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.credential_config", "teatree.llm", "teatree.utils"]
+
+[[modules]]
+path = "teatree.ci_oauth_switch"
+layer = "domain"
+depends_on = ["teatree.credential_config", "teatree.token_report", "teatree.utils"]
 
 [[modules]]
 path = "teatree.config"
 layer = "platform"
-depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check", "teatree.config_speak", "teatree.config_mr_reminder"]
-
-[[modules]]
-path = "teatree.config_speak"
-layer = "foundation"
-depends_on = ["teatree.types"]
-
-[[modules]]
-path = "teatree.config_agent"
-layer = "platform"
-depends_on = ["teatree.config"]
-
-[[modules]]
-path = "teatree.config_mr_reminder"
-layer = "foundation"
-depends_on = ["teatree.types"]
+depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check"]
 
 [[modules]]
 path = "teatree.update_check"
@@ -116,7 +139,7 @@ depends_on = ["teatree.utils"]
 [[modules]]
 path = "teatree.hooks"
 layer = "platform"
-depends_on = ["teatree.utils"]
+depends_on = ["teatree.config", "teatree.utils"]
 
 [[modules]]
 path = "teatree.timeouts"
@@ -134,6 +157,11 @@ layer = "platform"
 depends_on = ["teatree.types", "teatree.utils", "teatree.project"]
 
 [[modules]]
+path = "teatree.provisioning"
+layer = "platform"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.core"
 layer = "domain"
 depends_on = [
@@ -145,14 +173,29 @@ depends_on = [
   "teatree.utils",
   "teatree.timeouts",
   "teatree.skill_support",
-  "teatree.trigger_parser",
   "teatree.hooks",
   "teatree.on_behalf_gate",
   "teatree.slack_mrkdwn",
+  "teatree.quality",
+  # ORM-free enum home shared with the MCP service-declaration mechanism
+  # (OverlayConfig.required_third_party_services validates against Service).
+  "teatree.backends.types",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.models",
-  "teatree.core.session_identity"
+  "teatree.core.schema_readiness",
+  # selectors reuse the single-source overlay Q-builder that lives in its own
+  # managers_overlay leaf (F1.6) — a downward edge, mirroring teatree.core.models
+  # → managers.
+  "teatree.core.managers",
+  "teatree.core.managers_overlay",
+  "teatree.core.loop_lease_manager",
+  "teatree.core.session_identity",
+  "teatree.loop.loop_cadences",
+  # The merged operating-mode resolver (teatree.core.mode_resolution, #61) reuses
+  # the preset override/schedule resolver — a domain leaf depending only on
+  # core.models, mirroring the loop_cadences edge above.
+  "teatree.loop.preset_resolution"
 ]
 
 [[modules]]
@@ -176,9 +219,54 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.loop_lease_liveness"
+layer = "platform"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.core.loop_lease_manager"
 layer = "domain"
 depends_on = ["teatree.utils"]
+
+[[modules]]
+path = "teatree.core.repair_loop"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.managers_overlay"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.managers_task_claim"
+layer = "domain"
+depends_on = ["teatree.core.schema_readiness"]
+
+[[modules]]
+path = "teatree.core.managers_inbound"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.managers_issue_match"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.managers_phase_cadence"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.managers_session"
+layer = "domain"
+depends_on = ["teatree.config", "teatree.core.managers_overlay"]
+
+[[modules]]
+path = "teatree.core.schema_readiness"
+layer = "domain"
+depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.core.managers"
@@ -189,6 +277,13 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
+  "teatree.core.managers_inbound",
+  "teatree.core.managers_issue_match",
+  "teatree.core.managers_overlay",
+  "teatree.core.managers_phase_cadence",
+  "teatree.core.managers_session",
+  "teatree.core.managers_task_claim",
+  "teatree.core.repair_loop",
   "teatree.core.session_handover_manager"
 ]
 
@@ -198,7 +293,18 @@ layer = "domain"
 depends_on = [
   "teatree.core.modelkit",
   "teatree.core.managers",
-  "teatree.core.models.errors"
+  "teatree.core.models.errors",
+  "teatree.core.repair_loop",
+  "teatree.instance_id",
+  "teatree.url_classify",
+  "teatree.verification"
+]
+
+[[modules]]
+path = "teatree.mcp"
+layer = "integration"
+depends_on = [
+  "teatree.core.models"
 ]
 
 [[modules]]
@@ -209,10 +315,25 @@ depends_on = [
   "teatree.core",
   "teatree.core.modelkit",
   "teatree.core.models",
+  "teatree.credential_config",
   "teatree.skill_support",
   "teatree.utils",
+  "teatree.config"
+]
+
+[[modules]]
+# The first-party admin dashboard (#3162) — an HTTP interface over the existing
+# read-only selectors / health readers / loop-control managers. Reads the domain,
+# never the reverse; adds no second source of truth.
+path = "teatree.dash"
+layer = "interface"
+depends_on = [
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.loops",
   "teatree.config",
-  "teatree.config_agent"
+  "teatree.agents",
+  "teatree.utils"
 ]
 
 [[modules]]
@@ -223,8 +344,10 @@ depends_on = [
   "teatree.utils",
   "teatree.core",
   "teatree.identity",
+  "teatree.llm",
   "teatree.backends.errors",
   "teatree.backends.types",
+  "teatree.backends.http_retry",
   "teatree.backends.forge_merge_rpc",
   "teatree.backends.github",
   "teatree.backends.gitlab",
@@ -233,6 +356,11 @@ depends_on = [
 
 [[modules]]
 path = "teatree.backends.errors"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.backends.http_retry"
 layer = "domain"
 depends_on = []
 
@@ -255,7 +383,8 @@ depends_on = [
   "teatree.core",
   "teatree.core.models",
   "teatree.identity",
-  "teatree.url_classify"
+  "teatree.url_classify",
+  "teatree.backends.http_retry"
 ]
 
 [[modules]]
@@ -266,8 +395,10 @@ depends_on = [
   "teatree.utils",
   "teatree.core",
   "teatree.core.models",
+  "teatree.llm",
   "teatree.backends.errors",
   "teatree.backends.types",
+  "teatree.backends.http_retry",
   "teatree.backends.forge_merge_rpc",
   "teatree.backends.slack"
 ]
@@ -288,7 +419,7 @@ depends_on = [
 [[modules]]
 path = "teatree.contrib"
 layer = "integration"
-depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.docker", "teatree.utils", "teatree.visual_qa"]
+depends_on = ["teatree.core", "teatree.overlay_sdk"]
 
 [[modules]]
 path = "teatree.cli"
@@ -297,16 +428,18 @@ depends_on = [
   "teatree.paths",
   "teatree.project",
   "teatree.config",
-  "teatree.config_agent",
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.agents",
   "teatree.backends",
+  "teatree.llm",
   "teatree.backends.gitlab",
   "teatree.backends.slack",
   "teatree.eval",
   "teatree.skill_support",
   "teatree.claude_sessions",
   "teatree.overlay_init",
+  "teatree.instance_id",
   "teatree.loop",
   "teatree.utils",
   "teatree.self_update",
@@ -318,6 +451,7 @@ depends_on = [
   "teatree.messaging",
   "teatree.quality",
   "teatree.hooks",
+  "teatree.mcp",
   "teatree.cli.eval"
 ]
 
@@ -326,10 +460,16 @@ path = "teatree.cli.eval"
 layer = "interface"
 depends_on = [
   "teatree.cli._format_opts",
+  "teatree.ci_oauth_switch",
   "teatree.core",
+  "teatree.credential_config",
   "teatree.eval",
+  "teatree.token_report",
   "teatree.utils",
-  "teatree.claude_sessions"
+  "teatree.claude_sessions",
+  "teatree.llm",
+  "teatree.backends.github",
+  "teatree.types"
 ]
 
 [[modules]]
@@ -340,7 +480,7 @@ depends_on = []
 [[modules]]
 path = "teatree.eval"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions"]
+depends_on = ["teatree.core", "teatree.credential_config", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.claude_sessions", "teatree.llm"]
 
 [[modules]]
 path = "teatree.core.management"
@@ -357,15 +497,11 @@ depends_on = [
   "teatree.loops",
   "teatree.messaging",
   "teatree.paths",
+  "teatree.token_report",
   "teatree.types",
   "teatree.utils",
   "teatree.visual_qa"
 ]
-
-[[modules]]
-path = "teatree.loop_enabled"
-layer = "platform"
-depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.loop"
@@ -383,19 +519,18 @@ depends_on = [
   "teatree.backends.github",
   "teatree.backends.gitlab",
   "teatree.backends.slack",
-  "teatree.notify",
   "teatree.messaging",
-  "teatree.loop_enabled",
-  "teatree.teams",
   "teatree.loop.loop_cadences",
   "teatree.loop.session_identity",
   "teatree.loop.loop_scoping",
   "teatree.loop.statusline",
   "teatree.loop.statusline_loops",
+  "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette",
   "teatree.loop.statusline_render",
   "teatree.loop.url_specificity",
   "teatree.loop.review_claim_signals",
+  "teatree.loop.review_done_reactions",
   "teatree.loop.loop_state_db",
   "teatree.loop.review_request_tracker",
   "teatree.loop.dispatch_tables",
@@ -440,6 +575,11 @@ layer = "domain"
 depends_on = ["teatree.core.loop_lease_manager", "teatree.loop.session_identity"]
 
 [[modules]]
+path = "teatree.loop.statusline_loop_chunks"
+layer = "domain"
+depends_on = ["teatree.loop.loop_scoping", "teatree.loop.statusline_palette"]
+
+[[modules]]
 path = "teatree.loop.statusline_loops"
 layer = "domain"
 depends_on = [
@@ -447,6 +587,7 @@ depends_on = [
   "teatree.core",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
+  "teatree.loop.statusline_loop_chunks",
   "teatree.loop.statusline_palette"
 ]
 
@@ -468,7 +609,12 @@ depends_on = ["teatree.core.models"]
 [[modules]]
 path = "teatree.loop.dispatch_tables"
 layer = "domain"
-depends_on = []
+depends_on = [
+  # AGENT_ZONES (the producer SSOT the persistence executor contract is proven
+  # against) folds in SUBAGENT_BY_PHASE.values() — a forward same-layer edge the
+  # sibling dispatch_reducer/dispatch_gates already declare.
+  "teatree.core.modelkit"
+]
 
 [[modules]]
 path = "teatree.loop.pr_ticket_index"
@@ -481,7 +627,23 @@ layer = "domain"
 depends_on = ["teatree.types", "teatree.core.models", "teatree.loop.loop_state_db"]
 
 [[modules]]
+path = "teatree.loop.review_done_reactions"
+layer = "domain"
+depends_on = [
+  "teatree.types",
+  "teatree.utils",
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.loop.review_claim_signals"
+]
+
+[[modules]]
 path = "teatree.loop.loop_state_db"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.loop.preset_resolution"]
+
+[[modules]]
+path = "teatree.loop.preset_resolution"
 layer = "domain"
 depends_on = ["teatree.core.models"]
 
@@ -494,15 +656,18 @@ depends_on = [
   "teatree.utils",
   "teatree.url_classify",
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.core.models",
+  "teatree.core.models.errors",
+  "teatree.core.schema_readiness",
   "teatree.backends",
   "teatree.backends.errors",
   "teatree.backends.github",
   "teatree.backends.gitlab",
   "teatree.backends.slack",
-  "teatree.teams",
   "teatree.loop.url_specificity",
   "teatree.loop.review_claim_signals",
+  "teatree.loop.review_done_reactions",
   "teatree.loop.review_request_tracker",
   "teatree.loop.pr_ticket_index"
 ]
@@ -611,6 +776,7 @@ depends_on = [
 path = "teatree.loop.slack_answer"
 layer = "domain"
 depends_on = [
+  "teatree.agents",
   "teatree.backends.slack",
   "teatree.core",
   "teatree.core.models",
@@ -622,14 +788,21 @@ depends_on = [
 path = "teatree.loops"
 layer = "orchestration"
 depends_on = [
+  "teatree.agents",
   "teatree.config",
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.loop",
   "teatree.loop.loop_state_db",
+  "teatree.loop.preset_resolution",
   "teatree.messaging",
-  "teatree.notify",
   "teatree.utils"
 ]
+
+[[modules]]
+path = "teatree.overlay_sdk"
+layer = "integration"
+depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.utils", "teatree.docker", "teatree.visual_qa"]
 
 [[modules]]
 path = "teatree.docker"
@@ -647,6 +820,11 @@ layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
+path = "teatree.instance_id"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.on_behalf_gate"
 layer = "platform"
 depends_on = ["teatree.config"]
@@ -657,14 +835,9 @@ layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
-path = "teatree.notify"
-layer = "integration"
-depends_on = ["teatree.core"]
-
-[[modules]]
 path = "teatree.messaging"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.notify", "teatree.backends"]
+depends_on = ["teatree.core", "teatree.core.modelkit", "teatree.backends"]
 
 [[modules]]
 path = "teatree.outbound_claim"
@@ -694,7 +867,7 @@ depends_on = ["teatree.utils"]
 [[modules]]
 path = "teatree.url_title_fetcher"
 layer = "platform"
-depends_on = ["teatree.utils"]
+depends_on = ["teatree.utils", "teatree.config"]
 
 [[modules]]
 path = "teatree.url_classify"
@@ -703,11 +876,6 @@ depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.memory_audit"
-layer = "foundation"
-depends_on = []
-
-[[modules]]
-path = "teatree.trigger_parser"
 layer = "foundation"
 depends_on = []
 

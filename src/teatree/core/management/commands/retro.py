@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.review_findings import (
+from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FilingContext,
     FindingClass,
@@ -44,6 +44,7 @@ from teatree.eval.gate_failures import (
     escalate_gate_failures,
     extract_gate_failures,
     record_gate_failures,
+    recurring_fingerprints,
 )
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_resolver import resolve_transcript
@@ -140,7 +141,7 @@ class Command(TyperCommand):
         store = FindingsStore()
         record_gate_failures(store, failures)
 
-        recurring = store.recurring_fingerprints(min_occurrences=2)
+        recurring = recurring_fingerprints(failures, store=store)
         views = self._gate_failure_views(failures, recurring=recurring)
         self._print_gate_failure_summary(views)
 
@@ -244,8 +245,8 @@ class Command(TyperCommand):
 
     @staticmethod
     def _resolve_host(pr_url: str) -> "CodeHostBackend | None":
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         for overlay in get_all_overlays().values():
             host = get_code_host_for_url(overlay, pr_url)

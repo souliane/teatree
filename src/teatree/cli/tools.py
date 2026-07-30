@@ -72,6 +72,12 @@ def validate_mr(
         "--repo",
         help="MR TARGET repo (owner/repo slug, path, or URL); keys overlay resolution to the target, not the cwd.",
     ),
+    *,
+    sections_optional: bool = typer.Option(
+        False,
+        "--sections-optional",
+        help="Skip the required-description-sections check (a title-only update touches no description). #3254",
+    ),
 ) -> None:
     """Validate MR/PR title+description against the active overlay's rules.
 
@@ -88,8 +94,12 @@ def validate_mr(
     that overlay's validator FAILS CLOSED (deny), never silently skips. This
     closes the gap where an MR targeting an overlay with stricter title rules,
     created with cwd in a repo owned by a more-lenient overlay, was graded
-    against the cwd overlay and slipped through. A blank or unmatched ``--repo``
-    falls back to the cwd-keyed resolution below.
+    against the cwd overlay and slipped through. A **blank** ``--repo`` falls
+    back to the cwd-keyed resolution below. A **non-empty** ``--repo`` that maps
+    to no registered overlay SKIPS validation (exit 0) rather than falling
+    through — a repo teatree does not own must never be graded by whatever
+    overlay owns the cwd, which would wrongly reject titles valid under the
+    target's own convention (#2430).
 
     Overlay resolution is deterministic and never crashes on ambiguity
     (#1526). Order:
@@ -110,12 +120,15 @@ def validate_mr(
         create/update (the lockout this fix closes).
     """
     ensure_django()
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
+    require_sections = not sections_optional
     if repo:
         target_overlay = get_overlay_for_repo(repo)
         if target_overlay is not None:
-            errors = _validation_errors_fail_closed(target_overlay, title, description)
+            errors = _validation_errors_fail_closed(
+                target_overlay, title, description, require_sections=require_sections
+            )
             if errors:
                 _deny_with_errors(errors)
         return
@@ -126,7 +139,7 @@ def validate_mr(
         overlay = get_overlay_for_repo(".")
 
     if overlay is not None:
-        errors = _validation_errors(overlay, title, description)
+        errors = _validation_errors(overlay, title, description, require_sections=require_sections)
         if errors:
             _deny_with_errors(errors)
         return
@@ -136,20 +149,35 @@ def validate_mr(
         typer.echo("validate-mr: no overlay resolvable for this repo; skipping metadata check.", err=True)
         return
 
-    per_overlay_errors = [_validation_errors(ov, title, description) for ov in overlays.values()]
+    per_overlay_errors = [
+        _validation_errors(ov, title, description, require_sections=require_sections) for ov in overlays.values()
+    ]
     if any(not errs for errs in per_overlay_errors):
         return
     # Every overlay rejected — surface the first overlay's errors.
     _deny_with_errors(per_overlay_errors[0])
 
 
-def _validation_errors(overlay: "OverlayBase", title: str, description: str) -> list[str]:
-    """Return the overlay's ``validate_pr`` errors for ``title``/``description``."""
-    result = overlay.metadata.validate_pr(title, description)
+def _validation_errors(
+    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True
+) -> list[str]:
+    """Return the overlay's ``validate_pr`` errors for ``title``/``description``.
+
+    ``require_sections`` is always forwarded (#3526). Conditionally forwarding it
+    "only when it deviates from the default" hid a non-conforming overlay's
+    ``validate_pr(title, description)`` on the common path and crashed it on the
+    rarely-taken one — the inverse of safe. An overlay that cannot accept the
+    documented keyword is rejected loudly at registration by
+    ``overlay_signature_violations``; forwarding unconditionally keeps the call
+    site honest to the documented signature.
+    """
+    result = overlay.metadata.validate_pr(title, description, require_sections=require_sections)
     return list(result.get("errors", []))
 
 
-def _validation_errors_fail_closed(overlay: "OverlayBase", title: str, description: str) -> list[str]:
+def _validation_errors_fail_closed(
+    overlay: "OverlayBase", title: str, description: str, *, require_sections: bool = True
+) -> list[str]:
     """Target-keyed verdict that FAILS CLOSED when the overlay's validator crashes.
 
     Once the MR's target maps to exactly one known overlay, that overlay's
@@ -159,7 +187,7 @@ def _validation_errors_fail_closed(overlay: "OverlayBase", title: str, descripti
     lockout-inverse this gate exists to prevent.
     """
     try:
-        return _validation_errors(overlay, title, description)
+        return _validation_errors(overlay, title, description, require_sections=require_sections)
     except Exception as exc:  # noqa: BLE001 — fail closed on any validator fault.
         return [f"validate-mr: target overlay validator failed ({exc}); denying (fail closed)."]
 
@@ -174,10 +202,12 @@ def repo_mode(
     """Report whether the repo is solo (fix proactively) or collaborative (flag, don't fix).
 
     One heuristic for every skill: ``git shortlog`` over the last 90 days on
-    the default branch. A ``[teatree] repo_mode`` config value overrides the
-    detection. Result is cached 7 days per repo.
+    the default branch. The DB-home ``repo_mode`` setting (``t3 <overlay>
+    config_setting set repo_mode <solo|collaborative>``) overrides the
+    detection; a ``[teatree] repo_mode`` TOML value is ignored on read. Result
+    is cached 7 days per repo.
     """
-    from teatree.repo_mode import resolve_repo_mode  # noqa: PLC0415
+    from teatree.repo_mode import resolve_repo_mode  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     mode = resolve_repo_mode(repo, refresh=refresh)
     if json_output:
@@ -186,12 +216,28 @@ def repo_mode(
     typer.echo(mode.value)
 
 
-@tool_app.command("analyze-video")
+@tool_app.command(
+    "analyze-video",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def analyze_video(
-    video_path: str = typer.Argument(..., help="Path to video file"),
+    ctx: typer.Context,
+    source: str = typer.Argument(
+        ..., help="Video file path or URL (GitLab/GitHub upload URLs are fetched authenticated)"
+    ),
 ) -> None:
-    """Decompose video into frames for AI analysis."""
-    ToolRunner.run_script("analyze_video", video_path)
+    """Decompose a video into frames for AI analysis, or verify its quality.
+
+    ``source`` plus every flag passes straight through to
+    ``scripts/analyze_video.py``, which owns the flag definitions (#3116):
+    ``--interval N`` (0 derives from duration to span the whole video),
+    ``--max-frames N``, ``--scale W`` (default 1280px, 0 = native),
+    ``--crop top-bar|W:H:X:Y``, ``--contact-sheet ROWSxCOLS``,
+    ``--verify [--max-dead-lead S]`` (deterministic dead-lead gate, now
+    reachable to point at another author's video), ``--scene``,
+    ``--threshold T``, ``--output DIR``.
+    """
+    ToolRunner.run_script("analyze_video", source, *ctx.args)
 
 
 @tool_app.command("bump-deps")
@@ -209,7 +255,7 @@ def sonar_check(
     remote_status: bool = typer.Option(default=False, help="Fetch CI Sonar results"),
 ) -> None:
     """Run local SonarQube analysis via Docker."""
-    from teatree.cli import _find_overlay_project  # noqa: PLC0415
+    from teatree.cli import _find_overlay_project  # noqa: PLC0415 — deferred: breaks tools ↔ cli cycle
 
     project = _find_overlay_project()
     script = project / "scripts" / "sonar_check.sh"
@@ -242,7 +288,7 @@ def claude_handover(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Show Claude handover telemetry and runtime recommendations."""
-    from teatree.agents.handover import build_claude_handover_status  # noqa: PLC0415
+    from teatree.agents.handover import build_claude_handover_status  # noqa: PLC0415 — deferred: lazy CLI import
 
     status = build_claude_handover_status(current_runtime=current_runtime, session_id=session_id, state_dir=state_dir)
     if json_output:
@@ -270,7 +316,7 @@ def audit_memory(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show matched patterns for each entry."),
 ) -> None:
     """Scan Claude memory files for entries that should be promoted to skills."""
-    from teatree.memory_audit import scan_all  # noqa: PLC0415
+    from teatree.memory_audit import scan_all  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     entries = scan_all()
     if not entries:
@@ -303,7 +349,7 @@ def to_markdown(
     instructions inside it. Exits non-zero with an install hint when markitdown
     is absent, and non-zero with a clear message on a conversion failure.
     """
-    from teatree.backends.markdown_conversion import (  # noqa: PLC0415
+    from teatree.backends.markdown_conversion import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         MarkdownConversionError,
         MarkdownConverter,
         MarkdownConverterUnavailableError,
@@ -336,10 +382,10 @@ def notion_download(
     emits for `<file>` blocks; the signed URL is resolved server-side, so no
     manual browser click is required.
     """
-    import re  # noqa: PLC0415
-    from urllib.parse import urlparse  # noqa: PLC0415
+    import re  # noqa: PLC0415 — deferred: loaded only when this command runs
+    from urllib.parse import urlparse  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.backends.notion import NotionFileRef, download_notion_file  # noqa: PLC0415
+    from teatree.backends.notion import NotionFileRef, download_notion_file  # noqa: PLC0415 — deferred: lazy CLI import
 
     ref = NotionFileRef.from_fetch_src(url)
     if ref is not None:

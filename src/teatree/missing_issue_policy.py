@@ -41,12 +41,14 @@ re-deriving it, keeping this module a thin layer depending only on
 ``teatree.core``) without a circular dependency — exactly the shape of
 :mod:`teatree.on_behalf_gate`.
 
-The setting is ``[teatree] missing_issue_ref_policy`` (default
+The DB-home ``missing_issue_ref_policy`` setting (default
 :attr:`~teatree.config.MissingIssuePolicy.FIND_EXISTING_THEN_ASK`, per-overlay
-overridable, env override via ``T3_MISSING_ISSUE_POLICY``). Resolution follows
-the standard env → active-overlay → global → default chain via
-:func:`teatree.config.get_effective_settings`. The agent-facing prose lives in
-``skills/ship/SKILL.md`` § "Missing Issue Reference Policy".
+overridable, env override via ``T3_MISSING_ISSUE_POLICY``) is set with ``t3
+<overlay> config_setting set missing_issue_ref_policy <value>``; a
+``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on read. Resolution
+follows the DB-home chain env → DB(overlay scope) → DB(global scope) → default
+via :func:`teatree.config.get_effective_settings`. The agent-facing prose lives
+in ``skills/ship/SKILL.md`` § "Missing Issue Reference Policy".
 """
 
 from enum import StrEnum

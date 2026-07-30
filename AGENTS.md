@@ -2,6 +2,36 @@
 
 This is the teatree repo — both the Python package (`src/teatree/`) and the workflow skills (`skills/*/`). You are developing teatree itself, not using it on a downstream project.
 
+## First Principles (Non-Negotiable — outrank BLUEPRINT.md and every section below)
+
+These are the owner's standing directives. Where anything else in this repo conflicts with them, they win.
+
+1. **Zero regression allowed.** A fix without a regression test is not a fix. An AI *behavioural* fix without a regression **eval** is not a fix. Find the right surface to test: prefer **integration** tests over unit tests; reach for **evals** and **E2E** when those are what actually observe the behaviour. A test that passes on the buggy code guards nothing — observe it RED first.
+2. **Code is improved continuously**, not just extended: factorized, clean, maintainable, robust, extensible, bullet-proof — with as **few comments as possible**. Comments as code: express intent in names, types and structure so prose is not needed. Comment only what the code genuinely cannot say (a non-obvious *why*, a measured constant, a deliberate divergence).
+3. **Instructions are a fallback** for whatever cannot be ENFORCED deterministically. If a rule can be made mechanical, make it mechanical and delete the prose.
+4. **Checks and gates are a safety net** for whatever could not be properly ENFORCED. They catch what the design failed to prevent; they are not the design.
+5. **The factory requires as little human intervention as possible.** Every question asked of the owner is a cost — remove its cause where you can.
+6. **The factory is RESILIENT: it auto-repairs and auto-improves itself.** A failure that needs a human to notice it is an unfinished failure.
+7. **The factory is RELIABLE.** It does the same thing every time, and what it verifies is what it runs. A green check that proves a different environment than production is not a check — pin the versions, run the real path, and make the surface that ships the surface that was tested. Flakiness is a defect, not a condition to retry around.
+8. **No known gap outlives the PR that revealed it.** A gap an agent becomes aware of that concerns what it is working on is closed in the SAME pull request. No follow-up issue, no "phase 2", no `TODO`, no deferral to the next ticket. Filing a gap you could have fixed is not progress — it is the work, moved.
+9. **One phase, one PR per repository.** A plan has exactly one phase, and implements EVERYTHING in at most one PR per repo it touches. Do not propose staged rollouts, phase 1/2/3 sequencing, or a "foundation now, rest later" shape — if it is in the plan, it ships in that single PR.
+10. **An agent terminates only when its knowledge is fully implemented.** On finishing, everything the agent knows needs doing is done — 100%, by that agent. Nothing understood is handed to somebody else, to a future session, or to the owner. "Out of scope" is not a place to put work you already know how to do.
+11. **The owner's attention is the scarcest resource in the factory.** Assume the owner never reads Claude Code messages, and reads Slack only when forced to. Volume is what makes that true: every extra message lowers the odds the one that matters is read. So raise only what genuinely cannot be decided without a human, and decide and deliver everything else in silence.
+
+Read 8, 9 and 10 together — they are one requirement seen at three moments. 9 is completeness at plan time, 8 at implementation time, 10 at exit. Each exists because the other two are evaded the same way: by naming known work "later". There is no later.
+
+**What 8-10 bind — and what they do not.** They bind *deferral*. They do not widen scope, and they grant no authority:
+
+- **Scope.** They reach what the change in front of you touches — what it leaves broken, half-done, or contradicted. A gap uncovered while closing one is in scope only if it sits on that same surface; past it, name the finding in the PR body and stop. "Everything the agent knows needs doing" means everything in scope, not everything it noticed. Closing a gap must terminate, so the surface is the bound.
+- **Authority.** Maker is still not checker: a reviewer reports what it finds and never fixes it (§ "Reused-ticket attestation" below; `skills/review/SKILL.md`, `skills/ship/SKILL.md` § "Merging is the §17.4 keystone transition", `skills/wip/SKILL.md` § "Hard rails parallelization must not break"). Every recorded approval gate still holds — issue creation and plan/memory files (both below), remote-DB writes, on-behalf and live posts, review requests, merges, the E2E bypass. Evals, tests and the ship gates are never skipped to satisfy a principle. An agent stopped at a gate has finished by asking; "do it now" is not consent.
+
+Read 3 and 4 together, and mind *who acts*:
+
+- **When the actor is deterministic** (code, CI, a hook), enforce it mechanically. A rule that can be made impossible to break should be impossible to break, and the prose restating it should then be deleted.
+- **When the actor is an AI**, the instruction comes FIRST. A gate does not prevent an agent from doing the wrong thing — it fires after the fact, so every trigger costs a whole repair cycle in tokens and wall-clock. The instruction is what makes the behaviour right on the first attempt; the gate only catches what the instruction failed to convey.
+
+So a gate is never the answer to "how do we make the agent do X". It is the net under X, sized for the times the instruction did not land. Prose that restates what a mechanism already makes impossible is duplication; prose that shapes agent behaviour is the cheapest control there is.
+
 ## Repo Change Safety
 
 - Never create a new plan file, memory file, journal file, or repo-instruction file in this repository without the user's explicit approval first.
@@ -42,9 +72,10 @@ It provides:
 ```
 src/teatree/           Python package (the Django app + CLI)
   cli/                 Typer CLI package — the `t3` entry point
-  config.py            ~/.teatree.toml parsing, overlay discovery
-  skill_loading.py     Skill selection policy (phase → skills, companion resolution)
-  skill_deps.py        Transitive dependency and companion resolution
+  config.py            settings resolution (DB ConfigSetting store), overlay discovery
+  skill_support/       Skill selection policy (`loading.py` — phase → skills, cwd detection),
+                       transitive `requires` / soft `companions` resolution (`deps.py`),
+                       and the `agents/*.md` frontmatter reader (`agent_declarations.py`)
   core/                Django app: models, managers, views, selectors, management commands
     models/            Model package — Ticket/Worktree/Task/PullRequest (FSM) + Session, TaskAttempt, TicketTransition, etc.
     selectors/         Selector functions (no domain logic in views)
@@ -61,7 +92,7 @@ src/teatree/           Python package (the Django app + CLI)
     gitlab.py          GitLab code-host client
     gitlab_ci.py       GitLab CI pipeline operations
     gitlab_sync*.py    GitLabSyncBackend + per-concern sync modules (issues, prs, approvals, terminal)
-    slack*.py, notion.py, sentry.py  Other integrations
+    slack*.py, notion.py, sentry.py, sharepoint.py  Other integrations
   agents/              Agent runtime
     headless.py        Headless tasks via `claude -p` (capture structured JSON output)
     handover.py        Headless ↔ interactive session handover (resume by session id)
@@ -111,6 +142,7 @@ records.
 - Tracks visited phases across tasks within a conversation (not FSM-driven)
 - **Fields:** overlay, ticket (FK), visited_phases (JSONField), phase_visits (JSONField), started_at, ended_at, agent_id, repos_modified, repos_tested
 - Quality gates enforce ordering: reviewing requires testing, shipping requires reviewing
+- **Terminal point:** `ended_at` is written by `Session.close()`, driven from the `_close_session_on_terminal_task` `post_save` receiver — a Task reaching COMPLETED/FAILED closes its session once no sibling task on it is still active. `SessionQuerySet.live()` bounds the open-session liveness signal by `session_stale_after_hours` so a crashed agent cannot pin its ticket busy forever
 
 ### TaskAttempt — Execution history (FK → Task)
 
@@ -138,7 +170,7 @@ outage still surfaces via `_run_job`. Canonical exemplars:
 
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
-| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-sdk`, `followup refresh`, `loop_tick` | Yes |
+| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-headless`, `followup refresh`, `loop_tick` | Yes |
 | Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info`, `t3 loop start/stop/status` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
 
@@ -240,7 +272,7 @@ Headless tasks run `claude -p <prompt> --append-system-prompt <context> --output
 
 ### Interactive Sessions (`core/management/commands/tasks.py`)
 
-Interactive tasks (`tasks work-next-user-input`) launch `claude` inline in
+Interactive tasks (`tasks start`) launch `claude` inline in
 the invoking terminal — no ttyd, no terminal-mode strategies. The argv is
 built by `_build_claude_command`:
 
@@ -280,6 +312,8 @@ bash dev/test-matrix.sh             # Opt-in Docker matrix: Python 3.13 + 3.14
 
 **`dev/test-fast.sh` and `dev/test-matrix.sh` are explicit opt-in local runners, not the push path.** Run `dev/test-fast.sh` when you want the host suite locally on Python 3.13. Run `dev/test-matrix.sh` before merges that touch `dev/Dockerfile.test`, `uv.lock`, or system dependencies: it runs the suite in Docker across Python 3.13 + 3.14 and catches missing system dependencies and Python-version-specific differences the host gate can't. If the Dockerfile changed, remove the cached image first: `docker rmi teatree-test`.
 
+**The CI `test (3.13)` gate is sharded 4-way behind an unchanged combiner.** The heavy lane is a `test-shard` matrix (`pytest-split --splits 4 --group N`, `-n auto` within each shard) that measures coverage but enforces NO floor; the `test` COMBINER job aggregates them — it fails if any shard failed, asserts the shards partition the suite exactly once (`scripts/ci/check_shard_completeness.py`), then combines the coverage and enforces the 93% floor + per-module floors ONCE over the whole tree. The required check context stays `test (3.13)` (the combiner's job key + matrix are unchanged); local parity is still the single-process `bash dev/test-cov.sh`. Shard balance is tuned by the committed `dev/.test_durations` — staleness only degrades balance, never correctness (pytest-split falls back to even chunking). Regenerate it from a full run when balance drifts: `uv run --group shard pytest --store-durations --durations-path dev/.test_durations` (the `shard` group is opt-in, out of the default `dev` group like `shuffle`).
+
 ### Test-Writing Doctrine (Non-Negotiable)
 
 New tests — added in this repo or in any overlay repo — must lean **integration / E2E / functional**. Unit tests are reserved for pure logic that integration tests can't cover efficiently.
@@ -316,6 +350,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 - Python 3.13+ required. Use `X | Y` union syntax, not `Optional`.
 - `from __future__ import annotations` is banned — use native syntax.
 - No docstrings on classes/methods by policy (D1xx disabled). Self-documenting code.
+- **Concise (directive #4).** Everything teatree authors — code comments, commit/PR bodies, reviews, Slack — is bullets, straight to the point, no prose. Comment only what the code cannot say (the *why*, a non-obvious constraint); never narrate the *what*. Be RIGHT but concise — brevity is an efficiency axis, not a licence to drop detail that changes the meaning.
 - Management commands use `django-typer`, not `BaseCommand`.
 - Git author: use whatever `git config user.name` / `git config user.email` is set to.
 - Never add `Co-Authored-By` trailers to commits.
@@ -331,7 +366,15 @@ After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — 
 - Teatree skills must never reference a specific project or overlay by name.
 - Project-specific knowledge belongs in the generated host project's overlay app.
 - User preferences belong in memory/config files, not skills.
-- Use extension points or `~/.teatree.toml` variables for project context.
+- Use extension points or DB config settings for project context.
+
+### teatree never reads assistant memory as a functional input (Non-Negotiable)
+
+teatree resolves ALL required state from its own stores; an assistant's memory is never a source of truth for the factory (BLUEPRINT §17.1 invariant 14, [#3277](https://github.com/souliane/teatree/issues/3277)).
+
+- Every piece of state teatree needs to *function* — config, gate enablement, publishing/merge doctrine, factory settings, loop state, trusted identities, credential routing — resolves from teatree's OWN stores: the DB-home `ConfigSetting` / `LoopState` tables (`teatree.config.cold_reader` / `cold_db`, or the ORM), `pass`, repo config. Never from `MEMORY.md`, `~/.claude/**/memory`, or a per-project memory file — those are per-assistant, per-machine, and not portable, so a memory dependency would make the factory behave differently on another machine / agent / fresh session.
+- The only teatree paths that read the memory dir treat it as *product data teatree maintains or surfaces* (the `teatree.loops.dream` consolidation pass, the cold-tier recall injector's *advisory* context), each degrading to a no-op when the dir is absent. A memory-reading feature must NEVER gate a decision or resolve a required state value — even the recall injector's own `memory_recall_enabled` toggle reads from the DB, not from memory.
+- The invariant is pinned by `tests/test_no_agent_memory_dependency.py` (identical runtime state with the memory dir absent vs. populated with contradicting bait). When adding any state resolver, read from teatree's own stores; do not introduce a new read of the assistant memory dir on a functional path.
 
 ## Things That Catch People
 

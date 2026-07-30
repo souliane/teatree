@@ -42,7 +42,11 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
 
@@ -59,15 +63,22 @@ nav:
       - Installation: install.md
   - User Guide:
       - Management Commands: generated/management-commands.md
-      - Skill Triggers: skill-triggers.md
       - Testing Skill Evals: testing-skill-evals.md
+      - Evals:
+          - Dashboard: evals/index.md
+          - SOTA Runner Design: evals/sota-eval-runner.md
       - Security: security.md
       - Claude Code Internals: claude-code-internals.md
   - Reference:
       - CLI Reference: generated/cli-reference.md
+      - Representative CLI Output: generated/cli/representative-output.md
       - Overlay API: overlay-api.md
       - Overlay Extension Points: generated/overlay-extension-points.md
       - Skill Delegation Matrix: generated/skill-delegation-matrix.md
       - Skills Catalogue: generated/skills-catalogue.md
       - Anti-Pattern Catalog: generated/antipattern-catalog.md
+      - Worktree Lifecycle: generated/diagrams/worktree-lifecycle.md
+      - PullRequest Lifecycle: generated/diagrams/pull-request-lifecycle.md
+      - Ticket Lifecycle: generated/diagrams/ticket-lifecycle.md
+      - Admin Dashboard: dashboard.md
   - Contributing: contributing.md

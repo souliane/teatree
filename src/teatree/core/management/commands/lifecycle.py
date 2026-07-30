@@ -8,13 +8,14 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.gates.review_context_gate import ReviewContextError, check_review_context
 from teatree.core.gates.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
 from teatree.core.modelkit.phases import normalize_phase, phase_transition
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
+from teatree.core.models.ticket_ledger import retire_phase_ledger
+from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +145,12 @@ class Command(TyperCommand):
                 f"Refusing to clear ticket {ticket.pk}'s phase ledger without --confirm "
                 f"(destructive: every session's visited_phases/phase_visits is wiped)"
             )
-        # #1286: delegate to the canonical ``Ticket._retire_phase_ledger``
-        # helper so the CLI and the ``reopen()`` FSM workstream-boundary
-        # call retire the ledger the same way. One source of truth, no
-        # drift if the retire policy ever has to learn a new column.
+        # #1286: delegate to the canonical ``retire_phase_ledger`` helper so the
+        # CLI and the ``reopen()`` FSM workstream-boundary call retire the ledger
+        # the same way. One source of truth, no drift if the retire policy ever
+        # has to learn a new column.
         cleared = ticket.sessions.count()
-        ticket._retire_phase_ledger()  # noqa: SLF001
+        retire_phase_ledger(ticket)
         logger.warning(
             "Phase ledger cleared for ticket %s across %d session(s) — sanctioned session-retire",
             ticket.pk,
@@ -240,9 +241,9 @@ class Command(TyperCommand):
         the row in place (idempotent). A red run, or a green run with no
         ``--posted-url``, records provenance without satisfying the gate.
         """
-        from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415
-        from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415
-        from teatree.core.models.worktree import Worktree  # noqa: PLC0415
+        from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.core.models.worktree import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ticket = Ticket.objects.resolve(ticket_id)
         assert_lifecycle_db_is_canonical(ticket)

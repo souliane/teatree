@@ -1,6 +1,6 @@
 """``t3 dogfood`` — overlay-smoke management commands (#1308).
 
-The fat loop reaches for an overlay's provision path only when the user
+The loop reaches for an overlay's provision path only when the user
 needs E2E, so latent CLI bugs accumulate quietly between runs and
 surface as a cascade at the worst possible time.
 ``t3 dogfood overlay-provision-smoke`` exercises the canonical
@@ -29,6 +29,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.loop.dogfood_smoke import SmokeOutcomeKind, default_steps, report_summary, run_smoke, run_t3_command
 
 
@@ -52,15 +53,15 @@ def _notify_failure(*, summary_text: str, failing_step: str, command_str: str, s
     swallowed so a notify failure never propagates out of the smoke
     command (the CLI exit code already carries the verdict).
     """
-    from teatree.core.notify import NotifyKind  # noqa: PLC0415
-    from teatree.messaging import notify_with_fallback  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.messaging import notify_with_fallback  # noqa: PLC0415 — deferred: keeps command import light
 
     body = _dm_failure_body(summary_text, failing_step=failing_step, command_str=command_str, stderr=stderr)
     key = f"dogfood_smoke:{failing_step}"
     try:
-        notify_with_fallback(body, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(body, kind=NotifyKind.INFO, idempotency_key=key, audience=NotifyAudience.OWNER_ESCALATION)
     except Exception:
-        import logging  # noqa: PLC0415
+        import logging  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         logging.getLogger(__name__).exception("Failed to DM user about dogfood smoke failure")
 
@@ -110,7 +111,7 @@ class Command(TyperCommand):
             bool,
             typer.Option("--dry-run", help="Print the planned steps and exit 0 without executing them."),
         ] = False,
-        notify_on_failure: Annotated[  # noqa: FBT002
+        notify_on_failure: Annotated[  # noqa: FBT002 — typer CLI boolean flag; the bool parameter is typer's option idiom
             bool,
             typer.Option(
                 "--notify-on-failure/--no-notify-on-failure",
@@ -123,7 +124,7 @@ class Command(TyperCommand):
         Exits 0 on PASS, 11-19 on categorised failure (see
         :func:`_exit_code_for`) via ``raise SystemExit(code)`` so the code
         propagates under ``call_command``. DMs the user via
-        :func:`teatree.notify.notify_user` on any non-PASS outcome
+        :func:`teatree.core.notify.notify_user` on any non-PASS outcome
         unless ``--no-notify-on-failure`` is passed (CI hook).
         """
         target_overlay = overlay or _resolve_active_overlay()
@@ -167,7 +168,7 @@ class Command(TyperCommand):
 
 def _resolve_active_overlay() -> str:
     """Return the active overlay short name, or empty string when none is registered."""
-    from teatree.config import OverlayEntry, discover_active_overlay  # noqa: PLC0415
+    from teatree.config import OverlayEntry, discover_active_overlay  # noqa: PLC0415 — deferred: lazy command import
 
     active = discover_active_overlay()
     if active is None:

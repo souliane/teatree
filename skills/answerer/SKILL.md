@@ -6,7 +6,6 @@ requires:
   - workspace
   - rules
   - platforms
-companions:
   - verification-before-completion
 metadata:
   version: 0.0.1
@@ -71,7 +70,7 @@ mirroring `require_human_approval_to_merge`.
   only once comfortable with answer quality, by raising the overlay's
   trust tier — `t3 <overlay> autonomy set notify` (or `full`), which
   collapses `require_human_approval_to_answer → False` for that overlay
-  (the single homogenizing knob; never hand-edit `~/.teatree.toml`).
+  (the single homogenizing knob; never hand-edit config).
   Overlays whose questions are customer-facing or high-stakes should keep
   the tier at `babysit`.
 
@@ -167,8 +166,9 @@ the same answer. The reply transport short-circuits on a duplicate key.
 ### 5. Record & Report
 
 - The reply transport records the `ReplyDispatch` outcome
-  (`sent`/`failed`); on failure it follows the existing dead-letter /
-  retry path (`reply_retry.py`) — do not hand-roll retries here.
+  (`sent`/`failed`) with the failure's `error_message` — retry and
+  dead-letter handling belong to the transport layer, not the answerer;
+  do not hand-roll retries here.
 - Report back: the question, the channel, whether approval was required
   and obtained, and the posted-message reference.
 

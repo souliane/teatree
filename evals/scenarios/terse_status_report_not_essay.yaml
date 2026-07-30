@@ -1,0 +1,61 @@
+# Directives #5/#12 — too verbose → concise everywhere.
+#
+# Canonical rule: skills/rules/SKILL.md § "Keep Turn Output Terse and TTS-Ready".
+#
+# DISTINCT from terse_claude_code_output_no_narration (which forbids process
+# NARRATION and status TABLES): an essay-style multi-paragraph status report
+# carries NO narration tell and NO table, so it SLIPS the narration lookahead —
+# yet it is exactly the verbose-when-a-terse-line-would-do recurrence #5/#12
+# targets. This scenario adds the missing tooth: a STRUCTURAL discriminator
+# (paragraph count + length) that reds an essay-style report and greens a terse
+# one. Proven non-duplicative: the essay _fail fixture PASSES the narration
+# scenario's tooth (no narration tell) but is caught here.
+- name: terse_status_report_not_essay
+  scenario: "a finished-task status report is a terse line, not an essay-style multi-paragraph report when a terse line would do"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Keep Turn Output Terse and TTS-Ready"]
+  tier: balanced
+  # Pure final_state grade on the report text; the loader forbids an empty tools
+  # list, so pass the harmless default ([Bash]) — it does not affect a
+  # final_state matcher.
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    The multi-step task is finished: the archived_at migration is written and
+    applied, the suite is green, and PR #318 is open
+    (https://github.com/souliane/teatree/pull/318). Nothing is left to decide and
+    nothing is blocked. Produce your turn output now — the message the user sees.
+    A terse line is what this warrants: report the milestone in one or two short
+    sentences, not a multi-paragraph essay. End your turn with that message as
+    your final message.
+  judge:
+    rubric: |
+      The agent passes ONLY if its final turn output is a TERSE status line — a
+      milestone stated in one or two short sentences — and NOT an essay-style
+      multi-paragraph report.
+
+      PASS when the final message:
+        - reports the milestone (the PR / green suite / applied migration); and
+        - is a short, single- (or at most two-) paragraph line, not a
+          multi-paragraph narrative recounting each stage of the work.
+
+      FAIL when the final message is an essay: several paragraphs, or a long
+      recounting of the session, where a one-or-two-sentence line would do.
+  expect:
+    # Positive anchor (kills the no-op / empty-output vacuity class): the terminal
+    # must actually REPORT a milestone — a deliverable word a do-nothing "still
+    # thinking" turn never reaches. Both a terse line and a verbose essay satisfy
+    # this; it is NOT the discriminator — it only proves something substantive was
+    # surfaced (and reds the no-op transcript, which carries no milestone word).
+    - final_state: '~ "(?is)\b(done|complete[d]?|finish(ed)?|migrat(ed|ion)|appl(ied|y)|green|pass(ed|ing)|merg(ed|e)|push(ed)?|open(ed)?|pr ?#?\d|ready|blocked|block(er|ed)|no blockers)\b"'
+    # Discriminating tooth A (structure): the terminal must NOT be an essay — fewer
+    # than three blank-line-separated paragraphs. The negative lookahead reds a
+    # message carrying two or more paragraph breaks (>=3 paragraphs); a terse one-
+    # or two-line report has zero and passes. (`.` is dot-all under `(?s)`, `^` the
+    # start anchor with no MULTILINE.)
+    - final_state: '~ "(?s)^(?!.*\n[ \t]*\n.*\n[ \t]*\n)"'
+    # Discriminating tooth B (length): the terminal must fit a terse line — under
+    # 600 characters. A long single-paragraph essay (which tooth A cannot see)
+    # reds here. A terse milestone report is well under the cap. Proven against the
+    # _fail (essay) and _pass (terse) fixtures.
+    - final_state: '~ "(?s)^(?!.{600,})"'

@@ -58,7 +58,7 @@ def review(  # noqa: PLR0913, PLR0917 — typer command: every param is a CLI fl
     slug = parsed.group("slug")
     pr_id = int(parsed.group("pr_id"))
     variant = _classify_variant_cli(tuple(changed_paths))
-    from teatree.core.models.codex_review_marker import CodexReviewMarker  # noqa: PLC0415
+    from teatree.core.models.codex_review_marker import CodexReviewMarker  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if force:
         CodexReviewMarker.objects.filter(slug=slug, pr_id=pr_id, head_sha=head_sha).delete()
@@ -89,7 +89,7 @@ def review(  # noqa: PLR0913, PLR0917 — typer command: every param is a CLI fl
 
 def _classify_variant_cli(changed_files: tuple[str, ...]) -> str:
     """Same classifier as the scanner — kept in lockstep via shared markers."""
-    from teatree.loop.scanners.codex_review import (  # noqa: PLC0415
+    from teatree.loop.scanners.codex_review import (  # noqa: PLC0415 — deferred: keeps CLI startup light
         ADVERSARIAL_PATH_MARKERS,
         ADVERSARIAL_REVIEW_VARIANT,
         STANDARD_REVIEW_VARIANT,

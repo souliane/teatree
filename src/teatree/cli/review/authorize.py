@@ -63,12 +63,15 @@ def resolve_live_authorization(*, scope: str, action: str = _POST_ACTION) -> str
     single-use consume. This helper is the read-only decision used to
     produce the user-facing refusal message.
     """
-    from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415
+    from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415 — lazy CLI import
 
     if resolve_on_behalf_verdict(action) is OnBehalfVerdict.PROCEED:
         return ""
 
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval, canonical_on_behalf_target  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        OnBehalfApproval,
+        canonical_on_behalf_target,
+    )
 
     clean_scope = canonical_on_behalf_target(scope)
     if OnBehalfApproval.objects.filter(target=clean_scope, action=action, consumed_at__isnull=True).exists():
@@ -124,8 +127,14 @@ def register(review_app: typer.Typer) -> None:
         """
         ensure_django()
 
-        from teatree.core.models.live_post_approval import LivePostApproval, canonical_mr_scope  # noqa: PLC0415
-        from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError  # noqa: PLC0415
+        from teatree.core.models.live_post_approval import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            LivePostApproval,
+            canonical_mr_scope,
+        )
+        from teatree.core.models.on_behalf_approval import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            OnBehalfApproval,
+            OnBehalfApprovalError,
+        )
 
         clean_scope = canonical_mr_scope(scope)
         try:

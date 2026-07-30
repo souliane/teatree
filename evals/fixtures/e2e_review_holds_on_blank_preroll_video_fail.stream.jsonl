@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h3-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The run is green and the evidence exists, so I'll mark it verified and let the sweep merge."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record 7788 e2e-8648 --reviewed-sha aabbccddeeff00112233445566778899aabbccdd --verdict merge_safe --reviewer-identity reviewer-bot --gh-verify-result green", "description": "record merge_safe — VERIFIED"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded merge_safe"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -17,6 +17,7 @@ silently relax a gate.
 """
 
 import json
+import sqlite3
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -36,13 +37,30 @@ def _capture(data: dict, reason: str) -> tuple[bool, dict | None]:
     return blocked, payload
 
 
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the cold reader resolves."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    home = tmp_path / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    return home
+def config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db = tmp_path / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    return db
 
 
 def _bash(command: str) -> dict:
@@ -50,14 +68,14 @@ def _bash(command: str) -> dict:
 
 
 class TestDeniesByDefault:
-    def test_denies_when_fail_open_off_and_not_self_rescue(self, home: Path) -> None:
+    def test_denies_when_fail_open_off_and_not_self_rescue(self, config_db: Path) -> None:
         blocked, payload = _capture(_bash("git push origin main"), "BLOCKED: nope")
         assert blocked is True
         assert payload is not None
         assert payload["permissionDecision"] == "deny"
         assert "BLOCKED: nope" in payload["permissionDecisionReason"]
 
-    def test_denies_for_a_non_bash_tool_call(self, home: Path) -> None:
+    def test_denies_for_a_non_bash_tool_call(self, config_db: Path) -> None:
         blocked, payload = _capture({"tool_name": "Edit", "tool_input": {"file_path": "/x"}}, "BLOCKED: edit")
         assert blocked is True
         assert payload is not None
@@ -65,14 +83,14 @@ class TestDeniesByDefault:
 
 
 class TestFailOpenSwitch:
-    def test_allows_everything_when_fail_open_enabled(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = true\n", encoding="utf-8")
+    def test_allows_everything_when_fail_open_enabled(self, config_db: Path) -> None:
+        _seed_config_db(config_db, {"danger_gate_fail_open": True})
         blocked, payload = _capture(_bash("git push origin main"), "BLOCKED: nope")
         assert blocked is False
         assert payload is None
 
-    def test_denies_when_fail_open_explicitly_false(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = false\n", encoding="utf-8")
+    def test_denies_when_fail_open_explicitly_false(self, config_db: Path) -> None:
+        _seed_config_db(config_db, {"danger_gate_fail_open": False})
         blocked, _ = _capture(_bash("git push origin main"), "BLOCKED: nope")
         assert blocked is True
 
@@ -88,7 +106,7 @@ class TestSelfRescueAlwaysAllowed:
             "python manage.py migrate",
         ],
     )
-    def test_self_rescue_command_is_never_denied_even_with_fail_open_off(self, home: Path, command: str) -> None:
+    def test_self_rescue_command_is_never_denied_even_with_fail_open_off(self, config_db: Path, command: str) -> None:
         # No config at all → fail-open is OFF → a normal command would be
         # denied. A self-rescue command must STILL be allowed.
         blocked, payload = _capture(_bash(command), "BLOCKED: nope")
@@ -105,7 +123,7 @@ class TestFailsClosedOnResolutionError:
     path and must not relax by accident).
     """
 
-    def test_resolver_exception_still_denies(self, home: Path) -> None:
+    def test_resolver_exception_still_denies(self, config_db: Path) -> None:
         def _boom() -> bool:
             msg = "resolver blew up"
             raise RuntimeError(msg)

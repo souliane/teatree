@@ -22,27 +22,84 @@ provision/ship/teardown jobs that have been queued for days. FAILED is
 reversible — the row, its args, and the reason are all preserved; nothing is
 hard-deleted.
 
-Both are wired into the won-owner tick via :mod:`teatree.loop.tick_piggyback`
-behind a dedicated ``LoopLease`` CAS, and the drain refuses to run while a real
-``db_worker`` holds the machine-wide ``teatree-worker`` flock singleton — so the
-two drainers never compete for the same rows.
+Both are driven by the dedicated reactive drain-queue ``/loop``
+(``t3 loop drain-queue run`` → the ``loop_drain_queue`` management command →
+:func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``). The drain
+refuses to run while a live worker holds the ``worker`` singleton flock
+(:data:`~teatree.utils.singleton.WORKER_SINGLETON` — probed via the same constant
+the workers acquire), and it only drains the ``default`` queue — the
+``loops``-queue ``loop_timer`` rows advance ONLY on the worker's pinned executors, so
+the drain cannot become a second loop runner that bypasses the ``loop_runner_enabled``
+kill-switch.
 """
 
 import datetime as dt
 import logging
 import os
-import uuid
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import SuspiciousOperation
+from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models.expressions import BaseExpression
 from django.db.utils import OperationalError
 from django.utils import timezone
 
-from teatree.loop.loop_cadences import drain_cadence_seconds
+if TYPE_CHECKING:
+    from teatree.core.managers import ClaimOrder
 
 logger = logging.getLogger(__name__)
 
 _STALE_THRESHOLD_DEFAULT_HOURS = 24
 _DRAIN_BATCH_DEFAULT = 5
+
+#: Priority order the loop admits pending Task rows in: TODO/followup (rank 0)
+#: before a new-ticket auto-start (rank 1), then FIFO ``pk`` within a rank.
+ADMISSION_RANK_ALIAS = "_admission_rank"
+ADMISSION_ORDER: tuple[str, ...] = (ADMISSION_RANK_ALIAS, "pk")
+
+
+def _new_ticket_autostart_q() -> Q:
+    """A task that auto-STARTS a brand-new ticket: an initial-phase, un-parented row.
+
+    A ``planning``/``scoping`` task with no ``parent_task`` is the first phase of
+    a freshly picked-up ticket. Everything else — a downstream lifecycle phase
+    (coding/testing/reviewing/shipping), a followup (``parent_task`` set), or a
+    reactive ``answering``/``bughunt`` task — is continuing TODO work that should
+    drain first. Matched across every accepted spelling so a short-verb
+    ``plan``/``scope`` row ranks identically to the canonical gerund.
+    """
+    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: loaded at tick time
+
+    autostart_phases = phase_spellings("planning") + phase_spellings("scoping")
+    return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases)
+
+
+def admission_priority_annotations() -> dict[str, BaseExpression]:
+    """The ``.annotate()`` kwargs producing the integer :data:`ADMISSION_RANK_ALIAS`.
+
+    ``0`` = TODO/followup (drain first); ``1`` = new-ticket auto-start. Paired
+    with :data:`ADMISSION_ORDER` on the claim/plan path so a queued TODO admits
+    before a lower-``pk`` new-ticket task at equal priority.
+    """
+    return {
+        ADMISSION_RANK_ALIAS: Case(
+            When(_new_ticket_autostart_q(), then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+    }
+
+
+def admission_claim_order() -> "ClaimOrder":
+    """The :class:`ClaimOrder` the loop passes to ``claim_next_pending`` (PR-13).
+
+    Bundles :func:`admission_priority_annotations` with :data:`ADMISSION_ORDER`
+    so the live claim path admits a queued TODO/followup before a new-ticket
+    auto-start.
+    """
+    from teatree.core.managers import ClaimOrder  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    return ClaimOrder(annotations=admission_priority_annotations(), order_by=ADMISSION_ORDER)
 
 
 class StaleQueueJobError(RuntimeError):
@@ -88,20 +145,28 @@ def drain_batch_size() -> int:
 
 
 def a_worker_is_running() -> bool:
-    """True iff a live ``manage.py db_worker`` holds the ``teatree-worker`` flock.
+    """True iff a live worker holds the worker-singleton flock.
 
-    ``t3 <overlay> worker`` wraps its workers in the ``teatree-worker``
-    machine-wide flock singleton. When one is alive, the in-process tick
-    drain must stand down so the two never claim the same rows. ``read_pid``
-    reports the live holder (and reaps a stale pid file) without acquiring
-    the lock, so probing here never disturbs a running worker.
+    Every worker entry point that can own the queue — the #1796 ``LoopWorker``
+    (``t3 worker``) AND the ``t3 <overlay> worker`` db_worker spawner — acquires the
+    ONE :data:`~teatree.utils.singleton.WORKER_SINGLETON` (``"worker"``) flock (PR-28
+    completed the #5 deprecation of the pre-#1796 ``teatree-worker`` singleton). The
+    probe imports the SAME constant the workers acquire — so the name can never drift
+    — and stands the in-process tick drain down while it is alive, so the two never
+    claim the same rows. It reads the KERNEL flock, not the recorded pid: a stale/dead
+    pid in the lock file can never blind the stand-down while a worker is live, and a
+    recycled pid can never fake a holder (#3617). The non-blocking probe acquires and
+    releases when free, so it never disturbs a running worker.
     """
-    from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
+    from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps queue_drain cold-import cheap
+        WORKER_SINGLETON,
+        flock_is_held,
+    )
 
-    return read_pid(default_pid_path("teatree-worker")) is not None
+    return flock_is_held(WORKER_SINGLETON)
 
 
-def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
+def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: str | None = None) -> dict[str, int]:
     """Retire READY jobs older than the threshold, returning a count by task name.
 
     Conservative by design: only ``READY`` jobs whose ``enqueued_at`` predates
@@ -110,13 +175,21 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     the queue's terminal non-run state — carrying a :class:`StaleQueueJobError`
     so the reason is recorded and the row stays inspectable/re-enqueueable. No
     hard delete.
+
+    ``queue_name`` scopes the sweep to one queue when given. The worker's
+    startup + hourly expiry pass the ``default`` queue (via
+    :func:`expire_stale_default_jobs`) so it never touches the ``loops``-queue
+    timer chains — those are owned by the reconciler's own staleness repair
+    (stranded-RUNNING / surplus prune), and a shared cutoff sweep would fight it.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     hours = threshold_hours if threshold_hours is not None else stale_threshold_hours()
     cutoff = timezone.now() - dt.timedelta(hours=hours)
     stale = DBTaskResult.objects.filter(status=TaskResultStatus.READY, enqueued_at__lt=cutoff)
+    if queue_name is not None:
+        stale = stale.filter(queue_name=queue_name)
 
     retired: dict[str, int] = {}
     for job in stale.iterator():
@@ -136,6 +209,22 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     return retired
 
 
+def expire_stale_default_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
+    """Retire stale READY jobs on the ``default`` queue only — the heavy FSM/headless backlog.
+
+    The worker's startup expiry (before it spawns executors) and its hourly
+    maintenance chain both call this so a box that accumulated days-old
+    provision/ship/teardown jobs while no worker ran does NOT blind-fire them the
+    instant the worker spawns (the default-ON flip's load-jam class). Scoped to the
+    ``default`` queue so the reconciler stays the sole owner of ``loops``-queue timer
+    staleness — a shared cutoff sweep would mark a ``daily_at`` successor timer FAILED
+    the instant it crosses the 24 h threshold, retiring a live chain just before it fires.
+    """
+    from django_tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
+
+    return expire_stale_ready_jobs(threshold_hours=threshold_hours, queue_name=DEFAULT_TASK_QUEUE_NAME)
+
+
 def _run_one_ready_job() -> bool:
     """Claim and run a single READY job, mirroring ``db_worker.run_task``.
 
@@ -143,22 +232,39 @@ def _run_one_ready_job() -> bool:
     both are terminal outcomes that drain the queue), ``False`` when no READY
     job was available. The row is locked + claimed inside an exclusive
     transaction so a concurrent drainer cannot pick the same job.
+
+    Only the ``default`` queue is drained: the self-rescheduling ``loop_timer``
+    chains ride the separate ``loops`` queue and run ONLY on the worker's pinned
+    executors, so the tick drain never becomes an accidental loop runner that
+    bypasses the ``loop_runner_enabled`` kill-switch. ``"loops"`` is the only
+    non-``default`` queue, so scoping the claim to ``DEFAULT_TASK_QUEUE_NAME``
+    leaves the timer rows for the worker.
     """
-    from django.db import close_old_connections  # noqa: PLC0415
-    from django_tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415
-    from django_tasks.signals import task_finished, task_started  # noqa: PLC0415
-    from django_tasks.utils import get_random_id  # noqa: PLC0415
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
-    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415
+    from django.db import close_old_connections  # noqa: PLC0415 — deferred: Django import at call time
+    from django_tasks import (  # noqa: PLC0415 — deferred: django_tasks needs the app registry ready
+        DEFAULT_TASK_BACKEND_ALIAS,
+        DEFAULT_TASK_QUEUE_NAME,
+    )
+    from django_tasks.signals import task_finished, task_started  # noqa: PLC0415 — deferred: heavy/optional dep
+    from django_tasks.utils import get_random_id  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     worker_id = f"tickdrain-{os.getpid()}-{get_random_id()}"
-    ready = DBTaskResult.objects.ready().filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
+    ready = (
+        DBTaskResult.objects.ready()
+        .filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
+        .filter(queue_name=DEFAULT_TASK_QUEUE_NAME)
+    )
 
     with exclusive_transaction(ready.db):
         try:
             job = ready.get_locked()
         except OperationalError as exc:
-            if "is locked" in exc.args[0]:
+            # SQLite raises a bare, args-less/non-string OperationalError on some lock
+            # contention paths — guard the args before indexing so a locked-row probe
+            # never itself crashes the drain batch.
+            if exc.args and "is locked" in str(exc.args[0]):
                 return False
             raise
         if job is None:
@@ -171,7 +277,7 @@ def _run_one_ready_job() -> bool:
         backend_type = task.get_backend()
         task_started.send(sender=backend_type, task_result=task_result)
         if task.takes_context:
-            from django_tasks.base import TaskContext  # noqa: PLC0415
+            from django_tasks.base import TaskContext  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
             return_value = task.call(TaskContext(task_result=task_result), *task_result.args, **task_result.kwargs)
         else:
@@ -193,12 +299,12 @@ def _run_one_ready_job() -> bool:
 def drain_ready_batch(*, max_jobs: int | None = None) -> int:
     """Drain at most ``max_jobs`` READY jobs in-process; return how many ran.
 
-    Stands down entirely when a real ``db_worker`` is alive (it owns the
-    drain — see :func:`a_worker_is_running`). Stops early the moment the queue
-    is empty, so an idle tick costs one ``ready()`` query and returns ``0``.
+    Stands down entirely when a real worker is alive (it owns the drain — see
+    :func:`a_worker_is_running`). Stops early the moment the queue is empty, so
+    an idle tick costs one ``ready()`` query and returns ``0``.
     """
     if a_worker_is_running():
-        logger.debug("Skipping in-process queue drain: a db_worker holds the teatree-worker singleton.")
+        logger.debug("Skipping in-process queue drain: a live worker holds a worker singleton.")
         return 0
     limit = max_jobs if max_jobs is not None else drain_batch_size()
     drained = 0
@@ -217,22 +323,12 @@ def expire_then_drain() -> dict[str, int | dict[str, int]]:
     The expiry runs *first* so a stale heavy job (a 12-day-old provision/ship/
     teardown) is retired to ``FAILED`` before the drain can ever claim and run
     it. Only jobs newer than the stale threshold survive to be drained.
+
+    Scoped to the ``default`` queue: the reactive ``loops``-queue ``loop_timer``
+    chains are owned by the reconciler's own staleness repair, so a shared cutoff
+    sweep here would mark a due ``daily_at`` successor timer FAILED the instant it
+    crosses the 24 h threshold and retire the live chain just before it fires.
     """
-    retired = expire_stale_ready_jobs()
+    retired = expire_stale_default_jobs()
     drained = drain_ready_batch()
     return {"retired": retired, "drained": drained}
-
-
-def _piggyback_drain_queue() -> None:
-    """Drive one expire-then-drain pass behind the dedicated ``loop-drain-queue`` lease.
-
-    Mirrors the other tick-piggyback cycles: a per-tick-unique owner with a
-    cadence-length lease that is never released, so the lease TTL doubles as
-    the throttle — a re-tick inside the cadence window loses the CAS and skips.
-    """
-    from teatree.core.models import LoopLease  # noqa: PLC0415
-
-    owner = f"tickdrain-{os.getpid()}-{uuid.uuid4().hex}"
-    if not LoopLease.objects.acquire("loop-drain-queue", owner=owner, lease_seconds=drain_cadence_seconds()):
-        return
-    expire_then_drain()

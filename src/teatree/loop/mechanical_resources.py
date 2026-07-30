@@ -44,7 +44,7 @@ from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.config import workspace_dir
+from teatree.config import worktree_root
 from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
@@ -61,7 +61,7 @@ _STALE_STATUSLINE_DAYS = 2
 
 # The well-known statusline scratch dir. A module constant so it is patchable
 # in tests without monkeypatching ``pathlib.Path`` itself.
-_STATUSLINE_DIR = Path("/tmp/claude-statusline")  # noqa: S108
+_STATUSLINE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-controlled path, not user input
 
 
 @dataclass(slots=True)
@@ -96,7 +96,7 @@ def free_resources(payload: ActionPayload) -> None:
 
 
 def _free_resources_inner(payload: ActionPayload) -> None:
-    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415
+    from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM import
 
     resource = str(payload.get("resource", ""))
     if resource == "disk":
@@ -131,8 +131,16 @@ def _persist_plan(marker: object, plan: FreePlan) -> None:
 
 def _plan_disk(payload: ActionPayload) -> FreePlan:
     plan = FreePlan(resource="disk")
-    allowlist = _resolve_disk_allowlist(payload)
-    for path in allowlist:
+    for path in _resolve_disk_allowlist(payload):
+        # An entry that names nothing is reported as ABSENT rather than as a
+        # 0.00 GB purge: the two read identically in the plan, so a stale
+        # allow-list (every shipped default was absent on the host that produced
+        # #3852) looked exactly like a cache that was already clean, and the
+        # CRITICAL alarm re-fired every tick with no way to see why it reclaimed
+        # nothing.
+        if not Path(path).expanduser().is_dir():
+            plan.steps.append(f"SKIP cache {path} (absent — nothing here to reclaim; is this entry stale?)")
+            continue
         size_gb = _dir_size_gb(path)
         plan.steps.append(f"PURGE cache {path} (~{size_gb:.2f} GB)")
         plan.estimated_reclaim_gb += size_gb
@@ -275,8 +283,8 @@ def _gc_worktrees(payload: ActionPayload) -> float:
 
 
 def _list_workspace_worktrees() -> list[Path]:
-    """Enumerate git worktrees under the workspace via ``git worktree list``."""
-    workspace = workspace_dir()
+    """Enumerate git worktrees under the per-overlay WORKTREE root via ``git worktree list``."""
+    workspace = worktree_root()
     if not workspace.is_dir():
         return []
     result = _git(workspace, "worktree", "list", "--porcelain")
@@ -365,7 +373,7 @@ def _execute_ram(payload: ActionPayload) -> None:
 
 
 def _ram_kill_enabled(payload: ActionPayload) -> bool:
-    return bool(payload.get("allow_destructive_ram")) and int(payload.get("consecutive_critical", 0)) >= 2  # noqa: PLR2004
+    return bool(payload.get("allow_destructive_ram")) and int(payload.get("consecutive_critical", 0)) >= 2  # noqa: PLR2004 — self-documenting literal in this context
 
 
 def _ram_kill_skip_reason(payload: ActionPayload) -> str:
@@ -463,7 +471,7 @@ def _list_processes() -> list[tuple[int, str]]:
     processes: list[tuple[int, str]] = []
     for line in out.splitlines():
         parts = line.strip().split(None, 1)
-        if len(parts) == 2 and parts[0].isdigit():  # noqa: PLR2004
+        if len(parts) == 2 and parts[0].isdigit():  # noqa: PLR2004 — self-documenting literal in this context
             processes.append((int(parts[0]), parts[1]))
     return processes
 

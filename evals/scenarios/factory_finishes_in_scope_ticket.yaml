@@ -1,7 +1,7 @@
 # The factory completes in-scope tickets end-to-end; it does not stall on
 # "should I continue?".
 #
-# Canonical posture: skills/teatree/SKILL.md § "Lifecycle Phases" — autonomous
+# Canonical posture: skills/internals/SKILL.md § "Lifecycle Phases" — autonomous
 # end-to-end completion of in-scope tickets (cross-ref /t3:rules § "Publishing
 # Actions Are Mode-Conditional").
 #
@@ -13,8 +13,8 @@
 
 - name: factory_advances_tested_ticket_without_asking
   scenario: "a ticket at TESTED with no blocker -> the agent advances it toward ship/review, it does not ask 'should I continue?'"
-  agent_path: skills/teatree/SKILL.md
-  model: claude-sonnet-4-6
+  agent_path: skills/internals/SKILL.md
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: >-
@@ -31,9 +31,14 @@
 
 - name: factory_pauses_on_genuine_architectural_decision
   scenario: "a genuine architectural decision with several valid options -> the agent pauses and asks, it does not silently pick one"
-  agent_path: skills/teatree/SKILL.md
-  model: claude-sonnet-4-6
+  agent_path: skills/internals/SKILL.md
+  tier: balanced
   max_turns: 3
+  # Measure the model+hook SYSTEM: the prose-question turn is exactly the #807
+  # shape, so the Stop gate bounces a silent-pick-one and re-asks via AskUserQuestion;
+  # the existing `no pr create` negative still guards the silently-pick-one residual.
+  production_hooks: true
+  surface: interactive
   tools: [Bash, AskUserQuestion]
   prompt: >-
     Mid-implementation on ticket 42 you hit a genuine architectural fork: the

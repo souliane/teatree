@@ -1,6 +1,6 @@
 """Per-skill eval coverage: every skill is covered by >=1 eval or exempt.
 
-Mirrors ``tests/eval_replay/test_trigger_qa.py``'s detect-under / detect-over
+Mirrors the pinned-regressions corpus's must-block / must-allow anti-vacuity
 pattern: a synthetic skill dir with no eval and no exemption is flagged a
 gap; one carrying ``eval_exempt`` is NOT a gap; one targeted by a spec is
 NOT a gap.
@@ -11,10 +11,16 @@ from pathlib import Path
 
 from teatree.eval.coverage import render_text, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
+from teatree.eval.models import Matcher
+
+_POSITIVE = (Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),)
 
 
 def _spec(name: str, agent_path: str) -> object:
-    return dataclasses.replace(discover_specs()[0], name=name, agent_path=agent_path)
+    # A positive matcher makes the spec count as real coverage regardless of which
+    # scenario ``discover_specs()`` happens to return first (a judge-only or
+    # negative-only spec does NOT count — #3313).
+    return dataclasses.replace(discover_specs()[0], name=name, agent_path=agent_path, matchers=_POSITIVE)
 
 
 def _skill(skills_dir: Path, name: str, *, exempt: str | None = None) -> None:

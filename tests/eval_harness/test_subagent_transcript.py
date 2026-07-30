@@ -113,16 +113,30 @@ class TestSubagentRun:
         raw = _subagent_jsonl(
             _assistant([_bash("git worktree add ../wt -b fix/typo", "t1")]),
             _assistant([_bash("sed -i '3s/Teatree/TeaTree/' ../wt/README.md", "t2")]),
+            _assistant([{"type": "text", "text": "Fixed the typo in an isolated worktree."}]),
         )
         result = evaluate(_spec(), subagent_run(_spec(), raw))
         assert not result.skipped
         assert result.passed
 
     def test_grades_to_real_fail_when_behavior_absent(self) -> None:
-        raw = _subagent_jsonl(_assistant([_bash("sed -i '3s/Teatree/TeaTree/' README.md", "t1")]))
+        raw = _subagent_jsonl(
+            _assistant([_bash("sed -i '3s/Teatree/TeaTree/' README.md", "t1")]),
+            _assistant([{"type": "text", "text": "Edited the README."}]),
+        )
         result = evaluate(_spec(), subagent_run(_spec(), raw))
         assert not result.skipped
         assert not result.passed
+
+    def test_null_stop_reason_without_closing_text_is_incomplete(self) -> None:
+        # A capture cut off mid-tool-use (null stop_reason, final turn is a bare
+        # tool_use, no closing narration) is a truncated/mid-write copy — it must
+        # grade as an error, never a silent clean completion a negative matcher
+        # could pass on.
+        raw = _subagent_jsonl(_assistant([_bash("git worktree add ../wt -b fix/typo", "t1")], stop=None))
+        run = subagent_run(_spec(), raw)
+        assert run.terminal_reason == "incomplete"
+        assert run.is_error
 
     def test_tolerates_blank_malformed_and_typeless_lines(self) -> None:
         # Fail-soft: blank, non-JSON, non-dict, and a typeless object are all

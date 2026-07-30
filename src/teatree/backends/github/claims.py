@@ -52,7 +52,7 @@ def record_github_note_claim(
             transaction,
         )
 
-        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415 — deferred: ORM import needs the app registry
     except Exception:  # noqa: BLE001 — must never break the publish path
         return
 

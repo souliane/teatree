@@ -11,10 +11,15 @@ in-process against the ephemeral test DB, never the canonical queue.
 """
 
 import datetime as dt
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
+from django.db.utils import OperationalError
 from django.test import override_settings
 from django.utils import timezone
 from django_tasks.base import TaskResultStatus
@@ -24,6 +29,7 @@ from teatree.core.models import LoopLease
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
     drain_ready_batch,
+    expire_stale_default_jobs,
     expire_stale_ready_jobs,
     expire_then_drain,
     stale_threshold_hours,
@@ -32,13 +38,40 @@ from teatree.loop.queue_drain import (
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-DB_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks_db.backend.DatabaseBackend"}}}
+# QUEUES mirrors the real ``settings.TASKS`` (``["default", "loops"]``): the fixture
+# only swaps Immediate→Database, it must not narrow the queue set. django-tasks
+# validates ``queue_name`` at Task-CREATION time (``Task.__post_init__``), so omitting
+# "loops" makes the module-level ``@task(queue_name="loops")`` ``loop_timer`` fail the
+# first time a shuffled collection order imports ``teatree.loops.timer_chains`` here.
+DB_BACKEND = {
+    "TASKS": {
+        "default": {
+            "BACKEND": "django_tasks_db.backend.DatabaseBackend",
+            "QUEUES": ["default", "loops"],
+        }
+    }
+}
 
 
 @pytest.fixture(autouse=True)
 def _db_task_backend() -> object:
     with override_settings(**DB_BACKEND):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_singleton_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the worker-singleton probe at an empty per-test dir.
+
+    ``a_worker_is_running`` reads pid files under ``DATA_DIR``; the real machine dir may
+    hold a live ``worker.pid`` (a running worker, or a parallel ``test_worker_supervisor``
+    holding the singleton), which would non-deterministically stand the drain down. The
+    probe itself is exercised against controlled pid files in ``TestWorkerSingletonProbe``.
+    """
+    from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path / "singletons")
+    (tmp_path / "singletons").mkdir()
 
 
 def _backdate(hours: float) -> None:
@@ -88,6 +121,38 @@ class TestExpireStaleReadyJobs:
         assert DBTaskResult.objects.get().status == TaskResultStatus.RUNNING
 
 
+class TestExpireStaleDefaultJobs:
+    """``expire_stale_default_jobs`` scopes the sweep to the ``default`` queue only (PR-28).
+
+    The worker's startup + hourly expiry MUST leave the ``loops``-queue timer chains
+    alone — the reconciler owns their staleness (stranded-RUNNING repair, surplus
+    prune), and a shared cutoff sweep marking a stale timer FAILED would break the
+    chain the reconciler just repaired.
+    """
+
+    def test_expires_a_stale_default_job(self) -> None:
+        refresh_followup_snapshot.enqueue()
+        _backdate(50)
+
+        retired = expire_stale_default_jobs()
+
+        assert retired == {"refresh_followup_snapshot": 1}
+        assert DBTaskResult.objects.get().status == TaskResultStatus.FAILED
+
+    def test_leaves_a_stale_loops_queue_timer_untouched(self) -> None:
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default queue — expirable
+        loop_timer.enqueue("inbox")  # loops queue — the reconciler owns its staleness
+        _backdate(50)  # both now well past the threshold
+
+        retired = expire_stale_default_jobs()
+
+        assert retired == {"refresh_followup_snapshot": 1}  # only the default-queue row
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestDrainReadyBatch:
@@ -135,6 +200,105 @@ class TestDrainReadyBatch:
 
         assert a_worker_is_running() is False
 
+    def test_a_worker_is_running_reads_the_flock_not_the_recorded_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A live pid recorded in the file but NO flock held — the probe reads the kernel
+        # lock (free), never the recyclable pid (which pid-file blindness read as "held"): #3617.
+        import os  # noqa: PLC0415 — test-local deferred import (#3617)
+
+        from teatree.loop.queue_drain import a_worker_is_running  # noqa: PLC0415 — test-local deferred import (#3617)
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+        from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import (#3617)
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+        (tmp_path / f"{WORKER_SINGLETON}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        assert a_worker_is_running() is False
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestWorkerSingletonProbe:
+    """The drain stands down for the REAL worker singleton, never a wrong-name ghost (#5).
+
+    The probe reads the SAME constant every worker acquires — the one
+    ``WORKER_SINGLETON`` (the #1796 :class:`LoopWorker` AND the ``t3 <overlay> worker``
+    db_worker spawner, after PR-28 completed the #5 deprecation of ``teatree-worker``) —
+    via the KERNEL flock, not the recorded pid (#3617). A live flock holder forces the
+    tick drain to stand down; a stale pid alone (no live holder) does not.
+    """
+
+    @contextmanager
+    def _hold_flock(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Iterator[None]:
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+        ready, release = threading.Event(), threading.Event()
+
+        def _hold() -> None:
+            with singleton_mod.singleton(name, pid_path=tmp_path / f"{name}.pid"):
+                ready.set()
+                release.wait(timeout=10)
+
+        holder = threading.Thread(target=_hold)
+        holder.start()
+        try:
+            assert ready.wait(timeout=5), "holder never acquired the flock"
+            yield
+        finally:
+            release.set()
+            holder.join(timeout=5)
+
+    def test_drain_stands_down_for_live_worker_singleton(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
+
+        refresh_followup_snapshot.enqueue()
+        with self._hold_flock(tmp_path, monkeypatch, WORKER_SINGLETON):
+            assert drain_ready_batch(max_jobs=5) == 0
+        assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+    def test_drain_stands_up_for_a_stale_pid_with_no_live_holder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A dead pid in the lock file but NO live flock holder: the drain must PROCEED,
+        # never blocked by a ghost pid (the flock, not the pid, is the truth — #3617).
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+        from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+        (tmp_path / f"{WORKER_SINGLETON}.pid").write_text("999999999\n", encoding="utf-8")
+        refresh_followup_snapshot.enqueue()
+
+        assert drain_ready_batch(max_jobs=5) == 1
+
+    def test_drain_proceeds_when_no_singleton_pid_is_held(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)  # empty dir — no pid file for any name
+        refresh_followup_snapshot.enqueue()
+
+        assert drain_ready_batch(max_jobs=5) == 1
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestDrainExcludesLoopsQueue:
+    """loops-queue loop_timer rows run only on the worker's executors, never the tick drain (#5)."""
+
+    def test_drain_never_runs_loops_queue_rows(self) -> None:
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — test-local: enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default queue — drainable
+        loop_timer.enqueue("inbox")  # loops queue — must be left for the worker
+        drained = drain_ready_batch(max_jobs=5)
+
+        assert drained == 1  # ONLY the default-queue job ran
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.SUCCESSFUL
+
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
@@ -158,6 +322,48 @@ class TestExpireThenDrain:
         assert result["drained"] == 1
         assert DBTaskResult.objects.get().status == TaskResultStatus.SUCCESSFUL
 
+    def test_leaves_a_stale_loops_queue_timer_untouched(self) -> None:
+        # The expiry step is scoped to the `default` queue: a due `daily_at` successor
+        # timer that just crossed the 24h threshold must NOT be retired to FAILED just
+        # before it fires — the reconciler owns loops-queue staleness.
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default — expirable
+        loop_timer.enqueue("inbox")  # loops — must survive
+        _backdate(50)
+
+        expire_then_drain()
+
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestLockedRowGuard:
+    """``_run_one_ready_job`` guards ``exc.args`` before indexing (#10).
+
+    An args-less / non-string ``OperationalError`` from ``get_locked`` must not itself
+    crash the drain batch with an ``IndexError``: a genuine "database is locked" is
+    treated as contention (no job this pass); anything else re-raises unchanged.
+    """
+
+    def _queryset_class(self) -> type:
+        return DBTaskResult.objects.get_queryset().__class__
+
+    def test_database_is_locked_is_treated_as_contention_not_a_crash(self) -> None:
+        with patch.object(self._queryset_class(), "get_locked", side_effect=OperationalError("database is locked")):
+            assert drain_ready_batch(max_jobs=1) == 0
+
+    def test_args_less_operational_error_re_raises_not_indexerror(self) -> None:
+        # The OLD `exc.args[0]` crashed with IndexError here; the guard re-raises the
+        # genuine OperationalError instead of masking it as a spurious IndexError.
+        with (
+            patch.object(self._queryset_class(), "get_locked", side_effect=OperationalError()),
+            pytest.raises(OperationalError),
+        ):
+            drain_ready_batch(max_jobs=1)
+
 
 class TestThresholdConfig:
     def test_default_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,24 +385,21 @@ class TestThresholdConfig:
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
-class TestPiggybackWiring:
-    def test_piggyback_runs_expire_then_drain_behind_the_lease(self) -> None:
-        from teatree.loop.queue_drain import _piggyback_drain_queue  # noqa: PLC0415
+class TestDrainQueueCommand:
+    """``manage.py loop_drain_queue`` — the dedicated reactive drain ``/loop`` (replaces the piggyback)."""
 
+    def test_command_runs_expire_then_drain_behind_the_lease(self) -> None:
         refresh_followup_snapshot.enqueue()
 
-        _piggyback_drain_queue()
+        call_command("loop_drain_queue")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.SUCCESSFUL
-        assert LoopLease.objects.filter(name="loop-drain-queue").exists()
 
-    def test_piggyback_skips_when_lease_is_held(self) -> None:
-        from teatree.loop.queue_drain import _piggyback_drain_queue  # noqa: PLC0415
-
+    def test_command_skips_when_lease_is_held(self) -> None:
         LoopLease.objects.acquire("loop-drain-queue", owner="other", lease_seconds=300)
         refresh_followup_snapshot.enqueue()
 
-        _piggyback_drain_queue()
+        call_command("loop_drain_queue")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
 
@@ -218,9 +421,60 @@ class TestQueueCommand:
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
 
+    def test_expire_stale_command_leaves_the_loops_queue_alone(self) -> None:
+        # The operator expiry is scoped to the `default` queue, matching the tick path —
+        # a stale loops-queue timer is owned by the reconciler, never retired here.
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default
+        loop_timer.enqueue("inbox")  # loops
+        _backdate(50)
+
+        call_command("queue", "expire-stale", "--hours", "24")
+
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
+
     def test_status_command_is_read_only(self) -> None:
         refresh_followup_snapshot.enqueue()
 
         call_command("queue", "status")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+
+class TestAdmissionPriorityAnnotation:
+    """PR-13: the admission-rank annotation ranks new-ticket auto-starts LAST."""
+
+    def _task(self, *, phase: str, parented: bool = False):
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        url = f"https://x/{phase}/{Ticket.objects.count()}"
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id=f"a-{ticket.pk}")
+        parent = Task.objects.create(ticket=ticket, session=session, phase="planning") if parented else None
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
+
+    def _rank(self, task) -> int:
+        from teatree.core.models import Task  # noqa: PLC0415
+        from teatree.loop.queue_drain import ADMISSION_RANK_ALIAS, admission_priority_annotations  # noqa: PLC0415
+
+        row = Task.objects.annotate(**admission_priority_annotations()).get(pk=task.pk)
+        return getattr(row, ADMISSION_RANK_ALIAS)
+
+    def test_new_ticket_planning_ranks_last(self) -> None:
+        assert self._rank(self._task(phase="planning")) == 1
+
+    def test_new_ticket_scoping_ranks_last(self) -> None:
+        assert self._rank(self._task(phase="scoping")) == 1
+
+    def test_short_verb_plan_ranks_last(self) -> None:
+        # A short-verb ``plan`` row normalizes to the same auto-start band.
+        assert self._rank(self._task(phase="plan")) == 1
+
+    def test_downstream_phase_ranks_first(self) -> None:
+        assert self._rank(self._task(phase="coding")) == 0
+
+    def test_followup_planning_ranks_first(self) -> None:
+        # A planning task WITH a parent is continuing work, not a new-ticket start.
+        assert self._rank(self._task(phase="planning", parented=True)) == 0

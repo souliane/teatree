@@ -47,6 +47,13 @@ class AntiPatternEntry:
     a real tool like ``tach``) that mechanizes the check, or ``None`` to leave
     the enforcement gap visible. ``eval_invariant`` links to a
     ``transcript_conformance`` invariant id, or ``None``.
+
+    ``waivers`` records accepted, deliberate exceptions to a *judgement*-tier
+    entry — each string names the code site(s) a human review examined and chose
+    not to change, with the rationale and a revisit trigger. A waiver is only
+    meaningful where the call was a judgement one; a greppable entry is
+    mechanized, so an exception belongs in the grep_hint or the linter, never in
+    prose here. Waivers are therefore forbidden on greppable entries.
     """
 
     id: str
@@ -60,11 +67,21 @@ class AntiPatternEntry:
     grep_hint: str | None = None
     linter: str | None = None
     eval_invariant: str | None = None
+    waivers: tuple[str, ...] = ()
 
 
 def load_catalog(path: Path | None = None) -> tuple[AntiPatternEntry, ...]:
     source = path or catalog_path()
-    text = source.read_text(encoding="utf-8")
+    return load_catalog_text(source.read_text(encoding="utf-8"))
+
+
+def load_catalog_text(text: str) -> tuple[AntiPatternEntry, ...]:
+    """Parse catalog YAML from an in-memory string.
+
+    The path-free entry point lets a drift gate render the catalog from the
+    YAML as it sits in the git index (``git show :<path>``) rather than the
+    working tree, so an unstaged edit cannot mask committed drift.
+    """
     try:
         loaded = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -98,6 +115,7 @@ def _parse_entry(item: object) -> AntiPatternEntry:
         grep_hint=grep_hint,
         linter=_parse_optional_str(entry, "linter", entry_id),
         eval_invariant=_parse_optional_str(entry, "eval_invariant", entry_id),
+        waivers=_parse_waivers(entry, detection, entry_id),
     )
 
 
@@ -114,6 +132,13 @@ def _parse_grep_hint(entry: Mapping[str, Any], detection: str, entry_id: str) ->
     if raw is not None:
         raise CatalogError(entry_id, "grep_hint is forbidden on a judgement entry")
     return None
+
+
+def _parse_waivers(entry: Mapping[str, Any], detection: str, entry_id: str) -> tuple[str, ...]:
+    waivers = _parse_str_list(entry, "waivers", entry_id)
+    if waivers and detection != "judgement":
+        raise CatalogError(entry_id, "waivers are only allowed on a judgement entry")
+    return waivers
 
 
 def _parse_consumers(entry: Mapping[str, Any], entry_id: str) -> tuple[str, ...]:

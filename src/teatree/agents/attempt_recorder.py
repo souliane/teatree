@@ -16,12 +16,25 @@ the two dispatch backends.
 
 import dataclasses
 import json
+from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, check_evidence
-from teatree.core.models import Task, TaskAttempt
+from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, ReviewVerdictEnvelope, check_evidence
+from teatree.core.gates.critic_gate import record_returned_critic_verdict
+from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
+from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Task, TaskAttempt, Worktree
+from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
+from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,6 +53,18 @@ class AttemptUsage:
     cache_write_tokens: int | None = None
     cost_usd: float | None = None
     num_turns: int | None = None
+    # souliane/teatree#657: the Layer-2 lane (``TaskAttempt.Lane``) this
+    # attempt's credential authenticated through, or ``""`` when unattributed.
+    lane: str = ""
+    # #3157 E5: whether ``cost_usd`` is a price-table ESTIMATE (True) rather than a real
+    # reported (CLI/SDK/metered-router) figure. Default True so a recorder path that does
+    # not compute a reported cost is flagged conservatively as an estimate.
+    cost_is_estimated: bool = True
+    # #3673 Tier 3 dispatch provenance: the per-tier reasoning effort the spawn
+    # resolved and the resolved skill-bundle names. Both empty on a recorder path
+    # that has no dispatch context (e.g. an in-session record-attempt).
+    reasoning_effort: str = ""
+    skills_loaded: list[str] = dataclasses.field(default_factory=list)
 
 
 class ResultEnvelopeError(ValueError):
@@ -70,8 +95,9 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
 def validate_result_keys(result: AgentResultBlob) -> str:
     """Return an error message if *result* carries keys outside the schema.
 
-    Only the ``additionalProperties: false`` rule is enforced (no full
-    JSON-Schema dependency), mirroring the headless path's ``_validate_result``.
+    The single validation seam for every agent result — the headless driver and
+    ``record-attempt`` both land here. Only the ``additionalProperties: false``
+    rule is enforced (no full JSON-Schema dependency).
     """
     allowed = set(RESULT_JSON_SCHEMA.get("properties", {}).keys())  # type: ignore[union-attr]
     unexpected = set(result) - allowed
@@ -90,8 +116,14 @@ def record_result_envelope(
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
     Validation order: schema-key check → OUTAGE check (#1764) → per-phase
-    evidence gate (#1284) — a failure on any records a FAILED attempt and fails
-    the task (``exit_code=0`` so it reads as a clean refusal, not a crash). The
+    evidence gate (#1284) → LANDING check (coding/debugging must have committed) —
+    a failure on any records a FAILED attempt and fails the task (``exit_code=0``
+    so it reads as a clean refusal, not a crash). The landing check re-reads the
+    ticket worktree's git state so a coder that reported ``files_modified`` while
+    nothing was committed (the yield-without-landing stall) lands FAILED with a
+    ``landing_unverified`` diagnostic — which the bounded auto-requeue sweep then
+    retries-if-transient / escalates, instead of the ticket FSM silently
+    advancing over unlanded work. The
     outage check runs BEFORE the evidence gate so an outage death that happens
     to carry evidence (the "API error laundered as a completion" class) still
     lands FAILED with the diagnostic signature, never COMPLETED — the ticket FSM
@@ -104,17 +136,29 @@ def record_result_envelope(
     usage = usage or AttemptUsage()
     schema_error = validate_result_keys(result)
     if schema_error:
-        return _record_failure(task, error=schema_error)
+        return _record_failure(task, error=schema_error, result=result)
 
     signature = outage_signature(result)
     if signature:
-        return _record_failure(task, error=f"outage_death: {signature}")
+        return _record_failure(task, error=f"outage_death: {signature}", result=result)
 
     evidence_error = check_evidence(result, phase or task.phase)
     if evidence_error:
-        return _record_failure(task, error=evidence_error)
+        salvaged = _salvage_coding_result(task, result, phase=phase)
+        if salvaged is None:
+            return _record_failure(task, error=evidence_error, result=result)
+        result = salvaged
+
+    landing_error = landing_verification_error(task, phase=phase)
+    if landing_error:
+        return _record_failure(task, error=landing_error, result=result)
+
+    server_side_error = _record_returned_envelopes(task, result, phase=phase)
+    if server_side_error:
+        return _record_failure(task, error=server_side_error, result=result)
 
     _maybe_record_plan_artifact(task, result, phase=phase)
+    record_reactive_envelopes(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
         task=task,
@@ -130,29 +174,220 @@ def record_result_envelope(
         cache_write_tokens=usage.cache_write_tokens,
         cost_usd=usage.cost_usd,
         num_turns=usage.num_turns,
+        lane=usage.lane,
+        cost_is_estimated=usage.cost_is_estimated,
+        reasoning_effort=usage.reasoning_effort,
+        skills_loaded=list(usage.skills_loaded),
     )
     task.complete(result_artifact_path="")
     return attempt
 
 
-def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    """Record every shell-denied hand-back that carries a maker≠checker write, short-circuit.
 
-    effective_phase = phase or task.phase
+    A headless phase denied the shell RETURNS its typed verdict/sketch instead of
+    writing it; the orchestrator (a different actor) records it here. Each recorder is
+    a no-op unless its own dispatch/verdict is present on the task, and returns an
+    error string when the returned artifact is malformed or maker-graded — the first
+    such error stops the chain so the caller fails the task and the block surfaces.
+    """
+    review_error = _maybe_record_review_verdict(task, result, phase=phase)
+    if review_error:
+        return review_error
+    critic_error = record_returned_critic_verdict(task, result)
+    if critic_error:
+        return critic_error
+    return record_returned_directive_interpretation(task, result)
+
+
+#: Reviewing phases whose returned ``review_verdict`` the orchestrator records
+#: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
+#: carry the shell (``phase_tools.VERDICT_REVIEW_PHASES``). ``reviewing`` still
+#: hands the verdict back through this seam: its headless brief
+#: (``prompt._REVIEW_VERDICT_RETURN_LINES``) returns the envelope rather than
+#: shelling out. ``e2e_reviewing``'s live recording path is instead the shell
+#: ``t3 <overlay> review record`` from its ``/t3:e2e-review`` skill; its envelope
+#: membership here is currently dormant (nothing in production returns an
+#: ``e2e_reviewing`` verdict), so exactly one recording path fires per run and no
+#: double-record occurs. The
+#: ``codex_*`` variants are deliberately absent: no server-side envelope seam,
+#: shell-only.
+_REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
+#: Default reviewer identity when the envelope omits one — a non-maker/loop token
+#: (``ReviewVerdict.record`` refuses a maker/coding/loop identity, §17.8 clause 3).
+_DEFAULT_HEADLESS_REVIEWER = "headless-reviewer"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ReviewTarget:
+    """The PR a reviewing task's verdict binds to, resolved from the dispatch context."""
+
+    slug: str
+    pr_id: int
+    head_sha: str
+    ticket: "Ticket | None"
+    #: Identity under which THIS dispatch path holds the per-MR review lock, or
+    #: "" for a path that took none and cannot know whose identity did. A named
+    #: non-holder releases nothing; an unnamed one releases (MRReviewLock.resolve).
+    lock_holder: str = ""
+
+
+def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    """Record a reviewing task's returned ``review_verdict`` server-side (corr-11).
+
+    The orchestrator half of the headless review lane: a Bash-denied reviewer
+    RETURNS a typed ``review_verdict``; this records the ``ReviewVerdict`` (which
+    resolves the per-MR :class:`MRReviewLock`) — maker≠checker holds because THIS
+    actor is not the author. Returns an error string when the verdict is malformed or the
+    reviewer identity is a maker/loop role (the caller fails the task so the
+    block surfaces), else ``""``. A non-reviewing phase, a result without a
+    ``review_verdict``, or a reviewing task with no resolvable PR target is a
+    no-op (``""``).
+    """
+    if normalize_phase(phase or task.phase) not in _REVIEW_VERDICT_PHASES:
+        return ""
+    raw_envelope = result.get("review_verdict")
+    if not isinstance(raw_envelope, dict):
+        return ""
+    target = _resolve_review_target(task)
+    if target is None:
+        return ""
+
+    envelope = cast("ReviewVerdictEnvelope", raw_envelope)
+    raw_findings = envelope.get("findings", [])
+    findings = (
+        [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
+        if isinstance(raw_findings, list)
+        else []
+    )
+    try:
+        ReviewVerdict.record(
+            pr_id=target.pr_id,
+            slug=target.slug,
+            reviewed_sha=str(envelope.get("reviewed_sha") or "").strip() or target.head_sha,
+            verdict=str(envelope.get("verdict", "")),
+            reviewer_identity=str(envelope.get("reviewer_identity") or _DEFAULT_HEADLESS_REVIEWER),
+            findings=findings,
+            gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
+            blast_class=str(envelope.get("blast_class") or "logic"),
+            ticket=target.ticket,
+            lock_holder=target.lock_holder,
+        )
+    except ReviewVerdictError as exc:
+        return f"review verdict recording refused: {exc}"
+    return ""
+
+
+def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
+    """Resolve the PR a reviewing task's verdict binds to, or ``None``.
+
+    One dispatch context carries the target: the #68 auto-review dispatch (the
+    lock-holding path) links the reviewing task to an
+    :class:`AutoReviewDispatch` row carrying ``(slug, pr_id, head_sha)``.
+    ``None`` for a reviewing task without one — its returned verdict is evidence
+    but has no PR to bind to.
+    """
+    dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    if dispatch is None:
+        return None
+    return _ReviewTarget(
+        slug=dispatch.slug,
+        pr_id=dispatch.pr_id,
+        head_sha=dispatch.head_sha,
+        ticket=task.ticket,
+        lock_holder=LOOP_SCANNER_HOLDER,
+    )
+
+
+def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    effective_phase = normalize_phase(phase or task.phase)
     plan_text = result.get("plan_text")
     if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
         return
     recorded_by = (task.session.agent_id or "").strip() or "planning"
-    PlanArtifact.record(ticket=task.ticket, plan_text=plan_text, recorded_by=recorded_by)
+    # SELFCATCH-3: the planner envelope carries the base SHA it planned against and
+    # the four-section adequacy manifest. Under require_plan_adequacy, record()
+    # refuses a thin plan missing them — a planner that produced a scope-only spec
+    # fails loud here rather than dispatching a coder against nothing.
+    base_sha = result.get("base_sha")
+    adequacy = result.get("adequacy")
+    PlanArtifact.record(
+        ticket=task.ticket,
+        plan_text=plan_text,
+        recorded_by=recorded_by,
+        base_sha=base_sha if isinstance(base_sha, str) else "",
+        adequacy=adequacy if isinstance(adequacy, dict) else None,
+    )
 
 
-def _record_failure(task: Task, *, error: str) -> TaskAttempt:
+#: Phases whose landed commit can back-fill a missing ``files_modified`` envelope.
+_SALVAGEABLE_PHASES = frozenset({"coding", "debugging"})
+
+
+def _salvage_coding_result(task: Task, result: AgentResultBlob, *, phase: str) -> AgentResultBlob | None:
+    """Return *result* with ``files_modified`` synthesized from the landed commit, or ``None``.
+
+    The #3263 recovery: a coder committed real work but omitted the trailing
+    ``files_modified`` envelope, so the evidence gate refuses and the branch is
+    stranded. When the ticket worktree has a NEW commit ahead of its base AND is
+    clean (``landing_verification_error`` passes — so this never salvages dirty or
+    commit-less work), the committed diff's file paths ARE the evidence: synthesize
+    ``files_modified`` from them so the task COMPLETES on the real landed work.
+    ``None`` for a non-coding phase, or when there is nothing clean to salvage —
+    the caller then records the honest evidence refusal.
+    """
+    if normalize_phase(phase or task.phase) not in _SALVAGEABLE_PHASES:
+        return None
+    if landing_verification_error(task, phase=phase):
+        return None
+    files = _committed_file_changes(task)
+    if not files:
+        return None
+    salvaged = dict(result)
+    salvaged["files_modified"] = files
+    return salvaged
+
+
+def _committed_file_changes(task: Task) -> list[dict[str, str]]:
+    """``files_modified`` entries for the first ticket worktree with a commit ahead, else ``[]``."""
+    for worktree in Worktree.objects.for_ticket(task.ticket):
+        if not worktree_has_commits_ahead(worktree):
+            continue
+        paths = _committed_paths(worktree)
+        if paths:
+            return [{"path": path, "action": "modified"} for path in paths]
+    return []
+
+
+def _committed_paths(worktree: Worktree) -> list[str]:
+    # Reached only after ``worktree_has_commits_ahead`` proved a valid path + branch.
+    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
+    base = _base_ref(repo_path)
+    try:
+        out = git.run(repo=repo_path, args=["diff", "--name-only", f"{base}..{worktree.branch}"])
+    except (CommandFailedError, OSError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _base_ref(repo_path: str) -> str:
+    try:
+        return f"origin/{git.default_branch(repo_path)}"
+    except (CommandFailedError, RuntimeError):
+        return "main"
+
+
+def _record_failure(task: Task, *, error: str, result: AgentResultBlob | None = None) -> TaskAttempt:
     attempt = TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,
         ended_at=timezone.now(),
         exit_code=0,
         error=error,
+        result=result or {},
     )
     task.fail()
     return attempt

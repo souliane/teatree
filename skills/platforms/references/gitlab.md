@@ -13,11 +13,10 @@ TeaTree supports self-hosted GitLab instances. Set the base URL via the overlay 
 GITLAB_URL = "https://gitlab.example.com/api/v4"
 ```
 
-Or in `~/.teatree.toml`:
+Or in the overlay's DB `overlays` registry row:
 
-```toml
-[overlays.my-overlay]
-gitlab_url = "https://gitlab.example.com/api/v4"
+```json
+{"my-overlay": {"gitlab_url": "https://gitlab.example.com/api/v4"}}
 ```
 
 The default is `https://gitlab.com/api/v4`. All URL parsing (MR links, issue links, Slack review matching) works with any GitLab hostname.
@@ -179,6 +178,13 @@ glab api "projects/<PROJECT_ID>/merge_requests/<IID>/notes?per_page=100"
 glab ci status --branch <source_branch> -R <repo>
 ```
 
+**One SHA can have MULTIPLE pipelines with DIFFERENT job sets — check all of them before declaring an MR green.** `glab ci status --branch` (and a first glance at `glab mr view`) surfaces only the LATEST pipeline for that branch. A `push` pipeline and a separate `merge_request_event` pipeline can both exist for the exact same head SHA, and the `merge_request_event` one often carries jobs the push pipeline doesn't run at all (e.g. an MR title/description format validator). A push pipeline showing all-green does NOT mean the MR is mergeable if a later `merge_request_event` pipeline for the same SHA failed. Before asserting "CI green" on any MR, list every pipeline for the head SHA and check every job in each:
+
+```bash
+glab api "projects/<URL-ENCODED-PROJECT>/pipelines?sha=<head_sha>&per_page=10"   # lists ALL pipelines for that SHA
+glab api "projects/<URL-ENCODED-PROJECT>/pipelines/<pipeline_id>/jobs?per_page=100"  # every job's real status, not just the ones glab prints first
+```
+
 ### Watch a Manually-Triggered Job by ID
 
 `glab ci status --branch` only finds the latest pipeline; it misses manually-triggered stage jobs and old pipelines. When you already have a job URL (e.g., from `glab mr view`'s `head_pipeline.jobs[]`), hit the REST API directly:
@@ -293,12 +299,14 @@ curl -s -X POST "https://gitlab.com/api/v4/projects/<PROJECT_ID>/merge_requests/
 
 ### Post Note
 
+Pass the body as a **literal** `-m` value in its own, single Bash call — never via `$(cat <path>)` or a heredoc. `glab mr note` has no `-F`/`--body-file` flag (`glab mr note --help` lists only `-m`/`--message`), so there is no substitution-free way to source the body from a file. Per `t3:rules` § "Never Pipe, Redirect, or Chain a gh/glab Publish Command", any `$(...)` construct — a plain `$(cat <path>)` just as much as a heredoc — carries a substitution marker that the leak gate's segment-walk treats as unresolvable, forcing a conservative scan even on a genuinely private repo. Verified directly against `teatree.hooks.public_visibility.gate_skips_for_visibility` with the destination mocked non-public: both `-m "$(cat <<'EOF' ... EOF)"` and a plain `-m "$(cat <path>)"` return `skip=False`; only a fully literal `-m` value returns `skip=True`. A single-quoted literal spans multiple lines fine on its own:
+
 ```bash
-glab mr note <MR_NUMBER> -R <REPO_PATH> -m "$(cat <<'EOF'
-Comment body here.
-EOF
-)"
+glab mr note <MR_NUMBER> -R <REPO_PATH> -m 'Comment body here.
+A second line works directly inside the quotes.'
 ```
+
+For a body too complex to embed safely as a literal argument (single quotes/backticks, markdown images), use the Python + REST API recipe below instead of `glab mr note` — it never invokes `gh`/`glab` at all, so this concern doesn't apply to it. Note it also means the banned-terms/quote-scanner gates don't scan it (they only recognise `gh`/`glab`/`git`/`curl`-led segments as a publish) — compose that body carefully.
 
 ### Post or Update Note with Images — Always Use Python
 

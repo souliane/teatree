@@ -14,7 +14,12 @@ fails the specific id.
 
 import pytest
 
-from teatree.hooks.raw_merge_detect import invokes_raw_merge_subcommand
+from teatree.hooks.raw_merge_detect import (
+    invokes_graphql_merge_mutation,
+    invokes_raw_merge_subcommand,
+    is_raw_merge_api_write,
+    raw_merge_deny_reason,
+)
 
 _STILL_BLOCKED = [
     pytest.param("gh pr merge 5 --squash", id="bare-gh"),
@@ -80,3 +85,85 @@ def test_plausible_invocation_blocks(command: str) -> None:
 @pytest.mark.parametrize("command", _STILL_ALLOWED)
 def test_documentation_or_mention_is_allowed(command: str) -> None:
     assert invokes_raw_merge_subcommand(command) is False
+
+
+class TestMergeApiWrite:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/o/r/pulls/12/merge -X PUT",
+            "gh api repos/o/r/pulls/12/merge --method PUT",
+            "gh api repos/o/r/pulls/12/merge -XPUT",
+            "gh api repos/o/r/pulls/12/merge -f merge_method=squash",
+            "glab api projects/9/merge_requests/3/merge -X PUT",
+            # F7.8: a VARIABLE / templated iid resolves to a real merge at run
+            # time; the numeric-only pattern used to let it evade the hard-deny.
+            "gh api -X PUT repos/o/r/pulls/$PR/merge",
+            "gh api --method PUT repos/o/r/pulls/{id}/merge",
+            "glab api -X PUT projects/9/merge_requests/$IID/merge",
+            "gh api -X PUT repos/o/r/pulls/${PR_NUMBER}/merge",
+        ],
+    )
+    def test_write_to_merge_endpoint_is_detected(self, command: str) -> None:
+        assert is_raw_merge_api_write(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/o/r/pulls/12/merge",  # bare GET reads merge status
+            "gh api repos/o/r/pulls/12/merge -X GET",
+            "gh api repos/o/r/pulls/12/merge -X PUT -X GET",  # last-wins GET
+            "gh api repos/o/r/pulls/12/comments -X POST",  # not a merge endpoint
+            "gh api repos/o/r/pulls/$PR/merge",  # F7.8: variable iid but a GET read
+            "gh api repos/o/r/pulls/$PR/merge -X GET",  # variable iid, explicit GET
+            "ls",  # not an api command
+            "",
+        ],
+    )
+    def test_reads_and_non_merge_endpoints_are_allowed(self, command: str) -> None:
+        assert is_raw_merge_api_write(command) is False
+
+
+class TestGraphqlMergeMutation:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+            "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { actor { login } } }'",
+            "gh api graphql -f query='mutation { mergeBranch(input: {}) { mergeCommit { oid } } }'",
+        ],
+    )
+    def test_merge_mutation_is_detected(self, command: str) -> None:
+        assert invokes_graphql_merge_mutation(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api graphql -f query='query { viewer { login } }'",  # a read query
+            "mergePullRequest(input: {})",  # not a forge api command
+            "",
+        ],
+    )
+    def test_non_mutation_is_allowed(self, command: str) -> None:
+        assert invokes_graphql_merge_mutation(command) is False
+
+
+class TestRawMergeDenyReason:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr merge 5",
+            "glab mr merge 7",
+            "gh api repos/o/r/pulls/12/merge -X PUT",
+            "gh api graphql -f query='mutation { mergeBranch(input: {}) { x } }'",
+        ],
+    )
+    def test_every_merge_vector_yields_a_reason(self, command: str) -> None:
+        reason = raw_merge_deny_reason(command)
+        assert reason is not None
+        assert "BLOCKED" in reason
+        assert "ticket merge" in reason
+
+    @pytest.mark.parametrize("command", ["gh pr view 5", "ls -la", "", "gh api repos/o/r/pulls/12/merge"])
+    def test_non_merge_commands_yield_no_reason(self, command: str) -> None:
+        assert raw_merge_deny_reason(command) is None

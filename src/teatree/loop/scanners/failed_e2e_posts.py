@@ -54,7 +54,19 @@ class FailedE2EPostsScanner:
         signals: list[ScanSignal] = []
         try:
             for watcher in self.watchers:
-                signals.extend(self._scan_watcher(watcher))
+                # F5.7: isolate each watcher — a bad ``post_pattern`` /
+                # ``spec_pattern`` (``re.error``) or a channel fetch failure on
+                # one watcher must not kill the watchers queued after it. The
+                # DB-not-migrated OperationalError/ProgrammingError is global
+                # (the table is absent for every watcher) so it re-raises to the
+                # pre-migration skip below rather than isolating per-watcher.
+                try:
+                    signals.extend(self._scan_watcher(watcher))
+                except (OperationalError, ProgrammingError):
+                    raise
+                except Exception:
+                    logger.exception("FailedE2EPostsScanner failed on watcher %s", watcher.channel_id)
+                    continue
         except (OperationalError, ProgrammingError):
             # The ScannedFailedE2E table lives in migration 0033; an
             # install that hasn't migrated yet must not spam a
@@ -128,7 +140,7 @@ def failed_e2e_scanner_for(backend: object) -> FailedE2EPostsScanner | None:
     backend, or no watchers configured. Moved out of domain_jobs to keep
     that orchestrator under the module-LOC gate.
     """
-    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415
+    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415 — tick-time import
 
     overlay = getattr(backend, "overlay", None)
     messaging = getattr(backend, "messaging", None)

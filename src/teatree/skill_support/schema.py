@@ -1,29 +1,37 @@
 """SKILL.md frontmatter schema validation.
 
-Validates required fields, regex patterns, and cross-references.
+Validates required fields, the requires dependency chain, and cross-references.
 Can be used as a CLI tool: ``uv run python -m teatree.skill_support.schema <paths>``.
 
 Teatree frontmatter is a superset of APM's SKILL.md format:
 - APM requires: ``name``, ``description``
-- Teatree adds: ``triggers``, ``search_hints``, ``requires``, ``companions``, ``metadata``, ``compatibility``
+- Teatree adds: ``requires``, ``metadata``, ``compatibility``
 
 Unknown fields produce warnings (not errors) to preserve APM compatibility —
-APM or other tools may add fields teatree doesn't know about.
+APM or other tools may add fields teatree doesn't know about. The free-text
+intent-trigger fields (``triggers``, ``search_hints``) were removed with
+explicit skill loading; a stale one fails validation loud so a skill file never
+silently carries a dead mechanism. ``companions`` is distinct and recognised: an
+optional SOFT suggestion list (complementary-not-mandatory), the counterpart to
+the hard, transitive ``requires`` dependency edge.
+
+Both list fields resolve against BOTH provisioning sources — the apm-installed agent
+skills dir and the teatree plugin's own ``skills/`` tree (see
+:func:`installed_skill_names`) — so a plugin-provided target is not mistaken for a typo.
 """
 
-import re
 import sys
 from pathlib import Path
 
 import typer
+
+from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
 
 _KNOWN_TOP_LEVEL = frozenset(
     {
         "name",
         "description",
         "version",
-        "triggers",
-        "search_hints",
         "requires",
         "companions",
         "metadata",
@@ -32,13 +40,32 @@ _KNOWN_TOP_LEVEL = frozenset(
     }
 )
 
-_KNOWN_TRIGGER_KEYS = frozenset(
+# Fields the explicit-skill-loading cutover removed. A skill file still
+# carrying one is a stale reference to a deleted mechanism — an ERROR, not a
+# tolerated APM extension.
+_REMOVED_TOP_LEVEL = frozenset(
     {
-        "priority",
-        "keywords",
-        "urls",
-        "exclude",
-        "end_of_session",
+        "triggers",
+        "search_hints",
+    }
+)
+
+# External methodology / framework skills a ``requires:`` may name that have no
+# SKILL.md in this repo. They install separately (obra/superpowers via APM, the
+# ac-* language skills), so the transitive resolver warns-and-continues rather
+# than failing — the schema check treats them as valid targets, not typos.
+_EXTERNAL_REQUIRES = frozenset(
+    {
+        "test-driven-development",
+        "verification-before-completion",
+        "systematic-debugging",
+        "writing-plans",
+        "requesting-code-review",
+        "receiving-code-review",
+        "finishing-a-development-branch",
+        "ac-python",
+        "ac-django",
+        "fastapi",
     }
 )
 
@@ -79,20 +106,42 @@ def validate_skill_md(path: Path, *, known_skills: set[str] | None = None) -> tu
     if "description" not in fields:
         errors.append(f"{path}: missing required field 'description'")
 
-    # Unknown fields.
-    warnings.extend(f"{path}: unknown field '{key}' (APM extension?)" for key in fields if key not in _KNOWN_TOP_LEVEL)
+    # Removed fields fail loud; other unknown fields warn (APM compatibility).
+    errors.extend(
+        f"{path}: field '{key}' was removed with explicit skill loading — delete it"
+        for key in fields
+        if key in _REMOVED_TOP_LEVEL
+    )
+    warnings.extend(
+        f"{path}: unknown field '{key}' (APM extension?)"
+        for key in fields
+        if key not in _KNOWN_TOP_LEVEL and key not in _REMOVED_TOP_LEVEL
+    )
 
     if "eval_exempt" in fields:
         _validate_eval_exempt(path, frontmatter, errors)
 
-    # Validate trigger keyword regexes.
-    _validate_trigger_keywords(path, frontmatter, errors)
-
-    # Validate requires references.
+    # Validate requires + companions references (both name skills).
     if known_skills is not None:
-        _validate_requires_refs(path, frontmatter, known_skills, errors)
+        resolvable = known_skills | installed_skill_names()
+        _validate_list_field_refs(path, frontmatter, "requires", resolvable, errors)
+        _validate_list_field_refs(path, frontmatter, "companions", resolvable, errors)
 
     return errors, warnings
+
+
+def installed_skill_names() -> set[str]:
+    """Every skill name installed on this machine, across BOTH provisioning sources.
+
+    A ``requires:``/``companions:`` target resolves whether it was apm-installed into the
+    agent skills dir or ships with the teatree plugin's own ``skills/`` tree; a validator
+    whose known set is only the directory it happens to be walking calls the
+    plugin-provided half broken. Enumerated through the same canonical seam the
+    skill-loading hook and the dangling-reference validator read
+    (:func:`~teatree.skill_support.ref_validator.canonical_skill_names`), so the three can
+    never disagree about which skills exist.
+    """
+    return canonical_skill_names(default_search_dirs())
 
 
 def _extract_top_level_fields(frontmatter: str) -> set[str]:
@@ -115,40 +164,24 @@ def _validate_eval_exempt(path: Path, frontmatter: str, errors: list[str]) -> No
         return
 
 
-def _validate_trigger_keywords(path: Path, frontmatter: str, errors: list[str]) -> None:
-    in_keywords = False
-    for line in frontmatter.splitlines():
-        stripped = line.strip()
-        if not line.startswith((" ", "\t")) and ":" in stripped:
-            in_keywords = False
-            continue
-        if stripped == "keywords:":
-            in_keywords = True
-            continue
-        if in_keywords and stripped.startswith("- "):
-            pattern = stripped.removeprefix("- ").strip().strip("'\"")
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                errors.append(f"{path}: invalid regex in triggers.keywords: '{pattern}' ({exc})")
-
-
-def _validate_requires_refs(
+def _validate_list_field_refs(
     path: Path,
     frontmatter: str,
+    field_name: str,
     known_skills: set[str],
     errors: list[str],
 ) -> None:
-    in_requires = False
+    """Validate that every skill named under *field_name* (``requires``/``companions``) resolves."""
+    in_field = False
     for line in frontmatter.splitlines():
         stripped = line.strip()
         if not line.startswith((" ", "\t")) and ":" in stripped:
-            in_requires = stripped.split(":")[0].strip() == "requires"
+            in_field = stripped.split(":")[0].strip() == field_name
             continue
-        if in_requires and stripped.startswith("- "):
+        if in_field and stripped.startswith("- "):
             ref = stripped.removeprefix("- ").strip().strip("'\"")
-            if ref and ref not in known_skills:
-                errors.append(f"{path}: requires unknown skill '{ref}'")
+            if ref and ref not in known_skills and ref not in _EXTERNAL_REQUIRES:
+                errors.append(f"{path}: {field_name} unknown skill '{ref}'")
 
 
 def validate_directory(root: Path) -> tuple[list[str], list[str]]:

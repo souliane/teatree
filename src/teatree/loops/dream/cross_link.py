@@ -79,7 +79,7 @@ def _existing_links(text: str) -> frozenset[str]:
 def _load_memories(memory_dir: Path) -> list[_Memory]:
     memories: list[_Memory] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name == "MEMORY.md":
+        if md.name in {"MEMORY.md", "MEMORY_ARCHIVE.md"}:  # never cross-link an index (#2723)
             continue
         try:
             text = md.read_text(encoding="utf-8")

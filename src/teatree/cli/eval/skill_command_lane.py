@@ -1,4 +1,4 @@
-"""``t3 eval skill-command-validity`` — Tier-1 command-validity lane (#550, free).
+"""``t3 eval skill-command-validity`` — Tier-1 command-validity lane (#550, model-free).
 
 The thin CLI surface over the pure :mod:`teatree.eval.skill_command_validity`
 engine. The engine validates SKILL.md ``t3 …`` invocations against an injected
@@ -17,18 +17,19 @@ that builds the registry from its own app. The default provider raises a clear
 error, so a caller that never registered one fails loud rather than silently
 validating against an empty registry.
 
-Free and deterministic — no model, no spend. Wired into ``t3 eval`` (the
-free-lane summary) and exposed as the standalone ``t3 eval skill-command-validity``.
+Model-free and deterministic — no model, no spend. Wired into ``t3 eval`` (the
+model-free-lane summary) and exposed as the standalone ``t3 eval skill-command-validity``.
 """
 
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import typer
 
 from teatree.cli._format_opts import require_valid_format
 from teatree.cli.eval.verdict import LaneResult
-from teatree.eval.skill_command_validity import DEFAULT_SKILLS_DIR, CommandValidityReport, validate_skill_commands
+from teatree.eval.skill_command_validity import DEFAULT_REPO_ROOT, CommandValidityReport, validate_doc_commands
 from teatree.utils.django_bootstrap import ensure_django
 
 #: Builds the live ``(valid_paths, group_paths)`` registry. Registered by
@@ -59,14 +60,14 @@ def build_command_registry() -> tuple[set[str], set[str]]:
     return _registry_provider()
 
 
-def validate_shipped_skill_commands(skills_dir=DEFAULT_SKILLS_DIR) -> CommandValidityReport:  # noqa: ANN001
-    """Validate the shipped skill docs against the live registry (the lane body)."""
+def validate_shipped_skill_commands(repo_root: Path = DEFAULT_REPO_ROOT) -> CommandValidityReport:
+    """Validate the shipped repo docs against the live registry (the lane body)."""
     valid, groups = build_command_registry()
-    return validate_skill_commands(valid, groups, skills_dir=skills_dir)
+    return validate_doc_commands(valid, groups, repo_root=repo_root)
 
 
 def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
-    """Fold a validity report into the free ``skill-command-validity`` lane for ``t3 eval``."""
+    """Fold a validity report into the model-free ``skill-command-validity`` lane for ``t3 eval``."""
     detail = (
         f"{report.checked} `t3 …` invocation(s) all resolve"
         if report.ok
@@ -74,7 +75,7 @@ def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
     )
     return LaneResult(
         name="skill-command-validity",
-        cost="free",
+        cost="model-free",
         passed=report.ok,
         skipped=False,
         detail=detail,
@@ -84,26 +85,29 @@ def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
 def skill_command_validity(
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
 ) -> None:
-    """Validate every backticked ``t3 …`` in the skill docs against the live CLI registry.
+    """Validate every backticked ``t3 …`` in the repo docs against the live CLI registry.
 
-    Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
-    backticked ``t3 …`` commands are token-walked against the live typer command
-    tree. A command that no longer resolves (a CLI rename left the doc stale) is a
-    violation — the "no stale references" rule — and exits non-zero. Generic
-    placeholder mentions (``t3 …`` / ``t3 <overlay> …``) are skipped.
+    Tier-1 (deterministic, model-free, no ``claude`` run): the backticked ``t3 …``
+    commands in the skills tree, the ``agents/*.md`` role briefs, ``BLUEPRINT.md``
+    and ``docs/`` are token-walked against the live typer command tree. A leading
+    ``t3 <overlay>`` is resolved to a representative overlay so an overlay-scoped
+    ``t3 <overlay> <group> <sub>`` is validated too. A command that no longer
+    resolves (a CLI rename left the doc stale) is a violation — the "no stale
+    references" rule — and exits non-zero. A generic mention whose command path is
+    a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
     """
     ensure_django()
     require_valid_format(output_format)
     report = validate_shipped_skill_commands()
     if output_format == "json":
-        import json  # noqa: PLC0415
+        import json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         typer.echo(
             json.dumps(
                 {
                     "ok": report.ok,
                     "checked": report.checked,
-                    "violations": [{"skill": v.skill, "doc": v.doc, "command": v.command} for v in report.violations],
+                    "violations": [{"doc": v.doc, "command": v.command} for v in report.violations],
                 },
                 indent=2,
             )

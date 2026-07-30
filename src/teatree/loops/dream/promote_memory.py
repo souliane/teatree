@@ -32,19 +32,31 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.hooks import banned_terms_scanner
 from teatree.types import RawAPIDict
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from teatree.loops.dream.merge import BindingConflict
+
 logger = logging.getLogger(__name__)
 
-#: The dedup marker the filer embeds (and searches for) so a re-run never refiles a
-#: gap that already has an open tracking issue — mirrors the review-findings
-#: fingerprint marker, keyed on the row's stable ``cluster_key``.
+#: The standing umbrella issue that tracks every grounded dream gap as a reusable
+#: checkbox ledger — reused daily, never closed (#2663). A core gap rides this
+#: umbrella + a scheduled coding task instead of a fresh ``needs-triage`` issue.
+UMBRELLA_ISSUE_URL = "https://github.com/souliane/teatree/issues/2663"
+
+#: The dedup marker the binding-reconciliation filer embeds (and searches for) so a
+#: re-run never refiles a conflict that already has an open tracking issue — mirrors
+#: the review-findings fingerprint marker.
 _GAP_MARKER = "dream-memory-gap"
 
 #: A consolidated rule whose durable home points at teatree's own code/skills is a
@@ -67,17 +79,29 @@ class MemoryDisposition(Enum):
 MemoryClassifier = Callable[[ConsolidatedMemory], MemoryDisposition]
 
 
+def points_at_core_fix(destination: str) -> bool:
+    """Whether *destination* names a teatree-core fix path (skills / src / scripts / BLUEPRINT / …).
+
+    The single classifier behind Pass-2 triage (:func:`triage_disposition`) and the
+    compliance recurrence redirect
+    (:func:`teatree.loops.dream.compliance._is_memory_only`): a home under teatree's
+    own code/skills is a core-generic gap to fix in code; any other home — or no
+    home — is user-specific and stays a memory.
+    """
+    home = destination.strip().lower()
+    return bool(home) and home.startswith(_CORE_DESTINATION_PREFIXES)
+
+
 def triage_disposition(row: ConsolidatedMemory) -> MemoryDisposition:
     """Classify a consolidated rule as user-specific or a core-generic teatree gap.
 
-    Reads the ``durable_destination`` hint the distiller already computed: a home
-    under teatree's own skills/source/scripts/BLUEPRINT is core-generic doctrine to
-    fix in code; any other home — or no home — is user-specific and stays a memory.
-    Conservative on the empty case: an unclassifiable row is kept as memory, never
-    auto-ticketed.
+    Reads the ``durable_destination`` hint the distiller already computed via the
+    shared :func:`points_at_core_fix` classifier: a home under teatree's own
+    skills/source/scripts/BLUEPRINT is core-generic doctrine to fix in code; any
+    other home — or no home — is user-specific and stays a memory. Conservative on
+    the empty case: an unclassifiable row is kept as memory, never auto-ticketed.
     """
-    destination = row.durable_destination.strip().lower()
-    if destination and destination.startswith(_CORE_DESTINATION_PREFIXES):
+    if points_at_core_fix(row.durable_destination):
         return MemoryDisposition.CORE_GAP
     return MemoryDisposition.USER_SPECIFIC
 
@@ -102,74 +126,153 @@ class TicketOutcome:
 def file_core_gap_tickets(
     host: CodeHostBackend,
     *,
-    repo: str,
+    umbrella_url: str = UMBRELLA_ISSUE_URL,
     classifier: MemoryClassifier | None = None,
     dry_run: bool = False,
 ) -> list[TicketOutcome]:
-    """Triage every untriaged row; file a deduped teatree ticket for each core gap.
+    """Triage every untriaged row; drive each core gap to a fix-and-merge (#2663).
 
     Each untriaged row is classified (via the injected *classifier*, default the
     ``durable_destination``-hint one). A user-specific row advances to
-    ``USER_SPECIFIC_KEEP`` and files nothing. A core-gap row advances to
-    ``CORE_GAP_NEEDS_TICKET``; then (unless *dry_run*) a deduped ``needs-triage``
-    backlog issue is filed against *repo* and the row advances to ``TICKETED`` with
-    the issue URL recorded. A body that would leak a banned term / bare reference is
-    withheld — never filed. Returns one outcome per core-gap row (user-specific rows
-    file nothing and yield no outcome).
+    ``USER_SPECIFIC_KEEP`` and does nothing further. A core-gap row advances to
+    ``CORE_GAP_NEEDS_TICKET`` and is PROMOTED to a fix in the SAME pass — a checkbox
+    is upserted under the standing umbrella issue (*umbrella_url*, deduped by the row's
+    ``cluster_key``) and a coding task is scheduled for the fix. The gap no longer files
+    a fresh ``needs-triage`` issue that the scanner skips. A rendered title that would
+    leak a banned term / bare reference is withheld — never written.
+
+    Under *dry_run* NOTHING is written — no disposition advance, no umbrella edit, no
+    scheduled task — so a preview never STRANDS a detected gap: the disposition write
+    used to land BEFORE the dry-run guard, moving the row out of ``untriaged()`` while
+    its promotion was skipped, so the gap sat in ``CORE_GAP_NEEDS_TICKET`` with no drain
+    and was silently detected but never fixed.
+
+    Before the untriaged queue, any core-gap row a prior pass classified but never
+    promoted (:meth:`ConsolidatedMemory.objects.needs_ticket` — no ticket recorded) is
+    drained first, so such a stranded gap is picked up and promoted rather than left
+    forever. Returns one outcome per promoted core-gap row (user-specific rows and a
+    dry-run yield no outcome).
     """
     classify = classifier or triage_disposition
     outcomes: list[TicketOutcome] = []
+    if dry_run:
+        # A preview must not mutate: classify nothing, promote nothing. The untriaged
+        # rows stay untriaged so the next real pass drains them faithfully.
+        return outcomes
+    # Drain gaps a prior pass classified but never promoted (e.g. stranded by an older
+    # dry-run) FIRST, before this pass classifies any new core gap — reading the queue
+    # up front means a row classified below is never re-drained in the same pass.
+    outcomes.extend(
+        _promote_one_gap(host, stranded, umbrella_url=umbrella_url)
+        for stranded in ConsolidatedMemory.objects.needs_ticket()
+    )
     for row in ConsolidatedMemory.objects.untriaged():
         if classify(row) is MemoryDisposition.USER_SPECIFIC:
             row.classify_user_specific()
             continue
         row.classify_core_gap()
-        if dry_run:
-            continue
-        outcomes.append(_file_one_gap(host, row, repo=repo))
+        outcomes.append(_promote_one_gap(host, row, umbrella_url=umbrella_url))
     return outcomes
 
 
-def _file_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, repo: str) -> TicketOutcome:
-    """File (or reuse) one core-gap backlog ticket and advance the row to TICKETED.
+def _promote_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella_url: str) -> TicketOutcome:
+    """Drive one core-gap row to a fix-and-merge via the umbrella ledger (#2663).
 
-    Dedup-first: an open issue already carrying this row's gap marker is reused. A
-    rendered body that would leak a banned term or a bare forge reference is withheld
-    (no issue filed). Otherwise a ``needs-triage`` issue is filed and the row records
-    its URL.
+    Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
+    upserted under the umbrella (deduped by ``cluster_key``) and a coding task is
+    scheduled for the fix (deduped by the same key). The banned-term / bare-reference
+    withholding is enforced inside ``promote_gap`` against the rendered title.
     """
-    existing = _find_existing_gap_issue(host, repo=repo, cluster_key=row.cluster_key)
-    if existing:
-        row.mark_ticketed(existing)
-        return TicketOutcome(cluster_key=row.cluster_key, filed=False, ticket_url=existing, reason="reused open issue")
+    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-    title = _ticket_title(row)
-    body = _ticket_body(row)
-    rendered = f"{title}\n{body}"
+    outcome = umbrella_ledger.promote_gap(
+        host,
+        umbrella_url=umbrella_url,
+        gap=umbrella_ledger.GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key),
+    )
+    return TicketOutcome(
+        cluster_key=row.cluster_key,
+        filed=outcome.scheduled or outcome.checkbox_added,
+        ticket_url=umbrella_url,
+        withheld=outcome.withheld,
+        reason=outcome.reason,
+    )
 
+
+def _withholding_reason(rendered: str) -> str:
+    """The reason a rendered body must be withheld (banned term / bare ref), or ``""``."""
     banned = banned_terms_scanner.scan_text(rendered)
     if banned is not None:
-        return TicketOutcome(
-            cluster_key=row.cluster_key, filed=False, withheld=True, reason=f"contains banned term '{banned}'"
-        )
+        return f"contains banned term '{banned}'"
     leaked = find_bare_references(rendered)
     if leaked:
-        return TicketOutcome(
-            cluster_key=row.cluster_key,
-            filed=False,
-            withheld=True,
-            reason=f"contains bare reference(s): {', '.join(leaked)}",
-        )
-
-    raw = host.create_issue(repo=repo, title=title, body=body, labels=["dream-memory-gap", NEEDS_TRIAGE_LABEL])
-    url = _issue_url(raw)
-    row.mark_ticketed(url)
-    return TicketOutcome(cluster_key=row.cluster_key, filed=True, ticket_url=url, reason="filed new issue")
+        return f"contains bare reference(s): {', '.join(leaked)}"
+    return ""
 
 
-def _find_existing_gap_issue(host: CodeHostBackend, *, repo: str, cluster_key: str) -> str:
-    """Return the URL of an open gap issue already carrying this row's marker, or ``""``."""
-    marker = f"{_GAP_MARKER} {cluster_key}"
+#: The dedup marker for a binding-reconciliation ticket — keyed on the conflicting
+#: PAIR's sorted file stems so a re-run never refiles a conflict already tracked.
+_RECONCILE_MARKER = "dream-binding-reconcile"
+
+
+def _conflict_key(conflict: "BindingConflict") -> str:
+    return "+".join(sorted((conflict.survivor_name, conflict.absorbed_name)))
+
+
+def file_binding_reconciliation_tickets(
+    host: CodeHostBackend, *, repo: str, conflicts: "Sequence[BindingConflict]", dry_run: bool = False
+) -> list[TicketOutcome]:
+    """File a deduped reconciliation ticket per conflicting-BINDING memory pair (#2723).
+
+    Two BINDING near-duplicates are never auto-merged (Decision-3); the merge phase
+    cross-links them and hands the pair here. A deduped ``dream-memory-gap`` issue is
+    filed against *repo* so a human reconciles the doctrine. Dedup-first on the pair's
+    sorted stems, banned-term / bare-reference withholding reused verbatim from the
+    core-gap filer. Under *dry_run* nothing is filed. Returns one outcome per pair.
+    """
+    outcomes: list[TicketOutcome] = []
+    for conflict in conflicts:
+        if dry_run:
+            continue
+        outcomes.append(_file_one_reconciliation(host, conflict, repo=repo))
+    return outcomes
+
+
+def _file_one_reconciliation(host: CodeHostBackend, conflict: "BindingConflict", *, repo: str) -> TicketOutcome:
+    key = _conflict_key(conflict)
+    marker = f"{_RECONCILE_MARKER} {key}"
+    existing = _find_existing_marker_issue(host, repo=repo, marker=marker)
+    if existing:
+        return TicketOutcome(cluster_key=key, filed=False, ticket_url=existing, reason="reused open issue")
+
+    title = f"Conflicting BINDING memories need reconciliation: {neutralize_bare_references(key)}"
+    body = (
+        "Two BINDING memory files are near-duplicates but cannot be auto-merged — "
+        "binding doctrine that disagrees must be reconciled by a human, not silently "
+        "collapsed. The dream merge phase cross-linked them; please decide which rule "
+        "is canonical and retire or rewrite the other.\n\n"
+        f"**Files:** `{conflict.survivor_name}.md`, `{conflict.absorbed_name}.md`\n\n"
+        f"<!-- {marker} -->\n"
+    )
+    reason = _withholding_reason(f"{title}\n{body}")
+    if reason:
+        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=reason)
+
+    # Route through the shared forge-write seam (public-repo leak gate + #117
+    # send-proxy audit), the same path the MCP tools use — so this dream-loop
+    # write is no longer unscrubbed. A leak/blocked verdict withholds the issue.
+    try:
+        title = route_forge_write(forge="", repo=repo, text=title, action="dream_reconcile", target=repo)
+        body = route_forge_write(forge="", repo=repo, text=body, action="dream_reconcile", target=repo)
+    except OutboundBlockedError as exc:
+        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=str(exc))
+
+    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
+    return TicketOutcome(cluster_key=key, filed=True, ticket_url=_issue_url(raw), reason="filed new issue")
+
+
+def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str) -> str:
+    """Return the URL of an open issue already carrying *marker*, or ``""``."""
     try:
         matches = host.search_open_issues(repo=repo, query=marker)
     except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
@@ -186,37 +289,30 @@ def _ticket_title(row: ConsolidatedMemory) -> str:
     return f"Workflow gap (dreaming Pass 2): {snippet}"
 
 
-def _ticket_body(row: ConsolidatedMemory) -> str:
-    rule = neutralize_bare_references(row.rule.strip())
-    citation = neutralize_bare_references(row.verified_citation.strip())
-    destination = row.durable_destination.strip() or "(unspecified)"
-    return (
-        "A consolidated memory describes a generic teatree workflow gap. Per "
-        "[#2426](https://github.com/souliane/teatree/issues/2426), a generic memory is a "
-        "confession that teatree core has a bug — fix it in code (a gate, a hook, a CLI "
-        "change) and the memory is retired once the fix lands.\n\n"
-        f"**Rule:** {rule}\n\n"
-        f"**Cited mistake this would have prevented:** {citation}\n\n"
-        f"**Suggested home for the fix:** `{destination}`\n\n"
-        f"<!-- {_GAP_MARKER} {row.cluster_key} -->\n"
-    )
+def retire_resolved_memories(
+    host: CodeHostBackend, *, is_resolved: "Callable[[str], bool] | None" = None
+) -> list[ConsolidatedMemory]:
+    """Retire each TICKETED memory whose linked teatree ticket is now resolved.
 
-
-def retire_resolved_memories(host: CodeHostBackend) -> list[ConsolidatedMemory]:
-    """Retire each TICKETED memory whose linked teatree ticket is now closed.
-
-    For every row awaiting ticket-close, the linked issue's state is read from
-    *host*; a closed issue retires the row (the prose is archived, the gap it
+    For every row awaiting ticket-close, the linked ticket's resolved state is read
+    via *is_resolved* (default: the linked issue's closed/merged state read from
+    *host*); a resolved ticket retires the row (the prose is archived, the gap it
     confessed is fixed in code). A BINDING row is never retired (binding feedback is
-    load-bearing user doctrine). An unreadable issue state keeps the memory — a forge
-    hiccup must never retire a memory whose fix may not have landed. Returns the rows
+    load-bearing user doctrine). An unresolved/unreadable ticket keeps the memory — a
+    forge hiccup must never retire a memory whose fix may not have landed.
+
+    The *is_resolved* seam lets the umbrella reconcile path
+    (:func:`teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps`) retire off the
+    gap-fix Ticket's authoritative MERGED state instead of a fragile forge re-read of
+    a PR URL (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows
     retired this pass.
     """
+    resolved = is_resolved or (lambda url: _issue_is_closed(host, url))
     retired: list[ConsolidatedMemory] = []
     for row in ConsolidatedMemory.objects.awaiting_ticket_close():
         if row.is_binding:
             continue
-        if not _issue_is_closed(host, row.ticket_url):
+        if not resolved(row.ticket_url):
             continue
         row.retire(archive_path=row.ticket_url)
         retired.append(row)
@@ -245,7 +341,9 @@ __all__ = [
     "MemoryClassifier",
     "MemoryDisposition",
     "TicketOutcome",
+    "file_binding_reconciliation_tickets",
     "file_core_gap_tickets",
+    "points_at_core_fix",
     "retire_resolved_memories",
     "triage_disposition",
 ]

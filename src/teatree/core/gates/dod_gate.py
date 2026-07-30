@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.e2e_workitem import load_recipe
+from teatree.core.intake.e2e_workitem import load_recipe
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.overlay_loader import frontend_repos_for_overlay
@@ -197,12 +197,6 @@ def check_local_e2e_dod(ticket: "Ticket") -> None:
 _DOD_VIOLATION_KEY = "dod_e2e_violation"
 
 
-def _state_index(state: str) -> int:
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415
-
-    return [s.value for s in Ticket.State].index(state)
-
-
 def _is_post_ship_state(state: str) -> bool:
     """True iff *state* is at or past SHIPPED on the lifecycle.
 
@@ -211,9 +205,9 @@ def _is_post_ship_state(state: str) -> bool:
     MERGED / DELIVERED. A sync writer that grants any of these on a
     UI-visible ticket with no local E2E bypasses the ``ship()`` DoD gate.
     """
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+    from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    return _state_index(state) >= _state_index(Ticket.State.SHIPPED)
+    return Ticket.state_index(state) >= Ticket.state_index(Ticket.State.SHIPPED)
 
 
 def sync_gate_allows(ticket: "Ticket", inferred_state: str) -> bool:
@@ -251,7 +245,7 @@ def workflow_capped_state(ticket: "Ticket", inferred_state: str) -> str:
     ticket contradict reality. Use :func:`record_terminal_dod_violation`
     for those.
     """
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+    from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if sync_gate_allows(ticket, inferred_state):
         return inferred_state
@@ -301,7 +295,7 @@ def record_terminal_dod_violation(ticket: "Ticket", terminal_state: str) -> None
 
 
 def _now_iso() -> str:
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     return timezone.now().isoformat()
 

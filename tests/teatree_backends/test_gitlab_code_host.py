@@ -2,6 +2,11 @@ from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab.discussions import (
+    _count_unresolved_resolvable_threads,
+    _note_author,
+    thread_opened_solely_by,
+)
 from teatree.core.backend_protocols import PullRequestSpec
 
 
@@ -167,6 +172,35 @@ def test_close_issue_returns_error_when_project_not_resolved() -> None:
     client.put_json.assert_not_called()
 
 
+def test_update_issue_puts_the_description() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"iid": 3}
+    host = GitLabCodeHost(client=client)
+
+    result = host.update_issue(issue_url="https://gitlab.com/org/repo/-/issues/3", body="new umbrella body")
+
+    assert result == {"iid": 3}
+    client.put_json.assert_called_once_with("projects/42/issues/3", {"description": "new umbrella body"})
+
+
+def test_update_issue_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert "error" in host.update_issue(issue_url="https://gitlab.com/org/unknown/-/issues/3", body="x")
+    client.put_json.assert_not_called()
+
+
+def test_update_issue_rejects_non_issue_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    assert "error" in host.update_issue(issue_url="https://example.com/not/an/issue", body="x")
+    client.put_json.assert_not_called()
+
+
 def test_search_open_issues_searches_project() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -234,6 +268,31 @@ def test_list_assigned_issues_delegates_to_client() -> None:
     client.list_open_issues_for_assignee.assert_called_once_with("adrien")
 
 
+def test_list_authored_issues_delegates_to_client() -> None:
+    """#3235 — the author-scoped intake query: issues the trusted human FILED."""
+    client = MagicMock(spec=GitLabAPI)
+    client.list_open_issues_for_author.return_value = [{"iid": 4, "title": "Issue 4"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_authored_issues(author="trusted-colleague")
+
+    assert result == [{"iid": 4, "title": "Issue 4"}]
+    client.list_open_issues_for_author.assert_called_once_with("trusted-colleague", project_slugs=())
+
+
+def test_list_authored_issues_scopes_to_project_slugs() -> None:
+    """repo_slugs plumb through to the client as ``project_slugs`` — the cross-repo firehose fix."""
+    client = MagicMock(spec=GitLabAPI)
+    client.list_open_issues_for_author.return_value = []
+    host = GitLabCodeHost(client=client)
+
+    host.list_authored_issues(author="trusted-colleague", repo_slugs=("org/repo", "org/other"))
+
+    client.list_open_issues_for_author.assert_called_once_with(
+        "trusted-colleague", project_slugs=("org/repo", "org/other")
+    )
+
+
 def test_post_pr_comment_returns_error_when_project_not_resolved() -> None:
     """post_pr_comment returns error when project cannot be resolved."""
     client = MagicMock(spec=GitLabAPI)
@@ -272,6 +331,125 @@ def test_post_pr_comment_returns_empty_dict_when_post_returns_none() -> None:
     result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="note")
 
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# #3340 — author-aware stale-bot-thread filtering
+# ---------------------------------------------------------------------------
+
+
+_MISSING = object()
+
+
+def _note(*, author: object = "bot", resolvable: bool = True, resolved: bool = False) -> dict:
+    """A discussion note: ``author`` is the raw value (dict / None / missing)."""
+    note: dict = {"resolvable": resolvable, "resolved": resolved}
+    if author is not _MISSING:
+        note["author"] = {"username": author} if isinstance(author, str) else author
+    return note
+
+
+def _thread(*notes: dict) -> dict:
+    return {"notes": list(notes)}
+
+
+class TestNoteAuthor:
+    def test_reads_username_from_author_dict(self) -> None:
+        assert _note_author({"author": {"username": "bot"}}) == "bot"
+
+    def test_null_author_is_empty(self) -> None:
+        # System notes carry author: null — must not blow up mid-walk.
+        assert _note_author({"author": None}) == ""
+
+    def test_absent_author_is_empty(self) -> None:
+        assert _note_author({}) == ""
+
+    def test_non_string_username_is_empty(self) -> None:
+        assert _note_author({"author": {"username": 123}}) == ""
+
+
+class TestThreadOpenedSolelyBy:
+    def test_true_when_bot_opened_and_only_bot_replied(self) -> None:
+        thread = _thread(_note(author="bot"), _note(author="bot"))
+
+        assert thread_opened_solely_by(thread, "bot") is True
+
+    def test_false_when_a_human_replied(self) -> None:
+        # ANTI-VACUITY: resolving this would discard a real human objection.
+        thread = _thread(_note(author="bot"), _note(author="carol"))
+
+        assert thread_opened_solely_by(thread, "bot") is False
+
+    def test_survives_null_author_note(self) -> None:
+        # A system note (author: null) is not "someone else" — still bot-only.
+        thread = _thread(_note(author="bot"), _note(author=None))
+
+        assert thread_opened_solely_by(thread, "bot") is True
+
+    def test_false_when_someone_else_opened(self) -> None:
+        thread = _thread(_note(author="carol"), _note(author="bot"))
+
+        assert thread_opened_solely_by(thread, "bot") is False
+
+    def test_false_for_blank_author(self) -> None:
+        # A missing bot-username config must never eat every thread.
+        thread = _thread(_note(author="bot"))
+
+        assert thread_opened_solely_by(thread, "") is False
+
+    def test_false_when_no_notes(self) -> None:
+        assert thread_opened_solely_by({"notes": []}, "bot") is False
+
+
+class TestCountUnresolvedResolvableThreads:
+    def test_default_counts_every_unresolved_resolvable_thread(self) -> None:
+        discussions = [
+            _thread(_note(author="bot", resolved=False)),
+            _thread(_note(author="carol", resolved=False)),
+            _thread(_note(author="bot", resolved=True)),  # resolved → not counted
+        ]
+
+        assert _count_unresolved_resolvable_threads(discussions) == 2
+
+    def test_default_is_byte_identical_when_ignore_author_blank(self) -> None:
+        discussions = [_thread(_note(author="bot")), _thread(_note(author="carol"))]
+
+        assert _count_unresolved_resolvable_threads(discussions, ignore_author="") == 2
+
+    def test_ignore_author_excludes_stale_bot_only_thread(self) -> None:
+        discussions = [
+            _thread(_note(author="bot")),  # stale bot-only → excluded
+            _thread(_note(author="carol")),  # human → kept
+        ]
+
+        assert _count_unresolved_resolvable_threads(discussions, ignore_author="bot") == 1
+
+    def test_ignore_author_keeps_bot_thread_with_human_reply(self) -> None:
+        # ANTI-VACUITY: a human reply makes the bot thread a live objection.
+        discussions = [_thread(_note(author="bot"), _note(author="carol"))]
+
+        assert _count_unresolved_resolvable_threads(discussions, ignore_author="bot") == 1
+
+
+def test_list_pr_discussions_delegates_to_client() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_discussions.return_value = [{"id": "a", "notes": []}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_pr_discussions(repo="org/repo", pr_iid=10)
+
+    assert result == [{"id": "a", "notes": []}]
+    client.get_mr_discussions.assert_called_once_with(42, 10)
+
+
+def test_list_pr_discussions_returns_empty_when_project_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.list_pr_discussions(repo="org/unknown", pr_iid=10) == []
+    client.get_mr_discussions.assert_not_called()
 
 
 def test_current_user_proxies_to_api_username() -> None:
@@ -1160,3 +1338,252 @@ def test_repo_for_issue_url_returns_the_issues_own_project_slug() -> None:
     assert host.repo_for_issue_url("https://gitlab.com/org/repo/-/work_items/42") == "org/repo"
     # A non-issue URL yields "" (the caller then resolves nothing / fails loud).
     assert host.repo_for_issue_url("https://gitlab.com/org/repo/-/merge_requests/7") == ""
+
+
+def test_list_prs_builds_state_and_author_filters() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"iid": 5}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_prs(repo="org/repo", state="open", author="alice")
+
+    assert result == [{"iid": 5}]
+    client.get_json_paginated.assert_called_once_with(
+        "projects/42/merge_requests?per_page=100&state=opened&author_username=alice"
+    )
+
+
+def test_list_prs_passes_native_state_verbatim() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = []
+    GitLabCodeHost(client=client).list_prs(repo="org/repo", state="merged")
+
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100&state=merged")
+
+
+def test_list_prs_omits_empty_filters() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = []
+    GitLabCodeHost(client=client).list_prs(repo="org/repo")
+
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests?per_page=100")
+
+
+def test_list_prs_unresolvable_project_returns_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).list_prs(repo="org/repo") == []
+
+
+def test_get_pr_diff_returns_per_file_diffs() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"new_path": "a.py", "diff": "@@"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.get_pr_diff(repo="org/repo", pr_iid=7)
+
+    assert result == [{"new_path": "a.py", "diff": "@@"}]
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests/7/diffs?per_page=100")
+
+
+def test_get_pr_diff_unresolvable_project_returns_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).get_pr_diff(repo="org/repo", pr_iid=7) == []
+
+
+def test_list_pr_commits_returns_commits() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"id": "abc", "message": "fix"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_pr_commits(repo="org/repo", pr_iid=7)
+
+    assert result == [{"id": "abc", "message": "fix"}]
+    client.get_json_paginated.assert_called_once_with("projects/42/merge_requests/7/commits?per_page=100")
+
+
+def test_list_pr_commits_unresolvable_project_returns_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).list_pr_commits(repo="org/repo", pr_iid=7) == []
+
+
+def test_get_repo_returns_project_metadata() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    result = GitLabCodeHost(client=client).get_repo(repo="org/repo")
+
+    assert result == {
+        "id": 42,
+        "path_with_namespace": "org/repo",
+        "short_name": "repo",
+        "default_branch": "main",
+    }
+
+
+def test_get_repo_unresolvable_project_returns_structured_error() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    assert GitLabCodeHost(client=client).get_repo(repo="org/missing") == {
+        "error": "Could not resolve project: org/missing"
+    }
+
+
+# --- F8.2 resolve_project error semantics ------------------------------------
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+
+from teatree.core.backend_protocols import ApprovalState  # noqa: E402
+from teatree.utils.throttled_log import reset_throttle  # noqa: E402
+
+
+def _response(status: int, *, json_body: object = None) -> httpx.Response:
+    request = httpx.Request("GET", "https://gitlab.example.com/api/v4/projects/org%2Frepo")
+    if json_body is not None:
+        return httpx.Response(status, json=json_body, request=request)
+    return httpx.Response(status, request=request)
+
+
+def _api() -> GitLabAPI:
+    return GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
+
+
+def test_resolve_project_returns_none_on_404() -> None:
+    # F8.2: get_json now raises on 404 (raise_for_status); the documented
+    # None-degrade for an unknown/private slug must survive that.
+    api = _api()
+    with patch("httpx.get", return_value=_response(404)):
+        assert api.resolve_project("org/repo") is None
+
+
+def test_resolve_project_does_not_cache_none_from_404() -> None:
+    # F4.5: a 404 seen once (possibly during an outage) must not pin the slug
+    # unresolvable for the process life — the next call re-resolves.
+    api = _api()
+    with patch("httpx.get", return_value=_response(404)):
+        assert api.resolve_project("org/repo") is None
+    with patch("httpx.get", return_value=_response(200, json_body=_PROJECT_JSON)) as second:
+        assert api.resolve_project("org/repo") is not None
+        second.assert_called()  # the None was NOT cached — a real request went out
+
+
+def test_resolve_project_reraises_non_404_status() -> None:
+    # An auth/5xx failure is an outage, never "unknown project" — it must surface.
+    api = _api()
+    with patch("httpx.get", return_value=_response(403)), pytest.raises(httpx.HTTPStatusError):
+        api.resolve_project("org/repo")
+
+
+def test_resolve_project_caches_successful_resolution() -> None:
+    api = _api()
+    with patch("httpx.get", return_value=_response(200, json_body=_PROJECT_JSON)) as first:
+        assert api.resolve_project("org/repo") is not None
+    with patch("httpx.get", return_value=_response(500)) as second:
+        # Second call is served from the project cache — no request issued.
+        assert api.resolve_project("org/repo") is not None
+        second.assert_not_called()
+    first.assert_called()
+
+
+_PROJECT_JSON = {
+    "id": 42,
+    "path_with_namespace": "org/repo",
+    "path": "repo",
+    "default_branch": "main",
+}
+
+
+# --- F8.1 get_mr_approvals fails closed on unresolvable project --------------
+
+
+def test_get_mr_approvals_fails_closed_when_project_unresolved() -> None:
+    # F8.1: approvals_left=0 is MERGE-AUTHORISING. An unresolvable project must
+    # fail CLOSED (one approval outstanding), never authorise the merge.
+    reset_throttle()
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    state = GitLabCodeHost(client=client).get_mr_approvals(repo="org/repo", pr_iid=12)
+    assert state == ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0)
+    client.get_mr_approvals.assert_not_called()
+
+
+# --- F8.10 resolve_user_id_by_username url-encodes the username --------------
+
+
+def test_resolve_user_id_url_encodes_username() -> None:
+    api = _api()
+    resp = _response(200, json_body=[{"id": 7}])
+    with patch("httpx.get", return_value=resp) as mock_get:
+        assert api.resolve_user_id_by_username("a b+c") == 7
+    called_url = mock_get.call_args.args[0]
+    assert "a+b%2Bc" in called_url or "a%20b%2Bc" in called_url
+
+
+# --- F8.6 cancel_pipelines paginates -----------------------------------------
+
+
+def test_cancel_pipelines_walks_every_page() -> None:
+    # F8.6: a busy ref with >10 in-flight pipelines must not leave the overflow
+    # running. cancel_pipelines paginates rather than reading page 1 only.
+    api = _api()
+    page1 = [{"id": i} for i in range(1, 101)]
+    page2 = [{"id": 101}]
+
+    def _get(url: str, **_: object) -> httpx.Response:
+        request = httpx.Request("GET", url)
+        if "status=running" not in url:  # only the running status has pipelines
+            return httpx.Response(200, json=[], headers={"x-next-page": ""}, request=request)
+        if "page=2" in url:
+            return httpx.Response(200, json=page2, headers={"x-next-page": ""}, request=request)
+        return httpx.Response(200, json=page1, headers={"x-next-page": "2"}, request=request)
+
+    with patch("httpx.get", side_effect=_get), patch("httpx.post", return_value=_response(201, json_body={})):
+        cancelled = api.cancel_pipelines(42, "main", statuses=("running",))
+    assert len(cancelled) == 101
+    assert 101 in cancelled
+
+
+# --- F8.7 get_draft_notes_count paginates ------------------------------------
+
+
+def test_get_draft_notes_count_paginates() -> None:
+    api = _api()
+    page1 = [{"id": i} for i in range(100)]
+    page2 = [{"id": 100}, {"id": 101}]
+    with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
+        assert api.get_draft_notes_count(42, 7) == 102
+
+
+# --- F8.9 list_recently_merged_mrs single page without cutoff ----------------
+
+
+def test_list_recently_merged_without_cutoff_reads_one_page() -> None:
+    # F8.9: without updated_after, only the most-recent page is fetched — not a
+    # walk to _MAX_PAGES (which read up to 10k rows every tick).
+    api = _api()
+    request = httpx.Request("GET", "https://gitlab.example.com/api/v4/merge_requests")
+
+    def _get(url: str, **_: object) -> httpx.Response:
+        # Advertise a next page; the single-page read must ignore it.
+        return httpx.Response(200, json=[{"iid": 1}], headers={"x-next-page": "2"}, request=request)
+
+    with patch("httpx.get", side_effect=_get) as mock_get:
+        result = api.list_recently_merged_mrs("alice")
+    assert result == [{"iid": 1}]
+    assert mock_get.call_count == 1
+
+
+def test_list_recently_merged_with_cutoff_paginates() -> None:
+    api = _api()
+    page1 = [{"iid": i} for i in range(100)]
+    page2 = [{"iid": 100}]
+    with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
+        result = api.list_recently_merged_mrs("alice", updated_after="2026-01-01T00:00:00Z")
+    assert len(result) == 101

@@ -78,7 +78,7 @@ def running_env_is_uv_tool() -> bool:
     running env must be repaired in place (install into ``sys.prefix``),
     never via ``uv tool install`` (which targets a foreign env).
     """
-    import os  # noqa: PLC0415
+    import os  # noqa: PLC0415 — deferred: loaded only on this code path
 
     prefix = running_prefix().resolve()
     candidates: list[Path] = []

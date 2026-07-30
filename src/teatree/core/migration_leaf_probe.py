@@ -8,7 +8,7 @@ second branch's post-merge ``migrate --no-input`` failed with
 cannot see it — each branch's own graph is linear; the fork exists only
 in the *merged* graph.
 
-This is the CLEAR-side sibling of :mod:`teatree.core.branch_currency`:
+This is the CLEAR-side sibling of :mod:`teatree.core.worktree.branch_currency`:
 it predicts the merged tree of ``reviewed_sha`` + target via
 ``git merge-tree --write-tree`` (a pure object-DB merge that never
 touches the index or worktree), reads every migration file from that
@@ -29,6 +29,9 @@ from teatree.utils.git import git_env_without_overrides
 from teatree.utils.run import run_allowed_to_fail
 
 _MIGRATIONS_SEGMENT = "/migrations/"
+#: Only ``src/`` holds real Django app migrations; ``tests/**/migrations/`` mirrors
+#: that layout for pytest modules (souliane/teatree#3862) and must never be read as one.
+_REAL_MIGRATIONS_ROOT = "src/"
 _DEPENDENCIES_FIELD = "dependencies"
 _DEPENDENCY_PAIR_LEN = 2
 _LS_TREE_MIN_FIELDS = 3
@@ -91,11 +94,13 @@ def _merged_tree_oid(repo: str, reviewed_sha: str, target: str) -> str | None:
 
 
 def _migration_blobs(repo: str, tree_oid: str) -> dict[str, str]:
-    """Map ``"<app>/<name>"`` → blob oid for every migration file in ``tree_oid``.
+    """Map ``"<app>/<name>"`` → blob oid for every REAL migration file in ``tree_oid``.
 
-    Recursively lists the tree; a path under a ``…/migrations/`` directory
-    ending in ``.py`` (excluding ``__init__.py``) is a migration. The app
-    label is the directory immediately above ``migrations``.
+    Recursively lists the tree; a ``src/``-rooted path under a ``…/migrations/``
+    directory ending in ``.py`` (excluding ``__init__.py``) is a migration. Scoping to
+    ``src/`` excludes ``tests/**/migrations/`` — pytest modules mirroring the src
+    layout (souliane/teatree#3862), never Django migrations. The app label is the
+    directory immediately above ``migrations``.
     """
     rc, out = _git(repo, "ls-tree", "-r", tree_oid)
     if rc != 0:
@@ -103,7 +108,9 @@ def _migration_blobs(repo: str, tree_oid: str) -> dict[str, str]:
     blobs: dict[str, str] = {}
     for line in out.splitlines():
         meta, _, path = line.partition("\t")
-        if not path or _MIGRATIONS_SEGMENT not in path or not path.endswith(".py"):
+        if not path or not path.startswith(_REAL_MIGRATIONS_ROOT) or not path.endswith(".py"):
+            continue
+        if _MIGRATIONS_SEGMENT not in path:
             continue
         name = path.rsplit("/", 1)[-1].removesuffix(".py")
         if name == "__init__":

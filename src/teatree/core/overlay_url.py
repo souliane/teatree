@@ -31,6 +31,6 @@ def get_overlay_for_url(url: str) -> "OverlayBase":
     (...)`` error naming the installed overlays — fail loud, never silently pick
     one.
     """
-    from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url  # noqa: PLC0415 — deferred: import cycle
 
     return get_overlay(infer_overlay_for_url(url) or None)

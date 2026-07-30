@@ -24,9 +24,11 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from django.db import IntegrityError, transaction
 
+from teatree.core.gates.privacy_gate import PrivacyGateResult, scan_outbound_text
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 if TYPE_CHECKING:
@@ -34,6 +36,25 @@ if TYPE_CHECKING:
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+
+class PublicationPrivacyBlockedError(RuntimeError):
+    """A reply body tripped the #1295 publication privacy gate — it must NOT egress.
+
+    Raised on the on-behalf delivery path so a finding fails CLOSED: in
+    :meth:`_BaseReplier._send` it is caught and converted to a FAILED
+    ``ReplyDispatch``, and on the :meth:`_BaseReplier.redeliver` retry path it
+    propagates to the sweep, which keeps the row FAILED until the body is
+    redacted. Builds its own message from the gate result (mirroring
+    ``OnBehalfPostBlockedError``).
+    """
+
+    def __init__(self, result: PrivacyGateResult) -> None:
+        names = ", ".join(sorted({match.pattern_name for match in result.matches}))
+        super().__init__(
+            f"publication privacy gate refused: {result.target_repo} is public and the body "
+            f"trips {len(result.matches)} privacy pattern(s) ({names}); redact before posting."
+        )
 
 
 class _ProjectInfoLike(Protocol):
@@ -95,6 +116,67 @@ class Replier(Protocol):
     ) -> ReplyDispatch: ...
 
     def redeliver(self, dispatch: ReplyDispatch) -> None: ...
+
+
+#: Code-host sources (``channel_ref`` is a repo slug) → the visibility probe's forge.
+#: A Slack/CI source has no repo target, so it is absent and scoped OUT of the gate.
+_FORGE_BY_SOURCE: dict[str, str] = {
+    IncomingEvent.Source.GITHUB: "github",
+    IncomingEvent.Source.GITLAB: "gitlab",
+}
+
+
+#: The outbound surface each reply source posts to — routes the #117 send-proxy audit.
+_SEND_CHANNEL_BY_SOURCE: dict[str, SendChannel] = {
+    IncomingEvent.Source.SLACK: SendChannel.SLACK,
+    IncomingEvent.Source.GITHUB: SendChannel.GITHUB,
+    IncomingEvent.Source.GITLAB: SendChannel.GITLAB,
+}
+
+
+def _route_reply(spec: ReplySpec) -> str:
+    """Route an on-behalf reply body through the #117 send-proxy.
+
+    Returns the body to deliver (redacted in ``enforce`` mode) and raises
+    :class:`SendBlockedError` when the proxy refuses the destination in
+    ``enforce`` mode. On the ``warn`` ship default the proxy always allows and
+    returns the body unchanged, so this is an audit-only pass that records one
+    :class:`~teatree.core.models.send_audit.SendAudit` row per reply.
+    """
+    channel = _SEND_CHANNEL_BY_SOURCE.get(spec.event.source, SendChannel.OTHER)
+    verdict = route_send(
+        SendRequest(
+            channel=channel,
+            destination=spec.event.channel_ref,
+            payload=spec.body,
+            action=spec.action_name,
+            target=spec.target_ref,
+        ),
+    )
+    if not verdict.allowed:
+        raise SendBlockedError(verdict)
+    return verdict.payload
+
+
+def _enforce_privacy(spec: ReplySpec) -> None:
+    """Raise :class:`PublicationPrivacyBlockedError` if *spec.body* trips the gate.
+
+    The send-time chokepoint for the #1295 gate on the colleague code-host
+    surfaces: a GitHub PR comment / GitLab MR note carries the body to a repo
+    that may be PUBLIC, so it is scanned for the overlay's redact-terms plus the
+    built-in quote anchors before the wire call. Scoped to code-host events only
+    (:data:`_FORGE_BY_SOURCE`) — a Slack thread reply carries a channel ref, not
+    a repo slug, so it is out of scope here (and never mis-classified as a public
+    repo). :func:`scan_outbound_text` then derives public-ness from the visibility
+    axis, so a provably-private repo is a clean pass. Shared by ``_send`` (caught
+    → FAILED) and ``redeliver`` (propagates to the retry sweep).
+    """
+    forge = _FORGE_BY_SOURCE.get(spec.event.source)
+    if forge is None:
+        return
+    result = scan_outbound_text(text=spec.body, target_repo=spec.event.channel_ref, forge=forge)
+    if result.refused:
+        raise PublicationPrivacyBlockedError(result)
 
 
 class _BaseReplier:
@@ -194,6 +276,11 @@ class _BaseReplier:
             return dispatch
         if spec.action_name in self._ON_BEHALF_ACTIONS:
             try:
+                _enforce_privacy(spec)
+                # #117: the send-proxy audits the reply and (in enforce mode)
+                # redacts the body / refuses a non-allowlisted destination before
+                # any wire call. On the warn ship default it is audit-only.
+                spec.body = _route_reply(spec)
                 # #1879: consume + deliver + audit run in one transaction.atomic
                 # inside the gate, so a delivery failure rolls back the consume
                 # (the approval is never burned) and no audit lies. A BLOCK with
@@ -203,12 +290,14 @@ class _BaseReplier:
                     action=spec.action_name,
                     publish=lambda: self._deliver(spec),
                 )
-            except OnBehalfPostBlockedError as blocked:
+            except (SendBlockedError, OnBehalfPostBlockedError) as blocked:
                 # Surface, never silently drop and never post unattended: the
-                # FAILED row + actionable message is the user-notify path —
-                # the retry sweep re-attempts once a user records the
-                # OnBehalfApproval (no TTY) and the gate then passes.
-                logger.warning("Reply %s gated by on_behalf_post_mode", spec.idempotency_key)
+                # FAILED row + actionable message is the user-notify path. For an
+                # on-behalf block the retry sweep re-attempts once a user records
+                # the OnBehalfApproval (no TTY) and the gate then passes; for a
+                # send-proxy allowlist block it stays FAILED until the operator
+                # seeds the destination or the mode returns to warn.
+                logger.warning("Reply %s blocked before the wire call: %s", spec.idempotency_key, blocked)
                 return self._finalize(
                     dispatch,
                     status=ReplyDispatch.Status.FAILED,
@@ -279,6 +368,11 @@ class _BaseReplier:
             action_name=dispatch.action_name,
         )
         if dispatch.action_name in self._ON_BEHALF_ACTIONS:
+            # Re-scan on retry: a leaking (or newly-matched) body stays FAILED, never egresses.
+            _enforce_privacy(spec)
+            # #117: re-route on retry too — an enforce-mode allowlist block or
+            # redaction is re-applied, never bypassed by the redeliver path.
+            spec.body = _route_reply(spec)
             posted_ref = require_on_behalf_approval(
                 target=dispatch.target_ref,
                 action=dispatch.action_name,
@@ -332,7 +426,7 @@ def _linkify_for_slack(body: str) -> str:
     if not body:
         return body
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         overlay = get_overlay()
     except Exception:  # noqa: BLE001 — overlay resolution is best-effort; never crash a post

@@ -4,7 +4,7 @@
 not a GitHub ``owner/repo``. Before #871 every ``gh`` call in
 ``merge.execution`` passed ``clear.slug`` as ``--repo``, so a production
 CLEAR issued via ``t3 teatree ticket clear 866 statusline-stale-wakeup …``
-made ``gh pr view 866 --repo statusline-stale-wakeup`` fail, ``fetch_live_head_sha``
+made ``gh pr view 866 --repo statusline-stale-wakeup`` fail, ``CodeHostQuery.live_head_sha``
 return ``""``, and §17.4.3 step 2 raise the opaque "could not resolve the
 live head SHA". The sanctioned path could issue a CLEAR but never complete
 a merge.
@@ -29,9 +29,18 @@ from teatree.core.merge import (
     resolve_pr_repo_slug,
 )
 from teatree.core.models import MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these pre-date it and target other concerns, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+
 
 _SHA = "a" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
@@ -89,6 +98,8 @@ class TestMergeUsesResolvedRepo(TestCase):
     def test_workstream_slug_merge_calls_gh_with_real_repo(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _workstream_clear(ticket)
+        # The workstream slug resolves to the clone-origin repo; seed the verdict there.
+        seed_merge_safe_verdict(slug="souliane/teatree", pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
 
         def _gh(argv: list[str]) -> tuple[int, str, str]:
@@ -100,6 +111,8 @@ class TestMergeUsesResolvedRepo(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (0, _GREEN, "")
+            if "baseRefName" in joined or "required_status_checks" in joined:
+                return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
             return (0, "", "")
@@ -198,6 +211,8 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (0, _GREEN, "")
+            if "baseRefName" in joined or "required_status_checks" in joined:
+                return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
             return (0, "", "")
@@ -206,6 +221,8 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
 
     def test_sha_bind_precondition_passes_against_overlay_repo(self) -> None:
         clear = self._overlay_clear()
+        # The merge resolves to the overlay repo; seed the #2829 verdict there.
+        seed_merge_safe_verdict(slug=self._OVERLAY_REPO, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
 
         with (

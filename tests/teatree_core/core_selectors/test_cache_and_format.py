@@ -1,62 +1,11 @@
-"""Cache primitives and pure formatting-helper selectors.
+"""Pure formatting-helper selectors.
 
 Split verbatim from the former monolithic ``tests/teatree_core/test_selectors.py`` (souliane/teatree#443).
 """
 
-import time
-
 from django.utils import timezone
 
-from teatree.core.selectors import (
-    _cached,
-    _humanize_duration,
-    _list_of_str,
-    _panel_cache,
-    _uptime_from_epoch_ms,
-    invalidate_panel_cache,
-)
-
-
-class TestCached:
-    def test_returns_stored_value_within_ttl(self) -> None:
-        _panel_cache.clear()
-        calls: list[int] = []
-
-        def builder() -> str:
-            calls.append(1)
-            return "fresh"
-
-        assert _cached("test_key", builder, ttl=60.0) == "fresh"
-        assert _cached("test_key", builder, ttl=60.0) == "fresh"
-        assert len(calls) == 1
-        _panel_cache.clear()
-
-    def test_rebuilds_after_ttl_expires(self) -> None:
-        _panel_cache.clear()
-        calls: list[int] = []
-
-        def builder() -> str:
-            calls.append(1)
-            return f"v{len(calls)}"
-
-        # Populate cache with a stale entry (timestamp far in the past)
-        _panel_cache["stale_key"] = (time.monotonic() - 100, "old")
-        result = _cached("stale_key", builder, ttl=1.0)
-        assert result == "v1"
-        assert len(calls) == 1
-        _panel_cache.clear()
-
-
-class TestInvalidatePanelCache:
-    def test_by_name(self) -> None:
-        _panel_cache["a"] = (0.0, "val_a")
-        _panel_cache["b"] = (0.0, "val_b")
-
-        invalidate_panel_cache("a")
-
-        assert "a" not in _panel_cache
-        assert "b" in _panel_cache
-        _panel_cache.clear()
+from teatree.core.selectors import _humanize_duration, _list_of_str, _uptime_from_epoch_ms
 
 
 class TestHumanizeDuration:

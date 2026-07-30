@@ -26,10 +26,14 @@ pytestmark = pytest.mark.filterwarnings(
 _SHA = "7" * 40
 
 
-class _ImpactingOverlay:
+class _ImpactingReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return True
+
+
+class _ImpactingOverlay:
+    review = _ImpactingReview()
 
 
 class TestPrCreateE2EMandatory(TestCase):
@@ -39,9 +43,9 @@ class TestPrCreateE2EMandatory(TestCase):
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
             patch.object(pr_command, "validate_pr_metadata", return_value=None),
             patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
-            patch("teatree.core.management.commands._ship_gates.git.head_sha", return_value=_SHA),
+            patch("teatree.core.management.commands._ship.gates.git.head_sha", return_value=_SHA),
             patch(
-                "teatree.core.management.commands._ship_gates.visual_qa.changed_files",
+                "teatree.core.management.commands._ship.gates.visual_qa.changed_files",
                 return_value=["app/views.py"],
             ),
         ):

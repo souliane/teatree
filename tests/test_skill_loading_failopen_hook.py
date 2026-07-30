@@ -3,10 +3,10 @@
 The skill-loading gate (``handle_enforce_skill_loading``) blocks
 Bash/Edit/Write until every suggested-but-unloaded skill is loaded. A
 suggestion comes from the supplementary keyword config
-(``~/.teatree-skills.yml``) or from lifecycle/intent detection, and lands
+(``$HOME/.teatree-skills.yml``) or from lifecycle/intent detection, and lands
 in ``<session>.pending``.
 
-The lockout class this guards against: a ``~/.teatree-skills.yml`` entry
+The lockout class this guards against: a ``$HOME/.teatree-skills.yml`` entry
 maps a keyword to a skill *name that no longer resolves* (renamed or
 removed skill). The gate would then demand a skill the ``Skill`` tool
 cannot load ("Unknown skill"), blocking ALL Bash/Edit/Write for the whole

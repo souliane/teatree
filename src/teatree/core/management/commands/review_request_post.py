@@ -29,14 +29,23 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.gates.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
+from teatree.core.gates.review_request_draft_gate import is_draft_mr
+from teatree.core.gates.review_request_guard import (
+    canonical_mr_url,
+    overlay_for_mr_url,
+    resolve_guard_target,
+    should_post_review_request,
+)
+from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import Ticket
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.review_message_cache import persist_review_message
+from teatree.core.review.review_message_cache import persist_review_message
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.types import RawAPIDict
 
@@ -50,11 +59,42 @@ _DEFAULT_TITLE = "Please review"
 
 
 def _iid_from_mr(canonical: str) -> str:
-    """Last numeric path segment of the canonical MR URL (the ticket dir key)."""
+    """Last numeric path segment of the canonical MR URL — the MR iid, fallback only."""
     for segment in reversed(canonical.split("/")):
         if segment.isdigit():
             return segment
     return canonical.rsplit("/", 1)[-1]
+
+
+def _ticket_iid_for(canonical: str, ticket_id: str) -> str:
+    """The TICKET iid the review-message cache is keyed by — never the MR iid.
+
+    ``mr_review_messages.json`` lives under ``tickets/<ticket-iid>/``; keying it
+    on the MR URL's numeric segment (the MR iid) filed it under the wrong ticket
+    dir. Resolve the owning ticket's ``issue_number`` from ``--ticket-id`` first,
+    then from the ``PullRequest`` row that links the MR URL to its ticket. Only
+    when no ticket link exists does it fall back to the MR-URL segment.
+    """
+    ticket = _resolve_ticket(ticket_id) or _ticket_from_pr(canonical)
+    if ticket is not None:
+        return ticket.issue_number or str(ticket.pk)
+    return _iid_from_mr(canonical)
+
+
+def _resolve_ticket(ticket_id: str) -> "Ticket | None":
+    if not ticket_id.strip():
+        return None
+    try:
+        return Ticket.objects.resolve(ticket_id)
+    except Ticket.DoesNotExist:
+        return None
+
+
+def _ticket_from_pr(canonical: str) -> "Ticket | None":
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    pr = PullRequest.objects.filter(url=canonical).select_related("ticket").first()
+    return pr.ticket if pr is not None else None
 
 
 class Command(TyperCommand):
@@ -94,7 +134,20 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
-        target = resolve_guard_target()
+        # PR-08 review-state gate: refuse a broadcast unless the ticket is
+        # REVIEWED with a recorded review-evidence artifact. NO-OP when
+        # ``require_reviewed_state_for_review_request`` is off (opt-in default),
+        # so a normal reviewed-and-cleared flow is never blocked.
+        reviewed_state_block = self._reviewed_state_block(ticket_id)
+        if reviewed_state_block:
+            self.stdout.write(reviewed_state_block)
+            self._emit(
+                {"action": "refused", "reason": "ticket_not_reviewed", "mr_url": mr_url},
+                exit_code=2,
+            )
+
+        overlay_name = overlay_for_mr_url(mr_url)
+        target = resolve_guard_target(overlay_name=overlay_name)
         if target is None:
             # The review channel is unpostable (e.g. a Slack Connect channel
             # that requires a user xoxp token the bot doesn't hold — #2231).
@@ -111,6 +164,15 @@ class Command(TyperCommand):
             )
 
         canonical = canonical_mr_url(mr_url)
+
+        # Draft gate: a draft MR is not ready for review — refuse BEFORE the
+        # dedup claim so no orphan ``ReviewRequestPost`` row is left to roll back.
+        if is_draft_mr(canonical, overlay_name=overlay_name):
+            self._emit(
+                {"action": "refused", "reason": "draft_mr", "mr_url": canonical},
+                exit_code=2,
+            )
+
         decision = should_post_review_request(mr_url=canonical, target=target)
         if not decision.should_post:
             self._emit(
@@ -135,7 +197,7 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
-        messaging = messaging_from_overlay()
+        messaging = messaging_from_overlay(overlay_name or None)
         if messaging is None:
             self._emit(
                 {"action": "suppress", "reason": "no_messaging_backend", "mr_url": canonical},
@@ -174,11 +236,11 @@ class Command(TyperCommand):
             slack_thread_ts=ts,
         )
 
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
         persist_review_message(
             mr_url=canonical,
-            iid=_iid_from_mr(canonical),
+            iid=_ticket_iid_for(canonical, ticket_id),
             permalink=permalink,
             channel=target.channel_id,
             when=timezone.now(),
@@ -211,7 +273,7 @@ class Command(TyperCommand):
         ``action=suppress`` so a genuinely-undeliverable fallback stays loud
         instead of masquerading as a draft.
         """
-        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: keeps command import light
 
         canonical = canonical_mr_url(mr_url)
         subject = title or _DEFAULT_TITLE
@@ -224,6 +286,7 @@ class Command(TyperCommand):
             text,
             kind=NotifyKind.INFO,
             idempotency_key=f"review_request_draft:{canonical}",
+            audience=NotifyAudience.COLLEAGUE_ACTION,
         )
 
     @staticmethod
@@ -236,16 +299,19 @@ class Command(TyperCommand):
         is itself a block with actionable steering, since the request-review
         transition must be SHA-bound.
         """
-        from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415
+        from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: keeps command import light
             AntiVacuityAttestationError,
             anti_vacuity_required,
             check_anti_vacuity_attestation,
         )
-        from teatree.core.models import Ticket  # noqa: PLC0415
 
-        if not anti_vacuity_required():
-            return ""
+        # Without a ticket-id there is no ticket overlay to read, so the ambient
+        # overlay decides whether the gate is even on; once a ticket resolves, the
+        # gate is re-evaluated under the TICKET's own overlay (a per-overlay opt-in
+        # binds even from an env-less process — the #F2.3 fail-toward-green hole).
         if not ticket_id.strip() or not head_sha.strip():
+            if not anti_vacuity_required():
+                return ""
             return (
                 "request review refused (require_anti_vacuity_attestation): pass --ticket-id and "
                 "--head-sha so the anti-vacuity attestation can be verified SHA-bound. Record it first "
@@ -256,11 +322,38 @@ class Command(TyperCommand):
             ticket = Ticket.objects.resolve(ticket_id)
         except Ticket.DoesNotExist:
             return f"request review refused: ticket {ticket_id!r} not found (anti-vacuity gate needs a ticket)."
+        if not anti_vacuity_required(ticket.overlay or None):
+            return ""
         try:
             check_anti_vacuity_attestation(ticket, head_sha, transition="request review")
         except AntiVacuityAttestationError as exc:
             return str(exc)
         return ""
+
+    @staticmethod
+    def _reviewed_state_block(ticket_id: str) -> str:
+        """The PR-08 review-state block message, or ``""`` when allowed / off.
+
+        NO-OP (returns ``""``) when ``require_reviewed_state_for_review_request``
+        is off. When on, a ``--ticket-id`` is required (the gate reads the
+        ticket's FSM state and its review-evidence artifact); a missing or
+        unknown ticket is itself a block with actionable steering.
+        """
+        # Without a ticket-id there is no ticket overlay to read, so the ambient
+        # overlay decides whether the gate is even on; once a ticket resolves, the
+        # gate is re-evaluated under the TICKET's own overlay (#F2.3).
+        if not ticket_id.strip():
+            if not reviewed_state_required():
+                return ""
+            return (
+                "request review refused (require_reviewed_state_for_review_request): pass --ticket-id so "
+                "the gate can verify the ticket is REVIEWED with a recorded review-evidence artifact."
+            )
+        try:
+            ticket = Ticket.objects.resolve(ticket_id)
+        except Ticket.DoesNotExist:
+            return f"request review refused: ticket {ticket_id!r} not found (review-state gate needs a ticket)."
+        return check_reviewed_state(ticket)
 
     @staticmethod
     def _rollback_orphan_claim(canonical: str) -> None:
@@ -273,7 +366,7 @@ class Command(TyperCommand):
         message yet (``done_at`` unset and no thread ts) — never reconcile
         away a real prior post the guard reconciled.
         """
-        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415
+        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         ReviewRequestPost.objects.filter(
             mr_url=canonical,
@@ -287,7 +380,7 @@ class Command(TyperCommand):
         Always raises ``SystemExit`` (``0`` post/suppress, ``2`` refused) so
         the handle body has one uniform terminator and no dead ``return``.
         """
-        import json  # noqa: PLC0415
+        import json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
         self.stdout.write(json.dumps(payload))
         raise SystemExit(exit_code)

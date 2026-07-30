@@ -1,6 +1,6 @@
 # Testing skill evals
 
-A **test** checks what a function *returns* (deterministic, free, runs every
+A **test** checks what a function *returns* (deterministic, model-free, runs every
 commit). An **eval** checks what an *agent does* when it loads a skill — given a
 prompt, does it call the right tools, in the right order, and say the right
 thing? Skills carry behavior, so they need behavioral tests. That is an eval.
@@ -27,7 +27,7 @@ Overlays ship their own scenarios from the directory returned by
 ## A scenario, end to end
 
 A scenario is two *separate* AI steps — keeping them apart is what makes
-re-grading free and lets cheap checks gate every PR.
+re-grading model-free and lets cheap checks gate every PR.
 
 1. **RUN** — a fresh agent is given only the scenario `prompt`, run once **with
    the skill** loaded as its system prompt and once at a neutral **baseline** (no
@@ -39,7 +39,7 @@ re-grading free and lets cheap checks gate every PR.
 
 2. **GRADE** — a separate step reads the recorded transcript and decides
    PASS/FAIL. It never re-runs the task. Two mechanisms:
-   - **Matchers** (no model, free, instant) for crisp criteria: `tool_call`
+   - **Matchers** (no model, instant) for crisp criteria: `tool_call`
      present, `no_tool_call_matching` absent, `any_of`, `final_state`.
    - **LLM judge** (a second model call) only for fuzzy criteria a matcher can't
      express (tone, faithfulness). Prefer matchers; reach for a judge last.
@@ -64,7 +64,7 @@ plus the extras that let it run automatically and gate CI. A minimal scenario:
 - name: checking_is_read_only          # unique across the corpus
   scenario: "/t3:checking is a read-only glance — never posts or transitions"
   agent_path: skills/checking/SKILL.md
-  model: haiku                         # defaults to claude-sonnet-4-6
+  model: haiku                         # defaults to the `balanced` tier
   max_turns: 3                         # defaults to 30
   tools: [Bash]                        # defaults to [Bash]
   prompt: >-
@@ -81,8 +81,11 @@ Beyond Anthropic's `prompt` / `expected_output` / `files`, teatree's `EvalSpec`
 adds: `agent_path` (which skill to load + coverage attribution), `expect`
 matchers (machine-checkable, not only a prose rubric), an optional `judge:`
 block, `model` / `max_turns` / `tools` (run controls), `agent_sections` (send
-only some `##` sections of the SKILL.md to cut token cost), and `lane`
-(`clean_room` default, or `under_load` to reproduce real-session context drift).
+only some `##` sections of the SKILL.md to cut token cost), `lane`
+(`clean_room` default, or `under_load` to reproduce real-session context drift),
+and `surface` (`headless` default and BLOCKING, or `interactive` for a scenario
+grading the Claude-interactive `AskUserQuestion` tool call — still run and still
+reported, but advisory, so a bundled-CLI rendering change cannot red a gating lane).
 The cost-bounds, pass@k trials, and ratchets live alongside in `evals/`.
 
 ## Make an eval that can fail (anti-vacuous)
@@ -98,19 +101,33 @@ negative; only `_pass` is GREEN.
 
 | Lane | What it does | Cost | When |
 |------|-------------|------|------|
-| **matchers** | GRADE a transcript, no model | free | every PR |
+| **matchers** | GRADE a transcript, no model | model-free | every PR |
 | **transcript** (default) | REUSE an already-recorded RUN, then GRADE | $0 extra | in-session via `/t3:running-evals` |
-| **sdk** | RUN the model fresh, then GRADE | subscription-covered, **not** API-billed | weekly CI + explicit `t3 eval run` |
+| **api** | RUN the model fresh, then GRADE | on the `agent_harness_provider` credential (default subscription OAuth) | weekly CI + explicit `t3 eval run` |
 
-Neither AI backend bills an `ANTHROPIC_API_KEY` — both authenticate via the
-subscription (`CLAUDE_CODE_OAUTH_TOKEN`). The `sdk` lane never runs silently;
-it runs only when passed explicitly.
+The fresh-run `api` lane authenticates with the credential `agent_harness_provider`
+selects, resolved through `resolve_eval_credential` — **defaulting to the
+subscription `CLAUDE_CODE_OAUTH_TOKEN`** (it draws no per-token bill). TRADEOFF: the
+subscription's depleting 5h/7d window is shared with the main loop, so the CI lane is
+RIGHT-SIZED. The **weekly cron** (`eval.yml`) runs the BASELINE: each scenario ONCE at
+its baseline-pinned cheapest-passing tier (`--preset baseline`,
+`evals/presets/baseline.yaml`), single trial, with NO effort fan — the 3-tier
+`low,medium,high` benchmark fan lives ONLY in the MANUAL `eval-benchmark.yml`. A manual
+`eval.yml` dispatch stays a single effort tier (`high`, not `low,medium,high`) at a
+smaller trial count (2), and per-account OAuth routing (`anthropic_oauth_pass_paths`)
+spreads load — so a full fan-out cannot throttle the window or starve the loop. The metered `ANTHROPIC_API_KEY` is selectable
+per run with `t3 eval run --credential api_key` (or durably via
+`config_setting set agent_harness_provider api_key`).
+With no credential available the lane fails loud (`CredentialError`) rather than
+authenticating as nothing; the credential layer strips whichever credential is not
+selected. The `transcript`/`matchers` lanes run no model, so they authenticate
+nothing. The `api` lane never runs silently; it runs only when passed explicitly.
 
 ## How to run
 
 ```bash
-t3 eval --free-only    # fast pre-push gate: free deterministic lanes only
-t3 eval                # whole suite: free lanes + grade recorded transcripts
+t3 eval --model-free   # fast pre-push gate: model-free deterministic lanes only
+t3 eval                # whole suite: model-free lanes + grade recorded transcripts
 t3 eval list           # discovered scenarios
 t3 eval coverage       # per-skill covered / exempt / gap (--fail-on-gap to enforce)
 ```
@@ -123,7 +140,7 @@ to spend subscription tokens. Use `/t3:running-evals`, which chains
 To RUN the model fresh yourself (metered, opt-in — the same path CI runs weekly):
 
 ```bash
-t3 eval run --backend sdk --require-executed
+t3 eval run --backend api --require-executed
 ```
 
 `--require-executed` makes an all-skipped run exit non-zero, so it can never pass
@@ -131,12 +148,12 @@ green with zero coverage.
 
 ## What CI does
 
-- **Free lanes — every PR.** `skill-triggers` (prek hook), `pinned-regressions`
+- **Model-free lanes — every PR.** `pinned-regressions` (prek hook)
   - `skill-coverage` (pytest). `t3 tool verify-gates` runs the same set locally.
 - **Fresh-run lane — weekly + on demand.** A standalone workflow
   ([`eval.yml`](https://github.com/souliane/teatree/blob/main/.github/workflows/eval.yml)), off the PR path: weekly cron +
   manual dispatch. It skips cleanly (exit 0, logged) when no PR merged in the
   lookback window, asserts `claude --version`, and passes `--require-executed`
   unconditionally, so a missing binary or all-skipped run fails RED. It
-  authenticates from the `CLAUDE_CODE_OAUTH_TOKEN` secret and publishes a
-  per-trial transcript report as an artifact.
+  authenticates from the `ANTHROPIC_API_KEY` secret (the metered key, never the
+  subscription token) and publishes a per-trial transcript report as an artifact.

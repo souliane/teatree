@@ -138,9 +138,9 @@ class TestPrSweepScannerPropagatesError:
                 return False, ""
 
         class _NullKeystone:
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
                 _ = clear_id
-                return False, "", ""
+                return False, "", "", ""
 
         scanner = PrSweepScanner(
             repos=("owner/repo",),

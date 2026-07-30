@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils import django_db as mod
 from teatree.utils import run as run_mod
 from teatree.utils.django_db import DjangoDbImporter
+from teatree.utils.django_db import importer as mod
 
 from ._shared import _fail_run, _make_importer, _ok_run
 

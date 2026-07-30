@@ -2,6 +2,7 @@
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -41,10 +42,10 @@ def _make_sqlite_db(path: Path) -> None:
 
 
 def _make_wal_sqlite_db(path: Path) -> None:
-    """A WAL-mode DB whose ``-shm``/``-wal`` companions are absent.
+    """A WAL-mode DB whose ``-shm``/``-wal`` sidecar files are absent.
 
     ``PRAGMA journal_mode=WAL`` persists in the file header (bytes 18-19 become
-    ``2,2``); after a checkpoint+close and reaping the companions, only the main
+    ``2,2``); after a checkpoint+close and reaping the sidecar files, only the main
     db file remains, still flagged WAL. Opening it WAL-mode requires (re)creating
     the ``-shm`` shared-memory file — which a ``mode=ro`` open cannot do, so it
     raises ``OperationalError``. This is the on-disk shape an auto-isolated
@@ -153,7 +154,7 @@ class TestIsolatedSlug:
 
 
 class TestSqliteSnapshot:
-    def test_snapshots_wal_mode_db_with_absent_companions(self, tmp_path: Path) -> None:
+    def test_snapshots_wal_mode_db_with_absent_sidecars(self, tmp_path: Path) -> None:
         """RED-before-fix: a WAL-header DB whose dir forbids creating ``-shm``.
 
         With ``?mode=ro`` the snapshot open raises
@@ -243,6 +244,43 @@ class TestSeedIsolatedDb:
         _seed_isolated_db(data_dir, canonical_db=canonical, isolation_root=root)
         leftovers = [p.name for p in data_dir.iterdir() if p.name.startswith(".seed-")]
         assert leftovers == []
+
+
+class TestIsolatedEnvDirOpensStampedAtBirth:
+    """An auto-isolated env dir carries its owner from its first byte (#3872).
+
+    The stamp is the only venue-independent evidence a reaper has: a scan answers
+    "did THIS venue find an owner", which the container that produced #3872 answered
+    "no" for every host worktree. So the stamp must not be something a later pass
+    hopes to backfill — the dir has to be born with it.
+    """
+
+    @staticmethod
+    def _isolated(tmp_path: Path) -> tuple[Path, Path]:
+        return tmp_path / "teatree-worktrees" / "slug", tmp_path / "checkout"
+
+    def test_the_dir_is_stamped_before_the_control_db_is_seeded(self, tmp_path: Path) -> None:
+        # RED on seed-then-stamp: seeding copies a multi-gigabyte DB, so a startup
+        # that dies inside it leaves a dir on disk that no owner claims.
+        data_dir, repo_root = self._isolated(tmp_path)
+        stamped_when_seeding: list[Path | None] = []
+        disk_full = OSError("no space left on device")
+
+        def _record_then_fail(path: Path) -> None:
+            stamped_when_seeding.append(paths.IsolatedEnvDir(path).owner)
+            raise disk_full
+
+        with patch.object(paths, "seed_isolated_db", _record_then_fail), pytest.raises(OSError, match="no space"):
+            paths.IsolatedEnvDir(data_dir).open_for(repo_root)
+
+        assert stamped_when_seeding == [repo_root], "the seed ran against an unstamped dir"
+
+    def test_the_stamp_names_the_checkout_that_owns_the_dir(self, tmp_path: Path) -> None:
+        data_dir, repo_root = self._isolated(tmp_path)
+
+        paths.IsolatedEnvDir(data_dir).open_for(repo_root)
+
+        assert paths.IsolatedEnvDir(data_dir).owner == repo_root
 
 
 class TestStaleScanStaysCleanAfterSeed:

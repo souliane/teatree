@@ -10,13 +10,15 @@ the subprocess coverage so the registry can never regress below the deleted
 """
 
 import importlib.util
+import inspect
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
 import scripts.hooks.check_chokepoints as checker
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.quality.chokepoints import Chokepoint, ChokepointError, load_registry, registry_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -183,11 +185,157 @@ class TestCheckerBehavior:
         target.write_text("import subprocess\nsubprocess.run(['ls'])\n", encoding="utf-8")
         assert checker.main([str(target)]) == 0
 
+    def test_flags_close_issue_outside_the_forge_write_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text("host.close_issue(issue_url='u', comment='leak Contoso')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        err = capsys.readouterr().err
+        assert "close_issue(...)" in err
+        assert "forge-comment-write-seam" in err
+
+    def test_flags_post_pr_comment_outside_the_forge_write_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text("host.post_pr_comment(repo='o/r', pr_iid=1, body='raw')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        assert "forge-comment-write-seam" in capsys.readouterr().err
+
+    def test_flags_create_issue_outside_the_forge_write_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text("host.create_issue(repo='o/r', title='t', body='b')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        assert "forge-comment-write-seam" in capsys.readouterr().err
+
+    def test_allows_forge_write_inside_a_scrubbing_seam_module(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / "loop" / "mechanical.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("host.close_issue(issue_url='u', comment=clean)\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
+    def test_forge_write_method_definition_not_flagged(self, src_file: Path) -> None:
+        src_file.write_text("def close_issue(self, *, issue_url, comment=''):\n    return {}\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 0
+
+
+_FORGE_WRITE_BODY_METHODS = frozenset(
+    {
+        "post_pr_comment",
+        "update_pr_comment",
+        "post_issue_comment",
+        "update_issue_comment",
+        "close_issue",
+        "create_issue",
+        "create_sub_issue",
+        "update_issue",
+    }
+)
+
+#: The reviewed allowlist of NON-content parameter names — every parameter a
+#: ``CodeHostBackend`` method may carry that does NOT ferry outbound colleague-
+#: visible body text (identifiers, slugs, filters, upload handles). A method is
+#: body-bearing when its signature carries ANY parameter outside this set, so a
+#: NEW parameter name is treated as content by default: the guard fails closed —
+#: adding a body-shaped parameter (or a whole new forge-write method) turns the
+#: seam test red the moment it lands, even if nobody remembered to register it.
+#: Documented exclusions that are content-free by construction: ``create_pr``
+#: carries its body inside a ``PullRequestSpec`` (``spec``), ``search_open_issues``
+#: takes a ``query`` filter, and ``upload_file`` takes a ``filepath`` — none is a
+#: colleague-visible message body.
+_NON_CONTENT_PARAMS = frozenset(
+    {
+        "self",
+        "issue_url",
+        "repo",
+        "repo_slugs",
+        "parent_url",
+        "comment_id",
+        "slug",
+        "pr_id",
+        "pr_iid",
+        "pr_url",
+        "reviewer",
+        "login",
+        "assignee",
+        "author",
+        # Singular ``label`` is a READ-query scope (``list_labeled_issues``), like
+        # ``author``/``assignee``. The plural ``labels`` — what a write SETS — is
+        # deliberately absent, so a labelling write still enumerates as content.
+        "label",
+        "updated_after",
+        "state",
+        "query",
+        "expected_head_oid",
+        "child_type",
+        "spec",
+        "filepath",
+        "upload",
+    }
+)
+
+
+def _protocol_body_bearing_methods(protocol: type) -> set[str]:
+    """Every ``protocol`` method whose signature carries a non-allowlisted (body-bearing) parameter."""
+    found: set[str] = set()
+    for name in dir(protocol):
+        if name.startswith("_"):
+            continue
+        attr = getattr(protocol, name)
+        if not callable(attr):
+            continue
+        try:
+            params = inspect.signature(attr).parameters
+        except (TypeError, ValueError):
+            continue
+        if set(params) - _NON_CONTENT_PARAMS:
+            found.add(name)
+    return found
+
 
 class TestSelfMaintenance:
     def test_subprocess_attrs_cover_historical_ban(self, registry: tuple[Chokepoint, ...]) -> None:
         entry = next(e for e in registry if e.id == "subprocess-egress")
         assert set(entry.protected_attrs) >= _HISTORICAL_SUBPROCESS_ATTRS
+
+    def test_forge_write_seam_registers_every_body_bearing_protocol_method(
+        self, registry: tuple[Chokepoint, ...]
+    ) -> None:
+        """The seam registers EXACTLY the protocol's body-bearing forge-write methods.
+
+        This is the anti-false-assurance guard: it ENUMERATES the CodeHostBackend
+        protocol and derives "body-bearing" from each method's signature, so a NEW
+        colleague-visible forge-write method (any method taking body/title/comment/
+        labels/description) that is added to the protocol but NOT registered here
+        turns this test RED — the exact way ``create_sub_issue`` slipped through a
+        hardcoded-list check. The registry, the local constant, and the live
+        protocol enumeration must all agree.
+        """
+        entry = next(e for e in registry if e.id == "forge-comment-write-seam")
+        enumerated = _protocol_body_bearing_methods(CodeHostBackend)
+        assert enumerated, "protocol enumeration found no body-bearing methods — the heuristic is broken"
+        assert enumerated == _FORGE_WRITE_BODY_METHODS, (
+            "protocol body-bearing methods drifted from the registered set: "
+            f"unregistered={sorted(enumerated - _FORGE_WRITE_BODY_METHODS)}, "
+            f"stale={sorted(_FORGE_WRITE_BODY_METHODS - enumerated)}"
+        )
+        assert set(entry.protected_attrs) == _FORGE_WRITE_BODY_METHODS
+
+    def test_new_body_bearing_method_is_flagged_by_default(self) -> None:
+        """A method carrying an un-allowlisted parameter is flagged — the fail-closed teeth.
+
+        The allowlist inversion means any NEW parameter name (here ``message``) is
+        body-bearing by default, so a forge-write method added to the protocol
+        without touching the registry is caught automatically.
+        """
+
+        class _Probe(Protocol):
+            def announce(self, *, repo: str, message: str) -> None: ...
+
+        assert _protocol_body_bearing_methods(_Probe) == {"announce"}
 
 
 class TestLoaderValidation:

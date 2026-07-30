@@ -16,9 +16,18 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these pre-date it and target other concerns, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_merge_provenance_trusted", lambda **_: None)
+
 
 _SHA = "d" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
@@ -32,6 +41,9 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        # Base branch "main"; empty required-context gate → live rollup verdict stands.
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
     return (0, "", "")
@@ -155,6 +167,7 @@ class TestLegitimateReviewerIdentityPositiveControl(TestCase):
             )
         )
         assert clear.pk is not None
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()

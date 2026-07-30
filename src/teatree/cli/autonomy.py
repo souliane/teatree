@@ -1,11 +1,13 @@
 """``t3 <overlay> autonomy`` — show / set the per-overlay trust switch.
 
 The ``autonomy`` switch (``babysit`` < ``notify`` < ``full``, default
-``babysit``) is the single per-overlay knob that collapses the three
-user-in-the-loop approval gates — ``on_behalf_post_mode`` (which gates
-colleague auto-approve / on-behalf posts), ``require_human_approval_to_merge``,
-``require_human_approval_to_answer`` — and pins ``mode = auto`` so the
-loop's auto-merge path is reachable. It also drives review-request blocking off
+``babysit``) is the single per-overlay knob that collapses the user-in-the-loop
+approval gates — ``on_behalf_post_mode`` (which gates colleague auto-approve /
+on-behalf posts) and ``require_human_approval_to_answer`` — and pins ``mode = auto``
+so the loop's auto-merge path is reachable. It deliberately does NOT touch
+``require_human_approval_to_merge`` (#3630): how far the agent carries work on its
+own and whether a merge needs review are separate decisions, so merging without a
+review gate stays its own named opt-in. It also drives review-request blocking off
 the tier (#2579): the ``notify`` tier resolves ``review_request_post_disabled =
 True`` (a collaborative/customer surface never auto-requests review), while
 ``full`` resolves it ``False`` (a solo tooling surface auto-requests). The
@@ -51,7 +53,7 @@ AUTONOMY_KEY = "autonomy"
 
 
 def _active_overlay_name() -> str | None:
-    from teatree.config import _active_overlay_entry  # noqa: PLC0415
+    from teatree.config import _active_overlay_entry  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     entry = _active_overlay_entry()
     return entry.name if entry is not None else None
@@ -69,7 +71,7 @@ def _write_setting_row(value: str, *, scope: str = "") -> None:
     An empty ``scope`` addresses the GLOBAL store; a name scopes the row to that
     overlay.
     """
-    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415 — deferred: breaks autonomy ↔ overlay cycle
 
     args = ["config_setting", "set", AUTONOMY_KEY, json.dumps(value)]
     if scope:
@@ -99,9 +101,9 @@ def register_autonomy_commands(overlay_app: typer.Typer) -> None:
 
     @autonomy_group.command(name="show")
     def show() -> None:
-        """Show the effective autonomy tier (env > per-overlay > global > default)."""
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+        """Show the effective autonomy tier (DB overlay-scope > DB global-scope > default; no env layer)."""
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         # ``get_effective_settings`` reads the ``ConfigSetting`` DB tier via the
         # app registry, which fails SAFE to ``{}`` when Django is not configured.

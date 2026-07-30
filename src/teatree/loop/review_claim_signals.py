@@ -11,8 +11,8 @@ path. The outcome stratum builds on this one.
 This module is the discovery stratum, carved DOWN below
 :mod:`teatree.loop.scanners` so a scanner imports it without an up-edge into
 the orchestration top. Its only eager dependency is :mod:`teatree.types`; the
-``loop_enabled`` / ``core.models`` / ``utils`` reads are deferred (fail-safe,
-call-time), so it is a true leaf in the loop dependency DAG.
+``core.models`` / ``utils`` reads (via :func:`loop_held_in_db`) are deferred
+(fail-safe, call-time), so it is a true leaf in the loop dependency DAG.
 """
 
 import logging
@@ -33,26 +33,25 @@ _REVIEW_LOOP_NAME = "review"
 def review_loop_enabled() -> bool:
     """Read the current review-mini-loop enable state (#79 reads, never invents).
 
-    Two tiers, both read here so this chokepoint reaches the identical verdict
-    the tick does. First the DB ``LoopState`` control tier (#1913) via
-    :func:`teatree.loop.loop_state_db.loop_held_in_db` — a ``PAUSED`` /
-    ``DISABLED`` row durably stops review claims across a restart. Then the
-    env/toml doctrine via :func:`teatree.loop_enabled.loop_enabled_by_name` — the
-    same env-kill-switch → per-loop → global layers the orchestrator and the
-    live-tick fan-out apply via :class:`LoopsConfig`, factored into the config
-    layer so this :mod:`teatree.loop` module reaches an identical verdict without
-    importing :mod:`teatree.loops` (a forbidden up-stack dependency).
+    DB-only: resolves through the durable ``LoopState`` control tier (#1913) via
+    :func:`teatree.loop.loop_state_db.loop_held_in_db`. A ``PAUSED`` / ``DISABLED``
+    ``LoopState`` row durably stops review claims across a restart; an absent row
+    or a runnable one leaves them running. This is the discovery-time claim gate,
+    not a loop-run decision — it fails OPEN to enabled by design (#79 / #1913), so
+    it intentionally does NOT read the ``Loop.enabled`` column (the loop-run sites
+    — the loop tick and the off-live-tick loop gates — combine ``Loop.enabled``
+    AND the ``LoopState`` hold via
+    :func:`teatree.loop.loop_state_db.loop_state_admits`; this chokepoint
+    suppresses over-claiming and must never silently swallow every review on an
+    unreadable or absent row). There is no env kill-switch and no ``[loops]`` toml
+    fallback — loop control is ``/loops`` + the DB only.
 
     Fail-safe: any read error resolves to enabled so an unreadable source never
     silently suppresses every review — the discovery-time claim removal is what
     cures the over-claim, not this gate.
     """
     try:
-        from teatree.loop_enabled import loop_enabled_by_name  # noqa: PLC0415
-
-        if loop_held_in_db(_REVIEW_LOOP_NAME):
-            return False
-        return loop_enabled_by_name(_REVIEW_LOOP_NAME)
+        return not loop_held_in_db(_REVIEW_LOOP_NAME)
     except Exception:  # noqa: BLE001 — an unreadable loop config must never wedge the scan.
         logger.debug("review_loop_enabled: config read failed — failing safe to enabled")
         return True
@@ -64,7 +63,7 @@ def _reaction_claim_key(*, channel: str, ts: str, emoji: str) -> str:
 
 def _claim_already_recorded(key: str) -> bool:
     try:
-        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         return OutboundClaim.objects.filter(idempotency_key=key).exists()
     except Exception:  # noqa: BLE001 — ledger read must never crash a tick.
@@ -119,7 +118,7 @@ def record_reaction_claim(*, channel: str, ts: str, emoji: str, target_url: str 
     the field shape matches :func:`teatree.outbound_claim.record_claim`.
     """
     try:
-        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         OutboundClaim.objects.get_or_create(
             idempotency_key=_reaction_claim_key(channel=channel, ts=ts, emoji=emoji),

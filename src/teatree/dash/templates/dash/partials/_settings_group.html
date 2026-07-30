@@ -1,0 +1,32 @@
+{% comment %}
+The right pane: ONE section's rows. Swapped in whole by the left nav's hx-get, so switching
+sections costs one small fragment rather than a re-render of every key in the schema.
+{% endcomment %}
+<section class="settings-pane band"
+  data-group-path="{{ group.section.path|join:" / " }}"
+  data-group-slug="{{ group.section.slug }}">
+  <h2>{{ group.section.label|default:"Settings" }}</h2>
+  {% if group.section.parent_label %}<p class="muted">{{ group.section.parent_label }}</p>{% endif %}
+  {% if group.error %}<div class="banner-red">{{ group.error }}</div>{% endif %}
+  {% if group.section.path.0 == "Ungrouped" %}
+    <p class="banner-red">{{ group.settings|length }} key(s) belong to no declared group. They are listed here rather than hidden — give each one a declaration group.</p>
+  {% endif %}
+  {% if group.settings %}
+    <table class="dash">
+      <thead>
+        <tr>
+          <th>setting</th>
+          <th>value</th>
+          <th title="which tier of the resolution chain the effective value came from">value came from</th>
+          <th>shipped default</th>
+          <th>edit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in group.settings %}
+          {% include "dash/partials/_settings_row.html" with s=s scope=group.scope %}
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>

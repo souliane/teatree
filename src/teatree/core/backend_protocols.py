@@ -78,15 +78,6 @@ class PullRequestSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageSpec:
-    """Fields for an outgoing chat message."""
-
-    channel: str
-    text: str
-    thread_ts: str = ""
-
-
-@dataclass(frozen=True, slots=True)
 class PrMergeState:
     """The PR/MR's merge state from the forge — used for the §928 reconciliation.
 
@@ -112,12 +103,37 @@ ROLLUP_QUERY_FAILED: "RawAPIDict" = {_ROLLUP_QUERY_FAILED_KEY: True}
 query itself failed (non-zero rc / malformed / non-list payload), distinct from
 an empty list (no required checks → green). Core's classifier treats the sentinel
 as ``failed`` so a transport failure is never mistaken for "no checks to satisfy".
+
+``fetch_required_status_check_contexts`` reuses the same sentinel for the
+branch-protection lookup: ``[ROLLUP_QUERY_FAILED]`` when the required-status-check
+contexts could not be read (the base branch or the protection endpoint errored —
+fail CLOSED so an indeterminate required set never falls open), distinct from an
+empty list (the base branch has no required-status-check protection → no gate →
+green).
 """
 
 
 def rollup_query_failed(rollup: "list[RawAPIDict]") -> bool:
     """True iff *rollup* carries the :data:`ROLLUP_QUERY_FAILED` sentinel."""
     return any(entry.get(_ROLLUP_QUERY_FAILED_KEY) is True for entry in rollup)
+
+
+CHANGED_PATHS_UNAVAILABLE = "\x00_teatree_changed_paths_unavailable\x00"
+"""Sentinel path — the backend could NOT read the PR/MR changed-file list to completion.
+
+``fetch_pr_changed_paths`` returns ``[CHANGED_PATHS_UNAVAILABLE]`` when the diff
+query itself failed or could not be paginated to completion (non-zero rc, malformed
+payload), distinct from an empty list (a genuinely no-op diff) and from a complete
+list. The substrate detector treats an unavailable list as INDETERMINATE and fails
+CLOSED (holds the merge as substrate) — a >100-file PR whose substrate change sorts
+past a truncated page can never silently auto-merge. The NUL bytes make it
+un-collidable with any real forge path.
+"""
+
+
+def changed_paths_unavailable(paths: "list[str]") -> bool:
+    """True iff *paths* carries the :data:`CHANGED_PATHS_UNAVAILABLE` sentinel."""
+    return CHANGED_PATHS_UNAVAILABLE in paths
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +196,8 @@ class CodeHostBackend(Protocol):
 
     def current_user(self) -> str: ...  # pragma: no branch
 
+    def is_assignable(self, *, repo: str, login: str) -> bool: ...  # pragma: no branch
+
     def list_my_prs(
         self,
         *,
@@ -201,6 +219,20 @@ class CodeHostBackend(Protocol):
         updated_after: str | None = None,
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_prs(
+        self,
+        *,
+        repo: str,
+        state: str = "",
+        author: str = "",
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_repo(self, *, repo: str) -> RawAPIDict: ...  # pragma: no branch
+
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState: ...  # pragma: no branch
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState: ...  # pragma: no branch
@@ -219,6 +251,17 @@ class CodeHostBackend(Protocol):
     ) -> RawAPIDict: ...  # pragma: no branch
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # pragma: no branch
+        """Thread-structured, author-carrying discussion read (#3340).
+
+        Distinct from :meth:`list_pr_comments` (a flat note list): each element
+        is a thread whose notes carry authorship, so a caller can select "opened
+        by X with no reply from anyone else" — the stale-bot-thread predicate —
+        without dropping to a forge-specific client. Backends with no
+        resolvable-thread merge block (GitHub) return ``[]``.
+        """
+        ...
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict: ...  # pragma: no branch
 
@@ -249,6 +292,20 @@ class CodeHostBackend(Protocol):
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_authored_issues(
+        self,
+        *,
+        author: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_labeled_issues(
+        self,
+        *,
+        label: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def create_issue(
         self,
         *,
@@ -272,6 +329,8 @@ class CodeHostBackend(Protocol):
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
 
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 
     # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge.execution``
@@ -286,7 +345,20 @@ class CodeHostBackend(Protocol):
 
     def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool: ...  # pragma: no branch
 
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None: ...  # pragma: no branch
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_required_status_check_contexts(  # pragma: no branch
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+    ) -> list[RawAPIDict]: ...
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch
 
     def merge_pr_squash_bound(
         self,
@@ -339,7 +411,26 @@ class MessagingBackend(Protocol):
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict: ...  # pragma: no branch
+    # The honest peer of ``fetch_channel_history``: same read, but a channel the
+    # backend may not read RAISES instead of returning ``[]``. Poll loops keep the
+    # swallowing form (one unreadable channel must not break a scan over many);
+    # interactive single-channel callers use this one, because "quiet" and "the bot
+    # was never invited" are opposite facts an empty list cannot tell apart.
+    def fetch_channel_history_or_refuse(  # pragma: no branch
+        self,
+        *,
+        channel: str,
+        limit: int = 50,
+    ) -> list[RawAPIDict]: ...
+
+    def post_message(  # pragma: no branch
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str = "",
+        blocks: list[RawAPIDict] | None = None,
+    ) -> RawAPIDict: ...
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict: ...  # pragma: no branch
 

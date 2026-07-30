@@ -12,9 +12,13 @@ import subprocess
 from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import gate_result, mr_validator
 from hooks.scripts.hook_router import handle_validate_mr_metadata
-from teatree.core.mr_metadata import validate_mr_metadata
+from teatree.config import COLD_HOOK_SETTINGS
+from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
+
+_ALLOWANCE_KEY = "hook_validator_timeout_seconds"
 
 
 def _verdict(command: str) -> list[str] | None:
@@ -99,16 +103,6 @@ class TestDefaultOverlayValidation:
         monkeypatch.setattr(router.shutil, "which", lambda _: None)
         assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
 
-    def test_fails_closed_when_validator_times_out(self, monkeypatch, capsys):
-        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
-        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
-        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        with patch.object(router.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=10)):
-            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
-        assert blocked is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-
     def test_fails_closed_when_validator_binary_missing(self, monkeypatch, capsys):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
@@ -131,6 +125,134 @@ class TestDefaultOverlayValidation:
         assert blocked is True
         argv = run.call_args[0][0]
         assert argv[:3] == ["/usr/local/bin/t3", "tool", "validate-mr"]
+
+
+class TestValidatorCrashIsNotADeny:
+    """A validator that RAN but CRASHED is cannot-evaluate → warn+allow, never a deny (#1528).
+
+    A clean validation failure (``Title is empty.``) and an uncaught traceback in
+    the validator both exit non-zero. Collapsing the crash into a content deny
+    hard-blocks the MR with a Python traceback as the "reason" — the lockout class
+    #1528 names. The crash routes to fail-open-with-one-loud-line; the remote CI
+    MR-title/description job is the backstop for genuinely non-compliant content.
+    """
+
+    def test_traceback_output_allows_with_a_loud_warn(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        crashed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Traceback (most recent call last):\n  File ...\nKeyError: 'overlay'\n",
+        )
+        with patch.object(router.subprocess, "run", return_value=crashed):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False, "a crashing validator must not deny (fail-open-with-warn)"
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", "a crash must emit no deny JSON on stdout"
+        err = captured.err.lower()
+        assert "validator" in err, "the crash warn must name the validator"
+        assert "crash" in err, "the crash warn must be one loud diagnosable line"
+
+    def test_clean_nonzero_still_denies(self, monkeypatch, capsys):
+        # The content-deny path is untouched: a concise validation message
+        # (no traceback) is a genuine deny, not a crash.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            blocked = handle_validate_mr_metadata(_glab_create("", ""))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+
+
+class TestValidatorTimeoutIsNotADeny:
+    """A validator that ran out of TIME is cannot-evaluate → warn+allow, never a deny.
+
+    The allowance was a hardcoded ``timeout=10`` while ``t3 tool validate-mr``
+    takes ~13s cold on an unloaded box and 25-50s under concurrent load, so the
+    subprocess ALWAYS timed out and every ``gh``/``glab`` MR body edit was denied
+    — a PR body could not be corrected at all. "Too slow to evaluate" is the same
+    class as "ran but crashed" (crash ≠ deny, #1528), not a policy rejection.
+    """
+
+    def _timeout_run(self, monkeypatch, allowance: int = 60):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        return patch.object(
+            router.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=allowance)
+        )
+
+    def test_timeout_allows_with_a_loud_warn_naming_the_timeout(self, monkeypatch, capsys):
+        with self._timeout_run(monkeypatch):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False, "a timed-out validator must not deny (fail-open-with-warn)"
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", "a timeout must emit no deny JSON on stdout"
+        err = captured.err.lower()
+        assert "validator" in err
+        assert "did not finish" in err, "the warn must name the timeout as the reason, not a rejection"
+        assert str(gate_result.validator_timeout_seconds()) in captured.err, "the warn must name the allowance"
+        assert "hook_validator_timeout_seconds" in captured.err, "the warn must name the knob that raises it"
+        assert "invalid" not in err, "the warn must not read as a content rejection"
+        assert "rejected" not in err, "the warn must not read as a content rejection"
+
+    def test_rejection_still_denies_after_the_timeout_change(self, monkeypatch, capsys):
+        # Anti-vacuity: only the CANNOT_EVALUATE path moved. A validator that RAN
+        # and REJECTED keeps its teeth.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            blocked = handle_validate_mr_metadata(_glab_create("", ""))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert "Title is empty." in out["permissionDecisionReason"]
+
+    def test_pass_still_allows(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False
+        assert capsys.readouterr().err.strip() == "", "a clean pass must be silent"
+
+
+class TestValidatorTimeoutAllowanceIsConfigurable:
+    """The allowance is a DB-home cold-hook budget, not a magic number in the gate."""
+
+    def test_default_allowance_covers_the_measured_validator_cost(self):
+        # ~13s cold, 25-50s under load on the reference box — the default must
+        # clear the loaded range with headroom, or it rots into a false deny again.
+        assert gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS >= 60
+
+    def test_configured_allowance_is_passed_to_the_subprocess(self, monkeypatch):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        monkeypatch.setattr(mr_validator, "validator_timeout_seconds", lambda: 123)
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert run.call_args.kwargs["timeout"] == 123
+
+    def test_allowance_resolves_from_the_cold_db_budget(self, monkeypatch):
+        monkeypatch.setattr(
+            gate_result, "teatree_int_setting", lambda name, **kwargs: 77 if name == _ALLOWANCE_KEY else 0
+        )
+        assert gate_result.validator_timeout_seconds() == 77
+
+    def test_allowance_is_a_registered_cold_hook_budget(self):
+        # The no-silent-drop registry: an unregistered cold budget is dropped by
+        # the TOML->DB import and silently reverts to its in-code default.
+        setting = COLD_HOOK_SETTINGS[_ALLOWANCE_KEY]
+        assert setting.default == gate_result._HOOK_VALIDATOR_TIMEOUT_DEFAULT_SECONDS
+        assert setting.scope == ""
 
 
 class TestFileBasedDescriptionIsRead:
@@ -290,6 +412,40 @@ class TestMrTargetRepoIsThreadedToValidator:
         assert "--repo" not in argv
 
 
+class TestTitleOnlyUpdateSkipsRequiredSections:
+    """A title-only ``glab mr update`` threads ``--sections-optional`` (#3254).
+
+    A pure retitle touches no description, so the overlay's required-section
+    completeness check (``## Configuration`` / ``## Security & privacy impact``)
+    must not fire on the hook's back-filled placeholder body — the true retitle
+    passes. An update that DOES set a description still validates in full.
+    """
+
+    def _argv_for(self, monkeypatch, command: str) -> list[str]:
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
+        return list(run.call_args[0][0])
+
+    def test_title_only_update_threads_sections_optional(self, monkeypatch):
+        argv = self._argv_for(monkeypatch, "glab mr update 7 --title 'fix(x): rename widget (proj#1)'")
+        assert "--sections-optional" in argv
+
+    def test_description_modifying_update_does_not_skip_sections(self, monkeypatch):
+        argv = self._argv_for(
+            monkeypatch,
+            "glab mr update 7 --title 'fix(x): t (proj#1)' --description 'fix(x): t (proj#1)\n\n## What\n- x'",
+        )
+        assert "--sections-optional" not in argv
+
+    def test_create_never_skips_sections(self, monkeypatch):
+        # `create` is never title-only — both fields are required, sections enforced.
+        argv = self._argv_for(monkeypatch, "glab mr create --title 'fix(x): t' --description 'fix(x): t'")
+        assert "--sections-optional" not in argv
+
+
 class TestIssueCommandsAreNeverMrMutations:
     """``gh issue`` / ``glab issue`` commands are not MR mutations — the gate must never fire.
 
@@ -426,6 +582,61 @@ class TestDynamicValueIsSkipped:
     def test_create_with_description_no_title_still_validated(self):
         # Regression: a create missing --title is still bad metadata, not skipped.
         assert self._fields_for("glab mr create --description 'x'") == ("", "x")
+
+
+class TestMixedQuoteDescriptionCapturedInFull:
+    """A ``--description`` mixing ``'`` and ``"`` is captured whole, not truncated (#3300).
+
+    The old non-greedy regex ended the capture at the next occurrence of the
+    OPENING quote char, so a body carrying both an apostrophe (``doesn't``) and a
+    double-quoted phrase truncated — the gate then validated only the leading
+    fragment and rejected a compliant description for a required section present
+    past the first quote. shlex yields the true argument value regardless of the
+    body's internal quoting.
+    """
+
+    def test_apostrophe_and_double_quoted_phrase_body_is_captured_whole(self):
+        # A single-quoted description whose body contains an apostrophe (shell-
+        # escaped ``'\''``) AND a double-quoted phrase, with a required section
+        # placed AFTER the first inner quote so truncation would drop it.
+        desc = (
+            "fix(x): mixed quotes (proj#1)\n\n"
+            "## What\n"
+            "GitLab'\\''s handling of a \"quoted phrase\" doesn'\\''t truncate the body.\n\n"
+            "## Security & privacy impact\nnone"
+        )
+        cmd = f"glab mr create --title 'fix(x): mixed quotes (proj#1)' --description '{desc}'"
+        _title, description = _fields(cmd)
+        assert '"quoted phrase"' in description
+        assert description.count("doesn't") == 1
+        assert "## Security & privacy impact" in description
+
+    def test_double_quoted_body_with_escaped_quotes_and_apostrophe_is_whole(self):
+        # The mirror case: a double-quoted description whose body carries escaped
+        # ``\"`` double quotes and a bare apostrophe.
+        cmd = (
+            "glab mr create --title 'fix(x): quoting (proj#1)' "
+            '--description "fix(x): quoting (proj#1)\n\n## What\n'
+            'It doesn\'t drop the \\"quoted\\" tail.\n\n## Security & privacy impact\nnone"'
+        )
+        _title, description = _fields(cmd)
+        assert '"quoted"' in description
+        assert "## Security & privacy impact" in description
+
+    def test_equals_spelling_mixed_quote_title_is_whole(self):
+        # The ``--title=<value>`` equals spelling resolves the full value too.
+        cmd = "glab mr create --title='fix(x): a \"quoted\" title (proj#1)' --description 'fix(x): a (proj#1)'"
+        title, _description = _fields(cmd)
+        assert title == 'fix(x): a "quoted" title (proj#1)'
+
+    def test_unparseable_command_falls_back_to_regex_capture(self):
+        # An unbalanced quote ELSEWHERE in the command makes shlex raise; the gate
+        # must not crash — it falls back to the regex capture of the (locally
+        # balanced) --description value rather than skipping validation.
+        cmd = "glab mr create --title 'fix(x): t (proj#1)' --description 'clean body' && echo \"dangling"
+        title, description = _fields(cmd)
+        assert title == "fix(x): t (proj#1)"
+        assert description == "clean body"
 
 
 class TestEmbeddedTriggerIsNotAnMrMutation:

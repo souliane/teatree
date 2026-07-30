@@ -14,12 +14,24 @@ from teatree.core.models import (
     EvalScenarioResult,
     EvalVerdict,
     ImplementedIssueMarker,
+    IncomingEvent,
+    MergeAudit,
     MergeClear,
+    PullRequest,
+    RedCardSignal,
+    RedMrFixAttempt,
+    ReplyDispatch,
     ReviewVerdict,
     Rubric,
     RubricCriterion,
+    Session,
+    Task,
+    TaskAttempt,
     Ticket,
+    TicketTransition,
+    Worktree,
 )
+from teatree.core.models.pending_pull_request import SerializedPrSpec
 
 _FORTY_HEX = "c" * 40
 
@@ -49,6 +61,46 @@ class MergeClearFactory(DjangoModelFactory[MergeClear]):
         failed = factory.Trait(gh_verify_result=MergeClear.VerifyResult.FAILED)
         substrate = factory.Trait(blast_class=MergeClear.BlastClass.SUBSTRATE)
         docs = factory.Trait(blast_class=MergeClear.BlastClass.DOCS)
+
+
+class MergeAuditFactory(DjangoModelFactory[MergeAudit]):
+    class Meta:
+        model = MergeAudit
+
+    clear = factory.SubFactory(MergeClearFactory)
+    merged_sha = _FORTY_HEX
+    required_checks_status = "green"
+
+
+class RedMrFixAttemptFactory(DjangoModelFactory[RedMrFixAttempt]):
+    class Meta:
+        model = RedMrFixAttempt
+
+    pr_url = factory.Sequence(lambda n: f"https://github.com/souliane/teatree/pull/{900 + n}")
+    head_sha = factory.Sequence(lambda n: f"{n:040x}")
+    overlay = "t3-teatree"
+
+
+class TicketTransitionFactory(DjangoModelFactory[TicketTransition]):
+    """Backdate ``created_at`` (``auto_now_add``) with ``update()`` after build."""
+
+    class Meta:
+        model = TicketTransition
+
+    ticket = factory.SubFactory(TicketFactory)
+    from_state = Ticket.State.STARTED
+    to_state = Ticket.State.CODED
+
+
+class RedCardSignalFactory(DjangoModelFactory[RedCardSignal]):
+    class Meta:
+        model = RedCardSignal
+
+    overlay = "t3-teatree"
+    channel = "C123"
+    slack_ts = factory.Sequence(lambda n: f"1700000000.{n:06d}")
+    signal_kind = RedCardSignal.Kind.RED_CARD_TEXT
+    user_id = "U123"
 
 
 class ReviewVerdictFactory(DjangoModelFactory[ReviewVerdict]):
@@ -119,6 +171,7 @@ class ImplementedIssueMarkerFactory(DjangoModelFactory[ImplementedIssueMarker]):
 
     class Params:
         ticket_created = factory.Trait(state=ImplementedIssueMarker.State.TICKET_CREATED)
+        completed = factory.Trait(state=ImplementedIssueMarker.State.COMPLETED)
         abandoned = factory.Trait(state=ImplementedIssueMarker.State.ABANDONED)
 
 
@@ -147,3 +200,98 @@ class EvalScenarioResultFactory(DjangoModelFactory[EvalScenarioResult]):
     class Params:
         failing = factory.Trait(verdict=EvalVerdict.FAIL, score=0.0)
         was_skipped = factory.Trait(verdict=EvalVerdict.SKIP, score=0.0)
+
+
+class WorktreeFactory(DjangoModelFactory[Worktree]):
+    class Meta:
+        model = Worktree
+
+    ticket = factory.SubFactory(TicketFactory)
+    overlay = "t3-teatree"
+    repo_path = "souliane/teatree"
+    branch = factory.Sequence(lambda n: f"feat/wt-{n}")
+    state = Worktree.State.PROVISIONED
+
+
+class SessionFactory(DjangoModelFactory[Session]):
+    class Meta:
+        model = Session
+
+    ticket = factory.SubFactory(TicketFactory)
+    overlay = "t3-teatree"
+    agent_id = "coding"
+
+
+class TaskFactory(DjangoModelFactory[Task]):
+    class Meta:
+        model = Task
+
+    ticket = factory.SubFactory(TicketFactory)
+    session = factory.SubFactory(SessionFactory)
+    phase = "coding"
+    status = Task.Status.PENDING
+    # INTERACTIVE keeps ``status`` deterministic: the HEADLESS save-override
+    # reroute only touches ``execution_target``, never the status the tests count.
+    execution_target = Task.ExecutionTarget.INTERACTIVE
+
+
+class TaskAttemptFactory(DjangoModelFactory[TaskAttempt]):
+    """Backdate ``started_at`` (``auto_now_add``) with ``update()`` after build."""
+
+    class Meta:
+        model = TaskAttempt
+
+    task = factory.SubFactory(TaskFactory)
+    execution_target = Task.ExecutionTarget.HEADLESS
+    exit_code = 0
+    iteration = 1
+
+
+class PullRequestFactory(DjangoModelFactory[PullRequest]):
+    class Meta:
+        model = PullRequest
+
+    ticket = factory.SubFactory(TicketFactory)
+    overlay = "t3-teatree"
+    url = factory.Sequence(lambda n: f"https://github.com/souliane/teatree/pull/{1000 + n}")
+    repo = "souliane/teatree"
+    iid = factory.Sequence(lambda n: str(1000 + n))
+    state = PullRequest.State.OPEN
+
+
+class IncomingEventFactory(DjangoModelFactory[IncomingEvent]):
+    class Meta:
+        model = IncomingEvent
+
+    source = IncomingEvent.Source.SLACK
+    actor = "U123"
+    body = factory.Sequence(lambda n: f"event body {n}")
+    idempotency_key = factory.Sequence(lambda n: f"evt-{n}")
+
+
+class ReplyDispatchFactory(DjangoModelFactory[ReplyDispatch]):
+    class Meta:
+        model = ReplyDispatch
+
+    event = factory.SubFactory(IncomingEventFactory)
+    target_ref = "C123"
+    action_name = "reply"
+    idempotency_key = factory.Sequence(lambda n: f"disp-{n}")
+    status = ReplyDispatch.Status.SENT
+
+    class Params:
+        dead = factory.Trait(status=ReplyDispatch.Status.DEAD_LETTER)
+
+
+def serialized_pr_spec(title: str = "feat: the feature", branch: str = "feat/orphan") -> SerializedPrSpec:
+    """A ``PullRequestSpec`` in the shape ``PendingPullRequest.spec`` stores."""
+    return SerializedPrSpec(
+        repo="souliane/teatree",
+        branch=branch,
+        title=title,
+        description="body",
+        target_branch="",
+        labels=[],
+        assignee="",
+        draft=False,
+    )

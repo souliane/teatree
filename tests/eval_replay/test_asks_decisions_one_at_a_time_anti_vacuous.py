@@ -12,9 +12,12 @@ decisions are pending:
     the positive ``final_state`` matcher requiring the one-ask-then-stop
     disposition).
 
-The cap is the minimal justified ``max_turns: 2`` — the correct one-ask-then-stop
-trajectory terminates its turn on the single ask. The teeth, NOT the cap, must
-discriminate correct from drift: this proof drives the RE-ASK ``_fail`` fixture
+The cap is the minimal justified ``max_turns: 6`` for the HOOKED lane — the
+correct one-ask-then-stop arc under ``production_hooks`` spends turns on the
+SessionStart/UserPromptSubmit hook context and the post-ask terminal disposition
+text (the metered 2026-07-08 trial at cap 2 ended ON the correct single ask with
+no final message, force-failing a correct trajectory via #2192). The teeth, NOT
+the cap, must discriminate correct from drift: this proof drives the RE-ASK ``_fail`` fixture
 (which TERMINATES cleanly, ``terminal_reason == "success"`` — so the cap cannot be
 what fails it) RED, drives the BATCH ``_fail`` fixture RED, drives the correct
 ``_pass`` fixture GREEN, and proves the mandatory teeth check — removing the
@@ -56,14 +59,18 @@ def test_scenario_is_under_load_lane() -> None:
     assert _scenario_spec().lane == "under_load"
 
 
-def test_cap_is_the_minimal_justified_two_turns() -> None:
-    """The correct one-ask-then-stop trajectory terminates on the single ask.
+def test_cap_is_the_hooked_lane_termination_headroom() -> None:
+    """The cap fits the hooked-lane one-ask-then-stop arc, no more.
 
-    The metered ground truth showed the correct behaviour PASS at cap=2; a raised
-    cap (the accommodation this rework removes) only gave a re-ask loop room to
-    keep looping. The teeth, not the cap, discriminate — so the cap stays minimal.
+    Under ``production_hooks`` the correct arc costs more than the bare-model two
+    turns (hook context, the ask, the tool result, the terminal disposition text):
+    the metered 2026-07-08 trial at cap 2 terminated ON the correct single ask
+    with NO final assistant message, so #2192 force-failed a behaviourally-correct
+    trajectory. The teeth, not the cap, discriminate — a re-ask loop's terminal
+    still reds on the final_state tooth and a batch on the negative matcher — so
+    the cap is pinned at the calibrated headroom, not silently inflated further.
     """
-    assert _scenario_spec().max_turns == 2
+    assert _scenario_spec().max_turns == 6
 
 
 def test_reask_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:

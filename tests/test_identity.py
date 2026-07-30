@@ -7,31 +7,22 @@ read. Integration-first per the Test-Writing Doctrine: ``get_effective_settings`
 is exercised end-to-end through ``agent_signature_enabled`` / ``_suffix``.
 """
 
-from pathlib import Path
-
-import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
 from teatree.identity import agent_signature_enabled, agent_signature_suffix
 
 
-@pytest.fixture
-def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-    return cfg
+class TestSignatureDisabledByDefault(TestCase):
+    """With no ``agent_signature`` row the default-off resolves from the dataclass default."""
 
+    def test_signature_disabled_by_default(self) -> None:
+        assert agent_signature_enabled() is False
+        assert agent_signature_suffix("\n— Sent using Claude") == ""
 
-def test_signature_disabled_by_default(config_file: Path) -> None:
-    config_file.write_text("[teatree]\n", encoding="utf-8")
-    assert agent_signature_enabled() is False
-    assert agent_signature_suffix("\n— Sent using Claude") == ""
-
-
-def test_signature_disabled_when_no_config(config_file: Path) -> None:
-    assert agent_signature_enabled() is False
-    assert agent_signature_suffix("\nCo-Authored-By: agent <a@b>") == ""
+    def test_signature_disabled_when_unset(self) -> None:
+        assert agent_signature_enabled() is False
+        assert agent_signature_suffix("\nCo-Authored-By: agent <a@b>") == ""
 
 
 class TestSignatureEnabled(TestCase):

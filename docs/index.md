@@ -10,11 +10,10 @@ If your project spans several repos (backend, frontend, translations, configurat
 
 Teatree coordinates work through **four state machines** — `Ticket`, `Worktree`, `Task`, `PullRequest` — each with typed transitions and tests. Agents read skills to do the *creative* work; the CLI owns the *mechanical* work.
 
-Two surfaces sit on top:
+The **CLI** (`t3 ...`) is the source of truth — everything else is a view on top. Two surfaces sit on it:
 
-- **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
-- **Statusline** — the loop renders a 3-zone statusline (anchors, action needed, in flight) that is the only persistent UI surface.
-- **Claude plugin** — skills, hooks, and a fat `/loop` that teach an agent how to drive the CLI.
+- **Statusline** — a 3-zone statusline (anchors, action needed, in flight), the always-on UI surface written to a file and read by the Claude Code statusline hook.
+- **Claude plugin** — skills, hooks, and the autonomous per-domain loops (driven by the singleton `t3 worker`) that teach an agent how to drive the CLI.
 
 ## How it fits together
 
@@ -32,7 +31,7 @@ git clone https://github.com/souliane/teatree && cd teatree && uv tool install -
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
-Your overlay is a lightweight Python package with an `OverlayBase` subclass and a `teatree.overlays` entry point. Once installed alongside teatree, `/loop` (in your interactive Claude Code session) picks it up automatically.
+Your overlay is a lightweight Python package with an `OverlayBase` subclass and a `teatree.overlays` entry point. Once installed alongside teatree, the loops pick it up automatically — driven by the singleton `t3 worker`, or by a `/loop` in your interactive Claude Code session.
 
 ## Further reading
 

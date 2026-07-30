@@ -3,7 +3,7 @@
 The ticket-intake (info-fetch) FSM step surveys what is **already in flight or
 already settled** before the planner designs a plan — open PRs/MRs, local
 worktrees carrying uncommitted or unpushed work, and a per-issue
-close/merge/supersede recommendation (gathered by :mod:`teatree.core.landscape`).
+close/merge/supersede recommendation (gathered by :mod:`teatree.core.intake.landscape`).
 Before #2541 that survey was an on-demand CLI an operator ran and pasted into the
 plan prose; the planner re-derived it when it was not handed over.
 

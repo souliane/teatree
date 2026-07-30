@@ -7,11 +7,9 @@ is the ``ConfigSetting`` store (+ ``T3_*`` env). The pre-partition TOML surface
 now; the mode is staged via ``ConfigSetting.objects.set_value`` instead. This
 confirms the resolver defaults to ``WARN`` when no row is set (backward-compat),
 reads a stored ``strict`` / ``off`` row, and surfaces a clean ``ValueError`` on a
-corrupt stored value so a silent mode downgrade never lands. ``CONFIG_PATH`` is
-isolated so the real ``~/.teatree.toml`` never leaks in.
+corrupt stored value so a silent mode downgrade never lands. The Django test DB
+is the only config tier, so the real host config never leaks in.
 """
-
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
@@ -23,12 +21,11 @@ from teatree.core.models import ConfigSetting
 
 class TestVoiceClassifierModeResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_default_is_warn_when_no_row(self) -> None:
-        """No DB row and no config file → the dataclass default ``WARN``."""
+        """No DB row → the dataclass default ``WARN``."""
         assert get_effective_settings().slack_voice_classifier_mode is ClassifierMode.WARN
 
     def test_stored_strict(self) -> None:

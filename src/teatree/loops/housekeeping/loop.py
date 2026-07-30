@@ -21,9 +21,9 @@ def _build_jobs(
     it is built directly here, not via the per-overlay seam. The
     per-overlay pull-main-clone scanner is owned by ``Domain.HOUSEKEEPING``.
     """
-    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
-    from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
-    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — tick-time import
+    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time
 
     jobs: list[_ScannerJob] = []
     self_update = _self_update_scanner()

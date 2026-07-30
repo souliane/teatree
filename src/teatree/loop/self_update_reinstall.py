@@ -7,8 +7,9 @@ leaves the live process importing the old modules. When
 :class:`teatree.core.models.pending_reinstall.PendingReinstall` row; this
 module applies it.
 
-``drain_pending_reinstall`` is called as the FIRST step of ``loop_tick``
-— a fresh per-tick subprocess, before any scanner code imports — so the
+``drain_pending_reinstall`` is called as an early step of the ``loops_tick``
+per-loop command (lease-guarded, at most once per drain-throttle window) — a
+fresh per-tick subprocess, before any scanner code imports — so the
 ``uv tool install --editable <src> --reinstall`` + ``t3 setup`` + self-DB
 migrate runs in a process that has not yet imported the about-to-change
 code (no mixed-code window). It is a no-op when nothing is pending, and
@@ -49,7 +50,7 @@ def drain_pending_reinstall() -> DrainResult:
     tick (the overwhelming majority) does zero extra work; the in-flight
     check is only consulted when there is actually something to drain.
     """
-    from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415
+    from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415 — deferred: ORM/app-registry
 
     row = PendingReinstall.objects.pending().first()
     if row is None:
@@ -61,13 +62,16 @@ def drain_pending_reinstall() -> DrainResult:
 
 
 def _loop_unit_in_flight() -> bool:
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     return Task.objects.active_claim_exists()
 
 
 def _apply(row: "PendingReinstall") -> DrainResult:
-    from teatree.self_update import ensure_self_db_migrated, reinstall_running_editable  # noqa: PLC0415
+    from teatree.self_update import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        ensure_self_db_migrated,
+        reinstall_running_editable,
+    )
 
     label = row.repo_label
     result = reinstall_running_editable()

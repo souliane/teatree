@@ -7,16 +7,17 @@ returns the PR URL once the worker completes.
 """
 
 import re
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
 from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
-from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
+from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, defer_unpushed_pr
+from teatree.core.management.commands._pending_pr_commands import PendingPrCommands
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
     ShipDryRun,
@@ -28,38 +29,47 @@ from teatree.core.management.commands._pr_ticket_resolve import (
     resolve_ticket,
     ticket_not_found_error,
 )
-from teatree.core.management.commands._ship_exec import (
+from teatree.core.management.commands._pr_worktree import WorktreeMissingError, _resolve_or_adopt_worktree
+from teatree.core.management.commands._shared_code_host import no_code_host_error
+from teatree.core.management.commands._ship.exec import (
     ShipEnqueued,
     ShipExecuted,
     ShippingGateFailure,
     _enqueue_ship,
     _ship_sync,
 )
-from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
-from teatree.core.management.commands._ship_gates import (
+from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
+from teatree.core.management.commands._ship.gates import (
     BranchCurrencyFailure,
+    DebtDeltaGateFailure,
     E2EMandatoryGateFailure,
+    FleetClaimFenceFailure,
     NoCommitsAheadError,
+    PrBudgetGateFailure,
     VisualQAGateFailure,
 )
-from teatree.core.management.commands._ship_gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
-from teatree.core.management.commands._ship_gates import check_shipping_gate as _check_shipping_gate
-from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
-from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
-from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
+from teatree.core.management.commands._ship.gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
+from teatree.core.management.commands._ship.gates import check_shipping_gate as _check_shipping_gate
+from teatree.core.management.commands._ship.gates import run_branch_currency_gate as _run_branch_currency_gate
+from teatree.core.management.commands._ship.gates import run_debt_delta_gate as _run_debt_delta_gate
+from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
+from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate as _run_fleet_claim_fence_gate
+from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
+from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
+from teatree.core.management.commands._test_plan.mr_post import MrTestPlanPost, post_mr_test_plan_comment
+from teatree.core.management.commands._test_plan.post import TestPlanMediaError
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
-from teatree.core.on_behalf_gate_recorded import (
-    OnBehalfPostBlockedError,
-    on_behalf_block_message,
-    require_on_behalf_approval,
-)
-from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.provision.worktree_adopt import reopen_ticket_for_followup
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
+from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -86,8 +96,10 @@ type CommentResult = dict[str, object]
 # working after the ticket-resolution split.
 
 
-class WorktreeMissingError(TypedDict):
-    error: str
+# WorktreeMissingError / _worktree_missing_error / _resolve_or_adopt_worktree
+# (the worktree-or-adopt resolver, #3327) live in ``_pr_worktree`` (re-exported
+# above) so ``pr.py`` stays within the module-health LOC bar and external
+# importers of ``pr.WorktreeMissingError`` keep working.
 
 
 # ShipEnqueued / ShipExecuted / ShippingGateFailure and the ship-execution
@@ -103,6 +115,32 @@ _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
 
 
+def _run_precheck_ship_gates(
+    ticket: Ticket,
+    worktree: Worktree,
+) -> ShippingGateFailure | BranchCurrencyFailure | PrBudgetGateFailure | DebtDeltaGateFailure | None:
+    """The cheap state/text prechecks — first failure or ``None``.
+
+    Grouped so ``_run_ship_gates`` stays within the return-count gate and the
+    cheap gates run as one fail-fast block before the expensive diff-rendering
+    gates. Order: branch-currency (#940, first so the rest see the post-merge
+    tree), the phase/shipping gate (#694), the PR-budget gate (north-star PR-2),
+    then the debt-delta gate (north-star PR-3) — the last two both cheap, so a
+    ticket over its open-PR budget or introducing net-new tech debt fails before
+    any push creates an orphan remote branch.
+    """
+    currency_error = _run_branch_currency_gate(ticket, worktree)
+    if currency_error is not None:
+        return currency_error
+    gate_error = _check_shipping_gate(ticket)
+    if gate_error is not None:
+        return gate_error
+    budget_error = _run_pr_budget_gate(ticket, worktree)
+    if budget_error is not None:
+        return budget_error
+    return _run_debt_delta_gate(ticket, worktree)
+
+
 def _run_ship_gates(
     ticket: Ticket,
     worktree: Worktree,
@@ -114,6 +152,9 @@ def _run_ship_gates(
     | VisualQAGateFailure
     | BranchCurrencyFailure
     | E2EMandatoryGateFailure
+    | FleetClaimFenceFailure
+    | PrBudgetGateFailure
+    | DebtDeltaGateFailure
     | PrValidationError
     | None
 ):
@@ -121,9 +162,12 @@ def _run_ship_gates(
 
     Composed out of ``create`` so the command stays within the
     return-count gate and the gate sequence is independently testable.
-    The branch-currency gate (#940) runs FIRST: a stale base would
-    otherwise poison the visual-QA gate (it would render the
-    pre-merge tree) and the cold reviewer's SHA attestation.
+    The cheap state/text prechecks (:func:`_run_precheck_ship_gates` —
+    branch-currency, shipping, PR-budget, debt-delta) run FIRST as one
+    fail-fast block, then the fleet-claim fence (fleet-safety Stage 2,
+    inert unless the kill-switch is on), then the overlay close-keyword
+    gates, then the expensive diff-rendering gates (visual-QA, mandatory-E2E)
+    so all of them see the post-branch-currency tree.
 
     ``title`` is the explicit ``--title`` override: it has not yet been
     persisted to ``extra['pr_title_override']`` (that happens at ship time,
@@ -131,12 +175,15 @@ def _run_ship_gates(
     here — otherwise the preflight would validate the regenerated commit
     subject rather than the title that will actually ship.
     """
-    currency_error = _run_branch_currency_gate(ticket, worktree)
-    if currency_error is not None:
-        return currency_error
-    gate_error = _check_shipping_gate(ticket)
-    if gate_error is not None:
-        return gate_error
+    precheck_error = _run_precheck_ship_gates(ticket, worktree)
+    if precheck_error is not None:
+        return precheck_error
+    # Fleet-safety Stage 2: refuse to open a PR for a claimed work item this
+    # instance no longer holds (stolen claim, or ref infra unreachable). Inert
+    # unless ``fleet_claim_enabled`` is on and the ticket carries a fleet-claim.
+    fence_error = _run_fleet_claim_fence_gate(ticket, worktree)
+    if fence_error is not None:
+        return fence_error
     # Overlay-scoped (#1012): no-op unless the overlay forbids auto-close
     # trailers; raises SystemExit with the offending line otherwise.
     run_close_keyword_gate(ticket, worktree)
@@ -155,6 +202,29 @@ def _run_ship_gates(
     if e2e_error is not None:
         return e2e_error
     return validate_pr_metadata(ticket, worktree, title=title)
+
+
+def _run_skip_validation_path(
+    ticket: Ticket,
+    ship_worktree: Worktree,
+    *,
+    skip_mr_format_check: bool,
+    title: str,
+) -> PrValidationError | None:
+    """Reconcile the FSM for a ``--skip-validation`` ship, then run the cheap format check.
+
+    ``--skip-validation`` is the user-authorized attestation substitute (the
+    gate-fixer bootstrap, /t3:ship §5 #2): the FSM must follow the authorization
+    or ``ship()`` is structurally impossible from a non-REVIEWED state (#748). It
+    skips the HEAVY gates (visual QA, branch currency, FSM phase check) but NOT
+    the cheap, deterministic MR title/description format check — a non-compliant
+    title must not slip onto GitLab via the bypass; only the explicit
+    ``--skip-mr-format-check`` opt-in disables the format check too.
+    """
+    reconcile_fsm_for_ship(ticket)
+    if skip_mr_format_check:
+        return None
+    return validate_pr_metadata(ticket, ship_worktree, title=title)
 
 
 def _dispatch_ship(
@@ -177,7 +247,31 @@ def _dispatch_ship(
     return _enqueue_ship(ticket, title)
 
 
-class Command(TyperCommand):
+def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) -> tuple[str, EnsurePrResult | None]:
+    """Validate ``--repo`` is a real git checkout and resolve the branch to classify.
+
+    ``--repo`` must be a filesystem path, never a forge slug (``owner/repo``) —
+    ``git -C <slug>`` fails, and that failure used to be swallowed into a
+    false SYNCED classification (#2937). Returns ``(branch_name, None)`` on
+    success, or ``("", <result>)`` — the early :class:`EnsurePrResult` the
+    caller returns as-is — when validation stops the command before
+    classification.
+    """
+    if repo and not git.check(repo=repo_path, args=["rev-parse", "--is-inside-work-tree"]):
+        return "", EnsurePrResult(
+            error=(
+                f"--repo {repo!r} is not a git checkout on this filesystem. Pass a "
+                "path to a local clone or worktree (e.g. '.' or '/path/to/repo'), "
+                "not a forge slug like 'owner/repo'."
+            ),
+        )
+    branch_name = branch or git.current_branch(repo=repo_path)
+    if not branch_name or branch_name in {"HEAD", "main", "master"}:
+        return "", EnsurePrResult(skipped="not on a feature branch", branch=branch_name)
+    return branch_name, None
+
+
+class Command(PendingPrCommands, TyperCommand):
     @command()
     # PLR0913: this signature IS the CLI contract — django-typer derives
     # --title/--dry-run/--skip-validation/--skip-visual-qa/--sync by
@@ -185,7 +279,7 @@ class Command(TyperCommand):
     # the flags. Same targeted-noqa-for-framework-reality pattern as the
     # repo's PLC0415 (import-in-function) and SLF001 (framework internals).
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def create(  # noqa: PLR0913
+    def create(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
         self,
         ticket_id: str,
         *,
@@ -195,6 +289,7 @@ class Command(TyperCommand):
         skip_mr_format_check: bool = False,
         skip_visual_qa: str = "",
         sync: bool = False,
+        adopt_worktree: bool = False,
     ) -> (
         ShipEnqueued
         | ShipExecuted
@@ -203,6 +298,8 @@ class Command(TyperCommand):
         | VisualQAGateFailure
         | BranchCurrencyFailure
         | E2EMandatoryGateFailure
+        | FleetClaimFenceFailure
+        | PrBudgetGateFailure
         | ShippingGateFailure
         | WorktreeMissingError
         | NoCommitsAheadError
@@ -231,6 +328,12 @@ class Command(TyperCommand):
         title/description format check. ``--skip-mr-format-check`` is the
         separate, explicit opt-in that disables that format check too — needed
         only in the rare case where a non-canonical title must ship anyway.
+
+        ``--adopt-worktree`` opens a follow-up PR on a ticket whose prior PR
+        already merged and whose worktree row was torn down (#3327): it attaches
+        the invoking on-disk worktree as a new row and reopens the terminal
+        ticket to a shippable state once the #788 hollow-ship guard confirms the
+        fresh branch has real commits — so already-merged work is never re-shipped.
         """
         try:
             ticket = resolve_ticket(ticket_id)
@@ -247,9 +350,14 @@ class Command(TyperCommand):
         # phases were recorded — just in the canonical DB. Fail loudly here
         # instead, naming the canonical DB and the correct command.
         assert_lifecycle_db_is_canonical(ticket)
-        worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
-        if worktree is None:
-            return WorktreeMissingError(error="ticket has no worktree")
+        # #3327: the follow-up-PR case — a terminal ticket whose prior PR's
+        # worktree row was torn down. With --adopt-worktree, attach the invoking
+        # on-disk worktree as a new row (guarded) and continue through the
+        # managed path; without it (or on a never-provisioned ticket), refuse.
+        resolved = _resolve_or_adopt_worktree(ticket, adopt_worktree=adopt_worktree)
+        if not isinstance(resolved, Worktree):
+            return resolved
+        worktree = resolved
 
         # #776: a ticket can span multiple PRs (one branch per
         # workstream). Record the INVOKING worktree's current git branch
@@ -281,25 +389,24 @@ class Command(TyperCommand):
         if no_commits is not None:
             return no_commits
 
+        # #3327: only after the #788 hollow-ship guard passes (the fresh branch
+        # has real commits ahead of base) does an adopted terminal ticket get
+        # reopened to a shippable FSM state — so a mistakenly-merged branch is
+        # refused above, before any FSM advance, never re-shipped. A no-op unless
+        # the ticket sits in MERGED/DELIVERED.
+        if adopt_worktree:
+            reopen_ticket_for_followup(ticket)
+
         if not skip_validation:
             gate_failure = _run_ship_gates(ticket, ship_worktree, skip_visual_qa=skip_visual_qa, title=title)
             if gate_failure is not None:
                 return gate_failure
         else:
-            # --skip-validation is the user-authorized attestation
-            # substitute (the gate-fixer bootstrap, /t3:ship §5 #2). The
-            # FSM must follow the authorization or ship() is structurally
-            # impossible from a non-REVIEWED state (#748).
-            reconcile_fsm_for_ship(ticket)
-            # --skip-validation skips the HEAVY gates (visual QA, branch
-            # currency, FSM phase check) — but NOT the cheap, deterministic
-            # MR title/description format check. A non-compliant title must
-            # not slip onto GitLab via the bypass; only the explicit
-            # --skip-mr-format-check opt-in disables the format check too.
-            if not skip_mr_format_check:
-                format_error = validate_pr_metadata(ticket, ship_worktree, title=title)
-                if format_error is not None:
-                    return format_error
+            format_error = _run_skip_validation_path(
+                ticket, ship_worktree, skip_mr_format_check=skip_mr_format_check, title=title
+            )
+            if format_error is not None:
+                return format_error
 
         return _dispatch_ship(ticket, ship_worktree, title=title, dry_run=dry_run, sync=sync)
 
@@ -316,31 +423,37 @@ class Command(TyperCommand):
         match + tree-equality checks and no open PR. When this runs inside a
         git pre-push hook for a *first* push, the branch is not yet on the
         remote — creating the PR is deferred so the push proceeds.
+
+        ``--repo`` must be a filesystem path to a git checkout, never a forge
+        slug (``owner/repo``) — validated up front so that mistake surfaces
+        as a clear error instead of a silently misclassified branch (#2937).
         """
         repo_path = repo or "."
-        branch_name = branch or git.current_branch(repo=repo_path)
-        if not branch_name or branch_name in {"HEAD", "main", "master"}:
-            return EnsurePrResult(skipped="not on a feature branch", branch=branch_name)
+        branch_name, early_result = _validate_repo_and_resolve_branch(repo, repo_path, branch)
+        if early_result is not None:
+            return early_result
 
-        report = classify_branch(repo_path, branch_name)
+        try:
+            report = classify_branch(repo_path, branch_name)
+        except CommandFailedError as exc:
+            return EnsurePrResult(
+                branch=branch_name,
+                error=f"could not determine sync status of {branch_name!r} in {repo_path!r}: {exc}",
+            )
 
         if report.status is BranchStatus.SYNCED:
             return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
         if report.status is BranchStatus.OPEN_PR:
             return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
         if report.status is BranchStatus.UNPUSHED_ORPHAN:
-            return EnsurePrResult(
-                skipped="branch not on remote yet — re-run after push completes",
-                branch=branch_name,
-                hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
-            )
+            return defer_unpushed_pr(repo_path, branch_name)
 
         return create_or_defer_pr(repo_path, branch_name)
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
         """Check whether session gates allow a phase transition (#1118: cross-session)."""
-        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
 
         canonical_target = normalize_phase(target_phase)
         ticket = Ticket.objects.get(pk=ticket_id)
@@ -352,7 +465,7 @@ class Command(TyperCommand):
         except QualityGateError:
             visited, _ = ticket.aggregate_phase_records()
             canonical_visited = {normalize_phase(phase) for phase in visited}
-            required = session._REQUIRED_PHASES.get(canonical_target, [])  # noqa: SLF001
+            required = session._REQUIRED_PHASES.get(canonical_target, [])  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
             missing = [p for p in required if p not in canonical_visited]
             return {"allowed": False, "missing": missing, "reason": f"{target_phase} requires: {', '.join(missing)}"}
         except (ValueError, KeyError) as exc:
@@ -386,7 +499,7 @@ class Command(TyperCommand):
         """Fetch issue details with embedded image URLs and external links."""
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured"}
+            return {**no_code_host_error()}
         issue = host.get_issue(issue_url)
         description = str(issue.get("description", ""))
 
@@ -431,11 +544,14 @@ class Command(TyperCommand):
         """
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured (check overlay tokens)"}
+            return {**no_code_host_error()}
 
         author = get_overlay().config.get_gitlab_username() or host.current_user()
         if not author:
-            return {"error": "Could not resolve author username — set <host>_username in ~/.teatree.toml"}
+            return {
+                "error": "Could not resolve author username — "
+                "set it with `t3 <overlay> config_setting set <host>_username <value>`",
+            }
 
         prs = host.list_my_prs(author=author)
         return {"author": author, "count": len(prs), "prs": prs}
@@ -451,8 +567,16 @@ class Command(TyperCommand):
     ) -> dict[str, object]:
         """Post a test plan as a PR comment. Uploads files and updates existing notes.
 
-        Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
-        If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
+        A thin delegator to the shared gated engine
+        (:func:`teatree.core.management.commands._test_plan.mr_post.post_mr_test_plan_comment`),
+        so the MR path gets the SAME gates as the ticket/issue poster (F3.1) and
+        can no longer drift: files (screenshots, videos) are uploaded and each one
+        passes the #2156 ``verify_upload`` existence check before it is embedded
+        as ``![name](url)``; the body is run through the blocked-body config gate
+        and the scanned public-repo leak seam; and the note is matched for an
+        idempotent in-place update by THIS MR's hidden idempotency marker — never
+        a naive ``"## Test Plan" in body`` scan that could clobber a colleague's
+        unrelated comment.
 
         Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
         ``draft_or_ask``): the call is refused with no upload or host side
@@ -460,70 +584,31 @@ class Command(TyperCommand):
         ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
         is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
         value even though the command is now named ``post-test-plan``. The gate
-        is inlined here (not at the ``code_host`` layer) so PR creation — which
-        is not an on-behalf colleague-facing post — remains ungated.
+        is inlined at the command layer (not at the ``code_host`` layer) so PR
+        creation — which is not an on-behalf colleague-facing post — remains
+        ungated.
 
         The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
         for one release so existing scripts keep working.
         """
         host = code_host_from_overlay()
         if host is None:
-            return {"error": "No code host configured (check overlay GitLab token)"}
+            return {**no_code_host_error()}
 
         repo_path = repo or get_overlay().metadata.get_ci_project_path()
-        target = f"{repo_path}!{mr_iid}"
-
-        # Peek (non-consuming) so an unapproved post refuses before uploading
-        # anything; the consume happens atomically with the comment post below.
-        blocked = on_behalf_block_message(target, "post_evidence")
-        if blocked:
-            return {"error": blocked}
-
-        # Upload files and build markdown embeds
-        embeds: list[str] = []
-        for filepath in files or []:
-            upload = host.upload_file(repo=repo_path, filepath=filepath)
-            md = upload.get("markdown", "")
-            if md:
-                embeds.append(str(md))
-                self.stdout.write(f"  Uploaded: {filepath}")
-
-        # Build note body
-        embed_section = "\n\n".join(embeds)
-        note_body = f"## {title}\n\n{body}" if body else f"## {title}\n\n_No details provided._"
-        if embed_section:
-            note_body += f"\n\n{embed_section}"
-
-        # Find existing test plan note to update
-        existing_notes = host.list_pr_comments(repo=repo_path, pr_iid=mr_iid)
-        marker = "## Test Plan"
-        existing_note = next(
-            (n for n in existing_notes if marker in str(n.get("body", "")) and not n.get("system")),
-            None,
-        )
-
-        def _publish() -> RawAPIDict:
-            if existing_note:
-                comment_id = int(str(existing_note["id"]))
-                self.stdout.write(f"  Updating existing note {comment_id}")
-                return host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
-            return host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)
-
         try:
-            # consume + post + audit atomic (#1879): a failed comment post
-            # rolls back the consume and writes no audit.
-            result = require_on_behalf_approval(target=target, action="post_evidence", publish=_publish)
-        except OnBehalfPostBlockedError as blocked_now:
-            return {"error": str(blocked_now)}
-
-        notify_user_on_behalf_post(
-            target=target,
-            action="post_evidence",
-            destination=target,
-            artifact_url=str(result.get("web_url") or result.get("html_url") or target),
-            summary=f"{title} on {target}",
-        )
-        return result
+            # The MR path is a thin delegator to the shared gated engine (F3.1):
+            # the on-behalf peek, the #2156 verify_upload existence check, the
+            # blocked-body config gate, the scanned forge-write seam, and the
+            # marker-scoped note match are the SAME as the ticket/issue poster, so
+            # the two paths can never drift.
+            return post_mr_test_plan_comment(
+                host,
+                MrTestPlanPost(repo=repo_path, mr_iid=mr_iid, title=title, body=body, files=list(files or [])),
+                write_out=self.stdout.write,
+            )
+        except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, TestPlanMediaError) as err:
+            return {"error": str(err)}
 
     @command(name="post-evidence", hidden=True, deprecated=True)
     def post_evidence(

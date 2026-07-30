@@ -5,9 +5,9 @@ its countdowns are stale — it can still show a live-looking loop line while
 the loop has been dead for hours. This module computes the same state LIVE from
 the DB on every call. The #2513 cutover: the mini-loop rows now come from the
 DB ``Loop`` table (each row's ``enabled``/cadence/``last_run_at``/next-due) —
-the single source of truth, replacing the legacy ``MiniLoopMarker`` cadence
-ledger + ``[loops]``-toml ``LoopsConfig``. Infra-slot leases
-(:class:`LoopLease`) with PID-anchored owner liveness are read alongside.
+the single source of truth and the one cadence ledger, replacing the retired
+code-cadence ledger. Infra-slot leases (:class:`LoopLease`) with PID-anchored
+owner liveness are read alongside.
 
 Strictly read-only: it issues ORM reads only — never ticks, claims, acquires,
 marks fired, or mutates a row. :func:`teatree.loops.schedule.mini_loop_schedules`
@@ -23,13 +23,17 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.core.loop_lease_manager import is_per_loop_owner_slot
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
+from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
+from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
+from teatree.request_cache import cached_per_request
 from teatree.utils.singleton import pid_alive
 
 if TYPE_CHECKING:
     from teatree.core.models import Loop
+    from teatree.loop.preset_resolution import ActivePreset
 
 INFRA_SLOTS: tuple[str, ...] = (
     "loop-tick",
@@ -38,7 +42,6 @@ INFRA_SLOTS: tuple[str, ...] = (
     "loop-drain-queue",
 )
 
-OWNER_SLOT = "loop-owner"
 TICK_SLOT = "loop-tick"
 STALL_FACTOR = 2
 
@@ -54,7 +57,7 @@ class LoopOwnerStatus:
     owner_pid: int | None
     pid_is_alive: bool
     is_live: bool
-    slot: str = OWNER_SLOT
+    slot: str = T3_MASTER_SLOT
 
     @property
     def is_claimed(self) -> bool:
@@ -69,6 +72,11 @@ class LoopStatusEntry:
     cadence_seconds: int
     last_fired_at: dt.datetime | None
     next_fire_at: dt.datetime | None
+    #: The effective run verdict the tick actually gates on: NOT held, then the
+    #: #3159 preset mask (L3/L2) over the base ``enabled`` flag. Required — every
+    #: construction site resolves it, so a masked loop can never masquerade as a
+    #: running, counting-down loop (the drift #3159's single predicate exists to prevent).
+    admitted: bool
     held: bool = False
 
     @property
@@ -118,12 +126,13 @@ class LoopStatusReport:
         return age > STALL_FACTOR * self.tick_cadence_seconds
 
 
+@cached_per_request
 def build_report(*, now: dt.datetime | None = None) -> LoopStatusReport:
     moment = now if now is not None else timezone.now()
     leases = {row.name: row for row in LoopLease.objects.all()}
     infra = tuple(_infra_entry(slot, leases.get(slot)) for slot in INFRA_SLOTS)
     mini = _mini_entries()
-    owner = _owner_status(leases.get(OWNER_SLOT), moment, slot=OWNER_SLOT)
+    owner = _owner_status(leases.get(T3_MASTER_SLOT), moment, slot=T3_MASTER_SLOT)
     per_loop_owners = _per_loop_owners(leases, moment)
     tick_cadence = cadence_for_loop(TICK_SLOT)
     return LoopStatusReport(
@@ -149,6 +158,9 @@ def _infra_entry(slot: str, lease: LoopLease | None) -> LoopStatusEntry:
         cadence_seconds=cadence,
         last_fired_at=acquired_at,
         next_fire_at=next_fire_at,
+        # An infra slot is always enabled and no preset masks it — its run verdict
+        # is simply "not held".
+        admitted=not held,
         held=held,
     )
 
@@ -172,24 +184,49 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     """Live mini-loop status from the DB ``Loop`` table (#2513 cutover).
 
     The cutover SOT: each enabled/disabled state, cadence, last-run anchor, and
-    next-due instant comes from the ``Loop`` row (was ``LoopsConfig`` +
-    ``MiniLoopMarker``). One read here re-points BOTH the statusline and
-    ``t3 loop list`` since both consume :func:`build_report`.
-    """
-    from teatree.core.models import Loop  # noqa: PLC0415
+    next-due instant comes from the ``Loop`` row — the single cadence ledger,
+    replacing the retired code-cadence path. One read here re-points BOTH the
+    statusline and ``t3 loop list`` since both consume :func:`build_report`.
 
-    entries = [
-        LoopStatusEntry(
-            name=loop.name,
-            kind=LoopKind.MINI,
-            enabled=loop.enabled,
-            cadence_seconds=_row_cadence_seconds(loop),
-            last_fired_at=loop.last_run_at,
-            next_fire_at=loop.next_run_at(),
-        )
-        for loop in Loop.objects.all()
-    ]
+    ``held`` is read from the ``LoopState`` control tier the loop tick gates on
+    (``loop_enabled`` = ``Loop.enabled`` AND not held), so a PAUSED loop — which
+    keeps ``Loop.enabled=True`` and a live cadence anchor — is surfaced as held
+    rather than masquerading as a running, counting-down loop. The hold set is
+    bulk-resolved ONCE via :func:`teatree.loop.loop_state_db.control_planes_in_db`,
+    not per loop — the live report must not re-introduce the N+1 the tick removed.
+
+    ``admitted`` folds in the #3159 preset mask on top of held+enabled — the SAME
+    effective verdict the tick gates on. The active preset is resolved ONCE here,
+    so a preset-masked-off loop is reported un-admitted (no live countdown) and a
+    preset-forced-ON base-disabled loop is reported admitted (the tick will fire it).
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    active = resolve_active_preset()
+    held, forced = control_planes_in_db()
+    entries = [_mini_entry(loop, active, held, forced) for loop in Loop.objects.all()]
     return tuple(sorted(entries, key=operator.attrgetter("name")))
+
+
+def _mini_entry(
+    loop: "Loop", active: "ActivePreset | None", held_names: set[str], forced: dict[str, bool]
+) -> LoopStatusEntry:
+    held = loop.name in held_names
+    return LoopStatusEntry(
+        name=loop.name,
+        kind=LoopKind.MINI,
+        enabled=loop.enabled,
+        cadence_seconds=_row_cadence_seconds(loop),
+        last_fired_at=loop.last_run_at,
+        next_fire_at=loop.next_run_at(),
+        admitted=loop_state_admits(
+            configured_enabled=loop.enabled,
+            held=held,
+            preset_state=preset_state_for(active, loop.name),
+            forced=forced.get(loop.name),
+        ),
+        held=held,
+    )
 
 
 def _owner_status(lease: LoopLease | None, now: dt.datetime, *, slot: str) -> LoopOwnerStatus:
@@ -247,8 +284,8 @@ def _last_tick_at(infra: tuple[LoopStatusEntry, ...], mini: tuple[LoopStatusEntr
 
 __all__ = [
     "INFRA_SLOTS",
-    "OWNER_SLOT",
     "STALL_FACTOR",
+    "T3_MASTER_SLOT",
     "TICK_SLOT",
     "LoopKind",
     "LoopOwnerStatus",

@@ -1,0 +1,4 @@
+# Pragma, line scope
+
+The fix landed in `src/teatree/core/session.py`. <!-- skill-symbol-ref: pre-fix
+state this entry describes -->

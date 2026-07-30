@@ -1,0 +1,16 @@
+# Recorded owner approvals for each shipped default that DIVERGES from its in-code
+# `UserSettings` default.
+#
+# `defaults.toml` is hand-editable and the resolver reads it, so a diverging value moves
+# an effective default. That move is a reviewed decision, and this file is the record of
+# it — one entry per diverging key, carrying the exact approved value. CI refuses a
+# divergence with no entry here, an entry whose value differs from what is shipped, and
+# an entry left behind after the divergence was reverted.
+#
+# `manage.py snapshot_settings_defaults --apply` appends entries here after the owner
+# answers `approve` on the proposal's deferred question. A maintainer hand-editing
+# `defaults.toml` adds the matching entry by hand in the same commit — the PR diff IS
+# the review.
+#
+# Safety-posture keys and dark feature-flags are NOT approvable: they stay pinned to
+# their fail-closed/off in-code value, and an entry for one does not authorize anything.

@@ -1,6 +1,8 @@
 import logging
+from datetime import datetime
 from typing import ClassVar, cast
 
+from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -157,7 +159,7 @@ class Session(models.Model):
         missing = [phase for phase in self._REQUIRED_PHASES.get(canonical_target, []) if phase not in canonical_visited]
         if missing:
             joined = ", ".join(missing)
-            msg = f"{target_phase} requires: {joined}"
+            msg = f"{canonical_target} requires: {joined}"
             raise QualityGateError(msg)
 
     def mark_repo_modified(self, repo: str) -> None:
@@ -187,9 +189,35 @@ class Session(models.Model):
         tested = set(cast("list[str]", self.repos_tested or []))
         return sorted(modified - tested)
 
+    def close(self, *, at: datetime | None = None) -> bool:
+        """Stamp ``ended_at`` once; ``True`` iff this call was the one that closed it.
+
+        The single writer of ``ended_at`` — the conditional
+        ``UPDATE ... WHERE ended_at IS NULL`` makes it idempotent under
+        concurrency, so a second closer never re-stamps a session that already
+        ended (the first close's timestamp is the truth).
+        """
+        stamped = at or timezone.now()
+        if not type(self).objects.filter(pk=self.pk, ended_at__isnull=True).update(ended_at=stamped):
+            return False
+        self.ended_at = stamped
+        return True
+
+    def close_if_idle(self, *, at: datetime | None = None) -> bool:
+        """Close this session once no task it owns is still PENDING/CLAIMED.
+
+        Every production session-minting site creates one Session per dispatched
+        Task, so a task reaching a terminal status is its session's terminal
+        point. Child tasks and in-session sub-agent tasks share the parent's
+        session, hence the active-sibling check rather than an unconditional close.
+        """
+        task_model = apps.get_model("core", "Task")
+        if self.tasks.filter(status__in=task_model.Status.active()).exists():  # ty: ignore[unresolved-attribute]
+            return False
+        return self.close(at=at)
+
     def begin_manual_handoff(self) -> None:
-        self.ended_at = timezone.now()
-        self.save(update_fields=["ended_at"])
+        self.close()
 
     def _visited_phases(self) -> list[str]:
         return cast("list[str]", self.visited_phases or [])

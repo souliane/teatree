@@ -7,7 +7,7 @@ active core overlay on a single trigger: cadence
 behaviour, not coupled to delivery velocity.
 
 The sweep is destructive-capable (it can propose closing issues), so two
-safety properties are baked in from day one (the ``t3:backlog-sweep``
+safety properties are baked in from day one (the ``t3:sweeping-tickets``
 skill § "Scheduling via the loop"):
 
 * **Default-OFF.** ``backlog_sweep_disabled`` defaults *true* — unlike the
@@ -42,7 +42,7 @@ TEST_OVERLAY_NAME = "t3-teatree"
 def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
-    skill: str = "backlog-sweep",
+    skill: str = "sweeping-tickets",
     cadence_hours: int = 168,
     require_approval: bool = True,
 ) -> BacklogSweepScanner:
@@ -68,9 +68,10 @@ def _last_sweep_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
 def _backdate_task(task: Task, *, hours: int) -> None:
     """Move a Task's bookkeeping into the past so the cadence math triggers.
 
-    ``Task`` has no ``created_at`` column, so the scanner derives the
-    last-run timestamp from its ``Session.started_at`` (auto_now_add),
-    which we can backdate via ``update()``.
+    ``Task`` now has a ``created_at`` (migration 0004), but the scanner
+    intentionally keys on ``Session.started_at`` (auto_now_add) as the queue
+    time, so we derive the last-run timestamp from there and backdate the
+    Session row via ``update()``.
     """
     Session.objects.filter(pk=task.session_id).update(
         started_at=timezone.now() - timedelta(hours=hours),
@@ -86,7 +87,7 @@ class BacklogSweepScannerTests(TestCase):
         signal = signals[0]
         assert signal.kind == "backlog_sweep.queued"
         assert signal.payload["overlay"] == TEST_OVERLAY_NAME
-        assert signal.payload["skill"] == "backlog-sweep"
+        assert signal.payload["skill"] == "sweeping-tickets"
         assert signal.payload["phase"] == BACKLOG_SWEEP_PHASE
         assert signal.payload["trigger"] == "bootstrap"
 
@@ -222,6 +223,21 @@ class BacklogSweepAskGateTests(TestCase):
         assert "ASK-GATE" in reason
         assert "do NOT mass-close" in reason
 
+    def test_ask_gate_directive_routes_closes_through_bulk_close(self) -> None:
+        """Auto-closes must go through the gated `ticket bulk-close` command (#1931).
+
+        The no-bulk-close gate only protects the `ticket bulk-close` CLI path;
+        a raw per-item `ticket ignore` loop bypasses it. The directive routes
+        the sweep's autonomous close path through the gated command so an
+        over-threshold autonomous close is refused the same as a manual one.
+        """
+        _scanner().scan()
+        task = _last_sweep_task()
+        assert task is not None
+        reason = task.execution_reason
+        assert "ticket bulk-close" in reason
+        assert "never a raw per-item `ticket ignore` loop" in reason
+
     def test_approval_disabled_omits_gate_directive(self) -> None:
         """Opt-out (ask_before_backlog_sweep_closes=false) → no gate directive."""
         signals = _scanner(require_approval=False).scan()
@@ -232,7 +248,7 @@ class BacklogSweepAskGateTests(TestCase):
         assert task is not None
         assert "ASK-GATE" not in task.execution_reason
         # The skill name is still present so the dispatcher routes correctly.
-        assert "backlog-sweep" in task.execution_reason
+        assert "sweeping-tickets" in task.execution_reason
 
 
 class BacklogSweepWiringTests(TestCase):
@@ -273,7 +289,7 @@ class BacklogSweepWiringTests(TestCase):
         ):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
-        assert scanner.skill == "backlog-sweep"
+        assert scanner.skill == "sweeping-tickets"
         assert scanner.cadence_hours == 168
 
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:

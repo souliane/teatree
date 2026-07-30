@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.core.intake.label_admission import LabelPolicy
+from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.models import Ticket
 from teatree.types import SyncResult
 
@@ -30,12 +32,23 @@ def fetch_assigned_issues(
     result: SyncResult,
     *,
     overlay_name: str = "",
+    label_policy: LabelPolicy | None = None,
 ) -> None:
     """Upsert tickets for issues assigned to *username* that have no PR yet.
 
-    Tickets keyed by the same ``issue_url`` are consolidated with PR-based
-    tickets so each ticket is represented by a single row.
+    Tickets for the same forge issue are folded together with PR-based tickets so
+    each issue is represented by a single row — deduped on the collision-free
+    ``repo_namespaced_key`` (via :meth:`TicketQuerySet.matching_issue`), which
+    folds the ``/-/issues/<n>`` and ``/-/work_items/<n>`` URL aliases together
+    so a sibling-alias row is reused rather than colliding on INSERT.
+
+    This is the second issue intake alongside the ``assigned_issues`` scanner,
+    so it runs the same :func:`intake_admits` label gate: an assignment alone
+    is not a nomination, and a ticket created here is work the operator never
+    picked. The gate covers row *creation* only — an issue already tracked is
+    still reconciled, whatever its labels now say.
     """
+    policy = label_policy or LabelPolicy()
     try:
         issues = host.list_assigned_issues(assignee=username)
     except httpx.HTTPError as exc:
@@ -52,7 +65,7 @@ def fetch_assigned_issues(
         repo_path = extract_issue_repo_path(issue_url)
         repo_short = repo_path.rsplit("/", maxsplit=1)[-1] if repo_path else ""
 
-        existing = Ticket.objects.filter(issue_url=issue_url).first()
+        existing = Ticket.objects.matching_issue(issue_url).first()
         if existing is not None:
             if repo_short and isinstance(existing.repos, list) and repo_short not in existing.repos:
                 existing.repos = [*existing.repos, repo_short]
@@ -60,12 +73,18 @@ def fetch_assigned_issues(
                 result.tickets_updated += 1
             continue
 
+        raw_labels = issue.get("labels")
+        labels = [str(label) for label in raw_labels] if isinstance(raw_labels, list) else []
+        if not policy.admits(labels):
+            continue
+        issue_title = str(issue.get("title", ""))
         Ticket.objects.create(
             issue_url=issue_url,
             repos=[repo_short] if repo_short else [],
-            extra={"issue_title": str(issue.get("title", ""))},
+            extra={"issue_title": issue_title},
             state=Ticket.State.NOT_STARTED,
             overlay=overlay_name,
+            kind=classify_ticket_kind(labels=labels, title=issue_title),
         )
         result.tickets_created += 1
 
@@ -156,7 +175,7 @@ def fetch_issue_labels(client: "GitLabAPI", result: SyncResult) -> None:
 
 
 def extract_variant(labels: list[object]) -> str:
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
     known = get_overlay().config.known_variants
     known_lower = {v.lower(): v for v in known}

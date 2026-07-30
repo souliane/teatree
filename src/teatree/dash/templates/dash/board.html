@@ -1,0 +1,79 @@
+{% extends "dash/base.html" %}
+{% block title %}Board{% endblock %}
+{% block heading %}Board{% endblock %}
+{% block content %}
+  <form class="dash-filters" method="get" action="{% url 'dash:board' %}">
+    <input type="text" name="text" value="{{ filters.text }}" placeholder="search #/description">
+    <input type="text" name="overlay" value="{{ filters.overlay }}" placeholder="overlay">
+    <select name="role">
+      <option value="">any role</option>
+      <option value="author" {% if filters.role == "author" %}selected{% endif %}>author</option>
+      <option value="reviewer" {% if filters.role == "reviewer" %}selected{% endif %}>reviewer</option>
+    </select>
+    <select name="kind">
+      <option value="">any kind</option>
+      <option value="feature" {% if filters.kind == "feature" %}selected{% endif %}>feature</option>
+      <option value="fix" {% if filters.kind == "fix" %}selected{% endif %}>fix</option>
+    </select>
+    <label><input type="checkbox" name="ignored" value="1" {% if filters.include_ignored %}checked{% endif %}> ignored</label>
+    <button class="dash-btn primary" type="submit">Filter</button>
+    <span class="result-count">{{ board.total }} shown</span>
+  </form>
+
+  <div id="board"
+    hx-get="{% url 'dash:board_columns' %}?text={{ filters.text|urlencode }}&overlay={{ filters.overlay|urlencode }}&role={{ filters.role|urlencode }}&kind={{ filters.kind|urlencode }}{% if filters.include_ignored %}&ignored=1{% endif %}"
+    hx-trigger="every 4s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_columns.html" %}
+  </div>
+
+  <aside id="drawer" aria-label="Ticket detail"></aside>
+{% endblock %}
+{% block extra_js %}
+  {% load static %}
+  <script src="{% static 'dash/js/mermaid-11.min.js' %}"></script>
+  <script>
+    // Theme the lifecycle diagram from the CSS tokens so it matches the palette in
+    // both light and dark — never a hardcoded theme.
+    function mermaidTokens() {
+      var s = getComputedStyle(document.documentElement);
+      var v = function (n) { return s.getPropertyValue(n).trim(); };
+      return {
+        startOnLoad: false,
+        theme: "base",
+        themeVariables: {
+          darkMode: (document.documentElement.dataset.theme || "dark") !== "light",
+          background: v("--surface-2"),
+          mainBkg: v("--surface"),
+          primaryColor: v("--surface"),
+          primaryBorderColor: v("--line"),
+          primaryTextColor: v("--ink"),
+          lineColor: v("--ink-muted"),
+          secondaryColor: v("--surface-2"),
+          tertiaryColor: v("--surface-2"),
+          fontFamily: v("--font-mono"),
+          fontSize: "13px"
+        }
+      };
+    }
+    function initMermaid() { mermaid.initialize(mermaidTokens()); }
+    function renderDrawerDiagram(root) {
+      var nodes = root.querySelectorAll(".mermaid");
+      nodes.forEach(function (n) {
+        if (!n.dataset.src) { n.dataset.src = n.textContent; }
+        else { n.removeAttribute("data-processed"); n.innerHTML = n.dataset.src; }
+      });
+      if (nodes.length) { mermaid.run({ nodes: nodes }); }
+    }
+    initMermaid();
+    document.body.addEventListener("htmx:afterSwap", function (evt) {
+      if (evt.target.id === "drawer") { renderDrawerDiagram(evt.target); }
+    });
+    window.addEventListener("t3:theme", function () {
+      initMermaid();
+      var drawer = document.getElementById("drawer");
+      if (drawer) { renderDrawerDiagram(drawer); }
+    });
+  </script>
+{% endblock %}

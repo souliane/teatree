@@ -49,11 +49,12 @@ edge; the ``retro gate-failures`` CLI command lives in ``teatree.core.management
 """
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
-from teatree.core.review_findings import (
+from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FiledIssue,
     FilingContext,
@@ -78,6 +79,10 @@ _SENTENCE_SPLIT_RE = re.compile(r"[.;:\n]")
 _NON_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _SLUG_WORD_CAP = 6
 _SLUG_CHAR_CAP = 80
+#: Two firings is recurrence in BOTH dimensions — a gate hit twice in one session
+#: means the corrective did not take; hit once in each of two sessions means it did
+#: not stick. Same threshold, so neither dimension is privileged.
+_RECURRENCE_THRESHOLD = 2
 
 
 class GateVerdict(StrEnum):
@@ -163,7 +168,7 @@ class GateFailure:
     def fingerprint(self) -> str:
         """The dedup key: a stable hash of the gate-identity slug.
 
-        Delegates to the :class:`~teatree.core.review_findings.ReviewFinding`
+        Delegates to the :class:`~teatree.core.review.review_findings.ReviewFinding`
         adapter so the value recorded in the durable store and the value the
         escalation filer dedups on are ONE identical fingerprint — no second
         hashing scheme to drift.
@@ -284,6 +289,34 @@ def record_gate_failures(store: FindingsStore, failures: list[GateFailure]) -> N
         store.record(_session_key(failure.session_id), [classified])
 
 
+def recurring_fingerprints(
+    failures: list[GateFailure],
+    *,
+    store: FindingsStore,
+    min_occurrences: int = _RECURRENCE_THRESHOLD,
+) -> set[str]:
+    """Fingerprints that recur — WITHIN this session's *failures* or ACROSS sessions.
+
+    :meth:`FindingsStore.recurring_fingerprints` counts the number of per-session
+    FILES holding a fingerprint, and each file's findings are a
+    ``fingerprint -> classification`` map, so every firing of one gate inside a
+    single session collapses to one entry and that count stays 1. Cross-session
+    recurrence is therefore the only kind the store can see on its own.
+
+    Repetition inside one session is the stronger signal, not a weaker one: the
+    agent hit the gate, was told, and hit it again — the corrective visibly failed
+    to take. Counting only the cross-session dimension reported both gates of a
+    102-block transcript as ``recurring: false``, silently disabling the escalation
+    from "write a memory" to "build a gate" in exactly the case it exists for.
+
+    The two dimensions are unioned rather than summed: either one reaching
+    *min_occurrences* is recurrence, and neither can mask the other.
+    """
+    within = Counter(failure.fingerprint for failure in failures)
+    across = store.recurring_fingerprints(min_occurrences=min_occurrences)
+    return {fingerprint for fingerprint, seen in within.items() if seen >= min_occurrences} | across
+
+
 def escalate_gate_failures(
     host: "CodeHostBackend",
     *,
@@ -294,13 +327,14 @@ def escalate_gate_failures(
     """File one deduped enforcement issue per recurring preventable failure.
 
     A failure is escalated only when it is both *preventable* (classifier) and
-    *recurring* (its fingerprint recorded across >= 2 sessions). The filing
-    reuses :func:`~teatree.core.review_findings.file_class_c_issue`, so it is
+    *recurring* (:func:`recurring_fingerprints` — repeated within this session, or
+    recorded across >= 2 sessions). The filing reuses
+    :func:`~teatree.core.review.review_findings.file_class_c_issue`, so it is
     deduped by fingerprint marker (a re-run never refiles), banned-terms-safe
     (a hit withholds rather than leaks), and clickable-link safe. Environmental
     or non-recurring failures file nothing.
     """
-    recurring = store.recurring_fingerprints(min_occurrences=2)
+    recurring = recurring_fingerprints(failures, store=store)
     filed: list[FiledIssue] = []
     seen: set[str] = set()
     for failure in failures:

@@ -3,8 +3,8 @@
 Sits at the consumer end of the autonomous-events stack:
 
 1. Reads ``IncomingEvent.objects.unprocessed()`` (limited per tick).
-2. Classifies each via :func:`teatree.core.intent_classifier.classify_event`.
-3. Routes each via :func:`teatree.core.event_router.route_event`.
+2. Classifies each via :func:`teatree.core.intake.intent_classifier.classify_event`.
+3. Routes each via :func:`teatree.core.intake.event_router.route_event`.
 4. Executes the side effect for the routed action.
 5. Marks the event ``processed_at`` so it does not re-fire.
 
@@ -29,8 +29,8 @@ from django.db import OperationalError, ProgrammingError
 
 import teatree.core.overlay_loader as _overlay_loader
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.event_router import RoutedAction, route_event
-from teatree.core.intent_classifier import classify_event
+from teatree.core.intake.event_router import RoutedAction, route_event
+from teatree.core.intake.intent_classifier import classify_event
 from teatree.core.reply_transport import NoopReplier, Replier
 from teatree.loop.scanners.base import ScanSignal
 
@@ -43,7 +43,7 @@ type MessagingResolver = Callable[[str], MessagingBackend | None]
 
 
 def _default_messaging_resolver(overlay: str) -> MessagingBackend | None:
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: loaded at tick time
 
     return messaging_from_overlay(overlay or None)
 
@@ -101,14 +101,28 @@ class IncomingEventsScanner:
         for event in events:
             try:
                 signal = self._handle(event)
-            except Exception:
+            except Exception as exc:
                 logger.exception("IncomingEventsScanner failed on event %s", event.pk)
-                event.mark_processed()
+                # Do NOT mark_processed: that silently drops the poison. Record
+                # the failure so a transient error retries with backoff and a
+                # persistent one dead-letters (surfaced, not queue-blocking).
+                dead_lettered = event.record_failure(f"{type(exc).__name__}: {exc}")
+                if dead_lettered:
+                    signals.append(self._dead_letter_signal(event))
                 continue
             event.mark_processed()
             if signal is not None:
                 signals.append(signal)
         return signals
+
+    @staticmethod
+    def _dead_letter_signal(event: "IncomingEvent") -> ScanSignal:
+        """Surface a poisoned event that exhausted its retries (#673 dead-letter view)."""
+        return ScanSignal(
+            kind="incoming_event.dead_letter",
+            summary=f"dead-lettered {event.source} event after {event.attempts} attempts: {event.last_error}",
+            payload={"event_id": event.pk, "source": event.source, "attempts": event.attempts},
+        )
 
     def _handle(self, event: "IncomingEvent") -> ScanSignal | None:
         self._resolve_parent_text(event)
@@ -201,7 +215,7 @@ class IncomingEventsScanner:
         falls through to ``get_overlay_for_url("")`` → ``get_overlay(None)``,
         which fails loud naming the installed overlays rather than picking one.
         """
-        guard = _overlay_loader.get_overlay_for_url(_event_forge_url(event)).can_auto_merge(
+        guard = _overlay_loader.get_overlay_for_url(_event_forge_url(event)).review.can_auto_merge(
             target_ref=action.target_ref,
             thread_ref=action.detail,
         )

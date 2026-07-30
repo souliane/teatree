@@ -27,7 +27,7 @@ _MODELS_ROOT = _REPO_ROOT / "src" / "teatree" / "core" / "models"
 _FORBIDDEN_PREFIXES = (
     "teatree.core.gates",
     "teatree.core.tasks",
-    "teatree.core.worktree_tasks",
+    "teatree.core.worktree.worktree_tasks",
     "teatree.core.overlay_loader",
     "teatree.core.cost",
     "teatree.core.backend_protocols",

@@ -37,7 +37,7 @@ def migrate_self_db() -> list[str]:
     Thin binding of :func:`teatree.core.gates.schema_guard.migrate_self_db` so
     the corpus's pre-flight has one name to call (and tests one name to patch).
     """
-    from teatree.core.gates.schema_guard import migrate_self_db as _migrate  # noqa: PLC0415
+    from teatree.core.gates.schema_guard import migrate_self_db as _migrate  # noqa: PLC0415 — deferred: per eval run
 
     return _migrate()
 
@@ -49,7 +49,7 @@ def schema_preflight_result() -> CheckResult:
     migrated to current), and a RED one carrying the failure when the in-process
     migrate raises — fail-closed, never a silent pass against a half-migrated DB.
     """
-    from teatree.core.gates.schema_guard import SelfDbMigrationError  # noqa: PLC0415
+    from teatree.core.gates.schema_guard import SelfDbMigrationError  # noqa: PLC0415 — deferred: loaded per eval run
 
     try:
         migrate_self_db()

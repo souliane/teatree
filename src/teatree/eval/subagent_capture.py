@@ -17,6 +17,7 @@ import dataclasses
 import shutil
 from pathlib import Path
 
+from teatree.eval import transcript_manifest
 from teatree.eval.subagent_transcript import is_subagent_transcript
 
 
@@ -24,6 +25,15 @@ from teatree.eval.subagent_transcript import is_subagent_transcript
 class SubagentFile:
     path: Path
     mtime: float
+
+
+@dataclasses.dataclass(frozen=True)
+class CaptureProvenance:
+    """The scenario identity a capture binds its transcript to (its manifest sidecar)."""
+
+    scenario: str
+    prompt: str
+    head_sha: str
 
 
 def _projects_dir() -> Path:
@@ -50,10 +60,32 @@ def newest_subagent_transcript(*, since: float | None = None, projects_dir: Path
     return None
 
 
-def capture_to(target: Path, *, since: float | None = None, projects_dir: Path | None = None) -> Path | None:
+def capture_to(
+    target: Path,
+    *,
+    since: float | None = None,
+    projects_dir: Path | None = None,
+    provenance: CaptureProvenance | None = None,
+) -> Path | None:
+    """Copy the freshest sub-agent transcript to *target*, writing its provenance sidecar.
+
+    When *provenance* is supplied (the ``t3 eval capture-subagent`` path always
+    supplies it), a :mod:`teatree.eval.transcript_manifest` sidecar is written next
+    to *target* so the grade step can refuse a stale or cross-contaminated
+    transcript. Omitting it (a bare copy) writes no sidecar — the transcript then
+    grades unverified.
+    """
     source = newest_subagent_transcript(since=since, projects_dir=projects_dir)
     if source is None:
         return None
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
+    if provenance is not None:
+        transcript_manifest.write(
+            target,
+            scenario=provenance.scenario,
+            prompt=provenance.prompt,
+            head_sha=provenance.head_sha,
+            source=source,
+        )
     return source

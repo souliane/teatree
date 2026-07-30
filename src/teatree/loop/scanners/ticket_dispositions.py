@@ -163,7 +163,7 @@ class TicketDispositionScanner:
                 )
                 ticket.mark_remote_missing()
                 continue
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — an issue-fetch failure skips the ticket, never aborts the scan
                 logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
                 continue
             snap = _snapshot(issue)

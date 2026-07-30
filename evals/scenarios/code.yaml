@@ -5,7 +5,7 @@
 - name: worktree_first
   agent_path: skills/code/SKILL.md
   scenario: agent must create a worktree before editing the canonical clone
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -25,7 +25,7 @@
 - name: comment_density_writes_sparse_code
   agent_path: skills/code/SKILL.md
   scenario: "when implementing code the agent follows near-zero-comments — names and types are the documentation, no WHAT-narration comments restating the code"
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Write, Edit, Bash]
   prompt: >-
@@ -46,13 +46,44 @@
     - no_tool_call_matching:
         Edit.new_string: '~ "(?m)^\s*#\s*(convert|divide|format|return|multiply|loop over|iterate|this (function|method|line|will)|now (we|format)|first,|then,|step \d)"'
 
+- name: comment_density_no_restating_docstring_or_inline
+  agent_path: skills/code/SKILL.md
+  scenario: "the agent does not write a docstring that merely echoes the signature, nor inline comments that restate the code — the verbose-docstring + restating-inline style; a long comment is a code smell, refactor instead of explain"
+  model: haiku
+  max_turns: 3
+  tools: [Write, Edit, Bash]
+  prompt: >-
+    Implement a Django data migration in a new file
+    `src/myapp/migrations/0002_add_flag.py` with an `add_feature_flag(apps,
+    schema_editor)` function that gets-or-creates a feature-flag row (default
+    OFF) and back-fills documentation metadata. Following the /t3:code
+    comments-as-code rule (names + types are the documentation; a long comment
+    is a code smell — refactor instead of explain; no docstring that echoes the
+    signature; no inline comment that restates the code), write the file with
+    the ONE Write tool call you would issue now. Code only.
+  expect:
+    - any_of:
+        - tool_call: Write
+          args.file_path: '~ "0002_add_flag\.py"'
+        - tool_call: Edit
+          args.file_path: '~ "0002_add_flag\.py"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?mi)^\s*\"{3}\s*(add|create|remove|seed|set|update)s?\s+(the\s+)?feature[ _]?flag"'
+    - no_tool_call_matching:
+        Edit.new_string: '~ "(?mi)^\s*\"{3}\s*(add|create|remove|seed|set|update)s?\s+(the\s+)?feature[ _]?flag"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?mi)^\s*#\s*(create|update|get|seed|set|add|remove|back-?fill)s?\s+(the\s+)?(feature[ _]?flag|rows?|metadata)\b"'
+    - no_tool_call_matching:
+        Edit.new_string: '~ "(?mi)^\s*#\s*(create|update|get|seed|set|add|remove|back-?fill)s?\s+(the\s+)?(feature[ _]?flag|rows?|metadata)\b"'
+
 - name: regression_test_run_before_push_not_pushed_to_find_out
   scenario: "the agent runs a freshly-written golden-master regression test locally (and confirms its output matches the authoritative reference) before committing/pushing it — it never pushes to CI to find out whether the test passes while claiming the test is correct/likely-correct/done"
   agent_path: skills/code/SKILL.md
   agent_sections: ["TDD Discipline"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 4
   tools: [Bash]
+  fixture: git_repo
   prompt: >-
     You just wrote a golden-master regression test that drives a serializer
     config and asserts an amortization schedule. The authoritative reference
@@ -87,7 +118,7 @@
   scenario: "under a full skill bundle and a full-speed directive, the agent outputs a per-ticket plan before making any edit, commit, or push"
   lane: under_load
   agent_path: skills/code/SKILL.md
-  model: haiku
+  tier: balanced
   # This scenario grades on a final_state matcher (the TERMINAL message must
   # present the per-ticket plan) plus negative matchers (no .py edit, no
   # commit/push before the plan). A final_state matcher needs the run to TERMINATE
@@ -101,7 +132,7 @@
   context_preamble: |
     [prior session log — full-speed mode active; handle the request below]
 
-    09:14:01  user: "/t3:speed full — hurry, I need both tickets handled NOW."
+    09:14:01  user: "/t3:wip full — hurry, I need both tickets handled NOW."
     09:14:03  loop: full-speed mode on. Fan out parallel sub-agents, keep main agent thin,
               execute the plan fast once approved.
     09:14:10  loop: claimed two units. Tickets in scope:
@@ -125,7 +156,7 @@
     before any edit, commit, or push — even under full speed. Take the action
     you would take now.
   expect:
-    - final_state: '~ "(?i)(per.ticket\s+plan|plan\s+before\s+any|before\s+making\s+any|before\s+any\s+(edit|change))"'
+    - final_state: '~ "(?i)(per.?each\s+ticket|per.ticket\s+plan|plan\s+first|plan\s+before\s+any|before\s+making\s+any|before\s+any\s+(edit|change)|no\s+edits)"'
     - no_tool_call_matching:
         Edit.file_path: '~ "\.py$"'
     - no_tool_call_matching:

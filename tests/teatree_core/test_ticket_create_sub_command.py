@@ -16,6 +16,16 @@ _CHILD = {"iid": 8546, "web_url": "https://gitlab.com/org/repo/-/work_items/8546
 
 
 class TicketCreateSubCommandTest(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # `create-sub` now routes the child title/body/labels through the scanned
+        # forge-write seam; pin the leak-gate visibility probe to PRIVATE (clean
+        # pass, no gh/glab subprocess) so these mechanics tests stay deterministic.
+        # The leak-refusal path has its own suite (test_forge_write_cli_scrub.py).
+        patcher = patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_creates_child_via_resolved_code_host(self) -> None:
         host = MagicMock()
         host.create_sub_issue.return_value = _CHILD

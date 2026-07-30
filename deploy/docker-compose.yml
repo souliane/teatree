@@ -1,0 +1,282 @@
+# teatree headless deployment — one image, five services
+# (init/worker/admin/slack-listener/watchdog) sharing named volumes so init
+# installs teatree once and worker/admin run it.
+#
+# The box-side env file `teatree.env` (next to this file, gitignored, written by
+# the deploy workflow) supplies the non-secret runtime env and the Anthropic auth
+# path. The GitHub token and admin password are NOT kept here as plaintext: the
+# entrypoint sources them from the box's gpg-encrypted `pass` store at boot
+# (#3454 — TEATREE_GH_TOKEN / T3_ADMIN_PASSWORD, see deploy/entrypoint.sh and
+# deploy/README.md). Other non-secret runtime config (clone/repo paths, uv dirs)
+# is baked into the image.
+name: teatree
+
+x-teatree-common: &teatree-common
+  # Pull a PUBLISHED self-contained image by setting TEATREE_IMAGE (the publish
+  # workflow's lockfile-keyed tag, #3451) in a `.env` next to this file or in the
+  # deploy shell; leaving it unset builds locally from deploy/Dockerfile (the
+  # current on-box flow, unchanged). `.env` adjacency keeps the value identical
+  # for the host deploy AND the path-identity-mounted watchdog, so both resolve
+  # the same image; the watchdog's `up -d --no-recreate` never recreates a running
+  # container on a value change regardless.
+  image: ${TEATREE_IMAGE:-teatree-headless:latest}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    # The container's runtime UID must equal the host deploy user's UID (path-
+    # identity bind mounts — see deploy/README.md § UID invariant). deploy.sh
+    # exports TEATREE_UID from the host (`id -u`); the default matches the image's
+    # own ARG default (1001) for a bare `compose build` with no deploy.sh.
+    args:
+      TEATREE_UID: ${TEATREE_UID:-1001}
+      # Pin the baked source@ref (#3451). Defaults to `main`; the publish workflow
+      # passes the exact build SHA so the image and its lockfile-keyed tag pin together.
+      TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
+  env_file:
+    - teatree.env
+  # All services mount all state so admin and worker share ONE db.sqlite3
+  # (WAL — safe concurrent reads) and one editable install. The DB, worktrees,
+  # and workspaces are HOST bind mounts at their canonical absolute paths, so the
+  # container and the host see the same files (path identity — no XDG knob). This
+  # puts the factory's DB on the same daily-backed-up host disk as the operator's
+  # real DB instead of a Docker-internal named volume.
+  volumes:
+    - teatree_src:/home/teatree/teatree
+    - type: bind
+      source: /home/teatree/.local/share/teatree
+      target: /home/teatree/.local/share/teatree
+    - type: bind
+      source: /home/teatree/.local/share/teatree-worktrees
+      target: /home/teatree/.local/share/teatree-worktrees
+    - type: bind
+      source: /home/teatree/workspace/t3-workspaces
+      target: /home/teatree/workspace/t3-workspaces
+    # Credential plane: the host-provisioned pass store + its GPG home, as
+    # DEDICATED mounts decoupled from the data dir (a data-dir change must never
+    # orphan credentials again, as #3262 did). Path identity; rw — gpg-agent
+    # binds its socket and lock files inside GNUPGHOME on a headless box, and the
+    # slack/postgres secret writers insert into pass at runtime. Secrets stay
+    # gpg-encrypted on the host disk, OUTSIDE the backed-up data dir.
+    - type: bind
+      source: /home/teatree/.password-store
+      target: /home/teatree/.password-store
+    - type: bind
+      source: /home/teatree/.gnupg
+      target: /home/teatree/.gnupg
+    # Claude session plane: session transcripts + per-project memory corpus —
+    # the dream pass's input AND product (#3277 classifies dream's use as PRODUCT
+    # DATA: it reads transcripts and maintains */memory; runtime STATE still never
+    # resolves from assistant memory). Without this the containerized dream pass
+    # globs an empty ~/.claude/projects and every nightly consolidation is a
+    # permanent no-op (0 members). Path identity; rw — dream phases 4-6 write
+    # cross-links / MEMORY.md / decay archives, and container-run headless sessions
+    # persist their transcripts to the backed-up host disk. Scoped to projects/
+    # only, never the whole ~/.claude — the reason is CREDENTIALS
+    # (~/.claude/.credentials.json) which must stay host-only, NOT settings.
+    # settings.json is non-secret and needs its own provisioning: the init role
+    # generates it from the image-baked deploy/claude-settings.template.json (+ env
+    # overrides) so the headless agent's model / permission mode / autoMode grants
+    # / tool-use concurrency are configurable rather than stock CLI defaults
+    # (#3359 — see deploy/entrypoint.sh seed_claude_settings).
+    - type: bind
+      source: /home/teatree/.claude/projects
+      target: /home/teatree/.claude/projects
+    - teatree_uv:/opt/teatree/uv
+  init: true
+
+# Memory sizing (#3651). Every `mem_limit` below is a ceiling, not a reservation:
+# the kernel enforces it only against what the container actually allocates, so
+# an unused cap costs nothing and raising one consumes no RAM at all. What
+# a cap must cover is that container's realistic CONCURRENT peak plus headroom —
+# NOT its share of a budget. It follows that the SUM of these ceilings may exceed
+# physical RAM and that is expected, not a misconfiguration: do not "fix" the sum
+# down by shrinking a cap. Each cap below is set from measured usage on the live
+# box and states that measurement, so the next reader re-sizes from evidence.
+# Under-sizing is the failure that actually bites: a 512m admin OOM-killed a
+# routine `config_setting set` and ran at 74% of cap during a health probe.
+services:
+  # One-shot prep. worker/admin wait for this to exit 0, so the editable install
+  # on the shared clone never races.
+  teatree-init:
+    <<: *teatree-common
+    # TMPDIR pins the disk-backed agent output root at the CONTAINER level so a
+    # `docker exec` into this service inherits it too (#3641). The entrypoint's
+    # export covers only the service MAIN process — an exec'd process bypasses the
+    # entrypoint, so without this pin its scratch/transcripts land under a second,
+    # ephemeral root. The `${TEATREE_DISK_TMPDIR:-/var/tmp}` default matches
+    # deploy/entrypoint.sh's setup_disk_tmpdir.
+    environment:
+      TEATREE_ROLE: init
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+    restart: "no"
+
+  # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
+  # connection.queries unboundedly.
+  teatree-worker:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: worker
+      T3_DEBUG: "0"
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Defense-in-depth for drain-then-deploy: deploy/deploy.sh drains the worker
+    # (quiesce + wait for in-flight leases) BEFORE the recreate, so a clean deploy
+    # never SIGKILLs live work. This grace covers the residual case — a recreate that
+    # skipped the drain (bare `docker compose up`) or a worker mid-shutdown — giving
+    # the SIGTERM handler (`worker.request_stop()`) room to exit cleanly before SIGKILL
+    # instead of the 10s default. A CLAIMED task killed anyway re-queues via its lease
+    # lapse, so this is a graceful-exit window, not a correctness dependency.
+    stop_grace_period: "60s"
+    # The worker's CPU/RAM caps are DERIVED FROM THE REAL HOST at deploy time
+    # (#3432): deploy/deploy.sh runs uncapped on the host, reads its true
+    # cores/RAM via src/teatree/utils/ram_probe.py, and exports
+    # TEATREE_WORKER_CPUS / TEATREE_WORKER_MEM_LIMIT before `docker compose up`.
+    # The cgroup cap then reflects the host, so inside the worker
+    # `available_cpu_count` derives provision concurrency from the host instead
+    # of a baked-in 3-core cap that made host-derived concurrency a no-op. The
+    # in-file defaults below apply only when deploy.sh did not export a value
+    # (python3 absent / RAM unreadable, or a bare `docker compose up`): ~18g and
+    # 3 cores, the pre-#3432 hard-coded caps sized for a ~30GB host.
+    #
+    # 18g stays deliberately generous, and it is a CEILING for burst work, not a
+    # reservation — the worker idles at ~0.5 GiB. It is the one container that
+    # genuinely spikes: it hosts the headless agents and their test suites, and
+    # the box has been observed at 27/30 GiB under that load. Sizing this from
+    # idle usage would OOM-kill agent runs mid-flight.
+    mem_limit: "${TEATREE_WORKER_MEM_LIMIT:-18g}"
+    cpus: "${TEATREE_WORKER_CPUS:-3.0}"
+
+  # Django admin (gunicorn), DEBUG off like the worker — /admin/ mounts
+  # unconditionally now, so the admin no longer needs DEBUG (and inherits the
+  # same connection.queries-leak fix). Host networking binds it to the BOX
+  # loopback (127.0.0.1:8000): the SSH tunnel is the security boundary, and the
+  # middleware sees a genuine 127.0.0.1 client (a published bridge port would NAT
+  # the source to the docker gateway). With a loopback-only bind the middleware's
+  # loopback check is defense-in-depth against a bind misconfig, not the primary
+  # gate. Host port 8000 must be free on the box. Reach it via an SSH tunnel.
+  teatree-admin:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: admin
+      T3_DEBUG: "0"
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    network_mode: host
+    # 2g, because the admin is NOT gunicorn-only: it is the default `docker exec`
+    # target for CLI work, so it routinely runs Django-booting CLI commands while
+    # it serves the dashboard. Measured on the live box: ~257 MiB idle gunicorn,
+    # and ~380 MiB for `t3 doctor check --json` alone — 74% of the old 512m cap
+    # for one probe while the dashboard was still being served, and a routine
+    # `config_setting set` was OOM-killed outright under it (#3651). A child dying
+    # under the cgroup limit is not reported as a container-level OOM, so
+    # `OOMKilled` stayed false the whole time. The watchdog's health probe now
+    # runs in the WORKER (deploy/watchdog.sh's EXEC_SERVICES), which removes the
+    # heaviest recurring competitor for gunicorn but not the ad-hoc CLI exec that
+    # OOM-killed. 2g holds that concurrency (~640 MiB) with room for a second
+    # simultaneous CLI. The `_check_worker_memory_cap` doctor gate is role-aware
+    # and never inspects this cap, so nothing else catches an under-sized admin.
+    mem_limit: 2g
+    cpus: "0.5"
+
+  # The Slack Socket-Mode receiver. Runs `t3 slack listen` for every
+  # Slack-enabled overlay, writing inbound DMs/mentions/reactions to the JSONL
+  # queue on the shared data mount that the worker's drain-queue slot drains.
+  # Separate from the worker so a WebSocket reconnect never disturbs the loop
+  # cadence, and vice-versa. Harmless on a box with no Slack overlay: the
+  # process exits and `restart: unless-stopped` retries.
+  teatree-slack-listener:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: slack-listener
+      T3_DEBUG: "0"
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # 1g: measured at 172-264 MiB, i.e. up to ~52% of the old 512m cap while
+    # merely idling on a WebSocket. That left almost no room for a reconnect
+    # storm or a burst of queued inbound events, so the cap is tripled to ~4x
+    # observed peak.
+    mem_limit: 1g
+    cpus: "0.5"
+
+  # In-daemon self-heal watchdog — the cross-platform (Linux + macOS) replacement
+  # for the Linux-only systemd timer (#3289). The Docker daemon is the only
+  # supervisor present on both platforms, so the watchdog lives in the daemon as a
+  # sidecar container the daemon keeps alive independently of the stack it watches.
+  #
+  # Deliberately a STANDALONE block (NOT the x-teatree-common anchor): the anchor
+  # would drag in the DB/credential/session bind mounts, the teatree.env secrets,
+  # and a depends_on on init — all of which the watchdog must NOT have. It needs
+  # only the docker socket + a read-only view of this checkout.
+  teatree-watchdog:
+    image: ${TEATREE_IMAGE:-teatree-headless:latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      # Same shared image, so the UID build arg must match the anchor's (see
+      # deploy/README.md § UID invariant); default 1001 tracks the ARG default.
+      args:
+        TEATREE_UID: ${TEATREE_UID:-1001}
+        TEATREE_SOURCE_REF: ${TEATREE_SOURCE_REF:-main}
+    environment:
+      TEATREE_ROLE: watchdog
+      TEATREE_WATCHDOG_INTERVAL: "300"
+      # Where deploy.sh's single-convergence flock lands inside THIS container — the
+      # deploy-in-flight probe that keeps a rolling deploy from paging as an outage
+      # (#3732). The host path is /tmp/teatree-deploy.lock; see the /host-tmp mount.
+      TEATREE_WATCHDOG_DEPLOY_LOCK: /host-tmp/teatree-deploy.lock
+      # The watchdog role execs watchdog.sh before the entrypoint's TMPDIR export
+      # and runs no agents, so it never writes scratch to this root — but #3641's
+      # contract is that EVERY service declares the output root explicitly, so the
+      # pin is uniform and the doctor check (services_missing_output_root) stays green.
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+    # root so /var/run/docker.sock is readable regardless of the host docker gid
+    # (the socket is root-equivalent anyway; see README § security posture).
+    user: "0:0"
+    volumes:
+      # The daemon control channel — the watchdog's only mutating capability.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # This checkout, READ-ONLY, at PATH IDENTITY (source == target). Path
+      # identity keeps the inner `docker compose ... up -d` config hash identical
+      # to the host's, so the watchdog never recreates itself or the app services.
+      - type: bind
+        source: /home/teatree/teatree-deploy
+        target: /home/teatree/teatree-deploy
+        read_only: true
+      # The host temp root, READ-ONLY, at a DISTINCT target so the container's own
+      # /tmp is untouched. The only thing read from it is deploy.sh's convergence
+      # flock, whose inode the deploy-in-flight probe matches against /proc/locks
+      # (#3732). The DIRECTORY is the mount source, never the lock file: a missing
+      # file source would have dockerd create a host DIRECTORY at that path, and
+      # deploy.sh's `exec 9>` on a directory fails — killing every later deploy.
+      # Without this mount the probe degrades to the container-recreation signal.
+      - type: bind
+        source: /tmp
+        target: /host-tmp
+        read_only: true
+    # NO depends_on — it must start even when init crash-loops (the whole point).
+    # restart: always (NOT unless-stopped) — it must resurrect even after a manual
+    # stop followed by a daemon restart, so the supervisor is never silently gone.
+    restart: always
+    # The socket is the only channel it needs; the owner DM goes out via a
+    # `compose exec` inside an app container, not from this container's network.
+    network_mode: "none"
+    init: true
+    # 256m: measured at 61 MiB, ~48% of the old 128m cap. It is the supervisor
+    # that resurrects everything else, so it is the last container that should
+    # ever OOM; 256m buys ~4x observed peak for 128 MiB of ceiling that stays
+    # unallocated in the normal case.
+    mem_limit: 256m
+    cpus: "0.25"
+
+volumes:
+  teatree_src:
+  teatree_uv:

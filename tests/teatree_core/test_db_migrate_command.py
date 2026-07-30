@@ -34,12 +34,12 @@ class DbMigrateCommandTest(TransactionTestCase):
         # rescue against the live connection), never a subprocess wrapper.
         with patch(
             "teatree.core.management.commands.db.migrate_self_db",
-            return_value=["core.0041_resource_pressure_marker"],
+            return_value=["core.0001_initial"],
         ) as mocked:
             out = StringIO()
             call_command("db", "migrate", stdout=out)
         assert mocked.called
-        assert "core.0041_resource_pressure_marker" in out.getvalue()
+        assert "core.0001_initial" in out.getvalue()
 
     def test_migrate_preserves_existing_rows(self) -> None:
         # Non-destructive: a row written before migrate survives it. On a

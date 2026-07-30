@@ -31,22 +31,63 @@ classifiers there, so an interspersed persistent flag cannot break detection
 (#1672). This module owns body / title / secret-surface EXTRACTION.
 """
 
-import json
-import re
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
+from teatree.hooks._body_file_resolution import (
+    BodyFileContext,
+    command_body_file_base,
+    commit_body_file_base,
+    heredoc_files_map,
+    piped_stdin_writer_body,
+    unredirected_heredoc_bodies,
+    walk_body_file_flags,
+)
+from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
+from teatree.hooks._inline_body_resolution import resolve_inline_body_value
+from teatree.hooks._parser_primitives import (
+    FAIL_CLOSED_SENTINEL,
+    UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    attached_value,
+    canonical_forge_leader,
+    is_fail_closed_sentinel,
+    is_unavailable_body_source_sentinel,
+    read_file_arg,
+    wrapper_prefix_len,
+)
 from teatree.hooks._publish_detection import (
+    command_has_interpreter_forge_transport,
     command_has_opaque_forge_transport,
     command_has_token_aware_publish_surface,
     extract_title_fragments,
     segment_is_substring_publish,
     segment_word_lists,
 )
+from teatree.hooks._python_rest_detection import (
+    command_has_python_rest_publish_surface,
+    is_python_leader,
+    segment_is_python_rest_publish,
+)
 from teatree.hooks._shell_lexer import Token, TokenKind, split_commands, tokenize
 
-if TYPE_CHECKING:
-    from teatree.hooks._body_file_resolution import BodyFileContext
+# Re-exported for backward compatibility: several sibling gates import these
+# primitives from ``_command_parser`` (their historical home). They now live in
+# the dependency-free ``_parser_primitives`` leaf (which breaks the
+# ``_command_parser`` ⇄ ``_body_file_resolution`` cycle, #F7.9); re-exporting
+# keeps every ``from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL``
+# (and siblings) resolving unchanged.
+__all__ = [
+    "FAIL_CLOSED_SENTINEL",
+    "UNAVAILABLE_BODY_SOURCE_SENTINEL",
+    "attached_value",
+    "extract_bash_payload",
+    "extract_secret_scan_text",
+    "first_segment_words",
+    "is_fail_closed_sentinel",
+    "is_publish_command",
+    "is_unavailable_body_source_sentinel",
+    "read_file_arg",
+]
 
 # ── Publish-surface substring catalogues ────────────────────────────
 
@@ -68,71 +109,6 @@ _T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
     "ticket create-issue",
     "t3 slack react",
 )
-
-
-# Sentinel string that downstream scanning treats as a HIGH match. Any
-# indirect or undecodable body source surfaces this so the gate fails
-# closed (codex CRITICAL #5 round 1, codex round-2 #4).
-#
-# The wording must NOT itself match any quote-scanner HIGH pattern,
-# otherwise the gate self-matches its own injected sentinel and reports
-# a bogus user-quote finding on a body it never actually saw (#126: the
-# old "the user said: …" phrasing tripped ``the-user-said-colon``). The
-# sentinel is recognised explicitly by :func:`is_fail_closed_sentinel`
-# so a scanner can fail closed on a NAMED reason instead of an
-# accidental content-pattern self-match.
-FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
-
-
-# A SECOND fail-closed sentinel for the body sources that are FUNDAMENTALLY
-# unavailable at PreToolUse -- an unexpanded ``$VAR`` (the value is not in the
-# hook env) and a stdin body (``gh api --input -``, ``git commit -F -``). The
-# generic :data:`FAIL_CLOSED_SENTINEL` covers a missing/unreadable FILE, where
-# the actionable advice is "the file is missing"; these two cases need the
-# OPPOSITE advice (write the body to an absolute file and pass ``--body-file
-# <abspath>``), so they carry a distinct sentinel the gate maps to a distinct,
-# actionable message (#2369). The block is identical -- both sentinels fail
-# closed -- only the operator-facing reason differs. It too must not self-match
-# any quote-scanner HIGH pattern.
-UNAVAILABLE_BODY_SOURCE_SENTINEL: Final[str] = (
-    "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
-)
-
-
-def is_fail_closed_sentinel(text: str) -> bool:
-    """Return True iff ``text`` carries an INJECTED fail-closed sentinel.
-
-    The parser emits a sentinel as its own discrete payload fragment for every
-    unresolvable/ambiguous body source, and the fragments are joined by newlines
-    — so a genuinely-injected sentinel is always a standalone newline-delimited
-    line equal to :data:`FAIL_CLOSED_SENTINEL` or
-    :data:`UNAVAILABLE_BODY_SOURCE_SENTINEL`. The gate fails closed on either
-    NAMED reason (#126/#2369); both spellings are recognised here so every
-    downstream gate (quote-scanner, AI-signature, banned-terms) keeps failing
-    closed regardless of which body-source class injected the sentinel.
-
-    A body that merely MENTIONS a sentinel as inert prose inside a
-    properly-quoted argument value (a commit message or PR body that
-    DISCUSSES the gate) embeds the phrase mid-line, not as a standalone
-    line. That is not a quoting hazard — the argument is correctly quoted —
-    so the line-exact test allows it while every genuine injection (the
-    sentinel on its own line) still fails closed (#1213).
-    """
-    sentinels = {FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL}
-    return any(line.strip() in sentinels for line in text.split("\n"))
-
-
-def is_unavailable_body_source_sentinel(text: str) -> bool:
-    """Return True iff ``text`` carries an injected UNAVAILABLE-body-source sentinel.
-
-    Distinguishes the ``$VAR`` / stdin class (fundamentally unavailable before
-    the command runs) from a missing/unreadable FILE, so the gate can render the
-    actionable "write the body to an absolute file and use ``--body-file
-    <abspath>``" message for it instead of the misleading "body file is missing"
-    one (#2369). Line-exact for the same inert-prose reason as
-    :func:`is_fail_closed_sentinel`.
-    """
-    return any(line.strip() == UNAVAILABLE_BODY_SOURCE_SENTINEL for line in text.split("\n"))
 
 
 def _segment_is_t3_publish(words: list[str]) -> bool:
@@ -172,11 +148,30 @@ def is_publish_command(command: str) -> bool:
         the ``git [global-flags] commit`` after a ``-C``/``--git-dir`` flag and the
         raw-REST ``gh``/``glab api`` WRITE (effective method ≠ GET) regardless of
         flag ordering. A read-only ``gh``/``glab api`` GET is NOT a publish (#1530).
+    - a python REST-publish segment
+        (:func:`_publish_detection.command_has_python_rest_publish_surface`) --
+        a ``python3``/``python``-led segment POSTing/PATCHing to a forge REST
+        API (``requests``/``httpx``/``urllib``/a raw ``http.client`` call),
+        the SAME write-method + forge-target shape as ``gh``/``glab api``,
+        just authored in Python instead of CLI flags (#2943 gap).
+    - a forge call hidden inside a command-string INTERPRETER argument
+        (:func:`_publish_detection.command_has_interpreter_forge_transport`) --
+        ``sh -c "gh pr create --body X"``, ``eval "gh ..."``, ``ssh host gh ...``.
+        The forge tool never reaches an argv position the substring / api /
+        git-commit detectors parse, so a STANDALONE wrapper-hidden post used to
+        evade detection and skip BOTH leak gates entirely; the destination-aware
+        gates then fail closed on the unscannable body (#F7.1). A read-only
+        inspection that merely QUOTES a forge token (``rg 'sh -c "gh"'``) has a
+        non-interpreter leader and is NOT classified as a publish.
     """
     for words in segment_word_lists(command):
         if segment_is_substring_publish(words) or _segment_is_t3_publish(words):
             return True
-    return command_has_token_aware_publish_surface(command)
+    if command_has_token_aware_publish_surface(command):
+        return True
+    if command_has_python_rest_publish_surface(command):
+        return True
+    return command_has_interpreter_forge_transport(command)
 
 
 # Per-command argument-walker dispatch tables --------------------------
@@ -191,143 +186,42 @@ _BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
 
+# ``glab`` spells the MR/issue description short flag ``-d`` on ``create`` and
+# ``update``; ``gh`` uses ``-d`` for the boolean ``--draft``, so this short flag
+# is scoped to the ``glab`` leader only — extracting the next token as a body
+# for ``gh -d`` would misread its boolean draft switch.
+_GLAB_BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-d"})
+
 # Long options for ``gh api`` / ``glab api`` field assignments.
 _API_FIELD_LONG_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field"})
 _API_FIELD_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-f", "-F"})
 
-# Curl long-option data flags — payload is JSON-or-text.
-_CURL_DATA_LONG_FLAGS: Final[frozenset[str]] = frozenset(
-    {"--data", "--data-raw", "--data-binary", "--data-urlencode", "--json"},
-)
 
+def _walk_python_script(words: list[str], payloads: list[str]) -> None:
+    """Extract a python ``-c "<script>"`` inline script argument as a payload.
 
-def read_file_arg(path: str, base: Path | None = None) -> str | None:
-    """Return the text of ``path``, trying ``base / path`` as a fallback.
-
-    The bare ``path`` is read first (an absolute path, or one relative to the
-    process cwd). When that fails and ``base`` is set, the same path is retried
-    relative to ``base`` -- the dir whose repo a ``git commit`` LANDS in. At
-    PreToolUse the cold hook subprocess's cwd has often reset away from the
-    worktree, so a ``git -C <worktree> commit -F <relpath>`` body file is
-    unreadable from the cwd yet readable from the commit's own repo dir.
-    Resolving against ``base`` lets the gate scan that body and apply the
-    private-repo carve-out instead of fail-closing on an unread body.
-    """
-    candidates = [Path(path)]
-    if base is not None and not Path(path).is_absolute():
-        candidates.append(base / path)
-    for candidate in candidates:
-        try:
-            return candidate.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-    return None
-
-
-def _json_body_fields(blob: str) -> list[str]:
-    """Return ``text``/``message``/``body`` values from a JSON blob, if any."""
-    try:
-        decoded = json.loads(blob)
-    except (ValueError, TypeError):
-        return []
-    if not isinstance(decoded, dict):
-        return []
-    return [str(decoded[key]) for key in ("text", "message", "body") if key in decoded]
-
-
-def attached_value(token: str, prefix: str) -> str | None:
-    """Return the attached value of ``-X<value>`` / ``-X=<value>``, if any.
-
-    Returns the substring AFTER ``prefix`` when ``token`` starts with the
-    prefix and is strictly longer than it. ``-X=value`` strips the
-    leading ``=`` so callers see the bare payload.
-    """
-    if token.startswith(prefix) and len(token) > len(prefix):
-        return token[len(prefix) :].removeprefix("=")
-    return None
-
-
-def _scan_curl_payload(raw: str, payloads: list[str]) -> None:
-    """Append ``raw`` plus its JSON ``text``/``message``/``body`` fields.
-
-    A non-JSON-decodable body that LOOKS like JSON (starts with ``{`` or
-    ``[``) fails closed because we cannot be sure the gate's pattern
-    catalogue covers the obfuscation.
-    """
-    payloads.append(raw)
-    json_fields = _json_body_fields(raw)
-    if json_fields:
-        payloads.extend(json_fields)
-    elif raw.strip().startswith(("{", "[")):
-        payloads.append(FAIL_CLOSED_SENTINEL)
-
-
-def _record_curl_value(value: str, payloads: list[str]) -> None:
-    """Route a single curl data value to the payload list.
-
-    ``@file`` references fail closed (we cannot read arbitrary files);
-    everything else gets the standard JSON-aware scan.
-    """
-    if value.startswith("@"):
-        payloads.append(FAIL_CLOSED_SENTINEL)
-    else:
-        _scan_curl_payload(value, payloads)
-
-
-def _curl_long_flag_attached(word: str) -> str | None:
-    """Return the value of ``--data=VALUE`` / ``--json=VALUE`` if attached."""
-    for flag in _CURL_DATA_LONG_FLAGS:
-        attached = attached_value(word, flag + "=")
-        if attached is not None:
-            return attached
-    return None
-
-
-def _curl_short_d_attached(word: str) -> str | None:
-    """Return the value of ``-dVALUE`` attached short option, if applicable.
-
-    Excludes the long ``--data*`` / ``--json`` family — those start with
-    ``--`` and are handled by :func:`_curl_long_flag_attached`.
-    """
-    if word.startswith(("--data", "--json")):
-        return None
-    return attached_value(word, "-d")
-
-
-def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
-    """Extract curl ``-d``/``--data*``/``--json`` payloads from a command.
-
-    Supports:
-    - ``-d value`` (next token)
-    - ``-dvalue`` (attached short option, POSIX)
-    - ``-d=value`` (equals form)
-    - ``--data value`` / ``--data=value``
-    - ``-d@file`` / ``--data @file`` (fail closed — we cannot read the file)
+    Python owns no ``--body``/``--file`` grammar of its own, so the generic
+    body-flag/file walkers never see the script text a REST-publish call
+    lives in. A heredoc-fed script's body is captured separately (and
+    unconditionally, regardless of leader) by :func:`extract_bash_payload`'s
+    heredoc-body pass -- this walker covers only the ``-c`` inline form. The
+    caller gates this on :func:`_python_rest_detection.segment_is_python_rest_publish`
+    so an unrelated python ``-c`` one-liner (a local computation, a secret
+    read for LOCAL use) is never dumped into the wide secret-scan surface
+    :func:`extract_secret_scan_text` runs regardless of destination (#2943
+    review finding: gating on the leader alone over-widened that surface).
     """
     i = 0
     n = len(words)
     while i < n:
-        word = words[i]
-        if word == "-d" and i + 1 < n:
-            _record_curl_value(words[i + 1], payloads)
+        if words[i] == "-c" and i + 1 < n:
+            payloads.append(words[i + 1])
             i += 2
             continue
-        if word in _CURL_DATA_LONG_FLAGS and i + 1 < n:
-            _record_curl_value(words[i + 1], payloads)
-            i += 2
-            continue
-        attached_short = _curl_short_d_attached(word)
-        if attached_short is not None:
-            _record_curl_value(attached_short, payloads)
-            i += 1
-            continue
-        attached_long = _curl_long_flag_attached(word)
-        if attached_long is not None:
-            _record_curl_value(attached_long, payloads)
         i += 1
 
 
-def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
+def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], base: "Path | None", leader: str) -> None:
     """Extract ``--body``/``--description``/``--message``/``--title``/``-m``/``-b`` payloads.
 
     Handles both space-separated (``--body "x"``) and equals-separated
@@ -341,9 +235,12 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
     ``words``) so the resolver can tell a single-quoted INERT ``$(...)`` (the body
     is the literal text — scanned) from a live one — an embedded substitution in a
     body the gate can read is no longer mis-flagged as unresolvable.
-    """
-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
 
+    ``leader`` selects the short-flag grammar: ``glab`` adds the ``-d``
+    description short flag it uses on ``mr``/``issue`` ``create``/``update``,
+    which ``gh`` uses for the boolean ``--draft`` and so is glab-only.
+    """
+    short_flags = _BODY_SHORT_FLAGS | _GLAB_BODY_SHORT_FLAGS if leader == "glab" else _BODY_SHORT_FLAGS
     i = 0
     n = len(words)
     while i < n:
@@ -362,7 +259,7 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
         if attached_handled:
             i += 1
             continue
-        if word in _BODY_SHORT_FLAGS and i + 1 < n:
+        if word in short_flags and i + 1 < n:
             payloads.append(resolve_inline_body_value(words[i + 1], base, raws[i + 1]))
             i += 2
             continue
@@ -430,8 +327,6 @@ def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None",
     field token's verbatim source span so a single-quoted INERT ``$(...)`` is
     scanned; a LIVE unresolvable indirection yields the fail-closed sentinel.
     """
-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
-
     if "=" not in arg:
         return
     name, _, value = arg.partition("=")
@@ -442,42 +337,45 @@ def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None",
 # ── Command-segment walking ─────────────────────────────────────────
 
 
-def _first_two_words(segment: list[Token]) -> tuple[str, str]:
-    """Return up to the first two WORD values of a command segment.
-
-    Empty positions are returned as ``""``. Tokens that look like
-    environment-variable assignments (``KEY=val``) appearing before the
-    command name are skipped.
-    """
-    words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
-    # Skip leading ENV=value assignments.
-    while words and re.fullmatch(r"[A-Z_][A-Z0-9_]*=.*", words[0]):
-        words = words[1:]
-    first = words[0] if words else ""
-    second = words[1] if len(words) > 1 else ""
-    return first, second
-
-
 def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyFileContext") -> None:
-    """Route a single command segment to the right argument walkers."""
-    from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415
-    from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415
+    """Route a single command segment to the right argument walkers.
+
+    Leading benign-prefix tokens (env-assignments, ``cd``/``pushd`` nav, one
+    transparent argv wrapper -- ``xargs gh``, ``env GH_PAGER= gh``,
+    ``/usr/bin/gh``) are stripped index-parallel from ``words`` and ``raws`` and
+    the leader is canonicalised to the real forge tool's basename BEFORE the
+    per-command walkers dispatch, so a wrapper/path-hidden ``gh``/``glab``/``git``
+    body is extracted the same as the bare form. Previously the leader-keyed
+    walkers (``gh``/``glab api`` fields, ``curl``, python ``-c``) keyed on the
+    RAW first word (``xargs``, ``/usr/bin/gh``, a lowercase ``foo=1`` prefix),
+    silently skipped, and the body went unscanned -- detection said "publish"
+    while extraction produced nothing, failing OPEN (#F7.1/#F7.3).
+    """
+    from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415 — deferred: import cycle
 
     word_tokens = [tok for tok in segment if tok.kind is TokenKind.WORD]
-    words = [tok.value for tok in word_tokens]
+    all_words = [tok.value for tok in word_tokens]
+    if not all_words:
+        return
+    # Strip the benign env/cd/wrapper prefix from BOTH parallel lists by the same
+    # count so ``words`` and ``raws`` stay index-aligned. ``raws`` carries the
+    # verbatim source span (quotes intact) of each WORD; the inline-body resolver
+    # reads it to tell a LIVE ``$(...)`` bash would expand (double-quoted /
+    # unquoted ⇒ fail closed) from an INERT one bash passes verbatim
+    # (single-quoted ⇒ the body is fully present and scanned) — so a commit/note
+    # body that merely MENTIONS a ``$(...)`` snippet is no longer mis-classified
+    # as an unreadable source (#1415).
+    all_raws = [tok.raw for tok in word_tokens]
+    skip = wrapper_prefix_len(all_words)
+    words = all_words[skip:]
+    raws = all_raws[skip:]
     if not words:
         return
-    # The verbatim source span (quotes intact) of each WORD, parallel to
-    # ``words``. The inline-body resolver reads it to tell a LIVE ``$(...)``
-    # bash would expand (double-quoted / unquoted ⇒ fail closed) from an INERT
-    # one bash passes verbatim (single-quoted ⇒ the body is fully present and
-    # scanned) — so a commit/note body that merely MENTIONS a ``$(...)`` snippet
-    # is no longer mis-classified as an unreadable source (#1415).
-    raws = [tok.raw for tok in word_tokens]
-    first, _ = _first_two_words(segment)
+    first = canonical_forge_leader(all_words)
     # All segments get the generic body-flag walker since gh, glab, git,
-    # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
-    _walk_body_flags(words, raws, payloads, ctx.base)
+    # and t3 all accept ``--body``/``--message``/``-m``/``-b``. The canonical
+    # leader selects glab's extra ``-d`` description short flag.
+    _walk_body_flags(words, raws, payloads, ctx.base, first)
     # ``t3 review`` posts carry the body as the positional NOTE (or the #32
     # ``--body-file``) and use ``--file`` as a diff ANCHOR, not a body-file —
     # extract the NOTE + ``--body-file`` body and SKIP the generic body-file
@@ -490,6 +388,15 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
         _walk_api_fields(words, raws, payloads, ctx.base)
     if first == "curl":
         _walk_curl_args(words, payloads)
+    # Gated on the ACTUAL classification (write verb + forge URL), not merely
+    # the python leader: ``extract_bash_payload`` also backs
+    # ``extract_secret_scan_text``, which runs on EVERY Bash command
+    # regardless of destination -- an unconditional append here would dump
+    # any unrelated python ``-c`` one-liner's full source (a local
+    # computation, a secret read for LOCAL use) into that wide surface and
+    # false-block it as a "publish payload" it never was.
+    if is_python_leader(first) and segment_is_python_rest_publish(words, " ".join(words)):
+        _walk_python_script(words, payloads)
 
 
 # ── Body extraction ─────────────────────────────────────────────────
@@ -529,20 +436,19 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     the gate scans the real body and applies the private-repo carve-out instead
     of fail-closing on a clean post whose body it could not read.
     """
-    from teatree.hooks._body_file_resolution import (  # noqa: PLC0415
-        BodyFileContext,
-        command_body_file_base,
-        commit_body_file_base,
-        heredoc_files_map,
-        unredirected_heredoc_bodies,
-    )
-
     parts: list[str] = []
     tokens = tokenize(command)
+    # Heredocs fed straight to a CONSUMER (stdin / ``$(cat <<EOF)``) are part of
+    # the published payload and are appended below; their presence ALSO resolves
+    # a ``git commit -F -`` stdin body (the heredoc feeds git's stdin), so the
+    # ``-F -`` walker emits no spurious sentinel and never double-counts (#1415).
+    unredirected_heredocs = unredirected_heredoc_bodies(command)
     ctx = BodyFileContext(
         heredoc_files=heredoc_files_map(command, tokens),
         fail_closed_body_file=fail_closed_body_file,
         base=commit_body_file_base(command, cwd) or command_body_file_base(command) or cwd,
+        stdin_piped_body=piped_stdin_writer_body(tokens),
+        has_unredirected_heredoc=bool(unredirected_heredocs),
     )
     for segment in split_commands(tokens):
         _walk_command_segment(segment, parts, ctx)
@@ -552,13 +458,20 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     # are emitted here; a ``> path <<EOF`` heredoc writes to a file resolved by
     # path-pairing, so emitting it blanket would scan an unposted scratch body
     # and double-count a posted one.
-    parts.extend(unredirected_heredoc_bodies(command))
-    # A forge call hidden inside an interpreter / wrapper argument
-    # (``sh -c "gh ... --body X"``, ``eval``, ``ssh host gh``, ``xargs gh``)
-    # carries its body in an opaque token the walkers cannot descend into; the
-    # destination-aware gates fail closed on it so an unscannable public post
-    # hard-blocks rather than slips through unread.
-    if fail_closed_body_file and command_has_opaque_forge_transport(command):
+    parts.extend(unredirected_heredocs)
+    # A forge call hidden inside a command-string interpreter argument
+    # (``sh -c "gh ... --body X"``, ``eval``, ``ssh host gh``) or a live
+    # ``$(...)`` substitution carries its body in an opaque token the walkers
+    # cannot descend into. The sentinel is appended for BOTH gate modes -- not
+    # only the destination-aware banned-terms gate (``fail_closed_body_file``) but
+    # ALSO the quote gate (``fail_closed_body_file=False``) -- so a wrapper-hidden
+    # publish fails closed on EVERY leak gate rather than slipping through the
+    # quote gate unread (#F7.1). This runs only when the command is already a
+    # publish (the caller gates on :func:`is_publish_command`), so a benign
+    # ``echo $(date)`` -- not a publish -- is never scanned here. A transparent
+    # wrapper (``xargs gh``, ``/usr/bin/gh``) is NOT opaque: its leader
+    # canonicalises to the forge tool and its body is extracted above.
+    if command_has_opaque_forge_transport(command):
         parts.append(FAIL_CLOSED_SENTINEL)
     return "\n".join(parts)
 
@@ -602,7 +515,10 @@ def extract_secret_scan_text(command: str) -> str:
     parts = [extract_bash_payload(command, fail_closed_body_file=False)]
     parts.extend(extract_title_fragments(command))
     for words in segment_word_lists(command):
-        if words[0] in {"gh", "glab"}:
+        # Canonicalise the leader (transparent wrapper stripped, basename taken)
+        # so a secret in a ``xargs gh api -f title=…`` / ``/usr/bin/gh api …``
+        # field is scanned too, not just the bare ``gh api`` form (#F7.1).
+        if canonical_forge_leader(words) in {"gh", "glab"}:
             parts.extend(_api_field_values(words))
     return "\n".join(part for part in parts if part)
 

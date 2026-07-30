@@ -12,7 +12,9 @@ The migration-fork predicate (``_count_core_leaves`` /
 that module's namespace.
 """
 
+import json
 import os
+import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,6 +34,22 @@ _SHA_A = "a" * 40
 _SHA_B = "b" * 40
 
 
+def _seed_config_db(db: Path, key: str, value: object) -> None:
+    """Write one global ``teatree_config_setting`` row into a temp sqlite DB.
+
+    The security predicates drive the DB-home leak guards, which read the
+    canonical config store via ``cold_reader`` — so a predicate seeds a throwaway
+    DB and points the guard at it (``db_path`` / ``T3_CONFIG_DB``), never a file.
+    """
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+
 @contextmanager
 def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
     """Run the block with *overlay_name*'s effective autonomy pinned to *autonomy*.
@@ -40,20 +58,20 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     overlay's effective autonomy (the substrate-merge carve-out). ``autonomy`` is
     DB-home under the #1775 partition — it resolves SOLELY from the
     ``ConfigSetting`` store, not from ``[overlays.<name>]`` TOML — so this stages
-    it through that store's resolver seam rather than a hermetic ``~/.teatree.toml``
+    it through that store's resolver seam rather than a hermetic config file
     (a ``[overlays.<name>]`` / ``[teatree]`` ``autonomy`` key is ignored on read
     now — its home is the DB).
 
     It pins the per-overlay DB scope for *overlay_name* (alias-tolerant) to the
-    staged raw value — exercising the real ``_coerce_db_rows`` parser path — and
+    staged raw value — exercising the real ``_coerce_setting_rows`` parser path — and
     neutralises the global DB scope and the env tier to ``{}`` for the block so a
     live ``ConfigSetting`` row on the host (an overlay such as ``t3-teatree``
     pinned to ``full``) or a ``T3_*`` env var cannot win over the staged value.
     All seams are restored on exit.
     """
-    from unittest.mock import patch  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.config.settings import OverlayEntry  # noqa: PLC0415
+    from teatree.config.settings import OverlayEntry  # noqa: PLC0415 — deferred: loaded per eval run
 
     canonical = OverlayEntry.canonical_overlay_name(overlay_name)
 
@@ -63,7 +81,7 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     with (
         patch("teatree.config.resolution._load_global_rows", return_value={}),
         patch("teatree.config.resolution._load_overlay_rows", side_effect=_staged_overlay_rows),
-        patch("teatree.config.resolution._env_setting_overrides", return_value={}),
+        patch("teatree.config.resolution.env_setting_overrides", return_value={}),
     ):
         yield
 
@@ -76,7 +94,7 @@ def _check_branch_currency_conflict_only() -> bool:
     * return a finding when the reviewed SHA truly conflicts with the target, and
     * return ``None`` when the SHA is merely behind but conflict-free.
     """
-    from teatree.core.branch_currency import sha_conflicts_with_target  # noqa: PLC0415
+    from teatree.core.worktree.branch_currency import sha_conflicts_with_target  # noqa: PLC0415 — lazy import
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)
@@ -98,32 +116,34 @@ def _check_merge_precondition_substrate_human_authorize() -> bool:
 
     The CLEAR's overlay (resolved from its ``slug``) is pinned to ``babysit``
     via the DB-home autonomy seam (#1775) so the check is deterministic
-    regardless of the developer's live config. The ``autonomy = full`` carve-out is a
-    distinct must-allow path verified by
-    :func:`_check_merge_precondition_substrate_full_autonomy`; this check is the
-    must-block direction for a below-full overlay.
+    regardless of the developer's live config. Substrate is held under EVERY tier
+    (including ``full`` — verified by
+    :func:`_check_merge_precondition_substrate_full_autonomy_holds`); this check is
+    the must-block direction for a below-full overlay.
     """
     return _exercise_substrate_authorize(autonomy="babysit", expect_cleared_without_human=False)
 
 
-def _check_merge_precondition_substrate_full_autonomy() -> bool:
-    """Carve-out: a substrate CLEAR under an ``autonomy = full`` overlay clears without a per-PR sign-off.
+def _check_merge_precondition_substrate_full_autonomy_holds() -> bool:
+    """Ping-and-hold: a substrate CLEAR under an ``autonomy = full`` overlay is HELD, never auto-merged.
 
-    The mirror of :func:`_check_merge_precondition_substrate_human_authorize`:
-    with the CLEAR's overlay pinned to ``full``, the standing grant satisfies
-    the substrate sign-off, so presenting no ``--human-authorized`` must NOT
-    raise. This is the must-allow direction the ticket-less / aliased
-    overlay-resolution fix restores; without it, a full-autonomy substrate
-    merge is wrongly blocked (the rest of the floor is unaffected).
+    The owner's directive — substrate (merge keystone, architecture spec,
+    governance doc) PINGS-and-HOLDS so they authorize every such merge. With the
+    CLEAR's overlay pinned to ``full`` and NO ``--human-authorized`` presented, the
+    standing grant does NOT cover substrate, so ``_assert_clear_authorized`` MUST
+    raise (the loop edge then pings the owner). This is the inverse of the prior
+    carve-out: substrate is excluded from the standing grant entirely, so a
+    mislabeled or genuine substrate change can never auto-merge silently under
+    full autonomy. The only path that clears it is a per-PR human authorizer.
     """
-    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=True)
+    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=False)
 
 
 def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human: bool) -> bool:
-    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
-    from teatree.core.models import MergeClear  # noqa: PLC0415
-    from teatree.core.models.merge_clear import ClearRequest  # noqa: PLC0415
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415 — lazy import
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.models.merge_clear import ClearRequest  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: loaded per eval run
 
     slug, pr_id, reviewer, executor = "souliane/teatree", 4242, "cold-reviewer", "loop-session"
     overlay_name = infer_overlay_for_url(slug) or "t3-teatree"
@@ -147,7 +167,6 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
                 executing_loop_identity=executor,
                 slug=slug,
                 pr_id=pr_id,
-                human_authorized="",
             )
         except MergePreconditionError:
             cleared_without_human = False
@@ -164,8 +183,8 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
     the merge-time ``_assert_clear_authorized`` re-check is the last line of
     defence — it must refuse a CLEAR whose reviewer equals the executing loop.
     """
-    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
-    from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415 — lazy import
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     slug, pr_id, identity = "souliane/teatree", 4343, "loop-session"
     clear = MergeClear.objects.create(
@@ -182,7 +201,6 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
             executing_loop_identity=identity,
             slug=slug,
             pr_id=pr_id,
-            human_authorized="",
         )
     except MergePreconditionError:
         return True
@@ -190,24 +208,30 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
 
 
 def _check_loop_owner_lease_pid_anchored() -> bool:
-    """#1604/#1722: an alive foreign owner past its TTL is never hijacked.
+    """#1604/#1722: an alive DIFFERENT-PROCESS foreign owner past its TTL is never hijacked.
 
     The pre-fix lease released on TTL lapse alone, so a fresh session stole a
-    busy owner's loop. The pid-anchored ``claim_ownership`` must:
-    * refuse a foreign claim while the owner's pid is alive (even past TTL), and
-    * grant the claim once the owner's pid is dead and the TTL has lapsed.
+    busy owner's loop. The pid-anchored ``claim_ownership`` must refuse a
+    DIFFERENT-process foreign claim while the owner's pid is alive (even past
+    TTL — a genuine hijack is always a different OS process), and grant the
+    claim once the owner's pid is dead and the TTL has lapsed.
+
+    A same-process claim with a rotated session id is NOT a hijack but a
+    post-compaction self-reclaim (#2835), so the foreign owner here is modelled
+    with a DIFFERENT alive pid (``os.getppid()``, the alive parent) than the
+    claiming process (``os.getpid()``).
     """
-    from datetime import timedelta  # noqa: PLC0415
+    from datetime import timedelta  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-    from teatree.core.models import LoopLease  # noqa: PLC0415
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     name = "regression-lease"
-    alive_pid = os.getpid()
+    foreign_alive_pid = os.getppid()
     LoopLease.objects.filter(name=name).delete()
-    LoopLease.objects.claim_ownership(name, session_id="owner-session", owner_pid=alive_pid, ttl_seconds=1800)
-    # Force the TTL to have lapsed; only the alive pid now protects the lease.
+    LoopLease.objects.claim_ownership(name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800)
+    # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
     LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
     won_against_alive, _ = LoopLease.objects.claim_ownership(
         name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
@@ -239,7 +263,7 @@ def _check_account_switch_detect_and_recover() -> bool:
     Anti-vacuous: reverting detection (always ``switched=False``) fails the
     must-detect leg RED; a probe that ignored ``auth_test`` fails the verify leg.
     """
-    from teatree.core.account_switch import AccountSwitchRecovery, record_fingerprint  # noqa: PLC0415
+    from teatree.core.account_switch import AccountSwitchRecovery, record_fingerprint  # noqa: PLC0415 — lazy import
 
     reset_calls = {"n": 0}
 
@@ -281,15 +305,15 @@ def _check_private_repo_allowlist_path_segment_match() -> bool:
     * NOT match a PUBLIC slug that merely contains the org as a substring of a
         longer owner segment (``secretorg-mirror/x``).
     """
-    from teatree.hooks._repo_visibility import slug_is_allowlisted_private  # noqa: PLC0415
+    from teatree.hooks._repo_visibility import slug_is_allowlisted_private  # noqa: PLC0415 — deferred: per eval run
 
     with tempfile.TemporaryDirectory() as raw:
-        cfg = Path(raw) / ".teatree.toml"
-        cfg.write_text('[teatree]\nprivate_repos = ["org/secret", "secretorg"]\n', encoding="utf-8")
-        matches_exact = slug_is_allowlisted_private("org/secret", cfg)
-        matches_path_segment_child = slug_is_allowlisted_private("org/secret/sub", cfg)
-        matches_org_repo = slug_is_allowlisted_private("secretorg/repo", cfg)
-        matches_substring_alias = slug_is_allowlisted_private("secretorg-mirror/x", cfg)
+        db = Path(raw) / "config.sqlite3"
+        _seed_config_db(db, "private_repos", ["org/secret", "secretorg"])
+        matches_exact = slug_is_allowlisted_private("org/secret", db)
+        matches_path_segment_child = slug_is_allowlisted_private("org/secret/sub", db)
+        matches_org_repo = slug_is_allowlisted_private("secretorg/repo", db)
+        matches_substring_alias = slug_is_allowlisted_private("secretorg-mirror/x", db)
     return matches_exact and matches_path_segment_child and matches_org_repo and not matches_substring_alias
 
 
@@ -302,21 +326,21 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
         scanner raises, never ``None``, and
     * return ``None`` on a genuine no-op (no config / no script to run).
     """
-    from unittest.mock import patch  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
-    from teatree.hooks.banned_terms_scanner import SCANNER_UNAVAILABLE_MARKER, scan_text  # noqa: PLC0415
-    from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415 — deferred: loaded per eval run
+    from teatree.hooks.banned_terms_scanner import SCANNER_UNAVAILABLE_MARKER, scan_text  # noqa: PLC0415 — lazy import
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred: loaded per eval run
 
     def _crashing_scanner(*_args: object, **_kwargs: object) -> object:
         raise CommandFailedError(cmd=["check-banned-terms.sh"], returncode=2, stdout="", stderr="boom")
 
     with tempfile.TemporaryDirectory() as raw:
-        cfg = Path(raw) / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+        db = Path(raw) / "config.sqlite3"
+        _seed_config_db(db, "banned_terms", ["acmecorp"])
         with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
-            on_crash = scan_text("we ship to acmecorp", config_path=cfg)
-        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.toml")
+            on_crash = scan_text("we ship to acmecorp", config_path=db)
+        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
     return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config is None
 
 
@@ -330,7 +354,7 @@ def _check_forge_resolves_by_host_not_token() -> bool:
     * a gitlab.com / self-hosted-gitlab remote → ``"gitlab"``, and
     * an unrecognised host → ``""`` — regardless of configured PATs.
     """
-    from teatree.utils.forge import forge_from_remote  # noqa: PLC0415
+    from teatree.utils.forge import forge_from_remote  # noqa: PLC0415 — deferred: loaded per eval run
 
     github = forge_from_remote("git@github.com:souliane/teatree.git")
     gitlab_dotcom = forge_from_remote("git@gitlab.com:acme/widgets.git")
@@ -349,8 +373,8 @@ def _check_ship_branch_reconcile_renamed() -> bool:
         ``<N>-ticket`` → ``<N>-fix-foo`` (and persist it on the row), and
     * fall back to the recorded branch on an unrelated / non-prefixed ref.
     """
-    from teatree.core.models import Ticket, Worktree  # noqa: PLC0415
-    from teatree.core.runners.ship import resolve_and_reconcile_branch  # noqa: PLC0415
+    from teatree.core.models import Ticket, Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.runners.ship import resolve_and_reconcile_branch  # noqa: PLC0415 — deferred: loaded per eval run
 
     issue_url = "https://github.com/souliane/teatree/issues/999999042"
     Ticket.objects.filter(issue_url=issue_url).delete()
@@ -394,7 +418,10 @@ def _check_mr_description_first_line_validated() -> bool:
     * reject a description whose first line is not conventional-commit, and
     * accept a conventional-commit first line with a What/Why body.
     """
-    from teatree.core.mr_metadata import DEFAULT_MR_TITLE_REGEX, validate_mr_metadata  # noqa: PLC0415
+    from teatree.core.review.mr_metadata import (  # noqa: PLC0415 — deferred: loaded per eval run
+        DEFAULT_MR_TITLE_REGEX,
+        validate_mr_metadata,
+    )
 
     title = "feat(ship): add the gate (#1367)"
     bad_first_line = "## Summary\nAdds the gate.\n\n## Why\nThe convention is missed often."
@@ -411,7 +438,7 @@ __all__ = [
     "_check_forge_resolves_by_host_not_token",
     "_check_loop_owner_lease_pid_anchored",
     "_check_merge_precondition_maker_is_not_checker",
-    "_check_merge_precondition_substrate_full_autonomy",
+    "_check_merge_precondition_substrate_full_autonomy_holds",
     "_check_merge_precondition_substrate_human_authorize",
     "_check_mr_description_first_line_validated",
     "_check_private_repo_allowlist_path_segment_match",

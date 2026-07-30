@@ -110,30 +110,56 @@ def _clause_has_phrase(clause: str, phrase: str) -> bool:
     return not any(neg in lowered for neg in _NEGATION_TOKENS)
 
 
-def _has_approval_phrase(text: str) -> bool:
-    r"""True iff the message body contains a whole-word, unnegated approval phrase.
+# Straight single quotes are excluded on purpose: they collide with the
+# apostrophes in the negation tokens (``don't``/``can't``), so masking them
+# would swallow a negation and re-open the false-positive it guards.
+_QUOTE_SPAN_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r'"[^"]*"'),
+    re.compile(r"“[^”]*”"),  # "curly double"
+    re.compile(r"«[^»]*»"),  # «guillemets»
+    re.compile(r"`[^`]*`"),
+)
 
-    Splits the body into sentence-like clauses on ``.``/``!``/``?``/``;``
-    /``\n`` boundaries (every clause is checked independently), then
-    requires that some clause contains an approval phrase under
-    :func:`_clause_has_phrase`. This rejects:
+
+def _mask_quoted(text: str) -> str:
+    """Blank the content inside quote pairs so a quoted phrase never authorizes.
+
+    A quoted approval phrase is reported speech, not an authorization — the
+    button labelled ``"post it"`` or ``he said "go ahead"`` must NOT release a
+    live publish. Each quoted span's characters are replaced with spaces (length
+    preserved so nothing else shifts) before clause splitting and phrase
+    matching. See :data:`_QUOTE_SPAN_RES` for why straight single quotes are not
+    masked.
+    """
+    for pattern in _QUOTE_SPAN_RES:
+        text = pattern.sub(lambda match: " " * len(match.group(0)), text)
+    return text
+
+
+def _has_approval_phrase(text: str) -> bool:
+    r"""True iff the message body contains a whole-word, unnegated, unquoted approval phrase.
+
+    Masks quoted spans (:func:`_mask_quoted`), then splits the remainder into
+    sentence-like clauses on ``.``/``!``/``?``/``;``/``\n`` boundaries (every
+    clause is checked independently), and requires that some clause contains an
+    approval phrase under :func:`_clause_has_phrase`. This rejects:
 
     * ``"don't post live"`` (same clause negates the phrase)
     * ``"do NOT go ahead"`` (same clause negates the phrase)
+    * ``he said "go ahead"`` (phrase is quoted — reported speech, not approval)
     * ``"foopost livebar"`` (phrase is embedded, not whole-word)
 
     The longer-term fix is sentence-aware NLP (full negation scope,
-    polarity flips, modal qualifiers); the clause-scope negation gate
-    here is the minimal regex-only fix and is tracked as a class-C
-    enforcement follow-up.
+    polarity flips, modal qualifiers); the clause-scope negation + quotation
+    masking here is the minimal regex-only fix.
     """
-    clauses = re.split(r"[.!?;\n]+", text)
+    clauses = re.split(r"[.!?;\n]+", _mask_quoted(text))
     return any(_clause_has_phrase(clause, phrase) for clause in clauses for phrase in APPROVAL_PHRASES)
 
 
 def _is_fresh(slack_ts: str, *, ttl_minutes: int) -> bool:
     """True iff the Slack ``ts`` is within ``ttl_minutes`` of now."""
-    from django.utils import timezone  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
     try:
         epoch = float(slack_ts)
@@ -150,7 +176,7 @@ def _fetch_user_message(*, slack_ts: str, user_id: str, channel: str) -> tuple[S
     backend is missing, the DM channel cannot be opened, or no message
     exists at the timestamp.
     """
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     backend = messaging_from_overlay()
     if backend is None:
@@ -173,7 +199,7 @@ def _verify_slack_message(*, slack_ts: str, user_id: str, channel: str) -> tuple
     so a misconfigured Slack backend surfaces the same way here as it
     does in the bot→user DM path.
     """
-    from teatree.core.models.live_post_approval import LIVE_POST_APPROVAL_TTL_MINUTES  # noqa: PLC0415
+    from teatree.core.models.live_post_approval import LIVE_POST_APPROVAL_TTL_MINUTES  # noqa: PLC0415 — lazy ORM import
 
     message, error = _fetch_user_message(slack_ts=slack_ts, user_id=user_id, channel=channel)
     if error:
@@ -213,7 +239,7 @@ def _verify_on_behalf_authorization(*, scope: str) -> tuple[str, str]:
     token as the audit reference for which durable authorization minted
     it.
     """
-    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415 — deferred: ORM/app-registry
 
     approval = (
         OnBehalfApproval.objects.filter(
@@ -243,7 +269,7 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
     when neither channel authorizes. The caller mints the token only on
     an empty error.
     """
-    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
+    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415 — deferred: ORM/app-registry
 
     scope = canonical_mr_scope(mr_url)
     if from_on_behalf:
@@ -261,7 +287,7 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
                 "or --from-on-behalf (a recorded `t3 review approve-on-behalf` token)"
             ),
         )
-    from teatree.core.notify import resolve_user_channel  # noqa: PLC0415
+    from teatree.core.notify import resolve_user_channel  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     _approval_text, error = _verify_slack_message(slack_ts=slack_ts, user_id=user_id, channel=resolve_user_channel())
     if error:
@@ -321,16 +347,19 @@ def register(review_app: typer.Typer) -> None:
         """
         ensure_django()
 
-        from teatree.core.models.live_post_approval import (  # noqa: PLC0415
+        from teatree.core.models.live_post_approval import (  # noqa: PLC0415 — deferred: ORM/app-registry
             LivePostApproval,
             LivePostApprovalError,
             canonical_mr_scope,
         )
-        from teatree.core.notify import resolve_user_id  # noqa: PLC0415
+        from teatree.core.notify import resolve_user_id  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         user_id = resolve_user_id()
         if not user_id:
-            typer.echo("Refused: no Slack user_id configured — set `teatree.slack_user_id` first")
+            typer.echo(
+                "Refused: no Slack user_id configured — "
+                "set it with `t3 <overlay> config_setting set slack_user_id <id>`"
+            )
             raise typer.Exit(code=1)
 
         token_ts, _ref, error = _resolve_authorization(

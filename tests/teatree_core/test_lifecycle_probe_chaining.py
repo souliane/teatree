@@ -14,11 +14,13 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.core.management.commands._workspace.anchor as anchor_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
+from teatree.config.settings import UserSettings
 from teatree.core.models import Ticket, Worktree
-from teatree.core.readiness import Probe, ProbeResult
 from teatree.core.runners.base import RunnerResult
+from teatree.core.worktree.readiness import Probe, ProbeResult
 
 SETTINGS = {
     "TEATREE_OVERLAY_NAMES": ["test"],
@@ -63,9 +65,9 @@ class TestWorktreeStartChainsProbes(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_readiness_probes.return_value = [
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.provisioning.db_import_strategy.return_value = None
+            mock_overlay.runtime.readiness_probes.return_value = [
                 _failing_probe("translations-loaded", reason="raw key visible"),
             ]
 
@@ -73,7 +75,7 @@ class TestWorktreeStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             mock_config = MagicMock()
-            mock_config.user.workspace_dir = Path(tmp)
+            mock_config.user = UserSettings(workspace_dir=Path(tmp))
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
@@ -92,15 +94,15 @@ class TestWorktreeStartChainsProbes(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_readiness_probes.return_value = [_passing_probe("backend-up")]
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.provisioning.db_import_strategy.return_value = None
+            mock_overlay.runtime.readiness_probes.return_value = [_passing_probe("backend-up")]
 
             mock_runner = MagicMock()
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             mock_config = MagicMock()
-            mock_config.user.workspace_dir = Path(tmp)
+            mock_config.user = UserSettings(workspace_dir=Path(tmp))
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
@@ -118,15 +120,15 @@ class TestWorktreeStartChainsProbes(TestCase):
             wt = _build_worktree(wt_path)
 
             mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_readiness_probes.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.provisioning.db_import_strategy.return_value = None
+            mock_overlay.runtime.readiness_probes.return_value = []
 
             mock_runner = MagicMock()
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             mock_config = MagicMock()
-            mock_config.user.workspace_dir = Path(tmp)
+            mock_config.user = UserSettings(workspace_dir=Path(tmp))
 
             with (
                 patch.object(worktree_mod, "resolve_worktree", return_value=wt),
@@ -149,7 +151,7 @@ class TestWorktreeVerifyChainsProbes(TestCase):
             wt.save(update_fields=["state"])
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = [
+            mock_overlay.runtime.readiness_probes.return_value = [
                 _failing_probe("cors", reason="missing Access-Control-Allow-Origin"),
             ]
 
@@ -177,7 +179,7 @@ class TestWorktreeVerifyChainsProbes(TestCase):
             wt.save(update_fields=["state"])
 
             mock_overlay = MagicMock()
-            mock_overlay.get_readiness_probes.return_value = [_passing_probe("api-up")]
+            mock_overlay.runtime.readiness_probes.return_value = [_passing_probe("api-up")]
 
             mock_runner = MagicMock()
             mock_runner.run.return_value = RunnerResult(ok=True, detail="verified")
@@ -227,15 +229,15 @@ class TestWorkspaceStartChainsProbes(TestCase):
                 return [_passing_probe("backend-up")]
 
             mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_readiness_probes.side_effect = probes_for
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.provisioning.db_import_strategy.return_value = None
+            mock_overlay.runtime.readiness_probes.side_effect = probes_for
 
             mock_runner = MagicMock()
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
                 pytest.raises(SystemExit) as exc,
@@ -261,15 +263,15 @@ class TestWorkspaceStartChainsProbes(TestCase):
             )
 
             mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_readiness_probes.return_value = [_passing_probe("backend-up")]
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.provisioning.db_import_strategy.return_value = None
+            mock_overlay.runtime.readiness_probes.return_value = [_passing_probe("backend-up")]
 
             mock_runner = MagicMock()
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
             ):
@@ -294,15 +296,15 @@ class TestWorkspaceStartChainsProbes(TestCase):
             )
 
             mock_overlay = MagicMock()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_db_import_strategy.return_value = None
-            mock_overlay.get_readiness_probes.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.provisioning.db_import_strategy.return_value = None
+            mock_overlay.runtime.readiness_probes.return_value = []
 
             mock_runner = MagicMock()
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
             ):

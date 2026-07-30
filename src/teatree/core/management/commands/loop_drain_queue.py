@@ -1,0 +1,69 @@
+"""``manage.py loop_drain_queue`` — one reactive DB-queue drain cycle (#786, #1052).
+
+The dedicated driver for the django-tasks DB queue drain — a reactive ``/loop``
+slot alongside Slack-answer and self-improve. Acquires the ``loop-drain-queue``
+``LoopLease`` (so two sessions never drain the same rows and a slow drain never
+blocks a fast tick), runs :func:`teatree.loop.queue_drain.expire_then_drain`
+(retire stale READY jobs, then drain a bounded batch of the fresh remainder), and
+prints a one-line summary (or the JSON report when ``--json`` is passed).
+
+No loop-owner gate is needed here (unlike ``loop_slack_answer`` /
+``loop_self_improve``): the drain is a mechanical DB-queue drain with no
+user-facing hijack surface, and the ``loop-drain-queue`` lease mutex plus the
+worker-singleton flock check (:func:`teatree.loop.queue_drain.a_worker_is_running`,
+which probes both worker singletons) keep the tick drain from competing with a
+live worker for the same rows.
+"""
+
+import datetime as dt
+import os
+from typing import IO, Annotated, cast
+
+import typer
+from django_typer.management import TyperCommand
+
+from teatree.core.machine_output import emit
+
+
+class Command(TyperCommand):
+    help = "Run one reactive DB-queue drain cycle (expire stale READY jobs, then drain a bounded batch)."
+
+    def handle(
+        self,
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the cycle report as JSON.")] = False,
+    ) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.loop.queue_drain import expire_then_drain  # noqa: PLC0415 — deferred: keeps command import light
+
+        out = cast("IO[str]", self.stdout)
+        err = cast("IO[str]", self.stderr)
+        owner = f"pid-{os.getpid()}"
+        if not LoopLease.objects.acquire("loop-drain-queue", owner=owner):
+            now = dt.datetime.now(tz=dt.UTC)
+            emit(
+                {
+                    "skipped": True,
+                    "skipped_reason": "another drain cycle is already running",
+                    "started_at": now.isoformat(),
+                },
+                json_output=json_output,
+                out=out,
+                err=err,
+                human="SKIP  loop-drain-queue lease held — another cycle is running.",
+            )
+            return
+        try:
+            result = expire_then_drain()
+        finally:
+            LoopLease.objects.release("loop-drain-queue", owner=owner)
+
+        retired = result["retired"]
+        retired_total = sum(retired.values()) if isinstance(retired, dict) else 0
+        emit(
+            result,
+            json_output=json_output,
+            out=out,
+            err=err,
+            human=f"OK    retired={retired_total} drained={result['drained']}",
+        )

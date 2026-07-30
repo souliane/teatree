@@ -9,13 +9,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.selectors import _panel_cache, build_automation_summary, build_headless_queue, build_interactive_queue
+from teatree.core.selectors import build_automation_summary, build_headless_queue, build_interactive_queue
 
 
 class TestBuildInteractiveQueue(TestCase):
-    def setUp(self) -> None:
-        _panel_cache.clear()
-
     def test_returns_non_completed_manual_tasks(self) -> None:
         first_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         second_ticket = Ticket.objects.create(state=Ticket.State.CODED)
@@ -224,11 +221,19 @@ class TestReapStaleClaims(TestCase):
         assert stale.status == Task.Status.FAILED
         assert active.status == Task.Status.CLAIMED
 
-    def test_queue_reaps_before_building(self) -> None:
+    def test_queue_build_is_non_destructive(self) -> None:
+        """Building the dashboard queue is a pure READ — it never reaps a stale claim.
+
+        A read surface reaping (CLAIMED→FAILED) with no preceding reclaim would
+        terminally FAIL a recoverable crashed-session task, bypassing the
+        rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns. The
+        stale CLAIMED task therefore stays CLAIMED and appears in the queue
+        (``heartbeat_age`` reveals its staleness) rather than being failed.
+        """
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         now = timezone.now()
-        Task.objects.create(
+        stale = Task.objects.create(
             ticket=ticket,
             session=session,
             execution_target=Task.ExecutionTarget.HEADLESS,
@@ -239,7 +244,9 @@ class TestReapStaleClaims(TestCase):
 
         queue = build_headless_queue()
 
-        assert len(queue) == 0
+        assert len(queue) == 1
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.CLAIMED
 
 
 class TestHeadlessQueueElapsedTime(TestCase):
@@ -284,10 +291,6 @@ class TestHeadlessQueueElapsedTime(TestCase):
 
 class TestOverlayFiltering(TestCase):
     """Verify that overlay= parameter filters all selector functions."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        _panel_cache.clear()
 
     def test_headless_queue_filters_by_overlay(self) -> None:
         t1 = Ticket.objects.create(overlay="alpha")

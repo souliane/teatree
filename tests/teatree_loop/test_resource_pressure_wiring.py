@@ -77,7 +77,9 @@ class ConfigDefaultsTests(TestCase):
         allowlist = self._settings().disk_cache_allowlist
         assert "~/.cache/pre-commit" in allowlist
         assert "~/.cache/codex-runtimes" in allowlist
+        assert "~/.cache/go-build" in allowlist
         assert "~/.cache/prek" not in allowlist, "prek has unknown rebuild semantics — never default-purged"
+        assert "~/.cache/uv" not in allowlist, "the ladder's own `uv cache prune` is the safe uv reclaim"
         assert "~/.claude/projects" not in allowlist, "session memory is never an auto-purge target"
 
     def test_ram_kill_allowlist_defaults_empty(self) -> None:

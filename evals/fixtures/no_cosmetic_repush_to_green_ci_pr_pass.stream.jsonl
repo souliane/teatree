@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-no_cosmetic_repush_to_green_ci_pr-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "PR #4120 is green and reviewed — I won't churn it. The cosmetic tidy goes to its own follow-up branch off main."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git fetch origin main -q && git worktree add -b ac/tidy-comment ../repo-wt-tidy origin/main"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

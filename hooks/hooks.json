@@ -9,8 +9,13 @@
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionStart",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionStart",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/worker_supervisor.py --event SessionStart",
+            "timeout": 30
           }
         ]
       }
@@ -20,8 +25,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event UserPromptSubmit",
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event UserPromptSubmit",
+            "timeout": 30
           }
         ]
       }
@@ -32,8 +37,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 30
           }
         ]
       },
@@ -42,8 +47,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
-            "timeout": 6
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 30
           }
         ]
       },
@@ -52,8 +57,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 30
           }
         ]
       },
@@ -62,8 +67,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 30
           }
         ]
       },
@@ -72,8 +77,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 30
           }
         ]
       }
@@ -84,8 +89,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "timeout": 30
           }
         ]
       },
@@ -94,8 +99,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "timeout": 30
           }
         ]
       },
@@ -104,8 +109,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "timeout": 30
           }
         ]
       }
@@ -115,8 +120,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event TaskCreated",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event TaskCreated",
+            "timeout": 30
           }
         ]
       }
@@ -126,8 +131,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event InstructionsLoaded",
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event InstructionsLoaded",
+            "timeout": 30
           }
         ]
       }
@@ -137,8 +142,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreCompact",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreCompact",
+            "timeout": 30
           }
         ]
       }
@@ -148,8 +153,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionEnd",
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionEnd",
+            "timeout": 30
           }
         ]
       }
@@ -159,8 +164,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event Stop",
-            "timeout": 8
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event Stop",
+            "timeout": 30
           }
         ]
       }
@@ -170,8 +175,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SubagentStop",
-            "timeout": 8
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SubagentStop",
+            "timeout": 30
           }
         ]
       }

@@ -26,7 +26,7 @@ non-confirmed case is silently not flagged.
 
 Reuses the single git-plumbing seam :mod:`teatree.utils.git` (the same
 ``rev_count(base..branch)`` introspection
-:func:`teatree.core.management.commands._ship_gates.assert_commits_ahead_of_base`
+:func:`teatree.core.management.commands._ship.gates.assert_commits_ahead_of_base`
 uses for the hollow-ship gate), so the no-commit definition is consistent
 across the codebase.
 """

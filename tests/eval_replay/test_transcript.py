@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.agents import model_tiering
+from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.models import TokenUsage
 from teatree.eval.transcript import (
     extract_billed_model,
@@ -224,18 +226,25 @@ class TestRequestedModelPresent:
 
     def test_short_alias_request_matches_full_model_usage_key(self) -> None:
         # The documented `--models opus,sonnet,haiku` short aliases must normalize
-        # to their full ids at the comparison chokepoint, or alias matching breaks
-        # (the requested `opus` never matches the `claude-opus-4-8` usage key).
-        stream = '{"type":"result","subtype":"success","model_usage":{"claude-opus-4-8":{"input_tokens":80}}}\n'
+        # to the CURRENT concrete id at the comparison chokepoint, or alias matching
+        # breaks (the requested `opus` never matches the reported usage key).
+        key = TIER_MODELS["frontier"]
+        stream = f'{{"type":"result","subtype":"success","model_usage":{{"{key}":{{"input_tokens":80}}}}}}\n'
         events = parse_stream_json(stream)
         assert requested_model_present(events, "opus") is True
 
     def test_short_alias_with_effort_request_matches_full_key(self) -> None:
-        stream = (
-            '{"type":"result","subtype":"success","model_usage":{"claude-sonnet-4-6-20251001":{"input_tokens":80}}}\n'
-        )
+        key = f"{TIER_MODELS['balanced']}-20260514"
+        stream = f'{{"type":"result","subtype":"success","model_usage":{{"{key}":{{"input_tokens":80}}}}}}\n'
         events = parse_stream_json(stream)
         assert requested_model_present(events, "sonnet@high") is True
+
+    def test_long_context_suffixed_usage_key_matches_the_plain_request(self) -> None:
+        # `[1m]` selects a wider window on the SAME model — it is the main model,
+        # not a fallback.
+        stream = '{"type":"result","subtype":"success","model_usage":{"claude-opus-4-8[1m]":{"input_tokens":80}}}\n'
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "claude-opus-4-8") is True
 
     def test_unobservable_model_usage_is_none_not_a_fallback(self) -> None:
         events = parse_stream_json('{"type":"result","subtype":"success"}\n')
@@ -283,12 +292,12 @@ class TestExtractModelCostSplit:
         assert split.aux_cost_usd == pytest.approx(0.0)
 
     def test_short_alias_request_splits_main_from_aux(self) -> None:
-        # A `--models opus` short-alias request must key the `claude-opus-4-8`
-        # usage entry as MAIN, not lump it into AUXILIARY (which would zero the
-        # main cost and double-count the requested model as background).
+        # A `--models opus` short-alias request must key the frontier tier's usage
+        # entry as MAIN, not lump it into AUXILIARY (which would zero the main cost
+        # and double-count the requested model as background).
         stream = (
             '{"type":"result","subtype":"success","model_usage":'
-            '{"claude-haiku-4-5":{"costUSD":0.02},"claude-opus-4-8":{"costUSD":0.5}}}\n'
+            f'{{"{TIER_MODELS["cheap"]}":{{"costUSD":0.02}},"{TIER_MODELS["frontier"]}":{{"costUSD":0.5}}}}}}\n'
         )
         events = parse_stream_json(stream)
         split = extract_model_cost_split(events, "opus")
@@ -321,6 +330,47 @@ class TestExtractModelCostSplit:
         split = extract_model_cost_split(events, "claude-opus-4-8")
         assert split.main_cost_usd == pytest.approx(0.0)
         assert split.aux_cost_usd == pytest.approx(0.0)
+
+
+class TestAliasFollowsATierBump:
+    """A frontier-tier bump must carry the alias, the split, and the fallback detector together.
+
+    The failure this pins is silent and total: with a stale alias map, ``--models
+    opus`` REQUESTS the previous generation while the transcript REPORTS the new
+    one, so ``requested_model_present`` says the requested model never ran and
+    100% of the frontier spend buckets into AUXILIARY (``main_cost_usd == 0.0``).
+    No exception, no warning — the corrupted split flows into the matrix JSON
+    ``t3 eval set-baseline`` consumes.
+    """
+
+    BUMPED = "claude-opus-9-9"
+
+    @pytest.fixture
+    def bumped_frontier(self, monkeypatch: pytest.MonkeyPatch) -> str:
+        monkeypatch.setattr(model_tiering, "TIER_MODELS", {**TIER_MODELS, "frontier": self.BUMPED})
+        return self.BUMPED
+
+    def _events(self, frontier: str) -> list:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            f'{{"{TIER_MODELS["cheap"]}":{{"costUSD":0.02,"inputTokens":9000}},'
+            f'"{frontier}":{{"costUSD":0.5,"inputTokens":80}}}}}}\n'
+        )
+        return parse_stream_json(stream)
+
+    def test_bumped_frontier_is_not_reported_as_a_fallback(self, bumped_frontier: str) -> None:
+        assert requested_model_present(self._events(bumped_frontier), "opus") is True
+
+    def test_bumped_frontier_spend_stays_in_the_main_bucket(self, bumped_frontier: str) -> None:
+        split = extract_model_cost_split(self._events(bumped_frontier), "opus")
+        assert split.main_cost_usd == pytest.approx(0.5)
+        assert split.aux_cost_usd == pytest.approx(0.02)
+
+    def test_the_two_signals_agree_after_the_bump(self, bumped_frontier: str) -> None:
+        # The invariant the desync broke: "the requested model ran" and "its cost is
+        # MAIN" are the same fact, so they can never disagree.
+        events = self._events(bumped_frontier)
+        assert requested_model_present(events, "opus") is (extract_model_cost_split(events, "opus").main_cost_usd > 0)
 
 
 class TestMalformedStreams:

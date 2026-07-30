@@ -1,39 +1,31 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
-import logging
 from typing import Annotated, TypedDict
 
-import click
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import TyperCommand, command, group
+from django_typer.management import TyperCommand, command
 
-from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
+from teatree.core.management.commands._attachment_commands import AttachmentCommands
+from teatree.core.management.commands._clear_backfill_commands import ClearBackfillCommands
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
-from teatree.core.management.commands._plan_gate_commands import (
-    PlanAdvanceError,
-    PlanReconcileResult,
-    PlanResult,
-    reconcile_inflight,
-    record_artifact_and_advance,
-    record_trivial_skip_and_advance,
-)
+from teatree.core.management.commands._close_commands import CloseCommands
+from teatree.core.management.commands._context_commands import ContextCommands
+from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
+from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._spec_coverage_commands import SpecCoverageCommands
+from teatree.core.management.commands._sweep_commands import SweepCommands
+from teatree.core.management.commands._ticket_show import TicketShowCommands
+from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
-from teatree.core.merge import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
-
-
-class CompletionResult(TypedDict, total=False):
-    ticket_id: int
-    issue_url: str
-    from_state: str
-    to_state: str
-    action: str
+from teatree.core.send_proxy import forge_from_url, route_forge_write
 
 
 class CommentResult(TypedDict, total=False):
@@ -61,11 +53,6 @@ class ClearIssueResult(TypedDict, total=False):
     error: str
 
 
-class ContextResult(TypedDict, total=False):
-    ticket_id: int
-    context: str
-
-
 class DodOverrideResult(TypedDict, total=False):
     ticket_id: int
     reason: str
@@ -81,51 +68,30 @@ class E2EBypassResult(TypedDict, total=False):
     approver: str
 
 
-class ReattributeResult(TypedDict, total=False):
-    ticket_id: int
-    issue_url: str
-    from_overlay: str
-    to_overlay: str
-    action: str
-
-
-logger = logging.getLogger(__name__)
-
-_ALLOWED_TRANSITIONS = {
-    "scope",
-    "start",
-    "plan",
-    "code",
-    "test",
-    "review",
-    "ship",
-    "request_review",
-    "mark_merged",
-    "retrospect",
-    "mark_delivered",
-    "rework",
-    # #1077: reviewer concludes an external review with no postable/
-    # approvable action — terminal disposition for the reviewing task.
-    "mark_review_no_action",
-    # #1118: phase-driven catch-up to REVIEWED. The FSM exposes it via
-    # ``get_available_FIELD_transitions`` from every non-terminal state
-    # (#808); the CLI must mirror the FSM-table surface so a ticket
-    # stranded at ``in_review`` after a failed ship can be reconciled
-    # without a code-level workaround.
-    "reconcile_reviewed",
-}
-
-
-class Command(RubricCommands, TyperCommand):
-    @command()
+# The 10-mixin base list is a django-typer requirement, not a composition-bar
+# violation: django-typer discovers ``@command``-decorated methods by walking the
+# Command class's own MRO, so each cohesive command group (rubric, plan, show,
+# context, close, attachment, merge-keystone, sweep, spec-coverage, clear-backfill) MUST be a base
+# class of the single ``Command`` rather than a plain collaborator it delegates to — a helper
+# object's methods would never register as CLI subcommands. The mixins stay
+# single-concern; only their registration is inheritance-shaped.
+class Command(
+    RubricCommands,
+    PlanCommands,
+    TicketShowCommands,
+    ContextCommands,
+    CloseCommands,
+    AttachmentCommands,
+    MergeKeystoneCommands,
+    SweepCommands,
+    SpecCoverageCommands,
+    ClearBackfillCommands,
+    TyperCommand,
+):
+    @command(help=TRANSITION_HELP)
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
-        """Transition a ticket to a new state.
-
-        Accepts any of the allowed transition names: scope, start, code, test,
-        review, ship, request_review, mark_merged, retrospect, mark_delivered,
-        rework, mark_review_no_action.
-        """
-        if transition_name not in _ALLOWED_TRANSITIONS:
+        """Transition a ticket to a new state; see ``--help`` for the allowed names."""
+        if transition_name not in ALLOWED_TRANSITIONS:
             return {"error": f"Unknown transition: {transition_name}"}
 
         try:
@@ -181,9 +147,9 @@ class Command(RubricCommands, TyperCommand):
         blank ``--reason`` is refused: a silent bypass is exactly what #88
         forecloses.
         """
-        from django.utils import timezone  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-        from teatree.core.models.types import DodE2EOverride  # noqa: PLC0415
+        from teatree.core.models.types import DodE2EOverride  # noqa: PLC0415 — deferred: ORM/app-registry
 
         cleaned = reason.strip()
         if not cleaned:
@@ -191,49 +157,9 @@ class Command(RubricCommands, TyperCommand):
             raise SystemExit(1)
         ticket = self._resolve_ticket(ticket_id)
         recorded_at = timezone.now().isoformat()
-        ticket.merge_extra(
-            set_keys={"dod_e2e_override": DodE2EOverride(reason=cleaned, by=by.strip(), at=recorded_at)},
-        )
+        ticket.merge_extra(set_keys={"dod_e2e_override": DodE2EOverride(reason=cleaned, by=by.strip(), at=recorded_at)})
         self.stdout.write(f"  DoD local-E2E gate override recorded for ticket {ticket.pk}")
         return DodOverrideResult(ticket_id=int(ticket.pk), reason=cleaned, by=by.strip(), at=recorded_at)
-
-    @command()
-    def plan(
-        self,
-        ticket_id: int,
-        plan_text: Annotated[str, typer.Argument(help="The plan text recorded as the PlanArtifact.")],
-        *,
-        recorded_by: Annotated[
-            str,
-            typer.Option(help="Author identity recorded on the artifact (audit trail)."),
-        ] = "operator",
-    ) -> PlanResult:
-        """Record a PlanArtifact and advance the ticket STARTED → PLANNED.
-
-        The operator-facing plan recorder named by the ``NoPlanArtifactError``
-        message: a planning task that finished out-of-band, or a ticket the
-        planner never ran on, advances by recording the plan here. A blank
-        ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. For
-        an *audited bypass* (no real plan, explicit human sign-off) use
-        ``plan-bypass``; for a trivial mechanical edit use ``skip-planning``.
-        """
-        cleaned_text = plan_text.strip()
-        if not cleaned_text:
-            self.stderr.write("  refused: plan_text is required (a vacuous plan cannot advance the FSM)")
-            raise SystemExit(1)
-
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            artifact = record_artifact_and_advance(
-                ticket=ticket, plan_text=cleaned_text, recorded_by=recorded_by.strip() or "operator"
-            )
-        except PlanAdvanceError as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
-
-        # #2217: external-owner FSM seam — refresh a LIVE lease (no-op without one).
-        refresh_external_delivery_if_active(ticket)
-        self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
-        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
 
     @command(name="e2e-bypass")
     def e2e_bypass(
@@ -262,7 +188,7 @@ class Command(RubricCommands, TyperCommand):
         is refused). The next ship-gate / §17.4 CLEAR evaluation at that exact
         SHA consumes it once.
         """
-        from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError  # noqa: PLC0415
+        from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError  # noqa: PLC0415 — lazy ORM
 
         ticket = self._resolve_ticket(ticket_id)
         try:
@@ -280,187 +206,18 @@ class Command(RubricCommands, TyperCommand):
             "approver": approval.approver_id,
         }
 
-    @command(name="plan-bypass")
-    def plan_bypass(
-        self,
-        ticket_id: int,
-        *,
-        human_authorize: Annotated[
-            str,
-            typer.Option(
-                "--human-authorize",
-                help="Username of the human explicitly authorising this plan bypass.",
-            ),
-        ],
-        reason: Annotated[
-            str,
-            typer.Option(help="Documented reason for bypassing the plan gate (required)."),
-        ],
-    ) -> PlanResult:
-        """Record an audited PlanArtifact bypass and advance the ticket to PLANNED.
-
-        The ONLY escape from the plan gate outside the normal planner flow.
-        Both --human-authorize and --reason are required; a silent bypass is
-        not allowed. Records a PlanArtifact with bypass_reason set, then
-        drives ticket.plan() → STARTED→PLANNED.
-        """
-        cleaned_reason = reason.strip()
-        cleaned_authorizer = human_authorize.strip()
-        if not cleaned_authorizer:
-            self.stderr.write("  refused: --human-authorize is required")
-            raise SystemExit(1)
-        if not cleaned_reason:
-            self.stderr.write("  refused: --reason is required (a silent plan bypass is not allowed)")
-            raise SystemExit(1)
-
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            artifact = record_artifact_and_advance(
-                ticket=ticket,
-                plan_text=f"[audited bypass by {cleaned_authorizer}] {cleaned_reason}",
-                recorded_by=cleaned_authorizer,
-            )
-        except PlanAdvanceError as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
-
-        self.stdout.write(
-            f"  plan bypass recorded for ticket {ticket.pk} "
-            f"(artifact {artifact.pk}, authorizer={cleaned_authorizer}); state → {ticket.state}"
-        )
-        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
-
-    @command(name="skip-planning")
-    def skip_planning(
-        self,
-        ticket_id: int,
-        *,
-        reason: Annotated[
-            str,
-            typer.Option(help="Why this ticket is a trivial mechanical edit that may skip planning (required)."),
-        ],
-        by: Annotated[
-            str,
-            typer.Option(help="Who recorded the skip (audit trail)."),
-        ] = "operator",
-    ) -> PlanResult:
-        """Mark a trivial ticket to skip planning and advance STARTED → PLANNED.
-
-        The LIGHTWEIGHT, audited sibling of ``plan-bypass`` for a trivial
-        mechanical edit (a typo, a one-line bump): records a durable
-        ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
-        that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
-        skip the auto-planner. ``--reason`` is mandatory — an unreasoned skip is
-        refused and records nothing. See ``models.trivial_plan_skip``.
-        """
-        cleaned_reason = reason.strip()
-        if not cleaned_reason:
-            self.stderr.write("  refused: --reason is required (an unreasoned plan skip is not allowed)")
-            raise SystemExit(1)
-
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            record_trivial_skip_and_advance(ticket=ticket, reason=cleaned_reason, by=by.strip() or "operator")
-        except PlanAdvanceError as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
-
-        self.stdout.write(
-            f"  trivial plan skip recorded for ticket {ticket.pk} (reason={cleaned_reason!r}); state → {ticket.state}"
-        )
-        return PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
-
-    @command(name="plan-reconcile-inflight")
-    def plan_reconcile_inflight(
-        self,
-        *,
-        human_authorize: Annotated[
-            str,
-            typer.Option(
-                "--human-authorize",
-                help="Human/operator authorising retroactive plan bypass for in-flight STARTED tickets.",
-            ),
-        ],
-        issue_ref: Annotated[
-            str,
-            typer.Option(help="Issue/PR reference identifying why this reconcile is necessary."),
-        ] = "",
-        dry_run: Annotated[
-            bool, typer.Option("--dry-run", help="List affected tickets without modifying them.")
-        ] = False,
-    ) -> PlanReconcileResult:
-        """Retroactively advance STARTED tickets to PLANNED after the gate was added.
-
-        One-time operator command (a data migration would fabricate an authorizer
-        it cannot name): see ``_plan_gate_commands.reconcile_inflight``. Requires
-        --human-authorize; --dry-run inspects which tickets would be affected.
-        """
-        cleaned_authorizer = human_authorize.strip()
-        if not cleaned_authorizer:
-            self.stderr.write("  refused: --human-authorize is required")
-            raise SystemExit(1)
-
-        result, log = reconcile_inflight(authorizer=cleaned_authorizer, issue_ref=issue_ref, dry_run=dry_run)
-        for line in log:
-            self.stdout.write(line)
-        return result
-
     def _resolve_ticket(self, ticket_id: int) -> Ticket:
         """Fetch a ticket or abort the subcommand with a nonzero exit (#932).
 
-        A missing ticket is a real failure — returning an ``{"error": …}``
-        dict would print and exit 0, so a scripted ``ticket context`` caller
-        could not tell success from "ticket not found". ``raise SystemExit(1)``
-        is the sibling refusal convention (AGENTS.md § Test-Writing Doctrine).
+        A missing ticket is a real failure — returning an ``{"error": …}`` dict
+        would print and exit 0, so a scripted caller could not tell success from
+        "ticket not found". ``raise SystemExit(1)`` is the sibling refusal convention.
         """
         try:
             return Ticket.objects.get(pk=ticket_id)
         except Ticket.DoesNotExist:
             self.stderr.write(f"  Ticket {ticket_id} not found")
             raise SystemExit(1) from None
-
-    @group(help="Durable per-ticket knowledge store (#627).")
-    def context(self) -> None:
-        """Group root — forces sub-commands to be addressed by name."""
-
-    @context.command(name="show")
-    def context_show(self, ticket_id: int) -> ContextResult:
-        """Print the ticket's durable context store."""
-        ticket = self._resolve_ticket(ticket_id)
-        self.stdout.write(ticket.context or "(empty)")
-        return {"ticket_id": int(ticket.pk), "context": ticket.context}
-
-    @context.command(name="add")
-    def context_add(self, ticket_id: int, entry: str) -> ContextResult:
-        """Append a timestamped ``<key>: <value>`` line to the context store.
-
-        Append-only: parallel sessions never overwrite each other (open
-        question 2). A blank entry is refused with a nonzero exit.
-        """
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            updated = ticket.append_context(entry)
-        except ValueError as exc:
-            self.stderr.write(f"  refused: {exc}")
-            raise SystemExit(1) from exc
-        self.stdout.write(f"  appended to ticket {ticket.pk} context")
-        return {"ticket_id": int(ticket.pk), "context": updated}
-
-    @context.command(name="edit")
-    def context_edit(self, ticket_id: int) -> ContextResult:
-        """Open the full context store in ``$EDITOR`` and replace it.
-
-        Unlike ``add``, ``edit`` is a full-field rewrite — for pruning stale
-        entries or restructuring. An aborted edit (editor exits without
-        saving) leaves the store untouched.
-        """
-        ticket = self._resolve_ticket(ticket_id)
-        edited = click.edit(ticket.context)
-        if edited is None:
-            self.stdout.write(f"  edit aborted — ticket {ticket.pk} context unchanged")
-            return {"ticket_id": int(ticket.pk), "context": ticket.context}
-        ticket.context = edited
-        ticket.save(update_fields=["context"])
-        self.stdout.write(f"  ticket {ticket.pk} context replaced")
-        return {"ticket_id": int(ticket.pk), "context": edited}
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -492,6 +249,27 @@ class Command(RubricCommands, TyperCommand):
             str,
             typer.Option(
                 help="ONLY for blast_class=substrate: the human/owner id authorising the substrate merge.",
+            ),
+        ] = "",
+        expedite_authorize: Annotated[
+            str,
+            typer.Option(
+                "--expedite-authorize",
+                help=(
+                    "PENDING-checks waiver: the human/owner id authorising a merge on queued "
+                    "(never FAILED) required checks. Requires a ticket flagged expedited AND "
+                    "--local-ci-green-sha bound to the reviewed tree."
+                ),
+            ),
+        ] = "",
+        local_ci_green_sha: Annotated[
+            str,
+            typer.Option(
+                "--local-ci-green-sha",
+                help=(
+                    "Attestation that the local full CI lane (dev/test-cov.sh + ruff, tree-wide "
+                    "gates) ran green at exactly this reviewed SHA — must equal --reviewed-sha."
+                ),
             ),
         ] = "",
         executing_loop_identity: Annotated[
@@ -547,39 +325,68 @@ class Command(RubricCommands, TyperCommand):
             self.stdout.write(f"  CLEAR refused: {preflight_refusal}")
             return {"issued": False, "error": preflight_refusal}
 
+        request = ClearRequest(
+            pr_id=pr_id,
+            # Strip so the by-product verdict keys off the same normalized slug the
+            # merge gate resolves — whitespace can otherwise flip _looks_like_owner_repo.
+            slug=slug.strip(),
+            reviewed_sha=reviewed_sha,
+            reviewer_identity=reviewer_identity,
+            gh_verify_result=gh_verify_result,
+            blast_class=blast_class,
+            ticket=resolved_ticket,
+            human_authorizer=human_authorize,
+            expedite_authorizer=expedite_authorize,
+            local_ci_green_sha=local_ci_green_sha,
+            executing_loop_identity=executing_loop_identity,
+        )
+
+        # Resolve the verdict's owner/repo BEFORE issuing: resolve_pr_repo_slug
+        # fails closed in a degenerate environment (workstream slug, no ticket
+        # issue_url, no clone origin), and resolving it after MergeClear.issue()
+        # persisted the row would orphan an already-issued CLEAR behind a traceback.
+        # Issue runs only when resolution succeeds, so neither failure persists a row.
+        #
+        # Issue + record the sibling verdict inside ONE transaction (F3.2): the
+        # CLEAR and its read-side ReviewVerdict are two halves of one atomic
+        # keystone step. If ``ReviewVerdict.record`` raises AFTER ``issue()``
+        # persisted the row, the outer atomic rolls the CLEAR back too — so a
+        # verdict failure can never leave an issued CLEAR with no matching verdict
+        # (a phantom that `review status` would later read as merge-safe).
         try:
-            clear = MergeClear.issue(
-                ClearRequest(
-                    pr_id=pr_id,
-                    slug=slug,
-                    reviewed_sha=reviewed_sha,
-                    reviewer_identity=reviewer_identity,
-                    gh_verify_result=gh_verify_result,
-                    blast_class=blast_class,
+            verdict_slug = resolve_pr_repo_slug(request)
+            with transaction.atomic():
+                clear = MergeClear.issue(request)
+                # Record the durable read-side sibling (a merge-safe judgment by
+                # construction — issuance refused any non-green verdict) so a later
+                # `review status` answers "safe to approve at the current head?".
+                # Key it under verdict_slug — where the merge gate queries — not
+                # the workstream slug.
+                verdict = ReviewVerdict.record(
+                    pr_id=clear.pr_id,
+                    slug=verdict_slug,
+                    reviewed_sha=clear.reviewed_sha,
+                    verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+                    reviewer_identity=clear.reviewer_identity,
+                    blast_class=clear.blast_class,
+                    gh_verify_result=clear.gh_verify_result,
                     ticket=resolved_ticket,
-                    human_authorizer=human_authorize,
-                    executing_loop_identity=executing_loop_identity,
+                    # A pending expedite CLEAR records the sibling merge_safe verdict
+                    # on PENDING checks; the flag lets ``record`` accept it
+                    # (§17.4.3 / PR-07).
+                    expedited=bool(clear.expedite_authorizer),
                 )
-            )
-        except ClearIssuanceError as exc:
+        except (MergePreconditionError, ClearIssuanceError) as exc:
             self.stdout.write(f"  CLEAR refused: {exc}")
             return {"issued": False, "error": str(exc)}
 
+        # ``--ticket-id`` is optional and no caller passes it, so a CLEAR is routinely
+        # born with no ticket for the merge keystone to advance. The PR knows its own
+        # ticket — adopt it AFTER issuance, so the issuance contract sees exactly the
+        # inputs the caller supplied.
+        if resolved_ticket is None:
+            resolved_ticket = clear.adopt_owning_ticket()
         self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
-        # A CLEAR is a merge-safe judgment at the reviewed tree by construction
-        # (issuance refused any non-green verdict). Record the durable read-side
-        # sibling so a later `review status` lookup can answer "safe to approve
-        # at the current head?" without re-deriving the cold review.
-        verdict = ReviewVerdict.record(
-            pr_id=clear.pr_id,
-            slug=clear.slug,
-            reviewed_sha=clear.reviewed_sha,
-            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
-            reviewer_identity=clear.reviewer_identity,
-            blast_class=clear.blast_class,
-            gh_verify_result=clear.gh_verify_result,
-            ticket=resolved_ticket,
-        )
         result: ClearIssueResult = {
             "issued": True,
             "clear_id": int(clear.pk),
@@ -591,87 +398,6 @@ class Command(RubricCommands, TyperCommand):
         }
         if resolved_ticket is not None:
             result["ticket_id"] = int(resolved_ticket.pk)
-        return result
-
-    @command()
-    def merge(
-        self,
-        clear_id: int,
-        *,
-        loop_identity: Annotated[
-            str,
-            typer.Option(help="Identity of the executing loop (must differ from the CLEAR reviewer — §17.8 clause 3)."),
-        ] = "merge-loop",
-        human_authorized: Annotated[
-            str,
-            typer.Option(
-                help="Substrate-only: the recorded human authoriser id, re-presented to merge a substrate CLEAR.",
-            ),
-        ] = "",
-    ) -> MergeKeystoneResult:
-        """Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
-
-        The ONLY sanctioned merge path. Raw ``gh pr merge`` / ``glab mr
-        merge`` is mechanically refused on teatree-managed tickets (the
-        prohibition guard in ``hook_router``); they bypass the ledger
-        update, attestation binding, and ``mark_merged()`` and leave the
-        FSM incoherent.
-
-        Pre-condition (§17.4.3): a valid, actionable ``MergeClear`` (CLI
-        arg ``clear_id``), CI green on the exact PR head, an independent
-        cold-review CLEAR (``reviewer_identity`` != ``--loop-identity``),
-        SHA-match, not-draft, and ``blast_class`` != substrate. The merge
-        is bound to ``expected_head_oid`` and fails closed on head drift.
-        Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
-        binding + ``ticket.mark_merged()``.
-
-        ``--human-authorized`` is the sanctioned substrate approval path
-        (invariant 8): the loop NEVER auto-merges substrate, but the recorded
-        human approval id (set on the CLEAR via ``ticket clear …
-        --human-authorize``) is re-presented here and **the agent executes**
-        the substrate merge through THIS SAME transition — not raw ``gh``,
-        never a human-performed merge (approval is the gate, the agent is the
-        executor). It cannot unlock a non-substrate CLEAR, so it can never
-        bypass independent loop review of logic/docs.
-
-        On a pre-condition failure the FSM is left untouched and the
-        result is flagged ``escalated`` so the durable backlog re-escalation
-        is visible (the loop never self-issues a replacement CLEAR).
-        """
-        try:
-            require_current_schema()
-        except SelfDbMigrationError as exc:
-            self.stdout.write(f"  merge refused: {exc}")
-            return {"error": str(exc), "merged": False}
-
-        try:
-            clear = MergeClear.objects.get(pk=clear_id)
-        except MergeClear.DoesNotExist:
-            return {"error": f"MergeClear {clear_id} not found", "merged": False}
-
-        if (scope_refusal := merge_clear_refusal(clear, approved=bool(human_authorized))) is not None:
-            return scope_refusal
-
-        try:
-            outcome = merge_ticket_pr(
-                clear=clear,
-                executing_loop_identity=loop_identity,
-                human_authorized=human_authorized,
-            )
-        except MergePreconditionError as exc:
-            self.stdout.write(f"  merge refused (re-escalating): {exc}")
-            return escalated_merge_result(clear, str(exc))
-
-        result: MergeKeystoneResult = {
-            "merged": True,
-            "pr_id": outcome.pr_id,
-            "slug": outcome.slug,
-            "merged_sha": outcome.merged_sha,
-            "ticket_state": outcome.ticket_state,
-        }
-        if clear.ticket_id is not None:
-            result["ticket_id"] = int(clear.ticket_id)
-        self.stdout.write(f"  merged {outcome.slug}#{outcome.pr_id} → ticket state {outcome.ticket_state}")
         return result
 
     @command()
@@ -689,31 +415,28 @@ class Command(RubricCommands, TyperCommand):
         work items, GitHub issues). Pass the body inline with ``--body`` or
         from a file with ``--body-file``.
         """
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         text = Path(body_file).read_text(encoding="utf-8") if body_file else body
         if not text:
             return {"error": "No comment body: pass --body or --body-file"}
-
+        # The shared forge-write seam (public-repo leak gate + #117 send-proxy) — same seam the MCP tools use.
+        forge = forge_from_url(issue_url)
+        text = route_forge_write(forge=forge, repo=issue_url, text=text, action="ticket_comment", target=issue_url)
         for overlay in get_all_overlays().values():
             host = get_code_host_for_url(overlay, issue_url)
             if host is None:
                 continue
             raw = host.post_issue_comment(issue_url=issue_url, body=text)
-            error = raw.get("error") if isinstance(raw, dict) else None
-            if error:
-                self.stdout.write(f"  failed: {error}")
-                return {"error": str(error)}
+            if isinstance(raw, dict) and raw.get("error"):
+                self.stdout.write(f"  failed: {raw['error']}")
+                return {"error": str(raw["error"])}
             comment_id = raw.get("id") if isinstance(raw, dict) else None
             self.stdout.write(f"  commented on {issue_url}")
-            return {
-                "issue_url": issue_url,
-                "comment_id": comment_id if isinstance(comment_id, int) else 0,
-            }
-
+            return {"issue_url": issue_url, "comment_id": comment_id if isinstance(comment_id, int) else 0}
         return {"error": f"No code host could be resolved for {issue_url}"}
 
     @command(name="create-sub")
@@ -738,16 +461,30 @@ class Command(RubricCommands, TyperCommand):
         or from a file with ``--description-file``. Prints the child IID and URL
         for chaining into dispatch prompts.
         """
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
 
         if not parent.strip() or not title.strip():
             return {"error": "create-sub refused: --parent and --title are both required"}
 
         body = Path(description_file).read_text(encoding="utf-8") if description_file else description
         label_list = [label.strip() for label in labels.split(",") if label.strip()]
+
+        # Route the child title/body/labels through the shared forge-write seam
+        # (public-repo leak gate + #117 send-proxy) — the SAME seam the sibling
+        # `comment` and the MCP issue_create twin use — so a child carrying a
+        # customer codename bound for a public forge is REFUSED before the create.
+        # Labels ride the scrub too (a forge auto-creates a missing label),
+        # matching the MCP twin.
+        forge = forge_from_url(parent)
+        title = route_forge_write(forge=forge, repo=parent, text=title, action="ticket_create_sub", target=parent)
+        body = route_forge_write(forge=forge, repo=parent, text=body, action="ticket_create_sub", target=parent)
+        label_list = [
+            route_forge_write(forge=forge, repo=parent, text=label, action="ticket_create_sub", target=parent)
+            for label in label_list
+        ]
 
         for overlay in get_all_overlays().values():
             host = get_code_host_for_url(overlay, parent)
@@ -794,141 +531,3 @@ class Command(RubricCommands, TyperCommand):
             }
             for ticket in qs
         ]
-
-    @command()
-    def sync_completions(
-        self,
-        *,
-        dry_run: Annotated[bool, typer.Option(help="Show what would transition without acting.")] = False,
-    ) -> list[CompletionResult]:
-        """Check post-ship tickets against upstream issues and advance completed ones.
-
-        Walks tickets in shipped/in_review/merged states, calls the overlay's
-        ``is_issue_done()`` for each, and transitions completed tickets toward
-        delivered. Use ``--dry-run`` to preview without touching state.
-        """
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
-
-        completable_states = frozenset({"shipped", "in_review", "merged"})
-        results: list[CompletionResult] = []
-
-        for overlay_name, overlay in get_all_overlays().items():
-            tickets = Ticket.objects.filter(
-                state__in=completable_states,
-                overlay=overlay_name,
-            ).exclude(issue_url="")
-
-            for ticket in tickets:
-                host = get_code_host_for_url(overlay, ticket.issue_url)
-                if host is None:
-                    continue
-                try:
-                    issue_data = host.get_issue(ticket.issue_url)
-                except Exception:  # noqa: BLE001
-                    logger.warning("Failed to fetch issue for ticket %s (%s)", ticket.pk, ticket.issue_url)
-                    continue
-                if not isinstance(issue_data, dict) or "error" in issue_data:
-                    continue
-                if not overlay.is_issue_done(issue_data):
-                    continue
-
-                from_state = ticket.state
-                if dry_run:
-                    results.append(
-                        CompletionResult(
-                            ticket_id=int(ticket.pk),
-                            issue_url=ticket.issue_url,
-                            from_state=from_state,
-                            action="would_complete",
-                        )
-                    )
-                    self.stdout.write(f"  [dry-run] #{ticket.pk} ({from_state}) → completed: {ticket.issue_url}")
-                else:
-                    _advance_ticket(ticket)
-                    results.append(
-                        CompletionResult(
-                            ticket_id=int(ticket.pk),
-                            issue_url=ticket.issue_url,
-                            from_state=from_state,
-                            to_state=ticket.state,
-                            action="completed",
-                        )
-                    )
-                    self.stdout.write(f"  #{ticket.pk} {from_state} → {ticket.state}: {ticket.issue_url}")
-
-        if not results:
-            self.stdout.write("No tickets to advance.")
-        else:
-            self.stdout.write(f"\n{len(results)} ticket(s) {'would be' if dry_run else ''} advanced.")
-        return results
-
-    @command()
-    def reconcile_overlay(
-        self,
-        *,
-        dry_run: Annotated[bool, typer.Option(help="Show what would change without persisting.")] = False,
-    ) -> list[ReattributeResult]:
-        """Backfill ``overlay`` for rows whose attribution disagrees with inference.
-
-        Walks every ticket with an ``issue_url`` and re-runs overlay
-        inference (now routed through ``get_workspace_repos()``). Rows whose
-        stored overlay differs from a *conclusive* inference are corrected;
-        an inconclusive (empty) inference never blanks an existing value.
-        Use ``--dry-run`` to preview.
-        """
-        results: list[ReattributeResult] = []
-
-        for ticket in Ticket.objects.exclude(issue_url="").order_by("pk"):
-            inferred = ticket._infer_overlay()  # noqa: SLF001 — backfill owns this model concern.
-            if not inferred or inferred == ticket.overlay:
-                continue
-
-            from_overlay = ticket.overlay
-            from_label = from_overlay or "(none)"
-            if dry_run:
-                results.append(
-                    ReattributeResult(
-                        ticket_id=int(ticket.pk),
-                        issue_url=ticket.issue_url,
-                        from_overlay=from_overlay,
-                        to_overlay=inferred,
-                        action="would_reattribute",
-                    )
-                )
-                self.stdout.write(f"  [dry-run] #{ticket.pk}: {from_label} → {inferred}: {ticket.issue_url}")
-            else:
-                ticket.apply_inferred_overlay(inferred)
-                results.append(
-                    ReattributeResult(
-                        ticket_id=int(ticket.pk),
-                        issue_url=ticket.issue_url,
-                        from_overlay=from_overlay,
-                        to_overlay=ticket.overlay,
-                        action="reattributed",
-                    )
-                )
-                self.stdout.write(f"  #{ticket.pk}: {from_label} → {ticket.overlay}: {ticket.issue_url}")
-
-        if not results:
-            self.stdout.write("All ticket overlays already consistent with inference.")
-        else:
-            verb = "would be" if dry_run else "were"
-            self.stdout.write(f"\n{len(results)} ticket(s) {verb} re-attributed.")
-        return results
-
-
-def _advance_ticket(ticket: Ticket) -> None:
-    """Walk the ticket through remaining FSM transitions toward delivered."""
-    with transaction.atomic():
-        if ticket.state == "shipped":
-            ticket.request_review()
-            ticket.save()
-    with transaction.atomic():
-        if ticket.state == "in_review":
-            ticket.mark_merged()
-            ticket.save()
-    with transaction.atomic():
-        if ticket.state == "merged":
-            ticket.retrospect()
-            ticket.save()

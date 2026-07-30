@@ -56,6 +56,34 @@ class RecommendedAuthorization:
 # paths, or credentials. Keep each sentence copy-pasteable as-is.
 RECOMMENDED_AUTHORIZATIONS: tuple[RecommendedAuthorization, ...] = (
     RecommendedAuthorization(
+        key="teatree-owns-the-safety-layer",
+        sentence=(
+            "Teatree owns the security and safety layer for this workflow: its PreToolUse "
+            "and Stop gates decide what is allowed, so the auto mode classifier should "
+            "defer to them rather than re-deciding a call a teatree gate already let "
+            "through."
+        ),
+        keyphrases=("safety layer", "defer"),
+    ),
+    RecommendedAuthorization(
+        key="read-only-inspection",
+        sentence=(
+            "Allow read-only inspection commands that report state and mutate nothing — "
+            "`ps`, `lsof`, `docker compose ps`, `docker compose logs`, `git status`, "
+            "`git log`, `git diff`, `git show`, and pipes into `grep`/`jq`."
+        ),
+        keyphrases=("read-only", "docker compose ps"),
+    ),
+    RecommendedAuthorization(
+        key="reland-on-a-fresh-branch",
+        sentence=(
+            "When a push is blocked by the leak or commit-identity gate after a rebase, "
+            "allow re-landing the work on a fresh branch cut from `origin/main` and "
+            "cherry-picking the commits onto it. `--no-verify` is never authorized."
+        ),
+        keyphrases=("origin/main", "cherry-pick"),
+    ),
+    RecommendedAuthorization(
         key="manage-claude-settings-and-hooks",
         sentence=(
             "Allow editing ~/.claude/settings.json and files under ~/.claude/hooks/ — "
@@ -108,6 +136,36 @@ RECOMMENDED_AUTHORIZATIONS: tuple[RecommendedAuthorization, ...] = (
             "NOT authorized by this rule."
         ),
         keyphrases=("ticket clear", "ticket merge"),
+    ),
+    RecommendedAuthorization(
+        key="docker-exec-provisioning",
+        sentence=(
+            "Allow `docker exec` into teatree deployment containers and installing the "
+            "teatree editable package with extras via uv (e.g. "
+            "`uv tool install --editable '<clone>[slack]'`) as part of Slack/deploy "
+            "setup and runtime provisioning in Docker."
+        ),
+        keyphrases=("docker exec", "uv tool install"),
+    ),
+    RecommendedAuthorization(
+        key="slack-owner-id-lookup",
+        sentence=(
+            "Allow reading an overlay's own Slack workspace data via its bot token "
+            "(including `users.list` / `users.lookupByEmail`) STRICTLY to resolve or "
+            "verify the owner's own Slack user id for DM-only provisioning — never "
+            "bulk member-PII export."
+        ),
+        keyphrases=("users.list", "dm-only provisioning"),
+    ),
+    RecommendedAuthorization(
+        key="provision-config-writes",
+        sentence=(
+            "Allow teatree provisioning to write overlay config state in the DB "
+            "overlays registry (messaging backend, token references, user id, DM "
+            "channel) via `t3 setup` or `t3 <overlay> config_setting set` during "
+            "Slack or deploy setup."
+        ),
+        keyphrases=("config_setting set", "overlays registry"),
     ),
 )
 
@@ -193,5 +251,14 @@ def report_missing_authorizations(
 
 
 def authorizations() -> bool:
-    """Suggest absent recommended auto-mode authorizations (read-only)."""
+    """Suggest absent recommended auto-mode authorizations; re-test cached scope failures.
+
+    Read-only for settings. As the "am I authorized" re-check surface, it also
+    resets the in-process token-scope-failure cache (PR-19): once the operator
+    re-runs this after fixing a token's scopes, the next call re-tests the scope
+    live instead of short-circuiting on a stale cached miss.
+    """
+    from teatree.core.intake.scope_cache import reset_scope_cache  # noqa: PLC0415 — deferred: keep import-light
+
+    reset_scope_cache()
     return report_missing_authorizations(typer.echo)

@@ -1,0 +1,145 @@
+"""Transcript turn-inspection helpers shared by Stop gates.
+
+Each reads the most recent assistant turn and returns one projection of it:
+``current_turn_tool_commands`` flattens every ``tool_use`` input string (the
+closure-reverify Stop gate, #1448), ``current_turn_edits`` returns the edited file
+paths, and ``current_turn_assistant_text`` the assistant prose (both feed the
+consideration Stop gate). Factored OUT of ``hook_router`` (a shrink-only capped
+god-module): a new gate that needs the same walk imports it from here rather than
+growing the router.
+
+The transcript readers (``_read_transcript_entries`` / ``_entry_role`` /
+``_entry_content``) live in ``hook_router`` and are imported lazily at call time
+— ``hook_router`` imports this module at top level, so importing it back at top
+level here would be a cycle.
+"""
+
+import sys
+
+# Alias the bare and ``hooks.scripts.`` identities so the router and any test
+# patching a helper here operate on ONE module object.
+sys.modules.setdefault("turn_inspect", sys.modules[__name__])
+sys.modules.setdefault("hooks.scripts.turn_inspect", sys.modules[__name__])
+
+
+def current_turn_tool_commands(transcript_path: str) -> list[str]:
+    """Flattened text of every tool_use input in the most recent turn.
+
+    Walks the transcript newest->oldest to the most recent ``user`` boundary
+    and collects, for each ``tool_use`` block after it, the strings that can
+    carry an id + state-read verb: ``Bash`` ``command`` and ``Agent`` / ``Task``
+    ``prompt`` + ``description``. These feed the same-turn-verification check
+    so a ``gh pr view <id>`` in the turn clears the warning for that id.
+    """
+    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+        _entry_content,
+        _entry_role,
+        _read_transcript_entries,
+    )
+
+    entries = _read_transcript_entries(transcript_path)
+    if not entries:
+        return []
+    commands: list[str] = []
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            tool_input = block.get("input")
+            if not isinstance(tool_input, dict):
+                continue
+            for field in ("command", "prompt", "description"):
+                value = tool_input.get(field)
+                if isinstance(value, str) and value:
+                    commands.append(value)
+    return commands
+
+
+_EDIT_TOOL_NAMES = frozenset({"Edit", "Write", "NotebookEdit"})
+
+
+def _edit_block_path(block: dict) -> str | None:
+    """File path for an ``Edit``/``Write``/``NotebookEdit`` tool_use block.
+
+    Caller pre-filters with ``isinstance(block, dict)`` (mirrors the
+    ``_block_is_settings_write`` contract).
+    """
+    if block.get("type") != "tool_use":
+        return None
+    name = block.get("name")
+    if name not in _EDIT_TOOL_NAMES:
+        return None
+    tool_input = block.get("input")
+    if not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if isinstance(raw, str) and raw:
+        return raw
+    return None
+
+
+def current_turn_edits(transcript_path: str) -> list[str]:
+    """File paths edited by the assistant in the most recent turn.
+
+    Walks the transcript newest→oldest; the most recent ``user`` entry
+    is the boundary. Returns the file paths from every ``Edit`` /
+    ``Write`` / ``NotebookEdit`` ``tool_use`` block after that
+    boundary, in transcript order. Duplicates kept — the caller
+    classifies + dedupes.
+    """
+    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+        _entry_content,
+        _entry_role,
+        _read_transcript_entries,
+    )
+
+    entries = _read_transcript_entries(transcript_path)
+    if not entries:
+        return []
+    edits: list[str] = []
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if not isinstance(block, dict):
+                continue
+            path = _edit_block_path(block)
+            if path is not None:
+                edits.append(path)
+    edits.reverse()
+    return edits
+
+
+def current_turn_assistant_text(transcript_path: str) -> str:
+    """Concatenated assistant text blocks in the most recent turn.
+
+    Used to detect a teatree-issue reference that clears the gate.
+    """
+    from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import
+        _entry_content,
+        _entry_role,
+        _read_transcript_entries,
+    )
+
+    chunks: list[str] = []
+    entries = _read_transcript_entries(transcript_path)
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+    return "\n".join(chunks)

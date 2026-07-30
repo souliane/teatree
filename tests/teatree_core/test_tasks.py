@@ -1,14 +1,21 @@
+import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
+from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, Ticket
+from teatree.core.runners import RetroPhaseMarker
+from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
     drain_headless_queue,
+    drain_headless_queue_body,
+    enqueue_teardown_for_terminal_tickets,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -71,9 +78,9 @@ def _stub_headless_runner(testcase: TestCase) -> None:
     "don't run a real threaded DB read under TestCase" isolation
     ``tests/teatree_agents/_sdk_fake.py`` documents.
     """
-    from unittest.mock import patch  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415 - deferred: local import
 
-    from teatree.core import headless_dispatch  # noqa: PLC0415
+    from teatree.core import headless_dispatch  # noqa: PLC0415 - deferred: local import
 
     def _runner(task: Task, *, phase: str = "", overlay_skill_metadata: object = None) -> TaskAttempt:
         return task.complete_with_attempt(exit_code=0, result={"summary": "stubbed"})
@@ -87,9 +94,9 @@ class TestDrainHeadlessQueue(TestCase):
     """Drain is a safety net for tasks that missed the post_save auto-enqueue."""
 
     def setUp(self) -> None:
-        from django.db.models.signals import post_save  # noqa: PLC0415
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
 
         post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
         self.addCleanup(
@@ -134,14 +141,22 @@ class TestDrainHeadlessQueue(TestCase):
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [pending.pk], "failed_unknown_overlay": []}
+        assert result.return_value == {"enqueued": [pending.pk], "rerouted": [], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_no_pending_tasks(self) -> None:
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": []}
+        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_body_returns_empty_result_on_empty_queue(self) -> None:
+        # The shared body the @task wrapper and the maintenance chain both call.
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue_body()
+
+        assert result == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_unknown_overlay_task_is_failed_not_enqueued(self) -> None:
@@ -158,18 +173,68 @@ class TestDrainHeadlessQueue(TestCase):
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
+        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": [poison.pk]}
         poison.refresh_from_db()
         assert poison.status == Task.Status.FAILED
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_stale_interactive_row_is_rerouted_and_dispatched_under_headless_runtime(self) -> None:
+        # A phase task created during the laptop /loop era: a loop-dispatched
+        # (author, coding) pair routed INTERACTIVE, orphaned once the box moved
+        # to the headless lane with no interactive session to dispatch it. Under
+        # agent_runtime=headless the drain adopts it: route_to_headless + dispatch.
+        from teatree.config import AgentRuntime  # noqa: PLC0415 - deferred: local import
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.config.get_effective_settings") as mock_settings,
+        ):
+            mock_settings.return_value.agent_runtime = AgentRuntime.HEADLESS
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [stale.pk], "rerouted": [stale.pk], "failed_unknown_overlay": []}
+        stale.refresh_from_db()
+        assert stale.execution_target == Task.ExecutionTarget.HEADLESS
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_interactive_row_is_left_untouched_under_interactive_runtime(self) -> None:
+        # Under the default interactive runtime the /loop slot owns interactive
+        # rows — the drain must not adopt them (that would double-dispatch).
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        interactive = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [], "rerouted": [], "failed_unknown_overlay": []}
+        interactive.refresh_from_db()
+        assert interactive.execution_target == Task.ExecutionTarget.INTERACTIVE
 
 
 class TestExecuteHeadlessUnknownOverlay(TestCase):
     """A task on an unknown overlay fails permanently — never an eternal re-crash (#1959)."""
 
     def setUp(self) -> None:
-        from django.db.models.signals import post_save  # noqa: PLC0415
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
 
-        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
 
         post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
         self.addCleanup(
@@ -181,7 +246,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_unknown_overlay_marks_task_failed_with_attempt(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="ghost-overlay")
         session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
@@ -204,8 +269,47 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         assert "ghost-overlay" in attempt.error
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_headless_subprocess_stderr_is_recorded_on_the_attempt(self) -> None:
+        # A claude-agent-sdk ``ProcessError`` stringifies to "Check stderr output
+        # for details" and hides the real cause on ``.stderr``. The recorded
+        # attempt must carry that stderr so a headless failure is diagnosable.
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+        class _FakeProcessError(RuntimeError):
+            def __init__(self) -> None:
+                super().__init__("Command failed with exit code 1. Check stderr output for details")
+                self.stderr = "claude: error: OAuth token expired -- run `claude login`"
+
+        def _boom(*_args: object, **_kwargs: object) -> object:
+            raise _FakeProcessError
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_boom),
+            pytest.raises(_FakeProcessError),
+        ):
+            execute_headless_task.func(task.pk, task.phase)
+
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "claude subprocess stderr" in attempt.error
+        assert "OAuth token expired" in attempt.error
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
-        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="ghost-overlay")
         session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
@@ -224,6 +328,75 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         assert task.pk not in result.return_value["enqueued"]
 
 
+class TestClaimIsTheSoleAdmissionDecision(TestCase):
+    """The atomic claim is the ONLY admission predicate (F4).
+
+    A re-delivered terminal task or one a live rival already holds is a no-op,
+    never a second billed execution on the same row (the 74%-duplicate mechanism).
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        self.addCleanup(
+            post_save.connect,
+            _auto_enqueue_headless_task,
+            sender=Task,
+            dispatch_uid="auto_enqueue_headless",
+        )
+
+    def _make_task(self, *, status: str) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=status,
+            phase="architectural_review",
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_terminal_task_redelivery_does_not_re_execute(self) -> None:
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+
+        task = self._make_task(status=Task.Status.COMPLETED)
+        runner = MagicMock()
+
+        with (
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=runner),
+        ):
+            result = execute_headless_task.func(task.pk, task.phase)
+
+        runner.assert_not_called()
+        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_task_claimed_by_live_rival_does_not_re_execute(self) -> None:
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 - deferred: local import
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415 - deferred: local import
+
+        task = self._make_task(status=Task.Status.PENDING)
+        task.claim(claimed_by="rival-worker", lease_seconds=900)
+        runner = MagicMock()
+
+        with (
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=runner),
+        ):
+            result = execute_headless_task.func(task.pk, task.phase)
+
+        runner.assert_not_called()
+        assert result == {"skipped": "not claimable (claimed elsewhere or terminal)"}
+        task.refresh_from_db()
+        assert task.claimed_by == "rival-worker"
+
+
 class TestExecuteRetrospect(TestCase):
     @staticmethod
     def _ticket_in_merged() -> Ticket:
@@ -231,6 +404,15 @@ class TestExecuteRetrospect(TestCase):
         ticket.state = Ticket.State.MERGED
         ticket.save(update_fields=["state"])
         return ticket
+
+    def test_the_runner_only_stamps_the_phase_marker(self) -> None:
+        """Bookkeeping only — the agent-driven retro lives in `/t3:retro` + `lifecycle visit-phase`."""
+        ticket = self._ticket_in_merged()
+
+        assert RetroPhaseMarker(ticket).run() == RunnerResult(ok=True, detail="retro-scheduled")
+
+        ticket.refresh_from_db()
+        assert ticket.extra == {"retro_scheduled": True}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_merged_ticket_to_delivered(self) -> None:
@@ -270,7 +452,7 @@ class TestExecuteTeardown(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_runner_when_state_matches(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_merged()
 
@@ -288,22 +470,45 @@ class TestExecuteTeardown(TestCase):
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_skips_when_state_does_not_match(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+    def test_skips_when_state_is_not_terminal(self) -> None:
+        # A non-terminal ticket (IN_REVIEW — PR still open) is never torn down:
+        # the guard is the done set (MERGED/DELIVERED/IGNORED), SHIPPED excluded.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
 
         result = execute_teardown.enqueue(ticket.pk)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.IN_REVIEW
         assert result.return_value == {
             "ticket_id": ticket.pk,
             "skipped": True,
-            "state": "retrospected",
+            "state": "in_review",
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_does_not_skip_delivered_or_ignored(self) -> None:
+        # The guard relax (#): DELIVERED and IGNORED are terminal, so teardown
+        # runs (does not skip) — previously only MERGED passed the guard.
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
+
+        for state in (Ticket.State.DELIVERED, Ticket.State.IGNORED):
+            ticket = Ticket.objects.create(overlay="test")
+            ticket.state = state
+            ticket.save(update_fields=["state"])
+
+            with patch("teatree.core.tasks.WorktreeTeardown") as teardown:
+                teardown.return_value.run.return_value = RunnerResult(ok=True, detail="tore down 1 worktree(s)")
+                result = execute_teardown.enqueue(ticket.pk)
+
+            assert result.return_value == {
+                "ticket_id": ticket.pk,
+                "ok": True,
+                "detail": "tore down 1 worktree(s)",
+            }, state
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_reports_failure_without_advancing(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_merged()
 
@@ -320,6 +525,174 @@ class TestExecuteTeardown(TestCase):
         }
 
 
+class TestEnqueueTeardownBacklogDrain(TestCase):
+    """The one-shot operational drain enqueues teardown for terminal tickets holding worktrees."""
+
+    def _terminal_ticket_with_worktree(self, state: Ticket.State) -> Ticket:
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
+
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = state
+        ticket.save(update_fields=["state"])
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="r", branch="b", extra={"worktree_path": "/tmp/wt"}
+        )
+        return ticket
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_enqueues_only_terminal_tickets_with_worktrees(self) -> None:
+        merged = self._terminal_ticket_with_worktree(Ticket.State.MERGED)
+        ignored = self._terminal_ticket_with_worktree(Ticket.State.IGNORED)
+        # A terminal ticket with NO worktree: nothing to reap.
+        Ticket.objects.create(overlay="test", state=Ticket.State.DELIVERED)
+        # A non-terminal ticket with a worktree: not eligible.
+        non_terminal = self._terminal_ticket_with_worktree(Ticket.State.IN_REVIEW)
+
+        with patch("teatree.core.tasks.execute_teardown") as teardown:
+            enqueued = enqueue_teardown_for_terminal_tickets()
+
+        assert sorted(enqueued) == sorted([merged.pk, ignored.pk])
+        assert non_terminal.pk not in enqueued
+        assert teardown.enqueue.call_count == 2
+
+
+def _run_git(*args: str, cwd: Path) -> None:
+    import shutil  # noqa: PLC0415 - deferred: local import
+    import subprocess  # noqa: PLC0415 - deferred: local import
+
+    git = shutil.which("git") or "git"
+    subprocess.run([git, "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+class TestExecuteTeardownTerminalPurge(TestCase):
+    """The FSM-automatic teardown runs for non-MERGED terminal states, against real git.
+
+    Proves the guard relax end-to-end: ``execute_teardown`` purges an IGNORED
+    ticket's clean, fully-pushed worktree (previously it skipped anything not
+    MERGED), and the ``fsm_terminal=True`` carve-out means a stale never-ended
+    Session no longer pins the worktree ACTIVE forever. The #706 data-loss guard
+    still holds: a branch with unpushed-unique commits is KEPT on the new path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.remote = tmp_path / "remote.git"
+        self.remote.mkdir()
+        _run_git("init", "-q", "--bare", "-b", "main", cwd=self.remote)
+
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        self.branch = "ac-myrepo-purge-x"
+        self.wt_path = self.workspace / self.branch / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
+
+    def _commit_in_worktree(self, message: str) -> None:
+        (self.wt_path / "file.txt").write_text(message, encoding="utf-8")
+        _run_git("add", "file.txt", cwd=self.wt_path)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", message, cwd=self.wt_path)
+
+    def _ignored_ticket_with_worktree(self) -> Ticket:
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/purge",
+            state=Ticket.State.IGNORED,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="myrepo",
+            branch=self.branch,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        return ticket
+
+    @contextmanager
+    def _patched_clone_root(self) -> Iterator[None]:
+        with ExitStack() as stack:
+            stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
+            for target in (
+                "teatree.core.runners.teardown.clone_root",
+                "teatree.core.worktree.worktree_done.clone_root",
+                "teatree.core.cleanup.cleanup.clone_root",
+            ):
+                stack.enter_context(patch(target, return_value=self.workspace))
+            mock_overlay = stack.enter_context(patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree"))
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            yield
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_purges_clean_worktree_of_ignored_ticket(self) -> None:
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
+
+        ticket = self._ignored_ticket_with_worktree()
+        # Fully push the branch so nothing is at risk.
+        self._commit_in_worktree("pushed work")
+        _run_git("push", "-q", "origin", self.branch, cwd=self.wt_path)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        # A stale, never-ended Session pins the ticket ACTIVE on the ad-hoc path.
+        Session.objects.create(overlay="test", ticket=ticket)
+
+        with self._patched_clone_root():
+            result = execute_teardown.enqueue(ticket.pk)
+
+        assert result.return_value["ok"] is True, result.return_value["detail"]
+        assert not self.wt_path.exists(), "clean pushed worktree of an IGNORED ticket was not purged"
+        assert not Worktree.objects.filter(branch=self.branch).exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_unpushed_unique_commits_on_terminal_purge(self) -> None:
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
+
+        ticket = self._ignored_ticket_with_worktree()
+        # A commit on NO remote, not patch-id-equivalent to origin/main.
+        self._commit_in_worktree("genuinely unsynced work")
+
+        with self._patched_clone_root():
+            result = execute_teardown.enqueue(ticket.pk)
+
+        assert result.return_value["ok"] is False
+        assert self.branch in result.return_value["detail"]
+        assert "salvage" in result.return_value["detail"]
+        assert self.wt_path.exists(), "#706 guard breached: worktree with unpushed commits was destroyed"
+        assert Worktree.objects.filter(branch=self.branch).exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_keeps_uncommitted_changes_on_terminal_purge(self) -> None:
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
+
+        ticket = self._ignored_ticket_with_worktree()
+        # Every commit is pushed, so the unpushed-commit branch of the guard is
+        # clean — the ONLY thing at risk is a real uncommitted working-tree change,
+        # which is never on any remote. It must gate the purge on its own.
+        self._commit_in_worktree("pushed work")
+        _run_git("push", "-q", "origin", self.branch, cwd=self.wt_path)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        (self.wt_path / "uncommitted.txt").write_text("local edit not on any remote", encoding="utf-8")
+
+        with self._patched_clone_root():
+            result = execute_teardown.enqueue(ticket.pk)
+
+        assert result.return_value["ok"] is False
+        assert "uncommitted" in result.return_value["detail"]
+        assert "salvage" in result.return_value["detail"]
+        assert self.wt_path.exists(), "#706 guard breached: worktree with uncommitted changes was destroyed"
+        assert Worktree.objects.filter(branch=self.branch).exists()
+
+
 class TestExecuteProvision(TestCase):
     def _ticket_in_started(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", repos=["repo-a"], extra={"branch": "ac-repo-a-1-x"})
@@ -329,7 +702,7 @@ class TestExecuteProvision(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_provisions_then_schedules_planning(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
 
@@ -353,8 +726,8 @@ class TestExecuteProvision(TestCase):
         # artifact the planner consumes — the survey is PRODUCED by intake, not
         # re-derived by the planner. Revert the persistence and this drops to 0
         # artifacts (the anti-vacuity proof).
-        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415 - deferred: local import
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
         survey = {"worktrees": [], "open_prs": [{"url": "https://forge/pr/9"}], "recommendations": [], "warnings": []}
@@ -378,8 +751,8 @@ class TestExecuteProvision(TestCase):
         # The survey is best-effort context, not a gate: a gather that raises
         # (a forge outage, a corrupt clone) must not abort provisioning or
         # planning — fail-open, mirroring the landscape module's own doctrine.
-        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415 - deferred: local import
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
 
@@ -406,8 +779,10 @@ class TestExecuteProvision(TestCase):
         # ``workspace ticket``). The provision worker must NOT auto-schedule the
         # planner the external owner will never claim — but provisioning itself
         # still succeeds.
-        from teatree.core.models.external_delivery import mark_external_delivery  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models.external_delivery import (  # noqa: PLC0415 - deferred: local import
+            mark_external_delivery,
+        )
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
         mark_external_delivery(ticket)
@@ -429,8 +804,10 @@ class TestExecuteProvision(TestCase):
     def test_skips_planning_for_trivial_marked_ticket(self) -> None:
         # Batch C: a trivial-marked AUTHOR ticket skips the auto-planner exactly
         # as an externally-delivered one does — but provisioning still succeeds.
-        from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip  # noqa: PLC0415
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.models.trivial_plan_skip import (  # noqa: PLC0415 - deferred: local import
+            mark_trivial_plan_skip,
+        )
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
         mark_trivial_plan_skip(ticket, reason="one-line constant bump", by="operator")
@@ -449,6 +826,74 @@ class TestExecuteProvision(TestCase):
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_holds_planning_while_attachment_unfetched(self) -> None:
+        # PR-15/M5: the intake gate refuses to hand a ticket to the planner while
+        # a referenced attachment is un-fetched. Remove the gate call in
+        # execute_provision and the planning task appears anyway — the
+        # anti-vacuity proof (this assertion goes RED without the gate wiring).
+        ticket = self._ticket_in_started()
+        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not ticket.tasks.filter(phase="planning").exists()
+        assert attachment in result.return_value["detail"]
+        assert "--fetch" in result.return_value["detail"]
+        # The gate recorded the manifest with the un-fetched entry.
+        manifest = AttachmentManifest.latest_for(ticket)
+        assert manifest is not None
+        assert manifest.entries[0]["source_url"] == attachment
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_kill_switch_lifts_the_hold(self) -> None:
+        # Never-lockout: `[teatree] attachment_gate_enabled = false` hands the
+        # ticket off even with an un-fetched attachment, so a stuck ticket is
+        # never a hard lockout.
+        ticket = self._ticket_in_started()
+        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
+            patch(
+                "teatree.core.tasks.get_effective_settings",
+                return_value=MagicMock(attachment_gate_enabled=False),
+            ),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            execute_provision.enqueue(ticket.pk)
+
+        assert ticket.tasks.filter(phase="planning").exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_hands_off_once_attachment_is_fetched(self) -> None:
+        # The gate is not permanently blocking: once the cached file exists the
+        # planner is scheduled. Pairs with the hold test as the two-sided proof.
+        ticket = self._ticket_in_started()
+        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
+        att_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cached = local_path_for(att_dir, AttachmentRef(attachment, AttachmentKind.GITLAB_UPLOAD))
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(b"fetched")
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
+            patch("teatree.core.tasks.attachments_dir_for", return_value=att_dir),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            execute_provision.enqueue(ticket.pk)
+
+        assert ticket.tasks.filter(phase="planning").exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
 
@@ -465,7 +910,7 @@ class TestExecuteProvision(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_state_when_runner_fails(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_started()
 
@@ -488,7 +933,7 @@ class TestExecuteShip(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_advances_shipped_ticket_to_in_review(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_shipped()
 
@@ -520,7 +965,7 @@ class TestExecuteShip(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_state_when_runner_fails(self) -> None:
-        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415 - deferred: local import
 
         ticket = self._ticket_in_shipped()
 
@@ -545,7 +990,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
     """
 
     def _shipped_ticket_with_worktree(self) -> Ticket:
-        from teatree.core.models import Worktree  # noqa: PLC0415
+        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
         Worktree.objects.create(
@@ -705,7 +1150,11 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
         )
         task = Task.objects.create(ticket=ticket, session=session, phase="review")
 
-        task._advance_ticket()
+        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # test isolates the #750 short-verb normalization, not the #3313
+        # unshippable-review disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task._advance_ticket()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED, (
@@ -754,7 +1203,11 @@ class TestReviewConditionNormalizesPhase(TestCase):
         # condition `tasks.filter(phase="reviewing")` misses it.
         task = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
 
-        task._advance_ticket()
+        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # test isolates the #757 condition-normalization scope, not the
+        # #3313 unshippable-review disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task._advance_ticket()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED, (
@@ -781,7 +1234,11 @@ class TestReviewConditionNormalizesPhase(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
-        task._advance_ticket()
+        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # test pins the canonical-spelling regression guard, not the #3313
+        # unshippable-review disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task._advance_ticket()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
@@ -879,3 +1336,48 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
         zombie.refresh_from_db()
         assert zombie.status == Task.Status.COMPLETED
+
+
+class TestHeadlessClaimLease(TestCase):
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_headless_worker_claims_with_heartbeat_matched_lease(self) -> None:
+        # The initial claim lease must equal the heartbeat renewal window (900s),
+        # not Task.claim's 300s default: under CPU starvation a delayed first
+        # heartbeat lets the 300s lease lapse and reclaim_orphaned_claims re-queues
+        # the live task, which then aborts "lease lost: re-claimed by another worker".
+        from teatree.agents.headless import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
+        from teatree.core import headless_dispatch as headless_dispatch_mod  # noqa: PLC0415 — deferred: local
+        from teatree.core.tasks import (  # noqa: PLC0415 — deferred: local
+            _HEADLESS_CLAIM_LEASE_SECONDS,
+            execute_headless_task,
+        )
+
+        assert _HEADLESS_CLAIM_LEASE_SECONDS == _LEASE_SECONDS
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+        captured: dict[str, float] = {}
+
+        class _StopAfterClaimError(RuntimeError):
+            """Sentinel raised in the fake runner to stop right after the claim."""
+
+        def _capture_lease(t: Task, **_kwargs: object) -> object:
+            t.refresh_from_db()
+            captured["seconds"] = (t.lease_expires_at - t.claimed_at).total_seconds()
+            raise _StopAfterClaimError
+
+        with (
+            patch.object(headless_dispatch_mod, "loop_dispatch_refusal", return_value=None),
+            patch.object(headless_dispatch_mod, "get_headless_runner", return_value=_capture_lease),
+            pytest.raises(_StopAfterClaimError),
+        ):
+            execute_headless_task.func(task.pk, task.phase)
+
+        assert captured["seconds"] == pytest.approx(_LEASE_SECONDS, abs=1)

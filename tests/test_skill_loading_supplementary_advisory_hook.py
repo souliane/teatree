@@ -1,6 +1,6 @@
 r"""Supplementary keyword skills must not hard-block tool calls (#1683).
 
-The supplementary keyword config (``~/.teatree-skills.yml``) maps loose
+The supplementary keyword config (``$HOME/.teatree-skills.yml``) maps loose
 regexes to skill names — e.g. ``ac-adopting-ruff: '\b(ruff|...)\b'``. The
 bare ``\bruff\b`` alternative matches ANY mention of the word ``ruff`` in a
 genuine prompt ("can you run ruff check on the changed files"), not just the
@@ -21,7 +21,7 @@ keep enforcing load-first. A skill that is ALSO an intent/framework skill
 stays in the demand set; only supplementary-ONLY skills are demoted.
 
 Integration-style: the real ``suggest_skills`` engine, a real trigger index
-built from fixture ``SKILL.md`` files, a real ``~/.teatree-skills.yml``-shaped
+built from fixture ``SKILL.md`` files, a real ``$HOME/.teatree-skills.yml``-shaped
 config on disk, and the real ``handle_user_prompt_submit`` pending writer.
 """
 
@@ -71,7 +71,8 @@ def fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pat
     config = tmp_path / ".teatree-skills.yml"
     config.write_text(_RUFF_CONFIG, encoding="utf-8")
 
-    monkeypatch.setattr(skill_loader_mod, "SKILL_METADATA_CACHE", tmp_path / "no-cache.json")
+    # No metadata cache: point the reader's XDG resolution at an empty dir
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "no-cache-xdg"))
     monkeypatch.setattr(
         skill_loader_mod, "read_overlay_skill_metadata", lambda: {"skill_path": "", "remote_patterns": []}
     )
@@ -104,12 +105,14 @@ class TestSupplementaryDemotedToAdvisory:
         assert "ac-adopting-ruff" in result["suggestions"]
         assert "ac-adopting-ruff" in result["advisory"]
 
-    def test_intent_skill_is_not_advisory(self, fixtures: tuple[Path, Path]) -> None:
-        # The lifecycle intent skill (``code``) is a hard demand, never advisory.
+    def test_framework_skill_is_not_advisory(self, fixtures: tuple[Path, Path]) -> None:
+        # A cwd-detected framework skill (``ac-django``) is a hard demand, never
+        # advisory — only supplementary-config skills are demoted.
         skills_dir, config = fixtures
+        (skills_dir.parent / "manage.py").touch()
         result = _run("fix the failing test and run ruff check", skills_dir, config)
-        assert "code" in result["suggestions"]
-        assert "code" not in result["advisory"]
+        assert "ac-django" in result["suggestions"]
+        assert "ac-django" not in result["advisory"]
 
 
 class TestPendingExcludesAdvisory:
@@ -124,6 +127,9 @@ class TestPendingExcludesAdvisory:
         original = router.STATE_DIR
         router.STATE_DIR = tmp_path / "state"
         router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # #256: the suggester is gated on teatree engagement; opt in via autoload
+        # so this test exercises the pending-writer split, not the default-off gate.
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",

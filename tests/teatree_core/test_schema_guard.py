@@ -16,11 +16,24 @@ before proceeding. A migrate that itself fails still fails LOUD with the
 actionable remediation. These tests pin the self-heal behaviour and the
 read-only doctor surfacing (the doctor reports the gap, it does not
 heal).
+
+Tests that exercise a function accepting an explicit ``alias`` argument
+(``pending_migrations``, ``migrate_self_db``, ``require_current_schema``,
+``doctor_check_self_db_migrations``) drive their stale/restore cycle
+against a **private, file-backed SQLite connection** — never the shared,
+xdist-worker-lifetime-reused ``default`` test database (#2915). The
+handful of tests that exercise a sanctioned command (`ticket clear`,
+`ticket merge`, `review record`) or the `t3 doctor check` aggregator
+cannot move: those entry points hard-code ``DEFAULT_DB_ALIAS`` with no
+alias parameter, so genuinely testing their self-heal behaviour requires
+``default`` itself to be behind. Those stay on ``default``, scoped as
+tightly as possible (see :class:`BehindSelfDbReportingTest` and
+:class:`BehindSelfDbSelfHealsTest`).
 """
 
 import io
 from contextlib import redirect_stdout
-from typing import ClassVar, cast
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -29,7 +42,7 @@ from django.db import OperationalError, ProgrammingError, connection
 from django.db.utils import ConnectionDoesNotExist
 from django.test import TransactionTestCase
 
-from teatree.cli.doctor import check as doctor_check
+from teatree.cli.doctor import run_doctor_checks as doctor_check
 from teatree.core.gates.schema_guard import (
     SelfDbMigrationError,
     doctor_check_self_db_migrations,
@@ -37,89 +50,67 @@ from teatree.core.gates.schema_guard import (
     require_current_schema,
 )
 from teatree.core.models import MergeClear
+from tests.teatree_core._migration_graph import core_head_migration, core_migration_names
+from tests.teatree_core.conftest import SchemaGuardAlias
 
-_MERGE_MIGRATIONS = ("0011_mergeclear_mergeaudit", "0012_mergeclear_human_authorizer")
-_PRE_MERGE_MIGRATION = "0010_remove_looplease_heartbeat_at"
 
-
-def _unmigrate_core_to_pre_merge() -> None:
+def _unmigrate_core_to_zero() -> None:
     """Drive the self-DB genuinely behind via a real backward `migrate` (#2006).
 
-    Migrating ``core`` back to ``0010`` un-applies the whole 0011+ tail the
-    way the editable install would *advance past* it: the tables are really
-    dropped and the ``django_migrations`` ledger is really updated. So a
-    forward heal re-applies them cleanly — exactly the state a keystone
-    merge of a migration-adding PR leaves behind. (The cheap
-    delete-one-table reproduction below fakes only the symptom and a real
-    ``migrate`` cannot heal it, so it is reserved for the read-only/doctor
-    surfaces that never migrate.)
+    Migrating ``core`` back to ``zero`` reverses the whole chain: it drops
+    every core table and clears the ``django_migrations`` ledger — the way
+    the editable install *advances past* an unapplied migration. A forward
+    heal re-applies the whole graph cleanly (re-creating the schema and
+    re-running its seed/backfill data migrations) — exactly the state a
+    keystone merge of a migration-adding PR leaves behind.
     """
-    call_command("migrate", "core", _PRE_MERGE_MIGRATION, "--no-input", verbosity=0)
+    call_command("migrate", "core", "zero", "--no-input", verbosity=0)
 
 
 def _migrate_core_forward() -> None:
     call_command("migrate", "core", "--no-input", verbosity=0)
 
 
-class _UnapplyState:
-    """Carries the un-recorded migration tail between setup and cleanup."""
+def _unapply_initial_migration() -> None:
+    """Reproduce the #869 self-DB symptom against the core graph, minimally.
 
-    tail: ClassVar[list[str]] = []
-
-
-def _core_migrations_after_merge() -> list[str]:
-    """Ledger names for every applied core migration newer than 0012.
-
-    Django's ``MigrationExecutor`` treats a dependency as satisfied when a
-    *descendant* is recorded as applied. So un-recording only 0011/0012
-    while a later migration (0013+) stays in the ledger masks the gap —
-    the plan to the leaf is empty and the guard sees nothing pending.
-    Reproducing the #869 state faithfully therefore means un-recording
-    the whole contiguous tail from 0011 onward, not just the two merge
-    migrations. Discovered from the ledger so a future migration cannot
-    silently re-mask the gap again.
+    Drop the ``teatree_merge_clear`` table and un-record EVERY ``core`` migration
+    from the ledger so the table is absent *and* the ``django_migrations`` ledger
+    has no record of the migrations — precisely what ``MigrationExecutor``
+    inspects to report a pending migration. Un-recording only ``0001_initial``
+    would not surface a pending migration once a later leaf (``0002…``) is still
+    recorded applied: ``migration_plan`` to that recorded leaf is empty. Clearing
+    the whole core ledger makes the plan report the unapplied chain (``0001_initial``
+    first). The other core tables are left in place: this is the narrowest
+    mutation of the shared ``default`` connection that still reproduces the
+    symptom (#2915) — the one remaining test here (`doctor_check()`, the `t3
+    doctor check` aggregator) hard-codes ``DEFAULT_DB_ALIAS`` with no alias
+    parameter, so it cannot move to a private connection like its siblings did.
     """
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT name FROM django_migrations WHERE app = 'core' AND name > %s ORDER BY name",
-            [_MERGE_MIGRATIONS[-1]],
-        )
-        return [row[0] for row in cursor.fetchall()]
-
-
-def _unapply_merge_migrations() -> None:
-    """Reproduce the real #869 self-DB state exactly.
-
-    The dogfood DB ran #863/#864's code but never applied migrations
-    0011/0012, so the ``teatree_merge_clear`` table is absent *and* the
-    ``django_migrations`` ledger has no record of them — precisely what
-    ``MigrationExecutor`` inspects.
-    """
-    _UnapplyState.tail = _core_migrations_after_merge()
     with connection.schema_editor() as editor:
         editor.delete_model(MergeClear)
     with connection.cursor() as cursor:
-        cursor.executemany(
-            "DELETE FROM django_migrations WHERE app = 'core' AND name = %s",
-            [(name,) for name in (*_MERGE_MIGRATIONS, *_UnapplyState.tail)],
-        )
+        cursor.execute("DELETE FROM django_migrations WHERE app = 'core'")
 
 
-def _reapply_merge_migrations() -> None:
+def _reapply_initial_migration() -> None:
     """Restore the table + ledger so ``TransactionTestCase`` teardown flushes.
 
-    Idempotent: a #2006 self-heal may already have re-created the table and
-    re-recorded the ledger tail before this cleanup runs, so it tolerates an
+    Re-records every on-disk ``core`` migration the symptom-reproduction cleared
+    (not just ``0001_initial``) so ``migration_plan`` sees the graph current
+    again. Idempotent: a #2006 self-heal may already have re-created the table and
+    re-recorded the ledger rows before this cleanup runs, so it tolerates an
     already-current schema rather than colliding on a duplicate table/row.
     """
     if not _table_exists(MergeClear._meta.db_table):
         with connection.schema_editor() as editor:
             editor.create_model(MergeClear)
     with connection.cursor() as cursor:
-        cursor.executemany(
-            "INSERT OR IGNORE INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
-            [(name,) for name in (*_MERGE_MIGRATIONS, *_UnapplyState.tail)],
-        )
+        for name in core_migration_names():
+            cursor.execute(
+                "INSERT OR IGNORE INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
+                [name],
+            )
 
 
 def _table_exists(table: str) -> bool:
@@ -134,34 +125,90 @@ class PendingMigrationsTest(TransactionTestCase):
         require_current_schema()  # must not raise
 
 
-class BehindSelfDbReportingTest(TransactionTestCase):
-    """The cheap symptom reproduction: `MergeClear` table + ledger tail absent.
+# Every test here calls ``make_stale()`` — a full multi-app migrate plus a
+# reverse-migrate of ``core`` to ``zero`` on a fresh sqlite alias (several
+# seconds single-core). Under maximum ``-n auto --cov --doctest-modules``
+# parallel contention that exceeds the global 60s ``pytest-timeout``, so the
+# genuinely-slow migrations get a scoped 240s bump; the global timeout stays
+# 60s as the hang-detector for all other tests (#1189).
+@pytest.mark.timeout(240)
+class TestSchemaGuardOnPrivateAlias:
+    """Read-only / self-heal surfaces exercised against a private alias (#2915).
 
-    This drops one table and un-records the tail to make the gap visible
-    to the read-only surfaces (the raw-ORM anchor, the doctor checks) that
-    never call `migrate` — so they need only the symptom, not a state a
-    real `migrate` can heal. The self-heal behaviour is covered by
-    :class:`BehindSelfDbSelfHealsTest` with a real backward migration.
+    Every function under test here (``pending_migrations``, ``require_current_
+    schema``, ``doctor_check_self_db_migrations``) accepts an explicit
+    ``alias`` argument, so each test drives its own throwaway, file-backed
+    SQLite connection (via the shared ``schema_guard_alias`` fixture)
+    reverse-migrated to ``zero`` — never the shared ``default`` connection
+    every other test in the xdist worker reuses. A crashed reverse-migrate/
+    restore cycle here can corrupt only the one file the fixture created,
+    which it tears down itself.
     """
 
-    def setUp(self) -> None:
-        _unapply_merge_migrations()
-        self.addCleanup(_reapply_merge_migrations)
-
-    def test_raw_orm_call_would_fail_with_operationalerror(self) -> None:
+    def test_raw_orm_call_would_fail_with_operationalerror(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
         # Anchor: before any heal the ORM raises the raw, opaque error this
         # whole module exists to replace.
         with pytest.raises(OperationalError, match="no such table"):
-            MergeClear.objects.count()
+            MergeClear.objects.using(alias).count()
 
-    def test_doctor_surface_fails_and_names_pending_migrations(self) -> None:
+    def test_doctor_surface_fails_and_names_pending_migrations(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            result = doctor_check_self_db_migrations()
+            result = doctor_check_self_db_migrations(alias)
         assert result is False
         out = buffer.getvalue()
         assert "unapplied migration" in out
-        assert "0011_mergeclear_mergeaudit" in out
+        # A fresh/zero DB applies the current head (the squash replaces the range it
+        # collapses), so the doctor names ``core.<head>`` — derived from disk so a
+        # future squash/leaf never re-breaks this.
+        assert core_head_migration() in out
+
+    def test_migrate_failure_fails_loud_with_remediation(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
+        # When the heal itself fails, the gate must fail LOUD with the
+        # actionable remediation — never silently swallow a half-migrated DB.
+        with (
+            patch(
+                "teatree.core.gates.schema_guard.migrate_self_db",
+                side_effect=SelfDbMigrationError("migrate exploded mid-apply"),
+            ),
+            pytest.raises(SelfDbMigrationError) as exc,
+        ):
+            require_current_schema(alias)
+        message = str(exc.value)
+        assert "unapplied migration" in message
+        assert "t3 teatree db migrate" in message
+        assert "migrate exploded mid-apply" in message
+
+    def test_require_current_schema_auto_applies_then_proceeds(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
+        assert pending_migrations(alias), "guard precondition: the self-DB must be behind for this test"
+        with pytest.raises(OperationalError, match="no such table"):
+            MergeClear.objects.using(alias).count()  # behind: the table genuinely does not exist
+
+        require_current_schema(alias)  # heals in place — must not raise
+
+        assert pending_migrations(alias) == [], "the pending migrations should have been applied"
+        assert MergeClear.objects.using(alias).count() == 0  # healed: the table is now usable
+
+
+class BehindSelfDbReportingTest(TransactionTestCase):
+    """The one surface that cannot move off ``default`` (#2915).
+
+    ``t3 doctor check`` (the aggregator, not the schema-guard-specific
+    ``doctor_check_self_db_migrations`` it wraps) has no ``alias`` parameter —
+    it always inspects ``DEFAULT_DB_ALIAS`` — so genuinely exercising it needs
+    ``default`` itself to be behind. The mutation is the narrowest available
+    (one table dropped, one app's ledger rows cleared, see
+    ``_unapply_initial_migration``) rather than a full reverse-migrate, to
+    keep the shared connection's exposure as small as possible.
+    """
+
+    def setUp(self) -> None:
+        _unapply_initial_migration()
+        self.addCleanup(_reapply_initial_migration)
 
     def test_doctor_check_command_aggregates_pending_migrations(self) -> None:
         # The `t3 doctor check` aggregation wires the schema-guard surface
@@ -172,45 +219,28 @@ class BehindSelfDbReportingTest(TransactionTestCase):
         assert ok is False
         assert "unapplied migration" in buffer.getvalue()
 
-    def test_migrate_failure_fails_loud_with_remediation(self) -> None:
-        # When the heal itself fails, the gate must fail LOUD with the
-        # actionable remediation — never silently swallow a half-migrated DB.
-        with (
-            patch(
-                "teatree.core.gates.schema_guard.migrate_self_db",
-                side_effect=SelfDbMigrationError("migrate exploded mid-apply"),
-            ),
-            pytest.raises(SelfDbMigrationError) as exc,
-        ):
-            require_current_schema()
-        message = str(exc.value)
-        assert "unapplied migration" in message
-        assert "t3 teatree db migrate" in message
-        assert "migrate exploded mid-apply" in message
 
-
+# Each test drives a real backward ``migrate core zero`` in ``setUp`` and a full
+# forward heal, on the shared ``default`` connection — several seconds
+# single-core that exceeds the global 60s ``pytest-timeout`` under maximum
+# parallel contention. Scoped 240s bump for the genuinely-slow migrations; the
+# global 60s stays as the hang-detector everywhere else (#1189).
+@pytest.mark.timeout(240)
 class BehindSelfDbSelfHealsTest(TransactionTestCase):
-    """A keystone merge advanced the install over a migration; the gate self-heals (#2006).
+    """The sanctioned commands that cannot move off ``default`` (#2915).
 
-    `setUp` drives the self-DB genuinely behind with a real backward
-    `migrate core 0010` (tables dropped, ledger updated), reproducing the
-    exact state the live editable install lands in after a keystone merge
-    of a migration-adding PR. The sanctioned operations must now apply the
-    pending self-DB migrations in place and proceed, instead of crashing
-    every tick with `no such table` until a manual `t3 teatree db migrate`.
+    ``ticket clear``, ``ticket merge`` and ``review record`` call
+    ``require_current_schema()`` with no ``alias`` argument — they always
+    self-heal ``DEFAULT_DB_ALIAS``. Testing their self-heal integration for
+    real (a keystone merge advanced the install over a migration, #2006)
+    needs ``default`` itself genuinely behind, via a real backward `migrate
+    core zero` (every core table dropped, ledger cleared) — the state a real
+    ``migrate`` can heal, unlike the cheap symptom reproduction above.
     """
 
     def setUp(self) -> None:
-        _unmigrate_core_to_pre_merge()
+        _unmigrate_core_to_zero()
         self.addCleanup(_migrate_core_forward)
-
-    def test_require_current_schema_auto_applies_then_proceeds(self) -> None:
-        assert pending_migrations(), "guard precondition: the self-DB must be behind for this test"
-        with pytest.raises(OperationalError, match="no such table"):
-            MergeClear.objects.count()  # behind: the table genuinely does not exist
-        require_current_schema()  # heals in place — must not raise
-        assert pending_migrations() == [], "the pending migrations should have been applied"
-        assert MergeClear.objects.count() == 0  # healed: the table is now usable
 
     def test_ticket_clear_command_proceeds_past_schema_gate(self) -> None:
         result = cast(

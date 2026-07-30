@@ -16,8 +16,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
-from teatree.core.review_candidate import should_review_candidate_reasons
+from teatree.core.review.review_candidate import should_review_candidate_reasons
+from teatree.core.review.stranger_pr import pr_is_admitted
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 
@@ -43,10 +45,10 @@ class CacheEntry:
 def _ticket_model() -> "TicketModel | None":
     """Return the ``core.Ticket`` model, or ``None`` if Django isn't ready."""
     try:
-        from django.apps import apps  # noqa: PLC0415
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
         return cast("TicketModel", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a probe failure must never break the tick; degrade to no signal
         return None
 
 
@@ -56,9 +58,9 @@ def _migrate_legacy_json_cache_once() -> None:
     Idempotent: after the file is removed, subsequent runs are no-ops. Keeps the
     upgrade silent — users never run a migration command.
     """
-    import json  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only on this code path
 
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     path = DATA_DIR / "loop" / "reviewer_prs.json"
     if not path.is_file():
@@ -133,25 +135,6 @@ def _read_cache() -> dict[str, CacheEntry]:
     return result
 
 
-def _head_sha(pr: RawAPIDict) -> str:
-    sha = pr.get("sha")
-    if isinstance(sha, str):
-        return sha
-    head = pr.get("head")
-    if isinstance(head, dict):
-        head_dict = cast("RawAPIDict", head)
-        head_sha = head_dict.get("sha")
-        if isinstance(head_sha, str):
-            return head_sha
-    diff_refs = pr.get("diff_refs")
-    if isinstance(diff_refs, dict):
-        diff_dict = cast("RawAPIDict", diff_refs)
-        head_sha = diff_dict.get("head_sha")
-        if isinstance(head_sha, str):
-            return head_sha
-    return ""
-
-
 def _pr_url(pr: RawAPIDict) -> str:
     for name in ("web_url", "html_url"):
         value = pr.get(name)
@@ -177,7 +160,7 @@ def _orphaned_task_signals(
 
     **The local FSM is authoritative for the user's own decision (#1431).**
     A reviewer ticket whose ``state`` is already terminal
-    (DELIVERED/SHIPPED/MERGED/IGNORED) has no legal FSM transition left for
+    (REVIEW_POSTED/DELIVERED/SHIPPED/MERGED/IGNORED) has no legal FSM transition left for
     its reviewing task: a re-dispatched orphan's "nothing to post"
     disposition (``mark_review_no_action``) raises ``TransitionNotAllowed``
     (no terminal state in its ``source=[...]``) and the task re-dispatches
@@ -213,9 +196,9 @@ def _orphaned_task_signals(
     if ticket_model is None:
         return []
     # Local import to keep the Django dependency lazy (mirrors _ticket_model).
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+    open_statuses = Task.Status.active()
     candidates = ticket_model.objects.filter(
         role="reviewer",
         tasks__phase="reviewing",
@@ -224,23 +207,42 @@ def _orphaned_task_signals(
     if overlay:
         candidates = candidates.filter(overlay=overlay)
     candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
+    # One query for the whole sweep — this walks every reviewer ticket per tick,
+    # so the armed check must not become a per-ticket round trip.
+    # A POSITIVE filter, so all three conditions bind to the same joined task row.
+    # `.exclude(tasks__auto_review_dispatches__isnull=True)` reads like the same
+    # thing but compiles to an UNCORRELATED `NOT EXISTS` over every task on the
+    # ticket in any phase — it means "every task is armed", so one ordinary
+    # sibling task empties this set and the terminal branch reaps the armed
+    # review again.
+    armed_ticket_ids = set(
+        ticket_model.objects.filter(
+            tasks__phase="reviewing",
+            tasks__status__in=open_statuses,
+            tasks__auto_review_dispatches__isnull=False,
+        ).values_list("pk", flat=True)
+    )
     signals: list[ScanSignal] = []
     for ticket in candidates:
         # #1431: the LOCAL FSM is authoritative for the user's own
         # decision. A reviewer ticket whose state is already terminal
-        # (DELIVERED/SHIPPED/MERGED/IGNORED) has no legal transition left
+        # (REVIEW_POSTED/DELIVERED/SHIPPED/MERGED/IGNORED) has no legal transition left
         # for its reviewing task — re-dispatch wedges the loop. Reap it
         # regardless of forge state (a self-authored MR with no review owed
         # legitimately stays OPEN). This is terminal-LOCAL-FSM *proof*, not
         # absence/UNKNOWN doubt — the fail-open default below is untouched.
-        if ticket.is_terminal:
-            signals.append(
-                ScanSignal(
-                    kind="reviewer_pr.task_orphaned",
-                    summary=f"Reviewing task orphaned (ticket terminal: {ticket.state}): {ticket.issue_url}",
-                    payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
-                ),
-            )
+        #
+        # #3910: EXCEPT when ``pr_sweep`` armed a cold review on this ticket. A
+        # reviewer ticket goes terminal (``review_posted``) after ANY review of
+        # the PR, so the ship loop routinely arms its own-PR review on a ticket
+        # that is ALREADY terminal — and reaping on local state alone killed
+        # that review while the PR was still open and still unmergeable without
+        # a verdict. An armed ticket falls through to the forge check below, so
+        # a genuinely merged/closed PR still reaps (an armed review on dead work
+        # is still dead work) and only STALE LOCAL state stops killing a
+        # deliberately-scheduled review.
+        if ticket.is_terminal and ticket.pk not in armed_ticket_ids:
+            signals.append(_orphan_signal(ticket, f"ticket terminal: {ticket.state}"))
             continue
         try:
             state = host.get_pr_open_state(pr_url=ticket.issue_url)
@@ -250,14 +252,24 @@ def _orphaned_task_signals(
         if state not in {PrOpenState.MERGED, PrOpenState.CLOSED}:
             # OPEN → live review still owed; UNKNOWN → fail open. Never reap.
             continue
-        signals.append(
-            ScanSignal(
-                kind="reviewer_pr.task_orphaned",
-                summary=f"Reviewing task orphaned (PR {state.value}): {ticket.issue_url}",
-                payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
-            ),
-        )
+        signals.append(_orphan_signal(ticket, f"PR {state.value}"))
     return signals
+
+
+def _orphan_signal(ticket: "_Ticket", reason: str) -> ScanSignal:
+    """One ``reviewer_pr.task_orphaned`` signal carrying the ground it was reaped on (#3910).
+
+    The sweep reaps on two non-interchangeable grounds — terminal local FSM
+    (#1431) and forge state MERGED/CLOSED (#1074). ``reason`` travels in the
+    payload so the handler logs the one actually used: a terminal ticket on a
+    still-OPEN PR is a correct reap, and crediting it to the forge proof reads
+    as a forge bug.
+    """
+    return ScanSignal(
+        kind="reviewer_pr.task_orphaned",
+        summary=f"Reviewing task orphaned ({reason}): {ticket.issue_url}",
+        payload={"url": ticket.issue_url, "ticket_id": ticket.pk, "reason": reason},
+    )
 
 
 def _is_dismissed_from_approved(previous: str, current: ReviewState) -> bool:
@@ -300,6 +312,12 @@ class ReviewerPrsScanner:
     overlay and another, the most-specific claim wins so a dogfooding
     overlay that lists a sibling's repo path does not steal the sibling's
     reviewer-role PRs from its own zone.
+
+    ``trusted_authors`` + ``admit_label`` arm the #3634 stranger-PR gate: an
+    untrusted author's PR is IGNORED until the owner applies the admit label. An
+    empty ``trusted_authors`` leaves the gate disarmed (no admission context — this
+    scanner is not being driven as the factory's autonomous sweep), which preserves
+    the pre-#3634 behaviour for an ad-hoc caller.
     """
 
     host: CodeHostBackend
@@ -307,6 +325,8 @@ class ReviewerPrsScanner:
     overlay_name: str = ""
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    trusted_authors: tuple[str, ...] = field(default_factory=tuple)
+    admit_label: str = ""
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -339,6 +359,9 @@ class ReviewerPrsScanner:
                 # (not just the primary alias) is matched so an MR authored under
                 # any of the user's github/gitlab aliases is recognised as own
                 # work (#1321 multi-identity).
+                if not self._admitted(pr, url):
+                    logger.info("ReviewerPrsScanner IGNORED %s: untrusted author, no %r label", url, self.admit_label)
+                    continue
                 reasons = should_review_candidate_reasons(pr, current_user=primary_reviewer, self_identities=reviewers)
                 if reasons:
                     # #1321: a reviewing task already created for a self-authored
@@ -360,6 +383,13 @@ class ReviewerPrsScanner:
         signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.host, self.overlay_name))
         return signals
 
+    def _admitted(self, pr: RawAPIDict, url: str) -> bool:
+        """The #3634 stranger-PR gate — disarmed when no trusted set is configured."""
+        if not self.trusted_authors:
+            return True
+        trusted = frozenset(handle.strip().lower() for handle in self.trusted_authors if handle.strip())
+        return pr_is_admitted(pr, pr_url=url, trusted=trusted, admit_label=self.admit_label)
+
     def _self_authored_reconcile_signals(
         self,
         url: str,
@@ -372,17 +402,20 @@ class ReviewerPrsScanner:
         debugger + a colleague review-request, never a ``t3:reviewer``
         sub-agent. The mechanical handler completes the task so
         ``pending-spawn`` stops surfacing it.
+
+        A task the #68 auto-review dispatch armed is exempt (#3910): on a solo
+        overlay the agent cold-reviewer IS the checker, so that task is the
+        only route to a merge, not a stray.
         """
         if ticket_model is None or not url:
             return []
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+        strays = Task.objects.filter(phase="reviewing", status__in=Task.Status.active()).not_auto_review_armed()
         candidates = ticket_model.objects.filter(
             role="reviewer",
             issue_url=url,
-            tasks__phase="reviewing",
-            tasks__status__in=open_statuses,
+            tasks__in=strays,
         )
         if self.overlay_name:
             candidates = candidates.filter(overlay=self.overlay_name)
@@ -404,7 +437,7 @@ class ReviewerPrsScanner:
         primary_reviewer: str,
     ) -> list[ScanSignal]:
         """Emit the review signals (new_sha / unreviewed / approval_dismissed) for one PR."""
-        head = _head_sha(pr)
+        head = head_sha(pr)
         previous = cache.get(url, CacheEntry())
         if previous.sha and previous.sha != head:
             if ticket_model is not None:
@@ -470,7 +503,12 @@ class ReviewerPrsScanner:
         seen_urls: set[str] = set()
         prs: list[RawAPIDict] = []
         for reviewer in reviewers:
-            for pr in self.host.list_review_requested_prs(reviewer=reviewer):
+            try:
+                fetched = self.host.list_review_requested_prs(reviewer=reviewer)
+            except Exception:
+                logger.warning("list_review_requested_prs failed for %s — skipping", reviewer, exc_info=True)
+                continue
+            for pr in fetched:
                 url = _pr_url(pr)
                 if url and url in seen_urls:
                     continue

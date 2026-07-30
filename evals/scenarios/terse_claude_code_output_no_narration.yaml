@@ -1,0 +1,80 @@
+- name: terse_claude_code_output_no_narration
+  scenario: "on a multi-step task the agent's FINAL turn output is terse — a milestone, a decision it needs, or a blocker — never process narration or a per-turn status dump"
+  lane: under_load
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Keep Turn Output Terse and TTS-Ready"]
+  tier: balanced
+  # The work is already done in the preamble's session log; the prompt asks ONLY
+  # for the turn output, so a correct trajectory reports in one terminal message
+  # without further tool calls. A small budget fits that; the teeth (final_state),
+  # not the cap, discriminate terse-milestone from process-narration.
+  max_turns: 4
+  tools: [Bash]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    14:02:03  orchestrator: coding phase on TODO-12 (add the archived_at column +
+              backfill). Plan: write the migration, run it, run the suite, open the PR.
+    14:02:31  orchestrator: reminder carried from the rules skill — the turn output is
+              not a diary. Lead with the answer or the action taken; suppress routine
+              status noise. Report on a finished milestone, a decision you need, or a
+              real blocker — otherwise stay brief or silent.
+    14:03:10  $ uv run python manage.py makemigrations app
+              Migrations for 'app':  0042_add_archived_at.py  - Add field archived_at
+    14:03:48  orchestrator: a per-turn "here's what I'm doing / step 1 done, step 2 in
+              progress" status table is exactly the play-by-play the rule forbids — it
+              reads as a log line, not an answer, and blows the TTS budget.
+    14:04:22  $ uv run python manage.py migrate app
+              Applying app.0042_add_archived_at... OK
+    14:05:01  $ uv run pytest tests/app/test_archived_at.py -q
+              4 passed in 2.1s
+    14:05:40  orchestrator: do NOT narrate the dispatch of helpers either ("I've
+              dispatched a sub-agent to…", "now I'll kick off…") — the user wants the
+              outcome, not the running commentary.
+    14:06:18  $ git push -u origin TODO-12-add-archived-at && gh pr create --fill
+              https://github.com/souliane/teatree/pull/318
+    14:06:55  orchestrator: milestone reached — column added, backfill migration
+              applied, suite green, PR opened. Surface the turn output now.
+
+    [end prior session log]
+
+  prompt: >-
+    You are the main agent in a live session with the full skill bundle loaded.
+    The multi-step task is finished: the archived_at migration is written and
+    applied, the suite is green, and PR #318 is open (see the session log above).
+    There is nothing left to decide and no blocker. Produce your turn output now —
+    the message the user sees. End your turn with that message as your final
+    message.
+  judge:
+    rubric: |
+      The agent passes ONLY if its final turn output is terse and surfaces ONLY a
+      finished milestone / deliverable (the PR), a decision it needs from the user,
+      or a real blocker. It must read as the answer, not a diary.
+
+      PASS when the final message:
+        - leads with the outcome (the deliverable/milestone: the PR / the suite is
+          green / the migration applied), in a few short sentences; and
+        - contains NO process narration of the agent's own thinking or steps —
+          no "here's what I'm doing", no "let me start by…", no "first I'll… then
+          I'll…", no "I dispatched / now I'll kick off…"; and
+        - contains NO per-turn status table / play-by-play of step states
+          ("Step 1 done, Step 2 in progress", a markdown status grid).
+
+      FAIL when the final message narrates the agent's process, dumps a status
+      table or a step-by-step play-by-play, or otherwise pads the answer with
+      running commentary instead of just reporting the milestone.
+  expect:
+    # Positive anchor (kills the no-op / empty-output vacuity class): the terminal
+    # message must actually REPORT a milestone / decision / blocker — a deliverable
+    # word a do-nothing "still thinking" turn never reaches. Both a terse report and
+    # a verbose narration satisfy this; it is NOT the discriminator — it only proves
+    # the agent surfaced something substantive.
+    - final_state: '~ "(?is)\b(done|complete[d]?|finish(ed)?|migrat(ed|ion)|appl(ied|y)|green|pass(ed|ing)|merg(ed|e)|push(ed)?|open(ed)?|pr ?#?\d|ready|blocked|block(er|ed)|need|require[ds]?|waiting on|missing|no blockers)\b"'
+    # Discriminating tooth (the rule): the terminal message must carry NONE of the
+    # narration / status-dump tells. Encoded as a single negative-lookahead over the
+    # whole final message (`.` is dot-all under `(?is)`, `^` is the start anchor with
+    # no MULTILINE, so a tell ANYWHERE makes the lookahead fail and the matcher RED).
+    # A terse milestone report reaches this; a "here's what I'm doing / step 1 done,
+    # step 2 in progress / I dispatched…" narration or a markdown status table does
+    # not. Proven against the _fail (narration) and _pass (terse) fixtures.
+    - final_state: '~ "(?is)^(?!.*(here.?s what i|let me (start|begin|read|check|look|first|now|go|walk|explain|run|kick|fire|dispatch|update)|first,?\s+i\b|next,?\s+i\b|then i.?ll|now i.?ll|step\s*\d|status:|in progress|i.?ve dispatched|i dispatched|dispatching\b|i.?m going to|i am going to|i will (now|first|then|next)|here.?s my plan|my plan is|\|[^\n]*\|[^\n]*\|))"'

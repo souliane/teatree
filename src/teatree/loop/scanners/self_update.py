@@ -47,15 +47,56 @@ from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
+from teatree.loop.scanners.self_update_schema import (
+    SchemaReconcile,
+    SchemaReconcileState,
+    reconcile_schema_after_pull,
+    retry_pending_reconcile,
+)
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
+
+# The label the core editable clone is configured under, and therefore the one the
+# control DB belongs to. The retry names it directly rather than taking whichever
+# clone happens to be configured first: on a non-editable install `T3_REPO` does not
+# resolve, so the first configured repo is an OVERLAY, and a retry keyed on that
+# label would page about an overlay clone while migrating the control DB.
+CORE_REPO_LABEL = "teatree"
 
 _CI_SKIP_REASON: dict[CiVerdict, str] = {
     CiVerdict.RED: "ci_red",
     CiVerdict.PENDING: "ci_pending",
     CiVerdict.UNKNOWN: "ci_unknown",
 }
+
+# The off-default skip reason is a structured ``branch=<current>!=<default>``
+# string carried on the outcome + persisted marker. Construction and parsing
+# share these two helpers so a format change cannot silently desync the two
+# sites (the constructor in ``_pre_pull_gate`` and the parser in
+# ``_maybe_notify_stale_clone``) — the recurrence #5 guards against.
+_OFF_DEFAULT_REASON_PREFIX = "branch="
+_OFF_DEFAULT_REASON_SEP = "!="
+
+
+def _off_default_reason(current: str, default_branch: str) -> str:
+    """Build the off-default skip reason ``branch=<current>!=<default>``."""
+    return f"{_OFF_DEFAULT_REASON_PREFIX}{current}{_OFF_DEFAULT_REASON_SEP}{default_branch}"
+
+
+def _parse_off_default_branch(reason: str) -> str:
+    """Extract the default branch from an off-default reason, ``""`` if it doesn't match.
+
+    Defensive: returns ``""`` unless *reason* is the exact
+    ``branch=<current>!=<default>`` shape :func:`_off_default_reason` produces,
+    so a format drift degrades to an empty default branch only when the shape
+    genuinely no longer matches — and the paired round-trip test goes red the
+    moment construction and parsing disagree.
+    """
+    head, sep, default_branch = reason.partition(_OFF_DEFAULT_REASON_SEP)
+    if sep and head.startswith(_OFF_DEFAULT_REASON_PREFIX):
+        return default_branch
+    return ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,15 +149,21 @@ class SelfUpdateScanner:
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
+        advanced = False
         for label, path in self.repos:
             outcome = self._process_one(label=label, path=path)
+            _maybe_notify_stale_clone(label=label, path=path, outcome=outcome)
             signals.append(_signal_from_outcome(label=label, outcome=outcome))
+            signals.extend(_schema_signals(label=label, outcome=outcome))
+            advanced = advanced or outcome.outcome == "updated"
             logger.info(
                 "self_update %s outcome=%s reason=%s",
                 label,
                 outcome.outcome,
                 outcome.reason,
             )
+        if not advanced:
+            signals.extend(_schema_retry_signals(label=CORE_REPO_LABEL))
         return signals
 
     def _process_one(self, *, label: str, path: Path) -> _PullOutcome:
@@ -152,7 +199,7 @@ class SelfUpdateScanner:
         # Import inside the method so the scanner module imports cleanly even
         # when Django app loading hasn't run yet (the wiring layer imports
         # this class at module load time).
-        from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415
+        from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — lazy ORM import
 
         marker = SelfUpdateMarker.objects.filter(repo_label=label).first()
         if marker is None:
@@ -161,9 +208,118 @@ class SelfUpdateScanner:
         return elapsed_hours < self.cadence_hours
 
 
+def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) -> None:
+    """Emit a durable notice when the clone was skipped as dirty / off-default (#2836).
+
+    Only the silently-stale skip classes notify: ``dirty_tracked`` and the
+    off-default ``branch=…`` reason (which includes a detached HEAD —
+    ``_current_branch`` returns ``HEAD`` when detached). CI-gated and
+    no-origin skips are expected waits, not a clone the operator must fix, so
+    they stay log-only. The notice is idempotent per (clone, reason, HEAD), so a
+    persistent skip is surfaced once rather than every tick.
+    """
+    if outcome.outcome != "skipped":
+        return
+    from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        StaleCloneReason,
+        StaleCloneSkip,
+        notify_stale_clone_skip,
+    )
+
+    reason = outcome.reason
+    if reason.startswith("dirty_tracked"):
+        kind, default_branch = StaleCloneReason.DIRTY, ""
+    elif reason.startswith(_OFF_DEFAULT_REASON_PREFIX):
+        kind = StaleCloneReason.OFF_DEFAULT
+        default_branch = _parse_off_default_branch(reason)
+    else:
+        return
+    notify_stale_clone_skip(
+        StaleCloneSkip(
+            label=label,
+            repo_path=str(path),
+            reason=kind,
+            head_sha=outcome.old_sha,
+            default_branch=default_branch,
+            detail=reason,
+        )
+    )
+
+
+def _schema_signals(*, label: str, outcome: _PullOutcome) -> list[ScanSignal]:
+    """Sequence the schema behind an advanced clone and report what happened (#3901).
+
+    Only an ``updated`` outcome can leave the control DB behind the running code, so
+    only that outcome reconciles. A reconcile that itself crashes is reported as the
+    unresolved state rather than swallowed: the claim gate is still refusing, so
+    silence here would leave a parked factory with nothing naming why.
+    """
+    if outcome.outcome != "updated":
+        return []
+    try:
+        reconcile = reconcile_schema_after_pull(label=label, head_sha=outcome.new_sha)
+    except Exception as exc:
+        logger.exception("self_update %s post-pull schema reconcile crashed", label)
+        return [_schema_behind_signal(label=label, detail=f"{exc.__class__.__name__}: {exc}")]
+    return _reconcile_signals(label=label, reconcile=reconcile)
+
+
+def _schema_retry_signals(*, label: str) -> list[ScanSignal]:
+    """Re-attempt a reconcile a previous tick left FAILED, on a tick where nothing advanced.
+
+    Without this the outage is terminal until a human acts: the clone's HEAD already
+    moved, so every later tick reports ``up_to_date`` and the ``updated``-only
+    reconcile above never runs again. The retry is cheap on the healthy path — the
+    memoised admission verdict short-circuits it before any migration-graph walk.
+    """
+    try:
+        reconcile = retry_pending_reconcile(label=label, head_sha=_recorded_sha(label))
+    except Exception as exc:
+        logger.exception("self_update %s schema reconcile retry crashed", label)
+        return [_schema_behind_signal(label=label, detail=f"{exc.__class__.__name__}: {exc}")]
+    if reconcile is None:
+        return []
+    return _reconcile_signals(label=label, reconcile=reconcile)
+
+
+def _reconcile_signals(*, label: str, reconcile: SchemaReconcile) -> list[ScanSignal]:
+    """Translate one reconcile verdict into its signals — ``CURRENT`` is silent."""
+    if reconcile.state is SchemaReconcileState.FAILED:
+        return [_schema_behind_signal(label=label, detail=reconcile.detail)]
+    if reconcile.state is SchemaReconcileState.MIGRATED:
+        return [
+            ScanSignal(
+                kind="self_update.schema_migrated",
+                summary=f"self-update {label}: applied {len(reconcile.applied)} pending migration(s)",
+                payload={"repo": label, "applied": list(reconcile.applied)},
+            )
+        ]
+    return []
+
+
+def _recorded_sha(label: str) -> str:
+    """The clone's last recorded HEAD, so a retry pages under the first failure's key."""
+    from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    try:
+        marker = SelfUpdateMarker.objects.filter(repo_label=label).only("last_pulled_sha").first()
+    except Exception:
+        logger.exception("self_update could not read the recorded HEAD for %s", label)
+        return ""
+    return marker.last_pulled_sha if marker is not None else ""
+
+
+def _schema_behind_signal(*, label: str, detail: str) -> ScanSignal:
+    return ScanSignal(
+        kind="self_update.schema_behind",
+        summary=f"self-update {label}: control DB BEHIND the pulled code ({detail})",
+        payload={"repo": label, "detail": detail},
+    )
+
+
 def _record_marker(*, label: str, path: Path, outcome: _PullOutcome) -> _PullOutcome:
     """Upsert the :class:`SelfUpdateMarker` row + return *outcome*."""
-    from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415
+    from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — deferred: ORM/app-registry
 
     sha = outcome.new_sha or outcome.old_sha
     try:
@@ -262,7 +418,7 @@ def _pre_pull_gate(*, repo: Path, pre_sha: str) -> _PullOutcome | None:
     if current != default_branch:
         return _PullOutcome(
             outcome="skipped",
-            reason=f"branch={current}!={default_branch}",
+            reason=_off_default_reason(current, default_branch),
             old_sha=pre_sha,
         )
     dirty = _tracked_dirty_paths(repo)
@@ -295,7 +451,7 @@ def _origin_ahead(repo: Path, *, pre_sha: str) -> bool:
 
 def _queue_reinstall(*, label: str, target_sha: str) -> None:
     """Upsert a deferred-reinstall row; never crash the tick on a DB error."""
-    from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415
+    from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         with transaction.atomic():

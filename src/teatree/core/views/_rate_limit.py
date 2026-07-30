@@ -80,7 +80,7 @@ class WebhookRateLimiter:
         # An unknown source must not mint an unbounded bucket — a
         # misconfigured/forged platform value would otherwise get an
         # uncapped allowance. Treat it as rate-limited (rejected).
-        from teatree.core.models import IncomingEvent  # noqa: PLC0415
+        from teatree.core.models import IncomingEvent  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         if source not in IncomingEvent.Source.values:
             logger.warning("Rejecting webhook from unknown source %r — not creating a bucket", source)
@@ -102,7 +102,7 @@ _limiter_lock = threading.Lock()
 
 
 def _build_limiter() -> WebhookRateLimiter:
-    import time  # noqa: PLC0415
+    import time  # noqa: PLC0415 — deferred: loaded only on this code path
 
     capacity = int(getattr(settings, "TEATREE_WEBHOOK_RATE_CAPACITY", _DEFAULT_CAPACITY))
     refill = float(getattr(settings, "TEATREE_WEBHOOK_RATE_REFILL_PER_SECOND", _DEFAULT_REFILL_PER_SECOND))

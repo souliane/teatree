@@ -2,7 +2,7 @@
 #
 # Each ceiling is a CALIBRATED bound (the per-scenario metered cost measured by
 # the uncapped baseline calibration) plus a tolerance MARGIN. The weekly/manual
-# metered run fails loud (`t3 eval run --backend sdk --gate-cost-bounds`) when a
+# metered run fails loud (`t3 eval run --backend api --gate-cost-bounds`) when a
 # scenario's recorded `cost_usd` exceeds `bound_usd * (1 + margin)`.
 #
 # This is the ABSOLUTE-CEILING counterpart of `--gate-cost-regression` (relative

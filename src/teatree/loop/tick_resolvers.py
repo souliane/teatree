@@ -41,7 +41,7 @@ def _allowed_url_prefixes_for_host(
 
     * ``owner/repo`` — emits an exact prefix ``https://host/owner/repo/``.
         This is the shape ``[overlays.<name>] workspace_repos`` opts in to in
-        ``~/.teatree.toml``.
+        the DB overlays registry.
     * Bare ``repo`` — emits a wildcard pattern ``https://host/*/repo/`` that
         :meth:`MyPrsScanner._url_allowed` matches as "any owner segment, then
         this repo segment". Overlays whose ``get_repos()`` returns bare names
@@ -87,8 +87,8 @@ def _web_origin_for_host(code_host: CodeHostBackend) -> str:
     honoured). Returns ``""`` when the host shape is unrecognised so the
     URL gate degrades to ``empty prefixes → emit all``.
     """
-    from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
-    from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+    from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     if isinstance(code_host, GitHubCodeHost):
         return "https://github.com"

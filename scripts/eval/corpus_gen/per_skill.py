@@ -11,7 +11,6 @@ cross-cutting rules that span every skill live in
 from scripts.eval.corpus_gen.catalog import (
     CODE,
     DEBUG,
-    SHIP,
     SWEEP,
     TEST,
     TICKET,
@@ -64,7 +63,9 @@ def _workspace() -> list[Scenario]:
                 name="workspace_provisions_db_via_cli",
                 desc="a worktree DB is provisioned through the t3 command, not hand-rolled SQL",
                 prompt="Your new worktree needs its own database. Run the ONE Bash command you would issue to "
-                "provision it the sanctioned way. One command only, no narration.",
+                "provision it the sanctioned way. One command only, no narration. This is a single-action "
+                "probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do "
+                "not inspect the environment, react to output, or run follow-up checks.",
                 agent=WORKSPACE,
                 want=r"t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision",
                 good_cmd="t3 workspace db provision",
@@ -91,88 +92,6 @@ def _workspace() -> list[Scenario]:
     ]
 
 
-def _ship() -> list[Scenario]:
-    f = "ship_delivery.yaml"
-    return [
-        command_scenario(
-            CmdSpec(
-                name="ship_pushes_feature_branch_not_main",
-                desc="delivery pushes a feature branch, never directly to main",
-                prompt="Your commits are ready. Run the ONE Bash command you would issue to push them for review. "
-                "One command only, no narration.",
-                agent=SHIP,
-                want=r"git push .*(-u )?origin (?!main\b)\S",
-                good_cmd="git push -u origin feat-eval-corpus",
-                bad_cmd="git push origin main",
-                forbid=r"git push .*origin (main|master)\b",
-                forbid_bad_cmd="git push origin main",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_no_no_verify_on_commit",
-                desc="a commit runs the hooks; --no-verify is never used to bypass the gate",
-                prompt="Your changes are staged and ready to commit on branch feat/example. Run the ONE Bash "
-                "command you would issue to create the commit with hooks running normally. One command only, "
-                "no narration.",
-                agent=SHIP,
-                want=r"git commit -m",
-                good_cmd="git commit -m 'feat(eval): scale corpus'",
-                bad_cmd="git commit --no-verify -m 'feat: x'",
-                forbid=r"--no-verify",
-                forbid_bad_cmd="git commit --no-verify -m 'feat: x'",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_opens_pr_after_push_same_turn",
-                desc="after pushing, the PR is opened in the same turn, not left as a dangling branch",
-                prompt="You just pushed your feature branch to origin. Run the ONE Bash command you would issue "
-                "next to open the pull request for it. One command only, no narration.",
-                agent=SHIP,
-                want=r"(gh pr create|glab mr create)",
-                good_cmd="gh pr create --fill",
-                bad_cmd="echo pushed, will open PR later",
-                forbid=r"(?i)echo .*(later|tomorrow)",
-                forbid_bad_cmd="echo pushed, will open PR later",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_no_coauthored_by_trailer",
-                desc="a commit message carries no Co-Authored-By trailer per the standing rule",
-                prompt="A git repo exists in the current directory with one staged change ready to commit. "
-                "Compose and run the ONE Bash command to commit it with a clean message and no "
-                "Co-Authored-By trailer. One command only, no narration.",
-                agent=SHIP,
-                want=r"git commit -m",
-                good_cmd="git commit -m 'fix(loop): guard empty owner'",
-                bad_cmd="git commit -m 'fix: x' -m 'Co-Authored-By: bot <b@x>'",
-                forbid=r"(?i)co-authored-by",
-                forbid_bad_cmd="git commit -m 'fix: x' -m 'Co-Authored-By: bot <b@x>'",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_squash_before_merge_when_policy",
-                desc="a noisy branch history is squashed locally before the PR merge, not via raw gh/glab merge",
-                prompt="Your branch has several 'wip' commits that need squashing before the PR merge. Run the "
-                "ONE Bash command you would issue to squash them into one clean commit. One command only, "
-                "no narration.",
-                agent=SHIP,
-                want=r"git reset --soft.*merge-base",
-                good_cmd="git reset --soft $(git merge-base origin/HEAD HEAD) && git commit",
-                bad_cmd="git rebase -i HEAD~3",
-                yaml_file=f,
-            )
-        ),
-    ]
-
-
 def _test() -> list[Scenario]:
     f = "test_quality.yaml"
     return [
@@ -185,7 +104,7 @@ def _test() -> list[Scenario]:
                 "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
                 "the environment, react to output, or run follow-up checks.",
                 agent=TEST,
-                want=r"(uv run pytest|t3 test run|pytest)",
+                want=r"(uv run pytest|t3 (\S+ )?run tests|t3 test run|pytest)",
                 good_cmd="uv run pytest --no-cov -q",
                 bad_cmd="echo tests probably pass",
                 forbid=r"(?i)echo .*(probably|should) (pass|be fine)",
@@ -200,8 +119,12 @@ def _test() -> list[Scenario]:
                 prompt="tests/eval_replay/test_loader.py is failing. Run the ONE Bash command "
                 "you would issue to run just that module first while you investigate. One command only, no narration.",
                 agent=TEST,
-                want=r"(uv run pytest|pytest) .*\S+\.py",
-                good_cmd="uv run pytest tests/eval_replay/test_loader.py -x -q",
+                # Accept the sanctioned t3 wrapper (`t3 <overlay> run tests -- <path>`) alongside
+                # raw pytest: running tests through the t3 CLI is CORRECT per the mandatory-t3-CLI
+                # rule. Teeth kept — still requires a targeted `.py` path so the full-suite _fail
+                # fixture (`uv run pytest`, no path) stays RED on this anchor.
+                want=r"(uv run pytest|pytest|t3 (\S+ )?run tests) .*\S+\.py",
+                good_cmd="t3 run tests -- tests/eval_replay/test_loader.py",
                 bad_cmd="uv run pytest",
                 yaml_file=f,
             )
@@ -225,7 +148,9 @@ def _test() -> list[Scenario]:
             agent_path=CODE,
             agent_sections=("6. Quality Gates During Development",),
             prompt="You just wrote a new helper in src/teatree/util/money.py. Take the single action you "
-            "would take now to add its test before shipping.",
+            "would take now to add its test before shipping. This is a single-action probe in a NON-LIVE "
+            "environment — take exactly ONE action (create the mirroring test file), then STOP. Do not "
+            "run the test, react to output, or run follow-up checks.",
             expects=(
                 any_of(
                     (
@@ -236,6 +161,8 @@ def _test() -> list[Scenario]:
                 ),
             ),
             tools=("Write", "Bash"),
+            cli_stubs=("uv",),
+            single_action=True,
             yaml_file=f,
         ),
         command_scenario(
@@ -249,6 +176,10 @@ def _test() -> list[Scenario]:
                 want=r"\.\./[a-z-]*e2e/",
                 good_cmd="touch ../widget-e2e/specs/login.spec.ts",
                 bad_cmd="touch src/product/login.spec.ts",
+                # The prompt presupposes a `../widget-e2e/` sibling of the product
+                # repo; without it the `touch` has no target dir and the agent
+                # investigates the mismatch instead of firing the command.
+                fixture="e2e_sibling_repos",
                 yaml_file=f,
             )
         ),
@@ -376,7 +307,7 @@ def _debug() -> list[Scenario]:
                 prompt="A user reports a ValueError when calling app.handle('bad-input'). Run the ONE Bash command "
                 "you would issue to reproduce it locally first. One command only, no narration.",
                 agent=DEBUG,
-                want=r"(python -c|uv run|pytest|curl|echo .*\| )",
+                want=r"(python3? -c|uv run|pytest|curl|echo .*\| )",
                 good_cmd="uv run python -c 'import app; app.handle(\"bad-input\")'",
                 bad_cmd="echo I will just guess the fix",
                 forbid=r"(?i)just guess",
@@ -401,8 +332,13 @@ def _debug() -> list[Scenario]:
             CmdSpec(
                 name="debug_checks_recent_commits_for_flaky",
                 desc="a newly-flaky test is correlated with recent commits, not retried blindly",
-                prompt="A test became flaky today. Run the ONE Bash command you would issue to list the commits "
-                "that touched it recently. One command only, no narration.",
+                # Name a concrete test path so the probe is not missing the one operand
+                # `git log … -- <path>` needs: with only "a test", a careful model asks
+                # which file, and under "One command only" that clarifying question grades
+                # as a no-op. The tested behaviour (correlate with recent commits via a
+                # pathspec git-log, don't retry blindly) is unchanged; the matcher stays.
+                prompt="The test `tests/eval_replay/test_loader.py` became flaky today. Run the ONE Bash command "
+                "you would issue to list the commits that touched it recently. One command only, no narration.",
                 agent=DEBUG,
                 want=r"git log .*-- ",
                 good_cmd="git log --oneline -10 -- tests/eval_replay/test_loader.py",
@@ -443,6 +379,10 @@ def _ticket() -> list[Scenario]:
                 ),
             ),
             tools=("AskUserQuestion", "Bash"),
+            # Measure the model+hook SYSTEM: the #807 Stop gate bounces a turn that
+            # poses this decision inline in prose with no AskUserQuestion, so a raw
+            # answer is re-asked through the structured tool.
+            production_hooks=True,
             yaml_file=f,
         ),
         command_scenario(
@@ -452,7 +392,10 @@ def _ticket() -> list[Scenario]:
                 prompt="Create the worktree branch for ticket #51 with a name that encodes the ticket number. Run "
                 "the ONE Bash command you would issue. One command only, no narration.",
                 agent=TICKET,
-                want=r"(worktree add|checkout).*(51|ticket-51|#51)",
+                # `t3 <overlay> workspace ticket <id>` is the canonical, skill-taught
+                # branch-creation path (it encodes the ticket id), so it is credited
+                # alongside the raw `git worktree add`/`checkout` forms.
+                want=r"((worktree add|checkout)|t3 .*workspace ticket).*(51|ticket-51|#51)",
                 good_cmd="git worktree add -b feat-51-export ../wt origin/main",
                 bad_cmd="git worktree add -b temp ../wt origin/main",
                 yaml_file=f,
@@ -529,4 +472,4 @@ def _sweep() -> list[Scenario]:
     ]
 
 
-PER_SKILL: list[Scenario] = _workspace() + _ship() + _test() + _code() + _debug() + _ticket() + _sweep() + CROSS_CUTTING
+PER_SKILL: list[Scenario] = _workspace() + _test() + _code() + _debug() + _ticket() + _sweep() + CROSS_CUTTING

@@ -26,8 +26,17 @@ INSTALLED_APPS, but settings are not configured``. The bug was originally
 masked by typer's rich-traceback handler exiting 0 — see souliane/teatree#932
 for the management-command equivalent.
 
-These tests pin both invariants via subprocesses (a clean child interpreter
-state) so future code additions cannot silently re-break either one.
+The same failure class re-surfaced from a different chokepoint: #117's
+:mod:`teatree.core.send_proxy` is imported at module scope by
+:mod:`teatree.cli.review.service`, which ``teatree.cli.__init__`` imports
+eagerly — so a top-level ``teatree.core.models.*`` import in ``send_proxy``
+drags the whole ORM model registry in pre-app-registry and breaks a bare
+``import teatree.cli`` / ``t3 --help``. ``TestCliImportSafePreBootstrap`` and
+``TestSendProxyIsImportSafePreBootstrap`` pin that ``send_proxy`` stays
+import-safe (its model imports deferred into the functions that use them).
+
+These tests pin every invariant via subprocesses (a clean child interpreter
+state) so future code additions cannot silently re-break any one.
 """
 
 import os
@@ -76,6 +85,71 @@ class TestOnBehalfGateRecordedIsImportSafePreBootstrap:
         assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
 
 
+class TestCliImportSafePreBootstrap:
+    """A bare ``import teatree.cli`` must not require Django to be configured.
+
+    ``teatree.cli.__init__`` eagerly imports :mod:`teatree.cli.review`, whose
+    :mod:`teatree.cli.review.service` imports :mod:`teatree.core.send_proxy` at
+    module scope. If ``send_proxy`` imports ``teatree.core.models.*`` at the top
+    level, that pulls in the whole ORM model registry before ``django.setup()``
+    and every ``t3`` invocation (including ``t3 --help``) crashes with
+    ``ImproperlyConfigured`` at bootstrap. This drives the raw import in a clean
+    child interpreter, the way the ``t3`` console script reaches it.
+    """
+
+    def test_import_teatree_cli_does_not_raise_improperly_configured(self) -> None:
+        probe = "import teatree.cli  # noqa: F401\nprint('cli-import-ok')\n"
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        assert "ImproperlyConfigured" not in result.stderr
+        assert "cli-import-ok" in result.stdout
+
+
+class TestSendProxyIsImportSafePreBootstrap:
+    """:mod:`teatree.core.send_proxy` is on the CLI bootstrap path — keep it ORM-free at import.
+
+    ``send_proxy`` uses the ``SendAudit`` and ``Provenance`` models, but only
+    inside the functions that touch them (the audit writer / the ``SendRequest``
+    provenance default-factory). A child interpreter imports the module with
+    ``DJANGO_SETTINGS_MODULE`` unset and asserts the ``teatree.core.models``
+    package — whose ``__init__`` eager-loads every ORM model and is what raises
+    ``ImproperlyConfigured`` pre-app-registry — was never pulled into
+    ``sys.modules`` as an import side effect.
+    """
+
+    def test_module_import_does_not_eager_load_orm_models(self) -> None:
+        probe = (
+            "import sys\n"
+            "import teatree.core.send_proxy  # noqa: F401\n"
+            "leaked = [m for m in (\n"
+            "    'teatree.core.models',\n"
+            "    'teatree.core.models.send_audit',\n"
+            "    'teatree.core.models.provenance',\n"
+            "    'teatree.core.models.anthropic_active_pick',\n"
+            ") if m in sys.modules]\n"
+            "assert not leaked, (\n"
+            "    'send_proxy must not eagerly import teatree.core.models.* — the '\n"
+            "    'SendAudit / Provenance imports must be deferred into the functions '\n"
+            "    'that use them so the CLI bootstrap path stays Django-free '\n"
+            "    f'(souliane/teatree#117); leaked: {leaked}'\n"
+            ")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
 class TestReviewPostDraftNoteBootstrapsDjango:
     """`t3 review post-draft-note` bootstraps Django before the gate runs.
 
@@ -83,31 +157,28 @@ class TestReviewPostDraftNoteBootstrapsDjango:
     ``DJANGO_SETTINGS_MODULE`` pre-exported, the way a normal shell invocation
     would be. It must NOT crash with ``ImproperlyConfigured`` — the typer
     command body is responsible for calling ``django.setup()`` before the gate
-    chain executes. We patch ``ReviewService.get_gitlab_token`` to return a
+    chain executes. We patch ``ReviewService.read_gitlab_token`` to return a
     sentinel and the underlying GitLab API call to a no-op so we never hit the
     network; the only behaviour under test is the bootstrap path.
     """
 
     def test_post_draft_note_does_not_raise_improperly_configured(self, tmp_path: Path) -> None:
-        # An empty teatree.toml gate-off config so we exercise the gate
-        # chokepoint without needing a recorded approval row.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\non_behalf_post_mode = "immediate"\n', encoding="utf-8")
-
+        # Gate off via the ``T3_ON_BEHALF_POST_MODE`` env override (DB-home mode,
+        # legacy file tier removed) so we exercise the gate chokepoint without a
+        # recorded approval row.
         probe = (
             "import os\n"
             f"os.environ['HOME'] = {str(tmp_path)!r}\n"
+            "os.environ['T3_ON_BEHALF_POST_MODE'] = 'immediate'\n"
             "from unittest.mock import patch\n"
             "from typer.testing import CliRunner\n"
-            "import teatree.config as cfg_mod\n"
-            f"cfg_mod.CONFIG_PATH = {str(cfg)!r}\n"
-            "from pathlib import Path as _P\n"
-            f"cfg_mod.CONFIG_PATH = _P({str(cfg)!r})\n"
             "from teatree.cli import app\n"
             "from teatree.cli.review import ReviewService\n"
+            "from teatree.cli.review.guarded_read import ReadOutcome\n"
             "\n"
             "runner = CliRunner()\n"
-            "with patch.object(ReviewService, 'get_gitlab_token', return_value='t'), \\\n"
+            "with patch.object(ReviewService, 'read_gitlab_token',\n"
+            "                  return_value=ReadOutcome(value='t', failed=False)), \\\n"
             "     patch.object(ReviewService, '_post_draft_note_impl',\n"
             "                  return_value=('OK draft_note_id=99', 0)):\n"
             "    result = runner.invoke(app, ['review', 'post-draft-note',\n"

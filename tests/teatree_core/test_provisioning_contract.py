@@ -29,13 +29,36 @@ from django_fsm import TransitionNotAllowed
 
 from teatree.core.management.commands.e2e import _build_e2e_env
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import ProvisionStep, RunCommands
+from teatree.core.overlay import OverlayE2E, OverlayRuntime, ProvisionStep, RunCommands
+from teatree.core.provision.provision_report import StepResult
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
 from teatree.core.runners.worktree_start import WorktreeStartRunner
-from teatree.core.step_runner import StepResult
 from teatree.types import RunCommand
 from tests.teatree_core.conftest import CommandOverlay
+
+
+class _FullStackOverlayRuntime(OverlayRuntime):
+    def __init__(self, overlay: "FullStackOverlay") -> None:
+        self._overlay = overlay
+
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        # argv[0] is always a real executable, never a "KEY=value" env
+        # assignment (the class of bug where a shell-style env prefix is
+        # passed to a no-shell exec and becomes argv[0]).
+        overlay = self._overlay
+        return {
+            svc: RunCommand(args=["sh", "-lc", f"echo run-{svc} >> {overlay.order_file}"]) for svc in overlay.SERVICES
+        }
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        # Prereqs are a property of the *service*, never of which worktree
+        # happens to be provisioned/tracked (the gating anti-pattern that
+        # left a backend-tracked workspace's frontend unprovisioned).
+        def record() -> None:
+            self._overlay._record(f"prereq-{service}")
+
+        return [ProvisionStep(name=f"prereq-{service}", callable=record)]
 
 
 class FullStackOverlay(CommandOverlay):
@@ -50,10 +73,12 @@ class FullStackOverlay(CommandOverlay):
 
     SERVICES: ClassVar[tuple[str, ...]] = ("backend", "microservice", "frontend")
     PROVISION_STEPS: ClassVar[tuple[str, ...]] = ("schema", "seed")
+    _runtime_cls: ClassVar[type[_FullStackOverlayRuntime]] = _FullStackOverlayRuntime
 
     def __init__(self, order_file: Path, *, fail_provision_step: str | None = None) -> None:
         self.order_file = order_file
         self.fail_provision_step = fail_provision_step
+        self.runtime = self._runtime_cls(self)
 
     def _record(self, token: str) -> None:
         with self.order_file.open("a") as fh:
@@ -77,21 +102,6 @@ class FullStackOverlay(CommandOverlay):
 
             steps.append(make(name))
         return steps
-
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        # argv[0] is always a real executable, never a "KEY=value" env
-        # assignment (the class of bug where a shell-style env prefix is
-        # passed to a no-shell exec and becomes argv[0]).
-        return {svc: RunCommand(args=["sh", "-lc", f"echo run-{svc} >> {self.order_file}"]) for svc in self.SERVICES}
-
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
-        # Prereqs are a property of the *service*, never of which worktree
-        # happens to be provisioned/tracked (the gating anti-pattern that
-        # left a backend-tracked workspace's frontend unprovisioned).
-        def record() -> None:
-            self._record(f"prereq-{service}")
-
-        return [ProvisionStep(name=f"prereq-{service}", callable=record)]
 
 
 def _provisioned_worktree(tmp: str, ticket: Ticket) -> Worktree:
@@ -138,7 +148,7 @@ class ProvisioningContractTests(TestCase):
 
     # INV2 — no run-command argv[0] is a shell-style env assignment.
     def test_run_command_argv0_is_executable_not_env_assignment(self) -> None:
-        commands = self.overlay.get_run_commands(self.worktree)
+        commands = self.overlay.runtime.run_commands(self.worktree)
         for svc, cmd in commands.items():
             argv0 = cmd.args[0]
             assert "=" not in argv0, f"{svc}: argv[0] {argv0!r} looks like an env assignment"
@@ -147,12 +157,12 @@ class ProvisioningContractTests(TestCase):
     # prereqs (setup is per-service, not gated on the tracked worktree).
     def test_frontend_prereqs_exist_when_backend_is_tracked(self) -> None:
         assert self.worktree.repo_path == "backend"
-        steps = self.overlay.get_pre_run_steps(self.worktree, "frontend")
+        steps = self.overlay.runtime.pre_run_steps(self.worktree, "frontend")
         assert [s.name for s in steps] == ["prereq-frontend"]
 
-    # INV4 — get_e2e_env_extras is honored; CUSTOMER bridges WT_VARIANT.
+    # INV4 — e2e.env_extras is honored; CUSTOMER bridges WT_VARIANT.
     def test_e2e_env_extras_bridge_variant(self) -> None:
-        assert self.overlay.get_e2e_env_extras({"WT_VARIANT": "acme"}) == {"CUSTOMER": "acme"}
+        assert self.overlay.e2e.env_extras({"WT_VARIANT": "acme"}) == {"CUSTOMER": "acme"}
 
     def test_missing_service_is_not_ok_but_prereqs_still_ran(self) -> None:
         wt = SimpleNamespace(repo_path="backend", branch="b", db_name="", extra={}, ticket=None)
@@ -161,15 +171,13 @@ class ProvisioningContractTests(TestCase):
         assert self.order_file.read_text().splitlines() == ["prereq-nope"]
 
 
-class _SharedPrereqOverlay(FullStackOverlay):
-    """Two services share a prereq step name — dedup must collapse it."""
-
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+class _SharedPrereqOverlayRuntime(_FullStackOverlayRuntime):
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def shared() -> None:
-            self._record("prereq-shared")
+            self._overlay._record("prereq-shared")
 
         def per_service() -> None:
-            self._record(f"prereq-{service}")
+            self._overlay._record(f"prereq-{service}")
 
         return [
             ProvisionStep(name="prereq-shared", callable=shared),
@@ -177,17 +185,27 @@ class _SharedPrereqOverlay(FullStackOverlay):
         ]
 
 
-class _FailingPrereqOverlay(FullStackOverlay):
-    """The backend prereq raises — later services must still be prepared."""
+class _SharedPrereqOverlay(FullStackOverlay):
+    """Two services share a prereq step name — dedup must collapse it."""
 
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+    _runtime_cls: ClassVar[type[_FullStackOverlayRuntime]] = _SharedPrereqOverlayRuntime
+
+
+class _FailingPrereqOverlayRuntime(_FullStackOverlayRuntime):
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def record() -> None:
-            self._record(f"prereq-{service}")
+            self._overlay._record(f"prereq-{service}")
             if service == "backend":
                 msg = "backend prereq blew up"
                 raise RuntimeError(msg)
 
         return [ProvisionStep(name=f"prereq-{service}", callable=record)]
+
+
+class _FailingPrereqOverlay(FullStackOverlay):
+    """The backend prereq raises — later services must still be prepared."""
+
+    _runtime_cls: ClassVar[type[_FullStackOverlayRuntime]] = _FailingPrereqOverlayRuntime
 
 
 class ServiceLauncherContractTests(TestCase):
@@ -278,6 +296,54 @@ class WorktreeProvisionRunnerContractTests(TestCase):
         assert not result.ok
         assert "schema" in result.detail
 
+    # souliane/teatree#2949 — the ProvisionReport is persisted to
+    # Worktree.extra so `--report` / worktree status can render it later,
+    # with no schema change (extra is existing JSON).
+    def test_successful_provision_persists_report_to_worktree_extra(self) -> None:
+        overlay = FullStackOverlay(self.order_file)
+        result = self._run(overlay)
+        assert result.ok
+
+        self.worktree.refresh_from_db()
+        report_data = self.worktree.extra["provision_report"]
+        assert report_data["success"] is True
+        step_names = {s["name"] for s in report_data["steps"]}
+        assert {"prov-schema", "prov-seed", "prereq-backend", "prereq-frontend", "prereq-microservice"} == step_names
+        assert report_data["total_duration"] >= 0
+
+    def test_failed_provision_still_persists_report(self) -> None:
+        overlay = FullStackOverlay(self.order_file, fail_provision_step="schema")
+        result = self._run(overlay)
+        assert not result.ok
+
+        self.worktree.refresh_from_db()
+        report_data = self.worktree.extra["provision_report"]
+        assert report_data["success"] is False
+        step_names = [s["name"] for s in report_data["steps"]]
+        # halted before "prov-seed" (required-failure), but the post-db/pre-run
+        # phases still run unconditionally (best-effort, pre-existing behavior).
+        assert "prov-schema" in step_names
+        assert "prov-seed" not in step_names
+
+    def test_slow_provision_fires_out_of_band_alert(self) -> None:
+        overlay = FullStackOverlay(self.order_file)
+        with (
+            patch("teatree.core.runners.worktree_provision.alert_provision_user") as mock_alert,
+            patch("teatree.core.runners.worktree_provision.get_effective_settings") as mock_settings,
+        ):
+            mock_settings.return_value = SimpleNamespace(provision_slow_threshold_seconds=-1)
+            result = self._run(overlay)
+        assert result.ok
+        mock_alert.assert_called_once()
+        assert mock_alert.call_args.kwargs["step"] == "provision"
+
+    def test_fast_provision_does_not_fire_alert(self) -> None:
+        overlay = FullStackOverlay(self.order_file)
+        with patch("teatree.core.runners.worktree_provision.alert_provision_user") as mock_alert:
+            result = self._run(overlay)
+        assert result.ok
+        mock_alert.assert_not_called()
+
 
 class WorktreeStartRunnerContractTests(TestCase):
     """The real start runner: prepare_all must run before the compose phase.
@@ -346,9 +412,13 @@ class WorktreeFsmTransitionTests(TestCase):
             self.worktree.verify()
 
 
-class _FixedExtrasOverlay(CommandOverlay):
-    def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+class _FixedExtrasOverlayE2e(OverlayE2E):
+    def env_extras(self, env_cache: dict[str, str], **_: object) -> dict[str, str]:
         return {"E2E_CONTRACT_KEY": "from-overlay", "E2E_ONLY_OVERLAY": "filled"}
+
+
+class _FixedExtrasOverlay(CommandOverlay):
+    e2e = _FixedExtrasOverlayE2e()
 
 
 class E2eEnvMergeContractTests(TestCase):

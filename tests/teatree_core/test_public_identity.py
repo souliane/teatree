@@ -16,6 +16,7 @@ import pytest
 from teatree.core.public_identity import (
     NOREPLY_RE,
     canonical_noreply_identity,
+    is_github_host,
     is_noreply_email,
     is_public_github_remote,
 )
@@ -104,6 +105,97 @@ class TestPublicGithubVisibility:
         with patch("teatree.core.public_identity.run_allowed_to_fail") as gh:
             assert is_public_github_remote(remote) is False
             gh.assert_not_called()
+
+
+class TestIsGithubHost:
+    """The host guard (#2655) parses the host out of every git remote shape."""
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "git@github.com:souliane/teatree.git",
+            "https://github.com/souliane/teatree.git",
+            "ssh://git@github.com/souliane/teatree.git",
+            "https://user@github.com:443/souliane/teatree.git",
+            "git@github.com-work:souliane/teatree.git",  # ssh-alias host
+            "git@github.com-work-2:souliane/teatree.git",  # ssh-alias host (2nd alias)
+        ],
+    )
+    def test_github_hosts(self, remote: str) -> None:
+        assert is_github_host(remote) is True
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "git@gitlab.com:acme-eng/widget.git",
+            "https://gitlab.com/acme-eng/sidecar.git",
+            "git@bitbucket.org:team/repo.git",
+            "https://gitlab.example.com/group/proj.git",
+            "ssh://git@gitlab.example.com:2222/group/proj.git",
+            "souliane/teatree",  # bare slug — no host at all
+            "",
+            "git@notgithub.com:souliane/teatree.git",  # host that merely contains github.com? no
+        ],
+    )
+    def test_non_github_hosts(self, remote: str) -> None:
+        assert is_github_host(remote) is False
+
+
+class TestNonGithubHostNeverPublic:
+    """A non-github.com remote is NEVER treated as a public GitHub repo (#2655).
+
+    The slug parser strips the host, collapsing a non-github URL such as
+    ``git@gitlab.com:acme-eng/widget.git`` to the bare ``acme-eng/widget``
+    — which ``gh repo view`` would then resolve against **github.com**. If
+    a public github.com repo happened to exist at that owner/repo, a
+    non-github clone would be stamped with the public GitHub noreply
+    identity instead of its inherited identity. The host guard must
+    short-circuit a non-github host to ``False`` BEFORE any ``gh`` call,
+    so a gitlab/bitbucket remote can never be queried — or stamped — as
+    github.
+    """
+
+    @staticmethod
+    def _gh_public(_cmd: list[str], **_kw: object) -> object:
+        return type("R", (), {"stdout": "PUBLIC\n", "returncode": 0})()
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "git@gitlab.com:acme-eng/widget.git",
+            "https://gitlab.com/acme-eng/sidecar.git",
+            "git@bitbucket.org:team/repo.git",
+            "https://gitlab.example.com/group/proj.git",
+        ],
+    )
+    def test_non_github_host_is_not_public_without_calling_gh(self, remote: str) -> None:
+        # Even if gh WOULD answer PUBLIC for the host-stripped slug, a
+        # non-github host must never reach gh — it is not a GitHub repo.
+        with patch(
+            "teatree.core.public_identity.run_allowed_to_fail",
+            side_effect=self._gh_public,
+        ) as gh:
+            assert is_public_github_remote(remote) is False
+            gh.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "git@github.com:souliane/teatree.git",
+            "git@github.com-work:souliane/teatree.git",  # ssh-alias host
+            "https://github.com/souliane/teatree.git",
+            "ssh://git@github.com/souliane/teatree.git",
+        ],
+    )
+    def test_github_host_variants_still_reach_gh(self, remote: str) -> None:
+        # github.com (and a github.com-<alias> ssh host) must still be
+        # recognised so public github repos keep getting the source-fix.
+        with patch(
+            "teatree.core.public_identity.run_allowed_to_fail",
+            side_effect=self._gh_public,
+        ) as gh:
+            assert is_public_github_remote(remote) is True
+            gh.assert_called_once()
 
 
 class TestCanonicalIdentity:

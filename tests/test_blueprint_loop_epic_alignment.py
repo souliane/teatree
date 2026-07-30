@@ -101,28 +101,29 @@ class TestAnyWindowHasHelper:
         assert _any_window_has("nothing here", "#X", "ok") is False
 
 
-class TestTrackABOverviewPresent:
-    """The § 5.6 opening must make Track A vs Track B unmistakable (#1838).
+class TestLoopRestructureOverviewPresent:
+    """The § 5.6 opening must state the no-panes loop restructure (#1838/#3734).
 
     Anti-vacuous: revert the overview and these go RED. ``_any_window_has``
     scans all occurrences so an unrelated later mention of a token never
     satisfies the assertion on its own.
     """
 
-    def test_track_a_described_as_no_panes_loop_restructure(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "Track A", "no panes", "orchestrate")
-        assert _any_window_has(loop_topology, "Track A", "dedicated_loops")
+    def test_restructure_described_as_no_panes_on_the_lead_session(self, loop_topology: str) -> None:
+        assert _any_window_has(loop_topology, "NO panes", "orchestrate")
+        assert _any_window_has(loop_topology, "NO panes", "per-loop ownership")
 
-    def test_track_b_described_as_pane_backed_teammates(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "Track B", "pane", "separate long-lived")
-        assert _any_window_has(loop_topology, "Track B", "REVIEWER", "prohibited")
+    def test_pane_layer_documented_as_retired_not_as_current_design(self, loop_topology: str) -> None:
+        # The vocabulary may appear ONLY retirement-framed, attributed to #3734.
+        assert _any_window_has(loop_topology, "teatree.teams", "retired", "#3734")
+        assert _any_window_has(loop_topology, "classic", "sub-agent")
 
-    def test_master_off_switch_note_present(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "teams", "enabled = false", "off switch")
-        assert _any_window_has(loop_topology, "teams", "classic", "sub-agent")
-
-    def test_fat_loop_reframed_as_default_off_toggle_default(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "dedicated_loops = false", "default", "not the only")
+    def test_dedicated_loops_toggle_retired_for_per_loop_default(self, loop_topology: str) -> None:
+        # LOOP-PR-A deleted the dedicated_loops setting; #2650's one-`/loop`-per-
+        # enabled-row model superseded the fat-`/loop`-vs-dedicated-slots toggle.
+        # The vocabulary may now appear only retirement-framed (mirrors the
+        # roster-retirement rule below), attributed to #2650.
+        assert _any_window_has(loop_topology, "dedicated_loops", "retired", "#2650")
 
 
 class TestSubsumedIssuesDocumented:
@@ -163,10 +164,17 @@ class TestNoStaleRosterVocabularyAsCurrentDesign:
         )
 
     def test_roster_mentions_are_retirement_framed(self, loop_topology: str) -> None:
-        # Every "roster" mention in the loop topology must sit next to a
-        # retirement word — no bare present-tense roster description.
+        # The RETIRED immortal-singleton loop roster may only appear
+        # retirement-framed — no bare present-tense description of it. The
+        # CURRENT Agent-Team fixed roster (Track-B, #1838) is a live design
+        # concept, so a "roster" mention qualified as the Agent-Team roster
+        # is exempt; every other mention still requires retirement framing,
+        # so the retired-loop-roster invariant keeps biting.
+        retirement = ("retire", "no roster", "nothing to re-spawn", "no fixed", "replaced", "no longer")
         for m in re.finditer(r"roster", loop_topology, re.IGNORECASE):
             window = loop_topology[max(0, m.start() - 120) : m.end() + 120].lower()
-            assert any(
-                w in window for w in ("retire", "no roster", "nothing to re-spawn", "no fixed", "replaced", "no longer")
-            ), f"bare/current-tense 'roster' mention without retirement framing near: …{window}…"
+            if "agent-team" in window:
+                continue  # the live Track-B Agent-Team roster, not the retired loop roster
+            assert any(w in window for w in retirement), (
+                f"bare/current-tense 'roster' mention without retirement framing near: …{window}…"
+            )

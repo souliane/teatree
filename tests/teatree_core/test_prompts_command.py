@@ -16,9 +16,12 @@ from teatree.core.models import Prompt
 
 
 def _list(*args: str) -> str:
+    # emit() routes the human view to stderr and JSON to stdout — one channel per
+    # call — so their concatenation is the single populated output stream.
     out = io.StringIO()
-    call_command("prompts_list", *args, stdout=out)
-    return out.getvalue()
+    err = io.StringIO()
+    call_command("prompts_list", *args, stdout=out, stderr=err)
+    return out.getvalue() + err.getvalue()
 
 
 def _render(*args: str) -> str:

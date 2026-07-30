@@ -15,6 +15,10 @@ disjunction (``any_of`` — at least one positive branch holds). ``op`` is
 import dataclasses
 import json
 
+from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
+from teatree.eval.surface import INTERACTIVE_QUESTION_TOOL
+
 POSITIVE = "positive"
 NEGATIVE = "negative"
 ANY_OF = "any_of"
@@ -103,6 +107,11 @@ class Scenario:
     max_turns: int = 3
     agent_sections: tuple[str, ...] = ()
     yaml_file: str = ""
+    #: Explicit abstract tier (``frontier``/``balanced``/``cheap``). Empty → the
+    #: tier is INFERRED from ``agent_path`` (see :func:`infer_tier_or_phase`). The
+    #: emitted YAML carries ``tier:`` or ``phase:``, never a concrete model id —
+    #: the single ``teatree.agents.model_tiering.TIER_MODELS`` constant owns ids.
+    tier: str = ""
     #: Per-scenario metered-budget ceiling (USD). ``None`` leaves the lane default
     #: ($1.0). A scenario whose CORRECT trajectory legitimately dispatches a
     #: sub-agent (an orchestrator-delegation scenario) burns more than the default,
@@ -110,6 +119,38 @@ class Scenario:
     #: aggregate (#2192) even though every matcher passed and the agent did the
     #: right thing. Mirrors the hand-written ``delegates_under_load`` ($4.0).
     max_budget_usd: float | None = None
+    #: Opt-in throwaway sandbox fixture emitted as the YAML ``fixture:`` field
+    #: (``""`` → omitted). ``git_repo`` provisions a real repo (staged change,
+    #: commits to squash, an ``origin`` remote) so a working-tree-presupposing
+    #: prompt matches the sandbox and the agent fires the command instead of
+    #: investigating the empty-cwd mismatch.
+    fixture: str = ""
+    #: Opt-in inert CLI stubs emitted as the YAML ``cli_stubs:`` list (``()`` →
+    #: omitted). Prepends a throwaway ``bin/`` of success-printing ``t3``/``gh``/
+    #: ``glab`` stubs to the child ``PATH`` so a single-action probe whose correct
+    #: command would error in the sandbox succeeds and the agent stops, instead of
+    #: wandering into a ``max_turns`` cap-taint. A SEPARATE lever from ``fixture``.
+    cli_stubs: tuple[str, ...] = ()
+    #: Emit ``production_hooks: true`` — register the shipped teatree plugin
+    #: (``hooks/hooks.json``) into the SDK child so the scenario measures the
+    #: model+hook SYSTEM (the #807 Stop gate etc.), not the raw model with hooks
+    #: stripped. ``False`` (the default) omits the line, so a scenario declaring
+    #: none is byte-identical. See :attr:`teatree.eval.models.EvalSpec.production_hooks`.
+    production_hooks: bool = False
+    #: Emit ``single_action: true`` — grade as a first-correct-action probe (#2192 carve-out).
+    single_action: bool = False
+
+    @property
+    def surface(self) -> str:
+        """DERIVED, never declared: a required ``AskUserQuestion`` matcher is interactive-only.
+
+        Emitting the label from the matcher shape rather than a hand-set field means a
+        generated scenario can never drift out of sync with the guard that enforces it
+        (``teatree.eval.surface.mislabelled_interactive_specs``).
+        """
+        required = (e for e in self.expects if e.kind == POSITIVE)
+        interactive = any(e.tool.casefold() == INTERACTIVE_QUESTION_TOOL.casefold() for e in required)
+        return INTERACTIVE_SURFACE if interactive else HEADLESS_SURFACE
 
     @property
     def has_negative(self) -> bool:
@@ -154,6 +195,44 @@ def _matcher_yaml(expect: Expect, indent: str) -> list[str]:
     ]
 
 
+def infer_tier_or_phase(agent_path: str) -> str:
+    """Infer the ``tier:``/``phase:`` YAML line for a scenario from its *agent_path*.
+
+    Maps the skill the scenario exercises to a teatree FSM phase (resolved to a
+    tier at run time) or, when no phase fits, the ``balanced`` tier. The single
+    ``teatree.agents.model_tiering.TIER_MODELS`` constant owns the concrete model
+    ids — this emits an ABSTRACT tier/phase only, never a model id.
+
+    A phase that :data:`teatree.agents.model_tiering.DEFAULT_PHASE_MODELS`
+    resolves to the ``frontier`` tier (``coding``/``reviewing``/``planning``/
+    ``debugging``/``retrospecting``) is pinned to ``tier: balanced`` instead of
+    emitted as ``phase:`` — a shipped scenario silently riding Opus throttled the
+    metered CI eval lane's shared subscription-OAuth account (souliane/teatree
+    run 28515055436). Reading ``DEFAULT_PHASE_MODELS`` (never duplicating its
+    frontier set here) keeps this in lockstep with production phase tiering, so
+    a future frontier phase is caught automatically rather than by memory.
+    """
+    p = agent_path.lower()
+    phase = None
+    if "planner" in p or "writing-plans" in p or "planning" in p:
+        phase = "planning"
+    elif "review-request" in p or "review_request" in p:
+        phase = "requesting_review"
+    elif "/code/" in p or p.endswith("/code"):
+        phase = "coding"
+    elif "/review/" in p or "/e2e-review/" in p:
+        phase = "reviewing"
+    elif "/test/" in p:
+        phase = "testing"
+    elif "/ship/" in p:
+        phase = "shipping"
+    elif "/retro/" in p:
+        phase = "retrospecting"
+    if phase is not None and DEFAULT_PHASE_MODELS.get(phase) != "frontier":
+        return f"  phase: {phase}"
+    return "  tier: balanced"
+
+
 def scenario_yaml(scenario: Scenario) -> str:
     """Render one scenario as a YAML list entry the loader accepts."""
     tools = "[" + ", ".join(scenario.tools) + "]"
@@ -165,12 +244,23 @@ def scenario_yaml(scenario: Scenario) -> str:
     if scenario.agent_sections:
         sections = "[" + ", ".join(json.dumps(s, ensure_ascii=False) for s in scenario.agent_sections) + "]"
         lines.append(f"  agent_sections: {sections}")
+    tier_line = f"  tier: {scenario.tier}" if scenario.tier else infer_tier_or_phase(scenario.agent_path)
     lines += [
-        "  model: claude-sonnet-4-6",
+        tier_line,
         f"  max_turns: {scenario.max_turns}",
     ]
     if scenario.max_budget_usd is not None:
         lines.append(f"  max_budget_usd: {scenario.max_budget_usd}")
+    if scenario.fixture:
+        lines.append(f"  fixture: {scenario.fixture}")
+    if scenario.cli_stubs:
+        lines.append(f"  cli_stubs: [{', '.join(scenario.cli_stubs)}]")
+    if scenario.production_hooks:
+        lines.append("  production_hooks: true")
+    if scenario.single_action:
+        lines.append("  single_action: true")
+    if scenario.surface != HEADLESS_SURFACE:
+        lines.append(f"  surface: {scenario.surface}")
     lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",

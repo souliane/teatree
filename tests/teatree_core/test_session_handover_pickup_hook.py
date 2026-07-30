@@ -45,7 +45,7 @@ class _RegistryIsolation(TestCase):
         self.enterContext(_env("T3_LOOP_REGISTRY_DIR", str(reg_dir)))
         self.enterContext(mock.patch.object(router, "_TTY_PATH", str(reg_dir / "fake-tty")))
         self.enterContext(mock.patch.object(router, "_teatree_active", return_value=True))
-        self.enterContext(mock.patch.object(router, "_loops_auto_load_enabled", return_value=True))
+        self.enterContext(mock.patch.object(router, "_autoload_enabled", return_value=True))
 
 
 class TestClaimSessionHandover(_RegistryIsolation):

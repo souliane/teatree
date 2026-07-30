@@ -1,6 +1,6 @@
 """Overlay provision-smoke harness — exercise an overlay's provision path end-to-end (#1308).
 
-The fat loop reaches for an overlay's provision path only when the user
+The loop reaches for an overlay's provision path only when the user
 needs E2E, so latent CLI bugs accumulate quietly between runs and
 surface as a cascade at the worst possible time (mid-E2E session).
 This module owns the testable smoke runner that exercises the
@@ -19,6 +19,7 @@ runner; they never re-implement the orchestration shape.
 """
 
 import logging
+import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -128,6 +129,20 @@ def _decode_subprocess_output(raw: bytes | str | None) -> str:
     return raw
 
 
+def _clean_subprocess_env() -> dict[str, str]:
+    """Strip an inherited ``DJANGO_SETTINGS_MODULE`` for the step's ``t3`` child.
+
+    This process has already bootstrapped Django by the time a step runs,
+    which leaks ``DJANGO_SETTINGS_MODULE`` into ``os.environ`` (``ensure_django()``'s
+    ``setdefault``). A pre-set value crashes the child's overlay-entry-point
+    import with ``AppRegistryNotReady`` before it ever reaches its own command
+    body — the same class of leak :func:`teatree.cli.overlay._base_env` and
+    :func:`teatree.self_update._self_db_migrate_env` strip for their own
+    subprocess calls.
+    """
+    return {key: value for key, value in os.environ.items() if key != "DJANGO_SETTINGS_MODULE"}
+
+
 def run_t3_command(step: SmokeStep) -> StepResult:
     """Default runner: shell out to the step's CLI command.
 
@@ -143,6 +158,7 @@ def run_t3_command(step: SmokeStep) -> StepResult:
             step.command,
             expected_codes=None,
             timeout=step.timeout_seconds,
+            env=_clean_subprocess_env(),
         )
     except TimeoutExpired as exc:
         elapsed = time.monotonic() - started

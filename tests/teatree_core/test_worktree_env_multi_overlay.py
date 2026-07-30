@@ -19,31 +19,37 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
-from teatree.core.worktree_env import detect_drift, render_env_cache, write_env_cache
-from teatree.core.worktree_tasks import execute_worktree_provision
+from teatree.core.worktree.worktree_env import detect_drift, render_env_cache, write_env_cache
+from teatree.core.worktree.worktree_tasks import execute_worktree_provision
 
 OVERLAY_A = "overlay-alpha"
 OVERLAY_B = "overlay-beta"
+
+
+class _MarkedOverlayProvisioning(OverlayProvisioning):
+    def __init__(self, overlay: "_MarkedOverlay") -> None:
+        self._overlay = overlay
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"MARKER": self._overlay.marker}
+
+    def declared_env_keys(self) -> set[str]:
+        return {"MARKER"}
 
 
 class _MarkedOverlay(OverlayBase):
     def __init__(self, marker: str) -> None:
         super().__init__()
         self.marker = marker
+        self.provisioning = _MarkedOverlayProvisioning(self)
 
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"MARKER": self.marker}
-
-    def declared_env_keys(self) -> set[str]:
-        return {"MARKER"}
 
 
 class _MultiOverlayEnvTest(TestCase):
@@ -127,7 +133,8 @@ class TestProvisionRunnerEnvCacheOnMultiOverlayHost(_MultiOverlayEnvTest):
             wt = self._worktree(tmp, overlay=OVERLAY_B)
             result = WorktreeProvisionRunner(wt).run()
             assert result.ok, result.detail
-            spec_path = Path(wt.worktree_path).parent / ".t3-cache" / ".t3-env.cache"
+            wt_dir = Path(wt.worktree_path)
+            spec_path = wt_dir.parent / ".t3-cache" / wt_dir.name / ".t3-env.cache"
             assert spec_path.is_file()
             assert f"MARKER={OVERLAY_B}" in spec_path.read_text(encoding="utf-8")
 

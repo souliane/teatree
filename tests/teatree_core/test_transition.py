@@ -81,6 +81,29 @@ class TestTicketTransitionAudit(TestCase):
         assert last.triggered_by == "rework"
 
     def test_review_transition_recorded(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+
+        task = ticket.tasks.get(phase="reviewing", status=Task.Status.PENDING)
+        task.claim(claimed_by="test-worker")
+        # Shippable so the review lands REVIEWED (not auto-ignored) — this
+        # test pins the review audit row, not the #3313 unshippable-review
+        # disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            task.complete()
+
+        ticket.refresh_from_db()
+        last = TicketTransition.objects.filter(ticket=ticket).order_by("created_at").last()
+        assert last.from_state == "tested"
+        assert last.to_state == "reviewed"
+        assert last.triggered_by == "review"
+
+    def test_review_transition_with_no_shippable_diff_records_auto_ignore(self) -> None:
+        # #3313: a REVIEWED ticket with no shippable diff is auto-disposed to
+        # IGNORED right after review() lands, so the audit trail's last row
+        # is the auto-ignore, not the review itself.
         ticket = Ticket.objects.create()
         _advance_ticket_to_tested(ticket)
 
@@ -89,10 +112,15 @@ class TestTicketTransitionAudit(TestCase):
         task.complete()
 
         ticket.refresh_from_db()
-        last = TicketTransition.objects.filter(ticket=ticket).order_by("created_at").last()
-        assert last.from_state == "tested"
-        assert last.to_state == "reviewed"
-        assert last.triggered_by == "review"
+        assert ticket.state == Ticket.State.IGNORED
+        transitions = list(TicketTransition.objects.filter(ticket=ticket).order_by("created_at"))
+        assert transitions[-2].from_state == "tested"
+        assert transitions[-2].to_state == "reviewed"
+        assert transitions[-2].triggered_by == "review"
+        last = transitions[-1]
+        assert last.from_state == "reviewed"
+        assert last.to_state == "ignored"
+        assert last.triggered_by == "ignore"
 
     def test_str_representation(self) -> None:
         ticket = Ticket.objects.create()
@@ -220,3 +248,22 @@ class TestVisitPhaseCommand(TestCase):
         session = ticket.sessions.first()
         assert session is not None
         assert session.has_visited("testing")
+
+
+class TestTicketLifecycleMermaidIsBounded(TestCase):
+    """A state diagram is a SET of edges; repeating one 22,965 times draws the same picture.
+
+    The worst ticket on the deployed box carries 22,965 transition rows that
+    collapse to 10 distinct edges. Emitting one line per row put megabytes of
+    duplicate arrows into the ticket drawer, which is what stopped it opening.
+    """
+
+    def test_repeated_transitions_collapse_to_one_edge(self) -> None:
+        ticket = Ticket.objects.create()
+        TicketTransition.objects.bulk_create(
+            TicketTransition(ticket=ticket, from_state="scoped", to_state="started", triggered_by="start")
+            for _ in range(500)
+        )
+        mermaid = build_ticket_lifecycle_mermaid(ticket.pk)
+        assert mermaid.count("scoped --> started: start()") == 1
+        assert len(mermaid.splitlines()) < 10

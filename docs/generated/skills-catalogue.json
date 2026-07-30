@@ -1,24 +1,20 @@
 {
   "skills": [
     {
+      "name": "ac-reviewing-codebase",
+      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
+    },
+    {
       "name": "answerer",
       "summary": "Draft a reply to an inbound question, DM the user for approval, post on confirmation"
     },
     {
       "name": "architecture-design",
-      "summary": "Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass \u2014 BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants \u2014 BEFORE any code is written"
-    },
-    {
-      "name": "availability",
-      "summary": "24/7 dual question-mode \u2014 switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away)"
-    },
-    {
-      "name": "backlog-sweep",
-      "summary": "Periodic evidence-gated triage of the issue backlog \u2014 for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence \"superseded by merged PR #X\" class), posting a one-line reason on every close"
+      "summary": "Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass \u2014 BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability \u2014 BEFORE any code is written"
     },
     {
       "name": "checking",
-      "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable; then answer the pending deferred questions in-band"
+      "summary": "The check-in surface \u2014 a SHORT \"what did I miss\" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders)"
     },
     {
       "name": "code",
@@ -33,8 +29,16 @@
       "summary": "Troubleshooting and fixing \u2014 something is broken, find and fix it"
     },
     {
+      "name": "directive",
+      "summary": "Submit a plain-English directive about how teatree itself should behave \u2014 captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline"
+    },
+    {
+      "name": "dogfooding",
+      "summary": "Dogfooding teatree's own CLI, loop, and statusline \u2014 two modes sharing one mechanics section for reading a tick and the rendered statusline. \"Verify a change\" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. \"Hunt for bugs\" is proactive self-QA \u2014 dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees"
+    },
+    {
       "name": "dreaming",
-      "summary": "Runs the idle-time \"dreaming\" memory-consolidation pipeline end to end with one command \u2014 replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the \u00a74 acceptance gates, triage each row into keep-as-memory vs core-gap \u2192 file a needs-triage teatree ticket, and promote/stage eval candidates"
+      "summary": "Runs the idle-time \"dreaming\" memory-consolidation pipeline end to end with one command \u2014 replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the \u00a74 acceptance gates, triage each row into keep-as-memory vs core-gap \u2192 drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates"
     },
     {
       "name": "e2e",
@@ -45,16 +49,24 @@
       "summary": "Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices \u2014 user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence \u2014 and tells the implementer what to fix before approval"
     },
     {
-      "name": "followup",
-      "summary": "Daily follow-up \u2014 batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review"
-    },
-    {
       "name": "handover",
       "summary": "Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
     },
     {
-      "name": "loops",
-      "summary": "Show t3 loop status and trigger DB-configured loops \u2014 which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a master tick"
+      "name": "health",
+      "summary": "Read and act on the global operational-health chip \u2014 the green/yellow/red factory-health verdict and its known-issues registry"
+    },
+    {
+      "name": "interactive",
+      "summary": "ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that no work-bearing state is terminal. Loading this skill \u2014 or any skill declaring `requires: interactive` \u2014 writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged, by design. Also holds teatree's Claude Code harness wiring: how skills are selected, how plugin hooks are registered, and which output belongs to the headless pipeline. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. Teatree's own architecture and coding rules are `/t3:internals`; the dogfooding procedure is `/t3:dogfooding`"
+    },
+    {
+      "name": "internals",
+      "summary": "How teatree is BUILT and how to change it safely \u2014 architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring \u2014 that is `/t3:interactive` \u2014 and no dogfooding procedure \u2014 that is `/t3:dogfooding`"
+    },
+    {
+      "name": "mode",
+      "summary": "The operating mode \u2014 one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run"
     },
     {
       "name": "next",
@@ -86,11 +98,11 @@
     },
     {
       "name": "running-evals",
-      "summary": "Single in-session entrypoint that auto-orchestrates the whole eval picture \u2014 free deterministic lanes (skill-triggers, pinned-regressions) plus the transcript AI/trajectory lane (prepare \u2192 produce transcripts in-session \u2192 grade) \u2014 and prints one unified results table"
+      "summary": "Single in-session entrypoint that auto-orchestrates the whole eval picture \u2014 model-free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare \u2192 produce transcripts in-session \u2192 grade) \u2014 and prints one unified results table"
     },
     {
       "name": "scanning-news",
-      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, queues each concrete t3-improvement candidate behind an ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and posts a terse Slack DM summary"
+      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user"
     },
     {
       "name": "setup",
@@ -101,32 +113,20 @@
       "summary": "Delivery \u2014 committing, pushing, creating MR/PR, pipeline monitoring, review requests"
     },
     {
-      "name": "speed",
-      "summary": "The parallel-work throughput dial \u2014 slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
+      "name": "slack-formatting",
+      "summary": "Rendering tables and formatting messages for Slack \u2014 the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack"
     },
     {
       "name": "sweeping-prs",
       "summary": "Maintenance sweep across all your open PRs/PRs \u2014 merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases"
     },
     {
-      "name": "teatree",
-      "summary": "TeaTree agent lifecycle platform \u2014 core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks"
+      "name": "sweeping-tickets",
+      "summary": "Evidence-gated ticket/issue consolidation and triage \u2014 classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging \u2014 never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence \"shipped by merged PR #X\" class), posting a one-line reason on every close"
     },
     {
-      "name": "teatree-batch",
-      "summary": "Unattended batch ticket processing \u2014 work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions"
-    },
-    {
-      "name": "teatree-bughunt",
-      "summary": "Self-QA variant of batch mode \u2014 dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees"
-    },
-    {
-      "name": "teatree-dogfood",
-      "summary": "Dogfooding checklist for teatree CLI, loop, and statusline changes \u2014 verify fresh behavior by running the command yourself, exercising the full task lifecycle, and watching the rendered statusline before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation"
-    },
-    {
-      "name": "teatree-plan",
-      "summary": "Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns"
+      "name": "sweeping-worktrees",
+      "summary": "Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked \u2014 deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`)"
     },
     {
       "name": "test",
@@ -137,12 +137,16 @@
       "summary": "Ticket intake and kickoff \u2014 from zero to ready-to-code"
     },
     {
-      "name": "todos",
-      "summary": "List the current session's tasks/todos \u2014 terse, grouped pending / in_progress / completed, with clickable refs"
+      "name": "triaging-issues",
+      "summary": "Review and act on the needs-triage assessor's queued recommendations \u2014 list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row"
     },
     {
       "name": "update",
       "summary": "WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so"
+    },
+    {
+      "name": "wip",
+      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost \u2014 plus the WRITE-parallel / MERGE-serial phase split and the per-ticket unattended delivery cycle. `boost` keeps `boost_concurrency = N` workers live; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
     },
     {
       "name": "workspace",

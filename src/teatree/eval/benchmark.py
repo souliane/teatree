@@ -5,7 +5,7 @@ A benchmark run executes the scenario suite once per ``model@effort`` variant
 :class:`~teatree.eval.matrix.MatrixRow` cells into one :class:`VariantSummary`
 per variant: scenarios passed/executed, pass-rate, total metered cost, mean
 cost per scenario, and cost per pass — the cost/quality comparison the lane
-exists to answer (e.g. opus@xhigh vs fable@medium). Summaries and renderers
+exists to answer (e.g. opus@xhigh vs sonnet@medium). Summaries and renderers
 are pure (rows in, string out), so they are unit-testable without the SDK or
 the DB.
 """
@@ -34,7 +34,7 @@ class VariantSummary:
     total_cost_usd: float
     #: Metered cost summed across the executed cells, split into the requested
     #: MAIN model (the headline comparison number) and the AUXILIARY background
-    #: (Claude Code's ``claude-haiku-4-5``). ``main + aux`` need NOT equal
+    #: (Claude Code's Haiku model). ``main + aux`` need NOT equal
     #: ``total_cost_usd`` exactly — the API's billed total can carry rounding /
     #: per-call fees the per-model split doesn't — so the billed total stays the
     #: headline and the split is the observability around it.

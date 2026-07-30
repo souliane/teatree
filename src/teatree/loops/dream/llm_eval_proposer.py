@@ -283,7 +283,7 @@ def default_staging_dir() -> Path:
     Never under ``evals/scenarios``: a human / standing core-maker ratifies the
     staged ``derived_evals.yaml`` into the live suite via a PR.
     """
-    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415
+    from teatree.loops.dream.engine import default_projects_dir  # noqa: PLC0415 — deferred: loaded at tick time
 
     return default_projects_dir() / "dream-derived-evals"
 
@@ -303,7 +303,7 @@ def stage_proposals_file(
     one; tests inject a fake. A malformed row is skipped, never fatal — the queue is
     appended by a separate phase and one bad row must not block the rest.
     """
-    import json  # noqa: PLC0415
+    import json  # noqa: PLC0415 — deferred: loaded only on this code path
 
     if not proposals_path.is_file():
         return []
@@ -323,11 +323,15 @@ def stage_proposals_file(
         name = str(row.get("scenario_name") or "")
         if name:
             slices[name] = str(row.get("seed_citation") or "")
+    if synthesizer is None:
+        from teatree.loops.dream.sdk_eval_synthesizer import sdk_spec_synthesizer  # noqa: PLC0415 — import cycle
+
+        synthesizer = sdk_spec_synthesizer
     return stage_derived_evals(
         candidates,
         transcript_slices=slices,
         staging_dir=staging_dir or default_staging_dir(),
-        synthesizer=synthesizer or sdk_spec_synthesizer,
+        synthesizer=synthesizer,
         dry_run=dry_run,
     )
 
@@ -401,150 +405,12 @@ def _op(matcher: Matcher) -> str:
     return f'{matcher.operator} "{matcher.value}"'
 
 
-_SYNTH_SYSTEM_PROMPT = (
-    "You design ONE under_load behavioural eval that pins a drift rule. From the "
-    "drift rule, the cited real mistake, and a session slice, emit discriminating "
-    "matchers: a POSITIVE for the corrected behaviour and a NEGATIVE for the drift. "
-    "Use ONLY the existing matcher shapes; never invent a rule the slice cannot "
-    "ground. Also emit the cited drift's ACTUAL tool-call shape and the compliant "
-    "tool-call shape so the gate can prove your matchers reject the cited drift."
-)
-
-_SYNTH_PROMPT_TEMPLATE = (
-    "Design one under_load eval scenario as a single JSON object with keys: "
-    "scenario_name (copy verbatim: {scenario_name}), scenario_description (one "
-    "sentence), agent_path (the owning skill, e.g. skills/rules/SKILL.md), "
-    "context_preamble (a polluted session prefix synthesized from the slice below), "
-    "prompt (the user request that triggers the drift), expect (a JSON list of "
-    "matcher objects — each a tool_call/args entry, a no_tool_call_matching entry, "
-    "an any_of of tool_call entries, or a final_state entry), fail_tool_call (a "
-    'JSON object {{"name": <tool>, "input": {{...}}}} for the cited DRIFT action '
-    "your NEGATIVE matcher must reject), pass_tool_call (the same shape for the "
-    "COMPLIANT action your matchers must accept), and judge_rubric (a one-sentence "
-    "PASS-iff rubric). The matchers MUST reject fail_tool_call and accept "
-    "pass_tool_call.\n\n"
-    "Drift rule: {drift_rule}\n"
-    "Cited real mistake: {seed_citation}\n\n"
-    "Session slice:\n{slice}"
-)
-
-_SYNTH_WATCHDOG_SECONDS = 5 * 60
-_SYNTH_MODEL = "claude-haiku-4-5"
-_REQUIRED_SYNTH_KEYS = ("scenario_name", "context_preamble", "prompt", "expect", "fail_tool_call", "pass_tool_call")
-
-
-def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
-    """The real synthesizer: one bounded headless SDK turn → a scenario, parsed defensively.
-
-    Mirrors :func:`teatree.loops.dream.engine._sdk_distiller`'s invocation shape (the
-    ``claude_code`` preset, ``bypassPermissions``, a wall-clock watchdog) for a single
-    no-tool turn that transforms the candidate + slice into one scenario JSON object.
-    Raises on an unavailable ``claude`` or a malformed reply, so the caller DROPS the
-    candidate (never a staged unproven spec) rather than reporting a fake success.
-    """
-    import asyncio  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
-
-    if shutil.which("claude") is None:
-        msg = "claude is not installed — the dream eval synthesizer cannot run"
-        raise RuntimeError(msg)
-    prompt = _SYNTH_PROMPT_TEMPLATE.format(
-        scenario_name=str(candidate.get("scenario_name") or ""),
-        drift_rule=str(candidate.get("drift_rule") or ""),
-        seed_citation=str(candidate.get("seed_citation") or ""),
-        slice=transcript_slice,
-    )
-    raw = asyncio.run(_collect_synth_turn(prompt))
-    return _parse_synthesized(raw, candidate)
-
-
-async def _collect_synth_turn(prompt: str) -> str:
-    import asyncio  # noqa: PLC0415
-
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock  # noqa: PLC0415
-    from claude_agent_sdk.types import SystemPromptPreset  # noqa: PLC0415
-
-    options = ClaudeAgentOptions(
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=_SYNTH_SYSTEM_PROMPT),
-        model=_SYNTH_MODEL,
-        permission_mode="bypassPermissions",
-        max_turns=1,
-        allowed_tools=[],
-    )
-    parts: list[str] = []
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-
-        async def _drain() -> list[object]:
-            return [message async for message in client.receive_response()]
-
-        for message in await asyncio.wait_for(_drain(), timeout=_SYNTH_WATCHDOG_SECONDS):
-            if isinstance(message, AssistantMessage):
-                parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
-    return "\n".join(parts)
-
-
-def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> SynthesizedSpec:
-    """Parse the synthesizer's JSON object into a :class:`SynthesizedSpec`.
-
-    Tolerates surrounding prose by scanning for the first ``{`` … last ``}``. A
-    missing required key or a non-list ``expect`` raises, so a malformed reply DROPS
-    the candidate rather than staging a partial scenario.
-    """
-    import json  # noqa: PLC0415
-
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        msg = "synthesizer returned no JSON object"
-        raise ValueError(msg)
-    payload = json.loads(raw[start : end + 1])
-    if not isinstance(payload, Mapping) or any(key not in payload for key in _REQUIRED_SYNTH_KEYS):
-        msg = "synthesized scenario is missing required keys"
-        raise ValueError(msg)
-    expect = payload["expect"]
-    if not isinstance(expect, list) or not expect:
-        msg = "synthesized scenario has no matchers"
-        raise ValueError(msg)
-    fail_tool_call = _require_tool_call(payload["fail_tool_call"], "fail_tool_call")
-    pass_tool_call = _require_tool_call(payload["pass_tool_call"], "pass_tool_call")
-    return SynthesizedSpec(
-        scenario_name=str(payload["scenario_name"] or candidate.get("scenario_name") or ""),
-        scenario_description=str(payload.get("scenario_description") or ""),
-        agent_path=str(payload.get("agent_path") or "skills/rules/SKILL.md"),
-        context_preamble=str(payload["context_preamble"]),
-        prompt=str(payload["prompt"]),
-        expect=[entry for entry in expect if isinstance(entry, Mapping)],
-        fail_tool_call=fail_tool_call,
-        pass_tool_call=pass_tool_call,
-        judge_rubric=str(payload.get("judge_rubric") or ""),
-    )
-
-
-def _require_tool_call(value: object, key: str) -> ToolCallShape:
-    """Validate a synthesized tool-call shape (``{"name": <tool>, "input": {...}}``).
-
-    The teeth check seeds its candidate-derived ``_fail`` / ``_pass`` transcripts
-    from these, so a malformed shape (no ``name``) is fatal — the candidate DROPS
-    rather than teeth-checking against an empty transcript that fails nothing.
-    """
-    if not isinstance(value, Mapping):
-        value = {}
-    fields = {str(field_key): field_value for field_key, field_value in value.items()}
-    name = str(fields.get("name") or "")
-    if not name:
-        msg = f"synthesized scenario has a malformed {key} (need a tool-call with a name)"
-        raise ValueError(msg)
-    tool_input = fields.get("input")
-    return ToolCallShape(name=name, input=dict(tool_input) if isinstance(tool_input, Mapping) else {})
-
-
 __all__ = [
     "DerivationOutcome",
     "SpecSynthesizer",
     "SynthesizedSpec",
     "default_staging_dir",
     "derive_eval_from_candidate",
-    "sdk_spec_synthesizer",
     "stage_derived_evals",
     "stage_proposals_file",
 ]

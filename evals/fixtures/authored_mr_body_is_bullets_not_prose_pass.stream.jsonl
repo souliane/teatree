@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-authored_mr_body_is_bullets_not_prose-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "pr-body.md", "content": "fix(loop): guard empty owner in admission\n\n- what: reject a None owner before the mini-loop reads it\n- why: a None owner crashed admission (#123)\n- test: regression in test_loop_admission\n"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -19,6 +19,7 @@ read by ``_call_is_from_subagent``.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -33,15 +34,32 @@ from hooks.scripts.hook_router import (
 )
 
 
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed a DB-home ``teatree_config_setting`` store with JSON-encoded rows."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
+
+
 @pytest.fixture(autouse=True)
 def _gate_enabled_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolate ``_orchestrator_bash_gate_enabled`` from the dev's real config.
 
-    The handler reads ``~/.teatree.toml``; the developer's real file may
-    set ``orchestrator_bash_gate_enabled = false`` (the #115 failsafe).
-    Point ``Path.home`` at a clean tmp dir so the gate is ON by default
-    for every test here. The kill-switch tests monkeypatch ``Path.home``
-    again to their own dir, overriding this fixture.
+    The handler reads the DB-home ConfigSetting store; the developer's real
+    store may set ``orchestrator_bash_gate_enabled = false`` (the #115
+    failsafe). Point ``Path.home`` at a clean tmp dir so no config DB is
+    resolved and the gate is ON by default for every test here. The
+    kill-switch tests seed a config DB and set ``T3_CONFIG_DB`` to it, which
+    the reader honours over this fixture.
     """
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -177,6 +195,87 @@ class TestHeavyBashEscapeHatch:
 
     def test_subagent_dev_server_is_allowed(self) -> None:
         assert handle_enforce_orchestrator_boundary(_subagent_bash("nx serve frontend")) is False
+
+
+class TestHelpAndVersionQueriesAllowed:
+    """A --help/--version query of a heavy verb is fast/read-only — not gated.
+
+    Anti-vacuous: the help/version FALSE POSITIVES now pass, while a genuinely
+    heavy invocation of the SAME verb (and a help-arm chained to a heavy arm)
+    still denies — proving the exemption did not weaken the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 dream run --help",
+            "t3 teatree run backend --help",
+            "docker build --help",
+            "docker compose up --help",
+            "pytest -h",
+            "npm run --help",
+            "make --version",
+        ],
+    )
+    def test_help_or_version_query_is_allowed(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 dream run",  # same verb, no --help → still heavy
+            "docker build .",
+            "t3 x run --help && pytest tests/",  # help arm + a genuinely heavy arm
+            "ls -lhR /",  # has -h but as a flag bundle, not a help token
+            # A -h after `find … -exec` is the EXEC'd command's flag, never a
+            # find help query — the recursive sweep must stay denied.
+            r"find /src -name '*.py' -exec grep -h 'TODO' {} \;",  # grep -h = suppress filename
+            "find . -type f -exec chmod -h {} +",  # chmod -h = no-dereference
+            r"find / -name '*.log' -exec rm -h {} \;",
+            "find . -exec du -h {} +",  # du -h = human-readable
+        ],
+    )
+    def test_genuinely_heavy_still_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestFastBoundedOpsAllowed:
+    """#3253 — fast, bounded network/discovery ops are NOT heavy.
+
+    A ``--help`` query, ``git fetch``, and ``git push`` (a small branch push is
+    seconds, not a test suite) tie up the session only trivially. The gate must
+    target genuinely long/unbounded work (builds, full test suites, servers),
+    never these bounded ops. Anti-vacuous: the genuinely-heavy shapes in
+    :class:`TestMainAgentHeavyBashDenied` still deny.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push",
+            "git push origin HEAD",
+            "git push -u origin feature",
+            "git push --force-with-lease origin feature",
+            "git push --force",
+            "git push --help",
+            "git push -h",
+            "git fetch",
+            "git fetch origin",
+            "git fetch --all --prune",
+        ],
+    )
+    def test_fast_bounded_op_is_allowed(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push && uv run pytest",  # bounded push chained to a genuinely heavy arm
+            "git fetch origin && npm run build",
+        ],
+    )
+    def test_bounded_op_chained_to_heavy_arm_still_denies(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 
 class TestPytestSubstringFalseDenyFixed:
@@ -391,32 +490,31 @@ class TestNonBashToolsArePassThrough:
 
 
 class TestGateKillSwitch:
-    def test_gate_disabled_via_toml_passes_all(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home = tmp_path
-        (home / ".teatree.toml").write_text("[teatree]\norchestrator_bash_gate_enabled = false\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    def test_gate_disabled_via_db_passes_all(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {"orchestrator_bash_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _orchestrator_bash_gate_enabled() is False
-        # Even a heavy foreground main-agent command passes when disabled.
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is False
 
     def test_gate_enabled_by_default_when_key_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home = tmp_path
-        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _orchestrator_bash_gate_enabled() is True
 
     def test_gate_enabled_when_config_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         assert _orchestrator_bash_gate_enabled() is True
 
-    def test_gate_enabled_on_broken_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / ".teatree.toml").write_text("this is not = valid = toml [[[", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        assert _orchestrator_bash_gate_enabled() is True
-
 
 class TestMainAgentForegroundAgentIsBlocked1442:
-    """#1442 — main-agent Agent dispatch must pass ``run_in_background``.
+    """#1442 — a main-agent Agent dispatch with ``run_in_background: False`` is blocked.
+
+    Only an EXPLICIT foreground request is denied: the current Claude Code Agent
+    tool dispatches asynchronously and omits ``run_in_background`` altogether, so
+    an absent field is a background dispatch and passes (see
+    ``test_agent_absent_run_in_background_is_allowed``).
 
     Detection uses ``agent_id`` (the #115 fix) instead of the transcript
     ``isSidechain`` read. Since #1733 the Agent-arm deny is default-ON (an
@@ -430,12 +528,9 @@ class TestMainAgentForegroundAgentIsBlocked1442:
 
     @pytest.fixture(autouse=True)
     def _agent_gate_on(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        home.mkdir(parents=True, exist_ok=True)
-        (home / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {"orchestrator_boundary_agent_gate_enabled": True})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
     def test_agent_foreground_blocked_in_main_agent(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
@@ -446,24 +541,21 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert "run_in_background" in out["permissionDecisionReason"]
         assert self._RULE_CITATION in out["permissionDecisionReason"]
 
-    def test_agent_foreground_blocked_when_field_absent(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_agent_absent_run_in_background_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The current Claude Code Agent tool dispatches asynchronously and omits
+        # ``run_in_background`` entirely; an absent field is a background dispatch
+        # (nothing to prevent), so it must be ALLOWED, not false-blocked. Only an
+        # EXPLICIT ``run_in_background: False`` is the foreground case this gate stops.
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X"}}
-        assert handle_enforce_orchestrator_boundary(data) is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-        assert self._RULE_CITATION in out["permissionDecisionReason"]
+        assert handle_enforce_orchestrator_boundary(data) is False
+        assert capsys.readouterr().out.strip() == ""
 
     def test_agent_foreground_allowed_when_kill_switch_set(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # The gate is now default-ON (#1733); the OFF path is the explicit
-        # kill-switch. With it set, a foreground dispatch passes (no lockout).
-        kill_home = tmp_path / "kill-home"
-        kill_home.mkdir(parents=True, exist_ok=True)
-        (kill_home / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: kill_home))
+        db = tmp_path / "kill.sqlite3"
+        _seed_config_db(db, {"orchestrator_boundary_agent_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is False
         assert capsys.readouterr().out.strip() == ""
@@ -510,7 +602,7 @@ class TestAgentGateDefaultOn1733:
 
     @pytest.fixture(autouse=True)
     def _empty_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # No ~/.teatree.toml at all — the gate must be ON by its new default.
+        # No config DB at all — the gate must be ON by its new default.
         empty_home = tmp_path / "empty-home"
         empty_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: empty_home))
@@ -545,12 +637,9 @@ class TestAgentGateDefaultOn1733:
     def test_explicit_kill_switch_disables_default_on_gate(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        home = tmp_path / "kill"
-        home.mkdir(parents=True, exist_ok=True)
-        (home / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {"orchestrator_boundary_agent_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _orchestrator_boundary_agent_gate_enabled() is False
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is False
@@ -571,15 +660,14 @@ class TestAgentDenyRoutesThroughFailOpen1692:
     def home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         home = tmp_path / "home"
         home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
         return home
 
     def _enable_gate(self, home: Path, *, master_fail_open: bool) -> None:
-        lines = ["[teatree]", "orchestrator_boundary_agent_gate_enabled = true"]
+        rows: dict[str, object] = {"orchestrator_boundary_agent_gate_enabled": True}
         if master_fail_open:
-            lines.append("danger_gate_fail_open = true")
-        (home / ".teatree.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            rows["danger_gate_fail_open"] = True
+        _seed_config_db(home / "config.sqlite3", rows)
 
     def _fg_agent(self) -> dict:
         return {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
@@ -608,7 +696,7 @@ class TestSelfRescueEscapeHatchNeverGated:
 
     ``t3 <overlay> gate disable`` is the orchestrator's guaranteed escape
     from a Bash lockout: it flips the durable ``orchestrator_bash_gate_enabled``
-    kill-switch in ``~/.teatree.toml``. For the escape to be reachable EVEN
+    kill-switch in the DB-home ConfigSetting store. For the escape to be reachable EVEN
     WHEN the gate is fully enabled — and even if sidechain detection
     misclassifies the caller — the heavy-Bash denylist must not match it.
 
@@ -648,12 +736,9 @@ class TestSelfRescueEscapeHatchNeverGated:
     def test_durable_killswitch_unlocks_every_command_for_the_main_agent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # never-lockout: once the durable toml kill-switch is written (what
-        # ``t3 <overlay> gate disable`` does), EVERY main-agent command —
-        # including the heaviest foreground Bash — passes. The escape is
-        # always effective, not merely reachable.
-        (tmp_path / ".teatree.toml").write_text("[teatree]\norchestrator_bash_gate_enabled = false\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {"orchestrator_bash_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _orchestrator_bash_gate_enabled() is False
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is False
         assert handle_enforce_orchestrator_boundary(_main_agent_bash("docker compose up -d")) is False

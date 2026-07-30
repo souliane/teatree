@@ -6,9 +6,11 @@ text for the overlay's redact-terms + the default quote-anchor
 patterns, and refuses when any match fires.
 """
 
+from unittest.mock import patch
+
 import pytest
 
-from teatree.core.gates.privacy_gate import format_refusal, scan_for_publication
+from teatree.core.gates.privacy_gate import _registered_overlay_rules_union, format_refusal, scan_for_publication
 
 PUBLIC = "souliane/teatree"
 PRIVATE = "private-org/internal-repo"
@@ -38,15 +40,16 @@ def test_private_target_passes_same_content() -> None:
     assert result.is_public is False
 
 
-def test_bypass_flag_passes_public_target() -> None:
+def test_public_target_match_always_refuses_no_bypass() -> None:
+    # Medium finding: there is no self-asserted bypass — a public-target leak
+    # match always refuses (the agent cannot skip the scan for itself).
     result = scan_for_publication(
         text=f"Releases {REDACT_PRIV_PATH}#5 publicly.",
         target_repo=PUBLIC,
         public_repos=[PUBLIC],
         redact_terms=[REDACT_PRIV_PATH],
-        bypass=True,
     )
-    assert not result.refused
+    assert result.refused
 
 
 def test_blockquote_first_person_marker_blocked_on_public() -> None:
@@ -174,4 +177,12 @@ def test_format_refusal_renders_matches_block() -> None:
     assert PUBLIC in rendered
     assert "privacy gate refused" in rendered
     assert REDACT_ACRONYM in rendered
-    assert "--privacy-ok" in rendered
+    # No self-asserted bypass is advertised — the remedy is to redact.
+    assert "--privacy-ok" not in rendered
+    assert "Redact" in rendered
+
+
+def test_registered_overlay_rules_union_is_empty_when_the_registry_is_unenumerable() -> None:
+    """An unenumerable overlay registry offers no rules — the built-in anchors stay the floor."""
+    with patch("teatree.core.gates.privacy_gate.get_all_overlays", side_effect=RuntimeError("registry down")):
+        assert _registered_overlay_rules_union() == ([], [])

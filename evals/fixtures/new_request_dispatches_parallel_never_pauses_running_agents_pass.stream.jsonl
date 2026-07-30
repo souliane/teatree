@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-new_request_dispatches_parallel_never_pauses_running_agents-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Independent ask — I'll dispatch a fresh background agent for it in parallel and leave the two running agents untouched."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Task", "input": {"prompt": "Audit the loop scanner for the empty-owner bug. Investigate the owner-lease claim path and report findings. Run in parallel; do not touch the other running units.", "subagent_type": "general"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

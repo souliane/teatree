@@ -5,16 +5,16 @@ Two distinct failure shapes, two guards:
 *   *All-skipped*: specs collected, zero executed. A scenario skips (not fails)
     when its run never happened — most often because ``claude`` is not on PATH.
     Every skipped scenario reports as passed, so a suite that collects specs but
-    executes none exits green with zero behavioral coverage. The fresh-run (sdk)
+    executes none exits green with zero behavioral coverage. The fresh-run (api)
     path forces this guard on; the LOCAL transcript backend legitimately
     all-skips before any transcript exists, so for it the guard is opt-in.
 
-*   *Unmetered sdk*: the sdk backend executed scenarios but recorded $0 of model
+*   *Unmetered api*: the api backend executed scenarios but recorded $0 of model
     cost. That is the exact ``$0.00 (no metered calls)`` state the ``--bare``
     OAuth-auth bug produced — the model "ran" but authenticated as nothing,
     made zero tool calls, and recorded nothing. A fresh run that records nothing
     never actually executed and must FAIL LOUD, never pass. This guard is
-    unconditional for the sdk backend (it is the fresh-run path's reason to exist).
+    unconditional for the api backend (it is the fresh-run path's reason to exist).
 """
 
 
@@ -22,8 +22,12 @@ class AllSkippedError(RuntimeError):
     """Raised when a required run collected specs but executed none."""
 
 
-class UnmeteredSdkRunError(RuntimeError):
-    """Raised when the sdk backend ran scenarios but metered $0 — it never executed."""
+class UnmeteredApiRunError(RuntimeError):
+    """Raised when the api backend ran scenarios but metered $0 — it never executed."""
+
+
+class EmptyFreshRunError(RuntimeError):
+    """Raised when a fresh-run backend executed scenarios but produced no trajectory."""
 
 
 class UnmeteredJudgeError(RuntimeError):
@@ -43,38 +47,64 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
     msg = (
         f"eval suite collected {collected} scenario(s) but executed 0 — every scenario "
         "skipped. The suite produced zero behavioral coverage yet would report green. "
-        "Most likely `claude` is not on PATH (no CLAUDE_CODE_OAUTH_TOKEN / CLI provisioned "
+        "Most likely `claude` is not on PATH (no ANTHROPIC_API_KEY / CLI provisioned "
         "where the eval job runs). Provision the runner."
     )
     raise AllSkippedError(msg)
 
 
-def assert_sdk_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
-    """Fail when the sdk backend executed scenarios but metered $0 of API cost.
+def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
+    """Fail when the api backend executed scenarios but metered $0 of API cost.
 
-    Only the ``sdk`` backend is checked — the transcript backend runs no model
+    Only the ``api`` backend is checked — the transcript backend runs no model
     by design. ``executed == 0`` is the all-skipped guard's job, not this one;
     this fires only when scenarios ran (``executed > 0``) yet recorded nothing,
     which means the model never actually authenticated/executed.
     """
-    if backend != "sdk" or executed == 0 or total_cost_usd > 0.0:
+    if backend != "api" or executed == 0 or total_cost_usd > 0.0:
         return
     msg = (
-        f"sdk eval run executed {executed} scenario(s) but metered $0.00 (no metered "
+        f"api eval run executed {executed} scenario(s) but metered $0.00 (no metered "
         "calls). A metered run that bills nothing never actually executed — the SDK made "
-        "zero billable tool calls. The two common causes: an auth failure "
-        "(CLAUDE_CODE_OAUTH_TOKEN not reaching the CLI), or a subscription usage/weekly "
-        "limit so every scenario short-circuited before doing real work. This fails loud "
-        "rather than reporting a vacuous green."
+        "zero billable tool calls. On the DEFAULT subscription-OAuth eval lane the usual "
+        "cause is the OAuth usage window (5h/7d) being drained so every call was "
+        "throttled — NOT an API-key problem. It can also be a credential that never "
+        "reached the CLI (a logged-out / key-absent case, which is the only cause on a "
+        "metered api_key run). "
+        "Check the OAuth usage window first, then the credential. This fails loud rather "
+        "than reporting a vacuous green."
     )
-    raise UnmeteredSdkRunError(msg)
+    raise UnmeteredApiRunError(msg)
+
+
+def assert_pydantic_ai_run_produced_output(*, backend: str, executed: int, produced: int) -> None:
+    """Fail when the ``pydantic_ai`` backend executed scenarios but every run was empty.
+
+    The ``$0``-metered guard (:func:`assert_api_run_was_metered`) is Claude-specific:
+    it keys on ``cost_usd``, which the the OpenAI-compatible backend ``pydantic_ai`` lane does not
+    meter, so it can never guard a ``pydantic_ai`` fresh run. The backend-appropriate
+    vacuous-green signal there is an EMPTY trajectory — a run that captured no tool
+    calls AND no text never actually drove the model (the model-evolution lane could
+    otherwise report a decorative green). ``produced`` is the count of executed
+    (non-skipped) runs with a non-empty trajectory; the guard fires only for the
+    ``pydantic_ai`` backend when scenarios ran yet not one produced output.
+    """
+    if backend != "pydantic_ai" or executed == 0 or produced > 0:
+        return
+    msg = (
+        f"pydantic_ai eval run executed {executed} scenario(s) but every run captured an EMPTY "
+        "trajectory (no tool calls, no text). A fresh run that produces nothing never actually "
+        "drove the model — the backend credential/model likely never authenticated. This fails "
+        "loud rather than reporting a vacuous green; check the the OpenAI-compatible backend credential and model."
+    )
+    raise EmptyFreshRunError(msg)
 
 
 def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judge_calls: int) -> None:
     """Fail when ``--judge`` ran judge-oracle scenarios but every judge call skipped.
 
     Judge spend flows through a separate ``claude_agent_sdk.query`` that is never
-    folded into ``run.cost_usd``, so :func:`assert_sdk_run_was_metered` cannot see
+    folded into ``run.cost_usd``, so :func:`assert_api_run_was_metered` cannot see
     it: a ``--judge`` run whose judge-oracle scenarios all skipped (most often
     ``claude`` absent) would report green having graded nothing with the judge.
 
@@ -91,6 +121,6 @@ def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judg
         f"--judge requested and {judge_eligible} judge-oracle scenario(s) ran, but the judge "
         "graded 0 of them — every judge call skipped (most likely `claude` is not on PATH where "
         "the judge runs). A judge oracle that never grades reports a vacuous green; this fails "
-        "loud instead. Provision `claude` / CLAUDE_CODE_OAUTH_TOKEN, or drop --judge."
+        "loud instead. Provision `claude` / ANTHROPIC_API_KEY, or drop --judge."
     )
     raise UnmeteredJudgeError(msg)

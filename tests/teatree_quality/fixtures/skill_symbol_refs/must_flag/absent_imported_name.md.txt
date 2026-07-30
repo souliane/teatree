@@ -1,0 +1,5 @@
+# Absent imported name
+
+```python
+from teatree.core.notify import NotifyKind, no_such_notifier
+```

@@ -2,12 +2,19 @@
 
 import dataclasses
 import json
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 from html import escape
+from typing import TYPE_CHECKING
 
+from teatree.eval.discovery import find_spec
+from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.matchers import (
+    CallPattern,
     assert_final_state_contains,
     assert_final_state_matching,
+    assert_no_tool_call_before,
+    assert_no_tool_call_contains,
     assert_no_tool_call_matching,
     assert_tool_call_contains,
     assert_tool_call_matching,
@@ -22,6 +29,9 @@ from teatree.eval.models import (
     Matcher,
     canonicalize_tool,
 )
+
+if TYPE_CHECKING:
+    from teatree.eval.pass_at_k import PassAtKResult
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,13 +68,15 @@ class ScenarioResult:
             return True
         if self.run.is_error:
             return False
-        # A cap-truncated run (max_turns/budget/watchdog) NEVER counts as a gate
-        # pass, even when its partial trajectory satisfied every matcher (#2192).
-        # ``_terminal_capped_run`` grades the partial trajectory with
-        # ``is_error=False`` so the reason stays visible (diagnostic), but a run
-        # that emitted the expected early behavior yet never finished must FAIL
-        # the gate — otherwise raising the caps (#19) masks real failures.
-        if self.run.terminal_reason in CAP_TERMINAL_REASONS:
+        # A cap-truncated run never counts as a pass (#2192) unless single_action-exempt.
+        if self.run.terminal_reason in CAP_TERMINAL_REASONS and not self._single_action_cap_exempt:
+            return False
+        # A judge-only spec (a judge block, zero matchers) whose judge was never
+        # graded has NO gating evidence — every matcher vacuously passes and the
+        # judge verdict is absent, so it would read a permanent green. That is not
+        # a pass, it is an ungraded scenario; it must never satisfy the gate (the
+        # default lanes inject no grader, so this is the common state, not an edge).
+        if not self.matcher_results and self.spec.judge is not None and self.judge is None:
             return False
         if not all(m.passed for m in self.matcher_results):
             return False
@@ -75,6 +87,26 @@ class ScenarioResult:
         if self.skipped:
             return "skip"
         return "pass" if self.passed else "fail"
+
+    @property
+    def gate_assisted(self) -> bool:
+        """A PASS that a #807-class production-hook Stop block carried over the line.
+
+        The honesty annotation: gate-firing is NEVER a pass condition (that would
+        force-FAIL a first-try-compliant model — the gate only fires on
+        non-compliance), so a gate-carried pass is surfaced here (rendered
+        ``pass (gate-assisted)``) rather than hidden, keeping model-alone
+        regressions from masquerading as clean passes.
+        """
+        return self.passed and any(event.is_stop_block for event in self.run.gate_events)
+
+    @property
+    def _single_action_cap_exempt(self) -> bool:
+        return (
+            self.spec.single_action
+            and any(is_positive_anchor(m.matcher) for m in self.matcher_results)
+            and all(m.passed for m in self.matcher_results)
+        )
 
 
 def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None) -> ScenarioResult:
@@ -88,6 +120,16 @@ def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None
     skipped = run.terminal_reason.startswith("skipped:")
     if skipped:
         return ScenarioResult(spec=spec, run=run, matcher_results=(), skipped=True)
+    # A judge-only spec (a judge block, zero matchers) has no deterministic teeth;
+    # without an injected grader there is nothing to grade, so it is SKIPPED for
+    # setup reasons (surfaced as needs-setup by the AI lane) rather than read as a
+    # vacuous green. A spec that also carries matchers still grades them here — only
+    # the pure judge-only case is ungradable without a grader.
+    if not spec.matchers and spec.judge is not None and judge is None:
+        ungraded = dataclasses.replace(
+            run, terminal_reason="skipped: judge-only spec, no judge grader injected on this lane"
+        )
+        return ScenarioResult(spec=spec, run=ungraded, matcher_results=(), skipped=True)
     results: list[MatcherResult] = []
     for matcher in spec.matchers:
         try:
@@ -120,8 +162,28 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
     if matcher.kind == "positive" and matcher.operator == "~":
         assert_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
         return
-    if matcher.kind == "negative" and matcher.operator == "~":
+    if matcher.kind == "negative":
+        _dispatch_negative(matcher, run, tool)
+        return
+    msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
+    raise NotImplementedError(msg)
+
+
+def _dispatch_negative(matcher: Matcher, run: EvalRun, tool: str) -> None:
+    if matcher.has_order_guard:
+        forbidden = CallPattern(tool, matcher.arg_path, _as_regex(matcher.operator, matcher.value))
+        guard = CallPattern(
+            _canonicalize_tool(matcher.guard_tool),
+            matcher.guard_arg_path,
+            _as_regex(matcher.guard_operator, matcher.guard_value),
+        )
+        assert_no_tool_call_before(run, forbidden, guard)
+        return
+    if matcher.operator == "~":
         assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
+        return
+    if matcher.operator == "contains":
+        assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
         return
     msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
     raise NotImplementedError(msg)
@@ -157,6 +219,11 @@ def _canonicalize_tool(name: str) -> str:
     return canonicalize_tool(name)
 
 
+def _as_regex(operator: str, value: str) -> str:
+    """A regex form of an ``op "value"`` matcher — a ``contains`` value is escaped."""
+    return value if operator == "~" else re.escape(value)
+
+
 def render_text(results: list[ScenarioResult]) -> str:
     lines: list[str] = []
     for result in results:
@@ -165,7 +232,8 @@ def render_text(results: list[ScenarioResult]) -> str:
             continue
         status = "PASS" if result.passed else "FAIL"
         judge_tag = " [judge]" if result.judge is not None and not result.judge.skipped else ""
-        lines.append(f"{status} {result.spec.name} ({result.run.terminal_reason}){judge_tag}")
+        gate_tag = " (gate-assisted)" if result.gate_assisted else ""
+        lines.append(f"{status}{gate_tag} {result.spec.name} ({result.run.terminal_reason}){judge_tag}")
         if not result.passed:
             for matcher_result in result.matcher_results:
                 if matcher_result.passed:
@@ -193,6 +261,11 @@ def render_json(results: list[ScenarioResult]) -> str:
                 "is_error": r.run.is_error,
                 "skipped": r.skipped,
                 "passed": r.passed,
+                "gate_assisted": r.gate_assisted,
+                "gate_events": [
+                    {"hook_event": e.hook_event_name, "outcome": e.outcome, "is_stop_block": e.is_stop_block}
+                    for e in r.run.gate_events
+                ],
                 "judge": (
                     None
                     if r.judge is None
@@ -387,3 +460,98 @@ def _summary_dict(results: list[ScenarioResult]) -> dict[str, int | float]:
         "total_cost_usd": total_cost_usd,
         "metered_calls": metered_calls,
     }
+
+
+@dataclasses.dataclass(frozen=True)
+class _SummaryRow:
+    """One sanitized per-scenario row — name, lane, verdict, and pass/trial count.
+
+    Built ONLY from the spec identity (``name``/``lane``/``model``) and the
+    aggregate verdict + pass/trial counts. It never touches ``run.text_blocks``,
+    ``run.tool_calls``, a tool-call ``input``, or a ``judge.rationale``, so the
+    rendered markdown is publish-safe — the transcript stays in the private
+    ``--transcript-html`` artifact.
+    """
+
+    scenario: str
+    lane: str
+    verdict: str
+    trials: str
+    cost: str
+
+
+def _lane_of(spec_name: str, lane: str | None) -> str:
+    if lane is not None:
+        return lane
+    spec = find_spec(spec_name)
+    return spec.lane if spec is not None else "unknown"
+
+
+def _summary_counts_for_rows(rows: Sequence[_SummaryRow]) -> tuple[int, int, int]:
+    passed = sum(1 for r in rows if r.verdict == "pass")
+    failed = sum(1 for r in rows if r.verdict == "fail")
+    skipped = sum(1 for r in rows if r.verdict == "skip")
+    return passed, failed, skipped
+
+
+def _row_from_scenario(result: ScenarioResult) -> _SummaryRow:
+    return _SummaryRow(
+        scenario=result.spec.name,
+        lane=result.spec.lane,
+        verdict=result.verdict,
+        trials="-" if result.skipped else "1/1",
+        cost="-" if result.skipped else f"${result.run.cost_usd:.4f}",
+    )
+
+
+def _row_from_pass_at_k(result: "PassAtKResult") -> _SummaryRow:
+    verdict = "skip" if result.skipped else ("pass" if result.ok else "fail")
+    return _SummaryRow(
+        scenario=result.spec_name,
+        lane=_lane_of(result.spec_name, None),
+        verdict=verdict,
+        trials="-" if result.skipped else f"{result.passes}/{result.trials}",
+        cost="-" if result.skipped else f"${result.cost_usd:.4f}",
+    )
+
+
+def _model_of(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
+    for item in results:
+        if isinstance(item, ScenarioResult):
+            return item.spec.model
+        spec = find_spec(item.spec_name)
+        if spec is not None:
+            return spec.model
+    return "unknown"
+
+
+def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
+    """Render a SANITIZED aggregate markdown dashboard for a single- or multi-trial run.
+
+    A header (overall pass/fail/skip counts, total metered cost, model) plus a
+    ``scenario | lane | verdict | trials | cost`` table — the per-scenario metered
+    cost makes an expensive scenario obvious at a glance. Accepts either the single-trial
+    ``list[ScenarioResult]`` or the multi-trial ``Sequence[PassAtKResult]``;
+    ``trials`` is ``1/1`` for a single trial and ``passes/trials`` (e.g. ``2/3``)
+    for pass@k. Built ONLY from the spec identity, the verdict, and pass/trial
+    counts — it NEVER reads a transcript (``text_blocks``/``tool_calls``/tool-call
+    ``input``) or a judge rationale, so it is safe to publish to a PR's
+    ``$GITHUB_STEP_SUMMARY`` and the weekly public dashboard. The private
+    transcript is the separate ``--transcript-html`` artifact.
+    """
+    rows = [
+        _row_from_scenario(item) if isinstance(item, ScenarioResult) else _row_from_pass_at_k(item) for item in results
+    ]
+    passed, failed, skipped = _summary_counts_for_rows(rows)
+    total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
+    model = _model_of(results)
+    header = (
+        f"**{passed} passed**, **{failed} failed**, **{skipped} skipped** (of {len(rows)}) "
+        f"· model `{model}` · cost ${total_cost_usd:.4f}"
+    )
+    table = [
+        "| scenario | lane | verdict | trials | cost |",
+        "| --- | --- | --- | --- | --- |",
+        *(f"| {row.scenario} | {row.lane} | {row.verdict} | {row.trials} | {row.cost} |" for row in rows),
+    ]
+    return "\n".join([header, "", *table, ""])

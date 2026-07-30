@@ -14,13 +14,19 @@ import teatree.cli as teatree_cli
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
 from teatree.cli.enforcement_tools import _coverage_is_stale
-from teatree.cli.tools import ToolRunner
+from teatree.cli.tools import ToolRunner, _validation_errors
 from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.repo_mode import RepoMode
 
 runner = CliRunner()
 
 _GIT = shutil.which("git") or "git"
+
+
+def _unified_diff(path: str, added: list[str]) -> str:
+    """A minimal unified diff adding ``added`` lines to ``path``."""
+    header = [f"diff --git a/{path} b/{path}", f"--- a/{path}", f"+++ b/{path}", "@@ -1,1 +1,1 @@"]
+    return "\n".join(header + [f"+{line}" for line in added]) + "\n"
 
 
 class TestToolRunner:
@@ -92,6 +98,44 @@ class TestToolCommands:
             mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
             result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path)])
         assert result.exit_code == 0
+
+    def test_diff_coverage_default_base_is_repo_default_branch_not_hardcoded_main(self, tmp_path):
+        # A repo whose REAL default branch is ``master`` (``origin/HEAD`` -> master),
+        # not ``main``. Without an explicit ``--base`` the gate must diff against the
+        # repo's actual default, never a hardcoded ``origin/main`` — the latter grades
+        # a whole fork/branch as new code (the fork-bootstrap coverage-gate blocker).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "master", str(repo)], check=True)
+        subprocess.run(
+            [_GIT, "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master"],
+            check=True,
+        )
+        with (
+            patch("teatree.utils.git.branch_diff", return_value="") as branch_diff,
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(repo)])
+        assert result.exit_code == 0
+        branch_diff.assert_called_once_with(str(repo), "origin/master")
+
+    def test_diff_coverage_env_configured_base_branch_wins(self, tmp_path, monkeypatch):
+        # The configured base branch (``T3_DIFF_COVERAGE_BASE``) overrides the default:
+        # a fork-bootstrap fix aims the gate at the live integration branch instead of
+        # the stale ``origin/main`` the whole branch would otherwise diff against.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "main", str(repo)], check=True)
+        monkeypatch.setenv("T3_DIFF_COVERAGE_BASE", "chore/integration-branch")
+        with (
+            patch("teatree.utils.git.branch_diff", return_value="") as branch_diff,
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(repo)])
+        assert result.exit_code == 0
+        branch_diff.assert_called_once_with(str(repo), "origin/chore/integration-branch")
 
     def test_diff_coverage_fails_exit_one_and_reports(self, tmp_path):
         report = MagicMock(
@@ -217,11 +261,97 @@ class TestToolCommands:
         with patch.object(Path, "stat", stat_raising_for_ghost):
             assert _coverage_is_stale(cov, tmp_path) is True
 
+    def test_gate_relaxation_clean_staged_diff_passes(self, tmp_path):
+        clean = _unified_diff("src/teatree/m.py", ["    x = 1"])
+        with patch("teatree.utils.git_run.run", return_value=clean) as mock:
+            result = runner.invoke(app, ["tool", "gate-relaxation", "--repo", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "PASS" in result.stdout
+        assert mock.call_args.kwargs["args"][:2] == ["diff", "--cached"]
+
+    def test_gate_relaxation_staged_noqa_blocks_with_json_findings(self, tmp_path):
+        dirty = _unified_diff("src/teatree/m.py", ["    x = bad()  # noqa"])
+        with patch("teatree.utils.git_run.run", return_value=dirty):
+            result = runner.invoke(app, ["tool", "gate-relaxation", "--repo", str(tmp_path), "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["passes"] is False
+        assert any(f["kind"] == "noqa_without_justification" for f in payload["findings"])
+
+    def test_gate_relaxation_base_vacuous_test_warns_but_passes(self, tmp_path):
+        warn_diff = _unified_diff("tests/test_x.py", ["def test_it():", "    y = compute()"])
+        with patch("teatree.utils.git_commit.branch_diff", return_value=warn_diff) as mock:
+            result = runner.invoke(app, ["tool", "gate-relaxation", "--repo", str(tmp_path), "--base", "origin/main"])
+        assert result.exit_code == 0
+        assert "PASS" in result.stdout
+        assert "WARN" in result.stderr
+        assert "tests/test_x.py" in result.stderr
+        mock.assert_called_once_with(str(tmp_path), "origin/main")
+
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
             assert result.exit_code == 0
-            mock.assert_called_once_with("analyze_video", "/path/to/video.mp4")
+            args = mock.call_args.args
+            assert args[0] == "analyze_video"
+            assert "/path/to/video.mp4" in args
+
+    def test_analyze_video_forwards_every_flag(self):
+        """Every script flag the CLI declares must reach the underlying script (#3116 defect 2)."""
+        with patch.object(ToolRunner, "run_script") as mock:
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "analyze-video",
+                    "/vid.mov",
+                    "--interval",
+                    "0.75",
+                    "--max-frames",
+                    "12",
+                    "--scale",
+                    "800",
+                    "--crop",
+                    "top-bar",
+                    "--contact-sheet",
+                    "6x2",
+                    "--scene",
+                    "--threshold",
+                    "0.4",
+                    "--verify",
+                    "--max-dead-lead",
+                    "3.0",
+                    "--output",
+                    "/tmp/frames",
+                ],
+            )
+            assert result.exit_code == 0, result.stdout
+            args = list(mock.call_args.args)
+            assert args[0] == "analyze_video"
+            forwarded = args[1:]
+
+            def _pair(flag: str, value: str) -> bool:
+                return any(forwarded[i] == flag and forwarded[i + 1] == value for i in range(len(forwarded) - 1))
+
+            assert "/vid.mov" in forwarded
+            assert _pair("--interval", "0.75")
+            assert _pair("--max-frames", "12")
+            assert _pair("--scale", "800")
+            assert _pair("--crop", "top-bar")
+            assert _pair("--contact-sheet", "6x2")
+            assert _pair("--threshold", "0.4")
+            assert _pair("--max-dead-lead", "3.0")
+            assert _pair("--output", "/tmp/frames")
+            assert "--scene" in forwarded
+            assert "--verify" in forwarded
+
+    def test_analyze_video_verify_flag_reaches_gate(self):
+        """--verify is forwardable so a reviewer can point the dead-lead gate at a colleague's video (#3116)."""
+        with patch.object(ToolRunner, "run_script") as mock:
+            result = runner.invoke(app, ["tool", "analyze-video", "/vid.mov", "--verify", "--max-dead-lead", "2.5"])
+            assert result.exit_code == 0, result.stdout
+            forwarded = list(mock.call_args.args)[1:]
+            assert "--verify" in forwarded
 
     @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
     def test_analyze_video_script_extracts_frames(self, tmp_path):
@@ -444,7 +574,7 @@ class TestValidateMrCommand:
                 app,
                 ["tool", "validate-mr", "--title", "feat: a [f] (p#1)", "--description", "body here"],
             )
-        ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here")
+        ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here", require_sections=True)
 
     def test_runs_to_completion_in_a_fresh_shell_without_django_preset(self) -> None:
         # Bug 4 (#126): the pre-push hook shells ``t3 tool validate-mr`` from
@@ -480,8 +610,8 @@ class _OverlayMeta(OverlayMetadata):
     def __init__(self, errors: list[str]) -> None:
         self._errors = errors
 
-    def validate_pr(self, title: str, description: str):
-        del title, description
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
+        del title, description, require_sections
         return {"errors": list(self._errors), "warnings": []}
 
 
@@ -607,8 +737,8 @@ class _CrashingOverlay(OverlayBase):
 
 
 class _CrashingMeta(OverlayMetadata):
-    def validate_pr(self, title: str, description: str):
-        del title, description
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True):
+        del title, description, require_sections
         msg = "validator import boom"
         raise RuntimeError(msg)
 
@@ -899,3 +1029,52 @@ class TestToMarkdownCommand:
         result = runner.invoke(app, ["tool", "to-markdown", str(tmp_path / "absent.pdf")])
         assert result.exit_code == 1
         assert "File not found" in result.output
+
+
+class _RecordingMeta(OverlayMetadata):
+    """Records the exact keyword arguments each ``validate_pr`` call receives.
+
+    ``**kwargs`` capture (not a bound default) is what keeps the guard test
+    anti-vacuous: the old conditional forward passed NO keyword on the default
+    path, so a bound ``require_sections=True`` default would falsely look
+    forwarded. Capturing the raw kwargs distinguishes "forwarded" from "defaulted".
+    """
+
+    def __init__(self) -> None:
+        self.kwargs: list[dict[str, object]] = []
+
+    def validate_pr(self, title: str, description: str, **kwargs: object):
+        del title, description
+        self.kwargs.append(dict(kwargs))
+        return {"errors": [], "warnings": []}
+
+
+class _RecordingOverlay(OverlayBase):
+    def __init__(self) -> None:
+        self.metadata = _RecordingMeta()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestValidationErrorsAlwaysForwardsKeyword:
+    """`_validation_errors` forwards ``require_sections`` on every path (#3526).
+
+    The old ``kwargs = {} if require_sections else {...}`` guard forwarded the
+    keyword ONLY on the non-default path, so a non-conforming overlay worked on
+    the common path and crashed on the rare one. Forwarding unconditionally makes
+    the call site honour the documented signature on both paths.
+    """
+
+    def test_default_path_forwards_require_sections(self) -> None:
+        overlay = _RecordingOverlay()
+        _validation_errors(overlay, "fix: x", "body", require_sections=True)
+        assert overlay.metadata.kwargs == [{"require_sections": True}]
+
+    def test_non_default_path_forwards_false(self) -> None:
+        overlay = _RecordingOverlay()
+        _validation_errors(overlay, "fix: x", "body", require_sections=False)
+        assert overlay.metadata.kwargs == [{"require_sections": False}]

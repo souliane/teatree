@@ -1,5 +1,7 @@
 .DS_Store
 .t3/
+# Worktree-local PR body passed to `gh pr create --body-file`; never tracked.
+.pr-body.md
 __pycache__/
 *.pyc
 .venv/
@@ -18,7 +20,11 @@ build/
 node_modules/
 .claude/
 docs/plan
-docs/design
+# Per-ticket architecture pre-check scratch is ignored, but a tracked, permanent
+# design/decision doc (ADR) under docs/design/ is carved back in explicitly.
+docs/design/*
+!docs/design/autonomous-lane-redesign.md
+!docs/design/own-loop-scheduler.md
 tach_module_graph.dot
 htmlcov/
 # mkdocs build output
@@ -29,6 +35,9 @@ site/
 *.min.js
 *.min.css
 *.map
+# Vendored dashboard JS (htmx, mermaid) is load-bearing at runtime — the templates
+# load it via {% static %}, so it MUST be tracked despite the *.min.js ignore above.
+!src/teatree/dash/static/dash/js/*.min.js
 
 
 # Local plugin marketplace self-reference (created by t3 setup)
@@ -41,6 +50,9 @@ requirements.audit.txt
 apm_modules/
 docs/plans/
 .t3.local.json
+
+# Transient XDG CLI state written into a worktree (e.g. `gh`'s device-id).
+.local/
 
 # E2E artifacts: server stdout/stderr capture + Playwright video recordings.
 # Mounted writable into the e2e Docker container; useful when triaging CI failures.
@@ -63,6 +75,10 @@ e2e/.videos/
 # lives in the PR body, not a tracked file — see skills/architecture-design).
 ARCHITECTURE.md
 
+# Box-side secrets file for the Hetzner headless deploy (tokens/admin creds).
+# Written on the box by the deploy workflow; must never be committed.
+deploy/teatree.env
+
 # Captured eval transcripts (`t3 eval capture-subagent`, the `transcript`
 # backend's input) are written as a plain `<scenario>.jsonl` to the cwd / the
 # `--transcript-dir` (default the repo root). A REAL captured transcript holds
@@ -72,3 +88,19 @@ ARCHITECTURE.md
 # target can never shadow a committed fixture. (#privacy: real transcripts stay
 # uncommitted; the synthetic corpus_gen pipeline is the only committed source.)
 /*.jsonl
+.pr-body.md
+
+# CI's cached migrated-sqlite test-DB template (test-shard job, perf(ci):
+# skip redundant per-xdist-worker migrate). Never meant to be committed —
+# only ever built by tests/conftest.py::django_db_setup into a runner-local
+# or actions/cache-restored path.
+/.cache/django-test-template/
+
+# working notes for the mega consolidation - never commit
+MEGA_NOTES.md
+
+# one-shot analyses / plans - never committed (owner decision 2026-07-23)
+docs/audits/
+docs/research/
+
+.coverage*

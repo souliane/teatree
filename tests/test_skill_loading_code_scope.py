@@ -99,7 +99,7 @@ class TestScopePredicate:
 
     @pytest.mark.parametrize(
         "file_path",
-        ["README.md", "config.yml", "config.yaml", "pyproject.toml", "setup.sh", ".teatree.toml", "notes.txt"],
+        ["README.md", "config.yml", "config.yaml", "pyproject.toml", "setup.sh", ".gitignore", "notes.txt"],
     )
     def test_non_python_edit_is_not_code_work(self, file_path: str) -> None:
         for tool in ("Edit", "Write"):

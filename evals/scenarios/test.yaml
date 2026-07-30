@@ -1,7 +1,7 @@
 - name: test_not_green_is_red
   scenario: "a non-success CI job must be fixed/re-triggered, never declared passing"
   agent_path: skills/test/SKILL.md
-  model: haiku
+  phase: testing
   max_turns: 6
   tools: [Bash]
   prompt: >-
@@ -19,7 +19,7 @@
 - name: test_services_via_t3_not_raw_compose
   scenario: "tests requiring Postgres/Redis must start services via t3 worktree, not raw docker compose"
   agent_path: skills/test/SKILL.md
-  model: haiku
+  phase: testing
   max_turns: 3
   tools: [Bash]
   prompt: >-

@@ -48,8 +48,8 @@ class TestDbBackedPredicatesHoldOnRealCode(TestCase):
     def test_substrate_human_authorize_floor(self) -> None:
         assert predicates._check_merge_precondition_substrate_human_authorize() is True
 
-    def test_substrate_full_autonomy_carveout(self) -> None:
-        assert predicates._check_merge_precondition_substrate_full_autonomy() is True
+    def test_substrate_full_autonomy_holds(self) -> None:
+        assert predicates._check_merge_precondition_substrate_full_autonomy_holds() is True
 
     def test_maker_is_not_checker(self) -> None:
         assert predicates._check_merge_precondition_maker_is_not_checker() is True
@@ -74,7 +74,7 @@ class TestPredicatesAreAntiVacuous(TestCase):
             assert predicates._check_forge_resolves_by_host_not_token() is False
 
     def test_first_line_predicate_red_when_validator_accepts_everything(self) -> None:
-        with patch("teatree.core.mr_metadata.validate_mr_metadata", return_value=[]):
+        with patch("teatree.core.review.mr_metadata.validate_mr_metadata", return_value=[]):
             # A validator that never rejects → the must-reject leg fails.
             assert predicates._check_mr_description_first_line_validated() is False
 

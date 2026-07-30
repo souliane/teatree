@@ -43,9 +43,9 @@ def resolve_clear_changed_files(ticket: "Ticket | None") -> list[str]:
     if ticket is None:
         return []
 
-    from teatree import visual_qa  # noqa: PLC0415
-    from teatree.core.runners.ship import resolve_ship_worktree  # noqa: PLC0415
-    from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+    from teatree import visual_qa  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.core.runners.ship import resolve_ship_worktree  # noqa: PLC0415 — deferred: keeps command import light
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred: keeps command import light
 
     extra = cast("TicketExtra", ticket.extra or {})
     worktree = resolve_ship_worktree(ticket, extra)

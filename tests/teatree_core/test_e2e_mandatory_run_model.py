@@ -69,3 +69,30 @@ class TestHasGreenEvidence(TestCase):
 
     def test_no_run_is_not_evidence(self) -> None:
         assert E2eMandatoryRun.has_green_evidence(self.ticket, _SHA) is False
+
+
+class TestHasVisualVerification(TestCase):
+    """The per-ticket (any-SHA) attestation the snapshot-baseline gate reads."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/12")
+
+    def test_green_posted_run_at_any_sha_is_attestation(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_OTHER_SHA, spec="x", result="green", posted_url=_URL)
+        assert E2eMandatoryRun.has_visual_verification(self.ticket) is True
+
+    def test_green_but_unposted_is_not_attestation(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="green", posted_url="")
+        assert E2eMandatoryRun.has_visual_verification(self.ticket) is False
+
+    def test_red_run_is_not_attestation(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="red", posted_url=_URL)
+        assert E2eMandatoryRun.has_visual_verification(self.ticket) is False
+
+    def test_no_run_is_not_attestation(self) -> None:
+        assert E2eMandatoryRun.has_visual_verification(self.ticket) is False
+
+    def test_another_tickets_attestation_does_not_carry(self) -> None:
+        other = Ticket.objects.create(issue_url="https://example.com/i/13")
+        E2eMandatoryRun.record(ticket=other, head_sha=_SHA, spec="x", result="green", posted_url=_URL)
+        assert E2eMandatoryRun.has_visual_verification(self.ticket) is False

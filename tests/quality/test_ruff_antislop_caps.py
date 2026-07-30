@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._color_env import no_color_env
+
 _CODE_RE = re.compile(r"\b([A-Z]+\d+)\b")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,12 +45,33 @@ def _ignored_codes(lint: dict) -> set[str]:
 
 
 def _ruff_codes(target: Path) -> set[str]:
+    # ``--config <repo pyproject>`` applies the real project ruff config to a
+    # probe that lives OUTSIDE the tree (under tmp_path) — so the caps still bite
+    # without a probe ever being written into the live ``src/teatree/`` tree
+    # (the shared-tree-mutation flake the relocation removes). ``--no-cache`` so a
+    # stale ruff cache keyed on a prior probe path never masks the result.
+    # --color=never plus a color-forcing-stripped env: belt and suspenders
+    # against an ambient FORCE_COLOR/CLICOLOR_FORCE ANSI-wrapping ruff's
+    # output, which breaks \b-bounded code extraction (souliane/teatree#2359).
     result = subprocess.run(
-        [_UV, "run", "ruff", "check", "--output-format", "concise", str(target)],
+        [
+            _UV,
+            "run",
+            "ruff",
+            "check",
+            "--config",
+            str(_PYPROJECT),
+            "--no-cache",
+            "--output-format",
+            "concise",
+            "--color=never",
+            str(target),
+        ],
         cwd=_REPO_ROOT,
         check=False,
         capture_output=True,
         text=True,
+        env=no_color_env(),
     )
     return set(_CODE_RE.findall(result.stdout + result.stderr))
 
@@ -69,27 +92,25 @@ class TestEnablementPins:
 
 @pytest.mark.integration
 class TestCapsBite:
+    @pytest.fixture(autouse=True)
+    def _force_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Exercise the color-forced path on every run (not just a dev shell
+        # that happens to set it) so the extractor's hermeticity is proven,
+        # not merely assumed (souliane/teatree#2359).
+        monkeypatch.setenv("FORCE_COLOR", "1")
+
     def test_c901_flags_too_complex_function(self, tmp_path: Path) -> None:
         body = "\n".join(f"    if a == {i}:\n        return {i}" for i in range(15))
-        probe = _REPO_ROOT / "src" / "teatree" / "_c901_probe.py"
+        probe = tmp_path / "_c901_probe.py"
         probe.write_text(f"def f(a: int) -> int:\n{body}\n    return -1\n", encoding="utf-8")
-        try:
-            assert "C901" in _ruff_codes(probe)
-        finally:
-            probe.unlink()
+        assert "C901" in _ruff_codes(probe)
 
     def test_fix_flags_todo_comment(self, tmp_path: Path) -> None:
-        probe = _REPO_ROOT / "src" / "teatree" / "_fix_probe.py"
+        probe = tmp_path / "_fix_probe.py"
         probe.write_text("x = 1  # TODO: wire this up\n", encoding="utf-8")
-        try:
-            assert "FIX002" in _ruff_codes(probe)
-        finally:
-            probe.unlink()
+        assert "FIX002" in _ruff_codes(probe)
 
     def test_era_flags_commented_out_code(self, tmp_path: Path) -> None:
-        probe = _REPO_ROOT / "src" / "teatree" / "_era_probe.py"
+        probe = tmp_path / "_era_probe.py"
         probe.write_text("x = 1\n# y = compute(x, 2)\nprint(x)\n", encoding="utf-8")
-        try:
-            assert "ERA001" in _ruff_codes(probe)
-        finally:
-            probe.unlink()
+        assert "ERA001" in _ruff_codes(probe)

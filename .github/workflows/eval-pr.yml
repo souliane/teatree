@@ -1,0 +1,341 @@
+# ============================================================
+# SELECTIVE-PR BEHAVIORAL-EVAL WORKFLOW — runs only the scenarios a PR changed
+# ============================================================
+#
+# The metered behavioral-eval suite is expensive (real `claude` SDK trials) and
+# the full catalog runs weekly off the PR path (`.github/workflows/eval.yml`). But
+# when a PR EDITS a scenario file (`evals/scenarios/*.yaml` or an overlay's
+# `eval/scenarios/*.yaml`), waiting a week to learn the new/changed scenario's
+# behavior is too slow. This workflow closes that gap: on every PR it runs ONLY
+# the scenarios that PR's diff defines — never the whole catalog — so the cost is
+# bounded by what changed.
+#
+# HOW THE SELECTION WORKS
+#   The `detect` job diffs the PR against its base, pipes the changed paths to
+#   `scripts/eval/scenarios_for_changed.py`, and gets the `name` of every spec
+#   whose source file the PR touched. If that list is empty (no scenario file
+#   changed) the `eval` job is skipped entirely — a PR that touches no scenario
+#   spends zero API budget here.
+#
+# AUTH — `agent_harness_provider` selects the eval credential
+#   The eval step wires `T3_AGENT_HARNESS_PROVIDER` (`subscription_oauth`) and both
+#   repo secrets; every eval chokepoint resolves the selected credential through
+#   `resolve_eval_credential`. The DEFAULT rides the subscription
+#   `CLAUDE_CODE_OAUTH_TOKEN` (no per-token bill). This PR lane is inherently tiny —
+#   only the scenarios a PR changed, at a SINGLE trial (`--trials 1`) with
+#   escalate-on-fail — so it barely touches the subscription's usage window. The
+#   metered `api_key` provider stays selectable. Until the selected credential's
+#   secret is set the eval job correctly fails RED.
+#
+# NO-SILENT-GREEN
+#   `--require-executed` is passed unconditionally and `claude --version` is
+#   asserted before the eval, so a missing binary / all-skipped run fails RED
+#   rather than passing green with zero coverage (mirrors eval.yml). ZERO-IS-RED
+#   closes the last vacuous gap: when `detect` promised scenarios (`run=true`)
+#   the eval job asserts it executed >=1 — a run that was SUPPOSED to execute
+#   scenarios but executed ZERO fails, never passes green.
+#
+# SCENARIO-REACHABILITY (advisory, F12 / #3566)
+#   The `detect` job runs `t3 eval reachability` on every PR: it walks every
+#   `t3 …` invocation the shipped scenarios + fixtures cite against the LIVE CLI
+#   registry, so a scenario grading a path the product cannot take surfaces at
+#   authoring time. It is ADVISORY (report + exit 0) — the shipped corpus still
+#   carries known false positives (overlay-slot fixture names, prose fragments) —
+#   so it gives the check a live production caller without reddening a PR.
+#
+# TRIALS — single trial + adaptive escalate-on-fail
+#   This PR lane runs `--trials 1` (a single trial) for fast/cheap feedback, not the
+#   weekly lane's full `--trials 3` flake-resistance sweep. A single LLM trial is
+#   noisy, so `--escalate-on-fail --escalate-trials 3` adds an adaptive safety net:
+#   a scenario that FAILS the single trial is re-run 3 more times before the job
+#   reds. The job goes RED only on a CONFIRMED failure (every escalation trial also
+#   failed); a scenario that recovers on any escalation trial is reported
+#   flaky-but-passing, NOT red — so a one-off flake never blocks a PR while a real
+#   regression still reds. The escalation re-runs ONLY the failed scenarios, so the
+#   common all-green PR pays nothing extra. The PRIVATE per-trial transcript is
+#   uploaded as `eval-pr-transcripts`; the SANITIZED summary (no transcript, with
+#   the flaky/confirmed escalation table) is appended to the PR's step summary.
+#
+# WHY --summary-md GOES TO $RUNNER_TEMP, NOT $GITHUB_STEP_SUMMARY DIRECTLY
+#   The eval runs in `--docker`, whose writable artifacts bind-mount is the
+#   transcript path's parent (`$RUNNER_TEMP`). `$GITHUB_STEP_SUMMARY` is a host
+#   path NOT mounted into the container, so an in-container write to it would be
+#   lost. So the run writes the sanitized summary to `$RUNNER_TEMP/eval-summary.md`
+#   (which DOES land back on the host via the artifacts mount) and a following
+#   step appends that file to `$GITHUB_STEP_SUMMARY`.
+# ============================================================
+
+name: CI · Selective PR eval
+
+on:
+  pull_request:
+
+concurrency:
+  group: eval-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # DETECT: diff the PR against its base and resolve the scenarios it changed.
+  # Outputs `names` (comma-joined scenario names) and `run` (true iff non-empty).
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.select.outputs.names }}
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Diff the PR against its base (same diff source as ci.yml's preflight job) and
+      # resolve the changed scenario files to scenario names. Distinguish "no scenario
+      # changed" (the resolver's `--skip-code`) from a REAL failure (bad git ref, import
+      # error, malformed YAML): a bare `|| true` would swallow both and silently skip
+      # the eval on a broken resolver — indistinguishable from a clean no-change PR.
+      # skip-code 3 is disambiguated from Python's uncaught-exception exit 1 and
+      # argparse's exit 2. The git diff is its own command so a bad ref fails loud
+      # (default bash `-e`) rather than being masked by the resolver's skip exit.
+      - name: Select the scenarios this PR changed
+        id: select
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
+          rc=0
+          uv run python scripts/eval/scenarios_for_changed.py --skip-code 3 \
+            < changed-files.txt > names.txt || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            echo "scenarios_for_changed.py failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
+            exit "$rc"
+          fi
+          NAMES="$(paste -sd, names.txt)"
+          echo "names=$NAMES" >> "$GITHUB_OUTPUT"
+          if [ -n "$NAMES" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Changed scenarios → running: $NAMES"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No scenario file changed → skipping the metered PR eval."
+          fi
+      # ADVISORY reachability report (F12 / #3566): give the reachability check a
+      # live production caller. It walks every `t3 …` the shipped scenarios +
+      # fixtures cite against the LIVE CLI registry and reports unreachable ones.
+      # ADVISORY by default (`t3 eval reachability` exits 0 even with unreachable
+      # references) so it never reds a PR — the shipped corpus still carries known
+      # false positives (overlay-slot fixture names, prose fragments). A crash
+      # (broken wiring) still fails loud. Runs on every PR, not only when a
+      # scenario changed, so a fixture citing a removed command surfaces regardless.
+      - name: Report scenario-reachability (advisory)
+        run: uv run t3 eval reachability
+
+  # EVAL: run ONLY the changed scenarios (single trial), in the CI container.
+  # Mirrors eval.yml's setup. Skipped entirely when no scenario changed.
+  eval:
+    needs: detect
+    if: needs.detect.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # The PR lane runs a bounded subset at a SINGLE trial, so it finishes far
+    # inside this cap; the cap exists so a hang (a wedged scenario, a stuck docker
+    # daemon) fails loud as a red, diagnosable run instead of stalling to the 6h
+    # default. Sized like eval.yml's per-attempt budget with headroom.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
+      # it — a missing binary must FAIL the job, not skip every scenario green.
+      # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
+      # runner actually execs (`_find_cli` returns the bundle first; this global install
+      # is only the presence-gate). Matching it stops the two CLIs in one image from
+      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
+      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
+      - name: Install and assert the Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.169
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        run: uv run python -m teatree migrate --no-input
+      # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
+      # eval runs. `EVAL_OAUTH_TOKENS` (a newline-separated repo secret) is probed per
+      # token for remaining usage-window headroom (scripts/eval/select_oauth.py) and the
+      # freshest is exported — masked — into $GITHUB_ENV, which the eval step below
+      # reads. BACKWARD-SAFE: with EVAL_OAUTH_TOKENS unset/empty it passes the existing
+      # single CLAUDE_CODE_OAUTH_TOKEN secret through unchanged. This step OWNS the
+      # credential decision (it also exports T3_AGENT_HARNESS_PROVIDER — an all-exhausted
+      # set flips to api_key ONLY when the opt-in EVAL_API_KEY_FALLBACK repo variable is
+      # set, else it fails loud). This PR lane is tiny (only changed scenarios, single
+      # trial), so it barely touches a window — but a freshest pick still avoids a
+      # depleted account.
+      - name: Select the freshest eval OAuth account
+        env:
+          EVAL_CREDENTIAL: subscription_oauth
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+        run: uv run python scripts/eval/select_oauth.py
+      # Run the changed scenarios AGAINST BASELINE (`--preset baseline`) — the
+      # same cheapest-passing per-scenario tier the weekly run pins
+      # (evals/presets/baseline.yaml), so a PR's eval verdict matches the weekly's.
+      # A scenario absent from the baseline map (a brand-new scenario the PR adds)
+      # falls through to its own YAML tier — never silently cheapened. `--only` is
+      # gone; the positional NAME filter runs one scenario, so the comma-joined
+      # detect list is looped one scenario per `t3 eval run <name>`. Each run is a
+      # single trial at the baseline-pinned tier, with
+      # `--escalate-on-fail --escalate-trials 3` re-running a
+      # failed scenario 3 more times and reading only on a CONFIRMED failure (a
+      # recovered trial is flaky-but-passing, not red). `--require-executed` and
+      # the asserted CLI keep a no-coverage run from passing green; `--docker`
+      # routes through the CI image (auth forwarded via docker `-e`). The
+      # per-scenario transcript/summary files are accumulated into the shared
+      # report files under $RUNNER_TEMP (the writable artifacts bind-mount).
+      - name: Metered behavioral eval — the changed scenarios (in Docker)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
+          # "Select the freshest eval OAuth account" step above via `$GITHUB_ENV` (that
+          # step owns the credential decision) — NOT pinned here, since a step-level
+          # `env:` would override the dynamic `$GITHUB_ENV` value. `ANTHROPIC_API_KEY`
+          # stays wired for an exhausted-OAuth api_key fallback; docker forwards only the
+          # selected credential's var into the container.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_NAMES: ${{ needs.detect.outputs.names }}
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            set -euo pipefail
+            : > "$RUNNER_TEMP/eval-summary.md"
+            rc=0
+            ran=0
+            # Names of the CONFIRMED-red scenarios (every escalation trial also
+            # failed). Collected so the aggregate red-list below NAMES the failures
+            # explicitly — the per-scenario loop only accumulated a single `rc`, so a
+            # red scenario was invisible under a passing tail and had to be hunted
+            # for in the raw log. This prints the culprits directly.
+            failed=()
+            IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
+            for name in "${NAMES[@]}"; do
+              name="$(echo "$name" | xargs)"  # trim whitespace
+              [ -z "$name" ] && continue
+              ran=$((ran + 1))
+              scenario_rc=0
+              uv run t3 eval run "$name" --backend api --preset baseline \
+                --escalate-on-fail --escalate-trials 3 \
+                --require-executed --docker \
+                --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || scenario_rc=$?
+              [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
+              if [ "$scenario_rc" -ne 0 ]; then
+                rc="$scenario_rc"
+                failed+=("$name")
+              fi
+            done
+            # ZERO-IS-RED: detect reached this job only with run=true (>=1 changed
+            # scenario), so executing ZERO here is a vacuous green, never a pass —
+            # the case where every selected name trims to empty. Each real
+            # invocation is already zero-is-RED (require_spec exits 2 on an unknown
+            # name; --require-executed reds an all-skipped run); this closes the
+            # loop-ran-nothing gap the per-invocation guards cannot see.
+            if [ "$ran" -eq 0 ]; then
+              echo "::error::detect selected scenarios (run=true) but the eval executed ZERO — vacuous green, failing." >&2
+              exit 1
+            fi
+            # AGGREGATE RED-LIST: name every confirmed-red scenario before exiting so
+            # the next red is announced, not hidden under a passing tail.
+            if [ "${#failed[@]}" -gt 0 ]; then
+              echo "::error::CONFIRMED-red scenarios (${#failed[@]}/${ran}): ${failed[*]}" >&2
+              {
+                echo ""
+                echo "### CONFIRMED-red scenarios (${#failed[@]}/${ran})"
+                printf -- '- %s\n' "${failed[@]}"
+              } >> "$RUNNER_TEMP/eval-summary.md"
+            fi
+            exit "$rc"
+      # Append the sanitized summary to the PR's step summary (the in-container run
+      # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
+      # summary is the publish-safe dashboard; the transcript stays private.
+      - name: Publish the sanitized summary to the PR step summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
+            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
+      # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
+      # red run still publishes it.
+      - name: Upload the per-trial transcript report (private)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-pr-transcripts
+          path: ${{ runner.temp }}/eval-transcripts.html
+          if-no-files-found: warn
+
+  # EVAL-GATE: the single always-reporting merge gate. A conditionally-skipped job
+  # (the `eval` job skips when no scenario changed) is a fragile required check —
+  # GitHub leaves a skipped required context pending, wedging every no-change PR.
+  # This job ALWAYS runs (`if: always()`), so it emits exactly ONE conclusive
+  # success/failure check that branch protection pins as a stable required context
+  # (KEEP THE JOB KEY `eval-gate` STABLE — that is the pinned name). It PASSes when
+  # scenario detection succeeded AND the eval either passed or was legitimately
+  # skipped (no scenario changed — the common case); it FAILs when detection failed
+  # (bad ref / resolver error), when the eval failed (a real scenario regression OR
+  # the vacuous zero-executed case, which `exit 1`s inside the eval job and surfaces
+  # here as eval=failure), or when either job was cancelled. It reads only THIS
+  # workflow's two jobs, never the weekly/nightly metered runs, so a required
+  # eval-gate can never wedge merges on the depleting subscription window.
+  eval-gate:
+    needs: [detect, eval]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conclude the selective-eval merge gate
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          EVAL_RESULT: ${{ needs.eval.result }}
+          CHANGED: ${{ needs.detect.outputs.run }}
+        run: |
+          echo "detect=$DETECT_RESULT eval=$EVAL_RESULT changed_scenarios=$CHANGED"
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "::error::eval-gate FAIL — scenario detection did not succeed (detect=$DETECT_RESULT); cannot prove the PR's eval coverage."
+            exit 1
+          fi
+          case "$EVAL_RESULT" in
+            success)
+              echo "eval-gate PASS — the PR's changed scenarios ran and passed."
+              ;;
+            skipped)
+              echo "eval-gate PASS — no scenario changed; nothing to eval."
+              ;;
+            *)
+              echo "::error::eval-gate FAIL — the selective eval did not pass (eval=$EVAL_RESULT): a changed scenario failed, the run executed zero scenarios (vacuous), or the job was cancelled."
+              exit 1
+              ;;
+          esac

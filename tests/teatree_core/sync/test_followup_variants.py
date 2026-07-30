@@ -265,8 +265,8 @@ class TestSyncFollowupMergedMrs(TestCase):
 
         assert any("Merged PR fetch failed" in e for e in result.errors)
 
-    def test_skips_ticket_with_no_mrs(self) -> None:
-        """Ticket with empty/missing mrs dict should be skipped in merged detection."""
+    def test_skips_ticket_with_no_prs(self) -> None:
+        """Ticket with an empty ``extra["prs"]`` is skipped in merged detection."""
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/300",

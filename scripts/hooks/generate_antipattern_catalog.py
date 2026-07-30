@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from teatree.quality.catalog import AntiPatternEntry, load_catalog
+from teatree.quality.catalog import AntiPatternEntry, load_catalog, load_catalog_text
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_OUTPUT = _REPO_ROOT / "docs" / "generated" / "antipattern-catalog.md"
@@ -49,11 +49,16 @@ def _render_entry(e: AntiPatternEntry) -> list[str]:
         f"**Preferred.** {e.preferred_pattern}",
         "",
     ]
+    if e.waivers:
+        lines.append("**Accepted waivers.**")
+        lines.append("")
+        lines.extend(f"- {waiver}" for waiver in e.waivers)
+        lines.append("")
     return lines
 
 
-def build_markdown() -> str:
-    entries = load_catalog()
+def build_markdown(catalog_text: str | None = None) -> str:
+    entries = load_catalog_text(catalog_text) if catalog_text is not None else load_catalog()
     greppable = sum(1 for e in entries if e.detection == "greppable")
     judgement = len(entries) - greppable
 

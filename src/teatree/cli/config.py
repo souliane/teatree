@@ -1,8 +1,5 @@
 """``t3 config`` — configuration and skill autoloading commands."""
 
-import sys
-from pathlib import Path
-
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
@@ -13,7 +10,7 @@ config_app = typer.Typer(no_args_is_help=True, help="Configuration and autoloadi
 @config_app.command(name="check-update")
 def check_update() -> None:
     """Check if a newer version of teatree is available."""
-    from teatree.config import check_for_updates  # noqa: PLC0415
+    from teatree.config import check_for_updates  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     message = check_for_updates(force=True)
     typer.echo(message or "You are up to date.")
@@ -26,14 +23,14 @@ def show(
 ) -> None:
     """Read-only view of config: text-file intent vs DB regenerable cache (#628).
 
-    The intent section is ``~/.teatree.toml`` resolved — the user-authored
+    The intent section is the DB config store resolved — the user-authored
     source of truth. The derived section is DB / data-dir state that can be
     deleted and rebuilt from the text files; every entry is flagged
     regenerable so the cache-vs-intent invariant is visible. Reads only.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.config_view import build_config_view, render_config_view  # noqa: PLC0415
+    from teatree.cli.config_view import build_config_view, render_config_view  # noqa: PLC0415 — lazy CLI import
 
     view = build_config_view()
     if json_output:
@@ -45,13 +42,13 @@ def show(
 @config_app.command(name="write-skill-cache")
 def write_skill_cache() -> None:
     """Write overlay skill metadata + trigger index to XDG cache for hook consumption."""
-    from teatree.config import discover_active_overlay  # noqa: PLC0415
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
+    from teatree.config import discover_active_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     discover_active_overlay()
     ensure_django()
 
-    from teatree.core.skill_cache import write_skill_metadata_cache  # noqa: PLC0415
+    from teatree.core.skill_cache import write_skill_metadata_cache  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     write_skill_metadata_cache()
     typer.echo(f"Wrote skill metadata to {DATA_DIR / 'skill-metadata.json'}")
@@ -60,7 +57,7 @@ def write_skill_cache() -> None:
 @config_app.command()
 def autoload() -> None:
     """List skill auto-loading rules from context-match.yml files."""
-    from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415
+    from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     skills_dir = DEFAULT_SKILLS_DIR
     if not skills_dir.is_dir():
@@ -83,9 +80,9 @@ def autoload() -> None:
 @config_app.command()
 def cache() -> None:
     """Show the XDG skill-metadata cache content."""
-    import json as _json  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     cache_path = DATA_DIR / "skill-metadata.json"
     if not cache_path.is_file():
@@ -101,10 +98,10 @@ def cache() -> None:
 @config_app.command()
 def deps(skill: str) -> None:
     """Show resolved dependency chain for a skill."""
-    import json as _json  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
-    from teatree.skill_support.deps import resolve_all  # noqa: PLC0415
+    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.skill_support.deps import resolve_all  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     cache_path = DATA_DIR / "skill-metadata.json"
     if not cache_path.is_file():
@@ -113,38 +110,13 @@ def deps(skill: str) -> None:
         raise typer.Exit(code=1)
 
     data = _json.loads(cache_path.read_text(encoding="utf-8"))
-    trigger_index = data.get("trigger_index", [])
+    skill_index = data.get("skill_index", [])
 
     precomputed = data.get("resolved_requires", {})
     if precomputed and skill in precomputed:
         chain = precomputed[skill]
     else:
-        resolved = resolve_all(trigger_index)
+        resolved = resolve_all(skill_index)
         chain = resolved.get(skill, [skill])
 
     typer.echo(" → ".join(chain))
-
-
-@config_app.command(name="test-trigger")
-def test_trigger(prompt: str) -> None:
-    """Test which skill would be triggered for a given prompt."""
-    import json as _json  # noqa: PLC0415
-
-    from teatree import find_project_root as _find_root  # noqa: PLC0415
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
-
-    root = _find_root()
-    scripts_lib = root / "scripts" / "lib" if root else Path(__file__).resolve().parent
-    if str(scripts_lib) not in sys.path:
-        sys.path.insert(0, str(scripts_lib))
-
-    from skill_loader import detect_intent_detailed  # noqa: PLC0415  # ty: ignore[unresolved-import]
-
-    cache_path = DATA_DIR / "skill-metadata.json"
-    trigger_index: list[dict] | None = None
-    if cache_path.is_file():
-        data = _json.loads(cache_path.read_text(encoding="utf-8"))
-        trigger_index = data.get("trigger_index", [])
-
-    match = detect_intent_detailed(prompt, trigger_index=trigger_index)
-    typer.echo(str(match))

@@ -5,11 +5,10 @@ description: >
   Spawned by the orchestrator for delivery tasks.
 tools:
   - Read
-  - Write
-  - Edit
   - Bash
   - Grep
   - Glob
+  - Skill
 skills:
   - rules
   - workspace

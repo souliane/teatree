@@ -1,10 +1,12 @@
 """Canonical default loops + prompts, and their idempotent seed (#2513).
 
-The single source of truth for which autonomous :class:`Loop` rows ship by
-default and how each is invoked (its on-disk ``script`` or its reusable
-:class:`Prompt`). Migrations seeded these at migrate-time; this module is the
-install-time seed ``t3 setup`` runs so a fresh — or squashed-migration — install
-has them present regardless of migration history.
+Which autonomous :class:`Loop` rows ship by default — and how each is invoked (its
+on-disk ``script`` or its reusable :class:`Prompt`) — is SHIPPED DATA, not code: the
+values live in the ``[loops.<name>]`` tables of ``src/teatree/config/defaults.toml``
+alongside every other shipped default an operator tunes, and this module builds the
+:class:`LoopSeedSpec` set from them. Migrations seeded these at migrate-time; this
+module is the install-time seed ``t3 setup`` runs so a fresh — or squashed-migration —
+install has them present regardless of migration history.
 
 The seed is **idempotent**: it ``get_or_create``s by ``name``, so re-running it
 creates nothing new and NEVER clobbers an operator-edited row (a disabled loop,
@@ -18,28 +20,23 @@ review using the ``ac-reviewing-codebase`` skill.
 **No orphan rows (#2584).** Every name in :data:`DEFAULT_LOOPS` has a registry
 ``MiniLoop`` (a ``teatree.loops.<name>.loop`` package exposing ``MINI_LOOP``), so
 the seeded ``Loop``-table set equals :func:`teatree.loops.registry.iter_loops`.
-``slack_answer`` is intentionally NOT a default Loop row: it has no registry
-``MiniLoop`` — the autonomous ``build_loop_table_jobs`` / ``iter_loops`` fan-out
-can never run it. It runs ONLY via the won-tick piggyback cycle
-(:func:`teatree.loop.tick_piggyback.run_piggyback_cycles` →
-``teatree.loop.slack_answer.cycle.run_slack_answer_cycle``), behind its own
-``loop-slack-answer`` lease. Seeding a ``slack_answer`` Loop row would create an
-orphan the master tick can never fan out (the 19-vs-18 seed/registry mismatch
-this module's parity test pins).
+The reactive infra loops (``slack_answer``, ``self_improve``, ``drain_queue``)
+are intentionally NOT default Loop rows: they have no registry ``MiniLoop`` — the
+per-loop ``build_loop_table_jobs`` / ``iter_loops`` fan-out can never run them.
+Each runs as its OWN dedicated native Claude ``/loop`` firing its own
+``t3 loop <slot> run`` command (``teatree.cli.loop*``), behind its own dedicated
+``LoopLease`` (``loop-slack-answer`` / ``loop-self-improve`` / ``loop-drain-queue``).
+Seeding one as a ``Loop`` row would create an orphan a per-loop tick could never
+fan out (the seed/registry parity this module's test pins).
 """
 
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 
-#: The architectural-review prompt body — a real instruction telling the
-#: sub-agent to run an architectural review using the ``ac-reviewing-codebase``
-#: skill (owner's explicit decision). Shared with the data migration so the
-#: install-seed and the migrate-time seed agree.
-ARCH_REVIEW_PROMPT_BODY = (
-    "Run an architectural review of the codebase using the ac-reviewing-codebase skill. "
-    "Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, "
-    "codebase-wide architectural review, surfacing findings as the skill prescribes."
-)
+from teatree.config.seed_defaults import shipped_seed_table
+
+_LOOPS_TABLE = "loops"
 
 
 def script_entry_point_for(name: str) -> str:
@@ -54,18 +51,30 @@ def script_entry_point_for(name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class LoopSeedSpec:
-    """One default loop's seed config — name, cadence, and how it is invoked.
+    """One default loop's seed config — name, cadence, description, and how it is invoked.
 
     ``prompt_body`` set ⇒ a prompt-backed loop (a :class:`Prompt` named for the
     loop is seeded and the FK points at it); otherwise the loop is script-backed
     at its OWN module (:func:`script_entry_point_for`). ``daily_at`` overrides the
-    interval for a once-per-day loop.
+    interval for a once-per-day loop. ``description`` is the loop's real one-line
+    "what it does and when" — the source of truth populated onto ``Loop.description``
+    (and the prompt-backed loop's ``Prompt.description``) and rendered by
+    ``t3 loops list``. ``colleague_facing`` (#2904) marks a loop that reaches or
+    reads from a colleague — the #2904 admission gate skips it whenever
+    availability defers questions (away / autonomous_away). ``default_enabled``
+    ships the local/read-only operational core ON out of the box (the sound
+    default the squashed ``0001_initial`` seeds ``enabled=True`` on a fresh DB);
+    every colleague-facing, externally-visible, destructive-capable, or
+    token-costly loop stays ``False`` (opt-in).
     """
 
     name: str
     delay_seconds: int
+    description: str
     daily_at: dt.time | None = None
     prompt_body: str | None = None
+    colleague_facing: bool = False
+    default_enabled: bool = False
 
     @property
     def is_prompt_backed(self) -> bool:
@@ -77,31 +86,37 @@ class LoopSeedSpec:
         return script_entry_point_for(self.name)
 
 
-# One autonomous loop per row, each on its own cadence. Every script-backed loop
-# points at its OWN module; ``arch_review`` is the single prompt-backed default.
-DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
-    LoopSeedSpec("inbox", 60),
-    LoopSeedSpec("idle_stack_reaper", 60),
-    LoopSeedSpec("local_stack_queue", 60),
-    LoopSeedSpec("resource_pressure", 60),
-    # NOTE: ``slack_answer`` is intentionally absent — it has no registry
-    # MiniLoop and runs only via the won-tick piggyback cycle (see the module
-    # docstring). A seeded row would be an orphan the master tick can never run.
-    LoopSeedSpec("dispatch", 300),
-    LoopSeedSpec("tickets", 300),
-    LoopSeedSpec("review", 300),
-    LoopSeedSpec("ship", 300),
-    LoopSeedSpec("pane_reaper", 300),
-    LoopSeedSpec("audit", 1800),
-    LoopSeedSpec("followup", 1800),
-    LoopSeedSpec("issue_implementer", 3600),
-    LoopSeedSpec("housekeeping", 3600),
-    LoopSeedSpec("arch_review", 10800, prompt_body=ARCH_REVIEW_PROMPT_BODY),
-    LoopSeedSpec("dogfood", 86400),
-    LoopSeedSpec("eval_local", 86400),
-    LoopSeedSpec("news", 86400, daily_at=dt.time(8, 0)),
-    LoopSeedSpec("dream", 86400, daily_at=dt.time(3, 0)),
-)
+def load_loop_specs(path: Path | None = None) -> tuple[LoopSeedSpec, ...]:
+    """The shipped ``[loops]`` table as specs, in the file's table order.
+
+    File order IS seed order: the frozen ``0001_initial`` copy is pinned against this
+    tuple, so a reordering of the tables is a reviewed change, not a formatting whim.
+    An omitted optional field falls back to the dataclass default, so a loop that is
+    neither prompt-backed nor daily-scheduled needs only its cadence and description.
+    """
+    return tuple(
+        LoopSeedSpec(
+            name=name,
+            delay_seconds=entry["delay_seconds"],
+            description=entry["description"],
+            daily_at=entry.get("daily_at"),
+            prompt_body=entry.get("prompt_body"),
+            colleague_facing=entry.get("colleague_facing", False),
+            default_enabled=entry.get("default_enabled", False),
+        )
+        for name, entry in shipped_seed_table(_LOOPS_TABLE, path).items()
+    )
+
+
+#: One autonomous loop per row, each on its own cadence. Every script-backed loop
+#: points at its OWN module; ``arch_review`` is the single prompt-backed default.
+DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = load_loop_specs()
+
+#: The architectural-review prompt body — a real instruction telling the sub-agent to run
+#: an architectural review using the ``ac-reviewing-codebase`` skill (owner's explicit
+#: decision). Shared with the data migration so the install-seed and the migrate-time seed
+#: agree; shipped in ``[loops.arch_review] prompt_body``.
+ARCH_REVIEW_PROMPT_BODY: str = next(spec.prompt_body or "" for spec in DEFAULT_LOOPS if spec.is_prompt_backed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,12 +134,26 @@ def seed_default_loops_and_prompts() -> SeedResult:
     exactly as-is — the seed only fills in rows that are absent. A prompt-backed
     loop's :class:`Prompt` is seeded first so the FK resolves.
 
-    **Seeded paused (#2513 cutover).** Every default loop lands ``enabled=False``.
-    The cutover is plumbing only — no loop ticks until an operator deliberately
-    enables it. ``get_or_create`` never reaches the ``defaults`` for a row that
-    already exists, so an operator who has since ENABLED a loop keeps that choice.
+    **Sound operational defaults (reversing the #2513 all-paused cutover).** The
+    local/read-only operational core (``spec.default_enabled``) lands
+    ``enabled=True`` so a fresh install works out of the box; every
+    colleague-facing, externally-visible, destructive-capable, or token-costly
+    loop stays ``enabled=False`` (opt-in). ``get_or_create`` never reaches the
+    ``defaults`` for a row that already exists, so an operator who ENABLED a
+    paused loop — or DISABLED a default-on one — keeps that choice.
+
+    **Descriptions backfill onto existing rows.** ``get_or_create`` populates
+    ``description`` on a fresh row; an earlier install's row predates the field and
+    carries a blank one, so the seed also backfills any blank ``description`` from
+    the spec. The backfill filters on ``description=""``, so it is idempotent and
+    never clobbers a description an operator rewrote.
+
+    ``colleague_facing`` is admin-editable, so the seed leaves it alone; a row that
+    disagrees with the shipped table is surfaced by
+    :func:`teatree.loops.seed_drift.classification_drift` and reconciled only on the
+    explicit ``seed_loops --reconcile-classification`` run.
     """
-    from teatree.core.models import Loop, Prompt  # noqa: PLC0415
+    from teatree.core.models import Loop, Prompt  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     loops_created = 0
     prompts_created = 0
@@ -133,13 +162,16 @@ def seed_default_loops_and_prompts() -> SeedResult:
         if spec.is_prompt_backed:
             prompt, made = Prompt.objects.get_or_create(
                 name=spec.name,
-                defaults={"body": spec.prompt_body or "", "description": f"Default loop prompt for {spec.name!r}."},
+                defaults={"body": spec.prompt_body or "", "description": spec.description},
             )
             prompts_created += int(made)
+            Prompt.objects.filter(name=spec.name, description="").update(description=spec.description)
         defaults = {
             "delay_seconds": spec.delay_seconds,
             "daily_at": spec.daily_at,
-            "enabled": False,
+            "description": spec.description,
+            "enabled": spec.default_enabled,
+            "colleague_facing": spec.colleague_facing,
         }
         if prompt is not None:
             defaults["prompt"] = prompt
@@ -147,4 +179,5 @@ def seed_default_loops_and_prompts() -> SeedResult:
             defaults["script"] = spec.script_entry_point
         _, made = Loop.objects.get_or_create(name=spec.name, defaults=defaults)
         loops_created += int(made)
+        Loop.objects.filter(name=spec.name, description="").update(description=spec.description)
     return SeedResult(loops_created=loops_created, prompts_created=prompts_created)

@@ -11,14 +11,14 @@ back off the ``ResultMessage.structured_output`` — no free-text regex.
 
 Cost controls, by construction:
 
-*   the judge model defaults to the same Sonnet tier as a run
-    (``claude-sonnet-4-6``) and is per-scenario overridable to a cheaper tier;
+*   the judge model defaults to the same mid tier as a run
+    (the catalog's ``balanced`` entry) and is per-scenario overridable to a cheaper tier;
 *   ``max_budget_usd`` caps spend per judge call;
 *   a process-wide :class:`JudgeBudget` caps the number of judge calls per run,
     so a large suite cannot silently fan out into an unbounded bill.
 
 Like the runner, the judge runs in a virgin configuration via the shared
-:func:`~teatree.eval.sdk_runner.build_sdk_options` clean-room builder
+:func:`~teatree.eval.api_runner.build_sdk_options` clean-room builder
 (``setting_sources=[]`` + a plain-string ``system_prompt`` + empty ``settings``)
 so the developer's personal context never reaches the grader. When ``claude`` is
 not on PATH the judge skips (mirrors the runner's skip path) so CI and
@@ -33,15 +33,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
+from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, is_success_result_error
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.sdk_runner import (
-    CleanRoomConfig,
-    build_sdk_options,
-    classify_terminal_error,
-    env_float,
-    is_success_result_error,
-)
+from teatree.eval.resource_caps import env_float
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -154,11 +149,35 @@ class ClaudeJudge:
             return JudgeVerdict(passed=True, skipped=True, rationale="run skipped")
         if shutil.which("claude") is None:
             return JudgeVerdict(passed=True, skipped=True, rationale="claude binary not on PATH")
+        # The judge is itself a Claude call, so route it through the SAME credential
+        # chokepoint as make_runner: resolve the SELECTED eval credential (the
+        # ``agent_harness_provider``'s call — default subscription OAuth),
+        # export it (env wins, else the pass store), and FAIL LOUD with
+        # CredentialError when none is resolvable. This runs only past the skip guards
+        # above — a transcript-grade-only / keyless SKIP path (no judge block, skipped
+        # run, no claude binary) grades no model, so it never reaches here and is
+        # never forced to require a credential. isolated_claude_env then strips the
+        # conflicting credential from the judge child's env using the same
+        # credential's spec, so the judge authenticates on the SELECTED eval
+        # credential exclusively. Imported at call time (not module top) to keep the
+        # eval CLI import chain Django-free — ``credential_config`` pulls in the
+        # routing models + settings, which cannot be created before ``django.setup()``.
+        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415 — deferred: loaded per eval run
+
+        credential = resolve_eval_credential()
+        credential.export()
         if self._budget is not None:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)
         try:
-            structured = asyncio.run(_drive_judge(prompt, spec.judge.model))
+            structured = asyncio.run(
+                _drive_judge(
+                    prompt,
+                    spec.judge.model,
+                    credential.spec.conflicting_vars,
+                    credential.spec.forbidden_vars,
+                )
+            )
         except TimeoutError:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
         except Exception as exc:
@@ -169,8 +188,13 @@ class ClaudeJudge:
         return _verdict_from_structured(structured)
 
 
-async def _drive_judge(prompt: str, judge_model: str) -> StructuredVerdict | None:
-    with isolated_claude_env() as (env, cwd):
+async def _drive_judge(
+    prompt: str,
+    judge_model: str,
+    conflicting_vars: tuple[str, ...],
+    forbidden_vars: tuple[str, ...] = (),
+) -> StructuredVerdict | None:
+    with isolated_claude_env(conflicting_vars, forbidden_vars) as (env, cwd):
         options = _judge_options(model=judge_model, cwd=cwd, env=env)
         return await asyncio.wait_for(_judge_result(prompt, options), timeout=WATCHDOG_SECONDS)
 

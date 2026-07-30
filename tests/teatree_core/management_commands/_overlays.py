@@ -16,7 +16,10 @@ from teatree.core.overlay import (
     DbImportStrategy,
     OverlayBase,
     OverlayConfig,
+    OverlayE2E,
     OverlayMetadata,
+    OverlayProvisioning,
+    OverlayRuntime,
     ProvisionStep,
     RunCommands,
     ServiceSpec,
@@ -56,17 +59,17 @@ def env_safe_mock_overlay() -> MagicMock:
 
     The provision/start runners now thread their resolved overlay straight
     into ``write_env_cache`` (souliane/teatree#1975), so a bare ``MagicMock``
-    whose ``declared_env_keys`` / ``get_base_images`` return un-iterable
+    whose ``declared_env_keys`` / ``provisioning.base_images`` return un-iterable
     mocks crashes the renderer. This double pins those to empty collections
     so the env-cache path no-ops cleanly while the test keeps full control
     over the behaviour it actually asserts.
     """
     overlay = MagicMock()
-    overlay.get_env_extra.return_value = {}
-    overlay.declared_env_keys.return_value = set()
-    overlay.declared_secret_env_keys.return_value = set()
-    overlay.get_base_images.return_value = []
-    overlay.get_db_import_strategy.return_value = None
+    overlay.provisioning.env_extra.return_value = {}
+    overlay.provisioning.declared_env_keys.return_value = set()
+    overlay.provisioning.declared_secret_env_keys.return_value = set()
+    overlay.provisioning.base_images.return_value = []
+    overlay.provisioning.db_import_strategy.return_value = None
     return overlay
 
 
@@ -87,40 +90,20 @@ class FullMetadata(OverlayMetadata):
             {"name": "broken", "help": "No command defined"},
         ]
 
-    def validate_pr(self, title: str, description: str) -> ValidationResult:
+    def validate_pr(self, title: str, description: str, *, require_sections: bool = True) -> ValidationResult:
+        del require_sections
         errors = []
         if not title:
             errors.append("Title is required")
         return {"errors": errors, "warnings": []}
 
 
-class FullOverlay(OverlayBase):
-    metadata = FullMetadata()
-
-    def get_repos(self) -> list[str]:
-        return ["backend", "frontend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "backend": ["echo", "backend", worktree.repo_path],
-            "frontend": ["echo", "frontend", worktree.repo_path],
-            "build-frontend": ["echo", "build", worktree.repo_path],
-        }
-
-    def get_test_command(self, worktree: Worktree) -> list[str]:
-        return ["echo", "tests", worktree.repo_path]
-
-    def get_lint_command(self, worktree: Worktree) -> list[str]:
-        return ["echo", "lint", worktree.repo_path]
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
+class FullProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return {"kind": "test", "source_database": "test_db"}
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayProvisioning.db_import extension-point contract.
         self,
         worktree: Worktree,
         *,
@@ -132,25 +115,59 @@ class FullOverlay(OverlayBase):
     ) -> bool:
         return True
 
-    def get_reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+    def reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
         return ProvisionStep(name="reset-passwords", callable=lambda: None)
 
-    def get_compose_file(self, worktree: Worktree) -> str:
+    def compose_file(self, worktree: Worktree) -> str:
         return "/fake/docker-compose.yml"
 
-    def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+
+class FullRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["echo", "backend", worktree.repo_path],
+            "frontend": ["echo", "frontend", worktree.repo_path],
+            "build-frontend": ["echo", "build", worktree.repo_path],
+        }
+
+    def test_command(self, worktree: Worktree) -> list[str]:
+        return ["echo", "tests", worktree.repo_path]
+
+    def lint_command(self, worktree: Worktree) -> list[str]:
+        return ["echo", "lint", worktree.repo_path]
+
+
+class FullE2E(OverlayE2E):
+    def env_extras(self, env_cache: dict[str, str], **_: object) -> dict[str, str]:
         variant = env_cache.get("WT_VARIANT", "")
         return {"CUSTOMER": variant} if variant else {}
+
+
+class FullOverlay(OverlayBase):
+    metadata = FullMetadata()
+    provisioning = FullProvisioning()
+    runtime = FullRuntime()
+    e2e = FullE2E()
+
+    def get_repos(self) -> list[str]:
+        return ["backend", "frontend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+
+class _ServicesProvisioning(FullProvisioning):
+    def services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
+        return {
+            "postgres": {"start_command": ["echo", "start-pg"]},
+            "redis": {},
+        }
 
 
 class ServicesOverlay(FullOverlay):
     """Overlay with services config — used to test _start_services."""
 
-    def get_services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
-        return {
-            "postgres": {"start_command": ["echo", "start-pg"]},
-            "redis": {},
-        }
+    provisioning = _ServicesProvisioning()
 
 
 class ForbidCloseKeywordsOverlay(FullOverlay):
@@ -188,21 +205,24 @@ class _MinimalMetadata(OverlayMetadata):
         return []
 
 
+class _MinimalRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {}
+
+    def test_command(self, worktree: Worktree) -> list[str]:
+        return []
+
+
 class MinimalOverlay(OverlayBase):
     """Overlay that returns empty/None for most methods — tests fallback paths."""
 
     metadata = _MinimalMetadata()
+    runtime = _MinimalRuntime()
 
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {}
-
-    def get_test_command(self, worktree: Worktree) -> list[str]:
         return []
 
 
@@ -230,21 +250,23 @@ class NestedRepoOverlay(FullOverlay):
         return ["backend", "frontend"]
 
 
-class PostDbStepsOverlay(FullOverlay):
-    """Overlay with post-DB steps configured — tests the post-DB loop."""
-
-    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+class _PostDbProvisioning(FullProvisioning):
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return [
             ProvisionStep(name="run-migrations", callable=lambda: None),
             ProvisionStep(name="collectstatic", callable=lambda: None),
         ]
 
 
-class FailingImportOverlay(FullOverlay):
-    """Overlay where db_import always fails — tests error reporting."""
+class PostDbStepsOverlay(FullOverlay):
+    """Overlay with post-DB steps configured — tests the post-DB loop."""
 
+    provisioning = _PostDbProvisioning()
+
+
+class _FailingImportProvisioning(FullProvisioning):
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayProvisioning.db_import extension-point contract.
         self,
         worktree: Worktree,
         *,
@@ -255,6 +277,12 @@ class FailingImportOverlay(FullOverlay):
         approve_remote_dump: bool = False,
     ) -> bool:
         return False
+
+
+class FailingImportOverlay(FullOverlay):
+    """Overlay where db_import always fails — tests error reporting."""
+
+    provisioning = _FailingImportProvisioning()
 
 
 class RemotePathRecordingOverlay(FullOverlay):
@@ -277,10 +305,16 @@ class RemotePathRecordingOverlay(FullOverlay):
 
     def __init__(self) -> None:
         super().__init__()
+        self.provisioning = _RemotePathProvisioning()
+        self.calls = self.provisioning.calls
+
+
+class _RemotePathProvisioning(FullProvisioning):
+    def __init__(self) -> None:
         self.calls: dict[str, object] = {}
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayProvisioning.db_import extension-point contract.
         self,
         worktree: Worktree,
         *,
@@ -326,10 +360,41 @@ class RemotePathRecordingOverlay(FullOverlay):
             return importer.run(slow_import=slow_import, allow_remote_dump=approve_remote_dump)
 
 
-class PreRunOverlay(FullOverlay):
-    """Overlay with pre-run steps — tests the pre-run loop in worktree provision."""
+DB_ENV_PROBE = "T3_DB_REFRESH_ENV_BLEED_PROBE"
 
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+
+class _EnvCaptureProvisioning(FullProvisioning):
+    """Records the ``os.environ`` state seen during ``db_import`` + reset step."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, object] = {}
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {DB_ENV_PROBE: "applied"}
+
+    def db_import(self, worktree: Worktree, **kwargs: object) -> bool:
+        self.seen["import_probe"] = os.environ.get(DB_ENV_PROBE)
+        self.seen["import_virtual_env"] = os.environ.get("VIRTUAL_ENV")
+        return True
+
+    def reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        def _capture() -> None:
+            self.seen["reset_probe"] = os.environ.get(DB_ENV_PROBE)
+
+        return ProvisionStep(name="reset-passwords", callable=_capture)
+
+
+class EnvCaptureOverlay(FullOverlay):
+    """Overlay recording the env visible during ``db refresh`` — proves no bleed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.provisioning = _EnvCaptureProvisioning()
+        self.seen = self.provisioning.seen
+
+
+class _PreRunRuntime(FullRuntime):
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def _log_step() -> None:
             extra = dict(worktree.extra or {})
             log = extra.get("pre_run_log", [])
@@ -341,6 +406,19 @@ class PreRunOverlay(FullOverlay):
         return [ProvisionStep(name=f"prep-{service}", callable=_log_step)]
 
 
+class PreRunOverlay(FullOverlay):
+    """Overlay with pre-run steps — tests the pre-run loop in worktree provision."""
+
+    runtime = _PreRunRuntime()
+
+
+class _ProvenanceE2E(FullE2E):
+    def run_provenance(self, spec_path: str) -> str:
+        if not spec_path:
+            return ""
+        return f"{spec_path.rsplit('/', 1)[-1].removesuffix('.spec.ts')}-lane"
+
+
 class ProvenanceOverlay(FullOverlay):
     """Overlay that resolves a manifest entry id from a spec path (#272).
 
@@ -350,10 +428,7 @@ class ProvenanceOverlay(FullOverlay):
     provenance.
     """
 
-    def get_e2e_run_provenance(self, spec_path: str) -> str:
-        if not spec_path:
-            return ""
-        return f"{spec_path.rsplit('/', 1)[-1].removesuffix('.spec.ts')}-lane"
+    e2e = _ProvenanceE2E()
 
 
 FULL_OVERLAY = "tests.teatree_core.management_commands._overlays.FullOverlay"
@@ -387,6 +462,9 @@ PRE_RUN_OVERLAY = "tests.teatree_core.management_commands._overlays.PreRunOverla
 
 
 REMOTE_PATH_RECORDING_OVERLAY = "tests.teatree_core.management_commands._overlays.RemotePathRecordingOverlay"
+
+
+ENV_CAPTURE_OVERLAY = "tests.teatree_core.management_commands._overlays.EnvCaptureOverlay"
 
 
 SETTINGS: dict[str, object] = {}
@@ -446,6 +524,26 @@ class _ExternalRunnerOverlay(FullOverlay):
     metadata = _ExternalRunnerMetadata()
 
 
+class _PlaywrightArgsE2E(FullE2E):
+    def playwright_args(self, spec_path: str) -> list[str]:
+        if "api-flow/" in spec_path:
+            return ["-c", "api.config.ts"]
+        return []
+
+
+class _PlaywrightArgsOverlay(FullOverlay):
+    """External runner that selects a Playwright config per spec lane.
+
+    Mirrors a multi-config Playwright suite (one config per lane): an
+    ``api-flow`` spec needs ``-c api.config.ts``, everything else its
+    default. Proves the external runner threads the overlay-supplied args
+    into the ``npx playwright test`` command.
+    """
+
+    metadata = _ExternalRunnerMetadata()
+    e2e = _PlaywrightArgsE2E()
+
+
 class _ProjectRunnerOverlay(FullOverlay):
     metadata = _ProjectRunnerMetadata()
 
@@ -463,6 +561,9 @@ class _UnconfiguredOverlay(FullOverlay):
 
 
 _EXTERNAL_RUNNER_OVERLAY = "tests.teatree_core.management_commands._overlays._ExternalRunnerOverlay"
+
+
+_PLAYWRIGHT_ARGS_OVERLAY = "tests.teatree_core.management_commands._overlays._PlaywrightArgsOverlay"
 
 
 _PROJECT_RUNNER_OVERLAY = "tests.teatree_core.management_commands._overlays._ProjectRunnerOverlay"

@@ -21,6 +21,7 @@ def _invoke(*args: str):
     with (
         patch("teatree.cli.admin.ensure_django"),
         patch("teatree.cli.admin._ensure_migrated"),
+        patch("teatree.cli.admin._collectstatic"),
         patch("teatree.cli.admin._run_server") as run_server,
         patch("teatree.cli.admin.webbrowser.open") as browser_open,
     ):
@@ -46,6 +47,16 @@ class AdminSuperuserTestCase(TestCase):
         assert user.is_superuser
         assert user.check_password("s3cret-pw")
 
+    def test_empty_admin_user_falls_back_to_default(self) -> None:
+        # The deploy workflow writes T3_ADMIN_USER= (empty) for an unset secret;
+        # an empty value must fall back to the default, not crash create_superuser.
+        with patch.dict("os.environ", {"T3_ADMIN_USER": "", "T3_ADMIN_PASSWORD": "s3cret-pw"}):
+            result, _run_server, _browser = _invoke("--no-browser")
+        assert result.exit_code == 0
+        user = get_user_model().objects.get(username="admin")
+        assert user.is_superuser
+        assert user.check_password("s3cret-pw")
+
     def test_reuses_existing_superuser_without_resetting_password(self) -> None:
         get_user_model().objects.create_superuser(username="existing", password="already-set")
         result, _run_server, _browser = _invoke("--no-browser")
@@ -54,6 +65,22 @@ class AdminSuperuserTestCase(TestCase):
         assert "password" not in result.output
         assert get_user_model().objects.filter(is_superuser=True).count() == 1
         assert get_user_model().objects.get(username="existing").check_password("already-set")
+
+
+class AdminCollectStaticTestCase(TestCase):
+    def test_admin_collects_static_before_serving(self) -> None:
+        # BLOCKING #2: under gunicorn with DEBUG off WhiteNoise serves STATIC_ROOT,
+        # which must be populated first — so the admin boot path runs collectstatic.
+        with (
+            patch("teatree.cli.admin.ensure_django"),
+            patch("teatree.cli.admin._ensure_migrated"),
+            patch("teatree.cli.admin._run_server"),
+            patch("teatree.cli.admin.webbrowser.open"),
+            patch("teatree.cli.admin._collectstatic") as collectstatic,
+        ):
+            result = runner.invoke(_app, ["--no-browser"])
+        assert result.exit_code == 0
+        collectstatic.assert_called_once_with()
 
 
 class AdminServerLaunchTestCase(TestCase):
@@ -69,15 +96,24 @@ class AdminServerLaunchTestCase(TestCase):
 
 
 class AdminServerCommandTestCase(TestCase):
-    def test_run_server_uses_current_interpreter_not_bare_python(self) -> None:
-        # A bare "python" resolves via PATH to whatever shim is first (e.g. a
-        # pyenv python with no teatree) → "No module named teatree". The
-        # subprocess must use the interpreter running this CLI.
+    def test_run_server_execs_gunicorn_against_wsgi_app(self) -> None:
+        # A production WSGI server (gunicorn) against teatree's WSGI app, not
+        # Django's dev runserver. sys.executable -m gunicorn pins the tool-venv
+        # interpreter that has teatree + gunicorn (a bare "gunicorn" shim could
+        # resolve to a different env with no teatree).
         with patch("teatree.utils.run.run_streamed") as run_streamed:
             _run_server("127.0.0.1", 8000)
         cmd = run_streamed.call_args.args[0]
         assert cmd[0] == sys.executable
-        assert cmd[1:] == ["-m", "teatree", "runserver", "127.0.0.1:8000"]
+        assert cmd[1:4] == ["-m", "gunicorn", "teatree.wsgi:application"]
+        assert "--bind" in cmd
+        assert cmd[cmd.index("--bind") + 1] == "127.0.0.1:8000"
+
+    def test_run_server_binds_host_and_port_overrides(self) -> None:
+        with patch("teatree.utils.run.run_streamed") as run_streamed:
+            _run_server("192.168.1.5", 9001)
+        cmd = run_streamed.call_args.args[0]
+        assert cmd[cmd.index("--bind") + 1] == "192.168.1.5:9001"
 
 
 class AdminBrowserTestCase(TestCase):

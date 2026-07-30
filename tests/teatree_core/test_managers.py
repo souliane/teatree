@@ -1,8 +1,12 @@
 from datetime import timedelta
+from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
+from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
 
@@ -50,6 +54,30 @@ class TestWorktreeQuerySet(TestCase):
 
         assert list(Worktree.objects.active()) == [active, also_active]
 
+    def test_for_ticket_scopes_to_the_given_ticket(self) -> None:
+        wanted_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        other_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/be", branch="mine")
+        also_mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/fe", branch="also")
+        Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
+
+        assert list(Worktree.objects.for_ticket(wanted_ticket).order_by("pk")) == [mine, also_mine]
+
+
+class TestInboundManagersStayWired(TestCase):
+    """The inbound querysets still back their models after moving to `managers_inbound`.
+
+    The move is a pure relocation, so nothing below asserts behaviour — it pins
+    the wiring, which is the only thing a relocation can break. Every predicate
+    test in this module reaches these classes through `Model.objects`, so a
+    manager silently rebuilt from a plain `QuerySet` would leave them all
+    passing while `unprocessed()` and `due_for_retry()` vanish at runtime.
+    """
+
+    def test_managers_are_built_from_the_relocated_querysets(self) -> None:
+        assert isinstance(IncomingEvent.objects.all(), IncomingEventQuerySet)
+        assert isinstance(ReplyDispatch.objects.all(), ReplyDispatchQuerySet)
+
 
 class TestIncomingEventQuerySet(TestCase):
     def _slack(self, *, channel: str, thread_ref: str, key: str) -> IncomingEvent:
@@ -91,6 +119,37 @@ class TestIncomingEventQuerySet(TestCase):
         self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
 
         assert IncomingEvent.objects.active_dm_thread(channel="") == ""
+
+    def _event(
+        self, *, key: str, processed: bool = False, dead: bool = False, retry_ahead: bool = False
+    ) -> IncomingEvent:
+        now = timezone.now()
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            idempotency_key=key,
+            received_at=now - timedelta(days=60),
+            processed_at=now if processed else None,
+            dead_lettered_at=now if dead else None,
+            next_retry_at=(now + timedelta(hours=1)) if retry_ahead else None,
+        )
+
+    def test_prunable_is_the_settled_set_processed_or_dead_lettered(self) -> None:
+        processed = self._event(key="k-proc", processed=True)
+        dead = self._event(key="k-dead", dead=True)
+        self._event(key="k-inflight")
+
+        prunable = IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
+
+        assert set(prunable.values_list("pk", flat=True)) == {processed.pk, dead.pk}
+
+    def test_prunable_derives_from_the_unprocessed_boundary_not_its_due_clause(self) -> None:
+        # A backoff-retry event is unsettled but NOT due, so it is absent from BOTH
+        # unprocessed(now) and prunable(). Were prunable defined as the naive complement
+        # of unprocessed(now) it would wrongly prune this in-flight, backing-off row.
+        backoff = self._event(key="k-backoff", retry_ahead=True)
+
+        assert backoff not in IncomingEvent.objects.unprocessed()
+        assert backoff not in IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
 
 
 class TestSessionQuerySet(TestCase):
@@ -223,6 +282,92 @@ class TestTaskQuerySet(TestCase):
         assert claimed is not None
         assert claimed.claimed_by == "loop-slot"
         assert claimed.claimed_by_session == "sess-A"
+
+
+class TestTaskPhaseCadenceQueries(TestCase):
+    """The periodic-scanner dedupe/last-run queries shared via ``PhaseCadence``."""
+
+    OVERLAY = "t3-teatree"
+    PHASE = "eval_local"
+
+    def _task(self, *, overlay: str, phase: str, status: str, started_hours_ago: int | None = None) -> Task:
+        ticket = Ticket.objects.create(overlay=overlay)
+        session = Session.objects.create(overlay=overlay, ticket=ticket, agent_id="a")
+        if started_hours_ago is not None:
+            Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(hours=started_hours_ago))
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
+
+    def test_in_flight_for_phase_matches_pending_and_claimed_only(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        claimed = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.CLAIMED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED)
+
+        in_flight = set(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE))
+
+        assert in_flight == {pending, claimed}
+
+    def test_in_flight_for_phase_scopes_to_overlay_and_phase(self) -> None:
+        target = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay="other-overlay", phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay=self.OVERLAY, phase="scanning_news", status=Task.Status.PENDING)
+
+        assert list(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE)) == [target]
+
+    def test_last_run_at_for_phase_returns_newest_session_start(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=48)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=2)
+
+        last_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert last_run is not None
+        # The newest task started ~2h ago, so the clock reads ~2h, not 48h.
+        assert (timezone.now() - last_run) < timedelta(hours=3)
+
+    def test_last_run_at_for_phase_none_when_no_task(self) -> None:
+        assert Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE) is None
+
+    def test_manager_methods_delegate_to_module_helpers(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=3)
+
+        # The module-level helpers are the concern-split home the manager methods delegate to.
+        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)) == [pending]
+        direct = last_run_at_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)
+        via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+        assert direct == via_manager
+
+    def test_last_run_at_for_phase_completed_statuses_ignores_failed(self) -> None:
+        completed = self._task(
+            overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200
+        )
+        # A newer FAILED task must NOT advance the COMPLETED-only clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+
+        completed_run = Task.objects.last_run_at_for_phase(
+            self.OVERLAY, self.PHASE, statuses=frozenset({Task.Status.COMPLETED})
+        )
+        any_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert completed_run is not None
+        assert (timezone.now() - completed_run) > timedelta(hours=100)  # the old COMPLETED one
+        assert completed_run == Session.objects.get(pk=completed.session_id).started_at
+        # The unfiltered clock still sees the newer FAILED task.
+        assert any_run is not None
+        assert (timezone.now() - any_run) < timedelta(hours=2)
+
+    def test_last_run_at_for_phase_terminal_statuses_counts_failed(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200)
+        # The terminal (COMPLETED|FAILED) clock — the backoff clock — sees the FAILED attempt.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+        # A still-PENDING task is not terminal and must not advance the backoff clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=0)
+
+        terminal_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE, statuses=Task.Status.terminal())
+
+        assert terminal_run is not None
+        # The FAILED one (1h ago) wins over the old COMPLETED (200h); the newer
+        # PENDING (0h) is not terminal, so it must NOT advance the clock.
+        assert timedelta(minutes=30) < (timezone.now() - terminal_run) < timedelta(hours=2)
 
 
 class TestActiveClaimExists(TestCase):
@@ -659,6 +804,162 @@ class TestClaimNextPendingConcurrencyOnSqlite(TestCase):
         assert only.claimed_by in {"tick-1", "tick-2"}
 
 
+class TestTaskClaimAtomic(TestCase):
+    """``Task.claim`` is an atomic CAS — the create-and-assign-to-one-session claim.
+
+    The owner-reported bug: two concurrent Claude sessions picked up the SAME
+    unit because ``Task.claim`` was a read-then-write — ``select_for_update()``
+    (a silent no-op on the production SQLite backend, ``has_select_for_update``
+    is ``False``) then an UNCONDITIONAL ``save()`` with no affected-row guard.
+    Both sessions passed the in-Python check on the same stale view and both
+    wrote. It is now a single guarded ``UPDATE ... WHERE pk AND <claimable>``
+    whose row count is the CAS token, the same backend-agnostic shape the
+    sibling ``claim_next_pending`` / ``reap_stale_claims`` paths already use.
+
+    Three directions, all pinned here:
+
+    * race — two concurrent claims on one available unit ⇒ EXACTLY one wins;
+    * dead-lease reclaim — a unit whose owner's lease lapsed is re-claimable;
+    * live-lease protection — a unit with a FRESH lease is NOT stolen.
+    """
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+    def test_backend_is_sqlite(self) -> None:
+        # Pin the premise: the race shape below reflects the PRODUCTION backend,
+        # where ``select_for_update`` is a no-op — the whole reason the previous
+        # read-then-write raced.
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+        assert connection.features.has_select_for_update is False
+
+    def test_two_concurrent_claims_on_one_task_exactly_one_wins(self) -> None:
+        """The race: session A and session B both claim the same PENDING unit.
+
+        Same deterministic single-connection interleave as
+        ``TestClaimNextPendingConcurrencyOnSqlite``: session B runs its FULL
+        claim inside session A's critical section, just before A's write
+        commits, so A's write lands on a row B already moved to CLAIMED. The
+        seam patches BOTH write primitives (``QuerySet.update`` — the fixed
+        CAS — and ``Task.save`` — the pre-fix read-then-write), so the test is
+        RED on the buggy code (both "win") and GREEN on the fix (the CAS
+        ``WHERE`` lets exactly one writer match).
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        row = self._task()
+        session_a = Task.objects.get(pk=row.pk)
+        session_b = Task.objects.get(pk=row.pk)
+
+        fired: list[str] = []
+        rival_won = [False]
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            try:
+                session_b.claim(claimed_by="session-B")
+                rival_won[0] = True
+            except InvalidTransitionError:
+                rival_won[0] = False
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_save(self, *args, **kwargs)
+
+        caller_won = False
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            try:
+                session_a.claim(claimed_by="session-A")
+                caller_won = True
+            except InvalidTransitionError:
+                caller_won = False
+
+        row.refresh_from_db()
+        # EXACTLY one of the two interleaved sessions claimed the single unit.
+        assert (caller_won, rival_won[0]).count(True) == 1, (
+            f"double-claim race NOT closed on SQLite: {caller_won=} {rival_won[0]=}"
+        )
+        assert row.status == Task.Status.CLAIMED
+        assert row.claimed_by in {"session-A", "session-B"}
+
+    def test_claim_reclaims_a_dead_sessions_expired_lease(self) -> None:
+        """Dead-lease reclaim: a unit whose owner's lease lapsed is re-claimable.
+
+        Session A claims the unit, then dies — its lease is forced into the
+        past. The next healthy session B claims the SAME unit directly via
+        ``Task.claim``; the CAS ``<claimable>`` predicate admits a CLAIMED row
+        whose lease is expired, so B reclaims it (no duplicate unit, no manual
+        reopen).
+        """
+        task = self._task()
+        task.claim(claimed_by="session-A", lease_seconds=300)
+        # Session A dies: its lease lapses (no more heartbeats).
+        task.lease_expires_at = timezone.now() - timedelta(seconds=10)
+        task.save(update_fields=["lease_expires_at"])
+
+        session_b = Task.objects.get(pk=task.pk)
+        session_b.claim(claimed_by="session-B")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "session-B"  # reclaimed, not duplicated
+        assert task.lease_expires_at is not None
+        assert task.lease_expires_at > timezone.now()  # a fresh lease for B
+
+    def test_claim_does_not_steal_a_unit_with_a_fresh_lease(self) -> None:
+        """Live-lease protection: a unit with a FRESH lease is NOT stolen.
+
+        Session A holds a live lease. Session B's claim must lose — the CAS
+        ``<claimable>`` predicate excludes a CLAIMED row whose lease is still
+        in the future, so A's claim is left intact and B raises the typed
+        ``InvalidTransitionError``.
+        """
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+
+        task = self._task()
+        task.claim(claimed_by="session-A", lease_seconds=300)
+
+        session_b = Task.objects.get(pk=task.pk)
+        with pytest.raises(InvalidTransitionError):
+            session_b.claim(claimed_by="session-B")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "session-A"  # the live owner keeps its claim
+
+    def test_claim_refuses_a_terminal_task(self) -> None:
+        """A COMPLETED/FAILED unit is never re-claimed — the typed refusal stands."""
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+
+        task = self._task()
+        task.fail()  # terminal
+
+        with pytest.raises(InvalidTransitionError):
+            task.claim(claimed_by="session-A")
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+
 class TestReplyDispatchQuerySet(TestCase):
     def test_due_for_retry_orders_by_oldest_due_first(self) -> None:
         """``due_for_retry`` returns rows oldest-due-first by ``next_retry_at``.
@@ -828,6 +1129,8 @@ class TestReplayOrphanedTransitions(TestCase):
     def test_replays_testing_and_reviewing_transitions(self) -> None:
         # The testing→test and reviewing→review branches of the shared
         # path, each from its earned predecessor state.
+        from unittest.mock import patch  # noqa: PLC0415
+
         coded = Ticket.objects.create(state=Ticket.State.CODED)
         s1 = Session.objects.create(ticket=coded, agent_id="a")
         Task.objects.create(ticket=coded, session=s1, phase="testing", status=Task.Status.COMPLETED)
@@ -835,7 +1138,11 @@ class TestReplayOrphanedTransitions(TestCase):
         s2 = Session.objects.create(ticket=tested, agent_id="b")
         Task.objects.create(ticket=tested, session=s2, phase="reviewing", status=Task.Status.COMPLETED)
 
-        replayed = Task.objects.replay_orphaned_transitions()
+        # Shippable so `tested`'s replayed review lands REVIEWED (not
+        # auto-ignored) — this test pins the replay branch, not the #3313
+        # unshippable-review disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            replayed = Task.objects.replay_orphaned_transitions()
 
         coded.refresh_from_db()
         tested.refresh_from_db()
@@ -846,7 +1153,7 @@ class TestReplayOrphanedTransitions(TestCase):
     def test_replays_reviewer_role_external_review(self) -> None:
         # The reviewing+REVIEWER branch (mark_reviewed_externally): a
         # reviewer-role ticket whose completed reviewing task's external
-        # review transition was lost is recovered to DELIVERED.
+        # review transition was lost is recovered to REVIEW_POSTED.
         ticket = Ticket.objects.create(state=Ticket.State.STARTED, role=Ticket.Role.REVIEWER)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
@@ -855,7 +1162,7 @@ class TestReplayOrphanedTransitions(TestCase):
 
         ticket.refresh_from_db()
         assert replayed == 1
-        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.state == Ticket.State.REVIEW_POSTED
 
     def test_only_latest_completed_task_per_ticket_is_replayed(self) -> None:
         # A ticket accrues one COMPLETED task per phase. The sweep must
@@ -950,6 +1257,72 @@ class TestReplayOrphanedTransitions(TestCase):
         ticket.refresh_from_db()
         assert replayed == 1
         assert ticket.state == Ticket.State.CODED
+
+
+class TestReplayLeavesTerminalTicketsAlone(TestCase):
+    """#3879 — a ticket at its terminal state has no dropped transition to replay.
+
+    ``_apply_phase_transition``'s branches each require a source state that is not
+    the transition's own target, so an applied transition no-ops on replay — except
+    ``mark_reviewed_externally``, which lists ``REVIEW_POSTED`` (its own target) as
+    a source so a re-review at a moved head SHA can re-stamp. The sweep takes each
+    ticket's newest COMPLETED task every tick, so every reviewer ticket ever closed
+    re-fired that self-loop forever: a locked read-modify-write plus a ``save`` plus
+    a ``post_transition`` fan-out per ticket per tick, which minted one
+    ``execute_teardown`` job each time. 747,732 of 747,753 ``DBTaskResult`` rows on
+    the live box were that enqueue, across 203 tickets.
+
+    The sweep exists for a ticket a crash left BEHIND. A terminal ticket is not
+    behind — no branch of the shared path can advance it — so it is not a candidate.
+    """
+
+    @staticmethod
+    def _closed_review() -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.REVIEW_POSTED,
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        return ticket
+
+    def _sweep(self, times: int) -> tuple[int, int]:
+        """``(transitions replayed, teardown jobs enqueued)`` over *times* consecutive sweeps."""
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — module object for the enqueue patch
+
+        replayed = 0
+        with patch.object(tasks_mod, "execute_teardown") as teardown, self.captureOnCommitCallbacks(execute=True):
+            for _ in range(times):
+                replayed += Task.objects.replay_orphaned_transitions()
+        return replayed, teardown.enqueue.call_count
+
+    def test_repeated_sweeps_over_a_closed_review_enqueue_no_teardown(self) -> None:
+        ticket = self._closed_review()
+
+        replayed, enqueued = self._sweep(times=5)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert enqueued == 0, (
+            f"{enqueued} teardown job(s) minted for a ticket that reached its terminal state long ago — "
+            "the enqueue rate must be bounded by real work, not by tick cadence"
+        )
+        assert replayed == 0, f"the sweep re-fired an already-applied transition {replayed} time(s)"
+
+    def test_orphaned_reviewer_ticket_still_advances(self) -> None:
+        # Anti-vacuity: the sweep is not over-blocked. A reviewer ticket a crash
+        # left on a pre-terminal state still gets its dropped transition replayed.
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.NOT_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.REVIEW_POSTED
 
 
 class TestCompleteIsAtomic(TestCase):

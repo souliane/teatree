@@ -11,7 +11,6 @@ import datetime as dt
 import json
 import logging
 import os
-import tomllib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -24,7 +23,7 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
     ``behind`` inline after a ``git pull`` — otherwise the cached value
     stays stale until the next tick (~12 min later).
     """
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     git_dir = repo_path / ".git"
     if not git_dir.exists():
@@ -45,17 +44,17 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
 
 
 def _repos_from_toml() -> dict[str, Path]:
-    """Extract repo paths from ~/.teatree.toml overlays."""
-    toml_path = Path.home() / ".teatree.toml"
-    if not toml_path.is_file():
-        return {}
-    try:
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
-        return {}
-    workspace_dir = Path(str(data.get("teatree", {}).get("workspace_dir", "~/workspace"))).expanduser()
+    """Extract repo paths from the DB overlays registry."""
+    from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    overlays_cfg = load_config().raw.get("overlays") or {}
+    # ``workspace_repos`` resolve to CLONES, so join them under the CLONE root.
+    # The legacy ``[teatree] workspace_dir`` key is retired (DB-home now); reading
+    # it here would honour a value ignored everywhere else, so route through the
+    # one clone-root accessor (env ``T3_WORKSPACE_DIR`` → default ``~/workspace``).
+    workspace_dir = clone_root()
     repos: dict[str, Path] = {}
-    for name, overlay in (data.get("overlays") or {}).items():
+    for name, overlay in overlays_cfg.items():
         if not isinstance(overlay, dict):
             continue
         if "path" in overlay:
@@ -67,35 +66,29 @@ def _repos_from_toml() -> dict[str, Path]:
 
 
 def _canonical_overlay_names() -> dict[str, str]:
-    """Map raw ``~/.teatree.toml`` overlay keys to canonical overlay names.
+    """Map raw DB overlays-registry keys to canonical overlay names.
 
-    Generic legacy-alias protection: a user whose ``~/.teatree.toml`` still
-    carries a short ``[overlays.<alias>]`` table (e.g. ``[overlays.<short>]``
-    for a canonical ``t3-<short>`` entry-point overlay) would otherwise have
-    the freshness segment label as ``<short>=0`` even though the rest of the
-    statusline tags its rows as ``[t3-<short>]``. The bundled overlay no
-    longer needs this remap — it registers and reads its TOML under its
-    canonical entry-point name (souliane/teatree#1108) — but the generic
-    mapping stays for arbitrary operator aliases.
+    Generic legacy-alias protection: a registry whose keys still carry a short
+    ``[overlays.<alias>]`` entry (e.g. ``[overlays.<short>]`` for a canonical
+    ``t3-<short>`` entry-point overlay) would otherwise have the freshness
+    segment label as ``<short>=0`` even though the rest of the statusline tags
+    its rows as ``[t3-<short>]``. The bundled overlay no longer needs this
+    remap — it registers under its canonical entry-point name
+    (souliane/teatree#1108) — but the generic mapping stays for arbitrary
+    operator aliases.
 
     The matching rule lives in ``teatree.config._match_canonical_ep``
     (souliane/teatree#1138) — a single home shared with config-time discovery.
     """
     try:
-        from teatree.config import _match_canonical_ep  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded at tick time
+    except Exception:  # noqa: BLE001 — a config-read failure degrades to no overlays
         return {}
     canonical = set(get_all_overlays().keys())
-    toml_path = Path.home() / ".teatree.toml"
-    if not toml_path.is_file():
-        return {}
-    try:
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
-        return {}
+    overlays_cfg = load_config().raw.get("overlays") or {}
     mapping: dict[str, str] = {}
-    for raw_key in data.get("overlays") or {}:
+    for raw_key in overlays_cfg:
         if raw_key in canonical:
             continue
         cname = _match_canonical_ep(raw_key, canonical)
@@ -116,6 +109,48 @@ def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     }
 
 
+def _registered_overlays() -> list[object]:
+    """Every registered overlay instance, or ``[]`` on any discovery failure.
+
+    Fail-open so a broken overlay registry never blanks the statusline.
+    """
+    try:
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded at tick time
+
+        return list(get_all_overlays().values())
+    except Exception:
+        logger.warning("overlay discovery failed for statusline segments — no overlay segments", exc_info=True)
+        return []
+
+
+def _statusline_segments() -> list[dict[str, str]]:
+    """Assemble the contributed inline statusline segments (core + overlays).
+
+    Core contributes the cost chip as the first ``usage``-placed segment; each
+    registered overlay then contributes zero or more via
+    ``get_statusline_segments``. Every producer fails open to no segment (the
+    ``_cost_chip`` contract, extended per overlay), so a broken producer can
+    never blank the line. Returns the segments as plain dicts for
+    ``tick-meta.json``.
+    """
+    from teatree.core.statusline_segment import StatuslineSegment  # noqa: PLC0415 — deferred: loaded at tick time
+
+    segments: list[StatuslineSegment] = []
+    chip = _cost_chip()
+    if chip:
+        # The cost chip keeps its neutral (blue) render: color ``None`` falls to
+        # the shell's default palette arm, so the migration is byte-for-byte.
+        segments.append(StatuslineSegment(id="cost_chip", text=chip, placement="usage"))
+    for overlay in _registered_overlays():
+        try:
+            contributed = overlay.get_statusline_segments()  # ty: ignore[unresolved-attribute]
+        except Exception:
+            logger.warning("overlay statusline segments producer failed — skipping", exc_info=True)
+            continue
+        segments.extend(seg for seg in contributed if isinstance(seg, StatuslineSegment))
+    return [seg.as_meta() for seg in segments]
+
+
 def _cost_chip() -> str:
     """The SDK-equivalent cost chip for the sidecar, or ``""`` when silent.
 
@@ -125,15 +160,15 @@ def _cost_chip() -> str:
     handing the rendered string to the shell keeps the dollar figure in one
     place. Fails open to ``""`` so a broken cost read never blanks the line.
     """
-    from teatree.loop.rendering import cost_chip_lines  # noqa: PLC0415
+    from teatree.loop.rendering import cost_chip_lines  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     lines = cost_chip_lines()
     return lines[0] if lines else ""
 
 
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
-    from teatree.config import cadence_seconds  # noqa: PLC0415
-    from teatree.loop.statusline import default_path  # noqa: PLC0415
+    from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     meta_path = (target or default_path()).with_name("tick-meta.json")
     # #744: the skip path writes tick-meta directly without the
@@ -146,8 +181,20 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     cadence = cadence_seconds()
     next_epoch = int(started_at.timestamp()) + cadence
     freshness = _collect_repo_freshness()
+    # ``rendered_at`` is the render-age source the statusline freshness gate
+    # (teatree.loop.statusline_staleness + the shell hook) reads to surface a
+    # STALE banner when a dead/stopped loop leaves the file frozen. It is the
+    # tick's own start epoch — the moment this statusline was produced.
     meta_path.write_text(
-        json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness, "cost_chip": _cost_chip()})
+        json.dumps(
+            {
+                "next_epoch": next_epoch,
+                "cadence": cadence,
+                "rendered_at": int(started_at.timestamp()),
+                "freshness": freshness,
+                "segments": _statusline_segments(),
+            }
+        )
         + "\n",
         encoding="utf-8",
     )

@@ -20,8 +20,15 @@ from unittest.mock import patch
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering import zones_for
-from teatree.loop.statusline import live_loops_anchor, mini_loops_anchor, render
-from teatree.loop.statusline_loops import _mini_loop_chunk
+from teatree.loop.statusline import (
+    live_loops_anchor,
+    mini_loops_anchor,
+    render,
+    set_overridden_loops_reader,
+    set_preset_line_reader,
+)
+from teatree.loop.statusline_loop_chunks import _mini_loop_chunk, overdue_mini_loop_names
+from teatree.loop.statusline_loops import PresetLineHandles
 from teatree.loop.statusline_render import _format_duration
 
 
@@ -57,11 +64,11 @@ class TestConsolidatedLoopAnchor:
 
     def test_includes_relative_minutes_when_acquired_at_known(self) -> None:
         # Each lease carries its own acquire instant; 2 minutes elapsed of
-        # the 720s cadence → next tick in 10m. The loop-owner lease is
+        # the 720s cadence → next tick in 10m. The t3-master lease is
         # excluded from the shared loop line — its badge is per-session in
         # statusline.sh instead.
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
-        leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
+        leases = [("loop-tick", acquired_at), ("t3-master", acquired_at)]
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
@@ -73,7 +80,7 @@ class TestConsolidatedLoopAnchor:
         # Per-loop name + relative minutes, no headline count.
         assert "loops live" not in line, line
         assert "tick 10m" in line, line
-        # loop-owner is excluded from the shared line (per-session badge in sh).
+        # t3-master is excluded from the shared line (per-session badge in sh).
         assert "owner" not in line, line
 
     def test_names_only_when_no_lease_history(self) -> None:
@@ -81,7 +88,6 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["tick"], repr(lines)
@@ -93,14 +99,13 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["tick due"], repr(lines)
 
     def test_no_per_loop_lines_anymore(self) -> None:
         """The pre-refit one-line-per-loop shape is gone (user explicitly opted out)."""
-        leases = [("loop-tick", None), ("loop-owner", None), ("loop-self-improve", None)]
+        leases = [("loop-tick", None), ("t3-master", None), ("loop-self-improve", None)]
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
@@ -135,7 +140,7 @@ class TestMiniLoopsAnchor:
     it counts down across renders rather than freezing on a constant.
     """
 
-    def test_one_chunk_per_enabled_mini_loop_with_own_countdown(self) -> None:
+    def test_only_due_soon_loops_appear_each_with_own_countdown(self) -> None:
         now = datetime.now(UTC)
         schedules = [
             ("dispatch", now + timedelta(seconds=120), 600),
@@ -144,8 +149,9 @@ class TestMiniLoopsAnchor:
         ]
         with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules):
             chunks = mini_loops_anchor()
-        # Each loop carries its OWN countdown, not a shared value.
-        assert chunks == ["dispatch 2m", "tickets 4m", "news 18m"], chunks
+        # #3248: only DUE-SOON loops appear (news at 18m is filtered out — no
+        # full loop list), each with its OWN countdown.
+        assert chunks == ["dispatch 2m", "tickets 4m"], chunks
 
     def test_never_fired_loop_reads_due(self) -> None:
         with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]):
@@ -167,11 +173,11 @@ class TestMiniLoopsAnchor:
     def test_chunk_countdown_is_relative_to_now_not_static(self) -> None:
         # A nearer next-fire instant renders a SMALLER countdown than a
         # farther one — proving the value is derived from (next_fire - now),
-        # not a cached constant.
+        # not a cached constant. Both instants are within the due-soon horizon.
         now = datetime.now(UTC)
         with patch(
             "teatree.loop.statusline_loops._mini_loop_schedules",
-            return_value=[("ship", now + timedelta(seconds=600), 1200)],
+            return_value=[("ship", now + timedelta(seconds=300), 1200)],
         ):
             far = mini_loops_anchor()
         with patch(
@@ -179,7 +185,7 @@ class TestMiniLoopsAnchor:
             return_value=[("ship", now + timedelta(seconds=120), 1200)],
         ):
             near = mini_loops_anchor()
-        assert far == ["ship 10m"], far
+        assert far == ["ship 5m"], far
         assert near == ["ship 2m"], near
 
 
@@ -195,10 +201,11 @@ class TestLoopLineComposesLeasesAndMiniLoops:
                 "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("dispatch", datetime.now(UTC) + timedelta(seconds=120), 600)],
             ),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
-        assert lines == ["tick 10m · dispatch 2m"], lines
+        # #3248: due-soon mini-loops ride the ``due:`` section; #3494 keeps the
+        # infra leases unobtrusive at the tail.
+        assert lines == ["due: dispatch 2m · tick 10m"], lines
 
     def test_line_renders_for_mini_loops_even_with_no_live_lease(self) -> None:
         # The user's complaint: crons were invisible when no infra lease was
@@ -209,10 +216,259 @@ class TestLoopLineComposesLeasesAndMiniLoops:
                 "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("resource_pressure", datetime.now(UTC) + timedelta(seconds=60), 600)],
             ),
-            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
-        assert lines == ["resource_pressure 1m"], lines
+        assert lines == ["due: resource_pressure 1m"], lines
+
+
+class TestPerLoopLeaseCollapse:
+    """#3248: the ``loop_runner`` drives a ``loop:<name>`` lease for EVERY enabled loop.
+
+    Rendering one chunk per live lease listed the whole loop table — the spam the
+    owner complained about. Under the injected override selector the loop line
+    keeps a per-loop chunk ONLY for a manually-overridden or due-now loop; every
+    routine ``loop_runner``-driven loop is folded into the preset/schedule handle.
+    """
+
+    @staticmethod
+    def _render_with_overridden(overridden: set[str] | None, leases: list[tuple[str, datetime]]) -> str:
+        """Render the loop line for *leases* with *overridden* injected (``None`` = uninjected)."""
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._live_lease_drivers", return_value={}),
+            patch("teatree.loop.statusline_loops.current_session_owned_per_loop_slots", return_value=None),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=600),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
+            patch("teatree.loop.statusline_loops._waiting_clause", return_value=""),
+            patch(
+                "teatree.loop.statusline_loops._preset_line_handles",
+                return_value=PresetLineHandles(schedule="", mode="mode: engaged", override="ovr: audit+"),
+            ),
+        ):
+            set_overridden_loops_reader((lambda: overridden) if overridden is not None else None)
+            try:
+                lines = live_loops_anchor(colorize=False)
+            finally:
+                set_overridden_loops_reader(None)
+        assert lines, "expected a loop line"
+        return lines[0]
+
+    def test_n_leased_only_one_overridden_shows_preset_plus_the_override(self) -> None:
+        # Five loop_runner-driven per-loop leases; only ``audit`` is manually
+        # overridden. The routine four (acquired now, next fire +600s, well past
+        # the due-soon horizon) must be folded into the preset handle — NOT listed.
+        now = datetime.now(UTC)
+        leases = [
+            ("loop:audit", now),  # overridden -> surfaces
+            ("loop:dispatch", now),  # routine -> folded away
+            ("loop:tickets", now),  # routine -> folded away
+            ("loop:ship", now),  # routine -> folded away
+            ("loop:inbox", now),  # routine -> folded away
+        ]
+        line = self._render_with_overridden({"audit"}, leases)
+        # The preset handle represents the folded loops:
+        assert "mode: engaged" in line, line
+        # The single manual override surfaces:
+        assert "loop:audit" in line, line
+        # The routine loop_runner-driven, non-overridden loops are folded away:
+        for folded in ("loop:dispatch", "loop:tickets", "loop:ship", "loop:inbox"):
+            assert folded not in line, f"{folded} must be folded into the handle: {line}"
+
+    def test_due_now_loop_still_surfaces_even_when_not_overridden(self) -> None:
+        # ``due-only`` spec: a loop about to fire surfaces regardless of override.
+        now = datetime.now(UTC)
+        leases = [
+            ("loop:housekeeping", now - timedelta(seconds=595)),  # next fire +5s -> due -> surfaces
+            ("loop:tickets", now),  # +600s -> folded away
+        ]
+        line = self._render_with_overridden(set(), leases)
+        assert "loop:housekeeping" in line, line
+        assert "loop:tickets" not in line, line
+
+    def test_no_overrides_no_due_collapses_to_handle_only(self) -> None:
+        # No override, nothing due: the per-loop list is empty and only the
+        # preset handle remains (no per-loop spam).
+        now = datetime.now(UTC)
+        leases = [("loop:dispatch", now), ("loop:tickets", now), ("loop:ship", now)]
+        line = self._render_with_overridden(set(), leases)
+        assert "loop:" not in line, line
+        assert "mode: engaged" in line, line
+
+    def test_infra_leases_always_survive_the_collapse(self) -> None:
+        # Infra / master leases (``loop-tick`` -> ``tick``, ``reinstall``) are not
+        # ``loop:<name>`` owner slots and always surface, even with overrides active.
+        now = datetime.now(UTC)
+        leases = [("loop-tick", now), ("reinstall", now), ("loop:dispatch", now)]
+        line = self._render_with_overridden(set(), leases)
+        assert "tick" in line, line
+        assert "reinstall" in line, line
+        assert "loop:dispatch" not in line, line
+
+    def test_fails_open_to_full_list_when_selector_uninjected(self) -> None:
+        # No reader injected (``None``): the collapse never activates, so every
+        # per-loop lease surfaces — today's behavior, never a hidden loop.
+        now = datetime.now(UTC)
+        leases = [("loop:dispatch", now), ("loop:tickets", now)]
+        line = self._render_with_overridden(None, leases)
+        assert "loop:dispatch" in line, line
+        assert "loop:tickets" in line, line
+
+
+class TestMiniLoopOverdueCollapse:
+    """#3494: under an engaged preset the domain crons collapse to ``overdue: <names>``.
+
+    Complaint: with a preset engaged the ``due:`` list dumped every enabled
+    mini-loop that happened to be due-soon on its normal cadence. The engaged
+    preset is the summary handle — routine due-soon crons fold into it, and only
+    the genuinely-overdue / never-fired exceptions surface, under a single
+    ``overdue:`` label listing their bare names (no redundant per-item ``due``).
+    """
+
+    @staticmethod
+    def _render(mode: str, schedules: list[tuple[str, datetime | None, int]]) -> str:
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
+            patch(
+                "teatree.loop.statusline_loops._preset_line_handles",
+                return_value=PresetLineHandles(schedule="schedule: none active", mode=mode, override=""),
+            ),
+        ):
+            lines = live_loops_anchor(colorize=False)
+        assert lines, "expected a loop line"
+        return lines[0]
+
+    def test_only_overdue_and_never_fired_surface_under_one_label(self) -> None:
+        now = datetime.now(UTC)
+        schedules = [
+            ("dispatch", now + timedelta(seconds=60), 600),  # routine due-soon -> folded
+            ("inbox", now + timedelta(seconds=60), 600),  # routine due-soon -> folded
+            ("review", now + timedelta(seconds=180), 600),  # routine due-soon -> folded
+            ("snapshot_warmer", None, 600),  # never-fired -> overdue
+            ("triage_assessor", now - timedelta(seconds=5), 600),  # overdue
+        ]
+        line = self._render("mode: manual", schedules)
+        # One ``overdue:`` label, comma-separated names, no per-item "due":
+        assert "overdue: snapshot_warmer, triage_assessor" in line, line
+        assert "snapshot_warmer due" not in line, line
+        assert "· due:" not in line, line  # not the no-preset ``due:`` countdown list
+        # Routine due-soon crons fold into the preset handle:
+        for folded in ("dispatch", "inbox", "review"):
+            assert folded not in line, f"{folded} must fold into the preset handle: {line}"
+
+    def test_no_overdue_loops_omits_the_overdue_section(self) -> None:
+        now = datetime.now(UTC)
+        schedules = [
+            ("dispatch", now + timedelta(seconds=60), 600),
+            ("inbox", now + timedelta(seconds=60), 600),
+        ]
+        line = self._render("mode: manual", schedules)
+        assert "overdue:" not in line, line
+        assert "dispatch" not in line, line
+
+    def test_no_preset_engaged_keeps_every_due_soon_loop(self) -> None:
+        # The collapse is preset-gated: with no preset the full due-soon ``due:``
+        # countdown list renders (today's behavior) — never over-collapsed.
+        now = datetime.now(UTC)
+        schedules = [
+            ("dispatch", now + timedelta(seconds=60), 600),
+            ("inbox", now + timedelta(seconds=60), 600),
+        ]
+        line = self._render("", schedules)  # preset empty -> not governing
+        assert "due: dispatch 1m inbox 1m" in line, line
+        assert "overdue:" not in line, line
+
+
+class TestOverdueMiniLoopNames:
+    """The pure ``overdue_mini_loop_names`` selector (#3494)."""
+
+    def test_keeps_only_overdue_and_never_fired_by_name(self) -> None:
+        now = datetime.now(UTC)
+        schedules = [
+            ("dispatch", now + timedelta(seconds=60), 600),  # due-soon, not overdue -> dropped
+            ("snapshot_warmer", None, 600),  # never fired -> kept
+            ("triage_assessor", now - timedelta(seconds=5), 600),  # overdue -> kept
+        ]
+        assert overdue_mini_loop_names(schedules) == ["snapshot_warmer", "triage_assessor"]
+
+    def test_empty_when_nothing_overdue(self) -> None:
+        now = datetime.now(UTC)
+        assert overdue_mini_loop_names([("dispatch", now + timedelta(seconds=60), 600)]) == []
+
+
+class TestPresetLineReaderInjection:
+    """``set_preset_line_reader`` installs the up-stack handles reader (#3494)."""
+
+    def test_injected_reader_drives_the_line_handles(self) -> None:
+        handles = PresetLineHandles(schedule="schedule: standard", mode="mode: manual", override="")
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
+        ):
+            set_preset_line_reader(lambda: handles)
+            try:
+                line = live_loops_anchor(colorize=False)[0]
+            finally:
+                set_preset_line_reader(None)
+        assert line == "schedule: standard · mode: manual", line
+
+    def test_reset_to_none_silences_the_handles(self) -> None:
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
+        ):
+            set_preset_line_reader(None)
+            assert live_loops_anchor(colorize=False) == []
+
+
+class TestLoopLineSegmentOrder:
+    """#3494: the loop line reads schedule -> preset -> overdue -> forced -> availability -> waiting.
+
+    The schedule and preset handles LEAD the line (the summary handles the loops
+    fold under), then the collapsed ``overdue:`` exceptions, then the ``forced
+    ON:`` overrides, then availability and waiting. Infra leases (``reinstall``)
+    are kept unobtrusive at the tail — never between the preset and the loops.
+    """
+
+    def test_matches_the_owner_option_a_layout(self) -> None:
+        now = datetime.now(UTC)
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("reinstall", now)]),
+            patch("teatree.loop.statusline_loops._live_lease_drivers", return_value={}),
+            patch("teatree.loop.statusline_loops.current_session_owned_per_loop_slots", return_value=None),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=600),
+            patch(
+                "teatree.loop.statusline_loops._mini_loop_schedules",
+                return_value=[("snapshot_warmer", None, 600), ("triage_assessor", now - timedelta(seconds=5), 600)],
+            ),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=4),
+            patch(
+                "teatree.loop.statusline_loops._preset_line_handles",
+                return_value=PresetLineHandles(
+                    schedule="schedule: none active",
+                    mode="mode: manual",
+                    override="forced ON: triage_assessor",
+                ),
+            ),
+        ):
+            line = live_loops_anchor(colorize=False)[0]
+        # The separate availability segment is gone (folded into ``mode:``).
+        assert "availability:" not in line, line
+        positions = [
+            line.index("schedule: none active"),
+            line.index("mode: manual"),
+            line.index("overdue: snapshot_warmer, triage_assessor"),
+            line.index("forced ON: triage_assessor"),
+            line.index("4 waiting"),
+            line.index("reinstall"),  # infra lease kept at the tail
+        ]
+        assert positions == sorted(positions), line
+        # No cryptic forms leak in:
+        assert "ovr:" not in line, line
+        assert "⚠" not in line, line
+        assert "waiting=" not in line, line
 
 
 class TestMiniLoopChunk:
@@ -297,9 +553,9 @@ class TestZonesForIntegration:
 
     def test_line_one_is_per_loop_summary(self, tmp_path: Path) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
-        # The loop-owner lease is present but excluded from the shared line
+        # The t3-master lease is present but excluded from the shared line
         # (it is rendered as a per-session badge in statusline.sh instead).
-        leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
+        leases = [("loop-tick", acquired_at), ("t3-master", acquired_at)]
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
@@ -310,7 +566,7 @@ class TestZonesForIntegration:
         body = target.read_text()
         first_line = body.splitlines()[0]
         assert first_line.startswith("tick "), repr(first_line)
-        # 60s elapsed of 720s → next tick in 11m; loop-tick appears, loop-owner absent.
+        # 60s elapsed of 720s → next tick in 11m; loop-tick appears, t3-master absent.
         assert "tick 11m" in first_line, first_line
         assert "owner" not in first_line, first_line
         assert "loops live" not in first_line, first_line

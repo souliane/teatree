@@ -10,11 +10,14 @@ import logging
 from urllib.parse import urlparse
 
 from teatree.config import discover_overlays
-from teatree.core.merge.ci_rollup import fetch_live_head_sha
+from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
+from teatree.utils.forge import forge_from_remote
+from teatree.utils.pr_ref import PrRef
+from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 logger = logging.getLogger(__name__)
@@ -38,15 +41,7 @@ def _resolve_host_kind(clear: object) -> str:
     """
     ticket = getattr(clear, "ticket", None)
     issue_url = str(getattr(ticket, "issue_url", "") or "") if ticket is not None else ""
-    if not issue_url:
-        return "github"
-    host = urlparse(issue_url).hostname or ""
-    host = host.lower()
-    if "github.com" in host or host == "github":
-        return "github"
-    if "gitlab" in host:
-        return "gitlab"
-    return "github"
+    return forge_from_remote(issue_url) or "github"
 
 
 _GIT_BRANCH_PREFIXES = frozenset(
@@ -181,11 +176,27 @@ def resolve_pr_repo_slug(clear: object) -> str:
     raise MergePreconditionError(msg)
 
 
+def resolved_repo_slug(clear: object) -> str:
+    """The real ``owner/repo`` for *clear*'s PR, or ``""`` when unresolvable.
+
+    The non-raising sibling of :func:`resolve_pr_repo_slug`, promoted here as the
+    single canonical helper every repo-scoping join site reads (the merged-audit
+    checking gather and the waiting-lane covering-CLEAR match). A CLEAR whose repo
+    cannot be resolved (a workstream slug with no ticket ``issue_url`` and no
+    clone origin) yields ``""`` so a repo-scoping caller drops it, instead of
+    surfacing the fail-closed :class:`MergePreconditionError`.
+    """
+    try:
+        return resolve_pr_repo_slug(clear)
+    except MergePreconditionError:
+        return ""
+
+
 def normalize_repo_slug(value: str) -> str:
     """Canonicalize *value* UP to a GitHub ``owner/repo`` slug, or ``""``.
 
     The single normalization boundary for a declared working-repo (#2323):
-    :meth:`OverlayBase.get_merge_candidate_repo_slugs` may return a bare
+    :meth:`OverlayReview.merge_candidate_repo_slugs` may return a bare
     ``owner/repo``, an HTTPS URL, an SSH URL, or a ``host-alias`` SSH form
     (``git@github.com-myalias:owner/repo.git``). Each is canonicalized up to
     ``owner/repo`` here so the candidate set holds one consistent
@@ -211,7 +222,11 @@ def _overlay_package_repo_slugs() -> list[str]:
     """
     try:
         entries = discover_overlays()
-    except Exception:  # noqa: BLE001 — overlay discovery is best-effort here
+    except Exception:  # noqa: BLE001 — best-effort: never block the recovery probe on a registry read
+        # A persistently-failing overlay discovery is a real registry fault, not
+        # an expected miss — surface it (throttled) instead of silently blanking
+        # the candidate set on every S1/S4 compute and merge probe.
+        warn_throttled(logger, "slug-probe-discover", "overlay discovery failed during merge probe", exc_info=True)
         return []
     slugs: list[str] = []
     for entry in entries:
@@ -220,7 +235,7 @@ def _overlay_package_repo_slugs() -> list[str]:
             continue
         try:
             slug = git.remote_slug(repo=str(path))
-        except Exception:  # noqa: BLE001 — a missing remote must not block the probe
+        except Exception:  # noqa: BLE001 — a missing remote is an expected miss; must not block the probe
             slug = ""
         if slug:
             slugs.append(slug)
@@ -231,7 +246,7 @@ def _overlay_working_repo_slugs() -> list[str]:
     """Every overlay's declared working-repos, normalized to ``owner/repo`` (#2323).
 
     Source (3) for :func:`_iter_candidate_repo_slugs`. Reads each registered
-    overlay's :meth:`OverlayBase.get_merge_candidate_repo_slugs` — repos the
+    overlay's :meth:`OverlayReview.merge_candidate_repo_slugs` — repos the
     overlay operates on but does not package (e.g. an ``e2e`` companion repo) —
     and normalizes each declaration up to ``owner/repo`` via
     :func:`normalize_repo_slug`. Best-effort per-overlay: a hook that raises is
@@ -239,14 +254,20 @@ def _overlay_working_repo_slugs() -> list[str]:
     """
     try:
         overlays = get_all_overlays()
-    except Exception:  # noqa: BLE001 — overlay instantiation is best-effort here
+    except Exception:  # noqa: BLE001 — best-effort: never block the recovery probe on a registry read
+        # A persistently-failing overlay load is a real registry fault, not an
+        # expected miss — surface it (throttled) rather than silently blanking the
+        # working-repo candidate set.
+        warn_throttled(logger, "slug-probe-overlays", "overlay load failed during merge probe", exc_info=True)
         return []
     slugs: list[str] = []
     for name, overlay in overlays.items():
         try:
-            declared = overlay.get_merge_candidate_repo_slugs()
+            declared = overlay.review.merge_candidate_repo_slugs()
         except Exception:
-            logger.warning("overlay %r get_merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True)
+            logger.warning(
+                "overlay %r review.merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True
+            )
             continue
         slugs.extend(normalize_repo_slug(raw) for raw in declared)
     return slugs
@@ -329,7 +350,8 @@ def _reconcile_slug_against_reviewed_sha(
     """
     if not reviewed_sha:
         return initial_slug
-    initial_live = fetch_live_head_sha(initial_slug, pr_id, host_kind=host_kind)
+    query = CodeHostQuery.for_ref(PrRef(slug=initial_slug, pr_id=pr_id, host_kind=host_kind))
+    initial_live = query.live_head_sha()
     if initial_live == reviewed_sha:
         return initial_slug
     # An empty ``initial_live`` is itself a #1335 signal, NOT merely a transient
@@ -345,10 +367,9 @@ def _reconcile_slug_against_reviewed_sha(
     # set so the candidates list in the error message reflects what was probed.
     other_candidates = [c for c in candidates if c != initial_slug]
     matches = _probe_candidate_repos(
-        pr_id=pr_id,
+        query=query,
         reviewed_sha=reviewed_sha,
         candidates=other_candidates,
-        host_kind=host_kind,
     )
     if len(matches) > 1:
         # #2338: a same-SHA multi-match is an ambiguity the merge gate must
@@ -392,10 +413,9 @@ def _reconcile_slug_against_reviewed_sha(
 
 def _probe_candidate_repos(
     *,
-    pr_id: int,
+    query: CodeHostQuery,
     reviewed_sha: str,
     candidates: list[str],
-    host_kind: str,
 ) -> list[str]:
     """Every candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha* (#2338).
 
@@ -409,10 +429,12 @@ def _probe_candidate_repos(
     was probed first would merge an unverified twin. The list lets the caller
     raise instead, naming every ambiguous repo.
 
+    Reuses *query*'s already-resolved backend (:meth:`CodeHostQuery.rebound_to`),
+    re-reading ``pulls/<N>`` per candidate slug without re-resolving the transport.
     The per-candidate swallow-failures contract is preserved: a probe error
-    surfaces as an empty head from :func:`fetch_live_head_sha`, which never
+    surfaces as an empty head from :meth:`CodeHostQuery.live_head_sha`, which never
     equals *reviewed_sha*, so a failing candidate is simply absent from the
     matches — never counted, never raising on its own. Returns ``[]`` when no
     candidate matches (a real force-push or a truly stale CLEAR).
     """
-    return [slug for slug in candidates if fetch_live_head_sha(slug, pr_id, host_kind=host_kind) == reviewed_sha]
+    return [slug for slug in candidates if query.rebound_to(slug).live_head_sha() == reviewed_sha]

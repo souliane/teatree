@@ -26,6 +26,7 @@ import pytest
 
 from teatree.cli import app, register_overlay_commands
 from teatree.cli_reference import command_groups, command_paths
+from teatree.eval.skill_command_validity import expand_alternations
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCAN_DIRS = (_REPO_ROOT / "src" / "teatree", _REPO_ROOT / "hooks" / "scripts")
@@ -47,7 +48,7 @@ _EXAMPLE_OVERLAYS = frozenset({"acme", "example", "myoverlay"})
 # the gate picks up after that PR merges; grandfathered (not exempted) until then.
 _CARVED_OUT_FILES = frozenset(
     {
-        "src/teatree/core/management/commands/_workspace_cleanup.py",
+        "src/teatree/core/management/commands/_workspace/cleanup.py",
     }
 )
 
@@ -58,9 +59,6 @@ _ALLOWLIST: frozenset[str] = frozenset(
     {
         # Deliberate drift sample in the cli-reference doctest.
         "t3 loop tickk",
-        # `claim/owner/release` is a slash-joined enumeration, not a path.
-        "t3 loop claim/owner/release",
-        "t3 availability away|present|auto",
         "t3 questions list|answer|dismiss",
         # Real commands not surfaced by the in-process introspection used here
         # (DJANGO_GROUPS management subcommands without an overlay proxy leaf, or
@@ -118,7 +116,10 @@ def _resolves(raw: str, valid: set[str], groups: set[str]) -> bool:
     toks = raw.split()
     if len(toks) >= 2 and toks[1] in _EXAMPLE_OVERLAYS:
         return True
-    return _resolvable_path(raw, valid, groups) is not None
+    # A slash/pipe enumeration stands for several sibling commands; each one is
+    # walked (shared with the doc-corpus lane) so the enumeration is neither a
+    # false positive nor a place a wrong subcommand can hide.
+    return all(_resolvable_path(variant, valid, groups) is not None for variant in expand_alternations(raw))
 
 
 def _iter_literals() -> list[tuple[Path, str]]:

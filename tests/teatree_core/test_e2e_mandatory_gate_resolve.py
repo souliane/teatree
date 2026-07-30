@@ -18,14 +18,22 @@ from teatree.core.models import Ticket
 _SHA = "1" * 40
 
 
-class _ImpactingOverlay:
+class _ImpactingReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         return bool(changed_files)
 
 
-class _SafeOverlay:
+class _ImpactingOverlay:
+    review = _ImpactingReview()
+
+
+class _SafeReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         return False
+
+
+class _SafeOverlay:
+    review = _SafeReview()
 
 
 class TestResolveGateInputs(TestCase):

@@ -10,11 +10,15 @@ into their own tach nodes so the acyclic guard applies *within* ``core``; until
 that carve is complete (PR-2/PR-3 sever the ``models`` / ``managers`` up-edges),
 this ratchet keeps the deferred-import count from growing.
 
-It is a SHRINK-only peg: an AST walk counts every ``import``/``from`` whose
-enclosing scope is a function/method (not module-level) and whose target module
-starts with ``teatree.core``. ``current <= _FROZEN`` blocks growth; on
-``current < _FROZEN`` the message instructs lowering the peg so the gain is
-banked (mirroring ``test_module_health_ratchet.py`` and ``test_project_leaf.py``).
+It is a per-file peg ledger (``tests/quality/deferred_import_pegs.toml``
+``[intra_core]``, counted by the shared ``tests/quality/_deferred_imports.py``
+walker): each source file may carry at most its pegged number of function-scoped
+``teatree.core`` imports (a file not listed pegs at 0). Over-peg blocks (naming
+the file); a count BELOW its peg simply passes, so severing an edge is free and
+lowering the entry to bank the headroom stays optional. Per-file keying makes the ledger
+set-union mergeable — two disjoint peg bumps never collide, and same-file
+contention surfaces as a git textual conflict, not a post-merge red (the property
+a single repo-wide ``_FROZEN`` integer could not offer).
 
 The companion ``TestCoreModelkitLayer`` pins the PR-1 carve itself: the
 ``teatree.core.modelkit`` leaf is declared as a ``depends_on = []`` domain node,
@@ -29,49 +33,14 @@ import ast
 import tomllib
 from pathlib import Path
 
+from tests.quality._deferred_imports import diff_pegs, load_pegs, per_file_counts
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORE_ROOT = _REPO_ROOT / "src" / "teatree" / "core"
 _MODELS_ROOT = _CORE_ROOT / "models"
 _TACH = _REPO_ROOT / "tach.toml"
-
-# Measured in-worktree after PR-2b converted the 17 deferred
-# `from teatree.core.models.X import Y` imports inside `managers.py` into
-# call-time `apps.get_model("core", "Y")` lookups (AppRegistry-safe,
-# tach-invisible) and declared `teatree.core.models` / `teatree.core.managers`
-# as tach sub-nodes — the core cycle is now structurally forbidden, not merely
-# severed. The drop from PR-2a's 206 is exactly those 17 converted imports.
-# SHRINK-ONLY: lower this as PR-3 converts remaining deferred edges into
-# declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_CORE_DEFERRED = 188
-
-
-def _function_scoped_intra_core_imports(source: Path) -> int:
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    parents: dict[ast.AST, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[child] = node
-
-    def in_function_scope(node: ast.AST) -> bool:
-        cur = parents.get(node)
-        while cur is not None:
-            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef):
-                return True
-            cur = parents.get(cur)
-        return False
-
-    count = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if (node.module or "").startswith("teatree.core") and in_function_scope(node):
-                count += 1
-        elif isinstance(node, ast.Import):
-            count += sum(1 for alias in node.names if alias.name.startswith("teatree.core") and in_function_scope(node))
-    return count
-
-
-def _count_all() -> int:
-    return sum(_function_scoped_intra_core_imports(py) for py in sorted(_CORE_ROOT.rglob("*.py")))
+_PREFIX = "teatree.core"
+_PEG_TABLE = "intra_core"
 
 
 def _module_entry(path: str) -> dict[str, object]:
@@ -123,25 +92,14 @@ def _model_files_importing(dotted: str) -> list[str]:
 
 
 class TestIntraCoreDeferredImportRatchet:
-    def test_count_does_not_exceed_frozen(self) -> None:
-        current = _count_all()
-        assert current <= _FROZEN_INTRA_CORE_DEFERRED, (
-            f"intra-teatree.core deferred (function-scoped) imports grew to {current}, "
-            f"over the frozen ceiling {_FROZEN_INTRA_CORE_DEFERRED}. A new function-scoped "
-            f"`from teatree.core... import` hides an intra-core edge from tach's acyclic "
-            f"guard. Make the edge a declared tach sub-node edge (#2385) instead of "
-            f"adding another deferred import."
-        )
-
-    def test_count_is_not_below_frozen(self) -> None:
-        # Banks every reduction immediately: when an edge becomes a declared tach
-        # sub-node edge, the count drops and the peg must follow it down so a
-        # future regression cannot silently spend the gain.
-        current = _count_all()
-        assert current >= _FROZEN_INTRA_CORE_DEFERRED, (
-            f"intra-teatree.core deferred imports dropped to {current}, below the frozen "
-            f"ceiling {_FROZEN_INTRA_CORE_DEFERRED}. Lower _FROZEN_INTRA_CORE_DEFERRED to "
-            f"{current} to bank the reduction."
+    def test_no_file_exceeds_its_peg(self) -> None:
+        drift = diff_pegs(per_file_counts(_CORE_ROOT, _PREFIX), load_pegs(_PEG_TABLE))
+        assert not drift.over_peg, (
+            "intra-teatree.core deferred (function-scoped) imports grew over their per-file peg. A new "
+            "function-scoped `from teatree.core... import` hides an intra-core edge from tach's acyclic "
+            "guard. Make it a declared tach sub-node edge (#2385), or — if the edge is genuinely "
+            "load-bearing — bump this file's peg in tests/quality/deferred_import_pegs.toml [intra_core] "
+            "with a rationale in the commit message:\n" + "\n".join(drift.over_lines())
         )
 
 

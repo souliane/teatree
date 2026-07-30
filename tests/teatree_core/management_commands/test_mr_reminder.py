@@ -18,7 +18,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.config import UserSettings
-from teatree.config_mr_reminder import MrReminderConfig
+from teatree.config.mr_reminder import MrReminderConfig
 from teatree.core.management.commands import mr_reminder as command_module
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError
 
@@ -122,7 +122,7 @@ class TestPreview:
         result = cast("dict[str, object]", result)
         assert result["total"] == 0
         channels = cast("list[dict[str, object]]", result["channels"])
-        assert "No [mr_reminder] channel map" in cast("str", channels[0]["text"])
+        assert "No mr_reminder channel map" in cast("str", channels[0]["text"])
 
 
 class TestSend:

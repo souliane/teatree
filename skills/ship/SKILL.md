@@ -5,7 +5,6 @@ compatibility: macOS/Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
   - rules
-companions:
   - finishing-a-development-branch
 metadata:
   version: 0.0.1
@@ -21,7 +20,7 @@ This skill delegates the generic branch-finalization doctrine to:
 - `finishing-a-development-branch` — decide how to wrap up a ready branch
 - `verification-before-completion` — fresh verification before claiming the branch is ready
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 From "code is done" to "PR is merged."
 
@@ -57,8 +56,10 @@ When a commit or MR/PR needs an issue/ticket reference and you have none in hand
    ```bash
    git log -S '<the buggy line/symbol>' --oneline       # find the introducing commit
    git show <introducing-sha> --format='%s%n%b' | grep -iE '#[0-9]+'  # its linked issue
-   gh issue list --search '<keywords>' --state all       # GitHub
-   glab issue list --search '<keywords>'                 # GitLab
+   # Search the tracker via the MCP tool (structured JSON, no text parsing):
+   #   mcp__teatree__github_issue_search(repo, query='<keywords>')  /  mcp__teatree__gitlab_issue_search(...)
+   gh issue list --search '<keywords>' --state all       # CLI fallback (GitHub)
+   glab issue list --search '<keywords>'                 # CLI fallback (GitLab)
    ```
 
    If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
@@ -124,6 +125,7 @@ Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass
 
 - Start servers and verify functionality.
 - **E2E gate:** If the project requires E2E tests for the type of changes made (UI, forms, user flows), those tests must be written and passing BEFORE proceeding. E2E is part of implementation, not a post-push activity.
+- **Src-touching PR → run `bash dev/ci-parity.sh` before push (teatree).** It chains the exact blocking CI predicate (prek all-files, `makemigrations --check`, `t3 tool test-path-mirror`, `check_module_health.py --from-ref`, `dev/test-cov.sh`, `t3 ci coverage`) in one command, so a coverage-floor or ratchet failure is caught locally instead of on the first CI cycle. It is opt-in by workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree property no diff-scoped push subset can prove. The push-stage `ci-critical-parity` hook only covers the fast scoped doctest/never-lockout classes.
 - **Wait for user feedback.** Do NOT proceed to push without user approval.
 
 ### 3a. BLUEPRINT.md Sync
@@ -142,7 +144,7 @@ Common triggers (not exhaustive):
 
 - New `t3` command, flag, or env var
 - Renamed or removed public symbol, command, or setting
-- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name, a new `MiniLoopMarker` name)
+- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name)
 - New `SKILL.md` added, or one removed
 - User-observable behaviour change (default flips, UI flow, error message shape, response payload)
 - New feature flag
@@ -152,7 +154,7 @@ Common triggers (not exhaustive):
 | Trigger | Doc to update |
 |---|---|
 | New `t3` command / flag / env var | `README.md` (user-facing usage) |
-| New `Ticket.State` / FSM phase / `LoopLease` / `MiniLoopMarker` name | `BLUEPRINT.md` |
+| New `Ticket.State` / FSM phase / `LoopLease` name | `BLUEPRINT.md` |
 | New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
 | Skill behaviour change | the relevant `SKILL.md` |
 
@@ -182,7 +184,7 @@ Examples:
 
 The line is the friction-free attestation. Reviewers read it; if the reason looks wrong they push back on the specific reason, not on a generic "did you update docs?" prompt.
 
-**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` / `MiniLoopMarker` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
+**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
 
 Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
 
@@ -236,6 +238,14 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
 1. **Locate the reviewing task.** When the worktree was created via `t3 <overlay> workspace ticket <url>`, a `Task(phase="reviewing")` was scheduled by `Ticket.schedule_review()` once `test()` fired. If the branch is ad-hoc (no session/ticket exists yet), create one first with `t3 <overlay> workspace ticket <issue_url>` — never push from a session-less branch. The session is the receipt; without it the FSM has nothing to advance.
 
+1b. **Acquire the per-MR review-dispatch lock BEFORE spawning** (#1405, `MRReviewLock`) — this manual `Agent()` path and the loop's `AutoReviewDispatch` scanner enqueue are two independent dispatch paths that must not both spawn a reviewer for the same MR at once:
+
+   ```bash
+   t3 <overlay> review lock-acquire <mr-url> --holder <your-agent/session-id>
+   ```
+
+   `acquired: true` → proceed to step 2. `acquired: false` → a review is already in flight for this MR (the reported `holder` + `state`) — do **not** spawn a second reviewer; the in-flight one already covers this dispatch.
+
 2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool:
 
    The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
@@ -267,7 +277,7 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
    Do **not** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review. Since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why marking `reviewing` visited without an independent reviewer having actually reviewed the diff defeats the quality gate. Earn the phase (step 2), then record it; never record it to dodge step 2.
 
-5. **Verify before pushing.** `t3 <overlay> ticket list --state reviewed` (or `--id <ticket_id>`) should show the ticket in `reviewed` once the reviewing task completed. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list (`testing` / `reviewing` — #837: never `retro`); satisfy those phases (run the reviewer), don't bypass with `--skip-validation`.
+5. **Verify before pushing.** Prefer the `mcp__teatree__ticket_search` MCP tool (load via `ToolSearch` first if it shows as deferred) — call it with `state="reviewed"` (add `text=<issue-url-or-id-substring>` to narrow to one ticket) and read the `state` field of the returned JSON directly, no CLI shelling or text parsing (souliane/teatree#2863). It should show the ticket in `reviewed` once the reviewing task completed. Fall back to `t3 <overlay> ticket list --state reviewed` (filterable by `--state`/`--overlay` only — there is no `--id` flag) when the MCP server isn't connected. If the loop path advanced phases but the state still reads `tested`/`started`, that is expected — the shipping gate reconciles it to `reviewed` at `pr create` time. A blocked `pr create` returns the missing-phase list (`testing` / `reviewing` — #837: never `retro`); satisfy those phases (run the reviewer), don't bypass with `--skip-validation`.
 
 **Why a sub-agent, not just self-review.** The implementer's context is contaminated by the implementation: every "looks done" judgment carries the same blind spots that produced the gaps. A sub-agent starts cold, reads the diff with fresh eyes, and applies the review skill's checklists without the implementer's "I already checked that" shortcuts. The cost of one extra `Agent` call is ~30s of wall time and a few hundred tokens; the cost of skipping it is multi-round push-fix-push cycles after the PR is already public.
 
@@ -293,6 +303,8 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 3. You explicitly state the bypass and the reason in the response, so the user can stop you if the assumption is wrong.
 
 If `t3 <overlay> pr create` errors, **fix the error** (create the missing session, run the reviewer, set the missing env var) — do not work around it with raw `gh`/`glab`. Treating the CLI as optional is the same anti-pattern as "Fix the CLI, Never Work Around It" in [`../workspace/SKILL.md`](../workspace/SKILL.md), applied to the shipping flow.
+
+**Never hand-name a `/tmp` PR-body path — the CLI owns the temp file (Non-Negotiable).** The PR/MR body flows through `t3 <overlay> pr create` as *content*; the CLI writes it to a unique per-invocation temp file it owns (`teatree.utils.pr_body.pr_body_tempfile` → `gh pr create --body-file`). Do **not** write a shared, fixed path like `/tmp/pr-body.md` / `/tmp/pr_body.md` — two concurrent shippers race that path, one clobbers the other's body mid-create (re-injecting a default AI-authorship trailer that then trips the banned-terms gate). And never `cp` a body file **into the worktree** (`cp /tmp/pr-body.md pr-body.md`) — a `pr-body.*` / `pr_body.*` file staged in the repo is committable junk, refused by the `check_pr_body_stray` pre-commit gate. When a scratch body file is genuinely needed, mint it with `mktemp` (or the `pr_body_tempfile` helper); never a path you name yourself.
 
 **If the PR/MR needs an issue reference and you have none, do NOT improvise a dummy ref or auto-file on a tracker you do not own** — follow § 0a "Missing Issue Reference Policy": recover the original existing issue first, then ask on a colleague-facing repo (or create on the user's own repo) per the resolved `missing_issue_ref_policy`.
 
@@ -331,6 +343,16 @@ This gate exists because the overlay's own CI MR-title validator (the validating
 - **Always assign to the user.** The `t3 <overlay> pr create` command handles the correct flags automatically.
 
 > **PreToolUse hook:** The unified hook router intercepts `glab mr create/update` (and the MCP equivalents) and validates title + description against the active overlay's rules **by default** via `t3 tool validate-mr` — no env-var opt-in — **blocking** non-compliant calls before the push with a clear error. The verdict is the same one `t3 <overlay> pr create` enforces. Fix the reported issues and retry — no manual validation needed.
+
+#### Concise Body (directive #4)
+
+The commit message body and the PR/MR description are **bullets, not prose**. A reviewer skims the body to know what changed and why — give them that in the fewest lines:
+
+- Bullet points, one change or reason per line. No multi-paragraph narrative.
+- State *what* changed and *why*; skip the blow-by-blow of *how* (that's the diff).
+- No filler ("This PR aims to…", "As we can see…"), no restating the title, no marketing.
+- Keep the structured sections (scope matrix, `Open questions & assumptions`) — they are terse by design, not prose.
+- Be RIGHT but concise — cut words, never a load-bearing decision or caveat.
 
 #### Open Questions & Assumptions (Non-Negotiable)
 
@@ -429,6 +451,40 @@ When a CI failure (or any bug found during work) is **pre-existing** — not int
 
 **How to detect:** `git diff origin/main...HEAD --name-only` — if the failing file was never touched by the feature branch, the bug is pre-existing.
 
+### A tidy noticed AFTER the PR is green ships as a follow-up branch NOW — not the green branch, and not a ticket
+
+A reviewed PR whose CI is green is **finished work**. When you then notice something unrelated to its
+diff — an awkward comment, a stale name, a cosmetic nit — two responses are wrong, and the second is
+the one that keeps getting picked:
+
+1. **Re-pushing the green PR's own branch for it is wrong.** A cosmetic commit on `<green-branch>`
+   cancels and re-runs the whole pipeline and re-opens a completed review, so a two-line comment tidy
+   costs a full CI cycle plus a second reviewer pass. The branch is done; leave it alone.
+2. **Filing it as an issue/ticket "for later" is equally wrong** — and it is not the safe middle
+   ground it feels like. `t3:rules` § "Do Work Now, Don't Defer to 'Later' Tickets" names exactly this
+   move (opening a `<forge> issue` for work you are already holding in your hands) as
+   the failure it forbids, and its rubric's answer for a fix that is genuinely orthogonal to the
+   current PR is verbatim: *create a worktree + PR immediately, implement, ship. No new ticket.*
+   Choosing an issue because the PR is green protects the PR by abandoning the work.
+
+The compliant single action is to **start the follow-up branch off the default branch now** and ship
+the tidy there. Both goals hold at once: the reviewed PR stays byte-identical, and the tidy still
+lands today.
+
+```bash
+# do X — open the follow-up off the default branch; the green PR is never touched:
+git worktree add ../tidy-loader-comment -b <prefix>/tidy-loader-comment origin/main
+t3 <overlay> workspace ticket <id>        # the ticketed equivalent when one exists
+gh pr create --base main --head <prefix>/tidy-loader-comment --fill   # once committed there
+
+# never Y — a cosmetic commit pushed onto the reviewed, green PR's branch:
+git push origin <green-branch>            # FORBIDDEN — re-runs CI, re-opens the review
+# never Z — a ticket standing in for the two-minute fix you could ship in this turn:
+<forge> issue create --title "tidy that comment"   # FORBIDDEN — this is the deferral, not the fix
+```
+
+Pinned by `no_cosmetic_repush_to_green_ci_pr` (`evals/scenarios/ship.yaml`).
+
 ## One Open PR Per Ticket (Non-Negotiable)
 
 Before opening a new MR/PR, check whether a sibling PR for the **same ticket** is already open on the same repo:
@@ -437,10 +493,13 @@ Before opening a new MR/PR, check whether a sibling PR for the **same ticket** i
 gh pr list --repo <repo> --search "<ticket-ref> is:open" --json number,headRefName,baseRefName
 ```
 
+**First question is whether a second PR should exist at all.** Per [`../rules/SKILL.md`](../rules/SKILL.md) § "Fewest PRs for Related Work", related work ships as **one** PR — if the new commits serve the same goal as the sibling, add them to the sibling's branch (bundle), do not open a second PR. Splitting one coherent change into multiple/stacked PRs needs the user's explicit, up-front approval.
+
 If a sibling is open, **do not open a second PR targeting the default branch** — the two branches will diverge on the same files and the second one will need a painful 3-way merge. Pick one:
 
-1. **Wait for the sibling to merge**, then rebase the new work on the updated default branch and open the PR.
-2. **Stack on the sibling's branch** — set the new PR's base to the sibling's source branch (`gh pr create --base <sibling-branch>`). Update the base to the default branch after the sibling merges, so the stacked PR stays minimal.
+1. **Bundle into the sibling (default)** — add the commits to the sibling's branch (per `## Bundle Into an Existing Open PR` below). One coherent change, one PR.
+2. **Wait for the sibling to merge**, then rebase the new work on the updated default branch and open the PR — only when the new work is genuinely a *separate* concern.
+3. **Stack on the sibling's branch** — `gh pr create --base <sibling-branch>`. This splits related work across PRs, so use it **only with the user's explicit approval** (or when the two are genuinely disjoint concerns that merely share a base); update the base to the default branch after the sibling merges.
 
 **Never open two PRs on the same ticket targeting the default branch in parallel.** The only exception is when the two PRs touch genuinely disjoint files (different repos, different modules with no shared imports, no overlapping generated docs) — and even then, the second PR's description must name the sibling PR it races with.
 
@@ -498,7 +557,7 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **Commit early, commit often.** Never accumulate more than 1-2 tickets of uncommitted changes. Commit after completing each ticket or logical unit of work. Squash later with `t3 <overlay> workspace finalize`.
 - **Prefer `git commit -a`** when committing changes that touch files the linter might reformat. Pre-commit hooks (ruff-format, end-of-file-fixer) modify files and re-stage them. If you stage specific files, the hook may modify OTHER files that remain unstaged. The pre-push hook then stashes these unstaged changes and fails to restore the patch. Use selective staging only when you specifically need to exclude files.
 - **Verify static asset URLs** after any change to `<script src>` or `<link href>` in templates: (1) check the URL resolves (`curl -sI <url>`), (2) if vendoring locally, verify file size > 1KB (a 45-byte file is an error page), (3) Playwright screenshot + console error check.
-- **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (`t3.mode = "auto"` or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
+- **Publishing actions are mode-conditional.** Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". In `interactive` mode (default) every push/PR/merge/remote-delete needs separate explicit approval. In `auto` mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`) the agent ships end-to-end without confirm prompts; only the always-gated list (force-push to defaults, history rewrites on shared defaults, destructive shared-state ops, unauthorised external writes, `--no-verify`) remains confirm-gated.
 - **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
   1. **The orchestrator (coordinator) issues the per-diff CLEAR** after an independent cold review: `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity <independent-reviewer> --blast-class <substrate|logic|docs> [--ticket-id N] [--human-authorize <id>]`. The reviewer identity must not be a maker/coding-agent/loop role and must differ from the executing loop (§17.8 clause 3). This prints a `clear_id`, which the orchestrator passes to the loop.
   2. **The durable review-loop executes it**: `t3 <overlay> ticket merge <clear_id>`. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.

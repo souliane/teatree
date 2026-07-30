@@ -28,7 +28,7 @@ Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlay
 ## What This Skill Does
 
 1. Check prerequisites.
-2. Create or validate `~/.teatree`.
+2. Set the bootstrap environment variables and seed config settings.
 3. Install teatree skill symlinks for the current agent runtime.
 4. Optionally wire Claude Code hooks and statusline.
 5. Generate an overlay package with `t3 startoverlay`.
@@ -61,11 +61,13 @@ Rules:
 - Prefer `uv` for all project commands.
 - Treat missing optional tools as warnings, not blockers, unless the user explicitly needs that integration.
 
-## Step 2: Create `~/.teatree`
+## Step 2: Set environment variables and seed config
 
-Create or update `~/.teatree` as a simple `KEY=VALUE` shell file.
+Export the bootstrap variables below in your shell profile (or the agent's
+environment). Operational settings live in the teatree DB — seed them with
+`t3 <overlay> config_setting set`.
 
-Required values:
+Required (bootstrap environment):
 
 | Variable | Purpose |
 | --- | --- |
@@ -79,7 +81,7 @@ Useful optional values:
 | `T3_CONTRIBUTE` | Allow self-improvement commits in the teatree repo | `false` |
 | `T3_PUSH` | Allow pushing retro commits (safety gate for privacy review) | `false` |
 | `T3_AUTO_PUSH_FORK` | Auto-push retro commits to the user's fork without prompting (requires `T3_PUSH=true` and origin ≠ `T3_UPSTREAM`) | `false` |
-| `T3_AUTO_SHIP` | Create shipping tasks as headless instead of interactive. When `false`, the pipeline pauses at shipping for user approval before push. | `false` |
+| `T3_MODE` | Effective publishing mode. `auto` opts the pipeline into pushing without pausing for shipping approval; `interactive` (default) gates at shipping. Equivalent DB-home setting: `t3 <overlay> config_setting set mode auto`. (Supersedes the retired `T3_AUTO_SHIP` env var, #2697.) | `interactive` |
 | `T3_UPSTREAM` | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) | empty |
 | `T3_PRIVATE_TESTS` | Private QA repo path | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
@@ -88,27 +90,30 @@ Useful optional values:
 
 Do not require `T3_OVERLAY`. The active overlay is discovered via entry points.
 
-Example:
+Example (bootstrap environment):
 
 ```bash
-cat > ~/.teatree <<'EOF'
-T3_REPO="$HOME/workspace/teatree"
-T3_WORKSPACE_DIR="$HOME/workspace"
-T3_ISSUE_TRACKER="gitlab"
-T3_CONTRIBUTE=false
-T3_PUSH=false
-T3_AUTO_PUSH_FORK=false
-T3_AUTO_SHIP=false
-T3_UPSTREAM=""
-T3_PRIVATE_TESTS=""
-T3_BRANCH_PREFIX="ac"
-T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
-EOF
+export T3_REPO="$HOME/workspace/teatree"
+export T3_WORKSPACE_DIR="$HOME/workspace"
+export T3_ISSUE_TRACKER="gitlab"
+export T3_PUSH=false
+export T3_AUTO_PUSH_FORK=false
+export T3_UPSTREAM=""
+export T3_PRIVATE_TESTS=""
+export T3_BRANCH_PREFIX="ac"
+export T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
+```
+
+Operational settings go in the DB store, e.g.:
+
+```bash
+t3 <overlay> config_setting set contribute false
+t3 <overlay> config_setting set mode interactive
 ```
 
 ### Slack integration (per-overlay)
 
-Messaging is configured per overlay in `~/.teatree.toml`, not via `T3_CHAT_PLATFORM`.
+Messaging is configured per overlay in the DB `overlays` registry row, not via `T3_CHAT_PLATFORM`.
 Three commands cover distinct phases of the Slack lifecycle — they are not
 interchangeable:
 
@@ -162,6 +167,42 @@ Teatree ships a `hooks.json` that Claude Code loads automatically. `t3 setup` re
 
 Verify the registration: `t3 doctor check` (it reports the registered plugin and its `installPath`).
 
+`t3 setup` also registers + enables the external `pyright-lsp@claude-plugins-official`
+plugin (from the `anthropics/claude-plugins-official` marketplace) via the `claude
+plugin` CLI, so agents get LIVE pyright type diagnostics while coding instead of only
+catching type errors at CI. It is best-effort/offline-safe (an unreachable marketplace
+WARNs and continues) and needs `pyright-langserver` on PATH — setup provisions it
+idempotently (`npm install -g --prefix ~/.local pyright`, skipped when already present).
+`t3 doctor check` advisory-WARNs when the plugin is disabled, but HARD-FAILs when the
+plugin is enabled and the langserver is missing (the enabled LSP would silently never
+start). Both plugins are pinned in the managed
+`deploy/claude-settings.template.json` `enabledPlugins`, so every seeded container
+enables them and the host drift check re-asserts them.
+
+### Declared dependencies — provisioned by setup, gated by doctor
+
+Teatree's configuration declares the dependencies it mandates in three places, and
+those declarations — not a list inside the checker — are what `t3 doctor check`
+enumerates ([#3652](https://github.com/souliane/teatree/issues/3652)):
+
+| Surface | Declares | Provisioned by |
+| --- | --- | --- |
+| `apm.yml` → `dependencies.apm` | mandated skills (`ac-python`, `ac-django`, …) | `t3 setup` (`MandatedSkillProvisioner`) |
+| `pyproject.toml` → `[tool.teatree.provisioning].required_binaries` | required tools (`direnv`, `git`, `jq`) | the operator's package manager |
+| `~/.claude/settings.json` → `enabledPlugins` | enabled agent plugins | `t3 setup` (plugin registrars) |
+
+A declared dependency that is not actually provisioned is a **hard FAIL** naming the
+dependency, the surface that declares it, and the remediation — silence is never an
+outcome, and a surface that cannot be read is its own WARN rather than a
+confidently-empty pass. Declaring a new mandate is the whole change: the gate picks it
+up with no edit to the check.
+
+`t3 setup` installs the manifest-declared skills no plugin ships, cloning each from the
+source its declaration names into `~/.local/share/teatree/skill-sources` and symlinking
+it into `~/.claude/skills`. It is idempotent — an already-loadable skill is skipped — so
+the container entrypoint's every-start `t3 setup` converges without re-fetching. `apm`
+remains the primary installer when it is present.
+
 The hooks cover these events:
 
 | Event | Matcher | Purpose |
@@ -176,6 +217,12 @@ The hooks cover these events:
 | `SessionEnd` | *(none)* | Session cleanup |
 
 All hook scripts live in `$T3_REPO/hooks/scripts/`. The `hooks.json` at `$T3_REPO/hooks/hooks.json` defines the routing table.
+
+## Step 4a: Structured-Search MCP Server
+
+Teatree ships a plugin-bundled `.mcp.json` at the repo root declaring the `teatree` stdio MCP server (`t3 mcp serve`, built under [#1023](https://github.com/souliane/teatree/issues/1023)) — the same convention official Claude Code plugins use. Claude Code starts a plugin-bundled MCP server automatically once the plugin is enabled, so once `t3 setup` has registered and enabled the plugin (Step 4), the `mcp__teatree__*` tools are reachable — no separate `claude mcp add` step. The surface is **read + gate-preserving writes**: ~13 read tools (`ticket_search`, `ticket_get`, `ticket_list`, `worktree_status`, `pr_for_ticket`, `task_list`, `loop_stats`, `command_search`, `config_setting_get`, `gate_status`, `factory_signals`, …) PLUS the write suite (`pr_create`, `pr_merge`, `notify_user`, `config_setting_set`, `task_create`, the review-post and per-service forge/slack writes). The writes are **not** an escape hatch: each wraps the exact seam the `t3` CLI calls, so the shipping-phase FSM, sanctioned-merge keystone, on-behalf verdict, and leak-scrub gates all fire identically. Per-service groups (forge/slack/notion/sentry) register only when an overlay declares the service. Use `command_search` to discover which tool covers a task rather than enumerating them here.
+
+`t3 setup` confirms the file is intact (`OK`/`WARN` line naming `.mcp.json`); `t3 doctor check` re-verifies it and, when `claude` is on PATH, live-probes visibility via `claude mcp list` too ([#2863](https://github.com/souliane/teatree/issues/2863)). Prefer these tools over shelling out to `t3 ... list` and parsing text wherever a tool already covers the query — see `/t3:ship` § 4b step 5 for a worked example.
 
 ## Step 4b: Recommended Global Agent Config
 
@@ -204,7 +251,30 @@ Teatree ships **no** classifier `autoMode`/`permissions` allow-list — classifi
 
 Run `t3 doctor authorizations` (also surfaced by `t3 doctor check` and at the end of `t3 setup`). For each missing rule it prints the exact sentence to paste into your `autoMode.allow` array. The full set, the rationale, and what is deliberately left to the user (VPS hosts, dev-DB creds, exact paths) are documented in [`references/recommended-automode-authorizations.md`](references/recommended-automode-authorizations.md).
 
-For the broader picture — operating mode (`[teatree] mode`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration, and the post-setup permission state — see [`references/agent-mode-and-mcp-config.md`](references/agent-mode-and-mcp-config.md). It maps each config surface to the module that owns it so the docs cannot drift from the code.
+For the broader picture — operating mode (DB-home `mode`, set via `t3 <overlay> config_setting set mode …`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration, and the post-setup permission state — see [`references/agent-mode-and-mcp-config.md`](references/agent-mode-and-mcp-config.md). It maps each config surface to the module that owns it so the docs cannot drift from the code.
+
+### Interactive permission mode
+
+Set `permissions.defaultMode` to `auto` in `~/.claude/settings.json` for the session you drive teatree from. `auto` sends every tool call past a model classifier, so the session flows without a prompt on each call but nothing is blanket-approved. `bypassPermissions` approves everything — a wider posture than an interactive session needs, since you are present.
+
+This is a suggestion, not a gate: the mode is Claude Code's setting, not teatree's, so `t3 doctor check` only advises when it sees `bypassPermissions` and stays silent when no mode is configured.
+
+**Changing it reaches only the session you drive, even though every lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag); `t3 loop start` pins the same flag on the argv it execs; and `t3 agent "<task>"` pins it on the `-p` argv it execs. A pinned flag beats the settings default, so none of those lanes inherits your choice here.
+
+Those pins are the only thing separating the lanes, and each is asserted — `tests/teatree_agents/test_headless_least_privilege.py`, `tests/teatree_cli/test_cli_loop.py`, and `tests/teatree_cli/test_cli_agent.py` — so removing one fails a test rather than silently classifier-gating unattended work.
+
+Note the split inside `t3 agent`: with a task argument it execs `claude -p`, which is headless and therefore pinned; with no task it execs an interactive `claude` and pins nothing, because you are the human sitting in front of it.
+
+Five contexts — do not generalise one to the others:
+
+| Context | Mode | Why |
+|---|---|---|
+| Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
+| Bare `t3 agent` (no task argument) | unpinned — inherits your `defaultMode` | execs an interactive `claude`; the session is attended, so the mode is yours to choose |
+| `t3 agent "<task>"` | `bypassPermissions` (pinned) | execs `claude -p`; print-mode runs headless with nobody present to answer a denial |
+| The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended under `autonomous_away`, so a classifier denial has nobody to override it |
+| Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` (pinned) | no human to approve a `Write`; narrowing it strands the run |
+| The quarantined reader phase | `dontAsk` (pinned) | its tool set is meant to be empty, so default-deny is correct |
 
 ## Step 5: Generate an Overlay Package
 
@@ -237,7 +307,7 @@ my-overlay/
 Rules:
 
 - `overlay.py` must subclass `OverlayBase`.
-- The overlay must be registered as a `teatree.overlays` entry point in `pyproject.toml`.
+- The overlay must be registered as a `teatree.overlays` entry point in `pyproject.toml`. <!-- skill-symbol-ref: entry-point group name, not an importable module -->
 - The generated overlay package is the place where project-specific customisation lives.
 
 ## Step 6: Verify the Generated Project

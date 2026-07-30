@@ -1,0 +1,35 @@
+"""Notion read-only MCP tool group (#3076).
+
+Registered only when a registered overlay declares ``Service.NOTION``. The page
+client is resolved through
+:func:`teatree.core.backend_factory.notion_client_from_overlay` (a core seam).
+Read-only: the status *write* stays on the gated runtime sync, not the MCP
+surface.
+"""
+
+from asgiref.sync import sync_to_async
+from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
+
+from teatree.backends.types import Service
+from teatree.core.backend_factory import notion_client_from_overlay
+from teatree.core.backend_registry import NotionPageClient
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
+
+INSTRUCTIONS = "- notion_page_status(page_id, property_name): one Notion page's status property value."
+
+
+def _client() -> NotionPageClient:
+    return resolve_declaring_overlay_client(Service.NOTION, notion_client_from_overlay, description="Notion client")
+
+
+async def _notion_page_status(page_id: str, *, property_name: str = "Status") -> str | None:
+    return await sync_to_async(
+        lambda: _client().get_page_status(page_id, property_name=property_name), thread_sensitive=True
+    )()
+
+
+def register(server: MCPServer) -> None:
+    server.add_tool(_notion_page_status, name="notion_page_status", annotations=_READ_ONLY)

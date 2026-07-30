@@ -314,16 +314,43 @@ def test_slack_fetch_dms_concurrent_consumers_each_see_event() -> None:
     assert all(r == ["9.3"] for r in results)
 
 
-def test_slack_fetch_dms_new_enqueue_rolls_batch() -> None:
+def test_slack_fetch_dms_begin_tick_rolls_batch() -> None:
     backend = SlackBotBackend(bot_token="")
     backend.inbound.enqueue_dm({"text": "first tick", "ts": "10.0"})
 
     assert [e["ts"] for e in backend.fetch_dms()] == ["10.0"]
 
+    # An arrival after this tick's first snapshot is buffered for the NEXT tick;
+    # the frozen batch is re-served idempotently until the tick boundary.
     backend.inbound.enqueue_dm({"text": "second tick", "ts": "11.0"})
+    assert [e["ts"] for e in backend.fetch_dms()] == ["10.0"]
 
+    # The explicit tick boundary rolls the buffered arrival in as the new batch.
+    backend.inbound.begin_tick()
     assert [e["ts"] for e in backend.fetch_dms()] == ["11.0"]
     assert [e["ts"] for e in backend.fetch_dms()] == ["11.0"]
+
+
+def test_slack_fetch_dms_mid_tick_arrival_not_seen_by_only_some_scanners() -> None:
+    # The #1655 guarantee: an event that arrives BETWEEN two scanners' snapshots
+    # in the same tick must not be seen by only the later scanner. The batch is
+    # frozen at the tick's first snapshot, so every scanner sharing the backend
+    # reads the identical batch; the mid-tick arrival lands in the next tick.
+    backend = SlackBotBackend(bot_token="")
+    backend.inbound.enqueue_dm({"text": "a", "ts": "1.0"})
+    backend.inbound.enqueue_dm({"text": "b", "ts": "2.0"})
+
+    scanner_one = backend.fetch_dms()  # first scanner freezes the batch
+    backend.inbound.enqueue_dm({"text": "c", "ts": "3.0"})  # arrives mid-tick
+    scanner_two = backend.fetch_dms()  # second scanner in the SAME tick
+
+    assert [e["ts"] for e in scanner_one] == ["1.0", "2.0"]
+    assert [e["ts"] for e in scanner_two] == ["1.0", "2.0"]
+    assert scanner_one == scanner_two
+
+    # The mid-tick arrival surfaces only on the next tick, for every scanner.
+    backend.inbound.begin_tick()
+    assert [e["ts"] for e in backend.fetch_dms()] == ["3.0"]
 
 
 def test_slack_exposes_app_token_and_user_id() -> None:

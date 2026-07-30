@@ -19,6 +19,8 @@ on-behalf half asserts the gate stays in front of the post.
 """
 
 import json
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -28,10 +30,11 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core import test_plan_validation as _validation
 from teatree.core.backend_protocols import UploadVerification
-from teatree.core.management.commands import _test_plan
-from teatree.core.management.commands import _test_plan_render as _render
+from teatree.core.evidence import test_plan_validation as _validation
+from teatree.core.management.commands._test_plan import post as _test_plan
+from teatree.core.management.commands._test_plan import render as _render
+from teatree.core.management.commands._test_plan import scenario as _scenario
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -236,6 +239,48 @@ class TestRenderBody:
         )
         body = _test_plan.render_body(state)
         assert "**How to test:**" not in body
+
+    def test_backend_only_workflow_suppresses_the_empty_dev_local_table(self) -> None:
+        # A backend/API workflow carries neither video nor screenshots on either
+        # side — only its steps, which include the `Actual: ✅` claim. Emitting
+        # the `| Dev | Local |` header alone renders an empty grid that reads as
+        # missing evidence; the workflow renders as heading + steps only.
+        state = self._state(
+            local={"commits": {}, "workflows": {}},
+            steps={"Backend fee removal": ["Load the offer serializer", "Actual: ✅ fee line absent from payload"]},
+        )
+        body = _test_plan.render_body(state)
+        assert "### Backend fee removal" in body
+        assert "1. Load the offer serializer" in body
+        assert "2. Actual: ✅ fee line absent from payload" in body
+        assert "| Dev | Local |" not in body
+        assert "|---|---|" not in body
+
+    def test_empty_embed_workflow_suppresses_the_empty_dev_local_table(self) -> None:
+        # A workflow present in a side's map but carrying an empty embed (no
+        # video, no screenshots) is the same imageless case — suppress its table.
+        state = self._state(
+            local={"commits": {}, "workflows": {"Backend claim": self._embedded()}},
+        )
+        body = _test_plan.render_body(state)
+        assert "### Backend claim" in body
+        assert "| Dev | Local |" not in body
+
+    def test_media_bearing_workflow_still_renders_the_table_alongside_a_backend_one(self) -> None:
+        # A backend-only workflow suppresses its table; a media-bearing sibling
+        # in the same plan still renders its Dev | Local comparison table.
+        state = self._state(
+            local={
+                "commits": {},
+                "workflows": {"UI login": self._embedded(images=("![i](/uploads/s/l1.png)",))},
+            },
+            steps={"Backend fee removal": ["Load the serializer", "Actual: ✅ absent"]},
+        )
+        body = _test_plan.render_body(state)
+        assert "### UI login" in body
+        assert "| Dev | Local |" in body  # the media-bearing workflow keeps its table
+        assert "| — | ![i](/uploads/s/l1.png) |" in body
+        assert "### Backend fee removal" in body
 
     def test_commit_shas_render_as_clickable_links_derived_from_mrs(self) -> None:
         # The repo short-name (client) matches the MR URL .../org/client/...,
@@ -548,6 +593,109 @@ class TestNoVideoGateAtCommand(TestCase):
         assert post.issue_url == _ISSUE_URL
 
 
+def _blank_preroll_webm(path: Path) -> str:
+    """Render a REAL video that opens with ~8s of solid-black pre-roll, then motion.
+
+    This is the recurrence under test: a recording the author started long before
+    the interaction began, so the post path's video-evidence gate must refuse it.
+    Returns the path as a string for a manifest ``video`` slot.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg is not None
+    black = path.with_name("black.mp4")
+    moving = path.with_name("moving.mp4")
+    sources = (
+        ("color=c=black:size=160x120:rate=10", black, 8.0),
+        ("testsrc=size=160x120:rate=10", moving, 4.0),
+    )
+    for src, dst, dur in sources:
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "lavfi", "-i", f"{src}:duration={dur}", "-pix_fmt", "yuv420p", str(dst)],
+            check=True,
+            capture_output=True,
+        )
+    concat = path.with_name("concat.txt")
+    concat.write_text(f"file '{black}'\nfile '{moving}'\n", encoding="utf-8")
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(path)],
+        check=True,
+        capture_output=True,
+    )
+    return str(path)
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed",
+)
+class TestVideoPrerollGateAtCommand(TestCase):
+    """``build_validated_post`` REFUSES a manifest whose video opens with blank pre-roll."""
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._tmp = tmp_path
+        monkeypatch.setattr(
+            _test_plan,
+            "resolve_worktree",
+            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+        )
+
+    def _ticket(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+
+    def _manifest(self, video_path: str) -> str:
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [
+                    {
+                        "workflow": "Login",
+                        "local": {"images": [str(_red_boxed_png(self._tmp / "a.png"))], "video": video_path},
+                    }
+                ],
+            },
+        )
+
+    def test_blank_preroll_video_is_refused(self) -> None:
+        self._ticket()
+        video = _blank_preroll_webm(self._tmp / "blank.mp4")
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video))
+        with pytest.raises(_test_plan.TestPlanValidationError, match=r"(?i)pre-roll"):
+            _test_plan.build_validated_post(flags)
+
+    def test_skip_validation_lets_a_blank_preroll_video_through(self) -> None:
+        self._ticket()
+        video = _blank_preroll_webm(self._tmp / "blank2.mp4")
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video), skip_validation=True)
+        post = _test_plan.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+    def test_tight_video_passes(self) -> None:
+        self._ticket()
+        tight = self._tmp / "tight.mp4"
+        subprocess.run(
+            [
+                shutil.which("ffmpeg") or "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=10:duration=8",
+                "-pix_fmt",
+                "yuv420p",
+                str(tight),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(str(tight)))
+        post = _test_plan.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+
 class TestManifestPathResolution:
     """Relative image/video paths resolve against the manifest file's directory (#friction)."""
 
@@ -644,15 +792,15 @@ class TestMrLabel:
     """The MR link rendering is a pure helper."""
 
     def test_gitlab_mr_renders_repo_bang_num(self) -> None:
-        line = _test_plan.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
+        line = _render.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
         assert line == "Repos & MRs: [client!6331](https://gitlab.com/grp/sub/client/-/merge_requests/6331)"
 
     def test_github_pr_renders_repo_hash_num(self) -> None:
-        line = _test_plan.render_mrs_line(("https://github.com/owner/product/pull/7585",))
+        line = _render.render_mrs_line(("https://github.com/owner/product/pull/7585",))
         assert line == "Repos & MRs: [product#7585](https://github.com/owner/product/pull/7585)"
 
     def test_non_url_ref_shown_verbatim(self) -> None:
-        line = _test_plan.render_mrs_line(("client!6331",))
+        line = _render.render_mrs_line(("client!6331",))
         assert line == "Repos & MRs: client!6331"
 
 
@@ -962,9 +1110,6 @@ class TestOnBehalfGateConsulted(TestCase):
         # their ``T3_*`` env tier (the highest, DB-home-compatible layer): ASK
         # mode plus an empty auto-actions allowlist so the gate actually blocks.
         self._monkeypatch = monkeypatch
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
         monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
         monkeypatch.setenv("T3_ON_BEHALF_AUTO_ACTIONS", "")
 
@@ -1006,12 +1151,9 @@ class TestOnBehalfEvidenceAutoProceeds(TestCase):
 
     @pytest.fixture(autouse=True)
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # ``on_behalf_post_mode`` is DB-home (#1775): a TOML value is ignored on
-        # read, so ASK mode is staged via its ``T3_*`` env tier. The default
-        # ``on_behalf_auto_actions`` carve-out is left intact (evidence proceeds).
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        # ``on_behalf_post_mode`` is DB-home (#1775) — ASK mode is staged via its
+        # ``T3_*`` env tier. The default ``on_behalf_auto_actions`` carve-out is
+        # left intact (evidence proceeds).
         monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
 
     def test_post_proceeds_without_approval_under_ask(self) -> None:
@@ -1042,7 +1184,7 @@ class TestPureHelpers:
     """The marker / state-blob / existing-note helpers are independently testable."""
 
     def test_marker_round_trip(self) -> None:
-        marker = _test_plan.test_plan_marker(ticket_id="8521")
+        marker = _render.test_plan_marker(ticket_id="8521")
         assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
         assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 
@@ -1353,6 +1495,199 @@ class TestLinkApiTemplate(TestCase):
         assert "| Dev | Local |" not in body
 
 
+class TestLinkApiStepsRendered(TestCase):
+    """A steps-only ``link-api`` manifest (steps, no link/code embeds) must render the steps."""
+
+    def _steps_only_state(self) -> _render.TestPlanState:
+        return {
+            "ticket": "8521",
+            "title": "API check",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "steps": {"Create user": ["POST /users", "Assert 201", "GET /users/1"]},
+            "template": "link-api",
+        }
+
+    def test_renders_how_to_test_steps_when_no_media(self) -> None:
+        body = _render.render_body(self._steps_only_state())
+        visible = body.split("-->")[-1]
+        assert "### Create user" in visible
+        assert "**How to test:**" in visible
+        assert "1. POST /users" in visible
+        assert "2. Assert 201" in visible
+        assert "3. GET /users/1" in visible
+
+    def test_renders_steps_via_production_path(self) -> None:
+        manifest = _render.parse_manifest(
+            json.dumps(
+                {
+                    "ticket": "8521",
+                    "template": "link-api",
+                    "local": {"commits": {"client": "aabb"}},
+                    "workflows": [{"workflow": "Create user", "steps": ["POST /users", "Assert 201"]}],
+                }
+            )
+        )
+        merged = _render.merge_state(
+            _render.empty_state(ticket="8521", title="t"),
+            manifest=manifest,
+            title="API check",
+            embeds={"dev": {}, "local": {}},
+        )
+        body = _render.render_body(merged)
+        visible = body.split("-->")[-1]
+        assert "### Create user" in visible
+        assert "1. POST /users" in visible
+        assert "2. Assert 201" in visible
+
+    def test_renders_steps_alongside_link_and_code(self) -> None:
+        state: _render.TestPlanState = {
+            "ticket": "8521",
+            "title": "API check",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": _local_side(
+                {
+                    "Create user": {
+                        "video_md": "",
+                        "image_md": [],
+                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/8521)",
+                        "code_md": '```json\n{"id": 1}\n```',
+                    }
+                }
+            ),
+            "steps": {"Create user": ["POST /users", "Assert 201"]},
+            "template": "link-api",
+        }
+        body = _render.render_body(state)
+        visible = body.split("-->")[-1]
+        assert "1. POST /users" in visible
+        assert "[POST /users]" in visible
+        assert "```json" in visible
+
+
+class TestScenarioPlanTemplate(TestCase):
+    """The ``scenario-plan`` template renders the hand-authored exemplar shape.
+
+    Each scenario is a Preconditions / numbered Steps / Expected / Actual block
+    (with a ``✅`` pass marker), captioned inline screenshots for a UI scenario
+    or an API-contract block for an ``api`` scenario, ``---`` separators between
+    scenarios, and an ``**Environment:**`` footer.
+    """
+
+    def _ui_scenario(self, **over: object) -> _scenario.Scenario:
+        scenario: _scenario.Scenario = {
+            "surface": "Settings page",
+            "title": "Toggle dark mode",
+            "preconditions": "Logged in as a verified user.",
+            "steps": ["Open the settings page", "Click Dark mode", "Confirm"],
+            "expected": "The theme switches to dark.",
+            "modality": "ui",
+            "actual_pass": True,
+            "images": [{"slot": "settings", "caption": "Dark theme applied", "image_md": "![](/uploads/s/a.png)"}],
+        }
+        scenario.update(over)
+        return scenario
+
+    def _state(
+        self, *, scenarios: list[_scenario.Scenario], intro: str = "", environment: str = ""
+    ) -> _render.TestPlanState:
+        state: _render.TestPlanState = {
+            "ticket": "1025",
+            "title": "Dark mode toggle",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": _empty_side(env="local"),
+            "steps": {},
+            "template": "scenario-plan",
+            "scenarios": scenarios,
+        }
+        if intro:
+            state["scenario_intro"] = intro
+        if environment:
+            state["environment"] = environment
+        return state
+
+    def test_renders_scenario_heading_with_surface(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        assert "### Scenario 1 — Settings page" in body
+
+    def test_renders_preconditions_steps_expected_blocks(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        visible = body.split("-->")[-1]
+        assert "**Preconditions:** Logged in as a verified user." in visible
+        assert "**Steps:**" in visible
+        assert "1. Open the settings page" in visible
+        assert "2. Click Dark mode" in visible
+        assert "3. Confirm" in visible
+        assert "**Expected:** The theme switches to dark." in visible
+
+    def test_passing_actual_renders_check_pass(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        assert "**Actual:** ✅ Pass." in body
+
+    def test_non_passing_actual_renders_blocked_marker(self) -> None:
+        scenario = self._ui_scenario(actual_pass=False, actual_note="Blocked: feature flag off on dev.")
+        body = _render.render_body(self._state(scenarios=[scenario]))
+        visible = body.split("-->")[-1]
+        assert "✅ Pass." not in visible
+        assert "Blocked: feature flag off on dev." in visible
+
+    def test_captioned_inline_images_render(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        visible = body.split("-->")[-1]
+        assert "*Dark theme applied*" in visible
+        assert "![](/uploads/s/a.png)" in visible
+
+    def test_api_scenario_renders_no_screenshot_block(self) -> None:
+        contract = self._ui_scenario(modality="api", images=[])
+        body = _render.render_body(self._state(scenarios=[contract]))
+        visible = body.split("-->")[-1]
+        assert "contract check — no screenshot" in visible
+
+    def test_scenarios_separated_by_horizontal_rule(self) -> None:
+        body = _render.render_body(
+            self._state(scenarios=[self._ui_scenario(), self._ui_scenario(surface="Profile page")])
+        )
+        assert "### Scenario 2 — Profile page" in body
+        # One `---` separates the two scenarios.
+        assert body.count("\n---\n") >= 1
+
+    def test_environment_footer_renders(self) -> None:
+        body = _render.render_body(
+            self._state(scenarios=[self._ui_scenario()], environment="dev.example.com @ commit abcd1234")
+        )
+        assert "**Environment:** dev.example.com @ commit abcd1234" in body
+
+    def test_optional_intro_renders_above_first_scenario(self) -> None:
+        body = _render.render_body(
+            self._state(scenarios=[self._ui_scenario()], intro="Verified the toggle flow end to end.")
+        )
+        visible = body.split("-->")[-1]
+        intro_at = visible.index("Verified the toggle flow end to end.")
+        first_scenario_at = visible.index("### Scenario 1")
+        assert intro_at < first_scenario_at
+
+    def test_header_marker_and_title_still_render(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        assert "<!-- t3-e2e-evidence ticket=1025 -->" in body
+        assert "## Test Plan — Dark mode toggle" in body
+
+    def test_state_round_trips_scenarios_through_coerce(self) -> None:
+        state = self._state(scenarios=[self._ui_scenario()], intro="Intro line.", environment="dev.example.com")
+        recovered = _render.coerce_state(json.loads(json.dumps(state)))
+        assert recovered["template"] == "scenario-plan"
+        assert recovered["scenarios"][0]["surface"] == "Settings page"
+        assert recovered["scenarios"][0]["steps"] == ["Open the settings page", "Click Dark mode", "Confirm"]
+        assert recovered["scenarios"][0]["images"][0]["caption"] == "Dark theme applied"
+        assert recovered["scenario_intro"] == "Intro line."
+        assert recovered["environment"] == "dev.example.com"
+
+    def test_known_templates_includes_scenario_plan(self) -> None:
+        assert "scenario-plan" in _render.KNOWN_TEMPLATES
+
+
 class TestNeverEmptyRender(TestCase):
     def test_raises_on_empty_state(self) -> None:
         state: _render.TestPlanState = {
@@ -1387,15 +1722,15 @@ class TestBodyFile(TestCase):
             body_path.write_text("<!-- t3-e2e-evidence ticket=8521 -->\n## Test Plan\n\nSome steps.\n")
             host = self._patch_host()
             with (
-                patch("teatree.core.management.commands._test_plan.code_host_from_overlay", return_value=host),
-                patch("teatree.core.management.commands._test_plan._resolve_worktree_or_none", return_value=None),
+                patch("teatree.core.management.commands._test_plan.post.code_host_from_overlay", return_value=host),
+                patch("teatree.core.management.commands._test_plan.post._resolve_worktree_or_none", return_value=None),
                 patch("teatree.core.models.Ticket.objects.resolve", return_value=self._ticket()),
                 patch(
-                    "teatree.core.management.commands._test_plan.require_on_behalf_approval",
+                    "teatree.core.management.commands._test_plan.post.require_on_behalf_approval",
                     side_effect=lambda **kw: kw["publish"](),
                 ),
-                patch("teatree.core.management.commands._test_plan.on_behalf_block_message", return_value=""),
-                patch("teatree.core.management.commands._test_plan.notify_user_on_behalf_post"),
+                patch("teatree.core.management.commands._test_plan.post.on_behalf_block_message", return_value=""),
+                patch("teatree.core.management.commands._test_plan.post.notify_user_on_behalf_post"),
                 patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
             ):
                 call_command("e2e", "post-test-plan", ticket="8521", body_file=str(body_path))
@@ -1410,7 +1745,7 @@ class TestBodyFile(TestCase):
             with (
                 pytest.raises(SystemExit) as exc_info,
                 patch(
-                    "teatree.core.management.commands._test_plan.code_host_from_overlay",
+                    "teatree.core.management.commands._test_plan.post.code_host_from_overlay",
                     return_value=self._patch_host(),
                 ),
                 patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
@@ -1425,7 +1760,7 @@ class TestBodyFile(TestCase):
             with (
                 pytest.raises(SystemExit) as exc_info,
                 patch(
-                    "teatree.core.management.commands._test_plan.code_host_from_overlay",
+                    "teatree.core.management.commands._test_plan.post.code_host_from_overlay",
                     return_value=self._patch_host(),
                 ),
                 patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
@@ -1561,7 +1896,7 @@ class TestTemplateFlag(TestCase):
             manifest=json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "Login", "steps": ["s"]}]}),
             template="browser-click-first",
         )
-        with patch("teatree.core.management.commands._test_plan._resolve_worktree_or_none", return_value=None):
+        with patch("teatree.core.management.commands._test_plan.post._resolve_worktree_or_none", return_value=None):
             ticket = MagicMock()
             ticket.issue_url = _ISSUE_URL
             ticket.ticket_number = "8521"

@@ -55,19 +55,34 @@ class Poster(Protocol):
 type ThreadResolver = Callable[[str], str]
 
 
-def slack_config_from_toml() -> tuple[str, str] | None:
-    """Return ``(bot_token_ref, user_id)`` from the first slack-enabled overlay."""
-    import tomllib  # noqa: PLC0415
+# Audio enrichment for the mirrored question (#2171 TTS parity). Called
+# ``(channel, text, thread_ts)`` AFTER the text question DM lands, so the
+# spoken rendition reaches the user's phone the same way ``notify_user`` DMs
+# already do. INJECTED by the router (which resolves the Slack backend and
+# wraps ``teatree.core.speak.deliver_user_dm_sidecar``) so this leaf never
+# imports ``teatree.core`` — it stays a pure platform leaf. Best-effort by
+# contract: it must never raise into the post path, and the enrichment is
+# skipped entirely when ``None`` (``speak.slack`` off — today's text-only mirror).
+type AudioEnricher = Callable[[str, str, str], None]
 
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return None
+
+def slack_config_from_registry() -> tuple[str, str] | None:
+    """Return ``(bot_token_ref, user_id)`` from the first slack-enabled overlay.
+
+    Sources the per-overlay Slack wiring from the DB overlays registry. Named for
+    the registry it actually reads -- the legacy ``_from_toml`` name predated the
+    move off a TOML file to the DB overlays registry and misdescribed the source
+    (#F7.9).
+    """
+    from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
     try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
+        overlays = load_config().raw.get("overlays") or {}
+    except Exception:  # noqa: BLE001 — config read is best-effort; a failure degrades to no mirror
         return None
-    for overlay_cfg in (config.get("overlays") or {}).values():
+    for overlay_cfg in overlays.values():
+        if not isinstance(overlay_cfg, dict):
+            continue
         if overlay_cfg.get("messaging_backend") == "slack":
             ref = overlay_cfg.get("slack_token_ref", "")
             uid = overlay_cfg.get("slack_user_id", "")
@@ -77,12 +92,28 @@ def slack_config_from_toml() -> tuple[str, str] | None:
 
 
 def format_question_text(questions: list[dict]) -> str:
+    """Render the AskUserQuestion payload for the Slack DM, tolerant of loose shapes.
+
+    The harness input is opaque, not the typed view: a question may not be a
+    mapping, ``options`` may be absent or not a list, and an option may be a bare
+    string rather than a ``{label, description}`` mapping. Each shape is guarded
+    so a ``.get`` on a non-mapping can NEVER raise into the never-raise mirror
+    (an ``AttributeError`` here means the DM never lands).
+    """
     lines: list[str] = []
     for q in questions:
+        if not isinstance(q, dict):
+            continue
         lines.append(f"*{q.get('question', '')}*")
-        for i, opt in enumerate(q.get("options", []), 1):
-            label = opt.get("label", "")
-            desc = opt.get("description", "")
+        options = q.get("options", [])
+        for i, opt in enumerate(options if isinstance(options, list) else [], 1):
+            if isinstance(opt, dict):
+                label = opt.get("label", "")
+                desc = opt.get("description", "")
+            elif isinstance(opt, str):
+                label, desc = opt, ""
+            else:
+                continue
             lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
     lines.append("\n_Reply with the number (e.g. `1`) or type your answer._")
     return "\n".join(lines)
@@ -108,16 +139,26 @@ def read_dm_channel_cache(user_id: str) -> str:
 
 
 def write_dm_channel_cache(user_id: str, channel: str) -> None:
+    """Persist the DM channel id (best-effort, never raises into the mirror).
+
+    Both the read-merge and the mkdir/write are guarded: the cache lives under a
+    dir that may be unwritable in the restricted hook subprocess, and an
+    ``OSError`` from ``mkdir``/``write_text`` must never propagate into the
+    PreToolUse mirror (a raise there means the question DM never lands).
+    """
     path = slack_dm_cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     except (OSError, json.JSONDecodeError):
         existing = {}
     if not isinstance(existing, dict):
         existing = {}
     existing[user_id] = channel
-    path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def _str_field(mapping: dict | None, key: str) -> str:
@@ -142,7 +183,7 @@ def slack_open_dm(poster: Poster, bot_token: str, user_id: str) -> str:
     """
     try:
         resp = poster("conversations.open", token=bot_token, json={"users": user_id}, idempotent=True)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a Slack API failure degrades to no channel id
         return ""
     return _str_field(_sub_mapping(resp, "channel"), "id")
 
@@ -163,7 +204,7 @@ def slack_post_message(poster: Poster, channel: str, text: str, *, bot_token: st
         body["thread_ts"] = thread_ts
     try:
         resp = poster("chat.postMessage", token=bot_token, json=body, idempotent=False)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — a Slack API failure degrades to empty
         return ""
     if resp.get("ok") is not True:
         return ""
@@ -196,12 +237,38 @@ def slack_post_dm(poster: Poster, resolve_thread: ThreadResolver, bot_token: str
     return ts
 
 
+def _enrich_delivered_dm(
+    enrich_audio: AudioEnricher | None,
+    resolve_thread: ThreadResolver,
+    user_id: str,
+    text: str,
+) -> None:
+    """Attach audio to the just-delivered question DM — best-effort, never raises (#2171).
+
+    Called by :func:`perform_slack_post` only after a confirmed post, so the
+    delivered channel is the one now in the DM cache. A ``None`` enricher
+    (``speak.slack`` off) is a no-op — today's text-only mirror — and any
+    failure inside the injected enricher is swallowed so a synthesis / upload
+    problem can NEVER retroactively break the text question that already landed.
+    """
+    if enrich_audio is None:
+        return
+    channel = read_dm_channel_cache(user_id)
+    if not channel:
+        return
+    try:
+        enrich_audio(channel, text, resolve_thread(channel))
+    except Exception:  # noqa: BLE001 — audio is a pure enhancement; the text question already landed
+        return
+
+
 def perform_slack_post(
     slack_cfg: tuple[str, str],
     questions: list[dict],
     *,
     poster: Poster,
     resolve_thread: ThreadResolver,
+    enrich_audio: AudioEnricher | None = None,
 ) -> str:
     """Resolve the bot token and post the question — runs synchronously.
 
@@ -211,13 +278,20 @@ def perform_slack_post(
     posted ``ts`` (``""`` on any failure) so the #1174 capture path can link
     the mirror row to its DM.
 
-    ``poster`` (the Slack ``SlackHttpClient.post``) and ``resolve_thread`` (the
-    ``IncomingEvent`` active-DM lookup) are injected by the router so this
-    transport stays a pure ``teatree.hooks`` leaf with no upward import.
+    ``poster`` (the Slack ``SlackHttpClient.post``), ``resolve_thread`` (the
+    ``IncomingEvent`` active-DM lookup) and ``enrich_audio`` (the
+    ``deliver_user_dm_sidecar`` wrapper, #2171) are injected by the router so
+    this transport stays a pure ``teatree.hooks`` leaf with no upward import.
+    On a successful post the audio enrichment fires against the delivered
+    channel so BOTH question surfaces carry audio to the user's phone.
     """
     token_ref, user_id = slack_cfg
     result = run_allowed_to_fail(["pass", "show", f"{token_ref}-bot"], expected_codes=None, timeout=2)
     bot_token = result.stdout.strip() if result.returncode == 0 else ""
     if not bot_token:
         return ""
-    return slack_post_dm(poster, resolve_thread, bot_token, user_id, format_question_text(questions))
+    text = format_question_text(questions)
+    ts = slack_post_dm(poster, resolve_thread, bot_token, user_id, text)
+    if ts:
+        _enrich_delivered_dm(enrich_audio, resolve_thread, user_id, text)
+    return ts

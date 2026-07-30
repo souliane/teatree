@@ -14,9 +14,9 @@ a string literal / f-string matching any failure keyword in
 
 Scope (kept narrow so false positives stay low):
 
-- Only ``@command`` methods are scanned, so module-level helpers like
-    ``_workspace_reap.push_unsynced_branch`` keep returning "Push
-    failed:" for their command (``clean-all``) to inspect and raise on.
+- Only ``@command`` methods are scanned, so module-level helpers (e.g. a
+    ``_workspace_*`` reaping helper returning a "… failed:" string) keep
+    returning failure text for their command (``clean-all``) to inspect and raise on.
 - Only string / f-string returns are inspected; dynamic returns are out
     of AST reach and out of scope here.
 

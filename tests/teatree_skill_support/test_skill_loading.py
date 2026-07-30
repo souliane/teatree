@@ -5,6 +5,7 @@ import pytest
 
 import teatree.skill_support.loading as skill_loading_mod
 from teatree.skill_support.loading import (
+    INTERNALS_SKILL_NAME,
     SkillLoadingPolicy,
     SkillSelectionResult,
     _dedupe,
@@ -62,29 +63,6 @@ def test_lifecycle_for_phase(phase, expected):
     assert SkillLoadingPolicy.lifecycle_for_phase(phase) == expected
 
 
-# ── SkillLoadingPolicy.lifecycle_for_task_text ──────────────────────
-
-
-@pytest.mark.parametrize(
-    ("task", "expected"),
-    [
-        ("debug the issue", "debug"),
-        ("fix it now", "debug"),
-        ("run the tests", "test"),
-        ("run e2e tests", "e2e"),
-        ("playwright screenshot", "e2e"),
-        ("commit and push", "ship"),
-        ("review the code", "review"),
-        ("start working on ticket", "ticket"),
-        ("do a retro", "retro"),
-        ("setup worktree", "workspace"),
-        ("nothing matches here xyz", ""),
-    ],
-)
-def test_lifecycle_for_task_text(task, expected):
-    assert SkillLoadingPolicy.lifecycle_for_task_text(task) == expected
-
-
 # ── SkillLoadingPolicy.select_for_agent_launch ──────────────────────
 
 
@@ -93,7 +71,6 @@ def _launch(tmp_path, **overrides):
     defaults = {
         "cwd": tmp_path,
         "overlay_skill_metadata": {},
-        "task": "",
         "ticket_status": "",
         "explicit_phase": "",
         "explicit_skills": [],
@@ -133,45 +110,9 @@ def test_select_for_agent_launch_ticket_status(tmp_path: Path):
     assert "test" in result.skills
 
 
-def test_select_for_agent_launch_task_text(tmp_path: Path):
-    result = _launch(tmp_path, task="commit the changes")
-    assert result.lifecycle_skill == "ship"
-
-
-def test_lifecycle_for_task_text_with_search_hints():
-    policy = SkillLoadingPolicy()
-    trigger_index: list[dict[str, object]] = [
-        {"skill": "deploy", "search_hints": ["deploy", "release", "rollout"]},
-    ]
-    assert policy.lifecycle_for_task_text("deploy to prod", trigger_index=trigger_index) == "deploy"
-
-
-def test_lifecycle_for_task_text_hardcoded_takes_precedence():
-    policy = SkillLoadingPolicy()
-    trigger_index: list[dict[str, object]] = [
-        {"skill": "custom-debug", "search_hints": ["debug"]},
-    ]
-    # Hardcoded _AGENT_TASK_KEYWORDS maps "debug" to "debug" skill, not "custom-debug"
-    assert policy.lifecycle_for_task_text("debug the issue", trigger_index=trigger_index) == "debug"
-
-
-def test_lifecycle_for_task_text_no_match_with_index():
-    policy = SkillLoadingPolicy()
-    trigger_index: list[dict[str, object]] = [
-        {"skill": "deploy", "search_hints": ["deploy"]},
-    ]
-    assert policy.lifecycle_for_task_text("random gibberish", trigger_index=trigger_index) == ""
-
-
 def test_select_for_agent_launch_no_inputs_asks_user(tmp_path: Path):
     result = _launch(tmp_path)
     assert result.ask_user is True
-
-
-def test_select_for_agent_launch_ask_user_when_no_lifecycle_no_explicit(tmp_path: Path):
-    result = _launch(tmp_path, task="nothing matches xyz blah")
-    assert result.ask_user is True
-    assert result.lifecycle_skill == ""
 
 
 def test_select_for_agent_launch_overlay_active(tmp_path: Path):
@@ -179,59 +120,61 @@ def test_select_for_agent_launch_overlay_active(tmp_path: Path):
         tmp_path,
         overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
-        task="debug this",
+        explicit_phase="debugging",
     )
     assert "t3:acme" in result.skills
     assert "debug" in result.skills
 
 
-# ── SkillLoadingPolicy.select_for_prompt_hook ───────────────────────
+# ── SkillLoadingPolicy.select_for_prompt_hook (framework/cwd only) ───
 
 
-def test_select_for_prompt_hook_basic(tmp_path: Path):
+def test_select_for_prompt_hook_framework_from_cwd(tmp_path: Path):
+    (tmp_path / "manage.py").touch()
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
         loaded_skills=set(),
     )
-    assert "code" in result.skills
-    assert result.lifecycle_skill == "code"
+    assert "ac-django" in result.skills
+    # No prompt intent means no lifecycle skill from the hook.
+    assert result.lifecycle_skill == ""
 
 
 def test_select_for_prompt_hook_filters_loaded(tmp_path: Path):
+    (tmp_path / "manage.py").touch()
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
-        loaded_skills={"code"},
+        loaded_skills={"ac-django"},
     )
-    assert "code" not in result.skills
+    assert "ac-django" not in result.skills
 
 
 def test_select_for_prompt_hook_with_supplementary(tmp_path: Path):
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
         loaded_skills=set(),
         supplementary_skills=["rules", "platforms"],
     )
     assert "rules" in result.skills
     assert "platforms" in result.skills
+    # Supplementary skills are advisory-only.
+    assert set(result.advisory_skills) == {"rules", "platforms"}
 
 
-def test_select_for_prompt_hook_no_intent(tmp_path: Path):
+def test_select_for_prompt_hook_no_context(tmp_path: Path):
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="",
         overlay_skill_metadata={},
         loaded_skills=set(),
     )
+    assert result.skills == []
     assert result.lifecycle_skill == ""
 
 
@@ -270,105 +213,127 @@ def test_select_for_runtime_phase_with_overlay(tmp_path: Path):
     assert result.lifecycle_skill == "code"
 
 
-# ── _overlay_skill_for_context ──────────────────────────────────────
+# ── _overlay_in_scope (drives whether the overlay skill + companions load) ──
 
 
-def test_overlay_no_skill_path(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
+def test_overlay_in_scope_when_active(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme"},
+            overlay_active=True,
+            lifecycle_skill="code",
+        )
+        is True
+    )
+
+
+def test_overlay_out_of_scope_without_lifecycle(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
+            overlay_active=False,
+            lifecycle_skill="",
+        )
+        is False
+    )
+
+
+def test_overlay_out_of_scope_when_remote_patterns_not_a_list(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": "not-a-list"},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+def test_overlay_out_of_scope_when_remote_patterns_empty(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": []},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+def test_overlay_out_of_scope_when_remote_patterns_all_non_string(tmp_path: Path):
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": [123, None, ""]},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+def test_overlay_in_scope_on_remote_match(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("teatree.skill_support.loading._matches_any_remote", lambda _cwd, _patterns: True)
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is True
+    )
+
+
+def test_overlay_out_of_scope_on_remote_no_match(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("teatree.skill_support.loading._matches_any_remote", lambda _cwd, _patterns: False)
+    assert (
+        SkillLoadingPolicy._overlay_in_scope(
+            cwd=tmp_path,
+            overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
+            overlay_active=False,
+            lifecycle_skill="code",
+        )
+        is False
+    )
+
+
+# ── the overlay skill_path guard in _base_detected_skills ───────────────────
+
+
+def test_base_detected_skills_omits_overlay_skill_when_no_skill_path(tmp_path: Path):
+    # In scope (active) but the overlay declares no skill_path -> nothing appended.
+    ordered = SkillLoadingPolicy()._base_detected_skills(
         cwd=tmp_path,
         overlay_skill_metadata={},
-        overlay_active=False,
+        overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == ""
+    assert ordered == []
 
 
-def test_overlay_empty_skill_path(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
+def test_base_detected_skills_omits_overlay_skill_when_skill_path_blank(tmp_path: Path):
+    ordered = SkillLoadingPolicy()._base_detected_skills(
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "  "},
-        overlay_active=False,
+        overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == ""
+    assert ordered == []
 
 
-def test_overlay_active_returns_skill_path(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
+def test_base_detected_skills_includes_overlay_skill_when_active(tmp_path: Path):
+    ordered = SkillLoadingPolicy()._base_detected_skills(
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
         lifecycle_skill="code",
     )
-    assert result == "t3:acme"
-
-
-def test_overlay_no_lifecycle_returns_empty(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
-        overlay_active=False,
-        lifecycle_skill="",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_patterns_not_a_list(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": "not-a-list"},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_patterns_empty_list(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": []},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_patterns_with_non_string_entries(tmp_path: Path):
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": [123, None, ""]},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
-
-
-def test_overlay_remote_match(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_support.loading._matches_any_remote",
-        lambda _cwd, _patterns: True,
-    )
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == "t3:acme"
-
-
-def test_overlay_remote_no_match(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "teatree.skill_support.loading._matches_any_remote",
-        lambda _cwd, _patterns: False,
-    )
-    result = SkillLoadingPolicy._overlay_skill_for_context(
-        cwd=tmp_path,
-        overlay_skill_metadata={"skill_path": "t3:acme", "remote_patterns": ["*acme*"]},
-        overlay_active=False,
-        lifecycle_skill="code",
-    )
-    assert result == ""
+    assert ordered == ["t3:acme"]
 
 
 # ── overlay-companion skills are scoped to overlay work ─────────────
@@ -394,18 +359,21 @@ def test_companion_skills_required_when_overlay_active(tmp_path: Path):
 
 
 def test_companion_skills_required_when_remote_matches_overlay(tmp_path: Path, monkeypatch):
-    # Overlay-repo intent (the cwd's remote matches the overlay's patterns) →
-    # the overlay skill AND its companion skills are required.
+    # Overlay-repo agent launch (the cwd's remote matches the overlay's patterns,
+    # with a lifecycle from ticket status) → the overlay skill AND its companion
+    # skills are required even though the overlay is not session-active.
     monkeypatch.setattr(
         "teatree.skill_support.loading._matches_any_remote",
         lambda _cwd, _patterns: True,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_agent_launch(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata=_OVERLAY_META,
-        loaded_skills=set(),
+        ticket_status="started",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
         companion_skills=_COMPANIONS,
     )
     assert "t3:acme" in result.skills
@@ -414,7 +382,7 @@ def test_companion_skills_required_when_remote_matches_overlay(tmp_path: Path, m
 
 
 def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkeypatch):
-    # Teatree-core-only intent: overlay NOT active and the cwd's remote does NOT
+    # Teatree-core-only work: overlay NOT active and the cwd's remote does NOT
     # match the overlay's patterns. The overlay companion skills must NOT be
     # required — they are scoped to overlay work, not core work.
     monkeypatch.setattr(
@@ -422,17 +390,19 @@ def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkey
         lambda _cwd, _patterns: False,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_agent_launch(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata=_OVERLAY_META,
-        loaded_skills=set(),
+        ticket_status="started",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
         companion_skills=_COMPANIONS,
     )
     assert "t3:acme" not in result.skills
     assert "t3-acme-review" not in result.skills
     assert "acme-conventions" not in result.skills
-    # The framework/lifecycle skill is unaffected — core work still gets `code`.
+    # The lifecycle skill is unaffected — core work still gets `code`.
     assert "code" in result.skills
 
 
@@ -446,11 +416,13 @@ def test_framework_detection_independent_of_overlay_scope(tmp_path: Path, monkey
         lambda _cwd, _patterns: False,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_agent_launch(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata=_OVERLAY_META,
-        loaded_skills=set(),
+        ticket_status="started",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
         companion_skills=_COMPANIONS,
     )
     assert "ac-django" in result.skills
@@ -516,6 +488,43 @@ def test_detect_walks_parents(tmp_path: Path):
     subdir.mkdir(parents=True)
     (tmp_path / "manage.py").touch()
     assert SkillLoadingPolicy.detect_framework_skills(subdir) == ["ac-django"]
+
+
+# ── detect_internals_skill ──────────────────────────────────────────
+
+
+def _make_teatree_checkout(root: Path) -> Path:
+    package = root / "src" / "teatree"
+    package.mkdir(parents=True)
+    (package / "__init__.py").touch()
+    return root
+
+
+def test_detect_internals_in_a_teatree_checkout(tmp_path: Path):
+    assert SkillLoadingPolicy.detect_internals_skill(_make_teatree_checkout(tmp_path)) == [INTERNALS_SKILL_NAME]
+
+
+def test_detect_internals_walks_parents(tmp_path: Path):
+    subdir = _make_teatree_checkout(tmp_path) / "src" / "teatree" / "mcp"
+    subdir.mkdir(parents=True)
+    assert SkillLoadingPolicy.detect_internals_skill(subdir) == [INTERNALS_SKILL_NAME]
+
+
+def test_detect_internals_skipped_outside_a_teatree_checkout(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["teatree>=1"]')
+    assert SkillLoadingPolicy.detect_internals_skill(tmp_path) == []
+
+
+def test_a_teatree_checkout_dispatch_carries_the_internals_skill(tmp_path: Path):
+    result = _launch(_make_teatree_checkout(tmp_path), explicit_phase="coding")
+    assert INTERNALS_SKILL_NAME in result.skills
+
+
+def test_a_non_teatree_dispatch_does_not_carry_the_internals_skill(tmp_path: Path):
+    (tmp_path / "manage.py").touch()
+    result = _launch(tmp_path, explicit_phase="coding")
+    assert INTERNALS_SKILL_NAME not in result.skills
+    assert "ac-django" in result.skills
 
 
 _OSERROR_MSG = "permission denied"

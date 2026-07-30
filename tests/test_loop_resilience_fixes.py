@@ -5,9 +5,7 @@ class is self-contained and targets a single finding. Run these against
 the unfixed code to see them go RED, then apply the fix and confirm GREEN.
 """
 
-import datetime as dt
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -15,10 +13,8 @@ from unittest.mock import patch
 import pytest
 from django.db import OperationalError
 from django.test import TestCase
-from django.utils import timezone
 
-from teatree.config import TeaTreeConfig, UserSettings
-from teatree.core.models import ReviewRequestPost
+from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.messaging.notify_with_fallback import notify_with_fallback
 
 # ---------------------------------------------------------------------------
@@ -76,6 +72,7 @@ class TestF1NeverRaiseDatabaseError(TestCase):
                 "hello",
                 kind="info",
                 idempotency_key="f1-stamp-opererr",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
         # Primary DID deliver; the key is no exception was raised.
@@ -99,110 +96,10 @@ class TestF1NeverRaiseDatabaseError(TestCase):
                 "hello",
                 kind="info",
                 idempotency_key="f1-upsert-opererr",
+                audience=NotifyAudience.OWNER_DELIVERY,
                 user_id="U_ME",
             )
         assert result.delivered is False
-
-
-# ---------------------------------------------------------------------------
-# F2: review_nag DM failure must NOT silently close the train
-# ---------------------------------------------------------------------------
-
-
-class _EnableReviewNagMixin:
-    def setUp(self) -> None:
-        super().setUp()
-        enabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=True))
-        patcher = patch("teatree.config.load_config", return_value=enabled)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-
-@dataclass
-class _FakeSlack:
-    posts: list[dict[str, Any]] = field(default_factory=list)
-    raise_on_post: Exception | None = None
-    raise_on_open_dm: Exception | None = None
-    usergroup_id: str = ""
-    dm_channel: str = "D-USER"
-
-    def fetch_mentions(self, *, since: str = "") -> list[Any]:
-        return []
-
-    def fetch_dms(self, *, since: str = "") -> list[Any]:
-        return []
-
-    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, Any]:
-        if self.raise_on_post is not None:
-            raise self.raise_on_post
-        self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
-        return {"ok": True, "ts": f"reply.{len(self.posts)}"}
-
-    def open_dm(self, user_id: str) -> str:
-        if self.raise_on_open_dm is not None:
-            raise self.raise_on_open_dm
-        return self.dm_channel
-
-    def get_permalink(self, *, channel: str, ts: str) -> str:
-        return f"https://slack.example/archives/{channel}/p{ts}"
-
-    def react(self, *, channel: str, ts: str, emoji: str) -> dict[str, Any]:
-        return {}
-
-    def resolve_user_id(self, handle: str) -> str:
-        if handle == "engineers":
-            return self.usergroup_id
-        return ""
-
-
-class TestF2ReviewNagDmFailureDoesNotCloseTrain(_EnableReviewNagMixin, TestCase):
-    """F2 — _dm_user_and_close sets done_at OUTSIDE the try block.
-
-    A DM send failure permanently closes the nag train and the returned
-    ScanSignal kind ('review_nag.stale_dm') falsely claims delivery.
-
-    Fix: only set done_at/save on the SUCCESS path; on the except path
-    emit 'review_nag.stale_no_dm' and do NOT close the train.
-    """
-
-    def _seed_stale_post(self) -> ReviewRequestPost:
-        return ReviewRequestPost.objects.create(
-            mr_url="https://gitlab.example/x/-/merge_requests/99",
-            slack_channel_id="C0STALE",
-            slack_thread_ts="ts.stale",
-            created_at=timezone.now() - dt.timedelta(days=6),
-            last_nag_step=4,
-        )
-
-    def test_dm_failure_does_not_close_train(self) -> None:
-        """post_message raises → done_at must stay None and train must stay open."""
-        from teatree.loop.scanners.review_nag import ReviewNagScanner  # noqa: PLC0415
-
-        post = self._seed_stale_post()
-        slack = _FakeSlack(raise_on_post=RuntimeError("slack channel not found"))
-        ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
-
-        post.refresh_from_db()
-        # Bug: done_at is set even though the DM failed.
-        # Fix: done_at must stay None.
-        assert post.done_at is None, (
-            "done_at was set even though the DM send raised — the nag train was permanently closed on a failed delivery"
-        )
-
-    def test_dm_failure_emits_no_dm_kind_not_stale_dm(self) -> None:
-        """Signal kind must reflect no-delivery, not false 'stale_dm'."""
-        from teatree.loop.scanners.review_nag import ReviewNagScanner  # noqa: PLC0415
-
-        self._seed_stale_post()
-        slack = _FakeSlack(raise_on_post=RuntimeError("channel_not_found"))
-        signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
-
-        kinds = [s.kind for s in signals]
-        assert "review_nag.stale_dm" not in kinds, (
-            "Signal claimed 'stale_dm' (delivery) even though post_message raised"
-        )
-        # The fix should emit review_nag.stale_no_dm on failure
-        assert any("stale_no_dm" in k or "no_dm" in k for k in kinds), f"Expected a no-dm kind in signals, got: {kinds}"
 
 
 # ---------------------------------------------------------------------------
@@ -340,18 +237,16 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
     def test_bound_merge_returns_non_empty_sha_on_success(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
+        from teatree.core.review import author_trust  # noqa: PLC0415
         from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient  # noqa: PLC0415
+        from tests.teatree_core.conftest import seed_merge_safe_verdict  # noqa: PLC0415
 
         expected = "c" * 40
+        # The bound merge runs the #2829 review-verdict gate; seed the verdict.
+        seed_merge_safe_verdict(slug="owner/repo", pr_id=42, sha=expected)
 
         def _gh(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, expected, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]', "")
             if "pulls" in joined and "merge" in joined:
                 # The merge response carries no ``sha`` field — the bound path
                 # must fall back to the bound head, never a silent empty string.
@@ -359,7 +254,22 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
             return (0, "", "")
 
         client = GhPrApiClient(token="")
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh):
+        # The #18 floor re-reads the live not-draft + required-checks state at the
+        # merge chokepoint; a non-draft, green head clears it so the bound merge's
+        # sha-fallback contract is what gets exercised here. #3313 hardened the
+        # #3244 provenance gate so a same-repo head is no longer trusted
+        # unconditionally — it is conjoined with the identity+visibility author
+        # check (mirroring test_merge_execution_author_gate's
+        # test_same_repo_on_internal_repo_passes). This test is about the
+        # SHA-fallback contract, not provenance, so it takes the internal-repo
+        # bypass rather than asserting on a specific trusted author.
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_is_draft", return_value=False),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value="green"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+            patch.object(author_trust, "repo_is_internal", return_value=True),
+        ):
             ok, sha = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 
         assert ok is True

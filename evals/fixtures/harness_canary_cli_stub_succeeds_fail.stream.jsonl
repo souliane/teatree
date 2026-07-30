@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-harness_canary_cli_stub_succeeds-fail", "model": "claude-haiku-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "the t3 binary is not on PATH here; let me look for it before recording."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "which t3 || t3 --help", "description": "look for the t3 CLI"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

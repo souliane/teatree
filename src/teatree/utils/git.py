@@ -26,6 +26,7 @@ from teatree.utils.git_branch import (
     current_branch,
     default_branch,
     head_sha,
+    resolve_diff_base,
 )
 from teatree.utils.git_commit import (
     branch_diff,
@@ -40,24 +41,40 @@ from teatree.utils.git_commit import (
     unsynced_commits,
 )
 from teatree.utils.git_remote_ops import config_value, remote_slug, remote_url
-from teatree.utils.git_run import check, git_env_without_overrides, run, run_strict
-from teatree.utils.git_status import full_worktree_diff, status_porcelain, status_porcelain_strict
-from teatree.utils.git_sync import fetch, merge_abort, merge_no_edit, pull_ff_only, push, rebase
+from teatree.utils.git_run import check, git_env_hermetic, git_env_without_overrides, run, run_strict
+from teatree.utils.git_status import (
+    full_worktree_diff,
+    status_porcelain,
+    status_porcelain_strict,
+    status_porcelain_z_strict,
+)
+from teatree.utils.git_sync import fetch, fetch_all_prune, merge_abort, merge_no_edit, pull_ff_only, push, rebase
 from teatree.utils.git_worktree import (
-    bundle_create,
     commits_absent_from_all_remotes,
+    locked_worktree_paths,
+    recovered_head_sha_after_ref_gone,
     worktree_add,
     worktree_add_at_ref,
+    worktree_move,
     worktree_remove,
+)
+from teatree.utils.git_worktree_query import (
+    WorktreeRecord,
+    canonical_repo_root,
+    git_common_dir,
+    is_git_checkout,
+    list_worktrees,
+    worktree_for_branch,
 )
 
 __all__ = [
     "DETACHED_HEAD",
     "GitRepo",
+    "WorktreeRecord",
     "branch_delete",
     "branch_diff",
     "branch_merged",
-    "bundle_create",
+    "canonical_repo_root",
     "check",
     "commit",
     "commit_messages",
@@ -66,11 +83,17 @@ __all__ = [
     "current_branch",
     "default_branch",
     "fetch",
+    "fetch_all_prune",
     "first_commit_message",
     "full_worktree_diff",
+    "git_common_dir",
+    "git_env_hermetic",
     "git_env_without_overrides",
     "head_sha",
+    "is_git_checkout",
     "last_commit_message",
+    "list_worktrees",
+    "locked_worktree_paths",
     "log_oneline",
     "merge_abort",
     "merge_base",
@@ -78,17 +101,22 @@ __all__ = [
     "pull_ff_only",
     "push",
     "rebase",
+    "recovered_head_sha_after_ref_gone",
     "remote_slug",
     "remote_url",
+    "resolve_diff_base",
     "rev_count",
     "run",
     "run_strict",
     "soft_reset",
     "status_porcelain",
     "status_porcelain_strict",
+    "status_porcelain_z_strict",
     "unsynced_commits",
     "worktree_add",
     "worktree_add_at_ref",
+    "worktree_for_branch",
+    "worktree_move",
     "worktree_remove",
 ]
 

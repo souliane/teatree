@@ -24,7 +24,7 @@ from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode, UserSettings
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
-from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewRequestPost, Ticket
+from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewEvidence, ReviewRequestPost, Ticket
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
@@ -146,6 +146,148 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
             code, payload = _run("--title", "t")
         assert code == 0, payload
         assert payload["action"] == "post"
+
+
+def _reviewed_gate(*, required: bool) -> AbstractContextManager[object]:
+    return patch(
+        "teatree.core.gates.review_request_state_gate.get_effective_settings",
+        return_value=UserSettings(require_reviewed_state_for_review_request=required),
+    )
+
+
+class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
+    """PR-08: with the gate on, a broadcast refuses unless the ticket is REVIEWED + has evidence."""
+
+    def test_refused_when_ticket_not_reviewed_and_takes_no_claim(self) -> None:
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk))
+        assert code == 2
+        assert payload["reason"] == "ticket_not_reviewed"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_refused_when_ticket_id_missing(self) -> None:
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+        ):
+            code, payload = _run()  # no --ticket-id
+        assert code == 2
+        assert payload["reason"] == "ticket_not_reviewed"
+
+    def test_allows_reviewed_ticket_with_evidence(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
+
+    def test_allows_in_review_ticket_with_evidence(self) -> None:
+        # PR-08b wave-2 audit: the ENABLED gate exercised end-to-end with the
+        # REALISTIC broadcast-time state (IN_REVIEW — the FSM advanced
+        # review → ship → request_review before the request broadcast fires).
+        # RED on the pre-fix strict ``state == REVIEWED`` gate: the command
+        # refused with reason ``ticket_not_reviewed`` and posted nothing.
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
+
+    def test_noop_when_gate_off(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
+        with (
+            _reviewed_gate(required=False),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+
+
+class TestReviewRequestPostOverlayResolution(_DataDirMixin, TestCase):
+    """The post resolves the MR's owning overlay, exactly as ``check`` does.
+
+    ``review_request_check`` was taught to thread the URL-owning overlay so the
+    in-process MCP surface (no ``T3_OVERLAY_NAME``, every overlay registered)
+    stops answering ``no_review_channel_or_token`` on a perfectly postable
+    channel. The POST half kept calling ``resolve_guard_target()`` bare, so on
+    that same surface the guard's swallowed ``Multiple overlays found`` turned a
+    real broadcast into the #2231 "channel unpostable — forward it yourself" DM.
+    The two halves must resolve the same overlay for the same MR.
+    """
+
+    def test_threads_the_url_owning_overlay_into_guard_draft_and_messaging(self) -> None:
+        seen: dict[str, object] = {}
+        backend = _FakeBackend()
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+
+        def _guard(**kw: object) -> GuardTarget:
+            seen["guard"] = kw.get("overlay_name")
+            return _TARGET
+
+        def _draft(mr_url: str, *, overlay_name: str = "") -> bool:
+            seen["draft"] = overlay_name
+            return False
+
+        def _messaging(name: str | None = None) -> _FakeBackend:
+            seen["messaging"] = name
+            return backend
+
+        with (
+            patch.dict(os.environ),
+            patch(f"{_CMD}.overlay_for_mr_url", return_value="t3-acme"),
+            patch(f"{_CMD}.resolve_guard_target", side_effect=_guard),
+            patch(f"{_CMD}.is_draft_mr", side_effect=_draft),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", side_effect=_messaging),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert seen == {"guard": "t3-acme", "draft": "t3-acme", "messaging": "t3-acme"}
 
 
 class TestReviewRequestPostDedup(TestCase):
@@ -400,6 +542,48 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert _MR_URL in data
         assert data[_MR_URL]["channel"] == "C_REVIEW"
         assert data[_MR_URL]["permalink"].startswith("https://team.slack.com/archives/C_REVIEW/")
+
+    def test_draft_mr_refused_before_claim(self) -> None:
+        """A draft MR refuses ``draft_mr`` (exit 2) BEFORE any dedup claim row is taken."""
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.is_draft_mr", return_value=True),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 2, payload
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "draft_mr"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_permalink_filed_under_ticket_iid_not_mr_iid(self) -> None:
+        """The review-message cache is keyed by the TICKET iid, never the MR iid (#1084 follow-up).
+
+        ``_MR_URL`` ends in ``/385`` (the MR iid); the owning ticket is issue
+        ``17``. The permalink must land under ``tickets/17/``, not ``tickets/385/``.
+        """
+        from teatree.core.models import PullRequest  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://gitlab.com/org/repo/-/issues/17")
+        assert ticket.issue_number == "17"
+        PullRequest.objects.create(ticket=ticket, url=_MR_URL, repo="org/repo", iid="385")
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert (self._tmp / "tickets" / "17" / "mr_review_messages.json").exists()
+        assert not (self._tmp / "tickets" / "385" / "mr_review_messages.json").exists()
 
     def test_second_call_with_consumed_approval_refuses(self) -> None:
         OnBehalfApproval.record(

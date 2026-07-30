@@ -42,9 +42,14 @@ class RubricNotSatisfiedError(RuntimeError):
     """A merge was refused because the ticket's rubric is not fully PASS at the head SHA."""
 
 
-def rubric_gate_required() -> bool:
-    """Whether the rubric done-gate is in force (overlay -> global)."""
-    return get_effective_settings().require_rubric_verification
+def rubric_gate_required(overlay: str | None = None) -> bool:
+    """Whether the rubric done-gate is in force for *overlay* (overlay -> global).
+
+    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
+    when the evaluating process has no ambient ``T3_OVERLAY_NAME`` (the merge
+    keystone runs env-less). ``None`` resolves the ambient overlay as before.
+    """
+    return get_effective_settings(overlay).require_rubric_verification
 
 
 def latest_rubric(ticket: "Ticket") -> "Rubric | None":
@@ -54,7 +59,7 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
     the manager's ``active_for_ticket`` (order by ``-created_at``, first) is the
     active row.
     """
-    from teatree.core.models.rubric import Rubric  # noqa: PLC0415
+    from teatree.core.models.rubric import Rubric  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     return Rubric.objects.active_for_ticket(ticket)
 
@@ -70,13 +75,13 @@ def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
     (ticket-wide, ``task_id=None``). Fail-SAFE: any error recording the row is
     swallowed — the backstop must never block the (already-refusing) gate.
     """
-    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415
+    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
 
     try:
         session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
         if session is not None and session.agent_id:
             HonestyEscalation.record(HonestyEscalation.Reason.SHIPPED_INCOMPLETE, session_id=session.agent_id)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — the honesty backstop must never block the already-refusing gate
         return
 
 
@@ -94,7 +99,7 @@ def check_rubric_satisfied(ticket: "Ticket", head_sha: str, *, transition: str) 
     (teatree#2263 trigger #4 backstop) for the ticket's active session before
     raising, so the next verification spawn routes to the most-honest model.
     """
-    if not rubric_gate_required():
+    if not rubric_gate_required(ticket.overlay or None):
         return
     rubric = latest_rubric(ticket)
     if rubric is not None and rubric.is_fully_passed_at(head_sha):

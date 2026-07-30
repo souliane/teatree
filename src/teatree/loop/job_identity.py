@@ -42,6 +42,7 @@ class Domain(StrEnum):
     HOUSEKEEPING = "housekeeping"
     ISSUE_IMPLEMENTER = "issue_implementer"
     ISSUE_DISPOSITION = "issue_disposition"
+    TRIAGE_ASSESSOR = "triage_assessor"
     DISPATCH = "dispatch"
 
 
@@ -56,6 +57,7 @@ PER_OVERLAY_DOMAINS: tuple[Domain, ...] = (
     Domain.HOUSEKEEPING,
     Domain.ISSUE_IMPLEMENTER,
     Domain.ISSUE_DISPOSITION,
+    Domain.TRIAGE_ASSESSOR,
 )
 
 

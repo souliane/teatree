@@ -1,0 +1,274 @@
+"""The ``t3 setup`` typer command — coordination only.
+
+The ``run`` callback wires together the composed units
+(:class:`~teatree.cli.setup.tool_installer.ToolInstaller`,
+:class:`~teatree.cli.setup.apm.ApmInstaller`,
+:class:`~teatree.cli.setup.skill_linker.SkillLinker`,
+:class:`~teatree.cli.setup.plugin_registrar.PluginRegistrar`) and the
+clone-resolution helpers. Each concern lives in its own sibling module.
+"""
+
+import os
+from pathlib import Path
+
+import typer
+
+from teatree.cli.account_switch_recover import recover_account_switch
+from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
+from teatree.cli.doctor import agent_skill_dirs
+from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
+from teatree.cli.setup.clone import find_main_clone, validate_repo
+from teatree.cli.setup.docker_alias import DockerAliasInstaller
+from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
+from teatree.cli.setup.mandated_skills import MandatedSkillProvisioner
+from teatree.cli.setup.mcp_registrar import McpServerRegistrar
+from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
+from teatree.cli.setup.plugin_registrar import PluginRegistrar, PyrightPluginRegistrar
+from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
+from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline
+from teatree.cli.setup.tool_installer import ToolInstaller
+from teatree.cli.slack.dm_provisioning import provision_all_overlay_dm_channels
+from teatree.cli.slack.provision import slack_provision
+from teatree.cli.slack.setup import slack_bot_setup
+from teatree.cli.slack.user_token_setup import slack_user_token_setup
+from teatree.paths import get_data_dir
+from teatree.self_update import ensure_self_db_migrated, seed_default_loops
+from teatree.utils.django_bootstrap import ensure_django
+
+setup_app = typer.Typer(
+    help="First-time setup and global skill management.",
+    invoke_without_command=True,
+)
+
+
+def _write_automode_consented(*, yes: bool) -> bool:
+    """True when the operator explicitly consented to writing managed settings.
+
+    Consent is an explicit ``--yes`` or a truthy ``TEATREE_WRITE_AUTOMODE`` env
+    (the non-interactive/provisioning consent channel). Teatree edits the user's
+    ``~/.claude/settings.json`` only under this explicit grant — the classifier
+    whitelist stays the operator's final say (BLUEPRINT §11.4).
+    """
+    return yes or os.environ.get("TEATREE_WRITE_AUTOMODE", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _maybe_write_managed_settings(repo: Path, settings_json: Path, *, write_automode: bool, yes: bool) -> None:
+    """Deep-merge the committed Claude-settings template into ``settings_json`` on consent (#3408/#3410).
+
+    ``deploy/claude-settings.template.json`` is the single source of truth for the
+    managed keys (model, permission mode + allow-list, ``autoMode.allow`` recommended
+    grants, tool-use concurrency). With ``--write-automode`` and explicit consent this
+    applies the SAME deep merge the container seed uses, so host and container never
+    drift. Without consent it only points the operator at the flag — it never writes.
+    """
+    if not write_automode:
+        return
+    if not _write_automode_consented(yes=yes):
+        typer.echo(
+            "WARN  --write-automode needs explicit consent — re-run with `--yes` "
+            "(or set TEATREE_WRITE_AUTOMODE=1) to deep-merge the managed Claude settings.",
+        )
+        return
+    from teatree.cli.setup.claude_settings import write_host_claude_settings  # noqa: PLC0415 — lazy CLI import
+
+    template = repo / "deploy" / "claude-settings.template.json"
+    try:
+        write_host_claude_settings(template, settings_json)
+    except FileNotFoundError:
+        typer.echo(f"WARN  No Claude-settings template at {template} — skipped --write-automode.")
+        return
+    typer.echo(f"OK    Merged managed Claude settings from {template.name} into {settings_json}.")
+
+
+def _report_statusline_install(settings_json: Path, repo: Path) -> None:
+    """Install the Claude Code statusLine block and echo the outcome (PR-17)."""
+    result = install_statusline(settings_json, repo)
+    if result is StatuslineInstall.INSTALLED:
+        typer.echo("OK    Installed statusLine block into settings.json.")
+    elif result is StatuslineInstall.ALREADY_PRESENT:
+        typer.echo("OK    statusLine already configured — left untouched.")
+    elif result is StatuslineInstall.UNWRITABLE:
+        typer.echo("WARN  Could not write the statusline to settings.json (not writable) — skipping; setup continues.")
+    else:
+        typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
+
+
+def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
+    """Sync core + overlay skill symlinks into every agent runtime's skills dir."""
+    for label, skills_dir in agent_skill_dirs():
+        if not skills_dir.is_dir():
+            continue
+        linker = SkillLinker(skills_dir, workspace_dir)
+        removed = linker.remove_excluded(excluded)
+        if removed:
+            typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
+
+        sync_core = label != "claude"
+        created, fixed = linker.sync(sync_core=sync_core)
+        suffix = "" if sync_core else " (core skills via plugin)"
+        typer.echo(f"OK    {label}: {created} created, {fixed} fixed{suffix}.")
+
+        broken = linker.clean_broken()
+        if broken:
+            typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
+
+
+def _install_checkout_git_config(repo: Path) -> None:
+    """Install the per-checkout git config every checkout teatree commits from needs.
+
+    A checkout whose hooks were never installed pushes with the whole local gate
+    layer absent (leak gate, banned-terms, dev/push-gate.sh) and nothing errors;
+    a checkout without the ``generated`` merge driver leaves textual conflict
+    markers on generated docs (the CLI reference, antipattern catalog) on every
+    CLI-touching PR (souliane/teatree#3582). Both are per-``.git/config``
+    properties, so both walk the same checkout set.
+
+    Ordering: ``prek_hook.install`` routes through ``run_step``'s optional
+    time-box, which imports ``provision_timebox`` -> ``notify`` ->
+    ``teatree.core.models`` at call time — Django must already be configured
+    (the caller runs ``ensure_django()`` first).
+    """
+    GitHooksInstaller(repo).install(echo=typer.echo)
+    GitMergeDriverInstaller(repo).install(echo=typer.echo)
+
+
+@setup_app.callback()
+def run(
+    ctx: typer.Context,
+    *,
+    skip_plugin: bool = typer.Option(False, "--skip-plugin", help="Skip Claude CLI plugin registration."),
+    write_automode: bool = typer.Option(
+        False,
+        "--write-automode",
+        help="Deep-merge the committed Claude-settings template (recommended autoMode grants + managed keys) "
+        "into ~/.claude/settings.json. Requires --yes (or TEATREE_WRITE_AUTOMODE=1).",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Consent to teatree editing ~/.claude/settings.json (see --write-automode)."
+    ),
+) -> None:
+    """Install and configure teatree skills globally.
+
+    Runs APM dependency install, syncs skill symlinks, and registers the t3
+    plugin in ``~/.claude/plugins/installed_plugins.json`` (``installPath``
+    pointing at the main clone — no ``~/.claude/plugins/t3`` symlink).  Safe to
+    run from a teatree worktree — the main clone is resolved via the worktree's
+    ``.git`` file so the global install stays anchored to a stable path.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    repo = validate_repo(find_main_clone())
+    typer.echo(f"Teatree repo: {repo}")
+
+    _repair_dep_drift(repo)
+    ToolInstaller(repo).ensure_installed()
+
+    ApmInstaller(repo).install()
+
+    # ensure_django() is idempotent; the later call before DM provisioning is a
+    # no-op repeat. It must precede _install_checkout_git_config — see that helper.
+    ensure_django()
+    _install_checkout_git_config(repo)
+
+    settings_json = Path.home() / ".claude" / "settings.json"
+    stripped = strip_apm_hooks(settings_json)
+    if stripped:
+        typer.echo(f"OK    Stripped {stripped} APM-injected hook(s) from settings.json.")
+
+    _report_statusline_install(settings_json, repo)
+
+    # #3232: wire the containerized `t3` workflow — install a shell alias pointing
+    # `t3` at the container-wrapping `deploy/t3` entry so `t3 <args>` transparently
+    # execs into the Docker worker. No-ops inside a container (there the container
+    # IS the CLI); best-effort on the host (an unwritable rc WARNs, never aborts).
+    DockerAliasInstaller(repo).install(echo=typer.echo)
+
+    from teatree.config import clone_root, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    config = load_config()
+
+    all_excluded = list(dict.fromkeys(CORE_EXCLUDED_SKILLS + config.user.excluded_skills))
+    # The CLONE root (``~/workspace``) — skill-symlink targets are checked for
+    # being under it, not under the per-overlay worktree root.
+    workspace_dir = clone_root()
+
+    # Ensure the Claude skills dir exists so overlay symlinks have a target.
+    # Core skills reach Claude via the t3 plugin, not via this directory.
+    claude_skills = Path.home() / ".claude" / "skills"
+    claude_skills.mkdir(parents=True, exist_ok=True)
+
+    _sync_runtime_skill_links(workspace_dir, all_excluded)
+
+    # #3652: install the skills teatree's own configuration MANDATES but ships in
+    # no plugin — the companion bibles the operator config declares non-negotiable
+    # for Python/Django work. `apm` is the declared installer and is absent from
+    # the deployed image, so a fresh box ran agents that could not load a skill
+    # their config requires. Runs AFTER the linker (whose stale-link prune only
+    # touches teatree-owned source roots, never these) and is idempotent — an
+    # already-loadable skill is skipped, so the entrypoint's every-start `t3 setup`
+    # converges without re-fetching.
+    MandatedSkillProvisioner(repo, claude_skills, get_data_dir("skill-sources")).provision(typer.echo)
+
+    if not skip_plugin:
+        PluginRegistrar(repo).install()
+        # Register + enable the external pyright-lsp plugin (anthropics/claude-plugins-official)
+        # so factory agents get LIVE pyright type diagnostics while coding, instead of
+        # shipping type errors that only CI catches. Best-effort/offline-safe — an
+        # unreachable marketplace WARNs and continues; its `pyright-langserver` runtime
+        # dep is baked into the image and advisory-checked by `t3 doctor`.
+        PyrightPluginRegistrar().install()
+        # #3568: register+enable is not enough — the plugin execs `pyright-langserver`,
+        # so provision that binary (npm `pyright` into ~/.local) when it is missing.
+        # Idempotent (skips when already on PATH) and offline-safe (WARNs, continues).
+        PyrightPluginRegistrar.ensure_langserver()
+        # Confirm the structured-search MCP server (`t3 mcp serve`, #1023) is
+        # still wired via the plugin-bundled `.mcp.json` (#2863) — read-only,
+        # idempotent, warns loudly rather than silently regressing agents back
+        # to shelling out to the CLI for structured reads.
+        McpServerRegistrar(repo).verify()
+
+    self_db_unmigrated = ensure_self_db_migrated(quiet=True)
+
+    # Per-overlay Slack-bot IM provisioning (#1342) — open ``conversations.open``
+    # once for every Slack-bot overlay in the DB ``overlays`` registry that has no
+    # ``slack_dm_channel_id`` cached yet, then persist the resulting channel id back
+    # into that registry row. Without this step a freshly-registered per-overlay bot
+    # has no IM with the user, ``messaging_from_overlay`` returns a backend that hits
+    # ``channel_not_found`` on first DM, and the post silently falls back through
+    # whichever bot already had an IM open — conflating per-overlay attribution. Runs
+    # after the self-DB migrate so the ``ConfigSetting`` table exists, and behind
+    # ``ensure_django()`` — since #3074 the registry read is an in-process
+    # ``ConfigSetting`` ORM read, while the migrate/seed steps are subprocesses that
+    # never configure Django in this interpreter.
+    # #2513: also seed the default loops + prompts so a fresh (or squashed-migration)
+    # install has them present. Idempotent (``get_or_create`` by name) and
+    # best-effort — it never clobbers an operator-edited row and never aborts setup.
+    # The cron is NOT registered here and no tick is started: the seeded rows are
+    # config only until the operator opts in.
+    if not self_db_unmigrated:
+        ensure_django()
+        provision_all_overlay_dm_channels(echo=typer.echo)
+        seed_default_loops()
+
+    # Suggest (never apply) the recommended per-user auto-mode authorizations.
+    # Teatree ships no classifier whitelist of its own — see
+    # ``skills/setup/references/recommended-automode-authorizations.md``.
+    from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415 — lazy CLI import
+
+    report_missing_authorizations(typer.echo)
+
+    # #3408/#3410: on explicit consent, WRITE the managed settings (recommended
+    # autoMode grants + model/permissions/env) from the one committed template so
+    # a fresh box is classifier-unblocked and host+container stay in lockstep.
+    _maybe_write_managed_settings(repo, settings_json, write_automode=write_automode, yes=yes)
+
+    if self_db_unmigrated:
+        raise typer.Exit(code=1)
+
+    typer.echo("Done.")
+
+
+setup_app.command("slack-bot")(slack_bot_setup)
+setup_app.command("slack-user-token")(slack_user_token_setup)
+setup_app.command("slack-provision")(slack_provision)
+setup_app.command("recover-account-switch")(recover_account_switch)

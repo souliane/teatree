@@ -19,7 +19,7 @@ from django.test import TestCase
 
 from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
-from teatree.core import review_findings as rf_mod
+from teatree.core.review import review_findings as rf_mod
 from tests.teatree_core.conftest import CommandOverlay
 
 _PR_URL = "https://github.com/souliane/teatree/pull/2024"
@@ -114,6 +114,32 @@ class RetroGateFailuresTest(TestCase):
         assert any("user-directed-question" in g for g in preventable)
         assert any("plugin-directory-does-not-exist" in g for g in environmental)
         assert not any("pretooluse" in g for g in verdicts)
+
+    def test_a_gate_repeated_within_one_session_reports_recurring(self) -> None:
+        """The reported flag, not just the filer.
+
+        A session in which the SAME gate blocked repeatedly used to report
+        ``recurring: false`` on every row, because recurrence counted distinct
+        session FILES and one session is one file. Recurrence is what escalates a
+        finding from "write a memory" to "build a gate", so the flag being wrong
+        here is the whole signal being wrong.
+        """
+        store_dir = Path(self._tmp())
+        session = _session_file(
+            store_dir,
+            *[_gate_block_line(message=_QUESTION_GATE)] * 3,
+        )
+        result = self._run(file=str(session), store_dir=store_dir)
+        failures = cast("list[dict[str, object]]", result["failures"])
+        assert len(failures) == 3
+        assert all(f["recurring"] is True for f in failures)
+
+    def test_a_gate_blocking_once_in_one_session_is_not_recurring(self) -> None:
+        store_dir = Path(self._tmp())
+        session = _session_file(store_dir, _gate_block_line(message=_QUESTION_GATE))
+        result = self._run(file=str(session), store_dir=store_dir)
+        failures = cast("list[dict[str, object]]", result["failures"])
+        assert [f["recurring"] for f in failures] == [False]
 
     def test_serialized_output_never_carries_message_stderr_or_command(self) -> None:
         store_dir = Path(self._tmp())

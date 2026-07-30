@@ -30,12 +30,13 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
+from teatree.eval.context_budget import _HEADING_RE, MissingSectionError, extract_sections
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matcher_vacuity import negative_only_specs
 from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
 from teatree.eval.report import evaluate
-from teatree.eval.sdk_runner import load_agent_definition
 
 FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 
@@ -381,8 +382,6 @@ def test_every_declared_agent_section_resolves_against_its_skill() -> None:
     the real on-disk SKILL.md the same way the runner does, so a drifted heading
     fails here, not silently months later.
     """
-    from teatree.eval.context_budget import MissingSectionError, extract_sections  # noqa: PLC0415
-
     offenders: list[str] = []
     for spec in discover_specs():
         if not spec.agent_sections:
@@ -396,6 +395,54 @@ def test_every_declared_agent_section_resolves_against_its_skill() -> None:
         "scenario(s) declare agent_sections that do not match any `## ` heading in "
         "their agent_path SKILL.md (a drifted/typo'd anchor would send an empty rule "
         "prompt and make the scenario vacuous at metered-run time):\n" + "\n".join(offenders)
+    )
+
+
+def _expected_section_body(text: str, name: str) -> str | None:
+    """The named heading's body through the next SAME-OR-SHALLOWER heading.
+
+    The independent oracle the completeness gate grades against: it walks the
+    headings itself rather than calling the extractor under test, so a regression
+    in the extractor cannot move the expectation with it.
+    """
+    headings = list(_HEADING_RE.finditer(text))
+    for index, match in enumerate(headings):
+        if match.group(2) != name:
+            continue
+        depth = len(match.group(1))
+        end = next(
+            (later.start() for later in headings[index + 1 :] if len(later.group(1)) <= depth),
+            len(text),
+        )
+        return text[match.start() : end].rstrip()
+    return None
+
+
+def test_every_declared_agent_section_extracts_completely() -> None:
+    """A resolved anchor must also send the section's WHOLE body, subsections included.
+
+    The sibling gate above proves the anchor RESOLVES; it says nothing about how much
+    of the section came back. A section delimited by the next heading of any depth
+    stops at its own first subsection, so a rule whose carve-outs, worked examples, and
+    ``(do X, never Y)`` blocks live under ``### `` headings reaches the grader stripped
+    of them — the scenario is then graded against a rule the skill does not state, and
+    every matcher still passes, so nothing goes red.
+    """
+    offenders: list[str] = []
+    for spec in discover_specs():
+        if not spec.agent_sections:
+            continue
+        text = load_agent_definition(spec.agent_path)
+        extracted = extract_sections(text, spec.agent_sections)
+        for name in spec.agent_sections:
+            expected = _expected_section_body(text, name)
+            if expected is not None and expected not in extracted:
+                lost = len(expected.encode()) - len(extracted.encode())
+                offenders.append(f"  - {spec.name} ({spec.source_path.name}): {name!r} short by ~{lost} B")
+    assert not offenders, (
+        "scenario(s) declare agent_sections whose extracted span stops before the next "
+        "same-or-shallower heading, so the graded system prompt is missing part of the "
+        "rule under test:\n" + "\n".join(offenders)
     )
 
 

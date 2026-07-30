@@ -7,9 +7,22 @@ is the canonical override tier (mirrors ``MergeClear`` / ``DbApproval`` —
 returns its stored value.
 """
 
+import pytest
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome, scope_label
+
+
+class TestScopeLabel:
+    """The one ``scope_label`` home shared by the config CLI and the TOML export."""
+
+    def test_empty_scope_is_global(self) -> None:
+        assert scope_label("") == "global"
+
+    def test_named_scope_is_overlay_quoted(self) -> None:
+        assert scope_label("myproj") == "overlay 'myproj'"
 
 
 class TestConfigSettingStore(TestCase):
@@ -49,6 +62,23 @@ class TestConfigSettingStore(TestCase):
     def test_str_is_informative(self) -> None:
         row = ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
         assert "issue_implementer_enabled" in str(row)
+
+
+class TestConfigSettingEmptyValuesRoundTrip(TestCase):
+    """``[]``/``{}`` survive the manager's write→read path, not just ``full_clean``.
+
+    ``TestConfigSettingValueValidation`` covers the form/validation layer; these
+    prove an empty override actually comes back out of the store, so a caller
+    reading ``statusline_chain`` gets the override rather than the shipped default.
+    """
+
+    def test_empty_list_round_trips(self) -> None:
+        ConfigSetting.objects.set_value("statusline_chain", [])
+        assert ConfigSetting.objects.get_effective("statusline_chain") == []
+
+    def test_empty_dict_round_trips(self) -> None:
+        ConfigSetting.objects.set_value("agent_skill_models", {})
+        assert ConfigSetting.objects.get_effective("agent_skill_models") == {}
 
 
 class TestConfigSettingScope(TestCase):
@@ -97,3 +127,139 @@ class TestConfigSettingScope(TestCase):
     def test_str_names_overlay_scope(self) -> None:
         row = ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
         assert "my-overlay" in str(row)
+
+
+class TestSeedProvenance(TestCase):
+    """Provenance-aware deploy seed (#3435).
+
+    A changed shipped default reaches an existing box, a code-default seed is
+    never written, and an operator override is always preserved.
+    """
+
+    def test_seed_below_default_creates_with_provenance(self) -> None:
+        outcome = ConfigSetting.objects.seed("provision_max_concurrency", 1, code_default=0)
+        assert outcome is SeedOutcome.CREATED
+        row = ConfigSetting.objects.get(key="provision_max_concurrency")
+        assert row.value == 1
+        assert row.seed_value == 1
+        assert row.seeded_by == ENTRYPOINT_SEEDER
+
+    def test_seed_equal_to_code_default_is_not_written(self) -> None:
+        outcome = ConfigSetting.objects.seed("provision_max_concurrency", 0, code_default=0)
+        assert outcome is SeedOutcome.SKIPPED_DEFAULT
+        assert ConfigSetting.objects.filter(key="provision_max_concurrency").exists() is False
+
+    def test_reseed_same_value_is_a_noop(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.UNCHANGED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 75
+
+    def test_changed_shipped_seed_reseeds_an_unchanged_row(self) -> None:
+        # An old deploy seeded 70; the row still equals that seed (operator never
+        # touched it), so a new deploy shipping 75 must update it.
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.UPDATED
+        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        assert row.value == 75
+        assert row.seed_value == 75
+
+    def test_operator_override_is_preserved_across_reseed(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        # The operator pins their own value via the admin `set` path.
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 90)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.PRESERVED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 90
+
+    def test_reseed_equal_to_default_removes_an_owned_row(self) -> None:
+        # A row this seeder owns whose shipped seed now equals the code default is
+        # DROPPED so the live code default flows through (never frozen).
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 85, code_default=85)
+        assert outcome is SeedOutcome.REMOVED
+        assert ConfigSetting.objects.filter(key="provision_ram_ceiling_percent").exists() is False
+
+    def test_row_seeded_by_another_marker_is_preserved(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85, seeded_by="other")
+        outcome = ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        assert outcome is SeedOutcome.PRESERVED
+        assert ConfigSetting.objects.get_effective("provision_ram_ceiling_percent") == 70
+
+    def test_set_value_clears_seed_provenance(self) -> None:
+        ConfigSetting.objects.seed("provision_ram_ceiling_percent", 75, code_default=85)
+        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 75)
+        row = ConfigSetting.objects.get(key="provision_ram_ceiling_percent")
+        assert row.seeded_by == ""
+        assert row.seed_value is None
+
+
+class TestConfigSettingValueValidation(TestCase):
+    """``full_clean`` accepts every legitimately-empty JSON value but refuses ``None``.
+
+    Any ``ModelForm`` over this store (the Django admin included) resolves the
+    empty-vs-required question here, so the model — not a per-form override —
+    is what keeps ``[]`` savable and a blank submission out of the NOT NULL
+    column.
+    """
+
+    def test_full_clean_accepts_legitimately_empty_values(self) -> None:
+        for value in ([], {}, "", 0, False):
+            ConfigSetting(scope=GLOBAL_SCOPE, key="statusline_chain", value=value).full_clean()
+
+    def test_full_clean_rejects_none_as_a_value_field_error(self) -> None:
+        row = ConfigSetting(scope=GLOBAL_SCOPE, key="statusline_chain", value=None)
+        with pytest.raises(ValidationError) as caught:
+            row.full_clean()
+        assert "value" in caught.value.message_dict
+
+
+class TestConfigSettingCrossKeyConsistency(TestCase):
+    """``set_value`` rejects an inconsistent (agent_harness, agent_harness_provider) pair (#3688).
+
+    A provider valid only under ``pydantic_ai`` written while ``agent_harness``
+    sits at its ``claude_sdk`` default would be accepted silently today, then fail
+    EVERY later dispatch. The guard moves that rejection to write time; the store
+    is left untouched on rejection.
+    """
+
+    def test_provider_inconsistent_with_default_harness_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") is None
+
+    def test_retired_orca_router_byok_under_default_harness_is_rejected(self) -> None:
+        # The exact production trigger from #3688.
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
+
+    def test_provider_valid_under_default_harness_is_accepted(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "subscription_oauth"
+
+    def test_harness_then_matching_provider_is_accepted(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider") == "openai_compatible"
+
+    def test_harness_change_conflicting_with_stored_provider_is_rejected(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        # The harness row is unchanged — the rejected write left the store intact.
+        assert ConfigSetting.objects.get_effective("agent_harness") == "pydantic_ai"
+
+    def test_overlay_scope_pair_is_checked_against_the_default_harness(self) -> None:
+        with pytest.raises(ValidationError):
+            ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible", scope="acme")
+
+    def test_overlay_scope_provider_matches_overlay_scope_harness(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai", scope="acme")
+        ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible", scope="acme")
+        assert ConfigSetting.objects.get_effective("agent_harness_provider", scope="acme") == "openai_compatible"
+
+    def test_unrelated_key_write_is_never_touched(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True

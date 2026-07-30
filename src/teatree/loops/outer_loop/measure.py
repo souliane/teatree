@@ -1,0 +1,93 @@
+"""The MEASURE + DECIDE phases — post-horizon score and keep-only-if-better (T4-PR-3).
+
+After an experiment's fix merges the loop arms a measurement horizon
+(:func:`arm_measurement`); once :func:`horizon_elapsed` days pass it takes a post
+:func:`~teatree.loops.outer_loop.score.read_score` and applies the pure
+:func:`~teatree.loops.outer_loop.decide.decide_keep` rule
+(:func:`measure_and_decide`). A non-improving experiment is never kept — it moves
+to ``REVERT_PENDING`` for a human-ratified revert.
+
+MEASURE is a time+merge-count window, NOT causal attribution — a horizon-window
+delta is confounded by unrelated merges. The no-regression-anywhere rule and the
+human-ratified revert bound the risk; a KEPT decision is "correlated better", not
+"proven caused". This is the known weakest link (documented in BLUEPRINT).
+"""
+
+from datetime import datetime, timedelta
+
+from teatree.core.factory.factory_score import FactoryScore
+from teatree.core.models import FactoryScoreSnapshot, OuterLoopExperiment
+from teatree.loops.outer_loop.decide import Decision, decide_keep
+from teatree.loops.outer_loop.score import read_score
+from teatree.loops.shared.score_snapshot import snapshot_to_score
+from teatree.utils.git_branch import head_sha
+
+
+def arm_measurement(experiment: OuterLoopExperiment, *, now: datetime | None = None) -> None:
+    """``IMPLEMENTING`` → ``MEASURING``: start the post-merge horizon clock."""
+    experiment.arm_measure(now=now)
+
+
+def horizon_elapsed(experiment: OuterLoopExperiment, *, measure_days: int, now: datetime) -> bool:
+    """Whether the measurement horizon has elapsed since the clock was armed."""
+    started = experiment.measure_started_at
+    if started is None:
+        return False
+    return now >= started + timedelta(days=measure_days)
+
+
+def measure_and_decide(
+    experiment: OuterLoopExperiment,
+    *,
+    overlay: str = "",
+    now: datetime | None = None,
+    post_score: FactoryScore | None = None,
+) -> Decision:
+    """Take the post score, apply the keep-rule, and resolve the experiment.
+
+    KEEP → ``KEEP_PENDING`` bound to the current HEAD sha (a human ratifies the keep
+    via ``t3 outer resolve-keep``); otherwise → ``REVERT_PENDING``. The baseline is
+    the experiment's admission snapshot; a missing baseline is a conservative REVERT
+    (we cannot prove improvement without it).
+    """
+    resolved_post = post_score if post_score is not None else read_score(overlay=overlay, now=now)
+    post_snapshot = FactoryScoreSnapshot.objects.record_snapshot(
+        resolved_post, tree_sha=_safe_head_sha(), overlay=overlay
+    )
+    baseline = _baseline_score(experiment)
+    if baseline is None:
+        experiment.request_revert(
+            post_snapshot=post_snapshot, reason="no admission baseline — cannot prove improvement"
+        )
+        return Decision(keep=False, reason="no admission baseline")
+    decision = decide_keep(
+        baseline=baseline,
+        post=resolved_post,
+        target_provider_id=experiment.target_provider_id,
+        regress_band=experiment.regress_band,
+    )
+    if decision.keep:
+        experiment.request_keep(post_snapshot=post_snapshot, merged_sha=post_snapshot.tree_sha, reason=decision.reason)
+    else:
+        experiment.request_revert(post_snapshot=post_snapshot, reason=decision.reason)
+    return decision
+
+
+def _baseline_score(experiment: OuterLoopExperiment) -> FactoryScore | None:
+    """Reconstruct the admission FactoryScore from the experiment's baseline snapshot.
+
+    Delegates to the shared :func:`~teatree.loops.shared.score_snapshot.snapshot_to_score`
+    (F6.6) — the ONE snapshot→score inverse — rather than a verbatim second copy that
+    could drift from it field by field.
+    """
+    snapshot = experiment.baseline_snapshot
+    if snapshot is None:
+        return None
+    return snapshot_to_score(snapshot)
+
+
+def _safe_head_sha() -> str:
+    try:
+        return head_sha() or ""
+    except Exception:  # noqa: BLE001 — provenance is best-effort, never fatal to a measure
+        return ""

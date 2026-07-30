@@ -6,12 +6,13 @@ This file pins the deterministic pieces: the mutmut config it writes, the result
 parser, the ratchet/verdict, and the diff-resolution wiring.
 """
 
+import dataclasses
+import inspect
 from pathlib import Path
 
 import pytest
 
 from teatree.quality import mutation_run
-from teatree.quality.mutation import MutationConfigError
 from teatree.quality.mutation_run import (
     BaselineRatchet,
     MutationOutcome,
@@ -88,38 +89,54 @@ class TestBaselineRatchetVerdict:
             inconclusive=(),
         )
 
-    def test_warn_mode_fails_when_survivors_exceed_baseline(self) -> None:
+    def test_fails_when_survivors_exceed_baseline(self) -> None:
         outcome = self._outcome(survivors=5)
-        assert BaselineRatchet.verdict(outcome, mode="warn", baseline=0) == 1
+        assert BaselineRatchet.verdict(outcome, baseline=0) == 1
 
-    def test_warn_mode_passes_at_or_below_baseline(self) -> None:
+    def test_passes_at_or_below_baseline(self) -> None:
         outcome = self._outcome(survivors=2)
-        assert BaselineRatchet.verdict(outcome, mode="warn", baseline=2) == 0
+        assert BaselineRatchet.verdict(outcome, baseline=2) == 0
 
-    def test_block_mode_fails_above_baseline(self) -> None:
+    def test_fails_one_above_baseline(self) -> None:
         outcome = self._outcome(survivors=3)
-        assert BaselineRatchet.verdict(outcome, mode="block", baseline=2) == 1
+        assert BaselineRatchet.verdict(outcome, baseline=2) == 1
 
-    def test_block_mode_passes_at_or_below_baseline(self) -> None:
-        outcome = self._outcome(survivors=2)
-        assert BaselineRatchet.verdict(outcome, mode="block", baseline=2) == 0
-
-    def test_block_mode_passes_with_no_survivors(self) -> None:
+    def test_passes_with_no_survivors(self) -> None:
         outcome = self._outcome(survivors=0)
-        assert BaselineRatchet.verdict(outcome, mode="block", baseline=0) == 0
+        assert BaselineRatchet.verdict(outcome, baseline=0) == 0
 
-    def test_no_op_outcome_passes_in_any_mode(self) -> None:
+    def test_no_op_outcome_passes(self) -> None:
         outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
-        assert BaselineRatchet.verdict(outcome, mode="block", baseline=0) == 0
-        assert BaselineRatchet.verdict(outcome, mode="warn", baseline=0) == 0
+        assert BaselineRatchet.verdict(outcome, baseline=0) == 0
 
-    def test_rejects_unknown_mode(self) -> None:
-        with pytest.raises(MutationConfigError, match="mode"):
-            BaselineRatchet.verdict(self._outcome(survivors=1), mode="explode", baseline=0)
+
+class TestNoInertModeParameter:
+    """The verdict is a pure function of ``(outcome, baseline)`` — no discarded knob.
+
+    ``verdict`` used to accept and validate a ``mode`` that both values resolved
+    identically through, and ``MutationSettings`` carried the field only to feed
+    it. A parameter validated and then discarded reads as a live control it is
+    not, so neither survives.
+    """
+
+    def test_verdict_accepts_no_mode_argument(self) -> None:
+        assert "mode" not in inspect.signature(BaselineRatchet.verdict).parameters
+
+    def test_settings_carry_no_mode_field(self) -> None:
+        assert "mode" not in {field.name for field in dataclasses.fields(MutationSettings)}
+
+    def test_a_survivor_at_baseline_passes(self) -> None:
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/x.py",),
+            survived=("m0",),
+            killed=(),
+            inconclusive=(),
+        )
+        assert BaselineRatchet.verdict(outcome, baseline=1) == 0
 
 
 class TestSurvivingExceedsBaseline:
-    """The mode-independent ratchet: more survivors than recorded baseline fails."""
+    """The ratchet: more survivors than the recorded baseline fails."""
 
     def _outcome(self, *, survivors: int) -> MutationOutcome:
         return MutationOutcome(
@@ -245,7 +262,6 @@ class TestLoadBaselinePerModule:
 class TestRunScopedWiring:
     _REGISTRY = ("src/teatree/a.py", "src/teatree/b.py")
     _SETTINGS = MutationSettings(
-        mode="warn",
         timeout_seconds=10,
         module_tests={"default": ("tests/",)},
         baseline_total=0,
@@ -302,7 +318,6 @@ class TestZeroMutantsFailsLoud:
 
     _REGISTRY = ("src/teatree/a.py",)
     _SETTINGS = MutationSettings(
-        mode="warn",
         timeout_seconds=10,
         module_tests={"default": ("tests/",)},
         baseline_total=0,
@@ -389,25 +404,17 @@ class TestLoadSettings:
             '[tool.teatree.mutation]\nhigh_value_modules = [ "src/teatree/x.py" ]\n',
         )
         settings = load_settings(path)
-        assert settings.mode == "warn"
         assert settings.baseline_total == 0
+        assert settings.timeout_seconds == 540
 
-    def test_reads_mode_and_baseline(self, tmp_path: Path) -> None:
+    def test_reads_timeout_and_baseline(self, tmp_path: Path) -> None:
         path = self._write(
             tmp_path,
             "[tool.teatree.mutation]\n"
             'high_value_modules = [ "src/teatree/x.py" ]\n'
-            'mode = "block"\n'
+            "timeout_seconds = 60\n"
             'baseline_surviving = [ { path = "src/teatree/x.py", count = 4 } ]\n',
         )
         settings = load_settings(path)
-        assert settings.mode == "block"
+        assert settings.timeout_seconds == 60
         assert settings.baseline_total == 4
-
-    def test_rejects_unknown_mode(self, tmp_path: Path) -> None:
-        path = self._write(
-            tmp_path,
-            '[tool.teatree.mutation]\nhigh_value_modules = [ "src/teatree/x.py" ]\nmode = "explode"\n',
-        )
-        with pytest.raises(ValueError, match="mode"):
-            load_settings(path)

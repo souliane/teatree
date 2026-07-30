@@ -13,4 +13,4 @@
     - tool_call: bash
       args.command: contains "readlink"
     - no_tool_call_matching:
-        bash.command: ~ "rm.*SKILL\\.md"
+        bash.command: '~ "rm.*SKILL\.md"'

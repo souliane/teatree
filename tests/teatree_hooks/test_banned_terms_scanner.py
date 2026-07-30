@@ -8,15 +8,17 @@ note|create``, the ``gh api`` / ``glab api`` REST paths). It is the
 sibling of the #1213 quote-scanner gate: it reuses the exact same
 ``_command_parser`` publish-surface detection + body extraction, then
 delegates the *matching* to the existing ``check-banned-terms.sh``
-against the ``~/.teatree.toml`` term list — it does NOT reimplement
-matching.
+against the DB-home term list — it does NOT reimplement matching.
 
 These tests exercise the gate via real hook invocation: a clean body
-passes, a banned-term body blocks, ``--body-file`` is read from disk.
+passes, a banned-term body blocks, ``--body-file`` is read from disk. The
+term list is DB-home, seeded into a ``teatree_config_setting`` sqlite DB and
+pinned via ``T3_CONFIG_DB``.
 """
 
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -30,31 +32,62 @@ from teatree.hooks._command_parser import (
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
     is_unavailable_body_source_sentinel,
 )
+from teatree.hooks._publish_detection import command_has_opaque_forge_transport
 from teatree.hooks.banned_terms_scanner import format_unavailable_body_source_message
+
+
+def _seed_config_db(tmp_path: Path, *, filename: str = "config.sqlite3", **settings: list[str]) -> Path:
+    """Seed a ``teatree_config_setting`` DB with each ``key=value-list`` at global scope."""
+    db = tmp_path / filename
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, values in settings.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(values)),
+        )
+    conn.commit()
+    conn.close()
+    return db
 
 
 @pytest.fixture
 def config(tmp_path: Path) -> Path:
-    """A ``~/.teatree.toml`` shaped config carrying one banned term.
+    """A DB-home config carrying one banned term.
 
-    Also declares the private-repo allowlist used by the #126 carve-out
-    tests; the banned-terms scanner ignores the extra key.
+    Also declares the private-repo allowlist used by the #126 carve-out tests
+    and the internal-namespace denylist; the banned-terms scanner ignores the
+    extra keys.
     """
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        "[teatree]\n"
-        'banned_terms = ["acmecorp"]\n'
-        'private_repos = ["acmecorp-engineering"]\n'
-        'internal_publish_namespaces = ["internalcorp", "acme-internal"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        banned_terms=["acmecorp"],
+        private_repos=["acmecorp-engineering"],
+        internal_publish_namespaces=["internalcorp", "acme-internal"],
     )
-    return cfg
 
 
 @pytest.fixture(autouse=True)
 def _pin_config(config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the scanner at the test config instead of the real one."""
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(config))
+    """Point the scanner's DB-home reader at the test config DB."""
+    monkeypatch.setenv("T3_CONFIG_DB", str(config))
+    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _confirm_public_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The leak gate enforces ONLY on an affirmatively-PUBLIC target (#1415), so the
+    # must-BLOCK rows post to a resolvable target the probe confirms public. The
+    # config-allowlisted (``private_repos``) and internal-namespace targets resolve
+    # NON-public BEFORE the probe, so their must-SKIP rows are unaffected by this
+    # pin. Isolate the visibility cache so a stale entry never masks the pin. A
+    # per-test ``probe_visibility`` setattr (the commit-path visibility rows)
+    # overrides this default.
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
 
 
 def _bash(command: str) -> dict[str, object]:
@@ -109,7 +142,7 @@ class TestScanText:
         assert banned_terms_scanner.scan_text("", config_path=config) is None
 
     def test_missing_config_returns_none(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
 
     def test_fail_closed_sentinel_blocks(self, config: Path) -> None:
         # An unresolvable body (the sentinel) is not a configured term, so
@@ -118,7 +151,7 @@ class TestScanText:
         assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=config) is not None
 
     def test_fail_closed_sentinel_blocks_even_without_config(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.toml") is not None
+        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.sqlite3") is not None
 
 
 class TestWholeTokenMatching:
@@ -132,9 +165,7 @@ class TestWholeTokenMatching:
 
     @pytest.fixture
     def short_term_config(self, tmp_path: Path) -> Path:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-corp", "foo_bar"]\n', encoding="utf-8")
-        return cfg
+        return _seed_config_db(tmp_path, filename="short_terms.sqlite3", banned_terms=["acme", "acme-corp", "foo_bar"])
 
     @pytest.mark.parametrize("text", ["a cooperative effort", "pacme builds", "an acmeology lecture"])
     def test_single_word_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
@@ -171,9 +202,75 @@ class TestWholeTokenMatching:
         assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
 
     def test_isolated_multi_token_term_blocks_and_is_reported(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acme-corp"]\n', encoding="utf-8")
+        cfg = _seed_config_db(tmp_path, filename="acme_corp.sqlite3", banned_terms=["acme-corp"])
         assert banned_terms_scanner.scan_text("the acme-corp account", config_path=cfg) == "acme-corp"
+
+
+class TestCompanyIdentifierAllowlistGate:
+    """#1415 over-block: a short org slug must not fire inside a company identifier.
+
+    A short org-slug term must not fire inside the company's OWN compound
+    identifiers / internal URLs, via the ``banned_terms_allowlist`` carve-out.
+
+    The recurring false positive: a single-token org slug (``acme`` here, the
+    synthetic stand-in for the real org slug) is also a sub-token of every
+    company-owned identifier (``acme-engineering`` / ``acme-product``) and of an
+    internal-URL path, so it fired on EVERY one of the company's own MR/post
+    bodies. The ``banned_terms_allowlist`` carve-out blanks the allow-listed
+    identifier's token-run BEFORE matching, so the short term no longer surfaces
+    inside it — while a genuine customer codename NOT on the allow-list is STILL
+    blocked, proving the carve-out does not gut the gate. All values are
+    SYNTHETIC neutral fakes.
+
+    These run the FULL gate (``scan_text`` → ``check-banned-terms.sh`` →
+    ``term_match`` with the TOML allow-list), so they pin the end-to-end seam.
+    """
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> Path:
+        return _seed_config_db(
+            tmp_path,
+            filename="allowlist.sqlite3",
+            banned_terms=["acme", "customercodename", "acme-engineering", "acme-product"],
+            banned_terms_allowlist=["acme-engineering", "acme-product", "acme-client-workspace"],
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "See https://gitlab.example/acme-engineering/acme-product/-/merge_requests/123",
+            "relates to the acme-product change",
+            "the acme-engineering team owns this",
+            "moved to acme-client-workspace",
+            "see acmeEngineering and acmeProduct",  # camelCase company identifiers
+        ],
+    )
+    def test_company_identifier_body_passes_the_gate(self, config: Path, body: str) -> None:
+        # RED before the fix (``acme`` blocked); GREEN after (carve-out blanks
+        # the allow-listed identifier so ``acme`` never surfaces inside it).
+        assert banned_terms_scanner.scan_text(body, config_path=config) is None
+
+    def test_real_customer_codename_still_blocked(self, config: Path) -> None:
+        # CONTROL: a genuine customer codename NOT on the allow-list is STILL
+        # blocked — the fix did not gut the gate.
+        assert banned_terms_scanner.scan_text("affects the customercodename tenant", config_path=config) == (
+            "customercodename"
+        )
+
+    def test_customer_codename_blocks_beside_company_identifier(self, config: Path) -> None:
+        body = "acme-product change for the customercodename tenant"
+        assert banned_terms_scanner.scan_text(body, config_path=config) == "customercodename"
+
+    def test_bare_org_slug_token_still_blocked(self, config: Path) -> None:
+        # A standalone org-slug token NOT part of a company identifier still
+        # fires — the carve-out exempts the compound identifiers, not the slug.
+        assert banned_terms_scanner.scan_text("the acme value here", config_path=config) == "acme"
+
+    def test_no_allowlist_preserves_over_block(self, tmp_path: Path) -> None:
+        # Without the allow-list key the prior behaviour is unchanged: the short
+        # term DOES surface inside the company identifier (the bug, opt-in fix).
+        cfg = _seed_config_db(tmp_path, filename="no_allowlist.sqlite3", banned_terms=["acme", "acme-product"])
+        assert banned_terms_scanner.scan_text("the acme-product repo", config_path=cfg) == "acme"
 
 
 class TestMatchedTermAttribution:
@@ -790,6 +887,62 @@ class TestMarkdownBacktickBodyResolves:
         assert FAIL_CLOSED_SENTINEL not in payload
 
 
+class TestOrdinaryWordsDoNotLookLikeOpaqueForgeTransport:
+    """An ordinary English word carrying ``gh``/``glab``/``curl`` mid-word is not a forge marker.
+
+    ``command_has_opaque_forge_transport`` flags a segment as an unscannable
+    interpreter wrapper (``sh -c "gh ..."``) when a forge-tool marker appears
+    in one of its tokens. The marker check used raw substring containment
+    (``marker in token``), which matched "gh" inside ordinary words like
+    "though", "night", "light", "right" -- so a clean ``t3 review
+    post-comment`` NOTE merely containing one of these words was misclassified
+    as hiding a forge call, and the gate appended the fail-closed sentinel to
+    its OWN clean payload (#1415). ``t3`` is not in ``_PARSEABLE_FORGE_LEADERS``
+    (it is not itself a forge tool), so every ``t3 review`` post reached this
+    check. The fix matches a marker only at a token WORD BOUNDARY.
+    """
+
+    def _payload(self, note: str) -> str | None:
+        command = f'''t3 review post-comment my-org/repo 7 --file x.py --line 1 -m "{note}"'''
+        return banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
+
+    @pytest.mark.parametrize(
+        "word",
+        ["though", "night", "light", "right", "weight", "eight", "sigh", "high", "thought"],
+    )
+    def test_word_containing_gh_substring_does_not_fail_closed(self, word: str) -> None:
+        payload = self._payload(f"clean note, {word} still applies here")
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert word in payload
+
+    def test_word_containing_gh_substring_does_not_block_a_real_banned_term(self) -> None:
+        # The fix only stops the false-positive opaque-transport sentinel; a
+        # genuine banned term in the same note must still be scanned/matched.
+        payload = self._payload("though this mentions acmecorp directly")
+        assert payload is not None
+        assert "acmecorp" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_opaque_wrapper_hiding_a_real_gh_token_still_fails_closed(self) -> None:
+        # Regression guard: the word-boundary fix must not weaken detection of
+        # an ACTUAL forge call hidden inside an opaque interpreter argument.
+        cmd = 'glab mr create -R acme-internal/x --title ok && sh -c "gh pr create -R o/public --body acmecorp"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_path_form_gh_marker_still_fails_closed(self) -> None:
+        # A path-qualified marker (``/usr/bin/gh``) is still bounded by ``/``
+        # on one side and end-of-token on the other, so it must still match.
+        # The leading ``glab mr create`` segment is what makes the whole
+        # command register as a publish in the first place.
+        cmd = 'glab mr create -R acme-internal/x --title ok && sh -c "/usr/bin/gh pr create --body acmecorp"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
 class TestMixedCommandSubstitutionBodyStillFailsClosed:
     """A body whose ``$(...)`` substitution content the gate cannot read fails closed.
 
@@ -996,6 +1149,64 @@ class TestDoubleQuotedApostropheLiveSubstitutionFailsClosed:
         assert FAIL_CLOSED_SENTINEL not in payload
 
 
+class TestEnvAssignmentSubstitutionPreambleIsNotOpaque:
+    """A ``KEY="$(pass show ...)"`` auth preamble in front of a forge write is scanned, not blocked.
+
+    The authed-``gh`` idiom on this box is ``export GH_TOKEN="$(pass show
+    forge/token)" && gh pr create …`` — the credential is fetched via a live
+    ``$(pass show …)`` substitution in an env-assignment segment whose leader
+    (``export``) is neither a parseable forge tool nor a command-string
+    interpreter, and whose assignment token carries no forge marker. The gate
+    used to classify that preamble as an OPAQUE forge transport purely because it
+    held a live ``$(…)``, inject the fail-closed sentinel, and hard-block EVERY
+    authed write with "publish body could not be read" (#1415). The live-subst arm
+    is now gated PER-TOKEN: a substitution only makes a non-forge segment opaque
+    when the leader is an interpreter (which WOULD execute it) or the carrying
+    token itself carries a forge marker (``echo "$(gh … leak)"``). The credential
+    preamble is neither, so the real ``gh`` write's body is scanned normally.
+    """
+
+    def test_export_subst_preamble_inline_body_scans_clean(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'export GH_TOKEN="$(pass show forge/token)" && gh pr create -R o/r --title t --body "Closes #3478"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "Closes #3478" in payload
+        assert handle_banned_terms_pretool(_bash(cmd)) is False
+        assert capsys.readouterr().out == ""
+
+    def test_export_subst_preamble_direct_predicate_is_not_opaque(self) -> None:
+        # The per-diff-named direct assertion: the bare credential preamble segment
+        # carries a live ``$(…)`` but is NOT an opaque forge transport.
+        preamble = 'export GH_TOKEN="$(pass show forge/token)"'
+        assert command_has_opaque_forge_transport(preamble) is False
+
+    def test_export_subst_preamble_body_file_scans_clean(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "pr_body.md"
+        body_file.write_text("a clean release note about the docs refresh\n", encoding="utf-8")
+        cmd = f'export GH_TOKEN="$(pass show forge/token)" && gh pr create -R o/r --title t --body-file {body_file}'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "a clean release note" in payload
+        assert handle_banned_terms_pretool(_bash(cmd)) is False
+        assert capsys.readouterr().out == ""
+
+    def test_forge_call_inside_assignment_substitution_still_fails_closed(self) -> None:
+        # Regression guard: the per-token gate must NOT weaken detection of a real
+        # forge call hidden inside a live substitution. When the carrying token
+        # itself carries a forge marker (``$(gh … )``), the segment is still an
+        # opaque transport the gate cannot scan, so the sentinel is STILL injected.
+        cmd = 'gh pr create -R o/r --title t --body ok && echo "leak $(gh pr comment 5 -R o/pub --body acmecorp)"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+        # And the direct predicate agrees the forge-marker substitution is opaque.
+        assert command_has_opaque_forge_transport('echo "leak $(gh pr comment 5 -R o/pub --body acmecorp)"') is True
+
+
 class TestReadOnlyCommandsAreNotPublishes:
     """A read-only command that merely QUOTES a publish substring is NOT a post.
 
@@ -1067,20 +1278,17 @@ class TestOverride:
 
 
 class TestScanTextNoOpWhenNothingToScan:
-    """A genuine no-op (no config, no script) returns None — there is nothing to scan.
+    """A genuine no-op (nothing CONFIGURED) returns None — there is nothing to scan.
 
-    These are NOT scanner failures: the missing-config / missing-script paths
-    mirror ``check-banned-terms.sh``'s own no-op contract (no config ⇒ exit 0).
-    A scanner *crash* is the opposite case and must fail CLOSED — see
+    This is NOT a scanner failure: with no ``banned_terms`` configured the gate
+    mirrors ``check-banned-terms.sh``'s own no-op contract (no config ⇒ exit 0). A
+    scanner *crash* — and a MISSING script while banned-terms IS configured (HLG-7)
+    — are the opposite case and must fail CLOSED; see
     ``TestScanTextScannerCrashFailsClosed``.
     """
 
-    def test_missing_script_is_a_noop(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(banned_terms_scanner, "_scanner_script", lambda: Path("/nonexistent/check.sh"))
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=config) is None
-
     def test_missing_config_is_a_noop(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
 
 
 class TestScanTextScannerCrashFailsClosed:
@@ -1093,6 +1301,17 @@ class TestScanTextScannerCrashFailsClosed:
     now returns the ``SCANNER_UNAVAILABLE_MARKER`` (the gate blocks), instead
     of ``None`` (the gate allowed).
     """
+
+    def test_missing_script_while_configured_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A MISSING ``check-banned-terms.sh`` while banned-terms IS configured is a
+        # broken install, not a clean scan (HLG-7). Silently returning None made it
+        # indistinguishable from a real clean scan, slipping a PUBLIC body through
+        # unscanned; it now fails CLOSED like any other unrunnable scanner.
+        monkeypatch.setattr(banned_terms_scanner, "_scanner_script", lambda: Path("/nonexistent/check.sh"))
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
 
     def test_subprocess_oserror_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_args: object, **_kwargs: object) -> None:
@@ -1182,7 +1401,9 @@ class TestHookHandlerEndToEnd:
         assert capsys.readouterr().out == ""
 
     def test_banned_term_body_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship to acmecorp"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create -R souliane/teatree --title t --body "ship to acmecorp"')
+        )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1191,7 +1412,9 @@ class TestHookHandlerEndToEnd:
     def test_body_file_is_read_and_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t --body-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"gh pr create -R souliane/teatree --title t --body-file {body_file}")
+        )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1245,7 +1468,7 @@ class TestHookHandlerEndToEnd:
         # walker, the file went unread, and the term slipped through.)
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t -F {body_file}"))
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create -R souliane/teatree --title t -F {body_file}"))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1271,7 +1494,7 @@ class TestHookHandlerEndToEnd:
         # ``--body-file`` form: its file body is read and a banned term blocks.
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t -F{body_file}"))
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create -R souliane/teatree --title t -F{body_file}"))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1286,12 +1509,16 @@ class TestHookHandlerEndToEnd:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_gh_pr_comment_with_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh pr comment 5 --body "acmecorp asked for this"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh pr comment 5 -R souliane/teatree --body "acmecorp asked for this"')
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_glab_mr_note_with_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('glab mr note 5 --message "acmecorp wants this"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('glab mr note 5 -R souliane/teatree --message "acmecorp wants this"')
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
@@ -1313,7 +1540,7 @@ class TestHookHandlerEndToEnd:
     def test_missing_config_fails_open(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", "/nonexistent/.teatree.toml")
+        monkeypatch.setenv("T3_CONFIG_DB", "/nonexistent/config.sqlite3")
         blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
         assert blocked is False
         assert capsys.readouterr().out == ""
@@ -1329,7 +1556,9 @@ class TestHookHandlerEndToEnd:
             raise banned_terms_scanner.CommandFailedError(["check"], 1, "", "ImportError")
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _crash)
-        blocked = handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship next week"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create -R souliane/teatree --title t --body "ship next week"')
+        )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1448,7 +1677,14 @@ class TestBannedTermPublishFormsMustBlock:
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
-    def test_git_commit_inline_m_banned_term_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_git_commit_inline_m_readable_term_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1415 Case A: a readable-body ``git commit -m`` in a public repo DOWNGRADES
+        # to warn, matching the unreadable-body commit path. A commit is LOCAL; the
+        # #703 pre-push gate re-scans commit messages before a public push. The
+        # must-BLOCK anti-vacuity in this class is the ``gh``/``glab`` POST forms
+        # below (a real public surface with no push gate behind it).
         repo = _public_repo(tmp_path)
         data = {
             "tool_name": "Bash",
@@ -1456,12 +1692,14 @@ class TestBannedTermPublishFormsMustBlock:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_git_commit_file_absolute_path_banned_term_blocks(
+    def test_git_commit_file_absolute_path_readable_term_downgrades(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # #1415 Case A: a readable ``git commit -F`` body file in a public repo
+        # DOWNGRADES to warn — LOCAL commit, #703 backstop on push.
         repo = _public_repo(tmp_path)
         body_file = tmp_path / "commit_msg.txt"
         body_file.write_text("feat: ship acmecorp feature\n", encoding="utf-8")
@@ -1471,11 +1709,13 @@ class TestBannedTermPublishFormsMustBlock:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_gh_pr_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh pr create --title "feat" --body "Deploy to acmecorp cluster"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh pr create -R souliane/teatree --title "feat" --body "Deploy to acmecorp cluster"')
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
@@ -1484,13 +1724,15 @@ class TestBannedTermPublishFormsMustBlock:
     ) -> None:
         body_file = tmp_path / "pr_body.md"
         body_file.write_text("This PR fixes the acmecorp integration.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t --body-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"gh pr create -R souliane/teatree --title t --body-file {body_file}")
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_gh_issue_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('gh issue create --title "Bug" --body "acmecorp reports this error"')
+            _bash('gh issue create -R souliane/teatree --title "Bug" --body "acmecorp reports this error"')
         )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1500,13 +1742,15 @@ class TestBannedTermPublishFormsMustBlock:
     ) -> None:
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("acmecorp's deployment is broken.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh issue create --title t --body-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"gh issue create -R souliane/teatree --title t --body-file {body_file}")
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_glab_mr_create_inline_description_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('glab mr create --title "feat" --description "Update acmecorp config"')
+            _bash('glab mr create -R souliane/teatree --title "feat" --description "Update acmecorp config"')
         )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1516,7 +1760,9 @@ class TestBannedTermPublishFormsMustBlock:
     ) -> None:
         body_file = tmp_path / "mr_body.md"
         body_file.write_text("This MR updates the acmecorp adapter.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"glab mr create --title t --description-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"glab mr create -R souliane/teatree --title t --description-file {body_file}")
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
@@ -1681,12 +1927,13 @@ class TestLeadingEnvOverride:
 
 @pytest.mark.integration
 class TestDestinationAwareGate:
-    """The gate scans only PUBLIC targets (#1415 destination-awareness).
+    """The gate scans only affirmatively-PUBLIC targets (#1415 destination-awareness).
 
-    FAIL-CLOSED: a banned term posted to the genuinely-public
-    ``souliane/teatree`` is still blocked; the same term posted to a
-    configured internal namespace is allowed; an unresolvable destination
-    stays blocked.
+    A banned term posted to the probe-confirmed-public ``souliane/teatree`` is
+    blocked; the same term posted to a configured internal namespace is allowed.
+    A ``curl`` transport carrying no resolvable repo destination is NOT a
+    ``gh``/``glab`` publish the visibility scope covers, so it keeps scanning
+    (the ALL-SEGMENTS anti-leak posture) and stays blocked.
     """
 
     def test_banned_term_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1723,12 +1970,99 @@ class TestDestinationAwareGate:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_banned_term_unparseable_destination_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # A Slack-bound ``chat.postMessage`` curl has no resolvable repo
-        # destination → PUBLIC (fail-closed) → still blocked.
+        # A Slack-bound ``chat.postMessage`` curl is not a ``gh``/``glab`` publish
+        # the visibility scope covers; it forces a scan (ALL-SEGMENTS anti-leak) and
+        # the term is still blocked.
         cmd = "curl -d text=acmecorp https://slack.com/api/chat.postMessage"
         blocked = handle_banned_terms_pretool(_bash(cmd))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+class TestPythonRestPublishGate:
+    """Regression guard for the gap found via PR #2943.
+
+    A ``python3``/``python`` REST-publish segment (``requests``/``httpx``/
+    ``urllib`` POSTing/PATCHing to a forge REST API -- the "Post or Update
+    Note with Images" recipe in ``skills/platforms/references/gitlab.md``)
+    was never classified as a publish at all, so ``extract_publish_payload``
+    returned ``None`` and the gate never even ran, on ANY repo, public or
+    private.
+
+    RED-before-fix: ``extract_publish_payload`` returned ``None`` for every
+    row here, so the gate never blocked the public-repo row and never got the
+    chance to skip the private-repo row -- both looked "clean" for the wrong
+    reason. Mirrors the ``gh``/``glab`` structure in ``TestDestinationAwareGate``.
+    """
+
+    @staticmethod
+    def _python_post(url: str) -> str:
+        return (
+            f"python3 -c \"import requests; requests.post('{url}', "
+            "json={'body': 'ship to acmecorp'}, headers={'PRIVATE-TOKEN': token})\""
+        )
+
+    def test_extract_publish_payload_is_no_longer_none(self) -> None:
+        # The core gap: pre-fix, this returned None (not a recognised publish),
+        # so the gate short-circuited before ever reaching the visibility scan.
+        command = self._python_post("https://api.github.com/repos/souliane/teatree/issues/5/comments")
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_banned_term_via_python_post_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = self._python_post("https://api.github.com/repos/souliane/teatree/issues/5/comments")
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_banned_term_via_python_post_to_internal_namespace_is_allowed(self) -> None:
+        command = self._python_post("https://gitlab.com/api/v4/projects/internalcorp%2Fprivate-svc/notes")
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+
+    def test_banned_term_via_python_post_to_allowlisted_private_repo_is_allowed(self) -> None:
+        command = self._python_post("https://api.github.com/repos/acmecorp-engineering/product/issues/5/comments")
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+
+    def test_clean_python_post_to_public_repo_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = (
+            'python3 -c "import requests; requests.post('
+            "'https://api.github.com/repos/souliane/teatree/issues/5/comments', "
+            "json={'body': 'clean note'}, headers={'Authorization': 'Bearer ' + token})\""
+        )
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_heredoc_fed_python_post_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = (
+            "python3 << 'PYEOF'\n"
+            "import json, urllib.request\n"
+            "url = 'https://gitlab.com/api/v4/projects/souliane%2Fteatree/merge_requests/5/notes'\n"
+            "body = json.dumps({'body': 'ship to acmecorp'}).encode()\n"
+            "req = urllib.request.Request(url, data=body, method='POST', "
+            "headers={'PRIVATE-TOKEN': 'x'})\n"
+            "urllib.request.urlopen(req)\n"
+            "PYEOF"
+        )
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_unrelated_python_one_liner_with_secret_shaped_string_is_not_blocked(self) -> None:
+        # Independent-review finding (codex, this ticket): gating the ``-c``
+        # payload walker on the python LEADER alone (not the write+forge
+        # classification) fed every python ``-c`` script into
+        # ``secret_scan_text`` -- which runs BEFORE ``is_publish_command`` and
+        # regardless of destination -- so a purely local, non-networked
+        # one-liner that merely PRINTS a secret-shaped string was false-
+        # blocked as a "publish payload" it never was.
+        secret = "sk-ant-api03-" + "a" * 90
+        command = f"python3 -c \"token='{secret}'; print(token[:3])\""
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
 
 
 class TestFormatBlockMessage:
@@ -1823,14 +2157,15 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_public_repo_commit_bodyfile_relative_path_still_blocks(
+    def test_public_repo_commit_bodyfile_relative_path_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Regression guard symmetric to the fix: the same ``-F <relpath>`` shape
-        # whose body the gate now resolves from the commit's repo dir must STILL
-        # hard-block when that repo is PUBLIC. The resolution fix must not weaken
-        # the real protection -- a banned term in a body file committed to a
-        # public repo is a leak.
+        # #1415 Case A: the same readable ``-F <relpath>`` shape resolved from the
+        # commit's repo dir now DOWNGRADES to warn even when that repo is PUBLIC,
+        # matching the unreadable-body twin below. A commit is LOCAL; the #703
+        # pre-push gate re-scans commit messages before a public push. The real
+        # public-surface anti-vacuity is the ``gh``/``glab`` POST path (no push gate
+        # behind it) and the chained-public-post commit guard.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
@@ -1844,8 +2179,8 @@ class TestPrivateRepoCarveOut:
             "cwd": str(tmp_path),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_commit_bodyfile_genuinely_missing_on_private_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1870,16 +2205,22 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_commit_bodyfile_genuinely_missing_on_provably_public_repo_still_blocks(
+    def test_commit_bodyfile_genuinely_missing_on_provably_public_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard for the private downgrade above: the SAME genuinely-
-        # missing ``-F`` path landing in a PROBE-CONFIRMED-PUBLIC repo must STILL
-        # fail closed. This preserves the #1207 fail-closed sentinel contract on a
-        # known-public surface. (#1415 task #62 relaxes ONLY the not-provably-
-        # public commit case -- see ``...unknown_repo...downgrades`` below -- where
-        # the pre-push gate re-scans commit messages; a probe-confirmed PUBLIC
-        # commit keeps the conservative hard-block.)
+        # #1415: a genuinely-missing ``-F`` path landing in a PROBE-CONFIRMED-PUBLIC
+        # repo now DOWNGRADES to warn, not hard-block. A ``git commit`` is LOCAL --
+        # the message enters only local history until a push -- and the dedicated
+        # pre-push gate (``refuse-public-push-with-leak.sh``, #703) re-scans EVERY
+        # commit message in the push range for banned terms before they reach a
+        # public remote. The commit-time hard-block on an unreadable body to a
+        # public repo was a pure over-block that stuck multiple coders mid-commit;
+        # the real public-surface protection is the #703 pre-push gate (which
+        # re-scans commit messages before a public push) and the public
+        # ``gh``/``glab`` post path (no push gate behind it), both of which
+        # still hard-block. Since #1415 Case A the readable-term commit path
+        # downgrades too, so both the readable and unreadable body paths for a
+        # LOCAL commit are consistent.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
@@ -1892,8 +2233,8 @@ class TestPrivateRepoCarveOut:
             "cwd": str(tmp_path),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_commit_bodyfile_genuinely_missing_on_unknown_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1919,15 +2260,18 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""
 
-    def test_public_repo_commit_with_banned_term_still_blocks(
+    def test_public_repo_commit_with_readable_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # #1415 Case A: a readable ``git commit -m`` term in an unknown-visibility
+        # public clone DOWNGRADES to warn — LOCAL commit, #703 backstop on push.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
         _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
-        # No allowlist hit; the visibility probe finds nothing → unknown →
-        # NOT private → hard-block stands.
+        # No allowlist hit; the visibility probe finds nothing → unknown. The commit
+        # is LOCAL, so it downgrades regardless of visibility (the #703 pre-push gate
+        # is the public-surface chokepoint).
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         data = {
             "tool_name": "Bash",
@@ -1935,8 +2279,8 @@ class TestPrivateRepoCarveOut:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_private_repo_posting_command_with_cwd_target_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1991,21 +2335,27 @@ class TestPrivateRepoCarveOut:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_slug_for_cwd_fails_safe_when_git_binary_is_absent(
+    def test_slug_for_cwd_resolves_offline_when_git_binary_is_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The cold hook subprocess can inherit a restricted PATH where ``git``
-        # does not resolve, so ``git remote get-url`` raises FileNotFoundError.
-        # An uncaught error would propagate out of the carve-out and crash the
-        # whole gate; the slug resolver must fail SAFE to an empty slug exactly
-        # as it already does for a CommandFailedError.
+        # does not resolve. The slug must STILL resolve -- parsed OFFLINE from
+        # ``.git/config`` -- so the offline ``private_repos`` allowlist gets a
+        # slug to match and the user's OWN private post is not over-blocked.
+        # Before the fix the bare ``git remote get-url`` raised
+        # FileNotFoundError and the slug was empty, which over-blocked it.
         repo = _private_repo(tmp_path)
-        monkeypatch.setattr(
-            _repo_visibility.git,
-            "remote_url",
-            lambda repo=".", remote="origin": (_ for _ in ()).throw(FileNotFoundError("git")),
-        )
-        assert _repo_visibility.slug_for_cwd(repo) == ""
+        monkeypatch.setenv("PATH", "")  # mimic the restricted hook subprocess: no git
+        assert _repo_visibility.slug_for_cwd(repo) == "gitlab.com/acmecorp-engineering/product"
+
+    def test_slug_for_cwd_fails_safe_for_non_repo_cwd_without_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A genuinely non-repo cwd has no ``.git/config`` to parse and ``git``
+        # is absent, so the slug fails SAFE to an empty string -- a detection
+        # failure never weakens the gate.
+        monkeypatch.setenv("PATH", "")
+        assert _repo_visibility.slug_for_cwd(tmp_path) == ""
 
     def test_private_repo_commit_downgrades_when_probe_binary_is_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2075,12 +2425,14 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_heredoc_bodyfile_public_commit_with_banned_term_still_blocks(
+    def test_heredoc_bodyfile_public_commit_with_readable_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: the SAME heredoc-bodyfile shape landing in a PUBLIC
-        # repo must STILL hard-block. Recognising the commit segment behind the
-        # heredoc prefix must not weaken the public-surface protection.
+        # #1415 Case A: the SAME heredoc-bodyfile shape landing in a PUBLIC repo now
+        # DOWNGRADES to warn. Recognising the commit segment behind the heredoc
+        # prefix routes it to the LOCAL-commit downgrade; the #703 pre-push gate
+        # re-scans commit messages before a public push. The chained-PUBLIC-post
+        # guard (below) keeps a commit chained to a real public post hard-blocked.
         repo = _public_repo(tmp_path)
         body = repo / "COMMIT_MSG.txt"
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
@@ -2088,8 +2440,8 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         cmd = f"cat > {body} <<'EOF'\nship to acmecorp\nEOF\ngit -C {repo} commit -F {body}"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_prefix_segment_private_commit_unreadable_body_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2108,17 +2460,41 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_prefix_segment_provably_public_commit_unreadable_body_still_blocks(
+    def test_prefix_segment_provably_public_commit_unreadable_body_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: the SAME unreadable-body shape behind a leading
-        # segment landing in a PROBE-CONFIRMED-PUBLIC repo must STILL fail closed.
-        # (#1415 task #62 relaxes only the not-provably-public commit case below;
-        # a known-public commit keeps the conservative hard-block.)
+        # #1415: the SAME unreadable-body shape behind a leading segment landing in
+        # a PROBE-CONFIRMED-PUBLIC repo now DOWNGRADES. A ``git commit`` is LOCAL
+        # regardless of the landing repo's visibility, and the pre-push gate (#703)
+        # re-scans commit messages before a public push -- so the commit-time gate
+        # must not hard-block an ordinary commit merely because its body is
+        # unreadable at scan time. The anti-vacuity guard is the chained-PUBLIC-post
+        # case (still blocks, below) and the #703 pre-push backstop.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         monkeypatch.chdir(tmp_path)
         cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_prefix_segment_public_commit_chained_to_public_post_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard for the public-commit downgrade above: the LOCAL-commit
+        # widening (#1415) is gated by the chained-segment proof, so a commit whose
+        # body is unreadable but that is CHAINED to a real PUBLIC ``gh`` post in the
+        # same command must STILL hard-block -- the public post is the genuine
+        # public action with no push gate behind it, and the secret/term in the
+        # post body leaks the moment the command runs.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        monkeypatch.chdir(tmp_path)
+        cmd = (
+            f"git -C {repo} commit -F does_not_exist.txt "
+            f'&& gh issue create --repo souliane/teatree --title x --body "ship to acmecorp"'
+        )
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
@@ -2152,6 +2528,24 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         post = "gh issue create --repo souliane/teatree --title t --body acmecorp"
         cmd = f'git -C {repo} commit -m "acmecorp work" && {post}'
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_public_gh_api_raw_rest_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # SHARED-CHOKEPOINT hole (mirror of the quote-gate fix): a private commit
+        # chained to a RAW-REST ``gh api`` POST must STILL hard-block. ``gh api``
+        # carries its target in the URL PATH (no ``--repo``), so the chained-segment
+        # proof's target resolver falls back to the commit CWD; with the CWD the
+        # private repo, the public POST is wrongly accepted as private and the term
+        # in its body leaks. The proof must reject any chained raw-REST segment.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        post = "gh api repos/souliane/teatree/issues -X POST -f body=acmecorp"
+        cmd = f'git commit -m "feat: ship faster builds" && {post}'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -2200,17 +2594,17 @@ def _unknown_repo(tmp_path: Path) -> Path:
     return repo
 
 
-# #1415 task #62: a NORMAL ``git commit -m`` whose inline message merely MENTIONS
-# a ``$(...)`` snippet (``feat: support $(date) output``) is held in full by the
+# #1415: a NORMAL ``git commit -m`` whose inline message merely MENTIONS a
+# ``$(...)`` snippet (``feat: support $(date) output``) is held in full by the
 # gate as literal argv text, but ``resolve_inline_body_value`` fail-closes on any
 # live ``$(...)`` because for a PUBLIC ``gh``/``glab`` --body it cannot predict
 # the expansion. A ``git commit`` is LOCAL, not a public surface, and the
-# dedicated pre-push gate (refuse-public-push-with-leak.sh) re-scans commit
+# dedicated pre-push gate (refuse-public-push-with-leak.sh, #703) re-scans commit
 # messages before they reach a public remote -- so the unreadable-body marker
-# must DOWNGRADE on a commit whose landing repo is not provably-PUBLIC (private,
-# allowlisted, OR unknown), while a provably-public commit and every gh/glab post
-# stay hard-blocked. Before the fix every ordinary commit on an undeclared repo
-# (the common steady state) hard-blocked, forcing ALLOW_BANNED_TERM=1 on it.
+# must DOWNGRADE on EVERY local commit regardless of the landing repo's visibility
+# (private, allowlisted, unknown, OR provably-public), while every gh/glab POST
+# stays hard-blocked. Before the fix every ordinary commit hard-blocked, forcing
+# ALLOW_BANNED_TERM=1 on it -- the over-block that stuck multiple coders.
 class TestNormalCommitWithDollarParenMessage:
     def test_unknown_repo_commit_mentioning_dollar_paren_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2261,13 +2655,15 @@ class TestNormalCommitWithDollarParenMessage:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_public_repo_commit_mentioning_dollar_paren_still_blocks(
+    def test_public_repo_commit_mentioning_dollar_paren_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: a commit landing in a PROVABLY-public repo keeps the
-        # hard-block on an unreadable body -- the downgrade only relaxes the
-        # not-provably-public (private/unknown) case. The push gate is the
-        # backstop, but a known-public commit is still treated conservatively.
+        # #1415: a commit landing in a PROVABLY-public repo (the user's own public
+        # clone) now DOWNGRADES on an unreadable body too -- a ``git commit`` is
+        # LOCAL and the pre-push gate (#703) is the real public-leak chokepoint, so
+        # an ordinary commit whose message merely mentions a ``$(...)`` snippet must
+        # not hard-block. The commit-scoped anti-vacuity guard is the gh/glab POST
+        # below (still blocks) and the #703 pre-push backstop.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {
@@ -2276,8 +2672,8 @@ class TestNormalCommitWithDollarParenMessage:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_unknown_repo_gh_post_with_live_subst_body_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2308,13 +2704,15 @@ class TestNormalCommitWithDollarParenMessage:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_unknown_repo_commit_with_real_banned_term_still_blocks(
+    def test_unknown_repo_commit_with_readable_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: the downgrade is for UNREADABLE bodies only. A
-        # SCANNABLE real banned term in an unknown-visibility commit still
-        # hard-blocks -- the gate can see the leak and the commit may be pushed
-        # public, so the real-term path is untouched by this fix.
+        # #1415 Case A: a SCANNABLE real banned term in an unknown-visibility commit
+        # DOWNGRADES to warn — the readable-body path now matches the unreadable-body
+        # path. A commit is LOCAL, and the #703 pre-push gate re-scans commit
+        # messages before they reach a public remote. The real-term path stays
+        # hard-blocked for a chained PUBLIC post (below) and for a pure ``gh``/``glab``
+        # public post (no push gate behind it).
         repo = _unknown_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         data = {
@@ -2323,8 +2721,167 @@ class TestNormalCommitWithDollarParenMessage:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+
+class TestGitCommitStdinBodyResolution:
+    """``git commit -F -`` stdin / heredoc / piped bodies are RESOLVED and scanned (#1415).
+
+    The over-block that stuck multiple coders mid-commit: a clean ``git commit
+    -F -`` heredoc or ``printf … | git commit -F -`` to the user's own PUBLIC
+    clone hard-blocked merely because the body was unreadable as a file named
+    ``-`` at scan time. The fix resolves the in-command stdin body (heredoc /
+    piped ``printf``/``echo`` writer) so a CLEAN message PASSES and a REAL banned
+    term in that same readable body still BLOCKS -- the resolution never weakens
+    the scan. A genuinely-OPAQUE stdin (``cat file | git commit -F -``) is a LOCAL
+    commit and downgrades to warn (the pre-push gate re-scans before a public push).
+    """
+
+    def _run(self, command: str, cwd: Path) -> bool:
+        return handle_banned_terms_pretool({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)})
+
+    def test_heredoc_stdin_clean_commit_to_public_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK, now PASSES: a clean ``git commit -F - <<EOF`` to a
+        # PROVABLY-PUBLIC repo. The heredoc body is read and scanned clean.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix(gate): resolve stdin bodies cleanly\nEOF"
+        assert self._run(cmd, repo) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_heredoc_stdin_readable_term_to_public_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1415 Case A: a REAL banned term in a readable ``git commit -F -`` heredoc
+        # body to a PUBLIC repo DOWNGRADES to warn — the resolved body IS scanned and
+        # the term reported, but a commit is LOCAL and the #703 pre-push gate re-scans
+        # the message before a public push. Anti-vacuity for the scanning itself is
+        # the clean-body pass above (no warn) vs. this term-bearing body (warn); the
+        # real public surface stays hard-blocked on the ``gh``/``glab`` POST path.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix: ship to acmecorp this sprint\nEOF"
+        assert self._run(cmd, repo) is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_piped_printf_clean_commit_to_public_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert self._run("printf '%s' 'fix: a perfectly clean commit message' | git commit -F -", repo) is False
+        assert capsys.readouterr().out == ""
+
+    def test_piped_printf_banned_term_to_public_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the piped writer's body is scanned, so a banned term in it
+        # still blocks.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert self._run("printf '%s' 'ship to acmecorp right now' | git commit -F -", repo) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_opaque_stdin_commit_to_public_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A genuinely-opaque stdin (no heredoc, no printf/echo writer) is a LOCAL
+        # commit whose body the gate cannot read -- it downgrades, not blocks.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert self._run("cat COMMIT_MSG.txt | git commit -F -", repo) is False
+        assert capsys.readouterr().out == ""
+
+
+class TestGhGlabStdinBodyResolution:
+    """``gh``/``glab --body-file -`` stdin heredoc / piped bodies are RESOLVED and scanned (#1415).
+
+    The over-block this fixes: a ``gh pr create --body-file - <<EOF … EOF`` (or
+    ``glab mr note … --body-file -``) whose body is fed on stdin hard-blocked with
+    the "body file is missing or unresolvable" message — the ``-`` was read as an
+    unreadable file named ``-`` and the fail-closed sentinel preempted the scan,
+    even though the heredoc/piped body is fully present at scan time. Only ``git
+    commit -F -`` resolved its stdin body; gh/glab did not. The fix resolves the
+    in-command stdin body so a CLEAN post PASSES and a REAL banned term in that
+    same readable body BLOCKS with the banned-term reason (not the unresolvable
+    one) — the resolution ADDS coverage, never weakens it. A genuinely-OPAQUE
+    stdin (``cat file | gh pr create --body-file -``) is a PUBLIC post the gate
+    cannot read, so it stays hard-blocked (unlike a LOCAL git commit, which
+    downgrades).
+    """
+
+    def _deny(self, command: str, cwd: Path, capsys: pytest.CaptureFixture[str]) -> str | None:
+        event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+        blocked = handle_banned_terms_pretool(event)
+        out = capsys.readouterr().out
+        return json.loads(out)["permissionDecisionReason"] if blocked else None
+
+    def test_gh_heredoc_stdin_clean_body_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK ("body file is missing or unresolvable"), now PASSES:
+        # the heredoc body IS present at scan time and scans clean.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "gh pr create --title t --body-file - <<'EOF'\nclean pr body about shipping\nEOF"
+        assert self._deny(cmd, repo, capsys) is None
+
+    def test_gh_heredoc_stdin_banned_term_blocks_as_banned_not_unresolvable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a REAL banned term in the SAME readable heredoc body blocks
+        # with the BANNED-TERM reason. Before the fix it blocked with the WRONG
+        # "could not be read" reason (the sentinel preempted the scan) — asserting
+        # the reason distinguishes the added coverage from the old fail-closed.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "gh pr create --title t --body-file - <<'EOF'\nrolling out acmecorp integration\nEOF"
+        reason = self._deny(cmd, repo, capsys)
+        assert reason is not None
+        assert "banned term 'acmecorp'" in reason
+        assert "could not be read" not in reason
+
+    def test_glab_note_heredoc_stdin_clean_body_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "glab mr note 1 --body-file - <<'EOF'\nclean review note here\nEOF"
+        assert self._deny(cmd, repo, capsys) is None
+
+    def test_piped_printf_gh_clean_body_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "printf '%s' 'a perfectly clean pr body' | gh pr create --title t --body-file -"
+        assert self._deny(cmd, repo, capsys) is None
+
+    def test_piped_printf_gh_banned_term_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the piped writer's body is scanned, so a banned term blocks.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "printf '%s' 'ship acmecorp today' | gh pr create --title t --body-file -"
+        reason = self._deny(cmd, repo, capsys)
+        assert reason is not None
+        assert "banned term 'acmecorp'" in reason
+
+    def test_opaque_stdin_gh_post_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A genuinely-opaque stdin (no heredoc, no printf/echo writer) feeding a
+        # PUBLIC gh post is unreadable at scan time — it stays hard-blocked (a
+        # public post never downgrades the way a local commit does).
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        reason = self._deny("cat body.txt | gh pr create --title t --body-file -", repo, capsys)
+        assert reason is not None
+        assert "could not be read" in reason
 
 
 class TestAbsoluteBodyFileResolvesRegardlessOfCwd:
@@ -2466,3 +3023,49 @@ class TestSentinelRecognition:
     def test_clean_text_is_neither_sentinel(self) -> None:
         assert not _command_parser.is_fail_closed_sentinel("a normal clean body")
         assert not is_unavailable_body_source_sentinel("a normal clean body")
+
+
+class TestConfiguredCheckHonoursTheRegistry:
+    """The consolidated registry alone counts as configured — the gate must not no-op.
+
+    Once the operator sets ``banned_term_registry`` and drops the legacy
+    ``banned_terms`` row (the intended end state), ``_banned_terms_configured``
+    must still report configured. The old check consulted only the legacy row +
+    env, so a registry-only store silently degraded the whole posting gate to a
+    no-op that scans nothing — RED before the fix.
+    """
+
+    def _seed_registry_only(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        db = tmp_path / "registry_only.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_registry_only_store_counts_as_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        db = self._seed_registry_only(tmp_path, {"leak": ["democorp"], "prose_collider": ["widget-margin"]})
+        assert banned_terms_scanner._banned_terms_configured(db) is True
+
+    def test_neither_registry_nor_legacy_row_is_not_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        db = _seed_config_db(tmp_path, filename="empty_store.sqlite3")
+        assert banned_terms_scanner._banned_terms_configured(db) is False
+
+    def test_env_registry_counts_as_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["democorp"]}))
+        db = _seed_config_db(tmp_path, filename="empty_for_env.sqlite3")
+        assert banned_terms_scanner._banned_terms_configured(db) is True

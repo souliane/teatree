@@ -1,17 +1,23 @@
 """Price math, cache multipliers, cycle boundaries, and report rendering."""
 
+import json
+import sqlite3
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from teatree.core.cost import (
     DEFAULT_MONTHLY_CREDIT_USD,
+    ET_MODEL_MULTIPLIER,
     PRICE_TABLE,
+    UNPRICED_TIER,
     AttemptUsage,
     CostBreakdown,
     CostReport,
     ModelPrice,
     attempt_cost_usd,
+    compute_effective_tokens,
     cycle_start,
     price_for_model,
     price_table_cost_usd,
@@ -19,6 +25,16 @@ from teatree.core.cost import (
     tier_of_model,
     tier_rank,
 )
+
+
+def _seed_config(db_path: Path, key: str, value: object) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
 
 
 class TestModelPrice:
@@ -49,34 +65,134 @@ class TestTierResolution:
         assert tier_of_model("claude-sonnet-4-6") == "sonnet"
         assert tier_of_model("claude-haiku-4-5") == "haiku"
 
-    def test_unknown_and_none_fall_back_to_reasoning_tier(self) -> None:
+    def test_sonnet_5_maps_to_sonnet_tier_and_price(self) -> None:
+        # The balanced tier's model is now Sonnet 5; the substring-keyed lookup
+        # resolves it to the ``sonnet`` tier (same $3/$15 sticker) with no new
+        # PRICE_TABLE entry.
+        assert tier_of_model("claude-sonnet-5") == "sonnet"
+        assert price_for_model("claude-sonnet-5").input_per_mtok == pytest.approx(3.0)
+        assert price_for_model("claude-sonnet-5").output_per_mtok == pytest.approx(15.0)
+
+    def test_opus_5_maps_to_opus_tier_and_price(self) -> None:
+        # The frontier tier's model is now Opus 5; the substring-keyed lookup
+        # resolves it to the ``opus`` tier (same $5/$25 sticker as the prior Opus
+        # frontier entry) with no new PRICE_TABLE entry, and NOT to the unpriced
+        # bucket.
+        assert tier_of_model("claude-opus-5") == "opus"
+        assert price_for_model("claude-opus-5").input_per_mtok == pytest.approx(5.0)
+        assert price_for_model("claude-opus-5").output_per_mtok == pytest.approx(25.0)
+        assert tier_rank("claude-opus-5") == tier_rank("frontier")
+
+    def test_none_falls_back_to_conservative_reasoning_tier(self) -> None:
+        # A ``None`` model inherited the user's own (uncaptured) default — priced
+        # conservatively at the reasoning tier, NOT the unpriced bucket.
         assert tier_of_model(None) == "opus"
-        assert tier_of_model("some-future-model") == "opus"
+
+    def test_present_unknown_id_resolves_to_the_unpriced_bucket(self) -> None:
+        # §3a #2: a PRESENT but unrecognised id (a swapped non-Claude model) no
+        # longer silently masquerades as opus — it buckets honestly as unpriced.
+        assert tier_of_model("some-future-model") == UNPRICED_TIER
+        assert tier_of_model("gpt-9") == UNPRICED_TIER
+        assert tier_of_model("deepseek/deepseek-v4-pro") == UNPRICED_TIER
+
+    def test_no_special_cased_fable_tier(self) -> None:
+        # #2237 removal: no PRICE_TABLE entry recognises "fable" any more — a
+        # Fable-named model id falls into the unpriced bucket, same as any other
+        # unrecognised id (not a Claude tier).
+        assert "fable" not in PRICE_TABLE
+        assert tier_of_model("fable") == UNPRICED_TIER
+        assert tier_of_model("claude-fable-5") == UNPRICED_TIER
 
 
-class TestFableTier:
-    def test_fable_in_price_table_at_ten_fifty(self) -> None:
-        assert PRICE_TABLE["fable"] == ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0)
+class TestPriceEtParity:
+    """The ET table mirrors the price table 1:1 — the direct index must never KeyError."""
 
-    def test_tier_of_model_recognises_fable_substring(self) -> None:
-        assert tier_of_model("fable") == "fable"
-        assert tier_of_model("claude-fable-5[1m]") == "fable"
+    def test_et_multiplier_key_set_equals_price_table_key_set(self) -> None:
+        # ``compute_effective_tokens`` indexes ET_MODEL_MULTIPLIER by
+        # ``tier_of_model`` (a PRICE_TABLE key). A tier added to one dict but not
+        # the other is a latent KeyError — this pin fails LOUDLY on that drift.
+        assert set(ET_MODEL_MULTIPLIER) == set(PRICE_TABLE)
 
-    def test_fable_priced_above_opus(self) -> None:
-        assert price_for_model("claude-fable-5").input_per_mtok > price_for_model("opus").input_per_mtok
+
+class TestUnpricedBucketAndOverrides:
+    """The unpriced honest fallback + the ``cost_model_prices`` DB override (§3a #2)."""
+
+    def test_unpriced_bucket_bills_at_the_conservative_opus_rate(self) -> None:
+        # An unrecognised id is still billed conservatively (never understated),
+        # but under its own bucket rather than silently as opus.
+        assert price_for_model("some-future-model").input_per_mtok == pytest.approx(5.0)
+        assert price_for_model("some-future-model").output_per_mtok == pytest.approx(25.0)
+        assert PRICE_TABLE[UNPRICED_TIER].input_per_mtok == pytest.approx(5.0)
+
+    def test_unknown_model_buckets_as_unpriced_not_opus(self) -> None:
+        usages = [AttemptUsage("deepseek/deepseek-v4-pro", None, 1_000_000, 0, 0, 0)]
+        breakdown = CostBreakdown.from_usages(usages)
+        # The dollar figure buckets under 'unpriced', NOT folded into 'opus'.
+        assert UNPRICED_TIER in breakdown.per_tier_usd
+        assert "opus" not in breakdown.per_tier_usd
+
+    def test_absent_override_keeps_the_conservative_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With no cost_model_prices row, a non-Claude id keeps the conservative
+        # opus-rate fallback (public path — no override applied).
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+        assert price_table_cost_usd(AttemptUsage("deepseek/x", None, 1_000_000, 0, 0, 0)) == pytest.approx(5.0)
+
+    def test_cost_model_prices_row_prices_a_swapped_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A configured price for a non-Claude model wins over the conservative
+        # opus fallback: 1M input @ $0.50 + 1M output @ $1.50 = $2.00. Driven
+        # entirely through the public pricing surface (override read internally).
+        db = tmp_path / "config.sqlite3"
+        _seed_config(db, "cost_model_prices", {"deepseek/": {"input": 0.5, "output": 1.5}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        usage = AttemptUsage("deepseek/deepseek-v4-pro", None, 1_000_000, 1_000_000, 0, 0)
+        assert price_table_cost_usd(usage) == pytest.approx(2.0)
+        # And the aggregation resolves the override once and applies it.
+        assert CostBreakdown.from_usages([usage]).total_usd == pytest.approx(2.0)
+
+    def test_malformed_override_entry_is_dropped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed_config(
+            db,
+            "cost_model_prices",
+            {"deepseek/": {"input": 0.5, "output": 1.5}, "bad/": {"input": "x"}, "worse/": "nope"},
+        )
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        # The well-formed entry applies; a malformed one never poisons the table —
+        # a "bad/" model falls back to the conservative unpriced (opus) rate.
+        assert price_table_cost_usd(AttemptUsage("deepseek/x", None, 1_000_000, 1_000_000, 0, 0)) == pytest.approx(2.0)
+        assert price_table_cost_usd(AttemptUsage("bad/x", None, 1_000_000, 0, 0, 0)) == pytest.approx(5.0)
 
 
 class TestTierRank:
-    def test_capability_order_haiku_lt_sonnet_lt_opus_lt_fable(self) -> None:
-        assert tier_rank("haiku") < tier_rank("sonnet") < tier_rank("opus") < tier_rank("fable")
+    def test_abstract_tier_order_cheap_lt_balanced_lt_frontier(self) -> None:
+        # The ordering is expressed in the ABSTRACT tiers.
+        assert tier_rank("cheap") < tier_rank("balanced") < tier_rank("frontier")
+
+    def test_capability_order_haiku_lt_sonnet_lt_opus(self) -> None:
+        # The legacy short-names still rank consistently (family-mapped onto the
+        # abstract tiers): haiku≡cheap, sonnet≡balanced, opus≡frontier.
+        assert tier_rank("haiku") < tier_rank("sonnet") < tier_rank("opus")
+
+    def test_family_and_abstract_tier_rank_identically(self) -> None:
+        # A model FAMILY (old short-name or dated id) ranks identically to the
+        # abstract tier it belongs to — the floor merge is tier-space consistent.
+        assert tier_rank("opus") == tier_rank("frontier")
+        assert tier_rank("sonnet") == tier_rank("balanced")
+        assert tier_rank("haiku") == tier_rank("cheap")
 
     def test_dated_ids_rank_like_their_tier(self) -> None:
-        assert tier_rank("claude-fable-5[1m]") == tier_rank("fable")
         assert tier_rank("claude-sonnet-4-6") == tier_rank("sonnet")
+        assert tier_rank("claude-sonnet-5") == tier_rank("balanced")
+        assert tier_rank("claude-opus-4-8") == tier_rank("frontier")
+        assert tier_rank("claude-haiku-4-5") == tier_rank("cheap")
 
     def test_unknown_full_id_ranks_above_every_known_tier(self) -> None:
         unknown = tier_rank("claude-some-future-model")
-        assert unknown > tier_rank("fable")
+        assert unknown > tier_rank("frontier")
 
     def test_none_ranks_as_default_reasoning_tier(self) -> None:
         # None = inherited default; ranked as the conservative reasoning tier so a
@@ -112,6 +228,37 @@ class TestAttemptCost:
         assert price_table_cost_usd(usage) == pytest.approx(3.0)
 
 
+class TestEffectiveTokens:
+    """GitHub's agentic-workflow ET formula: m*(1.0*I + 0.1*C + 4.0*O) (souliane/teatree#657)."""
+
+    def test_opus_multiplier_is_one(self) -> None:
+        usage = AttemptUsage("opus", None, 1000, 100, 2000, 0)
+        # 1.0 * (1000 + 0.1*2000 + 4*100) = 1.0 * 1600 = 1600.
+        assert compute_effective_tokens(usage) == pytest.approx(1600.0)
+
+    def test_sonnet_multiplier_is_point_two(self) -> None:
+        usage = AttemptUsage("sonnet", None, 1000, 100, 2000, 0)
+        assert compute_effective_tokens(usage) == pytest.approx(0.2 * 1600.0)
+
+    def test_haiku_multiplier_is_point_zero_five(self) -> None:
+        usage = AttemptUsage("haiku", None, 1000, 100, 2000, 0)
+        assert compute_effective_tokens(usage) == pytest.approx(0.05 * 1600.0)
+
+    def test_cache_write_tokens_do_not_count(self) -> None:
+        # Only input / cache-READ / output feed the formula — cache-write is
+        # excluded (matches the GitHub article's I/C/O definition).
+        with_write = AttemptUsage("opus", None, 0, 0, 0, 5000)
+        assert compute_effective_tokens(with_write) == pytest.approx(0.0)
+
+    def test_unknown_model_uses_conservative_multiplier(self) -> None:
+        usage = AttemptUsage("some-future-model", None, 1000, 0, 0, 0)
+        assert compute_effective_tokens(usage) == pytest.approx(ET_MODEL_MULTIPLIER["opus"] * 1000)
+
+    def test_attempt_usage_exposes_effective_tokens_property(self) -> None:
+        usage = AttemptUsage("opus", None, 100, 0, 0, 0)
+        assert usage.effective_tokens == pytest.approx(compute_effective_tokens(usage))
+
+
 class TestCostBreakdown:
     def test_totals_and_splits_per_tier(self) -> None:
         usages = [
@@ -125,10 +272,72 @@ class TestCostBreakdown:
         assert breakdown.per_tier_usd["opus"] == pytest.approx(3.0)
         assert breakdown.per_tier_usd["sonnet"] == pytest.approx(0.5)
 
+    def test_opus_5_usage_record_costs_to_the_opus_tier(self) -> None:
+        # A dated opus-5 usage record buckets under the ``opus`` tier and prices
+        # from the price table — it never returns None nor crashes on the
+        # frontier-generation id.
+        usage = AttemptUsage("claude-opus-5", None, 1_000_000, 1_000_000, 0, 0)
+        breakdown = CostBreakdown.from_usages([usage])
+        # 1M input @ $5 + 1M output @ $25 = $30 at the opus rate.
+        assert breakdown.total_usd == pytest.approx(30.0)
+        assert breakdown.per_tier_usd == {"opus": pytest.approx(30.0)}
+        assert UNPRICED_TIER not in breakdown.per_tier_usd
+
     def test_empty_is_zero(self) -> None:
         breakdown = CostBreakdown.from_usages([])
         assert breakdown.total_usd == pytest.approx(0.0)
         assert breakdown.attempts == 0
+        assert breakdown.effective_tokens_total == pytest.approx(0.0)
+
+    def test_effective_tokens_totalled_across_usages(self) -> None:
+        usages = [
+            AttemptUsage("opus", None, 1000, 0, 0, 0),
+            AttemptUsage("haiku", None, 1000, 0, 0, 0),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        # 1.0*1000 (opus) + 0.05*1000 (haiku) = 1050.
+        assert breakdown.effective_tokens_total == pytest.approx(1050.0)
+
+    def test_splits_by_layer_2_lane(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 1000, 0, 0, 0, lane="subscription"),
+            AttemptUsage("opus", 2.0, 1000, 0, 0, 0, lane="metered"),
+            AttemptUsage("opus", 0.5, 1000, 0, 0, 0, lane="metered"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert breakdown.per_lane_usd["subscription"] == pytest.approx(1.0)
+        assert breakdown.per_lane_usd["metered"] == pytest.approx(2.5)
+        assert breakdown.per_lane_effective_tokens["subscription"] == pytest.approx(1000.0)
+        assert breakdown.per_lane_effective_tokens["metered"] == pytest.approx(2000.0)
+
+    def test_unattributed_lane_buckets_separately(self) -> None:
+        # No explicit Layer-2 pin was configured for this dispatch (#2887
+        # ambient-credential default) — the lane is unknown, not guessed.
+        usages = [AttemptUsage("opus", 1.0, 0, 0, 0, 0)]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert set(breakdown.per_lane_usd) == {"unattributed"}
+
+    def test_splits_by_phase(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 0, 0, 0, 0, phase="coding"),
+            AttemptUsage("opus", 2.0, 0, 0, 0, 0, phase="reviewing"),
+            AttemptUsage("opus", 0.5, 0, 0, 0, 0, phase="reviewing"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert breakdown.per_phase_usd["coding"] == pytest.approx(1.0)
+        assert breakdown.per_phase_usd["reviewing"] == pytest.approx(2.5)
+
+    def test_unattributed_phase_buckets_separately(self) -> None:
+        breakdown = CostBreakdown.from_usages([AttemptUsage("opus", 1.0, 0, 0, 0, 0)])
+        assert set(breakdown.per_phase_usd) == {"unattributed"}
+
+    def test_per_phase_dollars_sum_to_the_total(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 0, 0, 0, 0, phase="coding"),
+            AttemptUsage("haiku", 2.0, 0, 0, 0, 0, phase="reviewing"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert sum(breakdown.per_phase_usd.values()) == pytest.approx(breakdown.total_usd)
 
 
 class TestCycleStart:
@@ -201,3 +410,27 @@ class TestCostReport:
         lines = "\n".join(report.render_lines())
         assert "per model" not in lines
         assert "(0%)" in lines
+
+    def test_render_lines_show_effective_tokens_and_lane_split(self) -> None:
+        breakdown = CostBreakdown(
+            total_usd=3.0,
+            per_tier_usd={"opus": 3.0},
+            attempts=2,
+            effective_tokens_total=1500.0,
+            per_lane_usd={"subscription": 1.0, "metered": 2.0},
+            per_lane_effective_tokens={"subscription": 500.0, "metered": 1000.0},
+        )
+        report = CostReport.build(
+            breakdown,
+            credit_usd=DEFAULT_MONTHLY_CREDIT_USD,
+            cycle_start_date=date(2026, 6, 1),
+            today=date(2026, 6, 10),
+        )
+        lines = "\n".join(report.render_lines())
+        assert "effective tokens (ET): 1,500" in lines
+        assert "subscription: $1.00 (ET 500)" in lines
+        assert "metered: $2.00 (ET 1,000)" in lines
+
+    def test_render_lines_omit_per_lane_when_no_lane_split(self) -> None:
+        lines = "\n".join(self._report(50.0).render_lines())
+        assert "per lane" not in lines

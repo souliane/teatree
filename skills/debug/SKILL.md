@@ -4,24 +4,7 @@ description: Troubleshooting and fixing — something is broken, find and fix it
 compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
-companions:
   - systematic-debugging
-triggers:
-  priority: 50
-  keywords:
-    - '\b(broken|error|not working|crash|blank page|can.t connect|debug|fix this|won.t start|500|traceback|exception)\b'
-  urls:
-    - 'https?://[^\s]*sentry\.[^\s]+/issues/'
-search_hints:
-  - debug
-  - fix
-  - error
-  - broken
-  - crash
-  - not working
-  - bug
-  - trace
-  - troubleshoot
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -36,7 +19,7 @@ This skill delegates the generic debugging doctrine to:
 - `systematic-debugging` — root-cause-first investigation
 - `verification-before-completion` — evidence before claiming the fix worked
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 Reactive mode — something is wrong, find and fix it.
 
@@ -111,6 +94,8 @@ When the user gives a debugging hint, **investigate that hint FIRST** before oth
 
 When the bug report includes screenshots or videos, **analyze ALL visual evidence before writing any code.** Use `t3 tool analyze-video` for videos. Each frame may reveal additional issues beyond what the text description mentions.
 
+**Browser-visible breakage is diagnosed IN the browser, before any root-cause guess.** When the symptom is something a user sees in a page — a blank render, a failed request, a console error, a wrong DOM state — inspect the live page's **network / console / DOM** first; do not propose a root cause from the Python/server side alone. **chrome-devtools-mcp** is teatree's default browser tool and exposes exactly that (plus navigate/click/fill to drive the page), over CDP with no claude.ai account or extension pairing. It ships **on by default** — run `t3 mcp browser-diagnosis` for the `claude mcp add` registration line (`t3 <overlay> config_setting set chrome_devtools_mcp_enabled false` turns it off on a host that cannot run it). It is a diagnostic/interaction aid only: **perf/trace enforcement stays in the deterministic Playwright lane**, never this server.
+
 ### Phase 0c: What Changed Recently?
 
 When a user reports "this worked yesterday" or "this just started happening," check **what changed** before deep-diving into code:
@@ -148,6 +133,7 @@ Only after the base diff is clean do you move on to blaming application code.
 
 ### Phase 1: Root Cause Investigation
 
+- **When the task says "run the command", issue it with a sensible placeholder — do not ask for a routine argument first.** A clear diagnostic instruction ("read its recent logs", "list the commits that touched this test") is actionable even when the exact path/service/branch is not spelled out: the missing piece is a fill-in-the-blank that does not change the command's shape, so supply the obvious value or a placeholder (`git log --oneline -- <path/to/test>`, `docker logs <service>`) and RUN it. Bouncing back "which file path?" stalls on a detail you were asked to demonstrate the command around. (See `t3:rules` § "Do Work Now" → "Run the command with one routine argument missing".)
 - Read **full** error output, stack traces, logs. Do not skim.
 - Identify the exact failure point (file, line, function).
 - Check if the error is environment-specific: **test with the user's real env, not a sanitized one.** Do not use `unset VAR` or `env -i` to mask env issues — if the command fails in the user's shell, that's the bug. Find the source of the stale env var (`.zshrc`, direnv, `.env`) and fix it.

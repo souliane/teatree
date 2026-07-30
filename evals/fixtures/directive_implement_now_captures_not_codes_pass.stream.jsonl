@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_implement_now_captures_not_codes-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Capturing only \u2014 implementation runs on the loop after ratify."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 directive capture \"teatree should cap open PRs at 2 per repo per ticket \u2014 and implement it now, I don't want to wait.\"", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Captured directive #15 (state=captured). Interpretation runs headless; a ratify question arrives as a Slack DM. Nothing implements before you approve."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

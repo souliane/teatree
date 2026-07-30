@@ -10,16 +10,21 @@ state, not just an echo of the request.
 import json
 from io import StringIO
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, LoopStatus, Prompt
 
 
 def _run(*args: str) -> str:
+    # emit() sends JSON to stdout and the human view to stderr — one channel per
+    # call — so their concatenation is the single populated output stream.
     out = StringIO()
-    call_command("loop_state", *args, stdout=out)
-    return out.getvalue()
+    err = StringIO()
+    call_command("loop_state", *args, stdout=out, stderr=err)
+    return out.getvalue() + err.getvalue()
 
 
 def _loop(name: str, *, enabled: bool) -> Loop:
@@ -31,6 +36,12 @@ def _loop(name: str, *, enabled: bool) -> Loop:
 
 
 class TestLoopStateCommand(TestCase):
+    def setUp(self) -> None:
+        # Real loop rows: every verb now validates the name against the Loop table (#3117).
+        _loop("review", enabled=True)
+        _loop("ship", enabled=True)
+        _loop("tickets", enabled=True)
+
     def test_pause_sets_paused_status(self) -> None:
         _run("pause", "review")
         assert LoopState.objects.status_of("review") is LoopStatus.PAUSED
@@ -66,10 +77,41 @@ class TestLoopStateCommand(TestCase):
         assert payload["status"] == "disabled"
 
     def test_status_subcommand_reports_enabled_for_untouched_loop(self) -> None:
-        out = _run("status", "never-touched", "--json")
+        # A known loop with no LoopState row resolves to the ENABLED default.
+        out = _run("status", "tickets", "--json")
         payload = json.loads(out)
-        assert payload["name"] == "never-touched"
+        assert payload["name"] == "tickets"
         assert payload["status"] == "enabled"
+
+
+class TestStatusSubcommandIsAReadNotAMutation(TestCase):
+    """``status`` is a strict READ — no mutation, and its output reads like one.
+
+    The shared ``_report`` printed ``OK    loop 'x' is now <status>.`` — the
+    mutation-verb phrasing — so a ``status`` read was indistinguishable from a
+    pause/enable that had just changed the loop. The read now prints a
+    status-shaped line, and never writes a ``LoopState`` row.
+    """
+
+    def setUp(self) -> None:
+        _loop("review", enabled=True)
+
+    def test_status_leaves_an_enabled_loop_enabled_and_writes_no_row(self) -> None:
+        _run("status", "review")
+        assert LoopState.objects.status_of("review") is LoopStatus.ENABLED
+        assert not LoopState.objects.filter(name="review").exists()
+
+    def test_status_text_reads_as_a_status_not_a_mutation(self) -> None:
+        out = _run("status", "review")
+        assert "is now" not in out
+        assert "status:" in out.lower()
+        assert "ENABLED" in out
+
+    def test_status_reports_a_paused_loop_without_changing_it(self) -> None:
+        _run("pause", "review")
+        out = _run("status", "review")
+        assert "PAUSED" in out
+        assert LoopState.objects.status_of("review") is LoopStatus.PAUSED
 
 
 class TestLoopStateSetsLoopRowEnabled(TestCase):
@@ -78,7 +120,7 @@ class TestLoopStateSetsLoopRowEnabled(TestCase):
     The #2584 unified verdict gates a loop on BOTH ``Loop.enabled`` AND the
     ``LoopState`` control plane. Writing only the ``LoopState`` kill-switch left
     ``Loop.enabled`` stale, so ``t3 loop enable <name>`` reported success while
-    the master tick's ``not row.enabled`` gate kept skipping the loop. These pin
+    the loop tick's ``not row.enabled`` gate kept skipping the loop. These pin
     both columns moving together.
     """
 
@@ -112,9 +154,101 @@ class TestLoopStateSetsLoopRowEnabled(TestCase):
         _run("resume", "audit")
         assert Loop.objects.get(name="audit").enabled is True
 
-    def test_enable_disable_are_no_ops_for_a_name_with_no_loop_row(self) -> None:
-        # A control-plane verb on an unknown loop name still writes LoopState
-        # (the existing absent-row → ENABLED contract) and does not crash.
-        _run("disable", "no-such-loop")
-        assert LoopState.objects.status_of("no-such-loop") is LoopStatus.DISABLED
-        assert not Loop.objects.filter(name="no-such-loop").exists()
+
+class TestUnknownLoopNameRefused(TestCase):
+    """#3117: every verb refuses a name with no matching ``Loop`` row before touching ``LoopState``.
+
+    ``pause``/``resume``/``disable``/``enable``/``status`` on an unknown name used
+    to write (or, for ``status``, silently resolve to) a ``LoopState`` row for a
+    loop that does not exist — so a typo in a pause command reported success and
+    paused nothing. Each verb now exits non-zero, names the unknown loop, points
+    at ``t3 loops list``, and writes NO ``LoopState`` row.
+    """
+
+    _BOGUS = "totally_bogus_loop_xyz"
+
+    def _refuse(self, *args: str) -> str:
+        out = StringIO()
+        err = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("loop_state", *args, self._BOGUS, stdout=out, stderr=err)
+        assert caught.value.code == 2
+        return out.getvalue() + err.getvalue()
+
+    def test_pause_unknown_name_refused_no_row(self) -> None:
+        out = self._refuse("pause")
+        assert self._BOGUS in out
+        assert "t3 loops list" in out
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_resume_unknown_name_refused_no_row(self) -> None:
+        self._refuse("resume")
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_disable_unknown_name_refused_no_row(self) -> None:
+        self._refuse("disable")
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_enable_unknown_name_refused_no_row(self) -> None:
+        self._refuse("enable")
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_status_unknown_name_refused_never_prints_enabled(self) -> None:
+        out = self._refuse("status")
+        assert "ENABLED" not in out.upper()
+        assert not LoopState.objects.filter(name=self._BOGUS).exists()
+
+    def test_known_loop_still_pauses(self) -> None:
+        # No-regression: a real loop still pauses.
+        _loop("dispatch", enabled=True)
+        _run("pause", "dispatch")
+        assert LoopState.objects.status_of("dispatch") is LoopStatus.PAUSED
+
+
+class TestOverrideCommand(TestCase):
+    """``loop_state override`` — the emergency FORCED plane (#3248).
+
+    Sets the tri-state forced value (on/off/clear) with an optional TTL and
+    reason, orthogonal to the hold status. The CLI gates the pause/enable verbs
+    behind ``--emergency``; the override verb is the emergency handle itself.
+    """
+
+    def setUp(self) -> None:
+        _loop("review", enabled=True)
+        _loop("news", enabled=True)
+
+    def test_override_on_sets_forced_true(self) -> None:
+        _run("override", "review", "on")
+        assert LoopState.objects.forced_of("review") is True
+
+    def test_override_off_sets_forced_false(self) -> None:
+        _run("override", "news", "off")
+        assert LoopState.objects.forced_of("news") is False
+
+    def test_override_clear_returns_to_neutral(self) -> None:
+        _run("override", "review", "on")
+        _run("override", "review", "clear")
+        assert LoopState.objects.forced_of("review") is None
+
+    def test_override_with_ttl_expires(self) -> None:
+        _run("override", "review", "on", "--for", "2h")
+        row = LoopState.objects.get(name="review")
+        assert row.forced_until is not None
+        assert row.forced_until > timezone.now()
+
+    def test_override_records_reason(self) -> None:
+        _run("override", "review", "on", "--reason", "incident firefight")
+        assert LoopState.objects.get(name="review").forced_reason == "incident firefight"
+
+    def test_override_unknown_name_refused(self) -> None:
+        out = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("loop_state", "override", "no_such_loop", "on", stdout=out)
+        assert caught.value.code == 2
+        assert not LoopState.objects.filter(name="no_such_loop").exists()
+
+    def test_override_invalid_state_refused(self) -> None:
+        out = StringIO()
+        with pytest.raises(SystemExit) as caught:
+            call_command("loop_state", "override", "review", "maybe", stdout=out)
+        assert caught.value.code == 2

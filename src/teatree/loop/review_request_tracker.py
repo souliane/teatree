@@ -32,8 +32,8 @@ def record_review_request_post(
     """Persist (or update) a ``ReviewRequestPost`` for *mr_url*.
 
     Idempotent on ``mr_url``: a re-post overwrites the channel and
-    thread reference but leaves ``last_nag_step`` and ``done_at`` alone
-    so the nag state machine is preserved across retries.
+    thread reference but leaves ``last_nag_at`` and ``done_at`` alone
+    so the nag state is preserved across retries.
     """
     with transaction.atomic():
         post, created = ReviewRequestPost.objects.get_or_create(

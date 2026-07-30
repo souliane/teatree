@@ -1,9 +1,10 @@
 """#550 Tier-1 lane: ``t3 eval skill-command-validity`` over the live registry.
 
 The lane builds the live CLI registry from the typer app (``command_paths`` /
-``command_groups``) and validates every backticked ``t3 …`` in the shipped skill
-docs against it. A SKILL.md that cites a renamed/removed ``t3`` command FAILs the
-lane (the "no stale references" rule). The lane is wired into ``t3 eval all``.
+``command_groups``) and validates every backticked ``t3 …`` in the shipped repo
+docs against it — the skills tree, ``agents/*.md``, ``BLUEPRINT.md`` and
+``docs/``. A doc that cites a renamed/removed ``t3`` command FAILs the lane (the
+"no stale references" rule). The lane is wired into ``t3 eval all``.
 """
 
 from pathlib import Path
@@ -32,35 +33,29 @@ class TestLiveRegistry:
 
 
 class TestShippedCorpus:
-    def test_shipped_skill_docs_all_resolve(self) -> None:
+    def test_shipped_repo_docs_all_resolve(self) -> None:
         report = validate_shipped_skill_commands()
         assert report.ok, report.render_text()
         assert report.checked > 0  # the lane is not vacuous — it checked real commands
 
     def test_lane_catches_a_planted_stale_command(self, tmp_path: Path) -> None:
-        skills = tmp_path / "skills"
-        d = skills / "stale"
-        d.mkdir(parents=True)
-        (d / "SKILL.md").write_text("---\nname: stale\n---\nRun `t3 frobnicate`.\n", encoding="utf-8")
-        report = validate_shipped_skill_commands(skills_dir=skills)
+        (tmp_path / "BLUEPRINT.md").write_text("Run `t3 frobnicate`.\n", encoding="utf-8")
+        report = validate_shipped_skill_commands(repo_root=tmp_path)
         assert not report.ok
         assert report.violations[0].command == "t3 frobnicate"
 
 
 class TestLaneResult:
-    def test_clean_corpus_is_a_passing_free_lane(self) -> None:
+    def test_clean_corpus_is_a_passing_model_free_lane(self) -> None:
         lane = skill_command_validity_lane(validate_shipped_skill_commands())
         assert lane.name == "skill-command-validity"
-        assert lane.cost == "free"
+        assert lane.cost == "model-free"
         assert lane.passed is True
         assert lane.skipped is False
 
     def test_violation_makes_the_lane_fail(self, tmp_path: Path) -> None:
-        skills = tmp_path / "skills"
-        d = skills / "stale"
-        d.mkdir(parents=True)
-        (d / "SKILL.md").write_text("---\nname: stale\n---\n`t3 frobnicate`\n", encoding="utf-8")
-        lane = skill_command_validity_lane(validate_shipped_skill_commands(skills_dir=skills))
+        (tmp_path / "BLUEPRINT.md").write_text("`t3 frobnicate`\n", encoding="utf-8")
+        lane = skill_command_validity_lane(validate_shipped_skill_commands(repo_root=tmp_path))
         assert lane.passed is False
 
 

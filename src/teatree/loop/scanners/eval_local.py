@@ -7,15 +7,16 @@ first_pr_of_week.py``). This is the local half: the loop fires an
 ``eval_local`` task per cadence window (default 168h = weekly) so the
 SCOPED eval suite runs locally without depending on an external cron.
 
-The scanner mirrors :mod:`teatree.loop.scanners.scanning_news`:
+The scanner is one of the periodic task-queuing family that share
+:class:`teatree.loop.scanners.phase_cadence.PhaseCadence`:
 
 * **Single trigger.** Only a cadence (``eval_local_cadence_hours``,
     default 168h). A fixed-rate platform behaviour, not coupled to
     delivery velocity.
 * **Overlay anchor is injected, not baked.** A core scanner that does
     not know any overlay's name; the wiring layer
-    (``teatree.loop.global_scanner_factories._eval_local_scanner``) resolves the active
-    overlay via :func:`teatree.config.discover_active_overlay`.
+    (``teatree.loop.global_scanner_factories._eval_local_scanner``) resolves the
+    active overlay via :func:`teatree.config.discover_active_overlay`.
 * **Same dedup contract.** A pending or claimed ``eval_local`` task acts
     as the lock — completion (or failure) unlocks the next cadence
     window. No new model fields; the most recent task's
@@ -27,29 +28,13 @@ The scanner mirrors :mod:`teatree.loop.scanners.scanning_news`:
     long-running suite never blocks the tick.
 """
 
-import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
 
-from django.apps import apps
-from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.modelkit.phases import EVAL_LOCAL_PHASE
 from teatree.loop.scanners.base import ScanSignal
-
-if TYPE_CHECKING:
-    from teatree.core.models import Session as _Session
-    from teatree.core.models import Task as _Task
-    from teatree.core.models import Ticket as _Ticket
-
-logger = logging.getLogger(__name__)
-
-#: Canonical phase token written to ``Task.phase`` for local-eval tasks.
-EVAL_LOCAL_PHASE = "eval_local"
-
-#: States that mean an eval task is still in-flight (cannot queue a dupe).
-_IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
+from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 
 @dataclass(slots=True)
@@ -71,16 +56,20 @@ class EvalLocalScanner:
     name: str = "eval_local"
 
     def scan(self) -> list[ScanSignal]:
-        if self._in_flight_task_exists():
+        cadence = PhaseCadence(self.overlay_name, phase=EVAL_LOCAL_PHASE, cadence_hours=self.cadence_hours)
+        if cadence.in_flight_exists():
             return []
 
-        now = timezone.now()
-        last_run_at = self._last_run_at()
-        trigger = self._evaluate_trigger(now=now, last_run_at=last_run_at)
+        trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
             return []
 
-        task = self._queue_task(trigger=trigger)
+        task = cadence.queue_task(
+            placeholder_issue_url=f"eval-local://{self.overlay_name}",
+            agent_id=f"eval-local-{self.overlay_name}",
+            execution_reason=self._execution_reason(trigger),
+            log_label="EvalLocalScanner",
+        )
         if task is None:
             return []
         return [
@@ -97,65 +86,6 @@ class EvalLocalScanner:
             ),
         ]
 
-    def _in_flight_task_exists(self) -> bool:
-        task_model = _task_model()
-        if task_model is None:
-            return False
-        return task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=EVAL_LOCAL_PHASE,
-            status__in=_IN_FLIGHT_TASK_STATES,
-        ).exists()
-
-    def _last_run_at(self) -> object:
-        task_model = _task_model()
-        if task_model is None:
-            return None
-        aggregate = task_model.objects.filter(
-            ticket__overlay=self.overlay_name,
-            phase=EVAL_LOCAL_PHASE,
-        ).aggregate(ts=Max("session__started_at"))
-        return aggregate["ts"]
-
-    def _evaluate_trigger(self, *, now: object, last_run_at: object) -> str | None:
-        if last_run_at is None:
-            return "bootstrap"
-        elapsed_hours = (now - last_run_at).total_seconds() / 3600.0  # type: ignore[operator]
-        if elapsed_hours >= self.cadence_hours:
-            return "cadence"
-        return None
-
-    def _queue_task(self, *, trigger: str) -> "_Task | None":
-        ticket_model = _ticket_model()
-        task_model = _task_model()
-        session_model = _session_model()
-        if ticket_model is None or task_model is None or session_model is None:
-            return None
-        try:
-            with transaction.atomic():
-                ticket, _created = ticket_model.objects.get_or_create(
-                    issue_url=self._placeholder_issue_url(),
-                    defaults={"overlay": self.overlay_name, "role": "author"},
-                )
-                if ticket.overlay != self.overlay_name:
-                    ticket.overlay = self.overlay_name
-                    ticket.save(update_fields=["overlay"])
-                session = session_model.objects.create(
-                    overlay=self.overlay_name,
-                    ticket=ticket,
-                    agent_id=f"eval-local-{self.overlay_name}",
-                )
-                return task_model.objects.create(
-                    ticket=ticket,
-                    session=session,
-                    phase=EVAL_LOCAL_PHASE,
-                    execution_target=task_model.ExecutionTarget.HEADLESS,
-                    execution_reason=self._execution_reason(trigger),
-                )
-        except Exception:
-            logger.exception("EvalLocalScanner: failed to queue eval_local task")
-            return None
-
     def _execution_reason(self, trigger: str) -> str:
         """Direct the SCOPED local run via the $0-extra transcript runner.
 
@@ -163,37 +93,13 @@ class EvalLocalScanner:
         run`` + ``transcript`` substrings are load-bearing — they tell
         the skill to run the same scoped, $0-extra path the user runs
         by hand (``t3 eval run`` defaults to the transcript backend),
-        plus the deterministic ``skill-triggers`` / ``pinned-regressions`` checks.
+        plus the deterministic ``pinned-regressions`` check.
         """
         return (
             f"Periodic local eval ({trigger}) via skill: {self.skill} | run the SCOPED suite locally with "
-            "`t3 eval skill-triggers`, `t3 eval pinned-regressions`, and `t3 eval run` "
+            "`t3 eval pinned-regressions` and `t3 eval run` "
             "(transcript backend, $0 extra)"
         )
-
-    def _placeholder_issue_url(self) -> str:
-        return f"eval-local://{self.overlay_name}"
-
-
-def _ticket_model() -> "type[_Ticket] | None":
-    try:
-        return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _task_model() -> "type[_Task] | None":
-    try:
-        return cast("type[_Task]", apps.get_model("core", "Task"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _session_model() -> "type[_Session] | None":
-    try:
-        return cast("type[_Session]", apps.get_model("core", "Session"))
-    except Exception:  # noqa: BLE001
-        return None
 
 
 __all__ = [

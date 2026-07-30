@@ -13,6 +13,7 @@ reset every user turn. These tests exercise the two dimensions independently.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,22 @@ from hooks.scripts.hook_router import (
     handle_orchestrator_turn_budget_nudge,
     handle_reset_turn_tool_budget,
 )
+
+
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed a DB-home ``teatree_config_setting`` store with JSON-encoded rows."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
 
 
 @pytest.fixture(autouse=True)
@@ -36,11 +53,11 @@ def _clean_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
 
 
-def _write_toml(monkeypatch: pytest.MonkeyPatch, body: str) -> None:
-    home = Path.home()
-    (home / ".teatree.toml").write_text(body, encoding="utf-8")
+def _config_db() -> Path:
+    return Path.home() / "config.sqlite3"
 
 
 def _bash(session_id: str, command: str = "git status") -> dict:
@@ -56,17 +73,13 @@ class TestWallClockThresholdConfig:
     def test_default_threshold_is_positive(self) -> None:
         assert _orchestrator_turn_wall_clock_threshold() == router._DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
 
-    def test_explicit_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_toml(monkeypatch, "[teatree]\norchestrator_turn_wall_clock_seconds = 0\n")
+    def test_explicit_zero_disables(self) -> None:
+        _seed_config_db(_config_db(), {"orchestrator_turn_wall_clock_seconds": 0})
         assert _orchestrator_turn_wall_clock_threshold() == 0
 
-    def test_explicit_value_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_toml(monkeypatch, "[teatree]\norchestrator_turn_wall_clock_seconds = 42\n")
+    def test_explicit_value_overrides_default(self) -> None:
+        _seed_config_db(_config_db(), {"orchestrator_turn_wall_clock_seconds": 42})
         assert _orchestrator_turn_wall_clock_threshold() == 42
-
-    def test_broken_config_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_toml(monkeypatch, "not valid = toml [[[")
-        assert _orchestrator_turn_wall_clock_threshold() == router._DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
 
 
 class TestWallClockDimensionFiresIndependentOfCount:
@@ -76,10 +89,7 @@ class TestWallClockDimensionFiresIndependentOfCount:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # Threshold 60s; count budget high so the count dimension never fires.
-        _write_toml(
-            monkeypatch,
-            "[teatree]\norchestrator_turn_budget = 1000\norchestrator_turn_wall_clock_seconds = 60\n",
-        )
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 1000, "orchestrator_turn_wall_clock_seconds": 60})
         sid = "sess-wall-fire"
         # Pin the clock: turn started long ago.
         monkeypatch.setattr(router.time, "monotonic", lambda: 1000.0)
@@ -93,10 +103,7 @@ class TestWallClockDimensionFiresIndependentOfCount:
     def test_no_nudge_when_elapsed_below_threshold(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _write_toml(
-            monkeypatch,
-            "[teatree]\norchestrator_turn_budget = 1000\norchestrator_turn_wall_clock_seconds = 60\n",
-        )
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 1000, "orchestrator_turn_wall_clock_seconds": 60})
         sid = "sess-wall-quiet"
         monkeypatch.setattr(router.time, "monotonic", lambda: 1000.0)
         _set_turn_start(sid, 980.0)  # 20s elapsed < 60s threshold
@@ -106,10 +113,7 @@ class TestWallClockDimensionFiresIndependentOfCount:
     def test_wall_clock_disabled_when_threshold_zero(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _write_toml(
-            monkeypatch,
-            "[teatree]\norchestrator_turn_budget = 1000\norchestrator_turn_wall_clock_seconds = 0\n",
-        )
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 1000, "orchestrator_turn_wall_clock_seconds": 0})
         sid = "sess-wall-off"
         monkeypatch.setattr(router.time, "monotonic", lambda: 1_000_000.0)
         _set_turn_start(sid, 0.0)  # huge elapsed, but dimension disabled
@@ -119,10 +123,7 @@ class TestWallClockDimensionFiresIndependentOfCount:
     def test_wall_clock_nudge_emitted_once_per_turn(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _write_toml(
-            monkeypatch,
-            "[teatree]\norchestrator_turn_budget = 1000\norchestrator_turn_wall_clock_seconds = 30\n",
-        )
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 1000, "orchestrator_turn_wall_clock_seconds": 30})
         sid = "sess-wall-once"
         monkeypatch.setattr(router.time, "monotonic", lambda: 500.0)
         _set_turn_start(sid, 400.0)  # 100s elapsed
@@ -135,7 +136,7 @@ class TestWallClockDimensionFiresIndependentOfCount:
     def test_subagent_call_never_nudged_by_wall_clock(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _write_toml(monkeypatch, "[teatree]\norchestrator_turn_wall_clock_seconds = 30\n")
+        _seed_config_db(_config_db(), {"orchestrator_turn_wall_clock_seconds": 30})
         sid = "sess-wall-sub"
         monkeypatch.setattr(router.time, "monotonic", lambda: 500.0)
         _set_turn_start(sid, 0.0)
@@ -152,10 +153,7 @@ class TestCountDimensionStillFiresIndependently:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # Wall-clock disabled (0); a short count budget still nudges on call count.
-        _write_toml(
-            monkeypatch,
-            "[teatree]\norchestrator_turn_budget = 2\norchestrator_turn_wall_clock_seconds = 0\n",
-        )
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 2, "orchestrator_turn_wall_clock_seconds": 0})
         sid = "sess-count-only"
         # Turn started "now" so no wall-clock elapse.
         monkeypatch.setattr(router.time, "monotonic", lambda: 1000.0)

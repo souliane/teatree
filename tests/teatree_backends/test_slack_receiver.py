@@ -180,16 +180,14 @@ class TestRunSingleOverlay:
         stop.set()
         with patch.dict("sys.modules", {"slack_sdk": None, "slack_sdk.socket_mode": None}):
             _run_single_overlay(
-                overlay_name="test",
-                app_token="xapp-test",
-                bot_token="xoxb-test",
+                overlay=("test", "xapp-test", "xoxb-test"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
             )
 
     def test_connects_and_stops_on_event(self, tmp_path: Path) -> None:
-        import slack_sdk.socket_mode  # noqa: PLC0415
-        import slack_sdk.web  # noqa: PLC0415
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
 
         mock_client = MagicMock()
         mock_client.socket_mode_request_listeners = []
@@ -205,9 +203,7 @@ class TestRunSingleOverlay:
             patch.object(slack_sdk.web, "WebClient"),
         ):
             _run_single_overlay(
-                overlay_name="ov",
-                app_token="xapp",
-                bot_token="xoxb",
+                overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
             )
@@ -216,9 +212,9 @@ class TestRunSingleOverlay:
         assert len(mock_client.socket_mode_request_listeners) == 1
 
     def test_handler_enqueues_mention_events(self, tmp_path: Path) -> None:
-        import slack_sdk.socket_mode  # noqa: PLC0415
-        import slack_sdk.web  # noqa: PLC0415
-        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
 
         mock_client = MagicMock()
         mock_client.socket_mode_request_listeners = []
@@ -243,9 +239,7 @@ class TestRunSingleOverlay:
             patch.object(slack_sdk.web, "WebClient"),
         ):
             _run_single_overlay(
-                overlay_name="ov",
-                app_token="xapp",
-                bot_token="xoxb",
+                overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
             )
@@ -254,10 +248,127 @@ class TestRunSingleOverlay:
         assert len(events) == 1
         assert events[0]["event"]["type"] == "app_mention"
 
+    def test_handler_signals_wake_on_enqueued_event(self, tmp_path: Path) -> None:
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
+
+        mock_client = MagicMock()
+        mock_client.socket_mode_request_listeners = []
+        stop = threading.Event()
+        on_event = MagicMock()
+        handler_ref: list = []
+
+        def fake_connect() -> None:
+            handler_ref.extend(mock_client.socket_mode_request_listeners)
+            req = SocketModeRequest(
+                type="events_api",
+                envelope_id="e1",
+                payload={"event": {"type": "app_mention", "text": "hello", "ts": "1.0"}},
+            )
+            handler_ref[0](mock_client, req)
+            stop.set()
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=mock_client),
+            patch.object(slack_sdk.web, "WebClient"),
+        ):
+            _run_single_overlay(
+                overlay=("ov", "xapp", "xoxb"),
+                queues=_queues(tmp_path),
+                stop_event=stop,
+                on_event=on_event,
+            )
+
+        # The inbound event fires the drain signal immediately — no cadence wait.
+        on_event.assert_called_once_with()
+
+    def test_handler_does_not_signal_for_filtered_bot_message(self, tmp_path: Path) -> None:
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
+
+        mock_client = MagicMock()
+        mock_client.socket_mode_request_listeners = []
+        stop = threading.Event()
+        on_event = MagicMock()
+        handler_ref: list = []
+
+        def fake_connect() -> None:
+            handler_ref.extend(mock_client.socket_mode_request_listeners)
+            req = SocketModeRequest(
+                type="events_api",
+                envelope_id="b1",
+                payload={"event": {"type": "message", "subtype": "bot_message", "ts": "1.0"}},
+            )
+            handler_ref[0](mock_client, req)
+            stop.set()
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=mock_client),
+            patch.object(slack_sdk.web, "WebClient"),
+        ):
+            _run_single_overlay(
+                overlay=("ov", "xapp", "xoxb"),
+                queues=_queues(tmp_path),
+                stop_event=stop,
+                on_event=on_event,
+            )
+
+        # A filtered event is never enqueued, so it never signals the drain.
+        on_event.assert_not_called()
+
+    def test_handler_signal_failure_does_not_break_receiver(self, tmp_path: Path) -> None:
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
+
+        mock_client = MagicMock()
+        mock_client.socket_mode_request_listeners = []
+        stop = threading.Event()
+        queue = tmp_path / "events.jsonl"
+
+        def boom() -> None:
+            message = "db unavailable"
+            raise RuntimeError(message)
+
+        handler_ref: list = []
+
+        def fake_connect() -> None:
+            handler_ref.extend(mock_client.socket_mode_request_listeners)
+            req = SocketModeRequest(
+                type="events_api",
+                envelope_id="e1",
+                payload={"event": {"type": "app_mention", "text": "hi", "ts": "1.0"}},
+            )
+            handler_ref[0](mock_client, req)
+            stop.set()
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=mock_client),
+            patch.object(slack_sdk.web, "WebClient"),
+        ):
+            _run_single_overlay(
+                overlay=("ov", "xapp", "xoxb"),
+                queues=_queues(tmp_path),
+                stop_event=stop,
+                on_event=boom,
+            )
+
+        # The durable JSONL write still landed even though the wake signal raised.
+        events = drain_event_queue(queue)
+        assert len(events) == 1
+
     def test_handler_filters_bot_messages(self, tmp_path: Path) -> None:
-        import slack_sdk.socket_mode  # noqa: PLC0415
-        import slack_sdk.web  # noqa: PLC0415
-        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
 
         mock_client = MagicMock()
         mock_client.socket_mode_request_listeners = []
@@ -283,9 +394,7 @@ class TestRunSingleOverlay:
             patch.object(slack_sdk.web, "WebClient"),
         ):
             _run_single_overlay(
-                overlay_name="ov",
-                app_token="xapp",
-                bot_token="xoxb",
+                overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
             )
@@ -294,9 +403,9 @@ class TestRunSingleOverlay:
         assert events == []
 
     def test_handler_routes_reaction_added_to_reactions_queue(self, tmp_path: Path) -> None:
-        import slack_sdk.socket_mode  # noqa: PLC0415
-        import slack_sdk.web  # noqa: PLC0415
-        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
 
         mock_client = MagicMock()
         mock_client.socket_mode_request_listeners = []
@@ -330,9 +439,7 @@ class TestRunSingleOverlay:
             patch.object(slack_sdk.web, "WebClient"),
         ):
             _run_single_overlay(
-                overlay_name="ov",
-                app_token="xapp",
-                bot_token="xoxb",
+                overlay=("ov", "xapp", "xoxb"),
                 queues=QueuePaths(events=events_queue, reactions=reactions_queue),
                 stop_event=stop,
             )
@@ -344,9 +451,9 @@ class TestRunSingleOverlay:
         assert reaction_events[0]["event"]["type"] == "reaction_added"
 
     def test_handler_ignores_non_events_api(self, tmp_path: Path) -> None:
-        import slack_sdk.socket_mode  # noqa: PLC0415
-        import slack_sdk.web  # noqa: PLC0415
-        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415 — optional dep
 
         mock_client = MagicMock()
         mock_client.socket_mode_request_listeners = []
@@ -366,9 +473,7 @@ class TestRunSingleOverlay:
             patch.object(slack_sdk.web, "WebClient"),
         ):
             _run_single_overlay(
-                overlay_name="ov",
-                app_token="xapp",
-                bot_token="xoxb",
+                overlay=("ov", "xapp", "xoxb"),
                 queues=_queues(tmp_path),
                 stop_event=stop,
             )

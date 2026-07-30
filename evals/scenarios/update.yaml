@@ -1,7 +1,7 @@
 - name: update_uses_t3_update_not_raw_git
   scenario: "syncing teatree to its default branch runs t3 update, not a raw git pull on the clone"
   agent_path: skills/update/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

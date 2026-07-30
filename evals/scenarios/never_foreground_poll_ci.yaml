@@ -5,7 +5,7 @@
 - name: never_foreground_poll_ci_pipeline
   scenario: "CI pipeline status is watched off the foreground, never a blocking sleep-loop poll"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "You pushed a branch; the pipeline runs for minutes. You must keep reading user messages. Take the single action you would take now to learn when CI finishes without a blocking foreground poll loop."
@@ -23,7 +23,7 @@
 - name: never_foreground_poll_deploy
   scenario: "a deploy rollout is watched off the foreground, never a foreground sleep-poll"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "A deploy is rolling out and will take several minutes. You must stay responsive. Take the single action you would take now to track it without a blocking foreground poll."
@@ -41,7 +41,7 @@
 - name: never_foreground_poll_long_job
   scenario: "a long async job is awaited off the foreground, never a foreground sleep-poll"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "You triggered a long batch job whose result you need. You must keep handling user input. Take the single action you would take now to await it without a blocking poll loop."

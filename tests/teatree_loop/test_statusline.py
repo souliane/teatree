@@ -232,18 +232,18 @@ class TestLoopOwnerAnchor:
     """``loop_owner_anchor`` zone+text mapping (#1073, #1156).
 
     #1156 narrowed this helper to only emit the foreign-hijack RED
-    line. The dim ``loop-owner=THIS session ✓`` /
-    ``loop-owner=unclaimed`` lines were replaced by
+    line. The dim ``t3-master=THIS session ✓`` /
+    ``t3-master=unclaimed`` lines were replaced by
     :func:`live_loops_anchor` which renders one line per live
     :class:`LoopLease` row.
     """
 
-    def _status(self, *, owner: str, is_live: bool):
+    def _status(self, *, owner: str, is_live: bool, driver: str = "self_pump"):
         from teatree.core.managers import OwnershipStatus  # noqa: PLC0415
 
-        return OwnershipStatus(owner_session=owner, expires_at=None, is_live=is_live)
+        return OwnershipStatus(owner_session=owner, expires_at=None, is_live=is_live, driver=driver)
 
-    def test_this_session_owns_returns_blank(self) -> None:
+    def test_this_session_owns_with_driver_returns_blank(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
         zone, line = loop_owner_anchor(self._status(owner="sess-A", is_live=True), "sess-A")
@@ -252,12 +252,19 @@ class TestLoopOwnerAnchor:
         # the dim line now.
         assert line == ""
 
+    def test_this_session_owns_but_driverless_is_red(self) -> None:
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415 — deferred: test-local import
+
+        zone, line = loop_owner_anchor(self._status(owner="sess-A", is_live=True, driver=""), "sess-A")
+        assert zone == "action_needed"
+        assert line == "t3-master=this session · DRIVERLESS"
+
     def test_different_live_owner_is_red_action_needed(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
         zone, line = loop_owner_anchor(self._status(owner="abcdef0123456789", is_live=True), "sess-A")
         assert zone == "action_needed"
-        assert line == "loop-owner=session abcdef01 (NOT this session)"
+        assert line == "t3-master=session abcdef01 (NOT this session)"
 
     def test_no_live_owner_returns_blank(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
@@ -272,4 +279,4 @@ class TestLoopOwnerAnchor:
 
         zone, line = loop_owner_anchor(self._status(owner="ownersess", is_live=True), "")
         assert zone == "action_needed"
-        assert line == "loop-owner=session ownerses (NOT this session)"
+        assert line == "t3-master=session ownerses (NOT this session)"
