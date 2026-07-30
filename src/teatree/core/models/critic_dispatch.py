@@ -151,12 +151,16 @@ class CriticDispatch(models.Model):
 
     @classmethod
     def saturated(cls, *, at: "dt.datetime | None" = None) -> models.QuerySet:
-        """Claims that spent their whole retry budget and still hold no verdict."""
+        """Claims that spent their whole retry budget and still hold no verdict.
+
+        :meth:`_reclaim`'s claim test with the budget inverted, over the same
+        :func:`acquirable_q` predicate — the twin of
+        :meth:`AutoReviewDispatch.saturated`.
+        """
         now = at or timezone.now()
         return cls.objects.filter(
-            state__in=cls._ACTIVE_STATES,
+            acquirable_q(always_acquirable=cls._ACQUIRABLE_STATES, active=cls._ACTIVE_STATES, now=now),
             attempts__gte=MAX_DISPATCH_ATTEMPTS,
-            deadline__lt=now,
         )
 
     @classmethod

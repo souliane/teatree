@@ -272,14 +272,21 @@ class TestResolveNeverStrandsTheLock:
 
 
 class TestAcquirablePredicateIsTheOneRule:
-    """`acquirable_q` is now the single acquirability rule for all three claim models.
+    """`acquirable_q` is the single rule for MAY-THIS-CLAIM-BE-TAKEN, on every surface asking it.
 
     Pinned directly rather than only through its callers: three models (#3920 —
     MRReviewLock, AutoReviewDispatch, CriticDispatch) drive their CAS off this one
-    predicate, so a change here moves all three at once. The three-way split below
-    is the whole contract — always-acquirable, expired-active, terminal — and the
-    NULL-deadline case is the one an expiry-based reclaim is most likely to get
-    wrong, because "no bound" must mean "never stolen", not "infinitely stale".
+    predicate, and both dispatch ledgers drive ``saturated()`` off it too — the
+    same question with the retry budget inverted — so a change here moves all of
+    them at once. The three-way split below is the whole contract —
+    always-acquirable, expired-active, terminal — and the NULL-deadline case is
+    the one an expiry-based reclaim is most likely to get wrong, because "no
+    bound" must mean "never stolen", not "infinitely stale".
+
+    Deliberately NOT this rule: ``reconcile_stale`` and ``expired_unresolved_lock_for``
+    match the expired-active half ALONE. They ask "which held claim died?", not
+    "may this be taken", and the always-acquirable half would make the first reset
+    resolved rows and the second escalate a merge past a concluded review.
     """
 
     def _matches(self, row: MRReviewLock, *, now: dt.datetime) -> bool:

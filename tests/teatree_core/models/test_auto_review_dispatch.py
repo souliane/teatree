@@ -401,6 +401,16 @@ class TestStrandedDispatchIsReArmable:
             "a head that already has a verdict is spent — re-arming it would be review churn"
         )
 
+    def test_an_expired_claim_with_budget_left_is_not_saturated(self) -> None:
+        # The re-armable case: this claim died, but the next sweep will arm it
+        # again, so it is not the doctor's business. Saturation is the END of the
+        # retry, not any one dead attempt.
+        row = self._arm()
+        self._expire(row)
+
+        assert row.attempts < MAX_DISPATCH_ATTEMPTS
+        assert AutoReviewDispatch.saturated().count() == 0
+
     def test_saturated_claims_are_reported_for_the_doctor(self) -> None:
         row = self._arm()
         assert AutoReviewDispatch.saturated().count() == 0
@@ -410,6 +420,20 @@ class TestStrandedDispatchIsReArmable:
             assert row is not None
         self._expire(row)
         assert AutoReviewDispatch.saturated().count() == 1
+
+    def test_the_last_attempt_is_not_saturated_while_its_deadline_is_still_live(self) -> None:
+        # Saturation is "nothing will re-arm this head", not "the budget is spent":
+        # the final reviewer is still running and may yet record a verdict, so
+        # reporting it to the doctor now would be a false call for a human.
+        row = self._arm()
+        for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
+            self._expire(row)
+            row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL)
+            assert row is not None
+
+        assert row.attempts == MAX_DISPATCH_ATTEMPTS
+        assert row.deadline > timezone.now()
+        assert AutoReviewDispatch.saturated().count() == 0
 
 
 class TestHeldLockLeavesNoOrphanClaim:

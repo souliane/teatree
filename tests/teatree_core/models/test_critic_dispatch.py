@@ -86,6 +86,15 @@ class TestStrandedCriticDispatchIsReArmable(TestCase):
         assert again.task is not None
         assert again.task.pk != first.task_id
 
+    def test_an_expired_claim_with_budget_left_is_not_saturated(self) -> None:
+        # Re-armable, so not the doctor's business: saturation is the END of the
+        # retry, not any one dead attempt.
+        row = self._arm()
+        self._expire(row)
+
+        assert row.attempts < MAX_DISPATCH_ATTEMPTS
+        assert CriticDispatch.saturated().count() == 0
+
     def test_the_retry_budget_is_bounded_and_surfaces(self) -> None:
         row = self._arm()
         for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
@@ -98,6 +107,21 @@ class TestStrandedCriticDispatchIsReArmable(TestCase):
 
         assert CriticDispatch.enqueue(ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade") is None
         assert CriticDispatch.saturated().count() == 1
+
+    def test_the_last_attempt_is_not_saturated_while_its_deadline_is_still_live(self) -> None:
+        # The final critic is still running and may yet record a verdict, so a
+        # spent budget alone is not "nothing will re-arm this head".
+        row = self._arm()
+        for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
+            self._expire(row)
+            row = CriticDispatch.enqueue(
+                ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade the delivery"
+            )
+            assert row is not None
+
+        assert row.attempts == MAX_DISPATCH_ATTEMPTS
+        assert row.deadline > timezone.now()
+        assert CriticDispatch.saturated().count() == 0
 
     def test_a_recorded_verdict_is_terminal(self) -> None:
         row = self._arm()

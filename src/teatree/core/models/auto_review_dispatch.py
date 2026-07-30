@@ -157,12 +157,17 @@ class AutoReviewDispatch(models.Model):
         The visible end of the bounded retry: every attempt was armed and none
         produced a verdict, so nothing will re-arm this head and it needs a
         human. Surfaced by the doctor's reconciliation ledger.
+
+        Precisely :meth:`_reclaim`'s claim test with the budget inverted, over
+        the same :func:`acquirable_q` predicate: a saturated claim is one the
+        reclaim would take but for its exhausted ``attempts``. Spelling the
+        state/deadline half inline here instead would let "will not re-arm"
+        drift from "would re-arm", which is the whole point of the shared rule.
         """
         now = at or timezone.now()
         return cls.objects.filter(
-            state__in=cls._ACTIVE_STATES,
+            acquirable_q(always_acquirable=cls._ACQUIRABLE_STATES, active=cls._ACTIVE_STATES, now=now),
             attempts__gte=MAX_DISPATCH_ATTEMPTS,
-            deadline__lt=now,
         )
 
     @classmethod
