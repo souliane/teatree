@@ -252,6 +252,32 @@ def _unset_review_skill_by_default() -> Iterator[None]:
         yield
 
 
+@pytest.fixture(autouse=True)
+def _schema_readiness_current_by_default(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Pin the #3901 claim-admission gate to CURRENT unless a test opts in.
+
+    The gate walks the live migration graph, which ``pytest --no-migrations`` leaves
+    unrecorded while building the schema straight from the models — every claim would
+    then read BEHIND and refuse. Stubbing the probe (not the verdict) also keeps the
+    graph walk off every test's claim path. Tests that drive the gate re-patch
+    ``pending_migrations`` inside their own scope; the two that need the REAL walk
+    carry ``@pytest.mark.real_schema_readiness``.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+
+    from teatree.core.schema_readiness import (  # noqa: PLC0415 — deferred: importing it at collection pulls Django in
+        invalidate_schema_readiness,
+    )
+
+    invalidate_schema_readiness()
+    if "real_schema_readiness" in request.keywords:
+        yield
+    else:
+        with patch("teatree.core.schema_readiness.pending_migrations", return_value=[]):
+            yield
+    invalidate_schema_readiness()
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     """Create a minimal workspace structure with a main repo."""

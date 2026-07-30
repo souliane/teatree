@@ -47,6 +47,7 @@ from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
+from teatree.loop.scanners.self_update_schema import SchemaReconcileState, reconcile_schema_after_pull
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ class SelfUpdateScanner:
             outcome = self._process_one(label=label, path=path)
             _maybe_notify_stale_clone(label=label, path=path, outcome=outcome)
             signals.append(_signal_from_outcome(label=label, outcome=outcome))
+            signals.extend(_schema_signals(label=label, outcome=outcome))
             logger.info(
                 "self_update %s outcome=%s reason=%s",
                 label,
@@ -225,6 +227,42 @@ def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) 
             default_branch=default_branch,
             detail=reason,
         )
+    )
+
+
+def _schema_signals(*, label: str, outcome: _PullOutcome) -> list[ScanSignal]:
+    """Sequence the schema behind an advanced clone and report what happened (#3901).
+
+    Only an ``updated`` outcome can leave the control DB behind the running code, so
+    only that outcome reconciles. A reconcile that itself crashes is reported as the
+    unresolved state rather than swallowed: the claim gate is still refusing, so
+    silence here would leave a parked factory with nothing naming why.
+    """
+    if outcome.outcome != "updated":
+        return []
+    try:
+        reconcile = reconcile_schema_after_pull(label=label, head_sha=outcome.new_sha)
+    except Exception as exc:
+        logger.exception("self_update %s post-pull schema reconcile crashed", label)
+        return [_schema_behind_signal(label=label, detail=f"{exc.__class__.__name__}: {exc}")]
+    if reconcile.state is SchemaReconcileState.FAILED:
+        return [_schema_behind_signal(label=label, detail=reconcile.detail)]
+    if reconcile.state is SchemaReconcileState.MIGRATED:
+        return [
+            ScanSignal(
+                kind="self_update.schema_migrated",
+                summary=f"self-update {label}: applied {len(reconcile.applied)} pending migration(s)",
+                payload={"repo": label, "applied": list(reconcile.applied)},
+            )
+        ]
+    return []
+
+
+def _schema_behind_signal(*, label: str, detail: str) -> ScanSignal:
+    return ScanSignal(
+        kind="self_update.schema_behind",
+        summary=f"self-update {label}: control DB BEHIND the pulled code ({detail})",
+        payload={"repo": label, "detail": detail},
     )
 
 

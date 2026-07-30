@@ -799,6 +799,12 @@ class _ScannerSettings:
     # ``auto_update_require_green_main`` fails closed on non-green default-branch CI.
     auto_update_reinstall: bool = False
     auto_update_require_green_main: bool = True
+    # #3901 The deploy-order gate on the other side of that hot pull: while the
+    # control DB is BEHIND the running code's migration graph — or the probe cannot
+    # tell — the claim chokepoint admits ZERO new work rather than execute against a
+    # schema the DB does not have. Default ON: this is the guarantee, not an opt-in.
+    # The flag is the never-lockout escape for a box where the probe itself misfires.
+    schema_readiness_gate_enabled: bool = True
 
 
 # The regenerable cache dirs auto-purged at CRITICAL disk pressure (the

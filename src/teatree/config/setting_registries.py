@@ -143,6 +143,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_skill": _parse_strict_str,
     "dogfood_smoke_cadence_hours": _parse_strict_int,
     "dogfood_smoke_overlay": _parse_strict_str,
+    "schema_readiness_gate_enabled": _parse_strict_bool,
     "self_update_disabled": _parse_strict_bool,
     "self_update_cadence_hours": _parse_strict_int,
     "auto_update_reinstall": _parse_strict_bool,

@@ -23,7 +23,11 @@ cloned twice (with no shared object store via ``--no-local``) so the
 import datetime as _dt
 import os
 import subprocess
+import tempfile
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -33,6 +37,7 @@ from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.loop.scanners.self_update import SelfUpdateScanner
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
+from teatree.loop.scanners.self_update_schema import SchemaReconcile, SchemaReconcileState
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -450,6 +455,77 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
 
         assert signals[0].kind == "self_update.updated", "the tick must still report the update"
         assert _head_sha(self.clone) != self.old_sha
+
+
+class SelfUpdatePostPullSchemaTests(TestCase):
+    """#3901: a clone that ADVANCED must sequence the schema before work resumes."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp(prefix="self_update_schema_"))
+        self.addCleanup(_rmtree_safe, str(self._tmp))
+        self.origin = self._tmp / "origin.git"
+        _seed_origin_with_two_commits(self.origin)
+        self.clone = self._tmp / "teatree"
+        _clone_trailing_by_one_commit(origin=self.origin, clone=self.clone)
+
+    def _scanner(self, clone: Path) -> SelfUpdateScanner:
+        return SelfUpdateScanner(repos=(("teatree", clone),), ci_status=_StubCiStatus(CiVerdict.GREEN))
+
+    def _reconcile(
+        self,
+        *,
+        return_value: object = None,
+        side_effect: BaseException | None = None,
+    ) -> AbstractContextManager[MagicMock]:
+        target = "teatree.loop.scanners.self_update.reconcile_schema_after_pull"
+        return cast(
+            "AbstractContextManager[MagicMock]",
+            patch(target, return_value=return_value, side_effect=side_effect),
+        )
+
+    def test_an_advanced_clone_reconciles_against_its_new_head(self) -> None:
+        with self._reconcile(return_value=SchemaReconcile(state=SchemaReconcileState.CURRENT)) as reconcile:
+            self._scanner(self.clone).scan()
+
+        reconcile.assert_called_once_with(label="teatree", head_sha=_head_sha(self.clone))
+
+    def test_a_clone_that_did_not_move_is_never_reconciled(self) -> None:
+        current = self._tmp / "current"
+        _clone_up_to_date(origin=self.origin, clone=current)
+
+        with self._reconcile() as reconcile:
+            self._scanner(current).scan()
+
+        reconcile.assert_not_called()
+
+    def test_a_failed_reconcile_surfaces_its_own_signal(self) -> None:
+        failed = SchemaReconcile(state=SchemaReconcileState.FAILED, detail="disk full")
+        with self._reconcile(return_value=failed):
+            signals = self._scanner(self.clone).scan()
+
+        kinds = [signal.kind for signal in signals]
+        assert kinds == ["self_update.updated", "self_update.schema_behind"]
+        assert "disk full" in signals[1].summary
+
+    def test_an_applied_migration_is_reported_on_the_signal(self) -> None:
+        migrated = SchemaReconcile(state=SchemaReconcileState.MIGRATED, applied=("core.0042_widget",))
+        with self._reconcile(return_value=migrated):
+            signals = self._scanner(self.clone).scan()
+
+        assert signals[1].kind == "self_update.schema_migrated"
+        assert signals[1].payload["applied"] == ["core.0042_widget"]
+
+    def test_a_current_schema_adds_no_signal(self) -> None:
+        with self._reconcile(return_value=SchemaReconcile(state=SchemaReconcileState.CURRENT)):
+            signals = self._scanner(self.clone).scan()
+
+        assert [signal.kind for signal in signals] == ["self_update.updated"]
+
+    def test_a_crashing_reconcile_never_kills_the_tick(self) -> None:
+        with self._reconcile(side_effect=RuntimeError("orm exploded")):
+            signals = self._scanner(self.clone).scan()
+
+        assert [signal.kind for signal in signals] == ["self_update.updated", "self_update.schema_behind"]
 
 
 def _rmtree_safe(path: str) -> None:
