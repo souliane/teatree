@@ -37,6 +37,7 @@ from teatree.core.models import (
     TaskAttempt,
     Worktree,
 )
+from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -236,6 +237,9 @@ class _ReviewTarget:
     pr_id: int
     head_sha: str
     ticket: "Ticket | None"
+    #: Identity under which THIS dispatch path holds the per-MR review lock, or
+    #: "" for a path that took none. Only a holder may release its own lock.
+    lock_holder: str = ""
 
 
 def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: str) -> str:
@@ -278,6 +282,7 @@ def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: 
             gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
             blast_class=str(envelope.get("blast_class") or "logic"),
             ticket=target.ticket,
+            lock_holder=target.lock_holder,
         )
     except ReviewVerdictError as exc:
         return f"review verdict recording refused: {exc}"
@@ -298,7 +303,13 @@ def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
     """
     dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if dispatch is not None:
-        return _ReviewTarget(slug=dispatch.slug, pr_id=dispatch.pr_id, head_sha=dispatch.head_sha, ticket=task.ticket)
+        return _ReviewTarget(
+            slug=dispatch.slug,
+            pr_id=dispatch.pr_id,
+            head_sha=dispatch.head_sha,
+            ticket=task.ticket,
+            lock_holder=LOOP_SCANNER_HOLDER,
+        )
 
     slot = ReviewLoopRound.objects.filter(task=task).select_related("review_loop", "review_loop__ticket").first()
     if slot is None or slot.review_loop.variant != ReviewLoop.Variant.EXTERNAL:
@@ -310,6 +321,7 @@ def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
     ref = pr_ref_from_url(pr.url)
     if ref is None:
         return None
+    # The ReviewLoop reviewer leg takes no MRReviewLock, so its verdict releases none.
     return _ReviewTarget(slug=ref.slug, pr_id=ref.pr_id, head_sha="", ticket=ticket)
 
 

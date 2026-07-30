@@ -55,7 +55,7 @@ class TestLockAcquireCommand(TestCase):
 
     def test_acquire_after_resolve_succeeds_for_a_new_dispatcher(self) -> None:
         _acquire(holder="t3:reviewer-agent-a")
-        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR)
+        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-a")
 
         result = _acquire(holder="t3:reviewer-agent-b")
 
@@ -81,7 +81,7 @@ class TestLockStatusCommand(TestCase):
 
     def test_resolved_lock_reports_unlocked(self) -> None:
         _acquire(holder="t3:reviewer-agent-a")
-        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR)
+        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-a")
 
         result = _status()
 

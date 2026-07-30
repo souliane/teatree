@@ -1,18 +1,20 @@
 """Tests for :class:`AutoReviewDispatch` — the auto-review-dispatch ledger + task factory (#68)."""
 
+import datetime as dt
 import json
 from pathlib import Path
 from typing import cast
 
 import pytest
+from django.utils import timezone
 
 from teatree.agents.envelope_contract import envelope_example
 from teatree.agents.phase_blocks import _REVIEW_VERDICT_RETURN_LINES
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, JSONSchema, ReviewVerdictEnvelope
 from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import AutoReviewDispatch, MRReviewLock, Task, Ticket
-from teatree.core.models.auto_review_dispatch import build_review_contract
+from teatree.core.models import AutoReviewDispatch, MRReviewLock, ReviewVerdict, Task, Ticket
+from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER, MAX_DISPATCH_ATTEMPTS, build_review_contract
 
 REVIEWING_PHASE = "reviewing"
 
@@ -84,7 +86,7 @@ class TestDedupPerHead:
 
     def test_new_head_rearms_once_the_prior_review_has_resolved(self) -> None:
         AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
-        MRReviewLock.resolve(slug=SLUG, pr_id=6230)
+        MRReviewLock.resolve(slug=SLUG, pr_id=6230, holder=LOOP_SCANNER_HOLDER)
 
         rearmed = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL, overlay="teatree")
 
@@ -98,7 +100,7 @@ class TestDedupPerHead:
         # row's own (slug, pr_id, head_sha) uniqueness still dedups a re-enqueue on
         # the EXACT same head, even once the lock has resolved and become acquirable.
         AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
-        MRReviewLock.resolve(slug=SLUG, pr_id=6230)
+        MRReviewLock.resolve(slug=SLUG, pr_id=6230, holder=LOOP_SCANNER_HOLDER)
 
         second = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
 
@@ -318,3 +320,105 @@ class TestDispatchedTaskReachesTerminalState:
         task.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEW_POSTED
         assert task.status == Task.Status.COMPLETED
+
+
+class TestStrandedDispatchIsReArmable:
+    """The #3920 invariant: a head with no verdict and no live reviewing task re-arms.
+
+    ``AutoReviewDispatch`` was a ``get_or_create`` claim with no terminal state,
+    no deadline and no reaper, so a reviewing task that died without recording a
+    verdict left the row behind and ``enqueue`` returned ``None`` for that head
+    forever — the PR became unmergeable until someone force-pushed. #3887, #3893
+    and #3914 were all in exactly that state while the sweep declined to act.
+    """
+
+    @staticmethod
+    def _arm() -> AutoReviewDispatch:
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        assert row is not None
+        return row
+
+    @staticmethod
+    def _expire(row: AutoReviewDispatch) -> None:
+        """Push the claim's deadline into the past — the reviewer never came back."""
+        AutoReviewDispatch.objects.filter(pk=row.pk).update(deadline=timezone.now() - dt.timedelta(minutes=1))
+        MRReviewLock.objects.filter(slug=SLUG, pr_id=6230).update(deadline=timezone.now() - dt.timedelta(minutes=1))
+
+    def test_a_live_claim_still_dedups(self) -> None:
+        self._arm()
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None
+        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 1
+
+    def test_an_expired_claim_whose_task_died_re_arms(self) -> None:
+        first = self._arm()
+        assert first.task is not None
+        first.task.status = Task.Status.FAILED
+        first.task.save(update_fields=["status"])
+        self._expire(first)
+
+        again = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert again is not None, "an expired dispatch whose task died must be re-armable"
+        assert again.pk == first.pk, "the re-arm reuses the claim row rather than stacking a duplicate"
+        assert again.task is not None
+        assert again.task.pk != first.task.pk
+        assert again.task.status == Task.Status.PENDING
+
+    def test_re_arming_counts_the_attempt(self) -> None:
+        first = self._arm()
+        assert first.attempts == 1
+        self._expire(first)
+        again = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL)
+        assert again is not None
+        assert again.attempts == 2
+
+    def test_a_permanently_failing_review_stops_re_arming(self) -> None:
+        row = self._arm()
+        for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
+            self._expire(row)
+            row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL)
+            assert row is not None
+        assert row.attempts == MAX_DISPATCH_ATTEMPTS
+
+        self._expire(row)
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None, (
+            "the retry budget must bound a permanently-failing review rather than re-arm forever"
+        )
+        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == MAX_DISPATCH_ATTEMPTS
+
+    def test_a_recorded_verdict_is_terminal_and_never_re_arms(self) -> None:
+        row = self._arm()
+        ReviewVerdict.record(
+            pr_id=6230,
+            slug=SLUG,
+            reviewed_sha=HEAD,
+            verdict=ReviewVerdict.Verdict.HOLD,
+            reviewer_identity="an-independent-reviewer",
+        )
+        self._expire(row)
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None, (
+            "a head that already has a verdict is spent — re-arming it would be review churn"
+        )
+
+    def test_saturated_claims_are_reported_for_the_doctor(self) -> None:
+        row = self._arm()
+        assert AutoReviewDispatch.saturated().count() == 0
+        for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
+            self._expire(row)
+            row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL)
+            assert row is not None
+        self._expire(row)
+        assert AutoReviewDispatch.saturated().count() == 1
+
+
+class TestHeldLockLeavesNoOrphanClaim:
+    def test_a_lock_held_by_another_reviewer_arms_nothing_at_all(self) -> None:
+        MRReviewLock.acquire(slug=SLUG, pr_id=6230, holder="someone-else", mr_url=URL)
+
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is None
+        assert AutoReviewDispatch.objects.count() == 0, (
+            "a refused enqueue must leave no claim row behind — a half-claimed head would "
+            "dedup the next tick out of arming a review that was never dispatched"
+        )
+        assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 0

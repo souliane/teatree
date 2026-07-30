@@ -1,13 +1,25 @@
 """Atomic per-MR review-dispatch dedup + merge hold (#1405).
 
-Two independent review-dispatch paths exist: a human/orchestrator manually
-spawning a ``t3:reviewer`` sub-agent via the ``Agent()`` tool, and the loop's
+Six code paths produce a ``Task(phase="reviewing")``, and TWO of them take this
+lock:
+
+*Takes the lock.* The loop's
 :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch` scanner
-enqueue. Neither path knew about the other, so a manually-dispatched review
-already in flight for an MR did not stop the loop from enqueuing a second,
-duplicate reviewer for the SAME MR on the very next tick (the observed
-recurrence: five manual dispatches in flight, the next loop tick enqueued
-five duplicates for the same five MRs).
+enqueue, and a human/orchestrator manually spawning a ``t3:reviewer`` sub-agent
+after ``t3 review lock-acquire``. Neither path knew about the other, so a
+manually-dispatched review already in flight for an MR did not stop the loop
+from enqueuing a second, duplicate reviewer for the SAME MR on the very next
+tick (the observed recurrence: five manual dispatches in flight, the next loop
+tick enqueued five duplicates for the same five MRs).
+
+*Does NOT take the lock.* ``ReviewLoop`` reviewer legs
+(``review_loop.py``), the ticket scheduler (``ticket_scheduling.py``), the
+external-review scheduler (``ticket_external_review.py``), and the codex /
+self-PR review claims (``persistence.py``, ``persistence_self_pr_review.py``).
+For those four the #1405 guarantee — "never merge while a review is in flight" —
+does not hold: nothing they dispatch is visible to the merge gate's lock
+consult. What IS enforced is that a verdict from one of them cannot release
+somebody else's lock, because :meth:`resolve` matches the holder.
 
 ``MRReviewLock`` is the single per-MR lock both paths acquire before
 dispatching. It carries an explicit state machine:
@@ -157,18 +169,30 @@ class MRReviewLock(models.Model):
         return bool(updated)
 
     @classmethod
-    def resolve(cls, *, slug: str, pr_id: int) -> bool:
-        """Transition the held lock for ``(slug, pr_id)`` to ``resolved``.
+    def resolve(cls, *, slug: str, pr_id: int, holder: str) -> bool:
+        """Release the lock on ``(slug, pr_id)`` — but ONLY if *holder* is holding it.
 
         Called when a :class:`~teatree.core.models.review_verdict.ReviewVerdict`
-        is recorded for the PR — merge_safe or hold, either way the review
-        concluded and the MR is no longer "a review is in flight". Returns
-        ``True`` iff a row was transitioned; ``False`` when no row is held
-        (already resolved, idle, or absent — never an error, since resolving
-        an unheld MR is a legitimate no-op).
+        is recorded for the PR — merge_safe or hold, either way THAT review
+        concluded. Returns ``True`` iff a row was transitioned; ``False`` when no
+        row is held by *holder* (already resolved, idle, absent, or held by
+        someone else — never an error, since resolving an unheld MR is a
+        legitimate no-op).
+
+        The holder check is load-bearing, not defensive. Six code paths now
+        produce a ``Task(phase="reviewing")`` and only this lock's two acquirers
+        take the lock, so a verdict recorded by one of the other four used to
+        release a lock held by a DIFFERENT reviewer that was still running. The
+        merge then proceeded on verdict A while reviewer B was mid-flight and
+        about to record a HOLD — precisely the race #1405 exists to prevent. A
+        blank *holder* is the honest answer for a path that took no lock: it
+        releases nothing, and the real holder's lock lives out its deadline.
         """
+        claimant = holder.strip()
+        if not claimant:
+            return False
         updated = (
-            cls.objects.filter(slug=slug.strip(), pr_id=pr_id)
+            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, holder=claimant)
             .filter(state__in=cls._ACTIVE_STATES)
             .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
         )

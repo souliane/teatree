@@ -132,7 +132,7 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         clear = _clear(ticket=ticket)
         _seed_merge_safe_verdict()
         MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
-        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR)
+        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
 
         outcome = _merge(clear)
 

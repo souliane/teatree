@@ -213,8 +213,11 @@ class TaskQuerySet(models.QuerySet):
     def not_auto_review_armed(self) -> models.QuerySet:
         """Tasks the #68 auto-review dispatch did NOT arm — the stray/armed discriminator (#3910).
 
-        Reaping an armed task deadlocks its PR permanently: the dispatch dedups
-        per ``(slug, pr_id, head_sha)``, so no later tick re-arms it.
+        Reaping an armed task costs its PR a full dispatch deadline: the claim is
+        keyed per ``(slug, pr_id, head_sha)``, so nothing re-arms that head until
+        the deadline passes and the next sweep reclaims it (#3920). Bounded, not
+        permanent — but still a wasted cycle, so an armed task stays off the
+        reaper's list.
         """
         return self.filter(auto_review_dispatches__isnull=True)
 

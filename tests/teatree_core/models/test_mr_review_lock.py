@@ -6,6 +6,7 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.review_verdict import ReviewVerdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -75,7 +76,7 @@ class TestConcurrentDispatchDedup:
 class TestReacquireAfterResolveOrStale:
     def test_acquire_after_resolve_succeeds_for_a_fresh_dispatch(self) -> None:
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID) is True
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is True
 
         second = MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-b")
 
@@ -124,7 +125,7 @@ class TestResolve:
     def test_resolve_from_review_dispatched(self) -> None:
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
 
-        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID) is True
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is True
 
         row = MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID)
         assert row.state == MRReviewLock.State.RESOLVED
@@ -135,20 +136,20 @@ class TestResolve:
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
         MRReviewLock.mark_verdict_pending(slug=SLUG, pr_id=PR_ID)
 
-        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID) is True
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is True
 
         row = MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID)
         assert row.state == MRReviewLock.State.RESOLVED
 
     def test_resolve_with_no_row_is_a_no_op(self) -> None:
-        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID) is False
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is False
         assert MRReviewLock.objects.count() == 0
 
     def test_resolve_already_resolved_is_a_no_op(self) -> None:
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID)
+        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a")
 
-        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID) is False
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a") is False
 
 
 class TestReconcileStale:
@@ -180,7 +181,7 @@ class TestReconcileStale:
 
     def test_reconcile_leaves_idle_and_resolved_rows_untouched(self) -> None:
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID)
+        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a")
 
         count = MRReviewLock.reconcile_stale()
 
@@ -201,7 +202,7 @@ class TestActiveLockFor:
 
     def test_returns_none_once_resolved(self) -> None:
         MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="agent-a")
-        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID)
+        MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="agent-a")
 
         assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=PR_ID) is None
 
@@ -210,3 +211,51 @@ class TestActiveLockFor:
 
         # No reconcile_stale() call — the merge gate's consult self-heals at read time.
         assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=PR_ID) is None
+
+
+class TestResolveIsHolderAware:
+    """O3: a verdict from a path that took no lock must not release another reviewer's lock.
+
+    Six code paths produce a ``Task(phase="reviewing")`` and only two acquire
+    this lock. ``resolve`` used to filter on ``(slug, pr_id)`` alone, so a
+    codex / self-PR review — which takes no lock — released the lock held by a
+    still-running #68 reviewer. The merge then proceeded on that verdict while
+    the real reviewer was mid-flight and about to record a HOLD, which is the
+    exact race #1405 was built to prevent.
+    """
+
+    def test_a_different_holder_cannot_release_the_lock(self) -> None:
+        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="reviewer-68")
+
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="codex-self-review") is False
+
+        row = MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID)
+        assert row.state == MRReviewLock.State.REVIEW_DISPATCHED
+        assert row.is_locked() is True
+
+    def test_a_lockless_path_releases_nothing(self) -> None:
+        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="reviewer-68")
+
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="") is False
+        assert MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID).is_locked() is True
+
+    def test_the_holder_still_releases_its_own_lock(self) -> None:
+        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="reviewer-68")
+
+        assert MRReviewLock.resolve(slug=SLUG, pr_id=PR_ID, holder="reviewer-68") is True
+        assert MRReviewLock.objects.get(slug=SLUG, pr_id=PR_ID).is_locked() is False
+
+    def test_a_foreign_verdict_leaves_the_merge_gate_still_blocked(self) -> None:
+        # The consequence the race produced, asserted at the gate's own consult
+        # rather than only on the row: the merge gate must still see a review in
+        # flight after an unrelated reviewer records a verdict.
+        MRReviewLock.acquire(slug=SLUG, pr_id=PR_ID, holder="reviewer-68")
+        ReviewVerdict.record(
+            pr_id=PR_ID,
+            slug=SLUG,
+            reviewed_sha="a" * 40,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="codex-self-review",
+        )
+
+        assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=PR_ID) is not None

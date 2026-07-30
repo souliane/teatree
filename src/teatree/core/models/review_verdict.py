@@ -32,6 +32,7 @@ from typing import ClassVar, TypedDict
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha, is_non_reviewer_role
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.ticket import Ticket
@@ -257,6 +258,7 @@ class ReviewVerdict(models.Model):
         gh_verify_result: str = MergeClear.VerifyResult.GREEN,
         ticket: Ticket | None = None,
         expedited: bool = False,
+        lock_holder: str = "",
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -352,7 +354,14 @@ class ReviewVerdict(models.Model):
                     "recorded_at": timezone.now(),
                 },
             )
-            MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id)
+            # Both claims this verdict concludes, retired in the same transaction
+            # that records it. The per-HEAD dispatch claim is spent outright — a
+            # verdict covers this exact tree, so re-arming it would be churn. The
+            # per-MR lock is released only if *lock_holder* is the one holding
+            # it: a verdict from a path that took no lock must not release a lock
+            # a different, still-running reviewer holds (see MRReviewLock.resolve).
+            AutoReviewDispatch.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+            MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
             return recorded
 
     def carry_forward(self, *, reviewed_sha: str) -> "ReviewVerdict":

@@ -365,6 +365,46 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
     )
 
 
+def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> ReconciliationFinding:
+    """ALARM when a review or critic claim spent its whole retry budget with no verdict.
+
+    Query: ``AutoReviewDispatch.saturated()`` + ``CriticDispatch.saturated()`` —
+    claims still in ``dispatched`` whose deadline has passed and whose
+    ``attempts`` reached the bound. Any such row alarms.
+
+    This is the visible end of the bounded retry (#3920). A dispatch that
+    expires is re-armed, so an ordinary crashed reviewer never reaches here; a
+    saturated claim means every attempt died and nothing will arm that head
+    again. Without this the bound would be a SILENT deadlock — the same failure
+    class as the unbounded version it replaced, only quieter.
+    """
+    check_id = "review_dispatch_saturation"
+    try:
+        from teatree.core.models import (  # noqa: PLC0415 — ORM import needs the app registry
+            AutoReviewDispatch,
+            CriticDispatch,
+        )
+
+        moment = _now(now)
+        reviews = [f"`{row.slug}#{row.pr_id}@{row.head_sha[:8]}`" for row in AutoReviewDispatch.saturated(at=moment)]
+        critics = [
+            f"`ticket:{row.ticket_id}/{row.transition}@{row.head_sha[:8]}`"
+            for row in CriticDispatch.saturated(at=moment)
+        ]
+    except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
+        return _degraded(check_id, exc)
+    stranded = reviews + critics
+    if not stranded:
+        return _ok(check_id, "no saturated review/critic dispatches")
+    return _alarm(
+        check_id,
+        f"Review-dispatch saturation alarm: {len(stranded)} claim(s) exhausted the retry budget "
+        f"with no verdict recorded: {', '.join(stranded)}. Every armed review/critic for those heads "
+        f"died, so nothing will re-arm them and the merge gate stays unsatisfied — review each by hand "
+        f"or push a new commit to arm a fresh head.",
+    )
+
+
 def _high_churn_counts() -> dict[str, tuple[int, int]]:
     """``{table: (rows, ceiling)}`` for every table retention has a lane over."""
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
@@ -417,6 +457,7 @@ CHECKS: tuple = (
     _check_open_question_age,
     _check_duplicate_execution,
     _check_high_churn_table_size,
+    _check_review_dispatch_saturation,
 )
 
 
