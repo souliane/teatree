@@ -18,18 +18,29 @@ if TYPE_CHECKING:
     from teatree.cli.review.evidence_gate import FindingEvidence
 
 
-def _require_token() -> ReviewService:
+def _require_token(repo: str) -> ReviewService:
+    """Build the service for *repo*, or refuse naming the cause the operator can act on.
+
+    The token is resolved from the overlay that owns *repo* (souliane/teatree#3793), so
+    the service is bound to the target the command named. A FAILED read and an ABSENT
+    token get different messages: only the second is a login problem, and reporting the
+    first as one sends the operator to a re-login that changes nothing
+    (souliane/teatree#3794).
+    """
     # Bootstrap Django (idempotent) before the on-behalf pre-gate (#960)
     # touches the ORM. CLI module stays Django-free at import time so
     # typer can render --help / discover commands; mirrors cli/loop.py.
     # See souliane/teatree#1003.
     ensure_django()
 
-    token = ReviewService.get_gitlab_token()
-    if not token:
+    outcome = ReviewService.read_gitlab_token(repo)
+    if outcome.failed:
+        typer.echo(f"Could not resolve the review target for {repo}: {outcome.error}")
+        raise typer.Exit(code=1)
+    if not outcome.value:
         typer.echo("No GitLab token found. Run: glab auth login")
         raise typer.Exit(code=1)
-    return ReviewService(token)
+    return ReviewService(outcome.value, repo=repo)
 
 
 _EVIDENCE_JSON_HELP = (
@@ -147,7 +158,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         "This subcommand routes through the same draft path and will be removed in a "
         "follow-up.\n"
     )
-    service = _require_token()
+    service = _require_token(repo)
     validate_inline_or_general(file=file, line=line, general=general)
     evidence = _parse_evidence(evidence_json)
     msg, code = service.post_draft_note(
@@ -242,7 +253,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     except PostBodyError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=2) from exc
-    service = _require_token()
+    service = _require_token(repo)
     evidence = _parse_evidence(evidence_json)
     msg, code = service.post_comment(
         repo,
@@ -270,7 +281,7 @@ def reply_to_discussion(
     body: str = typer.Argument(help="Reply body (markdown)"),
 ) -> None:
     """Reply to a GitLab MR discussion thread (immediate, not draft)."""
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.reply_to_discussion(repo, mr, discussion_id, body)
     typer.echo(msg)
     if code:
@@ -292,7 +303,7 @@ def approve(
     <user-id>`` to satisfy the gate without switching mode to
     `immediate`.
     """
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.approve(repo, mr)
     typer.echo(msg)
     if code:
@@ -313,7 +324,7 @@ def unapprove(
     <user-id>`` to satisfy the gate without switching mode to
     `immediate`.
     """
-    service = _require_token()
+    service = _require_token(repo)
     msg, code = service.unapprove(repo, mr)
     typer.echo(msg)
     if code:

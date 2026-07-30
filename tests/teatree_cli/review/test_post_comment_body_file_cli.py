@@ -28,7 +28,7 @@ def _invoke(args: list[str]) -> tuple[int, str]:
         captured["note"] = note
         return "OK note_id=1", 0
 
-    def _make_service() -> "_Svc":
+    def _make_service(_repo: str) -> "_Svc":
         return _Svc()
 
     with (

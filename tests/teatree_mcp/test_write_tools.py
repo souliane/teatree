@@ -253,15 +253,28 @@ class TestReviewPostTools(TestCase):
 
         assert recorder.calls[0][1]["live"] is True
 
+    def test_the_seam_is_built_for_the_repo_the_tool_names(self) -> None:
+        """The target repo reaches the seam FACTORY, not just the post call (#3793).
+
+        The service resolves its base URL and token from the repo it was built
+        for, so a factory that never sees the repo falls back to ambient overlay
+        resolution — the multi-overlay outage.
+        """
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.write_tools.review_post_seam", return_value=recorder) as seam:
+            _call("review_post_draft_note", {"repo": "acme/widgets", "mr": 7, "note": "nit: rename"})
+
+        assert seam.call_args.args == ("acme/widgets",)
+
 
 class TestReviewSeamRegistration(TestCase):
     def test_cli_import_registers_the_review_service_seam(self) -> None:
         import teatree.cli  # noqa: F401, PLC0415 — the import side-effect under test registers the seam
 
-        # The factory resolves the GitLab token via the external `glab` binary;
-        # stub it so the registration proof does not depend on glab being installed.
+        # The factory resolves the token for the named repo; stub the resolution so the
+        # registration proof does not depend on how the environment is credentialed.
         with patch("teatree.cli.review.service.ReviewService.get_gitlab_token", return_value="tok"):
-            seam = review_seam.review_post_seam()
+            seam = review_seam.review_post_seam("acme/widgets")
         assert callable(seam.post_draft_note)
         assert callable(seam.post_comment)
 
@@ -270,6 +283,6 @@ class TestReviewSeamRegistration(TestCase):
         review_seam.register_review_post_seam(review_seam._unregistered_factory)
         try:
             with pytest.raises(RuntimeError, match="not registered"):
-                review_seam.review_post_seam()
+                review_seam.review_post_seam("acme/widgets")
         finally:
             register_review_post_seam(original)
