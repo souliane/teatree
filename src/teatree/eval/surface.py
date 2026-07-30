@@ -23,6 +23,32 @@ from teatree.eval.models import INTERACTIVE_SURFACE, AnyOf, EvalSpec, ExpectItem
 #: The interactive-only tool whose captured wire shape depends on the bundled CLI.
 INTERACTIVE_QUESTION_TOOL = "AskUserQuestion"
 
+#: Every verdict the advisory exemption must reach, NAMED — never counted.
+#:
+#: Prose that counted these ("at all three aggregation points", then "four") was
+#: falsified twice by lanes nobody remembered to recount, and a stale count reads
+#: as a covered invariant. Naming each one instead makes an omission visible: a new
+#: lane is missing from a list, not hidden inside a number that still parses.
+#: ``tests/conformance/test_advisory_verdict_points.py`` resolves every symbol here
+#: and reds when the docs fall back to counting.
+#:
+#: The exemption is applied inside each of these; the FIRST four are the in-process
+#: ``t3 eval run`` exits, the fifth is the ``eval-ci-heal`` combine job's second
+#: gate over the merged artifact (souliane/teatree#3855, souliane/teatree#3921).
+ADVISORY_EXEMPT_VERDICT_POINTS: tuple[str, ...] = (
+    "teatree.cli.eval.all._ai_lane_result",
+    "teatree.cli.eval.multi_trial.run_pass_at_k_lane",
+    "teatree.cli.eval.multi_trial.run_model_matrix_lane",
+    "teatree.cli.eval.run_modes.finalize_single_run",
+    "teatree.cli.eval.escalate.EscalationOutcome.is_hard_red",
+    "teatree.eval.green_proof.evaluate_green_proof",
+)
+
+#: The non-verdict consumer that must honour the exemption too: these names are the
+#: fixer-DISPATCH set, so an advisory red here burns an agent on a bundled-CLI
+#: rendering change no repo edit can fix (souliane/teatree#3921).
+ADVISORY_EXEMPT_CONSUMERS: tuple[str, ...] = ("teatree.loop.ci_eval_heal_advance.red_scenario_names",)
+
 
 def requires_interactive_tool_call(spec: EvalSpec) -> bool:
     """Whether *spec* cannot pass without an ``AskUserQuestion`` tool call being captured.
