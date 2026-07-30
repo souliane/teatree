@@ -4,7 +4,7 @@ Number derivation, locked ``extra`` RMW, FSM transitions, and the
 shippable-diff gate.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +16,7 @@ from django.test.utils import CaptureQueriesContext
 from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
+from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -215,6 +216,13 @@ class TestStampIssueTitle(TestCase):
 
 
 class TestTicketTransitions(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path

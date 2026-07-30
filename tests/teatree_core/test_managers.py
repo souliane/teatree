@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ from django.utils import timezone
 
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
+from tests._agent_runtime_env import interactive_runtime
 
 
 class TestTicketQuerySet(TestCase):
@@ -1006,6 +1008,13 @@ class TestReplayOrphanedTransitions(TestCase):
     ticket has not yet taken and replays the *same* idempotent
     ``_advance_ticket`` path — no parallel transition mechanism.
     """
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
 
     def test_backend_is_sqlite(self) -> None:
         from django.db import connection  # noqa: PLC0415

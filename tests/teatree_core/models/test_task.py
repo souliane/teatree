@@ -3,6 +3,8 @@
 Lifecycle, child-task spawning, and ``build_task_detail``.
 """
 
+from collections.abc import Iterator
+
 import pytest
 from django.test import TestCase
 from django.utils import timezone
@@ -17,12 +19,20 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
+from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.models._shared import _advance_ticket_to_tested
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestTask(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     def test_claim_route_complete_fail_and_attempt_storage(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")

@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import time
+from collections.abc import Iterator
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
@@ -21,6 +22,7 @@ from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
+from tests._agent_runtime_env import interactive_runtime
 from tests._loop_principal_env import pinned_loop_principal
 
 
@@ -42,6 +44,19 @@ def _seed_cold_config(db: Path, key: str, value: object) -> None:
 
 
 class _LoopDispatchTest(TestCase):
+    """``loop_dispatch`` is the IN-SESSION claimer, so every case here pins that lane.
+
+    The shipped ``agent_runtime`` is ``headless`` (#3895), under which
+    ``_dispatchable_q()`` deliberately matches nothing — the headless factory owns
+    every loop-dispatched phase. These tests are about the interactive claim itself,
+    so they name the runtime they exercise instead of inheriting the shipped one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        with interactive_runtime():
+            yield
+
     def _reviewer_task(self, *, url: str = "https://example.com/pr/1", head_sha: str = "x") -> Task:
         ticket = Ticket.objects.create(
             overlay="acme",

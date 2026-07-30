@@ -9,12 +9,15 @@ headless one like the self-improve executor) must STILL be auto-enqueued —
 never zero dispatch.
 """
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, Ticket
+from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -32,6 +35,13 @@ _AUTHOR_PHASES = ("coding", "testing", "reviewing", "shipping")
 
 class TestLoopDispatchedPhaseNotAutoEnqueued(TestCase):
     """An author phase task the loop dispatches is not also drained on creation."""
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
 
     def _author_ticket(self) -> Ticket:
         return Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)

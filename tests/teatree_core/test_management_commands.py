@@ -1,6 +1,7 @@
 import io
 import json
 import tempfile
+from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import cast
@@ -30,6 +31,7 @@ from teatree.core.overlay import (
     RunCommands,
 )
 from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
+from tests._agent_runtime_env import interactive_runtime
 from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
@@ -1038,6 +1040,13 @@ class TestTicketCommand(TestCase):
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
 
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     def test_create_headless_defaults_for_free_form_phase(self) -> None:
         # ``scoping`` has no registered author phase agent, so it is genuinely
         # headless and the default sticks. (A loop-dispatched phase like
@@ -1476,6 +1485,13 @@ class TestTasksListCommand(TestCase):
 
 class TestTasksStartCommand(TestCase):
     """Tests for the tasks start subcommand (inline interactive launch)."""
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
 
     def setUp(self) -> None:
         self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
