@@ -85,6 +85,15 @@ def red_scenario_names(payload: RawAPIDict) -> list[str]:
     total over a possibly-malformed payload — a non-list ``scenarios`` yields no
     reds rather than raising, so a bad artifact degrades to "no confirmable reds"
     (an infra halt), never to a false green.
+
+    An ``advisory`` row is EXCLUDED: these names are the fixer-dispatch set, and an
+    ``interactive``-surface red is a bundled claude CLI's ``AskUserQuestion``
+    rendering change that no repo edit can fix, so naming it would burn a fixer
+    agent on an unfixable target (souliane/teatree#3855, souliane/teatree#3921).
+    The producer derives the flag once (:class:`teatree.eval.triage.ScenarioRecord`);
+    reading it off the wire keeps this module inside its ``teatree.loop`` boundary
+    instead of re-deriving the exemption from a copied surface literal. A row
+    missing the flag reads as GATING — an older artifact is never silently exempted.
     """
     scenarios = payload.get("scenarios")
     if not isinstance(scenarios, list):
@@ -94,7 +103,7 @@ def red_scenario_names(payload: RawAPIDict) -> list[str]:
         if not isinstance(raw, dict):
             continue
         record = cast("RawAPIDict", raw)
-        if record.get("triage_class") is None:
+        if record.get("triage_class") is None or bool(record.get("advisory")):
             continue
         names.append(str(record.get("name", "")))
     return names

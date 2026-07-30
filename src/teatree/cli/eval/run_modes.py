@@ -330,8 +330,10 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     silently skipping them would turn a requested gate into a no-op.
 
     ``trials=1`` with no ``--models`` is the DEFAULT ``t3 eval run`` shape and the
-    one every metered CI leg drives, so the interactive-surface exemption the
-    full-suite / pass@k / matrix lanes apply has to hold here too (#3855).
+    one every metered CI leg drives, so the interactive-surface exemption has to hold
+    here too (#3855). This is ONE of the verdict points named in
+    :data:`teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS` — the canonical list,
+    enumerated by name rather than counted, because counting it went stale twice.
     """
     require_persist_for_history_gates(
         persist=persist,

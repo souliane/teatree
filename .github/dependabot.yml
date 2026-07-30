@@ -21,7 +21,14 @@ updates:
     # defended the wrong asset: the contract teatree owns is the headless Slack round
     # trip, not one CLI's rendering. Those scenarios now carry `surface: interactive`
     # and are ADVISORY, enforced by tests/eval_replay/test_question_surface.py, so a
-    # bump can no longer red a gating lane (souliane/teatree#3855). The pin stays EXACT
+    # bump can no longer red a gating lane (souliane/teatree#3855). That holds only
+    # because the exemption reaches EVERY verdict — including `t3 eval green-proof`
+    # over the merged artifact, the eval-ci-heal combine job's second gate
+    # (souliane/teatree#3921). The verdicts are enumerated by name in
+    # teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS and resolved by
+    # tests/conformance/test_advisory_verdict_points.py; if that list ever stops
+    # covering a gating lane, this `ignore`-free entry must be reconsidered with it.
+    # The pin stays EXACT
     # for an unrelated reason: tests/test_claude_cli_pin.py derives the eval/test image's
     # `claude` CLI generation from it, and reds on a bump until the bundled version is
     # re-derived from the new wheel.

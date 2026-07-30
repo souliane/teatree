@@ -26,16 +26,25 @@ class ScenarioRecord(TypedDict, total=False):
     downloaded artifact may see a partial record, so it is ``total=False`` and read
     defensively. It carries only spec identity + verdict + the triage
     discriminators + the derived ``triage_class`` — never a transcript.
+
+    ``surface`` is the raw question-SURFACE label (the sibling of ``lane``) and
+    ``advisory`` is the gating decision derived from it, exactly as ``triage_class``
+    is derived once from the discriminators. Carrying the DERIVED flag is what lets
+    an out-of-package consumer — ``teatree.loop.ci_eval_heal_advance``, which reads
+    this artifact as raw JSON and may not import ``teatree.eval`` — honour the
+    exemption without re-deriving it off a copied surface literal.
     """
 
     name: str
     lane: str
+    surface: str
     verdict: str
     is_error: bool
     terminal_reason: str
     matcher_failed: bool
     judge_failed: bool
     triage_class: str | None
+    advisory: bool
 
 
 class TriageClass(StrEnum):

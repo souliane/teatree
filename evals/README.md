@@ -1375,9 +1375,18 @@ Fields:
   to a bundled `claude` CLI generation (one at/after 2.1.204 emits a markdown chip no
   `tool_call` matcher can see). Advisory scenarios are still run and still reported —
   the lane detail carries an `N advisory failed` count — but their failure never flips
-  a verdict at any of the four aggregation points (the full-suite AI lane, pass@k, the
-  model matrix, and both exits of the default single-trial lane every metered CI leg
-  drives), so Claude Code interactive stays graded without gating headless.
+  a verdict, so Claude Code interactive stays graded without gating headless. The
+  verdicts the exemption must reach are NAMED, never counted: `ADVISORY_EXEMPT_VERDICT_POINTS`
+  in `src/teatree/eval/surface.py` is the canonical list — `all._ai_lane_result`,
+  `multi_trial.run_pass_at_k_lane`, `multi_trial.run_model_matrix_lane`, both exits of the
+  default single-trial lane (`run_modes.finalize_single_run` and
+  `escalate.EscalationOutcome.is_hard_red`), and `green_proof.evaluate_green_proof`, the
+  second gate `eval-ci-heal` applies over the MERGED summary JSON once the shards finish.
+  Counting them went stale twice, so `tests/conformance/test_advisory_verdict_points.py`
+  resolves every named symbol and reds if the prose reverts to a number. Each summary-JSON
+  row carries its `surface` plus the derived `advisory` flag, which is how the merged
+  verdict — and `loop/ci_eval_heal_advance.py`'s fixer-dispatch set — apply the exemption
+  without re-deriving it; a row missing the flag reads as GATING.
   `t3 eval run --surface <headless|interactive>` (`cli/eval/surface_filter.py`) slices
   the catalog outright, and the flag is forwarded across the `--docker` re-invocation
   like `--lane`/`--shard` (dropping it would silently run the FULL catalog
