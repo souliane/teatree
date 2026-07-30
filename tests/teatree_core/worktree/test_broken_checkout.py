@@ -23,7 +23,7 @@ from django.test import TestCase
 import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 from teatree.cli.doctor.checks_worktree_health import _check_registered_worktrees_are_checkouts
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree.broken_checkout import BrokenCheckout, classify_broken_checkout
+from teatree.core.worktree.broken_checkout import BrokenCheckout, classify_broken_checkout, unresolved_checkout_reason
 from teatree.core.worktree.worktree_done import reap_done_worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_checked
@@ -209,6 +209,19 @@ class FailClosedControlsTest(_BrokenWorktreeCase):
         verdict = classify_broken_checkout(row, workspace=self.workspace)
 
         assert verdict.state is BrokenCheckout.LIVE_CHECKOUT
+
+    def test_the_kept_reason_separates_an_unreachable_pointer_from_a_refusal(self) -> None:
+        # The two UNKNOWNs an operator acts on differently: one names an admin dir
+        # this context cannot reach (very probably alive elsewhere), the other is
+        # git declining to speak about a dir it can see.
+        unreachable = self.workspace / "wt-unreachable"
+        unreachable.mkdir()
+        (unreachable / ".git").write_text("gitdir: /nonexistent/other-context/.git/worktrees/x\n", encoding="utf-8")
+        plain = self.workspace / "wt-plain"
+        plain.mkdir()
+
+        assert "does not exist in this execution context" in unresolved_checkout_reason(unreachable)
+        assert "git could not say whether" in unresolved_checkout_reason(plain)
 
     def test_a_healthy_checkout_is_never_a_release_candidate(self) -> None:
         wt_path = self._worktree_on("live", commit="feat: in progress")

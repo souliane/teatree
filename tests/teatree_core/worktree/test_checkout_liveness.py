@@ -17,7 +17,12 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.core.worktree.checkout_liveness import claims_to_be_a_checkout, context_scoped_pointer, read_gitdir_pointer
+from teatree.core.worktree.checkout_liveness import (
+    admin_entry_for,
+    claims_to_be_a_checkout,
+    context_scoped_pointer,
+    read_gitdir_pointer,
+)
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 
@@ -82,6 +87,38 @@ class ContextScopedPointerTest(_RelocatedCloneTestCase):
         (junk / ".git").write_text("this is not a gitfile\n", encoding="utf-8")
 
         assert read_gitdir_pointer(junk) is None
+
+
+class AdminEntryResolutionTest(_RelocatedCloneTestCase):
+    """Proof of LIFE comes from the clone's entry NAME, never the recorded path."""
+
+    def test_the_visible_clone_still_holds_the_checkout_entry(self) -> None:
+        entry = admin_entry_for(self.checkout, self.clone)
+
+        assert entry is not None
+        assert entry == self.clone / ".git" / "worktrees" / "feature-wt"
+
+    def test_a_clone_with_no_such_entry_vouches_for_nothing(self) -> None:
+        unrelated = self.tmp / "unrelated"
+        unrelated.mkdir()
+        git.run(repo=str(unrelated), args=["init", "--quiet", "--initial-branch=main"])
+
+        assert admin_entry_for(self.checkout, unrelated) is None
+
+    def test_a_same_named_entry_for_a_different_checkout_does_not_vouch(self) -> None:
+        # The entry name alone is not enough: it must point back at a checkout of
+        # THIS checkout's name, or an unrelated clone's coincidence would read as
+        # proof of life for a directory it has never heard of.
+        entry = self.clone / ".git" / "worktrees" / "feature-wt" / "gitdir"
+        entry.write_text("/somewhere/else/other-wt/.git\n", encoding="utf-8")
+
+        assert admin_entry_for(self.checkout, self.clone) is None
+
+    def test_a_directory_naming_no_admin_dir_cannot_be_vouched_for(self) -> None:
+        plain = self.tmp / "plain"
+        plain.mkdir()
+
+        assert admin_entry_for(plain, self.clone) is None
 
 
 class ProbeRefusesToCallItDeadTest(_RelocatedCloneTestCase):
