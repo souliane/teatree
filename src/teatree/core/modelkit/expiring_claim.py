@@ -22,6 +22,7 @@ fresh review on the same MR. A resolved dispatch is per-HEAD and terminal — a
 verdict already covers that exact tree, so re-arming it would be review churn.
 """
 
+import datetime as dt
 from collections.abc import Iterable
 
 from django.db import models
@@ -31,7 +32,7 @@ def acquirable_q(
     *,
     always_acquirable: Iterable[str],
     active: Iterable[str],
-    now: object,
+    now: dt.datetime,
     state_field: str = "state",
     deadline_field: str = "deadline",
 ) -> models.Q:

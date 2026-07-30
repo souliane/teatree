@@ -55,6 +55,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.expiring_claim import acquirable_q
 from teatree.utils.url_slug import pr_ref_from_url
 
 DEFAULT_LOCK_TTL = dt.timedelta(hours=2)
@@ -128,10 +129,15 @@ class MRReviewLock(models.Model):
             )
             if created:
                 return row
-            acquirable = models.Q(state__in=cls._ACQUIRABLE_STATES) | models.Q(deadline__lt=now)
             claimed = (
                 cls.objects.filter(pk=row.pk)
-                .filter(acquirable)
+                .filter(
+                    acquirable_q(
+                        always_acquirable=cls._ACQUIRABLE_STATES,
+                        active=cls._ACTIVE_STATES,
+                        now=now,
+                    )
+                )
                 .update(
                     state=cls.State.REVIEW_DISPATCHED,
                     holder=holder,
