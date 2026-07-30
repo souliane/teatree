@@ -368,6 +368,11 @@ def _enqueue_ticket_transition_task(
     worktrees is ``enqueue_teardown_for_terminal_tickets``'s job — an explicit
     operator drain, not a side effect of an FSM no-op.
 
+    The enqueue itself goes through ``enqueue_teardown_once``, the shared seam that
+    skips a ticket whose teardown is already queued or running. Entering a terminal
+    state is the trigger; whether a job is still needed is the seam's call, so this
+    receiver and the operator drain cannot double-queue the same work.
+
     The deferred import of the executor is call-time (mirroring
     ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
     still sees its stub. ``transaction.on_commit`` preserves the body's
@@ -382,8 +387,9 @@ def _enqueue_ticket_transition_task(
         executor = getattr(tasks_mod, executor_name)
         transaction.on_commit(lambda: executor.enqueue(ticket_pk))
     if target in _TERMINAL_TARGET_STATES and source != target:
-        teardown = tasks_mod.execute_teardown
-        transaction.on_commit(lambda: teardown.enqueue(ticket_pk))
+        from teatree.core import teardown_dispatch  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+        transaction.on_commit(lambda: teardown_dispatch.enqueue_teardown_once(ticket_pk))
 
 
 def _enqueue_worktree_transition_task(

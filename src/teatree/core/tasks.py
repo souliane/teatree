@@ -406,25 +406,6 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
 
-def enqueue_teardown_for_terminal_tickets() -> list[int]:
-    """One-shot backlog drain: enqueue teardown for every terminal ticket still holding worktrees.
-
-    The operational catch-up for tickets that reached a terminal state BEFORE the
-    target-state teardown enqueue existed, so their worktrees never got reaped. It
-    is idempotent — ``execute_teardown`` re-checks state and the reaper keeps any
-    unsynced work — so re-running it is safe. NOT invoked automatically; an operator
-    calls it explicitly to drain the pile-up. Returns the ticket pks enqueued.
-    """
-    ticket_ids = list(
-        Ticket.objects.filter(state__in=_DONE_TICKET_STATES, worktrees__isnull=False)
-        .distinct()
-        .values_list("pk", flat=True)
-    )
-    for ticket_id in ticket_ids:
-        execute_teardown.enqueue(int(ticket_id))
-    return [int(ticket_id) for ticket_id in ticket_ids]
-
-
 @task()
 def execute_provision(ticket_id: int) -> TransitionResult:
     """Provision worktrees for a STARTED ticket and schedule the planning task.

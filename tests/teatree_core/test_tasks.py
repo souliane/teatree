@@ -15,7 +15,6 @@ from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
     drain_headless_queue,
     drain_headless_queue_body,
-    enqueue_teardown_for_terminal_tickets,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -523,37 +522,6 @@ class TestExecuteTeardown(TestCase):
             "ok": False,
             "detail": "repo-0: branch ahead",
         }
-
-
-class TestEnqueueTeardownBacklogDrain(TestCase):
-    """The one-shot operational drain enqueues teardown for terminal tickets holding worktrees."""
-
-    def _terminal_ticket_with_worktree(self, state: Ticket.State) -> Ticket:
-        from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
-
-        ticket = Ticket.objects.create(overlay="test")
-        ticket.state = state
-        ticket.save(update_fields=["state"])
-        Worktree.objects.create(
-            ticket=ticket, overlay="test", repo_path="r", branch="b", extra={"worktree_path": "/tmp/wt"}
-        )
-        return ticket
-
-    @override_settings(**IMMEDIATE_BACKEND)
-    def test_enqueues_only_terminal_tickets_with_worktrees(self) -> None:
-        merged = self._terminal_ticket_with_worktree(Ticket.State.MERGED)
-        ignored = self._terminal_ticket_with_worktree(Ticket.State.IGNORED)
-        # A terminal ticket with NO worktree: nothing to reap.
-        Ticket.objects.create(overlay="test", state=Ticket.State.DELIVERED)
-        # A non-terminal ticket with a worktree: not eligible.
-        non_terminal = self._terminal_ticket_with_worktree(Ticket.State.IN_REVIEW)
-
-        with patch("teatree.core.tasks.execute_teardown") as teardown:
-            enqueued = enqueue_teardown_for_terminal_tickets()
-
-        assert sorted(enqueued) == sorted([merged.pk, ignored.pk])
-        assert non_terminal.pk not in enqueued
-        assert teardown.enqueue.call_count == 2
 
 
 def _run_git(*args: str, cwd: Path) -> None:
