@@ -34,6 +34,7 @@ from django.test import TestCase
 import hooks.scripts.hook_router as router
 from teatree.core.models import Session, Task, Ticket
 from teatree.loop.self_improve.detectors import DispatchGapDetector, dispatch_gap
+from teatree.utils.hook_registry import loop_registry_dir
 
 _AGENT = "agent-alpha"
 _SESSION = "session-alpha"
@@ -118,6 +119,28 @@ class TestConsolidationRegistryDirectoryParity:
         assert (override / "consolidation-registry.json").is_file()
         assert not (tmp_path / "xdg" / "teatree" / "consolidation-registry.json").exists()
         assert dispatch_gap._consolidation_registry_holders() == [_AGENT]
+
+    @pytest.mark.parametrize(
+        ("env", "expected_subpath"),
+        [
+            ({"T3_LOOP_REGISTRY_DIR": "override"}, "override"),
+            ({"XDG_DATA_HOME": "xdg"}, "xdg/teatree"),
+            ({}, "home/.local/share/teatree"),
+        ],
+    )
+    def test_the_django_resolver_mirrors_the_hooks_precedence(
+        self, env: dict[str, str], expected_subpath: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One resolver, asserted against the writer's own answer at every step of
+        # the precedence — the hook's path IS the specification.
+        for name in ("T3_LOOP_REGISTRY_DIR", "XDG_DATA_HOME"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        for name, value in env.items():
+            monkeypatch.setenv(name, str(tmp_path / value))
+
+        assert loop_registry_dir() == tmp_path / expected_subpath
+        assert loop_registry_dir() == router._loop_registry_path().parent
 
 
 class DispatchGapReadsTheColdWriterTests(TestCase):
