@@ -448,6 +448,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         RunDockerArgs(
             name=name,
             lane=lane,
+            surface=surface,
             shard=shard,
             output_format=output_format,
             max_turns=max_turns,

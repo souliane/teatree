@@ -29,6 +29,7 @@ from typing import Literal
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult
+from teatree.eval.surface import is_advisory
 
 #: An injected trial runner — maps a spec to one graded :class:`ScenarioResult`.
 TrialRunner = Callable[[EvalSpec], ScenarioResult]
@@ -58,17 +59,28 @@ class EscalationOutcome:
     ``classification`` is ``flaky`` when the scenario passed at least one of its
     ``trials`` escalation trials (capable agent, trial-1 noise) or ``confirmed``
     when every escalation trial failed (a real, non-flaky failure).
+
+    ``advisory`` carries the scenario's question SURFACE through to the verdict: an
+    ``interactive``-surface scenario is re-run and reported exactly like any other,
+    but never reds the lane (#3855).
     """
 
     spec_name: str
     trials: int
     passes: int
     classification: EscalationClass
+    advisory: bool = False
 
     @property
     def is_hard_red(self) -> bool:
-        """Only a ``confirmed`` failure reds the lane; a ``flaky`` pass does not."""
-        return self.classification == "confirmed"
+        """Only a ``confirmed`` failure on a GATING scenario reds the lane.
+
+        A ``flaky`` pass never reds — the agent proved it is capable. Neither does
+        an ``advisory`` (``surface: interactive``) scenario, however solidly
+        confirmed: its verdict rides a bundled claude CLI's ``AskUserQuestion``
+        rendering rather than the question contract teatree owns (#3855).
+        """
+        return self.classification == "confirmed" and not self.advisory
 
 
 @dataclasses.dataclass(frozen=True)
@@ -96,18 +108,26 @@ def render_escalation_markdown(report: EscalationReport) -> str:
     """
     if not report.outcomes:
         return ""
-    confirmed = sum(1 for outcome in report.outcomes if outcome.is_hard_red)
+    # Counted by CLASSIFICATION, not by ``is_hard_red``: an advisory scenario that
+    # failed every escalation trial IS confirmed and must read as such — it simply
+    # does not gate. Counting it as flaky would hide a real interactive regression.
+    confirmed = sum(1 for outcome in report.outcomes if outcome.classification == "confirmed")
     flaky = len(report.outcomes) - confirmed
     header = f"**Escalation** — {confirmed} confirmed, {flaky} flaky (of {len(report.outcomes)} re-run)"
     table = [
         "| scenario | escalation trials | classification |",
         "| --- | --- | --- |",
         *(
-            f"| {outcome.spec_name} | {outcome.passes}/{outcome.trials} | {outcome.classification} |"
+            f"| {outcome.spec_name} | {outcome.passes}/{outcome.trials} | {describe_classification(outcome)} |"
             for outcome in report.outcomes
         ),
     ]
     return "\n".join([header, "", *table, ""])
+
+
+def describe_classification(outcome: EscalationOutcome) -> str:
+    """The outcome's classification, tagged when it is reported-but-non-gating."""
+    return f"{outcome.classification} (advisory)" if outcome.advisory else outcome.classification
 
 
 def _failed(result: ScenarioResult) -> bool:
@@ -143,6 +163,7 @@ def escalate_failures(
                 trials=aggregate.trials,
                 passes=aggregate.passes,
                 classification=classification,
+                advisory=is_advisory(result.spec),
             )
         )
     return EscalationReport(outcomes=outcomes)
