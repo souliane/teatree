@@ -1,7 +1,8 @@
 """Pre-commit hook: anti-relaxation + tach-soundness gate (BLUEPRINT §17.6, #850).
 
-Refuses a commit whose STAGED diff relaxes a lint/coverage constraint or a tach
-module boundary without the sanctioned relax marker — a new unjustified
+Refuses a commit whose staged diff — read against a base this hook names rather
+than inherits, :mod:`teatree.quality.diff_base` — relaxes a lint/coverage
+constraint or a tach module boundary without the sanctioned relax marker — a new unjustified
 ``# noqa``, a new ``per-file-ignores`` / coverage ``omit`` entry, a lowered
 ``fail_under``, a committed ``--no-verify``, a new empty ``interfaces = []``, or
 a new ``ignore_type_checking_imports`` with no justifying comment. Findings key off
@@ -25,13 +26,13 @@ commit.
 """
 
 import os
-import subprocess
 import sys
 
 # Importable because prek runs this as ``uv run python`` with teatree installed;
 # the scan engine is pure and lives in the teatree package (single source of
 # truth shared with ``t3 tool gate-relaxation``).
-from teatree.quality.gate_relaxation import BLOCK, WARN, scan_relaxation
+from teatree.quality import diff_base
+from teatree.quality.gate_relaxation import BLOCK, WARN, RelaxationFinding, scan_relaxation
 
 _ALLOW_ENV = "ALLOW_GATE_RELAX"
 
@@ -54,18 +55,21 @@ def _gate_enabled() -> bool:
     return bool(get_effective_settings().gate_relaxation_gate_enabled)
 
 
-def _staged_diff() -> str:
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--src-prefix=a/", "--dst-prefix=b/"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout if result.returncode == 0 else ""
+def _staged_diff(base: diff_base.DiffBase) -> str:
+    return diff_base.staged_diff(base, "--src-prefix=a/", "--dst-prefix=b/")
 
 
-def _scan_and_decide(diff: str) -> int:
-    findings = scan_relaxation(diff)
+def _authored_findings() -> list[RelaxationFinding]:
+    """Relaxations THIS commit's author introduced, not ones a merge brought in.
+
+    Findings are frozen dataclasses carrying the offending path and line text and
+    no diff-relative offset, so they compare directly across the two bases — no
+    key function needed.
+    """
+    return diff_base.authored_findings(scan_relaxation, _staged_diff)
+
+
+def _scan_and_decide(findings: list[RelaxationFinding]) -> int:
     if not findings:
         return 0
     if not _gate_enabled():
@@ -93,11 +97,8 @@ def _scan_and_decide(diff: str) -> int:
 
 
 def main() -> int:
-    diff = _staged_diff()
-    if not diff.strip():
-        return 0
     try:
-        return _scan_and_decide(diff)
+        return _scan_and_decide(_authored_findings())
     except Exception as exc:  # noqa: BLE001 — fail-open: a scan bug must never wedge commits repo-wide.
         print(f"WARN: anti-relaxation gate errored — failing open: {exc}", file=sys.stderr)
         return 0

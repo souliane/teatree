@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.hooks import check_quality_gates
+from scripts.hooks import check_gate_relaxation, check_quality_gates
 from teatree.quality import diff_base
 from tests._git_repo import git_identity_env, make_git_repo, run_git
 
@@ -156,3 +156,39 @@ class TestQualityGatesHookOnAMerge:
         for var, value in git_identity_env().items():
             monkeypatch.setenv(var, value)
         assert check_quality_gates.main() == 1
+
+
+class TestGateRelaxationHookOnAMerge:
+    """The sibling gate #3899 names: same bare base, same misattribution.
+
+    It survived in the field only because its ``ALLOW_GATE_RELAX`` escape lets a
+    truthful reason through — an escape is not a reason to keep scanning the
+    wrong changes.
+    """
+
+    def test_an_inherited_noqa_is_not_charged_to_the_merging_author(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_git_repo(tmp_path / "relax")
+        (repo / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "base")
+
+        run_git(repo, "checkout", "-q", "-b", "feature")
+        (repo / "other.py").write_text("OTHER = 2\n", encoding="utf-8")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "branch work")
+
+        run_git(repo, "checkout", "-q", "main")
+        (repo / "mod.py").write_text("VALUE = 1  # noqa\n", encoding="utf-8")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "main suppresses")
+
+        run_git(repo, "checkout", "-q", "feature")
+        run_git(repo, "merge", "--no-commit", "--no-ff", "main", check=False)
+
+        monkeypatch.chdir(repo)
+        for var, value in git_identity_env().items():
+            monkeypatch.setenv(var, value)
+
+        assert not [f.path for f in check_gate_relaxation._authored_findings()]
