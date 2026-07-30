@@ -13,13 +13,14 @@ Shape, not one string: the phrase families live in
 ``teatree.quality.incompleteness_markers``. This module supplies the ledger
 discipline, in the idiom of ``test_intra_core_deferred_import_ratchet.py``:
 per-file pegs in ``incompleteness_marker_pegs.toml``, over-peg blocks, under-peg
-blocks. Per-file keying makes the ledger set-union mergeable, and same-file
+passes. Per-file keying makes the ledger set-union mergeable, and same-file
 contention surfaces as a git textual conflict rather than a post-merge red.
 
-Under-peg blocks for the same reason it does on the deferred-import ratchet, and
-one more that is specific here: an unfinished statement removed from a file
-frees budget in exactly the file most likely to grow the next one. Forcing the
-entry down keeps the ledger an honest census rather than an allowance.
+Resolving an unfinished statement never blocks. The freed budget does sit in
+exactly the file most likely to grow the next one, so lowering the entry to bank
+it keeps the ledger an honest census rather than an allowance — but that is a
+one-line edit, not a red build. Compelling it made every finished phase pay for
+finishing, which is how a ledger of unfinished work stops shrinking.
 
 ``TestClosedIssueSubGate`` is the deterministic half. A deferral naming a closed
 issue is either done-but-uncleaned or a promise nobody tracks; either way the
@@ -133,14 +134,6 @@ class TestMarkerRatchet:
             "Where the statement genuinely must stand, raise the file's entry in "
             "tests/quality/incompleteness_marker_pegs.toml [markers] with the reason in the commit "
             "message -- banking is an attributable line in the diff, never automatic.\n" + "\n".join(detail)
-        )
-
-    def test_no_file_is_under_its_peg(self, tree_markers: list[Marker]) -> None:
-        drift = diff_pegs(per_file_counts(tree_markers), load_pegs("markers", toml_path=_PEGS))
-        assert not drift.under_peg, (
-            "an unfinished statement was resolved without being banked. Lower (or remove) the entry in "
-            "tests/quality/incompleteness_marker_pegs.toml [markers] so the freed budget cannot be spent "
-            "silently on the next one:\n" + "\n".join(drift.under_lines())
         )
 
 

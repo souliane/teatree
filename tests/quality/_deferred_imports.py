@@ -69,32 +69,31 @@ def load_pegs(table: str, *, toml_path: Path = _PEGS_TOML) -> dict[str, int]:
 
 @dataclasses.dataclass(frozen=True)
 class PegDrift:
+    """The one-sided verdict: the files that exceed their peg, and nothing else.
+
+    There is deliberately no under-peg surface. A ledger that also reported the
+    files sitting BELOW their peg gave a ratchet something to assert on, and the
+    assertion turned every severed edge and every resolved marker red until the
+    entry was hand-edited downward — a mechanical tax on the exact direction the
+    ledger exists to encourage. Lowering an entry to bank the headroom stays
+    welcome; it is no longer compulsory, and it is no longer expressible here.
+    """
+
     over_peg: tuple[tuple[str, int, int], ...]
-    under_peg: tuple[tuple[str, int, int], ...]
 
     @property
     def ok(self) -> bool:
-        return not self.over_peg and not self.under_peg
+        return not self.over_peg
 
     def over_lines(self) -> list[str]:
         return [f"  - {path}: {live} deferred import(s) over its peg of {peg}" for path, live, peg in self.over_peg]
 
-    def under_lines(self) -> list[str]:
-        return [
-            f"  - {path}: {live} deferred import(s), under its peg of {peg} — lower it to {live} to bank"
-            for path, live, peg in self.under_peg
-        ]
-
 
 def diff_pegs(live: Mapping[str, int], pegs: Mapping[str, int]) -> PegDrift:
-    """Compare live per-file counts against the pegs (a file absent from either side pegs at 0)."""
-    over: list[tuple[str, int, int]] = []
-    under: list[tuple[str, int, int]] = []
-    for path in sorted(set(live) | set(pegs)):
-        live_count = live.get(path, 0)
-        peg = pegs.get(path, 0)
-        if live_count > peg:
-            over.append((path, live_count, peg))
-        elif live_count < peg:
-            under.append((path, live_count, peg))
-    return PegDrift(over_peg=tuple(over), under_peg=tuple(under))
+    """The per-file counts that EXCEED their peg (a file absent from either side pegs at 0)."""
+    over = [
+        (path, live.get(path, 0), pegs.get(path, 0))
+        for path in sorted(set(live) | set(pegs))
+        if live.get(path, 0) > pegs.get(path, 0)
+    ]
+    return PegDrift(over_peg=tuple(over))

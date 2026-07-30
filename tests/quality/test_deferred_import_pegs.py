@@ -40,11 +40,11 @@ class TestDiffPegsAntiVacuity:
         assert not drift.ok
         assert "src/a.py" in "\n".join(drift.over_lines())
 
-    def test_under_peg_demands_banking(self) -> None:
-        drift = diff_pegs({"src/a.py": 2}, {"src/a.py": 3})
-        assert drift.under_peg == (("src/a.py", 2, 3),)
-        assert not drift.ok
-        assert "src/a.py" in "\n".join(drift.under_lines())
+    def test_under_peg_is_not_drift(self) -> None:
+        # Severing an edge is the improvement the ledger exists to encourage, so
+        # a count below its peg is clean. Lowering the entry banks the headroom
+        # and stays welcome; nothing compels it.
+        assert diff_pegs({"src/a.py": 2}, {"src/a.py": 3}).ok
 
     def test_exact_match_is_ok(self) -> None:
         assert diff_pegs({"src/a.py": 3}, {"src/a.py": 3}).ok
@@ -53,9 +53,8 @@ class TestDiffPegsAntiVacuity:
         drift = diff_pegs({"src/new.py": 1}, {})
         assert drift.over_peg == (("src/new.py", 1, 0),)
 
-    def test_stale_peg_with_no_live_deferral_is_under(self) -> None:
-        drift = diff_pegs({}, {"src/gone.py": 2})
-        assert drift.under_peg == (("src/gone.py", 0, 2),)
+    def test_stale_peg_with_no_live_deferral_is_ok(self) -> None:
+        assert diff_pegs({}, {"src/gone.py": 2}).ok
 
 
 class TestCollisionPin:
