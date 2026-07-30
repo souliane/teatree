@@ -277,10 +277,11 @@ class TestResolvedFieldsMoveOnlyWhereApproved(TestCase):
         resolved = get_effective_settings()
         assert resolved.autonomy is Autonomy.FULL
         assert resolved.mode is Mode.AUTO
-        assert resolved.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert resolved.require_human_approval_to_answer is False
         assert resolved.review_request_post_disabled is False
         # ``notify_on_behalf`` is the NOTIFY tier's derivation; ``full`` leaves it alone.
         assert resolved.notify_on_behalf is UserSettings().notify_on_behalf
-        # #3630: the merge gate is NOT collapsed by any tier.
+        # #3630 / #3895: neither the merge gate nor colleague egress is collapsed by any
+        # tier, so both stay guarded fields above and keep their shipped values here.
         assert resolved.require_human_approval_to_merge is True
+        assert resolved.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK

@@ -154,7 +154,7 @@ class TestEnvWinsOverDbHome(TestCase):
 
 
 class TestAutonomyCollapseWithDbHomeGates(TestCase):
-    """The three approval gates are DB-home; the autonomy collapse honours a global DB pin."""
+    """The approval gates are DB-home; the autonomy collapse honours a global DB pin."""
 
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,17 +165,19 @@ class TestAutonomyCollapseWithDbHomeGates(TestCase):
         ConfigSetting.objects.set_value("autonomy", "full")
         settings = get_effective_settings()
         assert settings.require_human_approval_to_answer is False
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert settings.mode is Mode.AUTO
-        # #3630: the merge review gate is not tier-governed and keeps its default.
+        # #3630 / #3895: the merge review gate and colleague egress are not tier-governed
+        # and keep their defaults.
         assert settings.require_human_approval_to_merge is True
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
     def test_autonomy_collapse_respects_db_global_pin(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full")
         ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True)
         settings = get_effective_settings()
         assert settings.require_human_approval_to_answer is True
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+        # The tier still resolved — the global pin beat the collapse, it did not skip it.
+        assert settings.mode is Mode.AUTO
 
 
 class TestSpeakAndMrReminderDbHome(TestCase):

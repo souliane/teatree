@@ -5,7 +5,7 @@ instructing the agent to assign the underlying keys directly.
 
 ``t3 <overlay> autonomy set`` (souliane/teatree#1729) is the first-class
 surface for the single per-overlay ``autonomy`` knob, which collapses the
-three approval gates including ``require_human_approval_to_answer``. A skill
+tier-governed approval gates including ``require_human_approval_to_answer``. A skill
 that still tells the agent to set those keys directly contradicts the
 anti-hand-edit doctrine and the CLI. This guard scans the live skill tree
 (not a diff) so the prohibition holds for every skill file.
