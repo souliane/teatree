@@ -108,18 +108,28 @@ RUNNER_PID_ENV = "T3_LOOP_RUNNER_PID"
 _OWNER_KEY = "t3-loop-tick-owner"  # gitleaks:allow
 
 
-def _loop_registry_path() -> Path:
-    """Resolve ``loop-registry.json`` exactly like ``loop_slack_answer``.
+def loop_registry_dir() -> Path:
+    """The directory the hook tier writes its loop registries into.
 
-    ``T3_LOOP_REGISTRY_DIR`` env → ``XDG_DATA_HOME/teatree`` →
-    ``~/.local/share/teatree`` (mirrors ``hook_router``'s writer).
+    THE Django-side answer, mirroring ``hook_router._loop_registry_path``'s
+    precedence exactly: ``T3_LOOP_REGISTRY_DIR`` → ``$XDG_DATA_HOME/teatree``
+    → ``~/.local/share/teatree``. Every Django reader of a registry the hook
+    tier owns resolves through here, because the registries are written by a
+    Django-free process and a reader that resolves them differently reads a
+    file nobody writes — silently, since "no such file" and "no holders" are
+    the same empty answer (souliane/teatree#3828, the #3499 shape).
     """
-    base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    if base_env:
-        return Path(base_env) / "loop-registry.json"
+    override = os.environ.get("T3_LOOP_REGISTRY_DIR")
+    if override:
+        return Path(override)
     xdg = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "teatree" / "loop-registry.json"
+    return base / "teatree"
+
+
+def _loop_registry_path() -> Path:
+    """The tick-owner registry the hook tier writes."""
+    return loop_registry_dir() / "loop-registry.json"
 
 
 def _owner_record_from_loop_registry() -> dict | None:

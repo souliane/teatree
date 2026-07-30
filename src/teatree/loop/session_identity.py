@@ -23,7 +23,13 @@ on every call makes that capture impossible and keeps patching either module
 equivalent.
 """
 
+from pathlib import Path
+
 from teatree.core import session_identity
+
+
+def loop_registry_dir() -> Path:
+    return session_identity.loop_registry_dir()
 
 
 def current_session_id() -> str:
@@ -42,4 +48,4 @@ def runner_identity_env(pid: int) -> dict[str, str]:
     return session_identity.runner_identity_env(pid)
 
 
-__all__ = ["current_session_id", "current_session_pid", "loop_principal", "runner_identity_env"]
+__all__ = ["current_session_id", "current_session_pid", "loop_principal", "loop_registry_dir", "runner_identity_env"]

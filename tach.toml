@@ -712,6 +712,7 @@ depends_on = [
   "teatree.core.models",
   "teatree.utils",
   "teatree.loop.scanners",
+  "teatree.loop.session_identity",
   "teatree.loop.statusline_render"
 ]
 

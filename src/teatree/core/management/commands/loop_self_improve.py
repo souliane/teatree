@@ -17,7 +17,7 @@ import typer
 from django_typer.management import TyperCommand
 
 from teatree.core.machine_output import emit
-from teatree.core.session_identity import session_id_from_env
+from teatree.core.session_identity import loop_registry_dir, session_id_from_env
 
 if TYPE_CHECKING:
     from teatree.loop.self_improve.schedule import TierResult
@@ -71,11 +71,7 @@ def _session_owns_loop(session_id: str | None) -> bool:
     """
     if not session_id:
         return True
-    from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-    base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"
-    registry_path = base / "loop-registry.json"
+    registry_path = loop_registry_dir() / "loop-registry.json"
     if not registry_path.is_file():
         return True
     try:
