@@ -1,20 +1,22 @@
 """``t3 <overlay> autonomy`` — show / set the per-overlay trust switch.
 
-The ``autonomy`` switch (``babysit`` < ``notify`` < ``full``, default
-``full``) is the single per-overlay knob that collapses the user-in-the-loop
-approval gates — ``on_behalf_post_mode`` (which gates colleague auto-approve /
-on-behalf posts) and ``require_human_approval_to_answer`` — and pins ``mode = auto``
-so the loop's auto-merge path is reachable. It deliberately does NOT touch
-``require_human_approval_to_merge`` (#3630): how far the agent carries work on its
-own and whether a merge needs review are separate decisions, so merging without a
-review gate stays its own named opt-in. It also drives review-request blocking off
-the tier (#2579): the ``notify`` tier resolves ``review_request_post_disabled =
-True`` (a collaborative/customer surface never auto-requests review), while
-``full`` resolves it ``False`` (a solo tooling surface auto-requests). The
-collapse and its precedence rules live in
-:func:`teatree.config._apply_autonomy`; this command is the first-class CLI
-surface that persists the knob so a user flips an overlay to full merge/approve
-autonomy without hand-editing config.
+The ``autonomy`` switch (``babysit`` < ``notify`` < ``full``, shipped
+``full``) is the single per-overlay knob for how far the agent carries work
+before asking. It collapses the tier-governed approval gate
+(``require_human_approval_to_answer``) and pins ``mode = auto`` so the loop's
+auto-merge path is reachable. Two gates sit deliberately OUTSIDE that set,
+because surrendering either is a decision distinct from how far the agent
+carries work, and a tier that made it for the operator would remove a control
+with no signal: ``require_human_approval_to_merge`` for review before merge
+(#3630), and ``on_behalf_post_mode`` for speaking to a colleague under the
+owner's own identity (#3895). Each is its own named opt-in, read unchanged by
+every tier. The tier DOES drive review-request blocking (#2579): ``notify``
+resolves ``review_request_post_disabled = True`` (a collaborative/customer
+surface never auto-requests review), while ``full`` resolves it ``False`` (a
+solo tooling surface auto-requests). The collapse and its precedence rules live
+in :func:`teatree.config._apply_autonomy`; this command is the first-class CLI
+surface that persists the knob so a user raises an overlay's tier without
+hand-editing config.
 
 ``autonomy`` is DB-home (#1775): its sole authoritative tier is the
 ``ConfigSetting`` store, so ``set`` writes a DB row — the active overlay's

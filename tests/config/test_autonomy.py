@@ -17,8 +17,8 @@ control, and no tier may remove one as a side effect. Each is its own named opt-
 ``on_behalf_post_mode = "immediate"`` for speaking to a colleague under the owner's
 identity (#3895).
 
-Under the #1775 DB partition, ``autonomy`` / ``mode`` / the three gates are all
-DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
+Under the #1775 DB partition, ``autonomy`` / ``mode`` / the collapsed gate / both
+excluded gates are all DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
 overlay-scoped row is the per-overlay opinion (``hard_pinned``); a global-scope
 row is the global opinion (still wins for a gate, harmless for ``mode``).
 
@@ -30,7 +30,8 @@ and is never relaxed.
 import pytest
 from django.test import TestCase
 
-from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings
+from teatree.config import SAFETY_POSTURE_KEYS, Autonomy, Mode, OnBehalfPostMode, get_effective_settings
+from teatree.config.resolution import _AUTONOMY_COLLAPSED_GATE_VALUES, AUTONOMY_COLLAPSED_FIELDS
 from teatree.core.models import ConfigSetting
 
 
@@ -55,6 +56,29 @@ class TestAutonomyParse:
         """Documented tier ordering: full > notify > babysit (default full)."""
         members = list(Autonomy)
         assert members == [Autonomy.BABYSIT, Autonomy.NOTIFY, Autonomy.FULL]
+
+
+class TestCollapseSetMembership:
+    """Pin the exclusions structurally, so no edit can re-enrol a gate the tier must not write.
+
+    The per-tier assertions elsewhere in this module observe the RESOLVED value; these
+    observe the set itself, which is what a future edit would actually touch.
+    """
+
+    def test_review_before_merge_is_not_a_collapsed_gate(self) -> None:
+        assert "require_human_approval_to_merge" not in _AUTONOMY_COLLAPSED_GATE_VALUES
+
+    def test_colleague_egress_is_not_a_collapsed_gate(self) -> None:
+        assert "on_behalf_post_mode" not in _AUTONOMY_COLLAPSED_GATE_VALUES
+
+    def test_no_safety_posture_key_is_tier_derived(self) -> None:
+        """The generalization of both exclusions, covering the fields derived outside the set too.
+
+        ``config_setting_set`` refuses a ``SAFETY_POSTURE_KEYS`` write by declared effect so an
+        agent can never self-grant one. A tier that DERIVED such a key would grant it by the back
+        door, since the resolved value needs no row an audit could read.
+        """
+        assert not SAFETY_POSTURE_KEYS & AUTONOMY_COLLAPSED_FIELDS
 
 
 class TestAutonomyDefault(TestCase):

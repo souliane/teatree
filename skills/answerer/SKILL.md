@@ -65,14 +65,26 @@ mirroring `require_human_approval_to_merge`.
   user for approval, and post **only** on explicit confirmation. This is
   the safety belt for `mode = "auto"` overlays: the loop autonomously
   drafts but stops short of speaking on the user's behalf.
-- **`false` (opt-in — post directly).** The agent posts the drafted answer
-  without a DM round-trip. A deliberate opt-in the user makes per-overlay
-  only once comfortable with answer quality, by raising the overlay's
-  trust tier — `t3 <overlay> autonomy set notify` (or `full`), which
-  collapses `require_human_approval_to_answer → False` for that overlay
-  (the single homogenizing knob; never hand-edit config).
-  Overlays whose questions are customer-facing or high-stakes should keep
-  the tier at `babysit`.
+- **`false` (opt-in — no DM round-trip).** The agent goes straight to the post
+  without the approval DM. A deliberate opt-in the user makes per-overlay only
+  once comfortable with answer quality, by raising the overlay's trust tier —
+  `t3 <overlay> autonomy set notify` (or `full`), which collapses
+  `require_human_approval_to_answer → False` for that overlay (the single
+  homogenizing knob; never hand-edit config). Overlays whose questions are
+  customer-facing or high-stakes should keep the tier at `babysit`.
+
+**This setting is not the egress gate, and no tier opens that one (#3895).** The
+post in step 4 goes out under the user's identity to a colleague surface, so
+`_BaseReplier` routes `post_in_thread` / `post_comment` through the
+`on_behalf_post_mode` pre-gate (`require_on_behalf_approval`) before any wire
+call. Under the shipped `draft_or_ask` that gate BLOCKs at every tier — the
+`ReplyDispatch` row lands FAILED with an actionable message and the retry sweep
+re-attempts once the user records the approval. So `false` here buys the DM
+round-trip, not colleague egress: to actually post unattended the overlay needs a
+recorded `OnBehalfApproval` for the target, or an explicit
+`t3 <overlay> config_setting set on_behalf_post_mode immediate --overlay <name>`.
+Raising `autonomy` never grants it. `post_dm` is a bot→user message and is
+outside the gate, so the approval DM path works at every tier.
 
 Resolve the effective value with
 `teatree.config.get_effective_settings().require_human_approval_to_answer`

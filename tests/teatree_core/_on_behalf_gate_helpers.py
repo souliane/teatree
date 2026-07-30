@@ -6,12 +6,11 @@ The tri-state ``on_behalf_post_mode`` gate (#960) is enforced at the
 has its own dedicated suites — need IMMEDIATE mode (gate off) so their
 assertions still hold.
 
-Since #3895 the pin runs BOTH ways. The shipped ``autonomy = full``
-collapses an UNSET mode to IMMEDIATE, so "leave it unset" no longer means
-gate-ON — it means gate-OFF, silently. A test about the gate BLOCKING
-therefore pins ``draft_or_ask`` explicitly (:func:`mode_gate_on_cm`); a
-pinned gate is never overridden by the collapse
-(``resolution._apply_autonomy`` fills only the gates left unpinned).
+The pin runs BOTH ways. No tier collapses the mode (#3895), so an UNSET
+mode resolves the shipped ``draft_or_ask`` at every tier — gate-ON. A test
+about the gate BLOCKING still pins it explicitly (:func:`mode_gate_on_cm`)
+rather than leaning on that default, so the case states what it exercises
+and survives a later change of shipped value.
 
 Under the #1775 DB-home partition ``on_behalf_post_mode`` is DB-home
 (legacy file tier removed). These helpers set the mode through the
@@ -19,13 +18,15 @@ Under the #1775 DB-home partition ``on_behalf_post_mode`` is DB-home
 wins for a DB-home key and needs no database, so the helper works for
 every caller (DB-backed or not) without a ``ConfigSetting`` write.
 
-Two flavours are exported because the consumers differ:
+Three are exported because the direction and the consumers differ:
 
-*   :func:`mode_immediate_cm` — a ``contextlib`` context manager (works
-    for both ``unittest.TestCase`` classes and pytest functions that
+*   :func:`mode_immediate_cm` — gate OFF as a ``contextlib`` context manager
+    (works for both ``unittest.TestCase`` classes and pytest functions that
     prefer ``with mode_immediate_cm(): ...``).
-*   :func:`disable_on_behalf_gate` — a one-shot helper that sets the env
-    var for the lifetime of the test using pytest's ``monkeypatch``
+*   :func:`mode_gate_on_cm` — the same shape for the opposite direction, for a
+    test that needs the gate to BLOCK.
+*   :func:`disable_on_behalf_gate` — gate OFF as a one-shot helper that sets the
+    env var for the lifetime of the test using pytest's ``monkeypatch``
     fixture, so an autouse fixture can call it without context-manager
     scoping.
 """

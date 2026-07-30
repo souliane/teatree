@@ -94,8 +94,8 @@ class TestPrApprovalScannerOutboundGating(_PrApprovalScannerTestBase):
 
     @pytest.fixture(autouse=True)
     def _gate_on(self) -> Iterator[None]:
-        # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
-        # case is about the gate BLOCKING, so it pins the mode it exercises.
+        # This case is about the gate BLOCKING, so it pins the mode it exercises
+        # rather than leaning on the shipped default resolving that way (#3895).
         with mode_gate_on_cm():
             yield
 
