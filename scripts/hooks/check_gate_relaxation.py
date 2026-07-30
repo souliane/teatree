@@ -10,6 +10,11 @@ deployed is exempt for free; ``# noqa`` findings are additionally diff-aware —
 code already suppressed on a line at base is not flagged when it reappears
 because sibling codes were stripped, only a genuinely-new suppression is.
 
+The staged diff is read against a base this hook NAMES rather than inherits
+(:mod:`teatree.quality.diff_base`). Mid-merge a bare ``git diff --cached`` shows
+the incoming side's changes as this commit's, so the gate charged whoever
+resolved a merge for suppressions they did not write (#3899).
+
 Enforcement (§17.6.5 WARN-not-hardfail): a BLOCK finding refuses the commit; a
 WARN finding (possible test vacuity — a fuzzy heuristic) prints advisory-only
 and never fails. Never-lockout: the ``ALLOW_GATE_RELAX=<reason>`` env marker
@@ -25,13 +30,13 @@ commit.
 """
 
 import os
-import subprocess
 import sys
 
 # Importable because prek runs this as ``uv run python`` with teatree installed;
 # the scan engine is pure and lives in the teatree package (single source of
 # truth shared with ``t3 tool gate-relaxation``).
-from teatree.quality.gate_relaxation import BLOCK, WARN, scan_relaxation
+from teatree.quality import diff_base
+from teatree.quality.gate_relaxation import BLOCK, WARN, RelaxationFinding, scan_relaxation
 
 _ALLOW_ENV = "ALLOW_GATE_RELAX"
 
@@ -54,18 +59,28 @@ def _gate_enabled() -> bool:
     return bool(get_effective_settings().gate_relaxation_gate_enabled)
 
 
-def _staged_diff() -> str:
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--src-prefix=a/", "--dst-prefix=b/"],
-        capture_output=True,
-        text=True,
-        check=False,
+def _staged_diff(base: diff_base.DiffBase) -> str | None:
+    """The staged diff against *base*, or ``None`` when git could not produce it."""
+    return diff_base.staged_diff(base, "--src-prefix=a/", "--dst-prefix=b/")
+
+
+def _authored_findings() -> list[RelaxationFinding]:
+    """Relaxations THIS commit's author introduced, not ones a merge brought in.
+
+    Keyed on ``(kind, path, line)`` — the fields that identify the relaxation
+    itself. ``message`` is deliberately excluded because it can quote the base
+    it was measured against (``fail_under`` lowered "from 90" against the branch
+    tip but "from 95" against the incoming side), which would make the two scans
+    disagree and silently drop a floor the operator really did lower.
+    """
+    return diff_base.authored_findings(
+        scan_relaxation,
+        _staged_diff,
+        key=lambda finding: (finding.kind, finding.path, finding.line),
     )
-    return result.stdout if result.returncode == 0 else ""
 
 
-def _scan_and_decide(diff: str) -> int:
-    findings = scan_relaxation(diff)
+def _scan_and_decide(findings: list[RelaxationFinding]) -> int:
     if not findings:
         return 0
     if not _gate_enabled():
@@ -93,11 +108,8 @@ def _scan_and_decide(diff: str) -> int:
 
 
 def main() -> int:
-    diff = _staged_diff()
-    if not diff.strip():
-        return 0
     try:
-        return _scan_and_decide(diff)
+        return _scan_and_decide(_authored_findings())
     except Exception as exc:  # noqa: BLE001 — fail-open: a scan bug must never wedge commits repo-wide.
         print(f"WARN: anti-relaxation gate errored — failing open: {exc}", file=sys.stderr)
         return 0
