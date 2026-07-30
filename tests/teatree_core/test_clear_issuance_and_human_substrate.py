@@ -33,7 +33,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr, resolve_pr_repo_slug
-from teatree.core.merge.authorization import assert_review_verdict_gate
+from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff, assert_review_verdict_gate
 from teatree.core.models import (
     ClearIssuanceError,
     ConfigSetting,
@@ -1091,8 +1091,6 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         ``full`` covers the per-PR sign-off. (End-to-end, a logic clear never reaches
         the substrate branch — this pins the resolution + standing-grant logic.)
         """
-        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
@@ -1104,27 +1102,49 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
         assert granted is True
 
     def test_foreign_repo_logic_clear_is_not_covered_by_standing_grant(self) -> None:
-        """The NON-substrate standing grant does NOT cover a repo no full overlay owns.
+        """The NON-substrate standing grant follows REPO IDENTITY, not the full overlay.
 
-        The anti-vacuity twin: a LOGIC clear on a foreign repo resolves to no full
-        overlay, so ``_overlay_grants_standing_substrate_signoff`` returns False.
+        The anti-vacuity twin: a LOGIC clear on a foreign repo falls back to the
+        ticket's own overlay, so the ``full`` grant on the teatree-owned repo does
+        not reach it. Both overlays are pinned — the shipped ``autonomy = full``
+        (#3895) would otherwise answer for the fallback overlay too and the twin
+        would stop discriminating.
         """
-        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
             state=Ticket.State.IN_REVIEW,
         )
         clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO, blast_class=MergeClear.BlastClass.LOGIC)
-        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_autonomy("t3-teatree", "full"),
+            _overlay_autonomy("some-other-overlay", "babysit"),
+        ):
             granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_FOREIGN_REPO)
         assert granted is False
 
+    def test_the_shipped_posture_grants_a_logic_clear_on_an_unclaimed_repo(self) -> None:
+        """#3895's consequence, pinned rather than incidental: the global tier answers.
+
+        With NO per-overlay row, the fallback overlay resolves the SHIPPED
+        ``autonomy = full``, so a LOGIC clear on a repo no overlay claims IS covered
+        by the standing grant. Substrate is unaffected — it routes through
+        ``substrate_self_signoff``, which stays pinned off (asserted below).
+        """
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/8",
+            state=Ticket.State.IN_REVIEW,
+        )
+        logic = _substrate_clear(ticket, pr_id=8, slug=_FOREIGN_REPO, blast_class=MergeClear.BlastClass.LOGIC)
+        substrate = _substrate_clear(ticket, pr_id=9, slug=_FOREIGN_REPO)
+        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO):
+            assert _overlay_grants_standing_substrate_signoff(logic, resolved_slug=_FOREIGN_REPO) is True
+            assert _overlay_grants_standing_substrate_signoff(substrate, resolved_slug=_FOREIGN_REPO) is False
+
     def test_substrate_clear_is_excluded_from_standing_grant(self) -> None:
         """A SUBSTRATE clear is never covered by the standing grant, even on a full-owned repo (§3.2)."""
-        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/8",
@@ -1150,8 +1170,6 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
 
     def test_substrate_signoff_on_at_full_grants_the_signoff(self) -> None:
         """MUST-ALLOW: setting on + autonomy=full covers a substrate CLEAR's sign-off."""
-        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32230",
@@ -1167,8 +1185,6 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
 
     def test_substrate_signoff_off_at_full_still_holds(self) -> None:
         """MUST-DENY (default): setting off keeps substrate held even at autonomy=full."""
-        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32231",
@@ -1184,8 +1200,6 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
 
     def test_substrate_signoff_on_below_full_still_holds(self) -> None:
         """MUST-DENY: the setting alone does not self-merge substrate below the full tier."""
-        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32232",

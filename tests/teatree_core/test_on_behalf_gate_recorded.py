@@ -14,8 +14,14 @@ on-behalf publish path calls. It exposes the gate's four outcomes
 *   ``ASK`` or ``DRAFT_OR_ASK`` (colleague-VISIBLE action) + no recorded
     approval → raise :class:`OnBehalfPostBlockedError` so the caller
     surfaces the blocked post to the user (never silently drop, never post
-    unattended). Default DRAFT_OR_ASK, fail-closed for every colleague-
-    visible mutation; drafts are the ungated safe-by-default.
+    unattended). ``DRAFT_OR_ASK`` is fail-closed for every colleague-visible
+    mutation; drafts are the ungated safe-by-default.
+
+The MODE the shipped defaults resolve to is a separate question from what each
+mode DOES, and this suite owns the second. It therefore pins the mode under test
+in every case rather than leaning on the resolved default — which #3895 moved to
+``IMMEDIATE`` via ``autonomy = full``, and which
+``tests/config/test_autonomy.py`` owns.
 """
 
 from pathlib import Path
@@ -23,7 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, ConfigSetting
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
@@ -39,11 +45,15 @@ def _set_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str | None)
     """Stage ``on_behalf_post_mode`` (DB-home, #1775) via the ``T3_*`` env tier.
 
     The mode is set through the env layer (which wins for a DB-home key and needs
-    no DB). ``mode=None`` leaves it unset so the field resolves to its
-    ``DRAFT_OR_ASK`` default. The global ``_isolate_env`` fixture already isolates
-    the config store so the developer's real config is never read.
+    no DB). ``mode=None`` leaves the key unset and pins ``autonomy = babysit``, so
+    the field resolves to its own ``DRAFT_OR_ASK`` default rather than the
+    ``IMMEDIATE`` the shipped ``autonomy = full`` collapses it to (#3895). The
+    global ``_isolate_env`` fixture already isolates the config store so the
+    developer's real config is never read.
     """
-    if mode is not None:
+    if mode is None:
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+    else:
         monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode)
 
 
@@ -78,10 +88,22 @@ class TestRecordedOnBehalfGate:
         with pytest.raises(OnBehalfPostBlockedError):
             require_on_behalf_approval(target="org/repo#42", action="post_comment", publish=_noop)
 
-    def test_default_is_fail_closed_for_non_draft_action(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _set_mode(tmp_path, monkeypatch, None)  # setting unset → DRAFT_OR_ASK
+    def test_unset_mode_is_fail_closed_for_non_draft_action(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_mode(tmp_path, monkeypatch, None)  # key unset under babysit → DRAFT_OR_ASK
         with pytest.raises(OnBehalfPostBlockedError):
             require_on_behalf_approval(target="t#1", action="post_comment", publish=_noop)
+
+    def test_the_shipped_posture_proceeds_without_approval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #3895: the shipped `autonomy = full` collapses the mode to IMMEDIATE, so a
+        # fresh install posts on behalf unattended. Pinned here because it is the gate's
+        # OWN behaviour under the shipped posture, not a property of any test's env.
+        monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
+        require_on_behalf_approval(target="t#1", action="post_comment", publish=_noop)
+        assert OnBehalfAudit.objects.count() == 0
 
     def test_recorded_approval_scope_is_exact(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_mode(tmp_path, monkeypatch, "ask")

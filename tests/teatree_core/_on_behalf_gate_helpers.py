@@ -1,11 +1,17 @@
-"""Shared helpers to set ``on_behalf_post_mode = "immediate"`` for transport tests.
+"""Shared helpers to PIN ``on_behalf_post_mode`` for a test that depends on it.
 
-The tri-state ``on_behalf_post_mode`` gate (#960) defaults to
-``DRAFT_OR_ASK`` globally and is enforced at the ``_BaseReplier``
-chokepoint. Pre-existing tests that exercise transport *mechanics*
+The tri-state ``on_behalf_post_mode`` gate (#960) is enforced at the
+``_BaseReplier`` chokepoint. Tests that exercise transport *mechanics*
 (idempotency, status recording, backend wiring) — not the gate, which
 has its own dedicated suites — need IMMEDIATE mode (gate off) so their
 assertions still hold.
+
+Since #3895 the pin runs BOTH ways. The shipped ``autonomy = full``
+collapses an UNSET mode to IMMEDIATE, so "leave it unset" no longer means
+gate-ON — it means gate-OFF, silently. A test about the gate BLOCKING
+therefore pins ``draft_or_ask`` explicitly (:func:`mode_gate_on_cm`); a
+pinned gate is never overridden by the collapse
+(``resolution._apply_autonomy`` fills only the gates left unpinned).
 
 Under the #1775 DB-home partition ``on_behalf_post_mode`` is DB-home
 (legacy file tier removed). These helpers set the mode through the
@@ -31,13 +37,22 @@ from unittest.mock import patch
 
 import pytest
 
+_MODE_ENV = "T3_ON_BEHALF_POST_MODE"
 _MODE_IMMEDIATE_ENV = "immediate"
+_MODE_GATE_ON_ENV = "draft_or_ask"
 
 
 @contextmanager
 def mode_immediate_cm() -> Iterator[None]:
     """Context manager: ``on_behalf_post_mode`` is IMMEDIATE inside the block."""
-    with patch.dict(os.environ, {"T3_ON_BEHALF_POST_MODE": _MODE_IMMEDIATE_ENV}):
+    with patch.dict(os.environ, {_MODE_ENV: _MODE_IMMEDIATE_ENV}):
+        yield
+
+
+@contextmanager
+def mode_gate_on_cm() -> Iterator[None]:
+    """Context manager: the gate BLOCKS colleague-visible posts inside the block."""
+    with patch.dict(os.environ, {_MODE_ENV: _MODE_GATE_ON_ENV}):
         yield
 
 
@@ -51,4 +66,4 @@ def disable_on_behalf_gate(
     of a class/function-scoped test: ``monkeypatch`` reverts the env var at
     teardown so the global gate-on default is restored automatically.
     """
-    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", _MODE_IMMEDIATE_ENV)
+    monkeypatch.setenv(_MODE_ENV, _MODE_IMMEDIATE_ENV)

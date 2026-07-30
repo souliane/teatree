@@ -11,7 +11,7 @@ from teatree.backends.slack import reactions as slack_reactions
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
-from tests.teatree_core._on_behalf_gate_helpers import mode_immediate_cm
+from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -358,10 +358,11 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append(pull_request)
             return 1
 
-        # Gate ON (default) — no recorded approval → reaction is skipped
-        # (NOT pure suppression: a recorded approval would let it
-        # publish, exercised by the next test).
-        with _patch_approval_publisher(_fake):
+        # Gate ON — no recorded approval → reaction is skipped (NOT pure
+        # suppression: a recorded approval would let it publish, exercised by the
+        # next test). Pinned, because the shipped autonomy collapses an unset mode
+        # to IMMEDIATE (#3895), which would silently make this the gate-OFF case.
+        with mode_gate_on_cm(), _patch_approval_publisher(_fake):
             pr.approve()
             pr.save()
 
@@ -499,8 +500,9 @@ class TestTransitionReactionGated(TestCase):
             calls.append((t, name))
             return 1
 
-        # Gate ON by default — no recorded approval → reaction is skipped.
-        with _patch_transition_publisher(_fake):
+        # Gate ON (pinned — the shipped autonomy collapses an unset mode to
+        # IMMEDIATE, #3895) and no recorded approval → the reaction is skipped.
+        with mode_gate_on_cm(), _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 
