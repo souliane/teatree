@@ -20,8 +20,8 @@ from pathlib import Path
 
 import django.test
 
-from teatree.core.availability import PresenceHeartbeat
 from teatree.core.models import Mode
+from teatree.live_presence import PresenceHeartbeat
 
 
 class TestOwnerReplyAlwaysOn(django.test.SimpleTestCase):

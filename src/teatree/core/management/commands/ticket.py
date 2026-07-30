@@ -9,12 +9,14 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
+from teatree.core.management.commands._clear_backfill_commands import ClearBackfillCommands
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._spec_coverage_commands import SpecCoverageCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
@@ -66,11 +68,11 @@ class E2EBypassResult(TypedDict, total=False):
     approver: str
 
 
-# The 8-mixin base list is a django-typer requirement, not a composition-bar
+# The 10-mixin base list is a django-typer requirement, not a composition-bar
 # violation: django-typer discovers ``@command``-decorated methods by walking the
 # Command class's own MRO, so each cohesive command group (rubric, plan, show,
-# context, close, attachment, merge-keystone, sweep) MUST be a base class of the
-# single ``Command`` rather than a plain collaborator it delegates to — a helper
+# context, close, attachment, merge-keystone, sweep, spec-coverage, clear-backfill) MUST be a base
+# class of the single ``Command`` rather than a plain collaborator it delegates to — a helper
 # object's methods would never register as CLI subcommands. The mixins stay
 # single-concern; only their registration is inheritance-shaped.
 class Command(
@@ -82,6 +84,8 @@ class Command(
     AttachmentCommands,
     MergeKeystoneCommands,
     SweepCommands,
+    SpecCoverageCommands,
+    ClearBackfillCommands,
     TyperCommand,
 ):
     @command(help=TRANSITION_HELP)
@@ -376,6 +380,12 @@ class Command(
             self.stdout.write(f"  CLEAR refused: {exc}")
             return {"issued": False, "error": str(exc)}
 
+        # ``--ticket-id`` is optional and no caller passes it, so a CLEAR is routinely
+        # born with no ticket for the merge keystone to advance. The PR knows its own
+        # ticket — adopt it AFTER issuance, so the issuance contract sees exactly the
+        # inputs the caller supplied.
+        if resolved_ticket is None:
+            resolved_ticket = clear.adopt_owning_ticket()
         self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
         result: ClearIssueResult = {
             "issued": True,

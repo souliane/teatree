@@ -2,11 +2,13 @@
 
 from unittest.mock import patch
 
+import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.test import RequestFactory, TestCase
 
-from teatree.core.middleware import LocalAdminAutoLoginMiddleware
+from teatree import request_cache
+from teatree.core.middleware import LocalAdminAutoLoginMiddleware, RequestScopedReadCacheMiddleware
 from teatree.core.models import ConfigSetting
 
 _LOOPBACK = "127.0.0.1"
@@ -83,3 +85,44 @@ class LocalAdminAutoLoginTestCase(TestCase):
 
     def test_noop_when_no_superuser_exists(self) -> None:
         self._run().assert_not_called()
+
+
+class RequestScopedReadCacheTestCase(TestCase):
+    """The memo lives for one request and never outlives a write inside it."""
+
+    def setUp(self) -> None:
+        self.calls: list[int] = []
+
+        @request_cache.cached_per_request
+        def read() -> int:
+            self.calls.append(1)
+            return len(self.calls)
+
+        self.read = read
+
+    def _run(self, view) -> object:
+        request = RequestFactory().get("/dash/board/", REMOTE_ADDR=_LOOPBACK)
+        return RequestScopedReadCacheMiddleware(view)(request)
+
+    def test_repeated_reads_within_one_request_run_once(self) -> None:
+        self._run(lambda _req: [self.read(), self.read(), self.read()])
+        assert len(self.calls) == 1
+
+    def test_a_write_during_the_request_invalidates_the_memo(self) -> None:
+        def mutate_then_read(_req: object) -> int:
+            self.read()
+            ConfigSetting.objects.set_value("mode", "auto")
+            return self.read()
+
+        assert self._run(mutate_then_read) == 2
+
+    def test_the_memo_does_not_outlive_the_request(self) -> None:
+        self._run(lambda _req: self.read())
+        self._run(lambda _req: self.read())
+        assert len(self.calls) == 2
+
+    def test_a_raising_view_still_closes_the_scope(self) -> None:
+        with pytest.raises(RuntimeError):
+            self._run(lambda _req: (_ for _ in ()).throw(RuntimeError("boom")))
+        self.read()
+        assert len(self.calls) == 1

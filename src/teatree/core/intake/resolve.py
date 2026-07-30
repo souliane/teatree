@@ -21,7 +21,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import get_all_overlays, get_overlay_for_repo
+from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.utils import git
@@ -223,12 +223,7 @@ def _overlay_name_for_cwd(cwd_path: Path) -> str | None:
         overlay = get_overlay_for_repo(str(cwd_path))
     except ImproperlyConfigured:
         return None
-    if overlay is None:
-        return None
-    for name, candidate in get_all_overlays().items():
-        if candidate is overlay:
-            return name
-    return None
+    return overlay_name_of(overlay) or None
 
 
 def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Worktree | None:
@@ -273,9 +268,19 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
         _refresh_reused_row(existing, branch, cwd_path)
         return existing
 
+    # A synthetic ``auto:<branch>`` URL names no repo, so ``Ticket.save()``'s
+    # ``infer_overlay`` can never attribute this row. Stamping the CWD's own
+    # overlay here is the only signal there is, and a blank ``overlay`` makes
+    # ``get_overlay_for_ticket`` fall through to the ambiguous
+    # ``get_overlay(None)`` on a multi-overlay install (souliane/teatree#1814).
     ticket = Ticket.objects.get_or_create(
         issue_url=f"auto:{branch}",
-        defaults={"variant": "", "repos": [repo_name], "kind": classify_ticket_kind(title=branch)},
+        defaults={
+            "overlay": overlay_name or "",
+            "variant": "",
+            "repos": [repo_name],
+            "kind": classify_ticket_kind(title=branch),
+        },
     )[0]
     return _get_or_refresh_worktree(ticket, repo_name, branch, cwd_path)
 

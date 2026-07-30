@@ -23,12 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.core.models.types import VisualQAPageDetail, VisualQAPageError, VisualQASummary
 from teatree.core.overlay import OverlayBase
 from teatree.utils import git
 
 if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
+
+    from teatree.core.models.types import VisualQASummary
 
 PlaywrightError: type[BaseException] = Exception
 try:
@@ -99,8 +100,14 @@ class VisualQAReport:
     def total_errors(self) -> int:
         return sum(len(page.errors) for page in self.pages)
 
-    def summary(self) -> VisualQASummary:
+    def summary(self) -> "VisualQASummary":
         """Return a JSON-serialisable snapshot for ``Ticket.extra``."""
+        from teatree.core.models.types import (  # noqa: PLC0415 — deferred: ORM import needs the app registry
+            VisualQAPageDetail,
+            VisualQAPageError,
+            VisualQASummary,
+        )
+
         details: list[VisualQAPageDetail] = [
             {
                 "url": page.url,

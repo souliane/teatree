@@ -238,7 +238,16 @@ class SkillLoadingPolicy:
         pr_review_companion: str = "",
         review_skills: list[str] | None = None,
         stage_skills: list[str] | None = None,
+        agent_declared_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
+        """Resolve a dispatched phase's bundle.
+
+        *agent_declared_skills* is the phase's ``agents/<name>.md`` frontmatter
+        declaration (#3667) — authoritative when present, so headless loads the
+        same set interactive does. :data:`_PHASE_TO_SKILL` remains the fallback
+        for a phase with no agent file, and still resolves ``lifecycle_skill``
+        (which drives the review-companion branch below and the returned result).
+        """
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
             cwd=cwd,
@@ -247,7 +256,9 @@ class SkillLoadingPolicy:
             lifecycle_skill=lifecycle_skill,
             companion_skills=companion_skills,
         )
-        if lifecycle_skill:
+        if agent_declared_skills:
+            ordered.extend(s for s in agent_declared_skills if isinstance(s, str) and s)
+        elif lifecycle_skill:
             ordered.append(lifecycle_skill)
         # #1135: a reviewer sub-agent dispatch (phase resolving to the
         # ``review`` lifecycle skill) also loads the project's review skills.

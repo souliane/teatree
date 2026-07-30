@@ -36,8 +36,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from teatree.core import availability, harness_todos
-from teatree.core.models import PullRequest
+from teatree.core import harness_todos
+from teatree.core.models import DeferredQuestion, PullRequest
 from teatree.core.session_identity import current_session_id
 from teatree.utils.run import run_allowed_to_fail
 
@@ -137,9 +137,7 @@ def _open_prs_lines() -> list[str]:
 
 
 def _pending_questions_lines() -> list[str]:
-    rows = [
-        f"- {q.question.splitlines()[0] if q.question else '(empty)'}" for q in availability.iter_pending_questions()
-    ]
+    rows = [f"- {q.question.splitlines()[0] if q.question else '(empty)'}" for q in DeferredQuestion.pending()]
     return ["## Pending deferred questions", *(rows or ["(none)"])]
 
 

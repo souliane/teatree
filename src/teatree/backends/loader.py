@@ -166,29 +166,61 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     return _host_backend(overlay, forge)
 
 
-def pr_is_merged_or_closed(pr_url: str) -> bool:
-    """Whether the PR/MR at *pr_url* is provably MERGED or CLOSED (#2081).
+def issue_is_done(overlay: "OverlayBase", issue_url: str) -> bool:
+    """Whether *issue_url*'s upstream issue is done per *overlay*'s ``is_issue_done``.
 
-    Resolves the per-URL code host with the active overlay's credentials and
-    reads live state via :meth:`CodeHostBackend.get_pr_open_state`. Fail-OPEN:
-    only a *definite* MERGED/CLOSED returns ``True``; an empty URL, UNKNOWN
-    (auth / network / parse failure), an unresolvable host, or any exception
-    returns ``False`` so a transient API hiccup never suppresses a downstream
-    action.
+    The single completion-detection seam the ``sync-completions`` sweep and the
+    ``TicketCompletionScanner`` both consult before advancing a post-ship ticket.
+    Fail-SKIP: an unresolvable host, a fetch failure, an error payload, or a
+    non-dict response all return ``False`` (never advance on uncertainty) and a
+    fetch failure is logged, never raised — it must not abort the sweep or wedge
+    the scan.
+    """
+    host = get_code_host_for_url(overlay, issue_url)
+    if host is None:
+        return False
+    try:
+        issue_data = host.get_issue(issue_url)
+    except Exception:  # noqa: BLE001 — a fetch failure skips the ticket, never aborts the caller
+        logger.warning("Failed to fetch issue %s — skipping completion check", issue_url)
+        return False
+    if not isinstance(issue_data, dict) or "error" in issue_data:
+        return False
+    return bool(overlay.is_issue_done(issue_data))
+
+
+def pr_open_state(pr_url: str) -> PrOpenState:
+    """Live OPEN / MERGED / CLOSED state of the PR/MR at *pr_url*, per the forge.
+
+    Resolves the per-URL code host with the owning overlay's credentials and reads
+    :meth:`CodeHostBackend.get_pr_open_state`. Every indeterminate case — an empty
+    URL, an unresolvable overlay or host, any transport error — collapses to
+    :attr:`PrOpenState.UNKNOWN`, so a caller can never mistake a failed read for a
+    definite verdict. Distinguishing MERGED from CLOSED is what lets the board
+    reconcile advance a landed ticket while resolving an abandoned one.
     """
     if not pr_url:
-        return False
+        return PrOpenState.UNKNOWN
     from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415 — deferred: backends ↔ core cycle
 
     try:
         host = get_code_host_for_url(get_overlay_for_url(pr_url), pr_url)
         if host is None:
-            return False
-        state = host.get_pr_open_state(pr_url=pr_url)
+            return PrOpenState.UNKNOWN
+        return host.get_pr_open_state(pr_url=pr_url)
     except Exception:
-        logger.exception("Live-state check failed for %s — failing open", pr_url)
-        return False
-    return state in {PrOpenState.MERGED, PrOpenState.CLOSED}
+        logger.exception("Live-state check failed for %s", pr_url)
+        return PrOpenState.UNKNOWN
+
+
+def pr_is_merged_or_closed(pr_url: str) -> bool:
+    """Whether the PR/MR at *pr_url* is provably MERGED or CLOSED (#2081).
+
+    Fail-OPEN: only a *definite* MERGED/CLOSED returns ``True``; the UNKNOWN that
+    :func:`pr_open_state` collapses every failure into returns ``False`` so a
+    transient API hiccup never suppresses a downstream action.
+    """
+    return pr_open_state(pr_url) in {PrOpenState.MERGED, PrOpenState.CLOSED}
 
 
 def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBackend | None:

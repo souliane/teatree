@@ -1,0 +1,115 @@
+{% extends "dash/base.html" %}
+{% block title %}Settings{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block content %}
+  <section class="band">
+    <h2>Settings</h2>
+    <p class="muted">Everything this box is configured to do: the resolved model / credential / self-repair readouts below, then every config key from the schema. Sections are on the left, the selected section's rows on the right — one section is fetched at a time, so the page stays small. Edits write to the DB store; a secret value is never shown (<span class="mono">***</span>) and its input is write-only. Restore-to-default deletes the row. <em>Value came from</em> names the tier of the resolution chain that supplied the effective value (env &rarr; DB overlay scope &rarr; DB global scope &rarr; overlay code default &rarr; shipped file); <em>shipped default</em> shows what <span class="mono">config/defaults.toml</span> ships, with <span class="default-match">&#10003; same as default</span> or <span class="default-differs">&#9679; differs from default</span> next to it.</p>
+    <form class="toolbar" method="get" action="{% url 'dash:settings' %}">
+      <label for="scope-picker">Scope</label>
+      <select id="scope-picker" name="scope" onchange="this.form.submit()">
+        {% for name in editor.available_scopes %}
+          <option value="{{ name }}" {% if name == editor.scope %}selected{% endif %}>{{ name|default:"global (every overlay)" }}</option>
+        {% endfor %}
+      </select>
+      <input type="hidden" name="section" value="{{ editor.group.section.slug }}">
+      <button class="dash-btn" type="submit">Show</button>
+    </form>
+    <p class="muted">A row in an overlay scope beats the global row for that overlay. The picker lists
+      every registered overlay plus any scope that already holds rows.</p>
+  </section>
+
+  <div id="settings-readouts"
+    hx-get="{% url 'dash:settings_readouts' %}"
+    hx-trigger="every 15s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_settings_readouts.html" %}
+  </div>
+
+  {% if editor.error %}<div class="banner-red">{{ editor.error }}</div>{% endif %}
+
+  <div class="settings-layout">
+    <nav class="settings-nav band" aria-label="Settings sections">
+      <h2>Sections</h2>
+      <ul>
+        {% for section in editor.sections %}
+          <li>
+            <button type="button"
+              class="settings-nav-item{% if section.slug == editor.group.section.slug %} active{% endif %}"
+              aria-current="{% if section.slug == editor.group.section.slug %}true{% else %}false{% endif %}"
+              hx-get="{% url 'dash:settings_group' section.slug %}{% if editor.scope %}?scope={{ editor.scope|urlencode }}{% endif %}"
+              hx-target="#settings-pane" hx-swap="innerHTML">
+              <span class="settings-nav-label">{{ section.label }}</span>
+              {% if section.parent_label %}<span class="settings-nav-parent">{{ section.parent_label }}</span>{% endif %}
+              <span class="settings-nav-count">{{ section.key_count }}</span>
+            </button>
+          </li>
+        {% endfor %}
+      </ul>
+    </nav>
+    <div id="settings-pane" class="settings-detail">
+      {% include "dash/partials/_settings_group.html" with group=editor.group %}
+    </div>
+  </div>
+
+  <section class="band">
+    <h2>Export</h2>
+    <form class="toolbar" method="get" action="{% url 'dash:settings_export' %}">
+      <label><input type="checkbox" name="default_keys_only" value="1"> Export default keys only</label>
+      <label><input type="checkbox" name="include_defaults" value="1"> Include values that are the same as default</label>
+      <button class="dash-btn" type="submit">Export (secrets withheld)</button>
+    </form>
+    <p class="muted">Both unticked is the delta dump: only the keys this box overrides. <em>Default keys only</em>
+      restricts it to the keys <span class="mono">config/defaults.toml</span> ships, dropping registries, secrets,
+      personal identifiers and overlay scopes. <em>Include values that are the same as default</em> also emits the
+      keys with no DB row, at their resolved effective value. Tick BOTH and the download is a complete drop-in
+      replacement for <span class="mono">config/defaults.toml</span>, header and seed tables included.</p>
+  </section>
+
+  <section class="band">
+    <h2>Import</h2>
+    <form method="post" action="{% url 'dash:settings_import' %}" enctype="multipart/form-data">
+      {% csrf_token %}
+      <input type="file" name="toml_file" accept=".toml,text/plain" aria-label="TOML file to import" required>
+      <input type="hidden" name="scope" value="{{ editor.scope }}">
+      <p class="toolbar">
+        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
+          aria-label="safety-posture confirm phrase">
+        <button type="submit" name="apply" value="">Preview (dry-run)</button>
+        <button type="submit" name="apply" value="1">Apply</button>
+      </p>
+      <p class="muted">Upload a <span class="mono">config_setting export</span> dump. A file carrying a safety-posture
+        key needs the confirm phrase, exactly as editing one above does. Each row lands in the scope its own table
+        names (<span class="mono">[teatree]</span> is global, <span class="mono">[overlays.&lt;name&gt;]</span> is that
+        overlay) — the picker above chooses what you are looking at, never where an imported row goes.</p>
+    </form>
+    {% if import_error %}<p class="banner-red">{{ import_error }}</p>{% endif %}
+    {% if import_result %}
+      <div class="import-result">
+        <h3>{% if import_applied %}Imported{% else %}Import preview — dry-run, nothing written{% endif %}</h3>
+        {% if import_result.rejected %}
+          <p class="banner-red">{{ import_result.rejected|length }} row(s) rejected — the whole import was refused, nothing was written.</p>
+          <ul>
+            {% for r in import_result.rejected %}
+              <li class="mono">{{ r.key }} [{{ r.scope|default:"global" }}] — {{ r.reason }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>{{ import_result.written|length }} row(s) {% if import_applied %}written{% else %}would be written{% endif %}; {{ import_result.skipped_default|length }} equal the shipped default (no row).</p>
+          {% if import_result.safety_posture_keys and not import_applied %}
+            <p class="banner-red">{{ import_result.safety_posture_keys|length }} safety-posture row(s) —
+              <span class="mono">{{ import_result.safety_posture_keys|join:", " }}</span>.
+              Applying needs the confirm phrase <span class="mono">{{ confirm_phrase }}</span>.</p>
+          {% endif %}
+          <ul>
+            {% for row in import_result.written %}
+              <li class="mono">{{ row.key }} = {{ row.value }} [{{ row.scope|default:"global" }}]{% if row.is_safety_posture %} <span class="banner-red">safety-posture</span>{% endif %}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% for old, new in import_result.folded %}<p class="muted">folded retired alias {{ old }} → {{ new }}</p>{% endfor %}
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

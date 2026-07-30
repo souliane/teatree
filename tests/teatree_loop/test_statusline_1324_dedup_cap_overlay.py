@@ -13,7 +13,6 @@ from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering import zones_for
 from teatree.loop.rendering_classification import _classify_actions
 from teatree.loop.rendering_zones import _MAX_PER_STATE
-from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 
 
 def _blob(actions: list[DispatchAction]) -> str:
@@ -100,29 +99,3 @@ class TestReadyOverflowCap:
         actions = [_ready(str(i), url=f"https://example.com/issues/{i}") for i in range(3)]
         blob = _blob(actions)
         assert "(+" not in blob
-
-
-class TestAssignedIssuesScannerStampsOverlay:
-    def test_scanner_payload_carries_overlay_name(self) -> None:
-        class _StubHost:
-            def current_user(self) -> str:
-                return "alice"
-
-            def list_assigned_issues(self, *, assignee: str) -> list[dict]:
-                _ = assignee
-                return [
-                    {
-                        "web_url": "https://example.com/issues/1",
-                        "title": "x",
-                        "labels": ["ready"],
-                    }
-                ]
-
-        scanner = AssignedIssuesScanner(
-            host=_StubHost(),
-            ready_labels=("ready",),
-            overlay_name="my-overlay",
-        )
-        signals = scanner.scan()
-        assert signals
-        assert signals[0].payload["overlay"] == "my-overlay"

@@ -6,7 +6,8 @@ file-side phases 4-6 (cross-link / re-index / decay) after it:
 
 ``run`` is the manual escape hatch: it runs a pass NOW regardless of cadence,
 with an optional ``--since`` window bound and a ``--dry-run`` no-write mode.
-``tick`` is the cron entry point: it runs a pass only when the ``dream`` Loop
+``tick`` is the off-live-tick entry the worker's ``drive_off_live_tick_loops`` chain
+fires: it runs a pass only when the ``dream`` Loop
 row is due (``Loop.is_due`` / ``last_run_at`` — the ONE cadence ledger) and the
 single enable verdict (``Loop.enabled`` + ``LoopState``) admits it, bumping
 ``last_run_at`` on a successful fire.

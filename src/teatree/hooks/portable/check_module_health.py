@@ -363,6 +363,51 @@ def _report(violations: list[str]) -> int:
     return 1
 
 
+def _tree_python_files() -> list[str]:
+    return sorted(
+        str(path)
+        for prefix in _FIRST_PARTY_PREFIXES
+        for path in pathlib.Path(prefix).rglob("*.py")
+        if _is_first_party(str(path))
+    )
+
+
+def run_debt_report() -> int:
+    """List every first-party module already over a cap — advisory, never blocks (#3511).
+
+    The ratchet grandfathers an over-cap file (it may only shrink), so the debt
+    stays invisible until an unrelated PR touches the file and inherits the
+    split mid-task. This whole-tree pass makes the same set visible on demand,
+    so it can be burned down deliberately instead of discovered while shipping
+    something else.
+    """
+    rows: list[str] = []
+    for filepath in _tree_python_files():
+        loc = _count_loc(filepath)
+        if loc > MAX_LOC:
+            rows.append(f"  {filepath}: {loc} LOC (cap {MAX_LOC})")
+        functions = _count_module_level_functions(filepath)
+        if len(functions) > MAX_MODULE_FUNCTIONS:
+            rows.append(f"  {filepath}: {len(functions)} public module-level functions (cap {MAX_MODULE_FUNCTIONS})")
+    if not rows:
+        print(
+            f"Module health debt: none — no first-party module is over "
+            f"the {MAX_LOC} LOC / {MAX_MODULE_FUNCTIONS} function caps."
+        )
+        return 0
+    print(f"Module health debt ({len(rows)} grandfathered over-cap entries) — advisory, nothing is blocked:")
+    print()
+    for row in rows:
+        print(row)
+    print()
+    print(
+        "These are already over the cap and are ratcheted to shrink-only. A PR\n"
+        "that touches one may not GROW it; burn them down deliberately rather\n"
+        "than discovering the split mid-task on an unrelated branch."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -370,9 +415,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Run the ratchet over the whole <ref>..HEAD range (CI twin) instead of staged files.",
     )
+    parser.add_argument(
+        "--report-debt",
+        action="store_true",
+        help="List every first-party module already over a cap (advisory, always exits 0).",
+    )
     # Tolerated, ignored: prek's commit-msg stage passes the message file path.
     parser.add_argument("ignored_commit_msg_file", nargs="?", default=None)
     args = parser.parse_args(argv)
+    if args.report_debt:
+        return run_debt_report()
     if args.from_ref is not None:
         return run_diff_mode(args.from_ref)
     return _run_staged()

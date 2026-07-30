@@ -20,12 +20,15 @@ from teatree.backends.loader import (
     get_code_host_for_url,
     get_code_hosts,
     get_messaging,
+    issue_is_done,
+    pr_is_merged_or_closed,
+    pr_open_state,
     reset_backend_caches,
 )
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.routing import OwnerDmOnlyError
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 _GIT = shutil.which("git") or "git"
@@ -555,3 +558,123 @@ class TestGetCodeHostForRepoGithubAmbientAuth:
 
         with pytest.raises(BackendResolutionError, match="github"):
             get_code_host_for_repo(overlay, repo)
+
+
+class _IssueHost:
+    """A code host whose issue fetch is scripted per URL."""
+
+    def __init__(self, payload: object, *, raises: bool = False) -> None:
+        self._payload = payload
+        self._raises = raises
+
+    def get_issue(self, issue_url: str) -> object:
+        _ = issue_url
+        if self._raises:
+            msg = "boom"
+            raise RuntimeError(msg)
+        return self._payload
+
+
+def _done_overlay(*, verdict: bool) -> OverlayBase:
+    overlay = _build_overlay()
+    overlay.is_issue_done = lambda _data: verdict  # type: ignore[method-assign]
+    return overlay
+
+
+class TestIssueIsDone:
+    """The shared completion-detection seam consumed by the sweep and the scanner."""
+
+    def _patch_host(self, monkeypatch: pytest.MonkeyPatch, host: object | None) -> None:
+        monkeypatch.setattr("teatree.backends.loader.get_code_host_for_url", lambda _overlay, _url: host)
+
+    def test_true_when_host_and_overlay_agree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_host(monkeypatch, _IssueHost({"state": "closed"}))
+        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is True
+
+    def test_false_when_overlay_says_not_done(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_host(monkeypatch, _IssueHost({"state": "closed"}))
+        assert issue_is_done(_done_overlay(verdict=False), "https://x/1") is False
+
+    def test_false_when_no_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_host(monkeypatch, None)
+        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
+
+    def test_false_on_fetch_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_host(monkeypatch, _IssueHost(None, raises=True))
+        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
+
+    def test_false_on_error_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_host(monkeypatch, _IssueHost({"error": "not found"}))
+        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
+
+    def test_false_on_non_dict_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_host(monkeypatch, _IssueHost("nope"))
+        assert issue_is_done(_done_overlay(verdict=True), "https://x/1") is False
+
+
+class _OpenStateHost:
+    """A code host whose PR open-state read returns *state*, or raises."""
+
+    def __init__(self, state: PrOpenState | None, *, raises: bool = False) -> None:
+        self._state = state
+        self._raises = raises
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        if self._raises:
+            msg = f"forge unreachable for {pr_url}"
+            raise RuntimeError(msg)
+        return cast("PrOpenState", self._state)
+
+
+class TestPrOpenState:
+    """MERGED must be distinguishable from CLOSED, and every failure collapses to UNKNOWN.
+
+    The board reconcile advances a landed ticket and resolves an abandoned one, so the
+    two verdicts drive opposite transitions — a seam that merely answered "merged or
+    closed?" could not tell them apart. Every indeterminate case is UNKNOWN so a failed
+    read can never be mistaken for a definite verdict.
+    """
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, host: object | None) -> None:
+        monkeypatch.setattr("teatree.core.overlay_loader.get_overlay_for_url", lambda _url: _build_overlay())
+        monkeypatch.setattr("teatree.backends.loader.get_code_host_for_url", lambda _overlay, _url: host)
+
+    def test_merged_and_closed_are_distinct(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, _OpenStateHost(PrOpenState.MERGED))
+        assert pr_open_state("https://x/pull/1") is PrOpenState.MERGED
+        self._patch(monkeypatch, _OpenStateHost(PrOpenState.CLOSED))
+        assert pr_open_state("https://x/pull/1") is PrOpenState.CLOSED
+
+    def test_open_passes_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, _OpenStateHost(PrOpenState.OPEN))
+        assert pr_open_state("https://x/pull/1") is PrOpenState.OPEN
+
+    def test_blank_url_is_unknown(self) -> None:
+        assert pr_open_state("") is PrOpenState.UNKNOWN
+
+    def test_no_host_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, None)
+        assert pr_open_state("https://x/pull/1") is PrOpenState.UNKNOWN
+
+    def test_probe_failure_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, _OpenStateHost(None, raises=True))
+        assert pr_open_state("https://x/pull/1") is PrOpenState.UNKNOWN
+
+
+class TestPrIsMergedOrClosed:
+    """The fail-OPEN predicate built on the state read — only a DEFINITE verdict is True."""
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, state: PrOpenState) -> None:
+        monkeypatch.setattr("teatree.backends.loader.pr_open_state", lambda _url: state)
+
+    def test_true_for_merged_and_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, PrOpenState.MERGED)
+        assert pr_is_merged_or_closed("https://x/pull/1") is True
+        self._patch(monkeypatch, PrOpenState.CLOSED)
+        assert pr_is_merged_or_closed("https://x/pull/1") is True
+
+    def test_false_for_open_and_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch(monkeypatch, PrOpenState.OPEN)
+        assert pr_is_merged_or_closed("https://x/pull/1") is False
+        self._patch(monkeypatch, PrOpenState.UNKNOWN)
+        assert pr_is_merged_or_closed("https://x/pull/1") is False

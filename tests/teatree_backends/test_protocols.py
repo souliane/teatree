@@ -5,7 +5,6 @@ from teatree.core.backend_protocols import (
     CIService,
     CodeHostBackend,
     ForgeMergeResult,
-    MessageSpec,
     MessagingBackend,
     PrMergeState,
     PrOpenState,
@@ -151,6 +150,9 @@ class _FakeCodeHost:
         _ = assignee
         return []
 
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:
+        return []
+
     def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[dict[str, object]]:
         _ = author, repo_slugs
         return []
@@ -252,6 +254,10 @@ class _FakeMessaging:
         _ = (channel, limit)
         return []
 
+    def fetch_channel_history_or_refuse(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
+        _ = (channel, limit)
+        return []
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
         _ = (channel, text, thread_ts)
         return {}
@@ -325,8 +331,3 @@ def test_non_conforming_class_is_not_messaging_backend() -> None:
         pass
 
     assert not isinstance(NotAMessaging(), MessagingBackend)
-
-
-def test_message_spec_default_thread_ts() -> None:
-    spec = MessageSpec(channel="C123", text="hello")
-    assert spec.thread_ts == ""

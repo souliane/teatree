@@ -8,7 +8,7 @@ scenario is listed under ``frontier_ok``.
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.discovery import discover_specs
-from teatree.eval.presets import BASELINE_PRESET_PATH, load_baseline_file
+from teatree.eval.presets import BASELINE_HEADER, BASELINE_PRESET_PATH, load_baseline_file
 
 
 class TestBaselineYamlHygiene:
@@ -34,3 +34,7 @@ class TestBaselineYamlHygiene:
         frontier_scenarios = {name for name, tier in parsed.scenario_tiers.items() if tier == "frontier"}
         unapproved = frontier_scenarios - parsed.frontier_ok
         assert not unapproved, f"baseline.yaml pins frontier without frontier_ok approval: {sorted(unapproved)}"
+
+    def test_the_checked_in_file_carries_the_regen_recipe(self) -> None:
+        text = BASELINE_PRESET_PATH.read_text(encoding="utf-8")
+        assert BASELINE_HEADER in text, "baseline.yaml lost the header `t3 eval set-baseline` emits"

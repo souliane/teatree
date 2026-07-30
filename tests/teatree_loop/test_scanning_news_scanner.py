@@ -28,6 +28,7 @@ from django.utils import timezone
 from teatree.config import UserSettings
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.news_sources import NEWS_SOURCES
 from teatree.loop.scanners.scanning_news import SCANNING_NEWS_PHASE, ScanningNewsScanner
 
 #: Test overlay anchor — a non-legacy name distinct from any literal the
@@ -405,3 +406,24 @@ class ScanningNewsWiringTests(TestCase):
         assert scanner is not None
         # Canonical post-0027 fallback — no bare legacy "teatree".
         assert scanner.overlay_name == "t3-teatree"
+
+
+class TestMergedSourceDirective(TestCase):
+    """The dispatched task carries the merged source table (#3669)."""
+
+    def test_directive_names_every_merged_source(self) -> None:
+        ScanningNewsScanner(overlay_name="t3-teatree").scan()
+
+        reason = Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason
+        assert all(source.label in reason for source in NEWS_SOURCES)
+
+    def test_directive_keeps_the_teatree_relevance_instruction(self) -> None:
+        ScanningNewsScanner(overlay_name="t3-teatree").scan()
+
+        reason = Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason
+        assert "teatree-relevance" in reason
+
+    def test_directive_still_carries_the_ask_gate(self) -> None:
+        ScanningNewsScanner(overlay_name="t3-teatree").scan()
+
+        assert "ASK-GATE" in Task.objects.get(phase=SCANNING_NEWS_PHASE).execution_reason

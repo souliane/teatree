@@ -3,7 +3,8 @@
 ``capture`` records a plain-language directive as a ``CAPTURED`` :class:`Directive`
 verbatim — always available, even while the loop is dark, because it is the EXPLICIT
 operator path (the ``DIRECTIVE``-intent router stays parity-off until
-``directive_loop_enabled`` is on). ``tick`` (PR-7) is the off-live-tick cron entry: it
+``directive_loop_enabled`` is on). ``tick`` (PR-7) is the off-live-tick entry the
+worker's ``drive_off_live_tick_loops`` chain fires: it
 advances the oldest active directive ONE guarded FSM step only when the
 ``directive_loop`` :class:`Loop` row is enabled AND its cadence has elapsed, behind the
 ``directive-loop-tick`` lease. ``resolve-revert`` closes a ``REVERT_PENDING`` directive
@@ -119,7 +120,9 @@ class Command(TyperCommand):
         Loop.objects.mark_run(MINI_LOOP.name, now)
         detail = f" ({result.reason})" if result.reason else ""
         directive = f" directive={result.directive_id}" if result.directive_id else ""
-        self.stdout.write(f"OK    directive_loop tick — {result.action}{detail}{directive}.")
+        # A guard refusal is a distinct outcome from a healthy tick, never an "OK" (#3643).
+        prefix = "WARN " if result.action == "refused" else "OK   "
+        self.stdout.write(f"{prefix} directive_loop tick — {result.action}{detail}{directive}.")
 
     @command(name="resolve-revert")
     def resolve_revert(

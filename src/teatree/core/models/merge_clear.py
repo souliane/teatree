@@ -24,6 +24,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -60,8 +61,11 @@ _COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
 # classifier and the cold-review record that DEFINE the trust boundary itself
 # (``merge_clear.py`` — this module — and ``review_verdict.py``, the maker≠checker
 # guard), every merge/safety gate (``core/gates/``), the trust classifier
-# (``author_trust.py``), the intake gate (``issue_implementer.py`` /
-# ``scanner_factories.py``), the autonomy/trust configuration (``config/`` —
+# (``author_trust.py``), the intake/admission trust boundary — the ONE decision
+# function (``factory_admission.py``), the scanner that consumes it
+# (``issue_intake.py``), the PR-side stranger-admission gate
+# (``stranger_pr.py``), and the wiring that arms them (``scanner_factories.py``)
+# — the autonomy/trust configuration (``config/`` —
 # autonomy tiers and the ``substrate_auto_merge_authorized_by`` default), the
 # on-behalf authorisation gate (``on_behalf_gate.py``), and the PreToolUse/Stop
 # safety hooks (``hooks/``). Schema migrations (``core/migrations/``, incl.
@@ -82,9 +86,11 @@ _SUBSTRATE_PATH_PREFIXES = (
     "src/teatree/core/gates/",
     "src/teatree/core/migrations/",
     "src/teatree/core/review/author_trust.py",
+    "src/teatree/core/review/stranger_pr.py",
+    "src/teatree/core/intake/factory_admission.py",
     "src/teatree/config/",
     "src/teatree/on_behalf_gate.py",
-    "src/teatree/loop/scanners/issue_implementer.py",
+    "src/teatree/loop/scanners/issue_intake.py",
     "src/teatree/loop/scanner_factories.py",
     "hooks/",
     "docs/blueprint/",
@@ -101,7 +107,8 @@ def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
     factory's self-governance seams (#3244) — the merge/CLEAR classifier and
     cold-review record that DEFINE the trust boundary (``merge_clear.py`` /
     ``review_verdict.py``), every merge/safety gate (``core/gates/``), the trust
-    classifier (``author_trust.py``), the intake gate (``issue_implementer.py`` /
+    classifier (``author_trust.py``), the intake/admission trust boundary
+    (``factory_admission.py`` / ``issue_intake.py`` / ``stranger_pr.py`` /
     ``scanner_factories.py``), the autonomy/trust config (``config/``), the
     on-behalf gate (``on_behalf_gate.py``) and the safety hooks (``hooks/``) — and
     schema migrations (``core/migrations/``, incl. destructive DROP / data
@@ -432,6 +439,36 @@ class MergeClear(models.Model):
                 "once checks are green (§17.4.3 / PR-07)"
             )
             raise ClearIssuanceError(msg)
+
+    def record_merged_pull_request(self) -> "Ticket | None":
+        """Bind a landed merge to the PR-side records; return the ticket the FSM must advance.
+
+        The merge keystone is the authoritative moment the PR became merged — the
+        open-PR-only reconciler that used to be ``PullRequest.mark_merged``'s sole
+        caller can never observe a PR that merged between two of its ticks.
+        """
+        PullRequest.objects.record_forge_merge(slug=self.slug, pr_id=self.pr_id)
+        return self.adopt_owning_ticket()
+
+    def adopt_owning_ticket(self) -> "Ticket | None":
+        """Persist the PR's owning ticket onto a ticketless CLEAR; return the ticket adopted.
+
+        ``--ticket-id`` is optional on ``ticket clear`` and the loop never passed one,
+        so a CLEAR is routinely born with no ticket and the merge keystone then has no
+        FSM to advance. The PR itself knows its ticket, so recover the link from there.
+
+        Adoption is bookkeeping, never authorisation: the merge gates that read
+        ``clear.ticket`` (anti-vacuity, rubric) run BEFORE the merge, so adopting
+        post-merge can never let something through that would otherwise be held.
+        """
+        if self.ticket is not None:
+            return self.ticket
+        ticket = PullRequest.objects.owning_ticket(slug=self.slug, pr_id=self.pr_id)
+        if ticket is None:
+            return None
+        self.ticket = ticket
+        self.save(update_fields=["ticket"])
+        return ticket
 
     def is_actionable(self) -> bool:
         """True iff every load-bearing field is populated and the CLEAR is unconsumed.

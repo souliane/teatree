@@ -11,11 +11,26 @@ and passes it in, keeping these functions free of the Connect-membership concern
 from typing import Protocol, cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES
-from teatree.types import RawAPIDict, ScannerError
+from teatree.backends.slack.pagination import next_cursor
+from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
+
+# Bounds the members walk at ~10k users so a lookup of a genuinely-absent handle
+# terminates rather than paging an entire enterprise workspace.
+_MAX_USER_PAGES = 50
 
 
 class Getter(Protocol):
     def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
+
+
+def read_channel_history_or_refuse(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
+    """Like :func:`read_channel_history` but RAISES on a channel-scoped refusal.
+
+    The seam for interactive, single-channel callers (the MCP Slack group). The
+    scanner keeps the swallowing variant; nobody has to choose between a resilient
+    poll loop and an honest answer.
+    """
+    return _read_channel_history(get=get, channel=channel, token=token, limit=limit, refuse=True)
 
 
 def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 50) -> list[RawAPIDict]:
@@ -31,8 +46,21 @@ def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 
     deactivated) raises :class:`ScannerError` so the dispatcher records it and DMs
     the user (#1287); a channel-scoped failure returns ``[]`` so one slow channel
     never breaks the scan loop (#1255). ``channel`` is stamped on each message so
-    downstream consumers don't have to thread it back in.
+    downstream consumers don't have to thread it back in. An interactive caller that
+    must distinguish "empty" from "unreadable" uses
+    :func:`read_channel_history_or_refuse` instead.
     """
+    return _read_channel_history(get=get, channel=channel, token=token, limit=limit, refuse=False)
+
+
+def _read_channel_history(
+    *,
+    get: Getter,
+    channel: str,
+    token: str,
+    limit: int,
+    refuse: bool,
+) -> list[RawAPIDict]:
     data = get(
         "conversations.history",
         {"channel": channel, "limit": max(1, min(limit, 200))},
@@ -46,6 +74,8 @@ def read_channel_history(*, get: Getter, channel: str, token: str, limit: int = 
                 error_class=GLOBAL_TOKEN_FAILURES[error_code],
                 detail=f"conversations.history on {channel}: {error_code}",
             )
+        if refuse:
+            raise ChannelReadRefusedError(channel, error_code or "unknown_error")
         return []
     messages = data.get("messages")
     if not isinstance(messages, list):
@@ -84,6 +114,21 @@ def read_reactions(*, get: Getter, channel: str, ts: str, token: str) -> list[st
     return names
 
 
+def _match_member_id(members: object, name: str) -> str:
+    """The id of the first member whose ``name``/``real_name`` equals *name*, else ``""``."""
+    if not isinstance(members, list):
+        return ""
+    for raw_member in members:
+        if not isinstance(raw_member, dict):
+            continue
+        member = cast("RawAPIDict", raw_member)
+        if member.get("name") == name or member.get("real_name") == name:
+            user_id = member.get("id")
+            if isinstance(user_id, str):
+                return user_id
+    return ""
+
+
 def resolve_user_id(*, get: Getter, handle: str) -> str:
     """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
     clean = handle.lstrip("@")
@@ -95,18 +140,19 @@ def resolve_user_id(*, get: Getter, handle: str) -> str:
         user_id = user.get("id")
         if isinstance(user_id, str):
             return user_id
-    # Fallback: list users and match by name. Cheap for personal workspaces;
-    # the loop scanners cache the result via ``functools.lru_cache`` upstream.
-    listing = get("users.list", {"limit": 200})
-    members = listing.get("members")
-    if not isinstance(members, list):
-        return ""
-    for raw_member in members:
-        if not isinstance(raw_member, dict):
-            continue
-        member = cast("RawAPIDict", raw_member)
-        if member.get("name") == clean or member.get("real_name") == clean:
-            user_id = member.get("id")
-            if isinstance(user_id, str):
-                return user_id
+    # Fallback: list users and match by name, cursor-following every page so a
+    # handle past the first page is not reported "not found". The loop scanners
+    # cache the result via ``functools.lru_cache`` upstream.
+    cursor: str | None = None
+    for _ in range(_MAX_USER_PAGES):
+        params: dict[str, str | int] = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        listing = get("users.list", params)
+        matched = _match_member_id(listing.get("members"), clean)
+        if matched:
+            return matched
+        cursor = next_cursor(listing)
+        if cursor is None:
+            return ""
     return ""

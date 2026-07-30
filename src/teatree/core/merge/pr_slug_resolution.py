@@ -15,6 +15,7 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git, git_remote
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.throttled_log import warn_throttled
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -40,15 +41,7 @@ def _resolve_host_kind(clear: object) -> str:
     """
     ticket = getattr(clear, "ticket", None)
     issue_url = str(getattr(ticket, "issue_url", "") or "") if ticket is not None else ""
-    if not issue_url:
-        return "github"
-    host = urlparse(issue_url).hostname or ""
-    host = host.lower()
-    if "github.com" in host or host == "github":
-        return "github"
-    if "gitlab" in host:
-        return "gitlab"
-    return "github"
+    return forge_from_remote(issue_url) or "github"
 
 
 _GIT_BRANCH_PREFIXES = frozenset(

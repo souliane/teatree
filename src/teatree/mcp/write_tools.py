@@ -21,17 +21,12 @@ approvals) are deliberately NOT exposed as tools — exposing them would let the
 agent self-approve (maker≠checker).
 """
 
-import contextlib
-import io
-import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import Any, cast
 
-import typer
 from asgiref.sync import sync_to_async
-from django.core.management import call_command
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
@@ -41,69 +36,13 @@ from teatree.config.feature_flags import is_feature_flag
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Task
-from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.mcp.review_seam import review_post_seam
+from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 _DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
-
-
-def _run_command(command: str, *args: object, **kwargs: object) -> object:
-    """Run a management command as the CLI does, but surface its error primitive.
-
-    The wrapped commands signal input errors with ``SystemExit`` / ``typer.Exit``
-    — a ``BaseException``. FastMCP only converts ``Exception`` to a structured
-    ``ToolError``, so an unguarded exit would crash the whole tool call instead of
-    returning the documented refusal. Capture the command's stderr and re-raise as
-    a plain ``RuntimeError`` so the caller gets the message, not a dead session.
-    """
-    err = io.StringIO()
-    try:
-        return call_command(command, *args, stderr=err, **kwargs)
-    except (SystemExit, typer.Exit) as exc:
-        code = getattr(exc, "code", None)
-        if code is None:
-            code = getattr(exc, "exit_code", 1)
-        message = err.getvalue().strip() or f"command failed (exit {code})"
-        raise RuntimeError(message) from exc
-
-
-def _last_json_object(text: str) -> dict[str, Any] | None:
-    """The last stdout line that parses as a JSON object, or ``None``."""
-    for raw in reversed(text.strip().splitlines()):
-        line = raw.strip()
-        if not (line.startswith("{") and line.endswith("}")):
-            continue
-        with contextlib.suppress(json.JSONDecodeError):
-            return cast("dict[str, Any]", json.loads(line))
-    return None
-
-
-def _run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[str, Any]:
-    """Run a command that reports its verdict via one JSON line + ``SystemExit``.
-
-    ``review_request_post`` prints a single machine-legible JSON dict
-    (``action`` ∈ post/draft/suppress/refused) to stdout and terminates via
-    ``SystemExit`` (0 for post/draft/suppress, 2 for refused). Capture stdout and
-    return the parsed verdict — the ``action`` field carries the outcome, so the
-    exit code is not needed. Surface stderr as a structured ``RuntimeError`` when
-    the command emitted no JSON (so a FastMCP tool call is never crashed by the
-    ``SystemExit`` primitive the CLI uses).
-    """
-    out = io.StringIO()
-    err = io.StringIO()
-    with (
-        contextlib.redirect_stdout(out),
-        contextlib.redirect_stderr(err),
-        contextlib.suppress(SystemExit, typer.Exit),
-    ):
-        call_command(command, *args, **kwargs)
-    payload = _last_json_object(out.getvalue())
-    if payload is not None:
-        return payload
-    message = err.getvalue().strip() or out.getvalue().strip() or f"{command} produced no machine-readable output"
-    raise RuntimeError(message)
 
 
 # Safety-gate keys an MCP caller may never flip: cold-hook gate wires, feature
@@ -169,7 +108,7 @@ async def _pr_create(ticket: str, *, title: str = "") -> dict[str, Any]:
     blocked gate returns the structured failure naming the missing evidence.
     """
     return await sync_to_async(
-        lambda: cast("dict[str, Any]", _run_command("pr", "create", ticket, title=title, sync=True)),
+        lambda: cast("dict[str, Any]", run_command("pr", "create", ticket, title=title, sync=True)),
         thread_sensitive=True,
     )()
 
@@ -183,7 +122,7 @@ async def _pr_merge(clear_id: int) -> dict[str, Any]:
     records MergeAudit + FSM advance. Issuing a CLEAR is NOT possible over MCP.
     """
     return await sync_to_async(
-        lambda: cast("dict[str, Any]", _run_command("ticket", "merge", str(clear_id))),
+        lambda: cast("dict[str, Any]", run_command("ticket", "merge", str(clear_id))),
         thread_sensitive=True,
     )()
 
@@ -196,7 +135,7 @@ async def _ticket_visit_phase(ticket: str, phase: str, *, agent_id: str = "") ->
     ``reviewing``); an illegal transition reports the resulting state loudly.
     """
     return await sync_to_async(
-        lambda: {"message": str(_run_command("lifecycle", "visit-phase", ticket, phase, agent_id=agent_id))},
+        lambda: {"message": str(run_command("lifecycle", "visit-phase", ticket, phase, agent_id=agent_id))},
         thread_sensitive=True,
     )()
 
@@ -218,7 +157,7 @@ async def _record_e2e_run(
     return await sync_to_async(
         lambda: cast(
             "dict[str, Any]",
-            _run_command(
+            run_command(
                 "lifecycle",
                 "record-e2e-run",
                 ticket,
@@ -250,7 +189,7 @@ async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dic
         raise ValueError(msg)
 
     def _set() -> dict[str, Any]:
-        _run_command("config_setting", "set", key, value, overlay=overlay)
+        run_command("config_setting", "set", key, value, overlay=overlay)
         return {"ok": True, "key": key, "overlay": overlay}
 
     return await sync_to_async(_set, thread_sensitive=True)()
@@ -269,7 +208,7 @@ async def _task_create(
     Wraps ``t3 <overlay> tasks create <ticket> --phase … --reason …`` so the
     dispatch-quote gate wiring keeps its semantics. A missing/blank phase, empty
     reason, or unknown ticket surfaces the command's own message as a structured
-    error (``_run_command`` converts the command's ``SystemExit`` so the tool
+    error (``run_command`` converts the command's ``SystemExit`` so the tool
     call is never killed).
     """
     return await sync_to_async(
@@ -277,7 +216,7 @@ async def _task_create(
             "ok": True,
             **cast(
                 "dict[str, Any]",
-                _run_command("tasks", "create", ticket, phase=phase, reason=reason, kind=kind, interactive=interactive),
+                run_command("tasks", "create", ticket, phase=phase, reason=reason, kind=kind, interactive=interactive),
             ),
         },
         thread_sensitive=True,
@@ -287,19 +226,45 @@ async def _task_create(
 async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -> dict[str, Any]:
     """Send a bot→user DM through the audited notify egress.
 
-    Wraps :func:`teatree.core.notify.notify_user` — the single notification
+    Wraps :func:`teatree.core.notify.notify_user_outcome` — the single notification
     egress with the send-proxy, the BotPing idempotency ledger, and the own-DM
     never-lockout carve-out. Pass a stable ``idempotency_key`` so a retry under
-    the same key is a no-op rather than a duplicate DM. Returns ``sent=false``
-    when the feature is disabled or no messaging backend / user id is configured.
+    the same key is a no-op rather than a duplicate DM.
+
+    ``kind`` is one of ``answer`` / ``question`` / ``info`` — the closed
+    :class:`~teatree.core.notify.NotifyKind` set. A DM that needs the owner to
+    ACT is ``kind="question"`` (it routes to the owner-question audience);
+    there is no separate action-required kind. An unknown kind is refused with
+    the valid set named, never a bare enum traceback.
+
+    A non-delivery ALWAYS names itself: ``reason`` is the machine-readable
+    :class:`~teatree.core.notify.NotifyReason` (``no_messaging_backend``,
+    ``no_user_id``, ``feature_disabled``, ``delivery_failed``, …) and ``detail``
+    the human sentence. A bare ``sent=false`` with no reason is what let five
+    completed reviews go unannounced for a day — the caller could not tell a
+    disabled feature from a dead transport, so nothing escalated.
     """
-    kind_value = NotifyKind(kind)
+    try:
+        kind_value = NotifyKind(kind)
+    except ValueError:
+        valid = " | ".join(member.value for member in NotifyKind)
+        msg = (
+            f"invalid kind {kind!r} — valid kinds: {valid}. "
+            "A DM that needs the owner to act is kind='question' (owner-question audience)."
+        )
+        raise ValueError(msg) from None
     audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
-    sent = await sync_to_async(
-        lambda: notify_user(text, kind=kind_value, idempotency_key=idempotency_key, audience=audience),
+    outcome = await sync_to_async(
+        lambda: notify_user_outcome(text, kind=kind_value, idempotency_key=idempotency_key, audience=audience),
         thread_sensitive=True,
     )()
-    return {"ok": bool(sent), "sent": bool(sent), "idempotency_key": idempotency_key}
+    return {
+        "ok": outcome.sent,
+        "sent": outcome.sent,
+        "idempotency_key": idempotency_key,
+        "reason": outcome.reason.value,
+        "detail": outcome.detail,
+    }
 
 
 async def _task_complete(task_id: int, *, result_artifact_path: str = "") -> dict[str, Any]:
@@ -332,7 +297,7 @@ async def _question_answer(question_id: int, text: str, *, resolver: str = "mcp"
     """
 
     def _answer() -> dict[str, Any]:
-        _run_command("questions", "answer", question_id, text, resolver_id=resolver)
+        run_command("questions", "answer", question_id, text, resolver_id=resolver)
         return {"ok": True, "question_id": question_id}
 
     return await sync_to_async(_answer, thread_sensitive=True)()
@@ -347,7 +312,7 @@ async def _worktree_teardown(path: str, *, force: bool = False) -> str:
     unpushed-commit guards (a dirty tree without ``force`` refuses).
     """
     return await sync_to_async(
-        lambda: str(_run_command("workspace", "teardown", path=path, force=force)),
+        lambda: str(run_command("workspace", "teardown", path=path, force=force)),
         thread_sensitive=True,
     )()
 
@@ -390,7 +355,7 @@ async def _review_request_check(mr_url: str) -> dict[str, Any]:
     can never wedge a later real post. The caller MUST abort on ``suppress``.
     """
     return await sync_to_async(
-        lambda: cast("dict[str, Any]", _run_command("review_request_check", "--mr-url", mr_url)),
+        lambda: cast("dict[str, Any]", run_command("review_request_check", "--mr-url", mr_url)),
         thread_sensitive=True,
     )()
 
@@ -412,7 +377,7 @@ async def _review_request_post(
     then the post. Returns the command's machine-legible verdict.
     """
     return await sync_to_async(
-        lambda: _run_emitting_command(
+        lambda: run_emitting_command(
             "review_request_post",
             "--mr-url",
             mr_url,
@@ -522,10 +487,14 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "notify_user",
         _notify_user,
         _WRITE,
-        "teatree.core.notify.notify_user — send-proxy + BotPing audit + own-DM carve-out",
+        "teatree.core.notify.notify_user_outcome — send-proxy + BotPing audit + own-DM carve-out",
         "- notify_user(text, kind, idempotency_key): send a bot→user DM through the "
         "audited notify egress (send-proxy + BotPing idempotency + own-DM "
-        "never-lockout carve-out). Pass a stable idempotency_key to dedupe retries.",
+        "never-lockout carve-out). kind is one of answer | question | info — an "
+        "action-needed DM is kind='question'. Pass a stable idempotency_key to "
+        "dedupe retries. A non-delivery returns sent=false PLUS a `reason` slug and "
+        "a human `detail` — never a bare false; treat any reason other than "
+        "already_sent as the owner NOT having been told.",
     ),
     _WriteTool(
         "question_answer",

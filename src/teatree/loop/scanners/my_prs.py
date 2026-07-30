@@ -246,7 +246,12 @@ class MyPrsScanner:
         seen_urls: set[str] = set()
         prs: list[RawAPIDict] = []
         for author in authors:
-            for pr in self.host.list_my_prs(author=author):
+            try:
+                fetched = self.host.list_my_prs(author=author)
+            except Exception:
+                logger.warning("list_my_prs failed for %s — skipping", author, exc_info=True)
+                continue
+            for pr in fetched:
                 url = _str_field(pr, "web_url", "html_url")
                 if url and url in seen_urls:
                     continue

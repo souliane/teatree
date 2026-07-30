@@ -25,6 +25,7 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
+from teatree.agents.envelope_refusal import is_envelope_refusal
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.headless import TaskUsage, run_headless
 from teatree.core.models import Session, Task, Ticket
@@ -119,6 +120,25 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
             attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
 
         self._assert_refused(attempt, task, session)
+
+    def test_recorded_refusal_is_classified_by_the_correcting_sweep(self) -> None:
+        # Producer/consumer parity. The refusal this runner WRITES must be the
+        # refusal ``loop.transient_requeue`` READS when it decides whether to spend
+        # the one bounded corrective retry. The two strings were hand-typed in two
+        # modules and drifted, so ``no_result_envelope`` — the most literal
+        # omitted-envelope failure there is — was the single envelope refusal that
+        # never earned the retry, and the first prose-only run paged a human.
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=self.ticket, session=session, phase="debugging")
+
+        with _fake_sdk(_PROSE):
+            attempt = run_headless(task, phase="debugging", overlay_skill_metadata={})
+
+        assert is_envelope_refusal(attempt.error), (
+            f"the correcting sweep must classify the runner's own refusal; got: {attempt.error!r}"
+        )
+        # Control: the classifier can say NO — it is not a rubber stamp.
+        assert not is_envelope_refusal("AssertionError: expected 3 got 4")
 
     def test_exempt_phase_keeps_prose_fallback(self) -> None:
         # Behaviour preservation: an exempt phase (``retro``) still records the

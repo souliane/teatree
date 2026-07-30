@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mr_review_lock import MRReviewLock
 
 if TYPE_CHECKING:
@@ -45,21 +46,28 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
     """The reviewer's standing contract, stamped into the task's execution_reason.
 
     The dispatched ``t3:reviewer`` cold-reviews the diff per /t3:review doctrine
-    and RETURNS its verdict in the ``review_verdict`` result envelope. This runs
-    headless with the shell denied (PR-11), so it must NOT try ``t3 <overlay>
-    review record``; the orchestrator records the ``ReviewVerdict`` server-side from the
-    returned envelope (maker≠checker: a different actor writes it), which is the
-    artifact the next pr_sweep merges on and which releases the review lock (#68,
-    #1405).
+    and RETURNS its verdict in the ``review_verdict`` result envelope. The phase
+    carries the shell (``phase_tools.VERDICT_REVIEW_PHASES``, #3549), so the contract
+    spends it: the verify-or-fail checkout and the diff-shape audit are named here
+    rather than left for the reviewer to improvise. The ``t3 <overlay> review record``
+    ban survives on its own merit — maker≠checker requires a different actor to write
+    the row, so the orchestrator records the ``ReviewVerdict`` server-side from the
+    returned envelope, which is the artifact the next pr_sweep merges on and which
+    releases the review lock (#68, #1405).
     """
     return (
         f"Cold-review the diff of {slug}#{pr_id} ({pr_url}) per /t3:review doctrine at head "
-        f'{head_sha[:8]}, then RETURN your verdict in the result envelope: `"review_verdict": '
+        f"{head_sha[:8]}. You have the shell: check the reviewed head out with "
+        f"`t3 review checkout {pr_url} --sha {head_sha}` (verify-or-fail; never a raw "
+        f"`git worktree add <branch>`), audit the diff shape with `t3 review run {pr_url}`, and run the "
+        f"affected tests in that checkout before voting merge_safe. Then RETURN your verdict in the "
+        f'result envelope: `"review_verdict": '
         f'{{"verdict": "merge_safe", "reviewed_sha": "{head_sha}", "reviewer_identity": '
-        f'"<your-reviewer-id>", "gh_verify_result": "green"}}`. Use "verdict": "hold" with a "findings" '
-        f"array when blocking. Do NOT run `t3 <overlay> review record` — this phase has no shell; the orchestrator "
-        f"records the ReviewVerdict at head {head_sha[:8]} from your envelope, and pr_sweep consumes it "
-        f"to auto-merge this own PR (#68)."
+        f'"<your-reviewer-id>", "gh_verify_result": "green", "findings": [{{"severity": "low", '
+        f'"summary": "<what you observed>", "file": "<path>", "line": 0}}]}}`. {ENVELOPE_FINDINGS_RULE} '
+        f"Do NOT run `t3 <overlay> review record` — maker≠checker requires a different "
+        f"actor to write the row: the orchestrator records the ReviewVerdict at head {head_sha[:8]} from "
+        f"your envelope, and pr_sweep consumes it to auto-merge this own PR (#68)."
     )
 
 

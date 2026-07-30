@@ -27,7 +27,8 @@ def tokens(
 
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-    # The ``tokens`` TyperCommand echoes its rendered output to stdout itself
-    # (django-typer serialises the return value); call it for the side effect. The ad-hoc
-    # tokens ride a plain kwarg — never re-serialised into an argv the classifier scans.
+    # The ``tokens`` TyperCommand writes its own output through the machine-output
+    # seam (JSON to stdout under ``--json``, the human table to stderr); call it for
+    # the side effect. The ad-hoc tokens ride a plain kwarg — never re-serialised
+    # into an argv the classifier scans.
     call_command("tokens", json_output=json_output, tokens=tokens)

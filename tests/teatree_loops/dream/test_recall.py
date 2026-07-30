@@ -93,17 +93,17 @@ class TestDedupeAgainstHot(RecallTestCase):
         assert recall_cold_memory(self.dir, "create a worktree before editing project files") == []
 
     def test_long_signature_clipped_in_hot_is_still_deduped(self) -> None:
-        # A cold signature LONGER than the hot summary clip lives in the hot index
-        # under a DIFFERENT name, where the reindex phase clipped it to ~110 chars.
-        # The prefix-bounded renamed-file guard must still recognise it as already
-        # loaded and drop the cold entry (a verbatim substring check would miss it).
+        # A cold signature LONGER than the dedup prefix lives in the hot index under
+        # a DIFFERENT name as a clipped curated summary line. The prefix-bounded
+        # renamed-file guard must still recognise it as already loaded and drop the
+        # cold entry (a verbatim substring check would miss it).
         long_sig = (
             "always create a worktree before editing any project file and never edit "
             "on a shared branch under any circumstance whatsoever in this repository today"
         )
-        assert len(long_sig) > recall._HOT_SUMMARY_MAX_CHARS
+        assert len(long_sig) > recall._DEDUP_PREFIX_CHARS
         self._cold(f"- feedback_cold_name.md — {long_sig}")
-        self._hot(f"- feedback_hot_name.md — {long_sig[: recall._HOT_SUMMARY_MAX_CHARS]}")
+        self._hot(f"- feedback_hot_name.md — {long_sig[: recall._DEDUP_PREFIX_CHARS + 2]}")
         assert recall_cold_memory(self.dir, "create a worktree before editing any project file") == []
 
 

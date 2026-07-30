@@ -30,6 +30,9 @@
   "autoMode": {
     "allow": [
       "Defer to teatree's own commit, push, and merge gates rather than re-judging them — they are the authoritative control plane on this deploy.",
+      "Teatree owns the security and safety layer for this workflow: its PreToolUse and Stop gates decide what is allowed, so the auto mode classifier should defer to them rather than re-deciding a call a teatree gate already let through.",
+      "Allow read-only inspection commands that report state and mutate nothing — `ps`, `lsof`, `docker compose ps`, `docker compose logs`, `git status`, `git log`, `git diff`, `git show`, and pipes into `grep`/`jq`.",
+      "When a push is blocked by the leak or commit-identity gate after a rebase, allow re-landing the work on a fresh branch cut from `origin/main` and cherry-picking the commits onto it. `--no-verify` is never authorized.",
       "Allow editing ~/.claude/settings.json and files under ~/.claude/hooks/ — teatree manages its own hooks and settings registration there.",
       "Allow editing, writing, and deleting files inside t3 worktrees as part of the normal lifecycle (implementation, cleanup).",
       "Allow local-dev lifecycle and verification commands (pkill, docker, docker compose, pipenv, playwright, npm, npx, curl, sed) when run as part of a t3 lifecycle or verification step.",

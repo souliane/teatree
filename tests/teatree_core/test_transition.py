@@ -248,3 +248,22 @@ class TestVisitPhaseCommand(TestCase):
         session = ticket.sessions.first()
         assert session is not None
         assert session.has_visited("testing")
+
+
+class TestTicketLifecycleMermaidIsBounded(TestCase):
+    """A state diagram is a SET of edges; repeating one 22,965 times draws the same picture.
+
+    The worst ticket on the deployed box carries 22,965 transition rows that
+    collapse to 10 distinct edges. Emitting one line per row put megabytes of
+    duplicate arrows into the ticket drawer, which is what stopped it opening.
+    """
+
+    def test_repeated_transitions_collapse_to_one_edge(self) -> None:
+        ticket = Ticket.objects.create()
+        TicketTransition.objects.bulk_create(
+            TicketTransition(ticket=ticket, from_state="scoped", to_state="started", triggered_by="start")
+            for _ in range(500)
+        )
+        mermaid = build_ticket_lifecycle_mermaid(ticket.pk)
+        assert mermaid.count("scoped --> started: start()") == 1
+        assert len(mermaid.splitlines()) < 10

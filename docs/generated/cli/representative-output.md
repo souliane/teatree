@@ -75,15 +75,15 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ worker          The singleton loop-timer worker (#1796 / PR-28). Bare `t3    │
 │                 worker` runs it (the cadence owner, default ON via           │
 │                 `loop_runner_enabled`). `status` reports the live holder +   │
-│                 resolved kill-switch; `ensure` spawns a detached worker iff  │
-│                 enabled and the flock is free.                               │
+│                 resolved kill-switch + whether loops actually tick (it EXITS │
+│                 NON-ZERO on a stale fleet); `ensure` spawns a detached       │
+│                 worker iff enabled and the flock is free; `drain` quiesces   │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
-│ teams           Agent-teams master switch. The teams.enabled config key      │
-│                 (default off) gates the pane-backed teammate layer; off      │
-│                 keeps the classic in-session sub-agent fan-out.              │
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
@@ -154,8 +154,10 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  emit it.                                                    │
 │ list             Print LIVE loop status: each loop's enabled state, cadence, │
 │                  last fire, and next tick.                                   │
-│ reclaim-markers  Release orphaned non-terminal markers whose ticket is       │
-│                  terminal/gone, freeing intake budget.                       │
+│ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
+│                  one per line, sorted.                                       │
+│ reclaim-markers  Release non-terminal markers whose ticket is terminal,      │
+│                  gone, or stalled, freeing intake budget.                    │
 │ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
 │                  presets/schedules or `loop override`.                       │
 │ resume           Resume a paused OR disabled mini-loop — EMERGENCY-only;     │

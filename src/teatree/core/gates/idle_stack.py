@@ -9,8 +9,9 @@ reaper stops such a stack (``Worktree.stop_services`` → demote to
 
 A worktree is REAPABLE when ALL hold: (1) its state is ``SERVICES_UP`` or
 ``READY`` — a dormant ``PROVISIONED`` row holds no stack, so it is never a
-candidate; (2) its ticket has NO live :class:`Session` (``ended_at`` is null)
-and NO active/claimed :class:`Task` (``PENDING`` / ``CLAIMED``); (3)
+candidate; (2) its ticket has NO live :class:`Session` (open AND active within
+``session_stale_after_hours``) and NO active/claimed :class:`Task` (``PENDING``
+/ ``CLAIMED``); (3)
 ``last_used_at`` is older than the idle threshold — a null ``last_used_at``
 cannot be confirmed idle, so it is a fail-safe KEEP; (4) it is not the
 currently-active worktree (the process CWD lives inside it); (5) #2227 — its

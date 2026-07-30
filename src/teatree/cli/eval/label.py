@@ -23,11 +23,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
-from django.core.exceptions import ImproperlyConfigured
 from rich.console import Console
 from rich.table import Table
 
-from teatree.core.gates.privacy_gate import scan_for_publication
+from teatree.core.gates.privacy_gate import overlay_privacy_rules, scan_for_publication
 from teatree.eval.corpus_grade import CircularOracleError, assert_independent_oracle
 from teatree.eval.corpus_loader import CORPUS_DIR, discover_corpus
 from teatree.eval.corpus_models import CorpusLabel
@@ -164,7 +163,31 @@ def _circular_failure(label: CorpusLabel) -> str | None:
 
 
 def _refuse_on_redaction_hit(body: str) -> None:
-    redact_terms, overlay_block_patterns = _overlay_privacy_rules()
+    """Refuse to copy *body* into the public corpus when it trips the privacy scanner.
+
+    The scan vocabulary is the always-on :data:`_PUBLIC_CORPUS_BLOCK_PATTERNS`
+    PLUS the overlay's own rules, resolved through the shared #1295 gate
+    (:func:`~teatree.core.gates.privacy_gate.overlay_privacy_rules`) so this guard
+    and the publication gate can never disagree on WHICH terms apply. No overlay
+    is threaded because none is known here: a corpus capture is keyed by session
+    id, and neither ``SessionAuditRecord`` nor the transcript records the overlay
+    the session ran under. The shared resolver already honours ``T3_OVERLAY_NAME``
+    (which the ``t3 <overlay>`` CLI bridge exports) and, on a multi-overlay
+    install where nothing disambiguates, unions every registered overlay's rules
+    rather than dropping them.
+
+    Unresolvable rules (``None``) refuse outright: a capture this guard could not
+    fully scan must not reach a public corpus.
+    """
+    rules = overlay_privacy_rules()
+    if rules is None:
+        typer.echo(
+            "REFUSED — the overlay privacy rules could not be resolved; the public-corpus "
+            "guard fails CLOSED rather than copying a capture it could not fully scan",
+            err=True,
+        )
+        sys.exit(1)
+    redact_terms, overlay_block_patterns = rules
     verdict = scan_for_publication(
         text=body,
         target_repo=_PUBLIC_TARGET,
@@ -181,23 +204,6 @@ def _refuse_on_redaction_hit(body: str) -> None:
         err=True,
     )
     sys.exit(1)
-
-
-def _overlay_privacy_rules() -> tuple[list[str], list[str]]:
-    """The active overlay's ``(privacy_redact_terms, privacy_block_patterns)``.
-
-    Resolving the overlay is best-effort: when no single overlay is resolvable
-    (none installed, or several with no ``T3_OVERLAY_NAME`` to disambiguate), the
-    public-corpus default block set still applies, so the guard never silently
-    weakens — it only loses the overlay's own customer-domain terms.
-    """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred Django import.
-
-    try:
-        config = get_overlay().config
-    except (ImproperlyConfigured, ImportError):
-        return [], []
-    return list(config.privacy_redact_terms), list(config.privacy_block_patterns)
 
 
 def _default_entry_id(session_id: str) -> str:

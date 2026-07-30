@@ -19,9 +19,12 @@ from teatree.core.models import Loop, LoopState, LoopStatus, Prompt
 
 
 def _run(*args: str) -> str:
+    # emit() sends JSON to stdout and the human view to stderr — one channel per
+    # call — so their concatenation is the single populated output stream.
     out = StringIO()
-    call_command("loop_state", *args, stdout=out)
-    return out.getvalue()
+    err = StringIO()
+    call_command("loop_state", *args, stdout=out, stderr=err)
+    return out.getvalue() + err.getvalue()
 
 
 def _loop(name: str, *, enabled: bool) -> Loop:
@@ -166,10 +169,11 @@ class TestUnknownLoopNameRefused(TestCase):
 
     def _refuse(self, *args: str) -> str:
         out = StringIO()
+        err = StringIO()
         with pytest.raises(SystemExit) as caught:
-            call_command("loop_state", *args, self._BOGUS, stdout=out)
+            call_command("loop_state", *args, self._BOGUS, stdout=out, stderr=err)
         assert caught.value.code == 2
-        return out.getvalue()
+        return out.getvalue() + err.getvalue()
 
     def test_pause_unknown_name_refused_no_row(self) -> None:
         out = self._refuse("pause")

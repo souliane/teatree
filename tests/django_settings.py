@@ -41,6 +41,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Carried over from the project settings so the dashboard query-count pins
+    # measure the plan production actually runs, memo included.
+    "teatree.core.middleware.RequestScopedReadCacheMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
 

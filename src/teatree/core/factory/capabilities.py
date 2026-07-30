@@ -43,6 +43,12 @@ class Capability:
 CAPABILITIES: tuple[Capability, ...] = (
     # PR-30-converted lifecycle leaves (--json on stdout, human on stderr).
     Capability("teatree queue status", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree retention prune",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-table retention plan; dry-run unless --apply (#3693)",
+    ),
     Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree tasks create",
@@ -59,7 +65,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0", "1"),
         note="exit code IS the contract: 0 iff every readiness probe passes",
     ),
-    Capability("teatree availability show", json_output=True, exit_codes=("0",)),
+    Capability("loop preset show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
@@ -69,10 +75,34 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="always JSON: the machine-readable clean-all handoff",
     ),
     Capability(
+        "teatree workspace stamp-owners",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-venue env-dir stamping report; deletes nothing (#3872)",
+    ),
+    Capability(
+        "teatree workspace release-dead-rows",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-row disposition for the dead-checkout rows; dry run unless --apply",
+    ),
+    Capability(
         "teatree do",
         json_output=True,
         exit_codes=("0", "1"),
         note="golden-path lifecycle walk: 0 = progress/pending/done, 1 = a gate blocked or ignored",
+    ),
+    Capability(
+        "teatree pr discharge-pending",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json reports whether the deferred-PR obligation was found and dropped",
+    ),
+    Capability(
+        "teatree ticket backfill-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-CLEAR recovery rows; dry run unless --no-dry-run",
     ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),

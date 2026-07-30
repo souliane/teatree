@@ -282,10 +282,11 @@ When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — 
   The test file **mirrors the production module's path** under `tests/` with a `test_` prefix (a helper at `src/<pkg>/util/money.py` gets `tests/<pkg>/util/test_money.py`). When you add a new production file, create its test file in the same change — do X, never Y: **do** write the mirroring `tests/.../test_*.py` now; **never** declare the helper done with no test file on disk.
 
   ```bash
-  # new production file: src/teatree/util/money.py  →  create its mirror test now
-  touch tests/teatree/util/test_money.py
+  # EXAMPLE — `<pkg>` is a placeholder; substitute your own package. Nothing here is a work item.
+  # new production file: src/<pkg>/util/money.py  →  create its mirror test now
+  touch tests/<pkg>/util/test_money.py
   # write the failing test (RED), then run only that node so feedback is seconds:
-  uv run pytest tests/teatree/util/test_money.py -q --no-migrations --reuse-db
+  uv run pytest tests/<pkg>/util/test_money.py -q --no-migrations --reuse-db
   ```
 
 - **Don't create an uncoverable/unreachable defensive guard — restructure so the type is precise.** A "shared core returning `T | None` + a thin wrapper that re-asserts non-`None`" shape forces an unreachable branch: the wrapper's `if x is None: raise` (or `assert x is not None`) can never execute when the core's contract guarantees non-`None` for that call, so it is both uncoverable (the 100%-new-line rule can't be met without breaking the contract) and a lint violation (`assert` is banned in `src/`; `# noqa` is not an option). The fix is at the design level, not a suppression: split into **two purpose-typed methods** — one that always produces and returns `T` (the create/attestation path), one that returns `T | None` (the read-only path) — sharing the *policy/logic*, not a `T | None` return. Each call site then gets a precisely-typed value with no narrowing, no defensive guard, no `assert`, and full coverage falls out naturally. When you find yourself adding an "unreachable / defensive, should never happen" guard purely to satisfy the type checker, that is the signal the return type is too loose — tighten it by splitting, don't guard it.

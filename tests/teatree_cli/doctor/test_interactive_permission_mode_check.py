@@ -52,15 +52,47 @@ class TestInteractivePermissionModeCheck:
         assert "headless" in lowered, "must say the headless lane is unaffected"
         assert "--permission-mode" in lowered, "must name the pin that makes that true"
 
-    def test_an_unset_mode_says_nothing(
+    def test_an_unset_mode_suggests_enabling_auto(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # No configured mode means the Claude Code default applies — not teatree's
-        # business to nag about, so the check stays silent rather than guessing.
+        # souliane/teatree#3495: with no mode configured the operator hand-approves the
+        # routine tool calls teatree's workflows run on, and may not know `auto` exists.
         _write_settings(tmp_path, None)
         monkeypatch.setenv("HOME", str(tmp_path))
+        assert _check_interactive_permission_mode() is True, "advisory only — it must never gate"
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "auto" in out
+        assert "/config" in out, "naming the concept is not enough — name the flow that enables it"
+
+    @pytest.mark.parametrize("mode", ["default", "acceptEdits", "plan"])
+    def test_hand_approving_modes_suggest_enabling_auto(
+        self, mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_settings(tmp_path, mode)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _check_interactive_permission_mode() is True, "advisory only — it must never gate"
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "/config" in out
+
+    def test_auto_mode_is_not_nagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_settings(tmp_path, "auto")
+        monkeypatch.setenv("HOME", str(tmp_path))
         assert _check_interactive_permission_mode() is True
-        assert capsys.readouterr().out == ""
+        assert "WARN" not in capsys.readouterr().out
+
+    def test_bypass_permissions_is_not_told_to_widen(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # It is already wider than auto — the #3497 narrowing advice stands alone and
+        # must not be followed by a contradictory "enable auto-mode" nudge.
+        _write_settings(tmp_path, "bypassPermissions")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _check_interactive_permission_mode() is True
+        assert "/config" not in capsys.readouterr().out
 
     def test_absent_settings_file_says_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

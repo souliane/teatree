@@ -1,6 +1,6 @@
 """Advisory for a Claude Code harness silent kill-switch (issue #980).
 
-For 1M-capable models (currently ``claude-opus-4-7``) without an
+For 1M-native models without an
 explicit auto-compact window setting, the harness in
 ``@anthropic-ai/claude-code`` v2.x silently disables auto-compaction
 regardless of ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE``.
@@ -30,7 +30,7 @@ The harness logic, decoded from the bundled binary at
 The trip condition (``zKH(model) && !oiH(model, autoCompactWindow)``)
 is reached when:
 
-1. The model is 1M-capable (``claude-opus-4-7``).
+1. The model is 1M-native (:data:`_KILL_SWITCH_MODELS`).
 2. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` env var is unset.
 3. The ``autoCompactWindow`` setting in ``~/.claude/settings.json`` is
     unset.
@@ -46,7 +46,7 @@ threshold is silently skipped on this path.
 
 The fix the harness wants is for the user to set
 ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` to the model's max window
-(``1000000`` for ``claude-opus-4-7``). That changes
+(``1000000`` for every 1M-native model). That changes
 ``Kr.source`` to ``"env"``, making ``oiH`` return true and bypassing
 ``zKH``'s kill-switch. The ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`` then
 applies as a percentage of the effective window.
@@ -61,22 +61,38 @@ import os
 from dataclasses import dataclass
 
 # Models for which the harness's silent kill-switch trips when no
-# explicit window is configured. Kept narrow on purpose — the kill-
-# switch is gated on ``hP(model, betas) === 1e6`` in the harness, and
-# the only model that flips this without the ``[1m]`` beta header is
-# ``claude-opus-4-7``. The ``[1m]`` suffix is stripped by the harness's
-# ``CD`` normaliser before comparison, so both names are equivalent
-# kill-switch carriers.
+# explicit window is configured. The kill-switch is gated on
+# ``hP(model, betas) === 1e6``, so the set is exactly the harness's
+# NATIVE-1M models — its bundled catalog entries carrying
+# ``context:{window:1e6, native_1m:!0}``. It is NOT a whole family:
+# within the same family the previous generation is 200k
+# (``…-4-6`` entries) while the newer ones are native-1M, so a
+# family-substring match would fire falsely on a 200k model. Decoded
+# from the bundled harness catalog; a genuinely new 1M-native id is a
+# one-line addition here.
+#
+# The ``[1m]`` suffix selects the beta long-context header on a model
+# that is NOT native-1M; the harness's ``CD`` normaliser strips it
+# before comparison, so :func:`_is_kill_switch_model` strips it too
+# rather than enumerating both spellings.
 _KILL_SWITCH_MODELS: frozenset[str] = frozenset(
     {
         "claude-opus-4-7",
-        "claude-opus-4-7[1m]",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+        "claude-mythos-5",
     }
 )
 
-# The harness ceiling for ``claude-opus-4-7``. ``hP`` returns ``1e6``
-# unconditionally for this model name (see ``JqH(H)`` and ``nZ(H)``).
-_OPUS_4_7_MAX_WINDOW_TOKENS = 1_000_000
+# The harness ceiling for a native-1M model. ``hP`` returns ``1e6``
+# unconditionally for these names (see ``JqH(H)`` and ``nZ(H)``).
+_NATIVE_1M_WINDOW_TOKENS = 1_000_000
+
+# The beta long-context suffix the harness's ``CD`` normaliser strips
+# before the window comparison.
+_LONG_CONTEXT_SUFFIX = "[1m]"
 
 # Upper bound the harness ``gE8`` accepts for ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE``
 # (``parseFloat`` result in ``(0, 100]``).
@@ -121,12 +137,12 @@ def _is_kill_switch_model(model: str | None) -> bool:
     """Return True for models whose ``hP(model, betas)`` returns 1M.
 
     The harness's ``CD`` normaliser strips ``[1m]`` and lowercases the
-    name; mirror that here so the detection holds for any cased
-    variant the agent might be running under.
+    name; mirror that here so the detection holds for any cased or
+    long-context-suffixed variant the agent might be running under.
     """
     if not model:
         return False
-    return model.strip().lower() in _KILL_SWITCH_MODELS
+    return model.strip().lower().removesuffix(_LONG_CONTEXT_SUFFIX) in _KILL_SWITCH_MODELS
 
 
 def has_pct_override(config: AutocompactConfig) -> bool:
@@ -176,7 +192,7 @@ def recommended_env_var() -> tuple[str, str]:
     ``zKH`` kill-switch is bypassed. ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE``
     then applies as a percentage of the effective window.
     """
-    return "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(_OPUS_4_7_MAX_WINDOW_TOKENS)
+    return "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(_NATIVE_1M_WINDOW_TOKENS)
 
 
 def advisory_text(config: AutocompactConfig) -> str | None:
@@ -190,7 +206,7 @@ def advisory_text(config: AutocompactConfig) -> str | None:
         return None
     var_name, var_value = recommended_env_var()
     pct = (config.pct_override or "").strip()
-    model = (config.model or "claude-opus-4-7").strip()
+    model = (config.model or "").strip()
     return (
         "AUTO-COMPACT SILENT KILL-SWITCH (souliane/teatree#980): "
         f"`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct}` is set but the Claude "

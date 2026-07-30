@@ -35,16 +35,16 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.config import clone_root, get_effective_settings
-from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.config import clone_root
 from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
-from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
-from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
+from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
 from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
+    INCONCLUSIVE_SOURCE,
+    RedundancyVerdict,
     _branch_has_open_pr,
     _branch_tree_matches_squash,
     branch_redundancy,
@@ -52,7 +52,9 @@ from teatree.core.worktree.branch_classification import (
     effective_default_target,
     is_squash_merged,
 )
+from teatree.core.worktree.broken_checkout import BrokenCheckout, BrokenCheckoutVerdict, classify_broken_checkout
 from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -61,12 +63,13 @@ logger = logging.getLogger(__name__)
 # Terminal ticket states that authorise teardown. SHIPPED is excluded on purpose
 # — a shipped ticket still has an OPEN PR, so the work is not finished.
 # REVIEW_POSTED (reviewer terminal) is included so a reviewer worktree is reaped.
-_DONE_TICKET_STATES = frozenset(
-    {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED},
-)
+# The canonical set lives on the model so the teardown signal (``core.signals``)
+# and this reaper can never diverge on which states are terminal.
+_DONE_TICKET_STATES = Ticket.marker_release_states()
 
 _PREVIEW_LIMIT = 3
 _FALLBACK_DEFAULT_TARGET = "origin/main"
+_CLONE_UNRESOLVABLE_SOURCE = "clone-unresolvable"
 
 
 def _effective_default_target(repo: Path) -> str:
@@ -273,13 +276,30 @@ def _branch_ref_gone_reasons(
     return [f"{count} commit(s) on NO remote (content not upstream): {preview}"]
 
 
+def _verdict_provenance(repo_main: Path, verdict: RedundancyVerdict) -> tuple[bool, str]:
+    """Did a content probe actually PROVE this verdict, and which layer decided?
+
+    Without this, an empty ``unique_commit_shas`` means two opposite things — the
+    tip was proven to hold nothing unique, or nothing could be probed at all — and
+    the judgment skill routes the first to DELETE. A repo the shared checkout
+    probe cannot confirm (a row whose ``clone_path`` outlived its clone) makes
+    every git answer below it meaningless, so it reports its own source rather
+    than the verdict's.
+    """
+    if probe_checkout(repo_main) is not CheckoutState.CHECKOUT:
+        return False, _CLONE_UNRESOLVABLE_SOURCE
+    return verdict.source != INCONCLUSIVE_SOURCE, verdict.source
+
+
 def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) -> CleanupEmitRecord:
     """Assemble the structured handoff record for a NOT-auto-deleted worktree.
 
     Resolves the current-tip redundancy (for ``unique_commit_shas`` +
-    ``merged_with_post_merge_work``), the banned-terms status of the unique
-    content, the tip author/date, and the liveness reason — everything the
-    judgment skill needs to route the item without re-probing git itself.
+    ``merged_with_post_merge_work``), its provenance (:func:`_verdict_provenance`,
+    so an unprobeable item never emits the proven-redundant shape), the
+    banned-terms status of the unique content, the tip author/date, and the
+    liveness reason — everything the judgment skill needs to route the item
+    without re-probing git itself.
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
@@ -288,6 +308,7 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     probe_repo = str(repo_main)
     default_target = _effective_default_target(Path(repo_main))
     verdict = branch_redundancy(probe_repo, ref, default_target)
+    content_verified, verdict_source = _verdict_provenance(Path(repo_main), verdict)
     try:
         texts = [
             git.run_strict(repo=probe_repo, args=["log", f"{default_target}..{ref}", "--format=%B"]),
@@ -308,6 +329,8 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
         kind="worktree",
         unique_commit_shas=verdict.unique_shas,
         merged_with_post_merge_work=verdict.merged_with_post_merge_work,
+        content_verified=content_verified,
+        verdict_source=verdict_source,
         banned_terms_status=status,
         banned_terms_found=found,
         liveness=liveness,
@@ -316,39 +339,26 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     )
 
 
-def _ownership_liveness_skip(worktree: Worktree, *, workspace: Path, fsm_terminal: bool = False) -> ReapOutcome | None:
-    """The OWNERSHIP then LIVENESS pre-gate: a skip :class:`ReapOutcome`, or ``None`` to proceed.
+def _pre_gate_outcome(worktree: Worktree, *, workspace: Path, verdict: ReapPreGateVerdict) -> ReapOutcome:
+    """Render a shared :func:`reap_pre_gate` verdict in this pass's own vocabulary.
 
-    A colleague's work on a product repo is EXCLUDED up front; an actively-worked
-    item is skipped-as-ACTIVE. Both carry a structured emit record so the skill
-    sees them. ``None`` means neither gate fired and the reaper may continue to
-    done-detection. ``fsm_terminal`` is threaded to :func:`worktree_liveness` so
-    the post-merge teardown bypasses the FSM-ceremony false positives (the merge
-    that just landed mints the phase session and the merge commit).
+    A ``clean_ignore`` skip carries no emit record: the operator has already ruled
+    the branch never-reap, so there is nothing for the judgment skill to route. The
+    other two do, so an EXCLUDED or ACTIVE item still reaches the skill.
     """
-    wt_path = _resolve_worktree_path(workspace, worktree)
-    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    settings = get_effective_settings()
-    ownership = is_excluded_by_ownership(
-        str(repo_main),
-        worktree.branch,
-        owner_aliases=settings.user_identity_aliases,
-        colleague_pattern=settings.colleague_repo_url_pattern,
-    )
-    if ownership.excluded:
+    if verdict.gate is ReapPreGate.CLEAN_IGNORE:
+        return ReapOutcome("skipped", f"SKIPPED '{worktree.branch}': {verdict.reason}")
+    if verdict.gate is ReapPreGate.OWNERSHIP:
         return ReapOutcome(
             "excluded",
-            f"EXCLUDED '{worktree.branch}': {ownership.reason}",
+            f"EXCLUDED '{worktree.branch}': {verdict.reason}",
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
-    liveness = worktree_liveness(worktree, wt_path=Path(wt_path), fsm_terminal=fsm_terminal)
-    if liveness.active:
-        return ReapOutcome(
-            "active",
-            f"ACTIVE '{worktree.branch}': {liveness.reason} — skipping (do not wipe a live item)",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness=liveness.reason),
-        )
-    return None
+    return ReapOutcome(
+        "active",
+        f"ACTIVE '{worktree.branch}': {verdict.reason} — skipping (do not wipe a live item)",
+        emit=_build_emit_record(worktree, workspace=workspace, liveness=verdict.reason),
+    )
 
 
 def reap_done_worktree(
@@ -361,13 +371,14 @@ def reap_done_worktree(
     """Wipe one worktree only when owned, not live, done AND every change proven redundant.
 
     The single per-worktree seam both ``clean-all`` and the FSM-automatic
-    teardown funnel through. Order is load-bearing: ``clean_ignore`` skip →
-    OWNERSHIP guard (exclude a colleague's work on a product repo) → LIVENESS guard
-    (skip an actively-worked item) → :func:`worktree_is_done` (necessary) →
-    :func:`analyze_worktree_changes` (sufficient, primary safety) → wipe. Every
-    item NOT auto-deleted carries a structured ``emit`` record for the judgment
-    skill; only a provably-redundant item is wiped (``force=True`` —  the analysis
-    IS the data-loss gate — ``strict_hygiene=False``).
+    teardown funnel through. Order is load-bearing: the shared
+    :func:`~teatree.core.cleanup.reap_pre_gates.reap_pre_gate` protection gates
+    (``clean_ignore`` skip → OWNERSHIP → LIVENESS, the same predicate the narrow
+    ``workspace release-dead-rows`` pass consults) → :func:`worktree_is_done`
+    (necessary) → :func:`analyze_worktree_changes` (sufficient, primary safety) →
+    wipe. Every item NOT auto-deleted carries a structured ``emit`` record for the
+    judgment skill; only a provably-redundant item is wiped (``force=True`` — the
+    analysis IS the data-loss gate — ``strict_hygiene=False``).
 
     ``fsm_terminal`` marks the post-merge FSM-immediate teardown (``WorktreeTeardown``
     on the merge transition): the LIVENESS guard then bypasses the two signals the
@@ -377,12 +388,13 @@ def reap_done_worktree(
     genuinely-ahead worktree is still KEPT on the FSM path. The ad-hoc ``clean-all``
     sweep leaves ``fsm_terminal`` off, preserving the full live-work protection.
     """
-    if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
-        return ReapOutcome("skipped", f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
-
-    pre_gate = _ownership_liveness_skip(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
+    pre_gate = reap_pre_gate(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
     if pre_gate is not None:
-        return pre_gate
+        return _pre_gate_outcome(worktree, workspace=workspace, verdict=pre_gate)
+
+    broken = classify_broken_checkout(worktree, workspace=workspace)
+    if broken.state is not BrokenCheckout.LIVE_CHECKOUT:
+        return _dead_checkout_outcome(worktree, workspace=workspace, verdict=broken, dry_run=dry_run)
 
     signal = worktree_is_done(worktree)
     if not signal.done:
@@ -405,6 +417,34 @@ def reap_done_worktree(
     return _wipe_proven_redundant(
         worktree, workspace=workspace, signal=signal, head_at_analysis=head_at_analysis, dry_run=dry_run
     )
+
+
+def _dead_checkout_outcome(
+    worktree: Worktree,
+    *,
+    workspace: Path,
+    verdict: BrokenCheckoutVerdict,
+    dry_run: bool,
+) -> ReapOutcome:
+    """Release (or keep) a row whose checkout is dead — the ONE owner of that state.
+
+    The done/redundancy gates below cannot reach a dir git will not open, so this
+    branch decides instead, on the proof :func:`classify_broken_checkout` gathered
+    from the source clone. ``force=True`` is warranted for the same reason it is in
+    :func:`_wipe_proven_redundant`: that proof IS the data-loss gate, and the guards
+    it bypasses are exactly the ones that can only fail closed here. The dir itself
+    is left to the broken-DIR reaper, which owns an untracked dead checkout.
+    """
+    if verdict.state is not BrokenCheckout.RELEASABLE:
+        return ReapOutcome(
+            "kept",
+            f"KEPT '{worktree.branch}': {verdict.reason}",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+        )
+    if dry_run:
+        return ReapOutcome("would-wipe", f"WOULD RELEASE '{worktree.branch}': {verdict.reason}")
+    result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
+    return ReapOutcome("wiped", f"Released dead checkout '{worktree.branch}': {result.label}", errors=result.errors)
 
 
 def _wipe_proven_redundant(

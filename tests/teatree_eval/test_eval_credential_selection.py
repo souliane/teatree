@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.config import AgentHarnessProvider
+from teatree.config import AgentHarness, AgentHarnessProvider
 from teatree.core.models import ConfigSetting
 from teatree.credential_config import resolve_eval_credential
 from teatree.eval.api_runner import ApiInProcessRunner
@@ -33,7 +33,7 @@ _PROVIDER_TO_CREDENTIAL = [
     (AgentHarnessProvider.SUBSCRIPTION_OAUTH, AnthropicSubscriptionCredential),
     (AgentHarnessProvider.API_KEY, AnthropicApiKeyCredential),
     (AgentHarnessProvider.ANTHROPIC_API, AnthropicApiKeyCredential),
-    (AgentHarnessProvider.ORCA_ROUTER_BYOK, AnthropicSubscriptionCredential),
+    (AgentHarnessProvider.OPENAI_COMPATIBLE, AnthropicSubscriptionCredential),
 ]
 
 
@@ -54,6 +54,17 @@ class TestProviderToCredentialMapping(TestCase):
             if provider is None:
                 continue
             with self.subTest(provider=str(provider)):
+                # Clear the previous iteration's provider, then pin the harness
+                # this provider is valid under before setting it, so the #3688
+                # cross-key write guard accepts the pair (switching harness while
+                # an incompatible provider is still pinned is itself rejected).
+                harness = (
+                    AgentHarness.PYDANTIC_AI
+                    if provider in AgentHarnessProvider.valid_for(AgentHarness.PYDANTIC_AI)
+                    else AgentHarness.CLAUDE_SDK
+                )
+                ConfigSetting.objects.clear("agent_harness_provider")
+                ConfigSetting.objects.set_value("agent_harness", harness.value)
                 ConfigSetting.objects.set_value("agent_harness_provider", provider.value)
                 assert isinstance(resolve_eval_credential(), expected)
 
@@ -62,13 +73,13 @@ class TestProviderToCredentialMapping(TestCase):
 
     def test_byok_router_falls_back_to_oauth_with_a_warning(self) -> None:
         with self.assertLogs("teatree.credential_config", level=logging.WARNING) as logs:
-            credential = resolve_eval_credential(kind=AgentHarnessProvider.ORCA_ROUTER_BYOK)
+            credential = resolve_eval_credential(kind=AgentHarnessProvider.OPENAI_COMPATIBLE)
         assert isinstance(credential, AnthropicSubscriptionCredential)
-        assert "orca_router_byok" in "\n".join(logs.output)
+        assert "openai_compatible" in "\n".join(logs.output)
 
     def test_only_the_byok_row_warns(self) -> None:
         for provider, _expected in _PROVIDER_TO_CREDENTIAL:
-            if provider is AgentHarnessProvider.ORCA_ROUTER_BYOK:
+            if provider is AgentHarnessProvider.OPENAI_COMPATIBLE:
                 continue
             with self.subTest(provider=str(provider)), patch("teatree.credential_config.logger") as spy:
                 resolve_eval_credential(kind=provider)

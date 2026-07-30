@@ -105,6 +105,28 @@ class TestClassifyLimit:
         assert "credit" not in match.as_reason().casefold()
         assert "subscription" not in match.as_reason().casefold()
 
+    @pytest.mark.parametrize(
+        ("status_code", "error_type"),
+        [(429, "rate_limit_error"), (529, "overloaded_error")],
+    )
+    def test_the_api_error_code_literals_classify_without_any_prose(self, status_code: int, error_type: str) -> None:
+        # A REAL Messages-API error body carries the error CODE, not the CLI's prose:
+        # ``rate_limit_error`` (underscores) does not contain ``rate limit`` (space),
+        # and a 529 body says only ``Overloaded``. Neither matched before, so a
+        # provider-reported throttle on a direct-API lane classified as no limit at all.
+        body = f"status_code: {status_code}, body: {{'error': {{'type': '{error_type}', 'message': 'Overloaded'}}}}"
+        match = classify_limit(body)
+        assert match is not None
+        assert match.cause is LimitCause.RATE_LIMIT
+        assert match.phrase == error_type, "the specific API code wins over the generic prose phrase"
+
+    def test_the_api_error_codes_never_outrank_a_credit_or_subscription_signal(self) -> None:
+        # The transient bucket stays LAST: a body naming both a throttle code and a
+        # credit-empty balance is a credit condition, whose remediation is unrelated.
+        match = classify_limit("{'type': 'rate_limit_error'} — your credit balance is too low")
+        assert match is not None
+        assert match.cause is LimitCause.API_CREDIT
+
 
 class TestClassifyRateLimitType:
     """The SDK's TYPED ``RateLimitInfo.rate_limit_type`` window classifies unambiguously."""

@@ -10,11 +10,13 @@ Pure-logic unit tests for :func:`diff_paths_are_substrate`; the model-method
 integration (``is_substrate()`` consulting ``touched_paths``) is a thin DB test.
 """
 
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import MergeClear
-from teatree.core.models.merge_clear import diff_paths_are_substrate
+from teatree.core.models import MergeClear, merge_clear
+from teatree.core.models.merge_clear import _SUBSTRATE_PATH_PREFIXES, diff_paths_are_substrate
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -47,9 +49,46 @@ class TestDiffPathsAreSubstrate:
     def test_trust_seam_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["src/teatree/core/review/author_trust.py"]) is True
 
-    def test_intake_gate_seams_are_substrate(self) -> None:
-        assert diff_paths_are_substrate(["src/teatree/loop/scanners/issue_implementer.py"]) is True
+    def test_intake_decision_seam_is_substrate(self) -> None:
+        # The ONE decision function that answers "who may the factory work for".
+        assert diff_paths_are_substrate(["src/teatree/core/intake/factory_admission.py"]) is True
+
+    def test_intake_scanner_seam_is_substrate(self) -> None:
+        assert diff_paths_are_substrate(["src/teatree/loop/scanners/issue_intake.py"]) is True
+
+    def test_stranger_pr_admission_gate_is_substrate(self) -> None:
+        # The PR-side half of the same trust boundary: a diff that admits an
+        # untrusted author's PR to the reviewer must not auto-merge as logic.
+        assert diff_paths_are_substrate(["src/teatree/core/review/stranger_pr.py"]) is True
+
+    def test_intake_wiring_seam_is_substrate(self) -> None:
         assert diff_paths_are_substrate(["src/teatree/loop/scanner_factories.py"]) is True
+
+    def test_every_intake_seam_is_named_in_the_prefix_list(self) -> None:
+        """Anti-vacuity: each seam is substrate BECAUSE the prefix list names it.
+
+        Dropping any one entry turns its assertion above RED — the guard cannot
+        pass on a path that is no longer classified.
+        """
+        seams = (
+            "src/teatree/core/intake/factory_admission.py",
+            "src/teatree/loop/scanners/issue_intake.py",
+            "src/teatree/core/review/stranger_pr.py",
+            "src/teatree/loop/scanner_factories.py",
+        )
+        assert set(seams) <= set(_SUBSTRATE_PATH_PREFIXES)
+
+    def test_a_seam_dropped_from_the_prefix_list_is_no_longer_substrate(self) -> None:
+        """The classifier has no fallback that would keep a dropped seam substrate."""
+        without_intake = tuple(
+            p for p in _SUBSTRATE_PATH_PREFIXES if p != "src/teatree/core/intake/factory_admission.py"
+        )
+        with patch.object(merge_clear, "_SUBSTRATE_PATH_PREFIXES", without_intake):
+            assert diff_paths_are_substrate(["src/teatree/core/intake/factory_admission.py"]) is False
+
+    def test_the_retired_intake_scanner_path_is_not_classified(self) -> None:
+        """The deleted module must not linger in the prefix list as a dead assertion."""
+        assert diff_paths_are_substrate(["src/teatree/loop/scanners/issue_implementer.py"]) is False
 
     def test_merge_classifier_module_is_substrate(self) -> None:
         # The module that DEFINES the trust boundary must class itself substrate:

@@ -1,3 +1,5 @@
+# test-path: cross-cutting — drives the hooks/scripts/coverage_gate.py PreToolUse gate; the
+# teatree.utils.diff_coverage import is only the byte-identity drift guard (#3521), no src/teatree/ mirror.
 """Tests for the per-diff-coverage PreToolUse hook (#937, §17.6 gate 12).
 
 Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -21,7 +23,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.coverage_gate import diff_coverage_finding
 from hooks.scripts.hook_router import _is_merge_class_mutation, handle_block_uncovered_diff
+from teatree.utils.diff_coverage import UNREFERENCED_SYMBOL_IMPORT_HINT
 
 
 class TestMergeClassMutationDetection:
@@ -56,6 +60,19 @@ class TestMergeClassMutationDetection:
     def test_non_bash_tool_is_not_merge_class(self):
         assert _is_merge_class_mutation({"tool_name": "Read", "tool_input": {"file_path": "/x"}}) is False
 
+    def test_mention_inside_quoted_argument_is_not_merge_class(self):
+        # The verb is detected on the quote/heredoc-stripped skeleton: a commit
+        # message (or any quoted argument) that merely MENTIONS the create verb
+        # must not fire the gate against the session repo's uncommitted diff.
+        cmd = 'git commit -m "docs: describe the glab mr create flow"'
+        assert _is_merge_class_mutation({"tool_name": "Bash", "tool_input": {"command": cmd}}) is False
+
+    def test_mention_inside_heredoc_body_is_not_merge_class(self):
+        # A python script fed via heredoc naming the verb in a string literal
+        # false-fired the gate and denied an unrelated read-only script.
+        cmd = "python3 - <<'EOF'\nCMD = \"glab mr create -R o/r\"\nprint(CMD)\nEOF"
+        assert _is_merge_class_mutation({"tool_name": "Bash", "tool_input": {"command": cmd}}) is False
+
 
 def _finding_json(*, uncovered: list[dict] | None = None, symbols: list[str] | None = None) -> str:
     return json.dumps(
@@ -65,6 +82,18 @@ def _finding_json(*, uncovered: list[dict] | None = None, symbols: list[str] | N
             "unreferenced_symbols": symbols or [],
         }
     )
+
+
+def test_finding_row_names_the_from_import_workaround():
+    # souliane/teatree#3521: the rendered symbol-finding row (consumed by
+    # the deny reason) names the imports-only reading + the `from <module>
+    # import <symbol>` workaround, so a false-positive on an already-covered
+    # symbol is discoverable.
+    finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["widget"]))
+    assert finding is not None
+    assert "widget" in finding
+    assert "from module import symbol" in finding
+    assert "import statements only" in finding
 
 
 class TestBlocksUncoveredDiff:
@@ -94,6 +123,43 @@ class TestBlocksUncoveredDiff:
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --title t --body b"}}
         with patch.object(router.subprocess, "run", return_value=rejected):
             assert handle_block_uncovered_diff(data) is True
+
+    def test_deny_preamble_names_the_from_import_workaround(self, monkeypatch, capsys):
+        # souliane/teatree#3521: the deny preamble (shown even for a
+        # line-only finding, symbols=[]) must not say a bare "cover it" —
+        # it names the imports-only reading and the `from <module> import
+        # <symbol>` workaround, since a flagged symbol may already be
+        # covered via `import mod` + `mod.sym()`.
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            assert handle_block_uncovered_diff(data) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "from <module> import <symbol>" in reason
+        assert "imports only" in reason
+        assert "attribute access" in reason
+
+
+class TestFindingNamesImportWorkaround:
+    """The deny reason names the import-only workaround, not a misleading "reference it" (#3521)."""
+
+    def test_unreferenced_symbol_finding_names_the_import_only_workaround(self) -> None:
+        finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["build_widget"]))
+        assert finding is not None
+        assert "import statements only" in finding
+        assert "does not count as a reference" in finding
+        assert "from module import symbol" in finding
+
+    def test_import_workaround_absent_from_pure_uncovered_line_finding(self) -> None:
+        finding = diff_coverage_finding(_finding_json(uncovered=[{"path": "src/x.py", "lines": [3]}], symbols=[]))
+        assert finding is not None
+        assert "import statements only" not in finding
+
+    def test_hook_finding_hint_is_byte_identical_to_the_canonical_source(self) -> None:
+        finding = diff_coverage_finding(_finding_json(uncovered=[], symbols=["build_widget"]))
+        assert finding is not None
+        assert UNREFERENCED_SYMBOL_IMPORT_HINT in finding
 
 
 class TestFailsOpenOnBrokenSubprocess:
@@ -239,6 +305,76 @@ class TestMeasuresTheGatedCommandsWorktree:
         # when the command runs there), never a bare cwd-less run.
         assert Path(captured["cwd"]).resolve() == y.resolve()
         assert "--repo" in captured["argv"]
+
+
+class TestScopesToThePublishedRepo:
+    """A publish to repo X is never gated on uncommitted symbols in repo Y (§17.6.3).
+
+    A cross-repo ship — ``glab mr create -R other-org/other-repo`` issued from an
+    unrelated clone (the session repo, carrying its own large uncommitted diff) —
+    used to measure the SESSION repo and deny the create on symbols the published
+    repo never sees. When the command names an explicit target repo that is NOT
+    the measured repo's own git-remote slug, the measurement is skipped entirely;
+    a matching (or absent) target keeps the established enforcement.
+    """
+
+    def _repo(self, root: Path, name: str, remote: str) -> Path:
+        repo = root / name
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)  # noqa: S607 — real git under tmp_path (repo test doctrine)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", remote], check=True)  # noqa: S607 - git resolved on PATH (test)
+        return repo
+
+    def test_cross_repo_target_skips_the_session_repo_measurement(self, tmp_path, monkeypatch):
+        session_repo = self._repo(
+            tmp_path,
+            "session-clone",
+            "git@gitlab.com:my-org/session-repo.git",  # privacy-scan:allow
+        )
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -R other-org/other-repo --title t --description d"},
+            "cwd": str(session_repo),
+        }
+        with patch.object(router.subprocess, "run") as run:
+            assert handle_block_uncovered_diff(data) is False
+        run.assert_not_called()
+
+    def test_matching_target_still_enforces(self, tmp_path, monkeypatch):
+        # Anti-vacuity: an explicit target that IS the measured repo (bare slug
+        # vs host-qualified remote) keeps the gate enforcing.
+        session_repo = self._repo(
+            tmp_path,
+            "session-clone",
+            "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
+        )
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create -R my-org/my-repo --title t --description d"},
+            "cwd": str(session_repo),
+        }
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            assert handle_block_uncovered_diff(data) is True
+
+    def test_flagless_create_keeps_the_cwd_scope(self, tmp_path, monkeypatch):
+        # No explicit target: the cwd repo IS the publish target — enforced.
+        session_repo = self._repo(
+            tmp_path,
+            "session-clone",
+            "git@gitlab.com:my-org/my-repo.git",  # privacy-scan:allow
+        )
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_finding_json(), stderr="")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab mr create --title t --description d"},
+            "cwd": str(session_repo),
+        }
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            assert handle_block_uncovered_diff(data) is True
 
 
 class TestRegisteredInPreToolUseChain:

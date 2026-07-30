@@ -1,11 +1,20 @@
-"""Box-capacity ``_check_*`` probes for `t3 doctor check` — temp headroom + memory cap.
+"""Box-capacity ``_check_*`` probes for `t3 doctor check` — disk + temp headroom + memory cap.
 
-These surface RESOURCE pressure that silently wedges the box: a RAM-backed ``/tmp``
-tmpfs filling toward ENOSPC, and a container memory cap set below the commit/lint-hook
-floor (a too-low ``mem_limit`` OOM-kills ``ty-check``). Both are surfacing-only WARNs —
-they always return ``True`` and never gate the doctor exit code, matching the sibling
-advisory checks. Kept out of ``checks_environment`` (which owns clone/install/venv
-hygiene) so each module stays a single concern under the module-health LOC cap.
+These surface RESOURCE pressure that silently wedges the box: a ROOT FILESYSTEM
+filling toward full, a RAM-backed ``/tmp`` tmpfs filling toward ENOSPC, and a
+container memory cap set below the commit/lint-hook floor (a too-low ``mem_limit``
+OOM-kills ``ty-check``). Kept out of ``checks_environment`` (which owns
+clone/install/venv hygiene) so each module stays a single concern under the
+module-health LOC cap.
+
+The root-filesystem probe is measured in PERCENT, deliberately unlike the
+``resource_pressure`` scanner's absolute-GB thresholds. Both readings are valid
+and answer different questions: absolute bytes say whether the next write fits
+(and never misread a shared APFS container's nominal total), while percent says
+whether the box is on a trajectory to full. A free-GB floor alone cannot express
+the second — ``disk_crit_free_gb = 10.0`` is 95.7% of a 235 GB disk, so the first
+alarm arrives long after the trajectory was obvious, which is why a host at 96%
+then 97% full never fired anything (#3852).
 """
 
 import json
@@ -25,6 +34,10 @@ type JsonObject = dict[str, object]
 _DEFAULT_TMPFS_WARN_PERCENT = 80
 _PERCENT_MAX = 100
 _MIN_MOUNT_FIELDS = 3
+
+_ROOT_MOUNT = "/"
+_DEFAULT_DISK_WARN_PERCENT = 85
+_DEFAULT_DISK_CRIT_PERCENT = 95
 
 # Only the WORKER container runs headless agents + their commit/ty-check/lint hooks,
 # so it is the only role whose under-sized memory cap or missing skills is a real,
@@ -60,6 +73,66 @@ def _tmpfs_warn_percent(raw: str | None) -> int:
     except ValueError:
         return _DEFAULT_TMPFS_WARN_PERCENT
     return value if 1 <= value <= _PERCENT_MAX else _DEFAULT_TMPFS_WARN_PERCENT
+
+
+def _disk_percent_threshold(raw: str | None, *, default: int) -> int:
+    """Parse a percent-threshold env override into 1..100; fall back to *default* on garbage."""
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if 1 <= value <= _PERCENT_MAX else default
+
+
+def _used_percent(path: str) -> int | None:
+    """Percent of *path*'s filesystem in use, or ``None`` when it cannot be measured."""
+    stats = os.statvfs(path)
+    total = stats.f_blocks * stats.f_frsize
+    if total <= 0:
+        return None
+    return round((total - stats.f_bavail * stats.f_frsize) / total * 100)
+
+
+def _check_root_disk_headroom(*, mount_point: str = _ROOT_MOUNT) -> bool:
+    """FAIL when the root filesystem is critically full, WARN when it is merely filling.
+
+    The probe that was missing entirely while the box climbed past 96%: the sibling
+    checks cover the ``/tmp`` tmpfs and the cgroup memory cap, and neither looks at
+    the disk everything else is written to. A full root filesystem is a broken
+    product — builds, docker, the control DB and every agent worktree stop — so the
+    CRITICAL band HARD-FAILs (gating the doctor exit code and the watchdog owner
+    DM) rather than joining the advisory WARNs.
+
+    Bands are PERCENT (see the module docstring for why, next to the absolute-bytes
+    scanner): WARN at ``TEATREE_DISK_WARN_PERCENT`` (default 85), FAIL at
+    ``TEATREE_DISK_CRIT_PERCENT`` (default 95). Crash-proof — any probe error
+    degrades to OK so this diagnostic never aborts the doctor run.
+    """
+    try:
+        used_pct = _used_percent(mount_point)
+    except OSError:
+        return True
+    if used_pct is None:
+        return True
+    crit = _disk_percent_threshold(os.environ.get("TEATREE_DISK_CRIT_PERCENT"), default=_DEFAULT_DISK_CRIT_PERCENT)
+    warn = _disk_percent_threshold(os.environ.get("TEATREE_DISK_WARN_PERCENT"), default=_DEFAULT_DISK_WARN_PERCENT)
+    if used_pct >= crit:
+        typer.echo(
+            f"FAIL  {mount_point} is {used_pct}% used (>= {crit}% critical) — a full root filesystem stops "
+            "builds, docker, the control DB and every agent worktree. Reclaim now: "
+            "`t3 <overlay> workspace reclaim-disk`, then `t3 <overlay> workspace clean-all` and "
+            "`t3 <overlay> retention prune --apply`. Tune with TEATREE_DISK_CRIT_PERCENT."
+        )
+        return False
+    if used_pct >= warn:
+        typer.echo(
+            f"WARN  {mount_point} is {used_pct}% used (>= {warn}% threshold) — reclaim before it bites: "
+            "`t3 <overlay> workspace reclaim-disk`, `t3 <overlay> workspace clean-all`, "
+            "`t3 <overlay> retention prune --apply`. Tune with TEATREE_DISK_WARN_PERCENT."
+        )
+    return True
 
 
 def _tmp_mount_fstype(mounts_text: str, mount_point: str) -> str | None:

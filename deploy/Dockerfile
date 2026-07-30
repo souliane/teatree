@@ -20,10 +20,40 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # daemon over the mounted socket. The npm `pyright` package provides the
 # `pyright-langserver` binary the pyright-lsp Claude plugin execs to give factory
 # agents live Python type diagnostics while coding (`t3 setup` enables the plugin).
+#
+# The claude CLI pin here is DELIBERATELY NOT the generation `claude-agent-sdk`
+# bundles (which every eval/test image pins). This image feeds the paths that exec
+# the GLOBAL binary — `t3 loop start`'s os.execv, the agent command, the ttyd web
+# terminal, the tasks command — so it needs a current known-good release; the
+# bundle's 2.1.169 predates `claude-opus-5`, which model_tiering resolves as the
+# `frontier` tier. Both tiers are guarded by tests/test_claude_cli_pin.py.
+# bash with `pipefail`, not the default dash `/bin/sh`. dash has no `pipefail`, so
+# a `curl ... | bash` whose FETCH fails still reports only the shell's exit status
+# and the `&&` chain sails on. That silently broke the box: NodeSource answered the
+# setup script with HTTP 403 on one build, the repo was therefore never added,
+# `apt-get install nodejs` happily installed Ubuntu's nodejs 18 — which packages
+# npm SEPARATELY, so npm was absent — and the layer died 6 seconds later at
+# `npm install -g` with a bare `/bin/sh: 1: npm: not found` and exit 127, naming
+# neither the 403 nor the wrong node. Every fetch below is now attributable.
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         ca-certificates curl direnv git gnupg jq pass sqlite3 ttyd && \
-    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
+    # Fetch the NodeSource setup script to a FILE, never straight into a shell, so
+    # a truncated or error body cannot be executed as a script; and retry, so a
+    # transient CDN 403/5xx costs seconds instead of the whole deploy.
+    for attempt in 1 2 3 4 5; do \
+        if curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh; then break; fi; \
+        echo "deploy image: NodeSource setup_24.x fetch failed (attempt ${attempt}/5) - retrying" >&2; \
+        if [ "$attempt" -lt 5 ]; then sleep 15; fi; \
+    done && \
+    if [ ! -s /tmp/nodesource_setup.sh ]; then \
+        echo "deploy image: FATAL - could not fetch https://deb.nodesource.com/setup_24.x after 5 attempts. Without that repo apt installs Ubuntu's nodejs 18, which ships no npm, and this build would die later with an unattributable 'npm: not found'." >&2; \
+        exit 1; \
+    fi && \
+    bash /tmp/nodesource_setup.sh && \
+    rm -f /tmp/nodesource_setup.sh && \
     apt-get install -y -qq --no-install-recommends nodejs && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -38,7 +68,14 @@ RUN apt-get update -qq && \
         > /etc/apt/sources.list.d/docker.list && \
     apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin && \
-    npm install -g @anthropic-ai/claude-code pyright && \
+    # Assert the node that landed is the NodeSource one before leaning on npm.
+    # `npm: not found` from the line below is the symptom that cost a week of
+    # deploys; say what it MEANS at the moment it is provable.
+    if ! command -v npm >/dev/null 2>&1; then \
+        echo "deploy image: FATAL - npm is absent after installing nodejs ($(node --version 2>/dev/null || echo 'node missing')). The NodeSource repo did not take effect, so this is Ubuntu's nodejs, which packages npm separately." >&2; \
+        exit 1; \
+    fi && \
+    npm install -g @anthropic-ai/claude-code@2.1.220 pyright@1.1.411 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 
@@ -106,7 +143,21 @@ WORKDIR /home/teatree
 
 # uv (the only baked python toolchain) — the teatree editable install and its
 # managed Python land on the shared /opt/teatree/uv volume at runtime.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# Fetched to a file, retried, and size-checked for the same reason as the
+# NodeSource script above: this is the second `curl | shell` in the image, and a
+# CDN blip here would otherwise pipe an error page into a shell and surface as
+# some later "uv: not found" that names nothing.
+RUN for attempt in 1 2 3 4 5; do \
+        if curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh; then break; fi; \
+        echo "deploy image: uv install.sh fetch failed (attempt ${attempt}/5) - retrying" >&2; \
+        if [ "$attempt" -lt 5 ]; then sleep 15; fi; \
+    done && \
+    if [ ! -s /tmp/uv-install.sh ]; then \
+        echo "deploy image: FATAL - could not fetch https://astral.sh/uv/install.sh after 5 attempts." >&2; \
+        exit 1; \
+    fi && \
+    sh /tmp/uv-install.sh && \
+    rm -f /tmp/uv-install.sh
 
 # No XDG_DATA_HOME: with HOME=/home/teatree the default already resolves DATA_DIR
 # to ~/.local/share/teatree (the canonical DB on the teatree_data volume). Setting

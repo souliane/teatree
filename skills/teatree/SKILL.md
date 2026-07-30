@@ -13,7 +13,7 @@ TeaTree is a personal code factory for multi-repo projects — it turns a ticket
 ## Architecture
 
 - **TeaTree IS the Django project.** Requires a local clone; installed via `uv tool install --editable .`.
-- **Overlays** register via `teatree.overlays` entry points and provide project-specific configuration.
+- **Overlays** register via `teatree.overlays` entry points and provide project-specific configuration. <!-- skill-symbol-ref: entry-point group name, not an importable module -->
 - **Skills** live in `skills/` and are loaded by the agent's skill system.
 - **Hooks** in `hooks/scripts/` run on agent lifecycle events (e.g., prompt submit, pre/post tool use).
 
@@ -140,4 +140,4 @@ This skill holds the core. Load the mode-specific skill for the task in hand —
 | Skill | When to load |
 |-------|--------------|
 | `/dogfooding-teatree` | Validating a CLI, loop, or statusline change; or self-QA on the loop and statusline — find, file, and fix bugs in one session |
-| `/teatree-batch` | Working the open issue tracker (and its tracking epics) unattended, one ticket at a time |
+| `/t3:wip` | Working the open issue tracker (and its tracking epics) unattended, one ticket at a time |

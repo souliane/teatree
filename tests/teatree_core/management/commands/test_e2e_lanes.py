@@ -1,6 +1,7 @@
 """The ``e2e lanes`` verb: derive ``{lane: [spec, ...]}`` from overlay seams (#3329)."""
 
 import json
+from io import StringIO
 from typing import cast
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import _e2e_lanes as _lanes
+from teatree.core.management.commands._e2e_lanes import LaneOptions, run_lanes
 from teatree.core.overlay import OverlayE2E
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -50,22 +52,31 @@ class TestLaneSplit(TestCase):
 
 
 class TestRunLanes(TestCase):
-    def test_json_emits_the_matrix_object(self) -> None:
-        lines: list[str] = []
-        split = _lanes.run_lanes(as_json=True, names=False, lane="", overlay=_LanesOverlay(), write_out=lines.append)
-        assert json.loads(lines[0]) == split
-        assert split["smoke"] == ["e2e/specs/checkout.spec.ts", "e2e/specs/login.spec.ts"]
+    @staticmethod
+    def _run(options: _lanes.LaneOptions) -> tuple[dict[str, list[str]], str, str]:
+        out, err = StringIO(), StringIO()
+        split = _lanes.run_lanes(options, overlay=_LanesOverlay(), out=out, err=err)
+        return split, out.getvalue(), err.getvalue()
 
-    def test_names_emits_every_spec_one_per_line(self) -> None:
-        lines: list[str] = []
-        _lanes.run_lanes(as_json=False, names=True, lane="", overlay=_LanesOverlay(), write_out=lines.append)
-        assert set(lines) == set(_SPECS)
+    def test_json_emits_the_matrix_object_on_stdout(self) -> None:
+        split, out, err = self._run(_lanes.LaneOptions(as_json=True))
+        assert json.loads(out) == split
+        assert split["smoke"] == ["e2e/specs/checkout.spec.ts", "e2e/specs/login.spec.ts"]
+        assert err == ""
+
+    def test_names_emits_every_spec_one_per_line_on_stdout(self) -> None:
+        """``--names`` is a second MACHINE format (a shell loop reads it) — never stderr."""
+        _, out, err = self._run(_lanes.LaneOptions(names=True))
+        assert set(out.splitlines()) == set(_SPECS)
+        assert err == ""
+
+    def test_human_view_goes_to_stderr_leaving_stdout_clean(self) -> None:
+        _, out, err = self._run(_lanes.LaneOptions())
+        assert out == ""
+        assert "smoke: e2e/specs/checkout.spec.ts, e2e/specs/login.spec.ts" in err
 
     def test_lane_filter_restricts_to_one_lane(self) -> None:
-        lines: list[str] = []
-        split = _lanes.run_lanes(
-            as_json=True, names=False, lane="smoke", overlay=_LanesOverlay(), write_out=lines.append
-        )
+        split, _, _ = self._run(_lanes.LaneOptions(as_json=True, lane="smoke"))
         assert set(split) == {"smoke"}
 
 
@@ -74,3 +85,11 @@ class TestLanesCommand(TestCase):
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             result = cast("dict[str, list[str]]", call_command("e2e", "lanes", json_output=True))
         assert result["smoke"] == ["e2e/specs/checkout.spec.ts", "e2e/specs/login.spec.ts"]
+
+
+class TestRunLanesDirectImport(TestCase):
+    """The seam is importable by name, not only through the module alias."""
+
+    def test_returns_the_same_split_as_lane_split(self) -> None:
+        out, err = StringIO(), StringIO()
+        assert run_lanes(LaneOptions(), overlay=_LanesOverlay(), out=out, err=err) == _lanes.lane_split(_LanesOverlay())

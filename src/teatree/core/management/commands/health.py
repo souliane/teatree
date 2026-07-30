@@ -11,16 +11,31 @@ ones) but never mutates a ticket; ``add``/``dismiss`` write exactly one row.
 """
 
 import io
-import json
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
-from django_typer.management import TyperCommand, command, initialize
+from django_typer.management import command, initialize
 
 from teatree.core.factory.operational_health import HealthReport, reconcile_health
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
+
+
+class _IssueRow(TypedDict):
+    id: int
+    severity: str
+    overlay: str
+    kind: str
+    summary: str
+    evidence_url: str
+
+
+class HealthPayload(TypedDict):
+    status: str
+    open_count: int
+    issues: list[_IssueRow]
 
 
 def _render_report(report: HealthReport) -> str:
@@ -42,7 +57,7 @@ def _render_report(report: HealthReport) -> str:
     return buffer.getvalue().rstrip("\n")
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     @initialize()
     def init(self) -> None:
         """``t3 <overlay> health`` group root."""
@@ -55,28 +70,33 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the report as JSON instead of the table view."),
         ] = False,
-    ) -> str:
+    ) -> HealthPayload:
         """Reconcile and print the global-health verdict + open KnownIssue rows."""
         report = reconcile_health()
-        if json_output:
-            return json.dumps(
+        payload: HealthPayload = {
+            "status": report.status.value,
+            "open_count": report.open_count,
+            "issues": [
                 {
-                    "status": report.status.value,
-                    "open_count": report.open_count,
-                    "issues": [
-                        {
-                            "id": issue.pk,
-                            "severity": issue.severity,
-                            "overlay": issue.overlay,
-                            "kind": issue.kind,
-                            "summary": issue.summary,
-                            "evidence_url": issue.evidence_url,
-                        }
-                        for issue in report.open_issues
-                    ],
-                },
-            )
-        return _render_report(report)
+                    "id": issue.pk,
+                    "severity": issue.severity,
+                    "overlay": issue.overlay,
+                    "kind": issue.kind,
+                    "summary": issue.summary,
+                    "evidence_url": issue.evidence_url,
+                }
+                for issue in report.open_issues
+            ],
+        }
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_render_report(report),
+        )
+        return payload
 
     @command()
     def add(

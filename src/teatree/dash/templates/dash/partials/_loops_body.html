@@ -1,0 +1,77 @@
+{% if page_error %}<p class="banner-red" role="alert">{{ page_error }}</p>{% endif %}
+  <section class="band">
+    <h2>Mode</h2>
+    <p>Current — <strong>{{ control.mode_name }}</strong> (decided by {{ control.mode_source }}) — {{ control.mode_posture }}</p>
+    {% comment %} One form per posture: the vendored htmx drops the clicked submitter, so
+    the value rides in a hidden input rather than on the button. {% endcomment %}
+    <div class="toolbar">
+      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="posture" value="reachable">
+        <button class="dash-btn" type="submit">reachable</button>
+      </form>
+      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="posture" value="defer-questions">
+        <button class="dash-btn" type="submit">defer questions</button>
+      </form>
+      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="posture" value="pause-everything">
+        <button class="dash-btn" type="submit">pause everything</button>
+      </form>
+      <form method="post" action="{% url 'dash:posture' %}" hx-post="{% url 'dash:posture' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="posture" value="auto">
+        <button class="dash-btn" type="submit">auto</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Master fail-open switch</h2>
+    <p>danger_gate_fail_open — <strong class="{% if control.gate_fail_open %}eff-no{% else %}eff-yes{% endif %}">{{ control.gate_fail_open|yesno:"ON,off" }}</strong></p>
+    {% if control.gate_fail_open %}
+      <form class="toolbar" method="post" action="{% url 'dash:gate_toggle' %}" hx-post="{% url 'dash:gate_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="enable" value="0">
+        <button class="dash-btn primary" type="submit">turn OFF (restore gates)</button>
+      </form>
+    {% else %}
+      <form class="toolbar danger" method="post" action="{% url 'dash:gate_toggle' %}" hx-post="{% url 'dash:gate_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="enable" value="1">
+        <input type="text" name="confirm" placeholder="type &quot;{{ gate_confirm_phrase }}&quot; to confirm">
+        <button class="dash-btn danger" type="submit">turn ON (relax all over-deny gates)</button>
+      </form>
+    {% endif %}
+  </section>
+
+  <section class="band">
+    <h2>Global loop kill-switch</h2>
+    <p>loop_runner_enabled — <strong class="{% if control.runner_enabled %}eff-yes{% else %}eff-no{% endif %}">{{ control.runner_enabled|yesno:"ON,off" }}</strong></p>
+    {% if control.runner_enabled %}
+      <form class="toolbar danger" method="post" action="{% url 'dash:runner_toggle' %}" hx-post="{% url 'dash:runner_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="enable" value="0">
+        <input type="text" name="confirm" placeholder="type &quot;{{ runner_confirm_phrase }}&quot; to confirm">
+        <button class="dash-btn danger" type="submit">stop the loop fleet</button>
+      </form>
+      <p class="muted">Stopping the fleet halts every loop. Nothing errors when it is off — work simply stops arriving, which is why it takes a typed confirmation. Both directions are audited.</p>
+    {% else %}
+      <form class="toolbar" method="post" action="{% url 'dash:runner_toggle' %}" hx-post="{% url 'dash:runner_toggle' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+        {% csrf_token %}
+        <input type="hidden" name="enable" value="1">
+        <button class="dash-btn primary" type="submit">restart the loop fleet</button>
+      </form>
+      <p class="muted">The fleet is stopped. No loop will tick until it is restarted.</p>
+    {% endif %}
+  </section>
+
+  <div id="loops-table"
+    hx-get="{% url 'dash:loops_table' %}"
+    hx-trigger="every 5s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_loops_table.html" %}
+  </div>

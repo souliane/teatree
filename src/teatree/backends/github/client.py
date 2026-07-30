@@ -207,6 +207,23 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
                 return []
             raise
 
+    def list_pr_reviews(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return the PR's submitted reviews (state + author); ``[]`` ONLY for a genuine HTTP 404.
+
+        The existing-review surface ``t3 review run`` reports: which logins
+        approved, and how many of the viewer's own reviews are still ``PENDING``
+        (GitHub's analogue of a GitLab draft note — the endpoint exposes a
+        pending review only to the account that owns it). Shares
+        :meth:`get_pr_diff`'s polarity: an unknown PR degrades to ``[]``, every
+        other failure re-raises rather than reading as "nobody has reviewed".
+        """
+        try:
+            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/reviews?per_page=100", token=self._token)
+        except CommandFailedError as exc:
+            if _pr_reads.is_not_found(exc):
+                return []
+            raise
+
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return the commits on the PR; ``[]`` ONLY for a genuine HTTP 404.
 
@@ -293,6 +310,15 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         firehose + cross-repo claim hole this closes — see the commit body).
         """
         query = quote_plus(f"is:issue is:open author:{author}" + "".join(f" repo:{s}" for s in repo_slugs))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues carrying *label* — the owner-admission intake query (#3634).
+
+        The ONLY route by which an untrusted author's issue reaches the factory, so it
+        is repo-scoped exactly like the author query.
+        """
+        query = quote_plus(f'is:issue is:open label:"{label}"' + "".join(f" repo:{s}" for s in repo_slugs))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def create_issue(

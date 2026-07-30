@@ -228,7 +228,7 @@ def _deliver_via_fallback(egress: _Egress) -> NotifyResult:
 def _claim_fallback_slot(egress: _Egress) -> bool:
     """CAS the BotPing row to SENDING before a direct send — the double-post gate.
 
-    Mirrors :func:`teatree.core.notify._claim_delivery_slot`: exactly one caller
+    Mirrors :func:`teatree.core.notify_ledger.claim_delivery_slot`: exactly one caller
     wins the ``CLAIMED`` outcome and proceeds to post; a concurrent
     ``IN_FLIGHT`` / already-``ALREADY_SENT`` caller stands down. The primary's
     prior FAILED/NOOP row is recoverable, so the winner replaces it with a fresh

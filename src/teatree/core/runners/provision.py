@@ -337,7 +337,7 @@ class WorktreeProvisioner(RunnerBase):
         """
         parents = {
             Path(path).parent
-            for wt in Worktree.objects.filter(ticket=ticket)
+            for wt in Worktree.objects.for_ticket(ticket)
             if (path := (wt.extra or {}).get("worktree_path")) and Path(path).is_dir()
         }
         return parents.pop() if len(parents) == 1 else None

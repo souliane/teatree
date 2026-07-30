@@ -9,11 +9,16 @@ the codebase and RETURNS a ``directive_interpretation`` envelope;
 ``attempt_recorder`` records the typed :class:`MechanismSketch` server-side
 (maker≠checker — a different actor writes it than the one that captured the text).
 
-Dedup is per ``(directive, purpose, generation)``: a re-fire at the same
-generation returns the existing row and enqueues no second interpreter; a
-clarification bumps ``generation`` and arms exactly one fresh interpreter. The row
-insert and the ``Task`` creation share one transaction so a row never exists
-without its task.
+Dedup is per ``(directive, purpose, generation)`` but keyed on the LIVE task, not
+the row: a re-fire while the generation's interpret task is still in flight
+(PENDING/CLAIMED) returns the existing row and enqueues no second interpreter. Once
+that task reaches a terminal status WITHOUT an interpretation being recorded — the
+governor refused it and the artifact sweep completed the still-PENDING task, or the
+run failed the evidence gate — the directive is still awaiting interpretation, so a
+re-tick RE-ARMS a fresh interpreter on the same row rather than dedup-stranding the
+directive in ``CAPTURED`` forever. A clarification bumps ``generation`` and arms its
+own fresh row. The row insert and the ``Task`` creation share one transaction so a
+row never exists without its task.
 """
 
 from typing import TYPE_CHECKING, ClassVar
@@ -24,19 +29,20 @@ from django.utils import timezone
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 if TYPE_CHECKING:
     from teatree.core.models.directive import Directive
 
 INTERPRET_PHASE = "directive_interpreting"
 
-#: The standing north-star self-modification umbrella every directive's synthetic
-#: interpret ticket anchors under; the ``#directive=<pk>`` fragment makes each unique
-#: while still resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url``
-#: (the outer-loop synthetic-ticket idiom — the interpret phase needs a ``Task``, and a
-#: ``Task`` needs a ``Ticket``). Shares the north-star umbrella with the outer loop and
-#: the directive-implementation ticket; the ``#directive=`` fragment disambiguates.
-DIRECTIVE_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
+#: The standing north-star self-modification umbrella the directive's synthetic interpret
+#: ticket anchors under; the ``#directive=<pk>`` fragment makes each unique while still
+#: resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url`` (the interpret
+#: phase needs a ``Task``, and a ``Task`` needs a ``Ticket``). Single-sourced from
+#: :data:`~teatree.utils.url_slug.SYNTHETIC_LOOP_UMBRELLA_URL` — the ONE anchor the task
+#: sweep recognises so it never artifact-completes a synthetic loop ticket (#3706).
+DIRECTIVE_UMBRELLA_URL = SYNTHETIC_LOOP_UMBRELLA_URL
 
 
 def synthetic_interpret_ticket(directive: "Directive") -> Ticket:
@@ -87,14 +93,27 @@ class DirectiveDispatch(models.Model):
     def __str__(self) -> str:
         return f"directive-dispatch<{self.pk}:directive:{self.directive_id} {self.purpose}@gen{self.generation}>"  # type: ignore[attr-defined]  # Django FK accessor
 
+    def has_live_interpreter(self) -> bool:
+        """Whether this dispatch's interpret task is still in flight (PENDING/CLAIMED).
+
+        A live task means an interpreter is already armed for this generation — a
+        re-tick waits on it (the dedup). A terminal or absent task means the prior
+        interpreter finished without an interpretation being recorded, so the
+        directive is still awaiting one and a re-tick may RE-ARM a fresh interpreter.
+        """
+        return self.task is not None and self.task.status in Task.Status.active()
+
     @classmethod
     def enqueue(cls, *, directive: "Directive", contract: str) -> "DirectiveDispatch | None":
         """Record the dispatch + create one claimable headless interpret task — idempotently.
 
-        Returns the new row on the first dispatch for ``(directive, interpret,
-        generation)``; ``None`` when a row for that generation already exists (a
-        prior tick already armed the interpreter). The row insert and the ``Task``
-        creation share one transaction so a row never exists without its task.
+        Returns the row (a fresh interpret task attached) on the first dispatch for
+        ``(directive, interpret, generation)`` AND on a re-arm — when a row for that
+        generation already exists but its interpreter is terminal without having
+        recorded an interpretation. Returns ``None`` only while the generation's
+        interpreter is still in flight (a live PENDING/CLAIMED task). The row insert
+        and the ``Task`` creation share one transaction so a row never exists without
+        its task.
         """
         with transaction.atomic():
             row, created = cls.objects.get_or_create(
@@ -103,7 +122,13 @@ class DirectiveDispatch(models.Model):
                 generation=directive.generation,
             )
             if not created:
-                return None
+                # Lock the existing row so two concurrent ticks cannot both pass the
+                # terminal-task check and double-arm two live interpreters. On the
+                # file-backed prod SQLite backend the atomic already serializes writers;
+                # the row lock makes it correct on any backend if the loop ever fans out.
+                row = cls.objects.select_for_update().get(pk=row.pk)
+                if row.has_live_interpreter():
+                    return None
             row.task = cls._create_interpret_task(directive=directive, contract=contract)
             row.save(update_fields=["task"])
         return row

@@ -9,11 +9,13 @@ B (``pydantic_ai``, PR-03) filters its assembled toolsets down to
 (:func:`disallowed_tools_for_phase`) as ``ClaudeAgentOptions.disallowed_tools``
 so the same least-privilege holds on the SDK transport.
 
-The names here are teatree's OWN capability tool names (the Lane-B
-``FunctionToolset`` tool names in :mod:`teatree.agents.lane_b`), which are the
-provider-neutral vocabulary; Lane A maps each to its SDK-native equivalent at
-its own boundary. ``normalize_phase`` collapses spellings so a table keyed on the
-canonical token resolves a task stored with any accepted alias.
+The names here are teatree's OWN provider-neutral capability names. Each lane maps
+them to its model-visible vocabulary at its own boundary: Lane A via
+:mod:`teatree.agents.sdk_tool_map` (``read_file`` -> ``Read``, …) injected as
+``disallowed_tools``, and Lane B via :mod:`teatree.agents.lane_b.tool_names` (the
+same skill vocabulary) named onto its ``FunctionToolset`` tools. ``normalize_phase``
+collapses spellings so a table keyed on the canonical token resolves a task stored
+with any accepted alias.
 """
 
 from typing import Final

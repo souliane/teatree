@@ -3,7 +3,14 @@
 This scanner reconciles teatree **Task** rows (the DB-backed lifecycle work
 units), never the agent harness's working list of session items. The candidate
 set is the open :class:`Task` rows (status ``PENDING`` or ``CLAIMED``) whose
-``Ticket`` carries an ``issue_url``. Each tick the scanner walks those tasks
+``Ticket`` carries an ``issue_url``, EXCLUDING every task anchored on a synthetic
+teatree-internal URL (:func:`_is_synthetic_issue_url`) — the loop-umbrella routing
+device (directive interpret/implement + outer-loop experiment, #3706) and the cadence
+scanners' hostless placeholder schemes (``eval-local://``, ``scanning-news://``,
+``architectural-review://``, ``backlog-sweep://``, ``dogfood-smoke://``). Neither
+resolves to a real per-URL code host, so sweeping them would either complete a live
+FSM-owned task or run ``get_issue`` against the wrong default forge and manufacture a
+spurious ``task.orphaned`` signal. Each tick the scanner walks the remaining tasks
 and, for each, verifies the underlying artifact's *terminal* state — is the
 upstream issue closed / the PR merged? — via the overlay's ``is_issue_done()``
 hook (the same independent-evidence check ``TicketCompletionScanner`` uses for
@@ -38,6 +45,8 @@ from django.utils import timezone
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
+from teatree.utils.git_remote import web_base_from_remote
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
@@ -94,11 +103,12 @@ class TaskSweepScanner:
         if self.overlay_name:
             qs = qs.filter(ticket__overlay=self.overlay_name)
         try:
-            return list(qs.only("id", "status", "ticket__id", "ticket__issue_url", "last_sweep_check_ts"))
+            rows = list(qs.only("id", "status", "ticket__id", "ticket__issue_url", "last_sweep_check_ts"))
         except (OperationalError, ProgrammingError):
             # Pre-migration install: the table or the new column does not exist
             # yet. The next tick after ``migrate`` picks the tasks up.
             return []
+        return [row for row in rows if not _is_synthetic_issue_url(row.ticket.issue_url)]
 
     def _claim_for_sweep(self, *, task_id: int, now: datetime) -> bool:
         """Atomically stamp ``last_sweep_check_ts``; True iff this tick won the race."""
@@ -151,6 +161,20 @@ class TaskSweepScanner:
                 "overlay": self.overlay_name,
             },
         )
+
+
+def _is_synthetic_issue_url(issue_url: str) -> bool:
+    """Whether *issue_url* is a teatree-internal anchor no per-URL host can resolve.
+
+    Covers the shared loop umbrella (github-hosted, FSM-owned task lifecycle,
+    #3706) and the cadence scanners' hostless ``<scheme>://<overlay>`` placeholders
+    (``eval-local://``, ``scanning-news://`` …). For the latter ``web_base_from_remote``
+    returns ``""``, so ``get_code_host_for_url`` falls back to the overlay DEFAULT host
+    and ``get_issue`` runs against the wrong forge — manufacturing a spurious
+    ``task.orphaned`` signal. A URL with a real host but an unrecognised forge is NOT
+    synthetic, keeping the fail-open orphan-for-operator-review behaviour.
+    """
+    return is_synthetic_loop_umbrella_url(issue_url) or not web_base_from_remote(issue_url)
 
 
 __all__ = ["TaskSweepScanner"]

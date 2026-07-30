@@ -262,6 +262,10 @@ _NON_CONTENT_PARAMS = frozenset(
         "login",
         "assignee",
         "author",
+        # Singular ``label`` is a READ-query scope (``list_labeled_issues``), like
+        # ``author``/``assignee``. The plural ``labels`` — what a write SETS — is
+        # deliberately absent, so a labelling write still enumerates as content.
+        "label",
         "updated_after",
         "state",
         "query",

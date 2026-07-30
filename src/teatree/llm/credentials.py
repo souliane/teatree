@@ -28,15 +28,13 @@ loop). This module stays foundation-pure — it enforces "use THIS credential,
 exclusively", not which one the eval lane picks.
 
 The pieces are named provider-agnostically (``Credential`` / ``CredentialSpec`` /
-``CredentialSource``) so this layer later becomes an ``LLMBackend.credential`` —
-Claude today, other providers (OpenRouter, …) later — with no rework at the call
-sites. Dependency-injected sources keep the whole surface unit-testable without
-touching the real environment or the ``pass`` store. :class:`OrcaRouterCredential`
-is the first non-Anthropic tenant of this pattern: the
-``pydantic_ai`` headless harness's ([#2885](https://github.com/souliane/teatree/issues/2885))
-BYOK, OpenAI-compatible provider, resolved the identical env-then-``pass`` way but
-carrying no conflicting Anthropic vars (an orthogonal provider, not a mirror-image
-rule).
+``CredentialSource``) so this layer IS the ``LLMBackend.credential``: Claude here,
+and every OpenAI-compatible provider through one generic backend in
+:mod:`teatree.llm.openai_compatible`, configured by a base URL, a model name and a
+credential-store entry name rather than a class per provider
+([#3666](https://github.com/souliane/teatree/issues/3666)). Dependency-injected
+sources keep the whole surface unit-testable without touching the real environment
+or the ``pass`` store.
 
 A credential's ``pass_path`` MAY be overridden per instance by an INJECTED
 ``pass_path_override`` (a plain string) — the resolved per-account ``pass`` entry
@@ -414,82 +412,3 @@ def reject_ambient_base_url_redirect() -> None:
             ),
         )
     )
-
-
-class OrcaRouterCredential(Credential):
-    """The OrcaRouter BYOK metered API key — the ``pydantic_ai`` harness's Layer-2 provider.
-
-    Layer-2 provider/credential resolution table (Layer 1 = ``agent_harness``,
-    constraining which Layer-2 provider is valid — the ``ORCA_ROUTER_BYOK``
-    member of :class:`~teatree.config.AgentHarnessProvider`, which encodes this
-    same table as :meth:`~teatree.config.AgentHarnessProvider.valid_for`
-    [#2885](https://github.com/souliane/teatree/issues/2885),
-    [#2887](https://github.com/souliane/teatree/issues/2887)):
-
-    | Layer 1          | Layer 2 provider    | Credential                        | Status       |
-    |-------------------|----------------------|------------------------------------|---------------|
-    | ``claude_sdk``     | subscription-OAuth   | ``AnthropicSubscriptionCredential`` | shipped (default) |
-    | ``claude_sdk``     | API-key              | ``AnthropicApiKeyCredential``       | shipped (opt-in)  |
-    | ``pydantic_ai``    | OrcaRouter BYOK       | ``OrcaRouterCredential`` (here)     | shipped (default) |
-    | ``pydantic_ai``    | Vertex                | -- reserved --                      | not implemented   |
-
-    ``claude_sdk`` never touches this credential — the bundled CLI only
-    understands the two Anthropic credentials above. ``pydantic_ai`` never
-    touches the Anthropic credentials — the ``CLAUDE_CODE_OAUTH_TOKEN`` is
-    meaningless outside the bundled CLI, so its ONLY implemented Layer-2
-    provider today is this metered BYOK key; a future Vertex AI binding is
-    reserved but not yet built (mirrors the :class:`~teatree.agents.harness.PydanticAiHarness`
-    precedent of shipping one path first).
-
-    OrcaRouter is a separate, orthogonal provider (not an Anthropic account), so
-    unlike the two credentials above it declares no ``conflicting_vars`` — nothing
-    to strip when it is applied. It has NO built-in default ``pass`` path and no
-    per-account routing LIST (unlike ``anthropic_oauth_pass_paths`` /
-    ``anthropic_api_key_pass_paths``): BYOK means the operator supplies exactly one key,
-    via the ``ORCA_ROUTER_API_KEY`` env var or the single ``orca_router_pass_path``
-    setting (injected as ``pass_path_override``). With neither, :meth:`resolve` fails
-    loud naming ``orca_router_pass_path`` rather than reading a dead built-in entry.
-    """
-
-    spec = CredentialSpec(
-        env_var="ORCA_ROUTER_API_KEY",
-        conflicting_vars=(),
-        pass_path=None,
-        routing_setting="orca_router_pass_path",
-    )
-
-
-_ORCA_ROUTER_BASE_URL_ENV = "ORCA_ROUTER_BASE_URL"
-
-
-@dataclasses.dataclass(frozen=True)
-class OrcaRouterProviderConfig:
-    """The OpenAI-compatible provider config :class:`~teatree.agents.harness.PydanticAiHarness` needs.
-
-    *api_key* rides :class:`OrcaRouterCredential` (env then ``pass``, same
-    mechanics as every other :class:`Credential`). *base_url* is NOT a secret —
-    it skips the ``pass`` store and reads ``ORCA_ROUTER_BASE_URL`` only, with NO
-    fabricated default: a wrong hardcoded endpoint would silently route real
-    spend at the wrong host, so an absent value fails loud instead of guessing.
-    """
-
-    api_key: str
-    base_url: str
-
-
-def resolve_orca_router_provider_config(*, credential: OrcaRouterCredential | None = None) -> OrcaRouterProviderConfig:
-    """Resolve the OrcaRouter provider config, failing loud when either half is absent.
-
-    *credential* is injectable (default: a fresh :class:`OrcaRouterCredential`,
-    env then ``pass``) so callers can drive this with fake sources in tests, the
-    same DI pattern every other credential resolver in this module uses.
-    """
-    credential = credential if credential is not None else OrcaRouterCredential()
-    base_url = os.environ.get(_ORCA_ROUTER_BASE_URL_ENV, "").strip()
-    if not base_url:
-        msg = (
-            f"no {_ORCA_ROUTER_BASE_URL_ENV} configured. Set the OrcaRouter OpenAI-compatible "
-            "endpoint in the environment before selecting agent_harness=pydantic_ai."
-        )
-        raise CredentialError(msg)
-    return OrcaRouterProviderConfig(api_key=credential.resolve(), base_url=base_url)

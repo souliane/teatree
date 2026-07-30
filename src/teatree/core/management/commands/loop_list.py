@@ -14,20 +14,19 @@ marks fired, or mutates a row.
 """
 
 import datetime as dt
-import json
 from collections.abc import Sequence
 from typing import IO, Annotated, Any, cast
 
 import typer
-from django_typer.management import TyperCommand
 
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.session_identity import current_session_id
 from teatree.core.table_output import print_table
 from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusReport, build_report, owned_per_loop_owners
 
 _NEVER = "—"
 _REMEDIATION = (
-    "re-register each enabled loop's `/loop` via the `/t3:loops` skill, or run `t3 loop claim` "
+    "re-register each enabled loop's `/loop` via the `/t3:health` skill, or run `t3 loop claim` "
     "in a Claude Code session to take ownership (force a one-off render with `t3 loops tick`)"
 )
 _SECONDS_PER_MINUTE = 60
@@ -144,6 +143,14 @@ def _status_lines(report: LoopStatusReport, *, show_all: bool) -> list[str]:
     return lines
 
 
+def _render_human(report: LoopStatusReport, stream: IO[str], *, show_all: bool) -> None:
+    now = report.generated_at
+    _render_entries_table("infra slots", report.infra_slots, now, stream)
+    _render_entries_table("mini-loops", report.mini_loops, now, stream)
+    for line in _status_lines(report, show_all=show_all):
+        stream.write(line)
+
+
 def _entry_payload(entry: LoopStatusEntry, now: dt.datetime) -> dict[str, Any]:
     return {
         "name": entry.name,
@@ -170,7 +177,7 @@ def _owner_payload(owner: LoopOwnerStatus) -> dict[str, Any]:
     }
 
 
-def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
+def _payload(report: LoopStatusReport, *, show_all: bool) -> dict[str, Any]:
     now = report.generated_at
     payload = {
         "generated_at": report.generated_at.isoformat(),
@@ -196,10 +203,10 @@ def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
     per_loop_owners = _resolve_per_loop_owners(report, show_all=show_all)
     if per_loop_owners:
         payload["per_loop_owners"] = [_owner_payload(owner) for owner in per_loop_owners]
-    return json.dumps(payload, indent=2)
+    return payload
 
 
-class Command(TyperCommand):
+class Command(MachineOutputCommand):
     help = "Print LIVE loop status computed from the DB (read-only; #1744)."
 
     def handle(
@@ -213,14 +220,15 @@ class Command(TyperCommand):
                 help="Also show the per-loop owning sessions (cross-session health view, #1834).",
             ),
         ] = False,
-    ) -> None:
+    ) -> dict[str, Any]:
         report = build_report()
-        if json_output:
-            self.stdout.write(_render_json(report, show_all=show_all))
-            return
-        stream = cast("IO[str]", self.stdout)
-        now = report.generated_at
-        _render_entries_table("infra slots", report.infra_slots, now, stream)
-        _render_entries_table("mini-loops", report.mini_loops, now, stream)
-        for line in _status_lines(report, show_all=show_all):
-            self.stdout.write(line)
+        payload = _payload(report, show_all=show_all)
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_human(report, stream, show_all=show_all),
+        )
+        return payload

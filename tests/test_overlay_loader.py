@@ -13,12 +13,14 @@ from django.core.exceptions import ImproperlyConfigured
 
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
+from teatree.config.settings import OverlayEntry
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import (
     OverlayConfigResolver,
     _discover_toml_overlays,
     frontend_repos_for_overlay,
+    get_overlay,
     get_overlay_for_repo,
     get_overlay_for_url,
     infer_overlay_for_url,
@@ -104,6 +106,24 @@ class TestDiscoverTomlOverlaysImportError:
             result = _discover_toml_overlays(OverlayBase, set())
         assert result == {}
         assert "failed to load class" in caplog.text
+
+
+class TestDiscoverTomlOverlaysConformance:
+    """A registry overlay whose hook signature is non-conforming is warned + skipped (#3526).
+
+    Mirrors the non-subclass handling above: a registry-configured overlay is
+    lenient — a signature mismatch is logged and the overlay dropped, not fatal
+    (the fatal path is reserved for entry-point overlays).
+    """
+
+    def test_skips_non_conforming_overlay(self, caplog):
+        config = _make_config(
+            {"nonconforming": {"class": "tests.test_overlay_loader:_NonConformingOverlay"}},
+        )
+        with patch.object(config_mod, "load_config", return_value=config), caplog.at_level("WARNING"):
+            result = _discover_toml_overlays(OverlayBase, set())
+        assert result == {}
+        assert "require_sections" in caplog.text
 
 
 class TestInferOverlayForUrl:
@@ -533,6 +553,81 @@ class TestGetOverlayForUrl:
             assert get_overlay_for_url("") is overlays["only"]
 
 
+class TestAmbientOverlayMatchesConfigResolution:
+    """A bare ``get_overlay()`` resolves the cwd's overlay instead of crashing on ambiguity.
+
+    ``teatree.config`` already resolves the ACTIVE overlay as ``T3_OVERLAY_NAME``
+    → cwd walked up to its ``manage.py`` (``discover_active_overlay``) → the
+    single installed overlay. ``get_overlay`` stopped one tier short, so on a
+    two-overlay install one process held two active overlays: the settings tier
+    layered an overlay's DB rows while every backend / gate / skill resolver
+    raised ``Multiple overlays found`` and had it swallowed into a benign-looking
+    "nothing configured" answer by its caller. The two tiers must agree.
+    """
+
+    def _two_overlays_no_pin(self, overlays: dict):
+        """Register *overlays* with ``T3_OVERLAY_NAME`` unset (the conftest pins it)."""
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        return (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+        )
+
+    def _overlays(self) -> dict[str, OverlayBase]:
+        return {"t3-alpha": _StubOverlay(), "t3-beta": _StubOverlay()}
+
+    def test_cwd_owned_overlay_wins_over_the_ambiguity_error(self):
+        overlays = self._overlays()
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with (
+            env_patch,
+            discover_patch,
+            patch(
+                "teatree.config.discover_active_overlay",
+                return_value=OverlayEntry(name="t3-beta", overlay_class="", project_path=Path("/w/beta")),
+            ),
+        ):
+            assert get_overlay() is overlays["t3-beta"]
+
+    def test_cwd_owning_no_overlay_still_fails_loud(self):
+        overlays = self._overlays()
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with (
+            env_patch,
+            discover_patch,
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            pytest.raises(ImproperlyConfigured, match=r"Multiple overlays found"),
+        ):
+            get_overlay()
+
+    def test_unregistered_cwd_overlay_still_fails_loud(self):
+        """A cwd naming an overlay teatree does not have must never resolve to a guess."""
+        overlays = self._overlays()
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with (
+            env_patch,
+            discover_patch,
+            patch(
+                "teatree.config.discover_active_overlay",
+                return_value=OverlayEntry(name="t3-gamma", overlay_class="", project_path=Path("/w/gamma")),
+            ),
+            pytest.raises(ImproperlyConfigured, match=r"Multiple overlays found"),
+        ):
+            get_overlay()
+
+    def test_env_pin_still_wins_over_the_cwd(self):
+        overlays = self._overlays()
+        with (
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "t3-alpha"}),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch(
+                "teatree.config.discover_active_overlay",
+                side_effect=AssertionError("the env pin must short-circuit cwd discovery"),
+            ),
+        ):
+            assert get_overlay() is overlays["t3-alpha"]
+
+
 class TestResolveOverlayName:
     """``resolve_overlay_name`` folds a name onto its registered canonical form (#1959)."""
 
@@ -756,3 +851,28 @@ class _StubOverlay(OverlayBase):
 
 class _NotAnOverlay:
     """A class that does not subclass OverlayBase."""
+
+
+class _NarrowValidatePr:
+    """metadata.validate_pr predating the require_sections keyword (#3526 non-conforming).
+
+    Deliberately not an ``OverlayMetadata`` subclass — the narrow signature would
+    be a lexical override the type checker rejects; the conformance scan reads the
+    runtime signature, which is the surface under test.
+    """
+
+    def validate_pr(self, title: str, description: str):
+        del title, description
+        return {"errors": [], "warnings": []}
+
+
+class _NonConformingOverlay(OverlayBase):
+    """Registry overlay whose validate_pr cannot accept the documented keyword."""
+
+    metadata = _NarrowValidatePr()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []

@@ -109,12 +109,6 @@ def covering_verdict(ticket: "Ticket", head_sha: str) -> "CriticVerdict | None":
     return CriticVerdict.objects.latest_for(ticket=ticket, transition=_PLAN_TRANSITION, head_sha=head_sha)
 
 
-def failed_slugs(verdict: "CriticVerdict") -> list[str]:
-    """Plan rubric slugs the *verdict* FAILs (an uncited pass is downgraded to a fail)."""
-    passed = {item.slug for item in verdict.item_verdicts() if not item.is_fail()}
-    return [item.slug for item in llm_items(_PLAN_TRANSITION) if item.slug not in passed]
-
-
 def _finding_specs(verdict: "CriticVerdict", head_sha: str) -> list[CriticFindingSpec]:
     specs: list[CriticFindingSpec] = []
     for failed in verdict.failed_items():

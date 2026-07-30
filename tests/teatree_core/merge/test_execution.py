@@ -10,7 +10,7 @@ from django.test import TestCase
 
 from teatree.core.merge import execution
 from teatree.core.merge.execution import record_merge_and_advance
-from teatree.core.models import MergeClear, Ticket
+from teatree.core.models import MergeClear, PullRequest, Ticket
 
 _SHA = "a" * 40
 
@@ -31,6 +31,117 @@ def _clear(ticket: Ticket, *, slug: str, pr_id: int, reviewed_sha: str = _SHA) -
         gh_verify_result=MergeClear.VerifyResult.GREEN,
         blast_class=MergeClear.BlastClass.LOGIC,
     )
+
+
+def _pull_request(ticket: Ticket, *, slug: str, pr_id: int) -> PullRequest:
+    return PullRequest.objects.create(
+        ticket=ticket,
+        overlay=ticket.overlay,
+        url=f"https://github.com/{slug}/pull/{pr_id}",
+        repo=slug,
+        iid=str(pr_id),
+    )
+
+
+class TestKeystoneRecordsTheForgeMerge(TestCase):
+    def test_merge_marks_the_pull_request_row_merged(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        pr = _pull_request(ticket, slug="acme/widget", pr_id=42)
+
+        state = record_merge_and_advance(
+            clear=_clear(ticket, slug="acme/widget", pr_id=42),
+            merged_sha="c" * 40,
+            required_checks_status="green",
+        )
+
+        pr.refresh_from_db()
+        ticket.refresh_from_db()
+        assert pr.state == PullRequest.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        assert state == Ticket.State.MERGED
+
+    def test_ticketless_clear_adopts_the_pull_request_owning_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        pr = _pull_request(ticket, slug="acme/widget", pr_id=43)
+        clear = MergeClear.objects.create(
+            pr_id=43,
+            slug="acme/widget",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
+
+        clear.refresh_from_db()
+        pr.refresh_from_db()
+        ticket.refresh_from_db()
+        assert clear.ticket_id == ticket.pk
+        assert pr.state == PullRequest.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        assert state == Ticket.State.MERGED
+
+    def test_unresolvable_ticketless_clear_still_merges_and_returns_no_state(self) -> None:
+        clear = MergeClear.objects.create(
+            pr_id=44,
+            slug="acme/widget",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
+
+        clear.refresh_from_db()
+        assert clear.ticket_id is None
+        assert clear.consumed_at is not None
+        assert state == ""
+
+    def test_replayed_merge_leaves_an_already_merged_pull_request_row_alone(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        pr = _pull_request(ticket, slug="acme/widget", pr_id=45)
+        pr.mark_merged()
+        pr.save()
+
+        record_merge_and_advance(
+            clear=_clear(ticket, slug="acme/widget", pr_id=45),
+            merged_sha="c" * 40,
+            required_checks_status="green",
+        )
+
+        pr.refresh_from_db()
+        assert pr.state == PullRequest.State.MERGED
+
+    def test_a_differently_cased_clear_slug_still_advances_the_board(self) -> None:
+        """A mis-cased CLEAR must not silently reinstate the starvation it fixes.
+
+        Forge slugs are case-insensitive, so a CLEAR issued as ``acme/Widget``
+        names the same PR as an ``acme/widget`` row. A case-sensitive lookup
+        marks 0 rows and adopts no ticket, so the keystone returns nothing and
+        the real merge moves no card.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        pr = _pull_request(ticket, slug="acme/widget", pr_id=46)
+        clear = MergeClear.objects.create(
+            pr_id=46,
+            slug="Acme/Widget",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
+
+        clear.refresh_from_db()
+        pr.refresh_from_db()
+        ticket.refresh_from_db()
+        assert clear.ticket_id == ticket.pk
+        assert pr.state == PullRequest.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        assert state == Ticket.State.MERGED
 
 
 class TestSiblingSupersedeCaseInsensitive(TestCase):

@@ -551,3 +551,22 @@ class TestWorktreePgConnection(TestCase):
         )
         user, host, env = worktree_pg_connection(wt)
         assert (user, host, env) == ("", "", {})
+
+
+class TestOrmImportsAreDeferred(TestCase):
+    """The CLI cold-path refactor keeps ORM/model imports function-level.
+
+    worktree_env must be importable before ``django.setup()`` (bare ``t3``),
+    so the model imports are deferred inside the functions rather than bound at
+    module top level. A regression that re-binds them at import time silently
+    breaks the cold path this refactor exists to protect.
+    """
+
+    def test_model_names_are_not_bound_at_module_top_level(self) -> None:
+        assert not hasattr(worktree_env_mod, "WorktreeEnvOverride")
+        assert not hasattr(worktree_env_mod, "Worktree")
+
+    def test_public_helpers_stay_module_level_callables(self) -> None:
+        for fn in (render_env_cache, write_env_cache, detect_drift, env_cache_path, load_overrides, set_override):
+            assert callable(fn)
+            assert fn.__module__ == "teatree.core.worktree.worktree_env"

@@ -144,14 +144,16 @@ class TestRecommendedPermissions:
             "actions/variables/": (1, _NOT_FOUND),
         }
 
-    def test_all_recommended_present_ok_and_no_recommended_gaps_except_workflows(self) -> None:
+    def test_all_recommended_present_reports_no_gap_and_one_unprobed(self) -> None:
         run = _runner(self._base_responses())
         with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
             probe = probe_token_permissions(_SLUG, run=run)
         assert probe.ok
-        # workflows:write is never actively probed for a fine-grained token —
-        # always surfaced so remediation tells the operator to verify manually.
-        assert probe.missing_recommended == ("workflows: write",)
+        # workflows:write is never actively probed for a fine-grained token, so it is
+        # reported as UNPROBED — not as a gap. Claiming a gap nobody measured drove a
+        # recreate-your-token warning that no action could ever clear.
+        assert probe.missing_recommended == ()
+        assert probe.unprobed == ("workflows: write",)
 
     def test_missing_actions_write_reported_recommended_never_required(self) -> None:
         responses = self._base_responses()
@@ -524,3 +526,53 @@ class TestFormatRemediation:
         probe = GhTokenProbe(missing=("issues: write",), token_kind="fine_grained")
         lines = format_remediation(probe, _SLUG)
         assert any("issues: write" in line for line in lines)
+
+
+class TestUnprobedIsNotAGap:
+    """An UNPROBEABLE permission is not evidence of a missing one.
+
+    ``workflows: write`` is deliberately never probed on a fine-grained token (the
+    #3477 spike could not distinguish a route-level 403 from the permitted path), so
+    reporting it in ``missing_recommended`` asserts a gap nobody measured. The
+    consequence is worse than noise: ``format_remediation`` then tells the operator
+    to RECREATE a token that may already carry the permission, and no action they
+    take can ever clear the WARN — it is unfalsifiable by construction.
+    """
+
+    def _fine_grained_all_present(self) -> GhTokenProbe:
+        base = TestRecommendedPermissions()._base_responses()
+        run = _runner(base)
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            return probe_token_permissions(_SLUG, run=run)
+
+    def test_a_clean_fine_grained_token_reports_no_gap(self) -> None:
+        probe = self._fine_grained_all_present()
+        assert probe.missing_recommended == (), "an unprobed permission is not a measured gap"
+        assert probe.unprobed == ("workflows: write",)
+
+    def test_a_clean_fine_grained_token_produces_no_remediation(self) -> None:
+        # The whole point: nothing to act on means nothing printed, run after run.
+        assert format_remediation(self._fine_grained_all_present(), _SLUG) == []
+
+    def test_the_unprobed_note_rides_along_when_a_real_gap_exists(self) -> None:
+        # The operator is already recreating the token, so naming it is actionable.
+        probe = GhTokenProbe(
+            missing=(),
+            missing_recommended=("projects: read",),
+            unprobed=("workflows: write",),
+            token_kind="fine_grained",
+        )
+        lines = format_remediation(probe, _SLUG)
+        body = "\n".join(lines)
+        assert "projects: read" in body
+        assert "workflows: write" in body
+        assert "cannot be probed" in body
+
+    def test_a_classic_token_probes_the_workflow_scope_so_nothing_is_unprobed(self) -> None:
+        # The classic path reads X-OAuth-Scopes, which is real evidence — its
+        # `workflows: write` verdict stays a measured gap, not an unprobed note.
+        run = _runner({_META_KEY: (0, _classic_headers("repo, read:project"))})
+        with patch("teatree.core.gates.gh_token_preflight.shutil.which", return_value="/usr/bin/gh"):
+            probe = probe_token_permissions(_SLUG, run=run)
+        assert probe.missing_recommended == ("workflows: write",)
+        assert probe.unprobed == ()

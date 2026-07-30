@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from django.core.cache import cache
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
@@ -180,7 +181,32 @@ def _account_utilizations() -> tuple[AccountUtilization, ...]:
     )
 
 
+#: Cache key + TTL for the cycle-to-date spend aggregate. The health page polls
+#: every ~5s; the aggregate is a full cycle-to-date ``TaskAttempt`` scan, so it is
+#: recomputed at most once per TTL instead of once per poll (#3674 F16). A short
+#: TTL keeps the chip fresh while collapsing the poll storm to one scan.
+_SPEND_CACHE_KEY = "dash:health:spend_summary"
+_SPEND_CACHE_TTL = 30
+_SPEND_MISS = object()
+
+
 def _spend_summary() -> SpendSummary | None:
+    """Cached cycle-to-date spend chip — recomputed at most once per TTL, not per poll.
+
+    Wraps :func:`_compute_spend_summary` in a short-TTL cache so the health page's
+    ~5s htmx poll no longer triggers a full-table cost aggregate on every request.
+    A ``None`` (fail-open) result is cached too, so a broken cost read is not
+    re-hammered every poll.
+    """
+    cached = cache.get(_SPEND_CACHE_KEY, _SPEND_MISS)
+    if cached is not _SPEND_MISS:
+        return cached
+    result = _compute_spend_summary()
+    cache.set(_SPEND_CACHE_KEY, result, _SPEND_CACHE_TTL)
+    return result
+
+
+def _compute_spend_summary() -> SpendSummary | None:
     """Cycle-to-date SDK-equivalent spend vs the monthly credit (the ``t3 cost`` read).
 
     Composes the same ``CostReport`` the ``cost`` command builds, directly rather

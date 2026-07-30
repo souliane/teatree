@@ -28,7 +28,10 @@ lands in ~one worker poll instead of waiting out the cadence, while
 wake left behind. A :func:`render_statusline` chain
 (:mod:`teatree.loops.statusline_refresh`) keeps ``statusline.txt`` fresh on a short
 cadence even when no domain loop is admitted-and-ticking, so the pre-rendered loop line
-never freezes headless. The maintenance chains are seeded by
+never freezes headless. The :mod:`teatree.loops.off_live_tick_driver` chain fires each ``off_live_tick``
+loop's own tick command (``directive`` / ``dream`` / ``outer``) as a deadlined
+subprocess — those loops are excluded from BOTH the live fan-out and the timer chains,
+so without it they have no driver at all. The maintenance chains are seeded by
 :func:`ensure_maintenance_chains` at worker startup and self-perpetuate, so a worker
 restart re-arms them.
 """
@@ -51,9 +54,9 @@ logger = logging.getLogger(__name__)
 
 #: The reconciler's own cadence — it re-runs every ~5 minutes off its own chain.
 RECONCILE_INTERVAL_SECONDS = 300
-#: The result-prune cadence and how long a finished result is kept before pruning.
+#: The result-prune cadence. How long a finished result is kept is the
+#: ``task_result_retention_days`` setting, not a constant here.
 PRUNE_INTERVAL_SECONDS = 86400
-PRUNE_RETENTION_SECONDS = 86400
 #: The stale-job expiry cadence — hourly, so a long-lived worker keeps the
 #: ``default``-queue backlog swept without depending on the front-end drain loop.
 EXPIRE_INTERVAL_SECONDS = 3600
@@ -79,8 +82,9 @@ def timer_chain_loop_names() -> set[str]:
 
     Enabled ``Loop`` rows (the row-level ``enabled`` column) intersected with the
     registered mini-loops that are NOT ``off_live_tick`` — the heavy off-tick loops
-    (``dream``) are driven by their own low-frequency cron, never a worker timer, so
-    they never get a chain that would only ever no-op.
+    (``dream``, ``directive_loop``, ``outer_loop``) are driven by
+    :mod:`teatree.loops.off_live_tick_driver` firing their own tick command, never a
+    worker timer, so they never get a chain that would only ever no-op.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
     from teatree.loops.registry import iter_loops  # noqa: PLC0415 — deferred: loaded at tick time, not import
@@ -173,41 +177,52 @@ def _pending_for_path(path: str) -> bool:
 
 @task(queue_name=LOOPS_QUEUE)
 def reconcile_timers() -> dict[str, int]:
-    """Reconcile the chains, then re-schedule this reconciler ~5 minutes out.
+    """Re-schedule this reconciler ~5 minutes out, THEN reconcile the chains.
 
     Self-dedups first (another pending reconciler carries the chain) so an
     at-least-once redelivery collapses to one, mirroring the loop-timer contract.
+    Successor-FIRST (F6): the next fire is queued BEFORE the body runs, so a body
+    exception cannot orphan the chain. This is the repair chain for every OTHER
+    chain, so orphaning it would strand the whole maintenance mesh until a worker
+    restart — the body therefore runs in a try that records-but-never-propagates.
     """
     if _pending_for_path(reconcile_timers.module_path):
         return {"deduped": 1}
-    counts = ensure_loop_timers()
     reconcile_timers.using(run_after=timezone.now() + dt.timedelta(seconds=RECONCILE_INTERVAL_SECONDS)).enqueue()
-    return counts
+    try:
+        return ensure_loop_timers()
+    except Exception:
+        logger.exception("reconcile_timers body failed; successor already queued, the chain survives")
+        return {"error": 1}
 
 
 @task(queue_name=LOOPS_QUEUE)
 def prune_task_results() -> dict[str, int]:
-    """Delete finished DBTaskResults older than the retention window, then re-schedule daily.
+    """Re-schedule daily, THEN delete finished DBTaskResults older than the retention window.
 
-    Caps unbounded growth of the results table the timer chains churn. Only FINISHED
-    (successful/failed) rows past the retention window are removed — a READY or
-    RUNNING row is never touched.
+    Caps unbounded growth of the results table the timer chains churn. The delete is
+    :func:`teatree.core.retention.task_results.prune_finished_task_results` — the same
+    seam ``t3 <overlay> retention prune`` uses, so the scheduled pass and the operator's
+    pass cannot disagree about which rows are disposable, and neither hand-writes a
+    prune over ``django_tasks_db``'s table. Only FINISHED (successful/failed) rows past
+    the window go; a READY or RUNNING row is never touched. The window is the
+    ``task_result_retention_days`` setting (a ``0`` disables the chain's delete, leaving
+    the reconciler's own surplus/stranded pruning untouched). Successor-FIRST (F6): the
+    next fire is queued before the delete runs, in a try that records-but-never-propagates,
+    so a body fault cannot orphan the chain.
     """
-    from django_tasks.base import TaskResultStatus  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: config read at call time
+    from teatree.core.retention.task_results import prune_finished_task_results  # noqa: PLC0415 — deferred: heavy dep
 
     if _pending_for_path(prune_task_results.module_path):
         return {"deduped": 1}
-    cutoff = timezone.now() - dt.timedelta(seconds=PRUNE_RETENTION_SECONDS)
-    deleted, _ = (
-        DBTaskResult.objects.filter(
-            status__in=[TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED],
-            finished_at__lt=cutoff,
-        )
-        .exclude(finished_at=None)
-        .delete()
-    )
     prune_task_results.using(run_after=timezone.now() + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
+    try:
+        days = int(get_effective_settings().task_result_retention_days)
+        deleted = prune_finished_task_results(days=days) if days > 0 else 0
+    except Exception:
+        logger.exception("prune_task_results body failed; successor already queued, the chain survives")
+        return {"error": 1}
     return {"pruned": deleted}
 
 
@@ -224,8 +239,12 @@ def expire_stale_jobs() -> dict[str, int]:
 
     if _pending_for_path(expire_stale_jobs.module_path):
         return {"deduped": 1}
-    retired = expire_stale_default_jobs()
     expire_stale_jobs.using(run_after=timezone.now() + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
+    try:
+        retired = expire_stale_default_jobs()
+    except Exception:
+        logger.exception("expire_stale_jobs body failed; successor already queued, the chain survives")
+        return {"error": 1}
     return {"retired": sum(retired.values())}
 
 
@@ -313,7 +332,7 @@ def reap_stuck_headless_runs() -> dict[str, int]:
 
 @task(queue_name=LOOPS_QUEUE)
 def drain_headless_chain() -> dict[str, int]:
-    """Reap dead headless runs, drain the pending headless backlog, re-schedule ~5min out.
+    """Re-schedule ~5min out, THEN reap dead headless runs and drain the pending backlog.
 
     The scheduled home of ``drain_headless_queue`` — it was defined but NEVER
     scheduled from anywhere, so the pending headless backlog only drained on the
@@ -322,15 +341,21 @@ def drain_headless_chain() -> dict[str, int]:
     self-perpetuating, like its sibling reconcile/prune/expire chains. Runs on
     the ``loops`` queue and enqueues onto ``default`` (it never runs the heavy
     headless work itself). Self-dedups first so an at-least-once redelivery
-    collapses to one.
+    collapses to one. Successor-FIRST (F6): the next fire is queued before the
+    reap/drain body, in a try that records-but-never-propagates, so a body fault
+    cannot orphan the chain.
     """
     from teatree.core.tasks import drain_headless_queue_body  # noqa: PLC0415 — deferred: task-body import
 
     if _pending_for_path(drain_headless_chain.module_path):
         return {"deduped": 1}
-    reaped = reap_stuck_headless_runs()
-    drained = drain_headless_queue_body()
     drain_headless_chain.using(run_after=timezone.now() + dt.timedelta(seconds=DRAIN_INTERVAL_SECONDS)).enqueue()
+    try:
+        reaped = reap_stuck_headless_runs()
+        drained = drain_headless_queue_body()
+    except Exception:
+        logger.exception("drain_headless_chain body failed; successor already queued, the chain survives")
+        return {"error": 1}
     return {
         "reaped_failed": reaped["failed"],
         "reaped_reenqueued": reaped["reenqueued"],
@@ -372,27 +397,31 @@ def _run_slack_answer_cycle_under_lease() -> dict[str, int]:
 
 @task(queue_name=LOOPS_QUEUE)
 def run_slack_answer() -> dict[str, int]:
-    """Run one reactive Slack-answer cycle headless, then re-schedule at its cadence.
+    """Re-schedule at its cadence, THEN run one reactive Slack-answer cycle headless.
 
     Self-dedups first (another pending run carries the chain), mirroring the
     reconcile/prune/expire contract, so an at-least-once redelivery collapses to
-    one. Runs :func:`_run_slack_answer_cycle_under_lease` — which SKIPS the cycle
-    when an owner session already holds the ``loop-slack-answer`` lease rather
-    than double-post — then always re-schedules itself at
-    :func:`slack_answer_cadence_seconds`. This cadence chain is the fallback
-    safety net behind the event-driven :func:`wake_slack_answer`: it drains
-    anything a missed wake left behind even when no inbound event arrives.
+    one. Successor-FIRST (F6): the next fire is queued before the cycle body, in a
+    try that records-but-never-propagates, so a body fault cannot orphan the chain.
+    The body runs :func:`_run_slack_answer_cycle_under_lease` — which SKIPS the
+    cycle when an owner session already holds the ``loop-slack-answer`` lease rather
+    than double-post. This cadence chain is the fallback safety net behind the
+    event-driven :func:`wake_slack_answer`: it drains anything a missed wake left
+    behind even when no inbound event arrives.
     """
     from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
 
     if _pending_for_path(run_slack_answer.module_path):
         return {"deduped": 1}
 
-    result = _run_slack_answer_cycle_under_lease()
     run_slack_answer.using(
         run_after=timezone.now() + dt.timedelta(seconds=slack_answer_cadence_seconds()),
     ).enqueue()
-    return result
+    try:
+        return _run_slack_answer_cycle_under_lease()
+    except Exception:
+        logger.exception("run_slack_answer body failed; successor already queued, the chain survives")
+        return {"error": 1}
 
 
 @task(queue_name=LOOPS_QUEUE)
@@ -415,8 +444,13 @@ def wake_slack_answer() -> dict[str, int]:
 
 
 def ensure_maintenance_chains() -> None:
-    """Seed reconcile / prune / expire / drain / slack-answer / usage-window / preset / statusline chains if absent."""
+    """Seed every maintenance chain if absent.
+
+    Reconcile, prune, expire, drain, slack-answer, off-live-tick drive, usage-window
+    recovery, preset transitions, and statusline refresh.
+    """
     from teatree.loop.loop_cadences import slack_answer_cadence_seconds  # noqa: PLC0415 — deferred: tick-time import
+    from teatree.loops.off_live_tick_driver import ensure_off_live_tick_driver_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.preset_transitions import ensure_preset_transitions_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.statusline_refresh import ensure_statusline_refresh_chain  # noqa: PLC0415 — cycle-safe
     from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
@@ -439,6 +473,10 @@ def ensure_maintenance_chains() -> None:
     # session's ``/loop`` slot before. Lease-guarded against the owner session.
     if not _pending_for_path(run_slack_answer.module_path):
         run_slack_answer.using(run_after=now + dt.timedelta(seconds=slack_answer_cadence_seconds())).enqueue()
+    # The off-live-tick driver. Without it directive_loop / dream / outer_loop have NO
+    # driver at all: the live fan-out excludes them, the reconciler above builds them no
+    # chain, and the cron their docstrings promised was never installed anywhere.
+    ensure_off_live_tick_driver_chain()
     # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
     # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
     ensure_usage_window_recovery_chain()

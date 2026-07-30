@@ -14,6 +14,22 @@ from teatree.config import get_effective_settings
 logger = logging.getLogger(__name__)
 
 
+def stranger_pr_admission(overlay_name: str) -> tuple[tuple[str, ...], str]:
+    """The ``(trusted_authors, admit_label)`` pair arming the #3634 stranger-PR gate.
+
+    The same two values the intake scanner is built with, so "who may the factory
+    work for" is answered identically on the issue and PR sides.
+    """
+    from teatree.config import effective_trusted_issue_authors  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.intake.factory_admission import DEFAULT_ADMIT_LABEL  # noqa: PLC0415 — deferred leaf import
+
+    settings = get_effective_settings(overlay_name or None)
+    return (
+        tuple(sorted(effective_trusted_issue_authors(settings))),
+        settings.issue_implementer_label or DEFAULT_ADMIT_LABEL,
+    )
+
+
 def _gitlab_approvals_enabled() -> bool:
     """Resolve the GitLab-approval poll-scanner feature flag.
 

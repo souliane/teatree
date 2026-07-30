@@ -128,7 +128,8 @@ class TestStatusCommand:
 
         assert result.exit_code == 1
         assert "not running" in result.stdout
-        assert not pid_file.is_file()
+        # read_pid reuses the flock file in place; unlinking it would orphan a live holder's lock (#3617).
+        assert pid_file.is_file()
 
     def test_garbled_pid_file(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "slack-listener.pid"
@@ -138,7 +139,8 @@ class TestStatusCommand:
 
         assert result.exit_code == 1
         assert "not running" in result.stdout
-        assert not pid_file.is_file()
+        # read_pid reuses the flock file in place; unlinking it would orphan a live holder's lock (#3617).
+        assert pid_file.is_file()
 
     def test_running_pid(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "slack-listener.pid"

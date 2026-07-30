@@ -30,7 +30,9 @@ _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 
 INSTRUCTIONS = (
     "- slack_mentions(since): recent @-mentions of the user.\n"
-    "- slack_channel_history(channel, limit): recent messages in a channel.\n"
+    "- slack_channel_history(channel, limit): recent messages in a channel. Errors "
+    "(never returns an empty list) when the bot cannot read the channel — a bot token "
+    "reads only channels it was invited to, so `[]` always means genuinely empty.\n"
     "- slack_thread_replies(channel, thread_ts): replies under one thread.\n"
     "- slack_permalink(channel, ts): the permalink for one message.\n"
     "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
@@ -53,8 +55,17 @@ async def _slack_mentions(*, since: str = "") -> list[dict[str, Any]]:
 
 
 async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Recent messages in *channel* — refuses loudly rather than returning a misleading ``[]``.
+
+    An agent asking about ONE channel cannot act on a bare empty list: "the channel
+    is quiet" and "the bot was never invited, so it sees nothing" are opposite facts
+    demanding opposite responses, and the silent-empty form reported the first while
+    meaning the second. A bot token reads only channels the bot is a MEMBER of, so
+    that refusal is the common case, not an edge case — it raises
+    :class:`~teatree.types.ChannelReadRefusedError`, which FastMCP surfaces to the caller.
+    """
     return await sync_to_async(
-        lambda: _client().fetch_channel_history(channel=channel, limit=limit), thread_sensitive=True
+        lambda: _client().fetch_channel_history_or_refuse(channel=channel, limit=limit), thread_sensitive=True
     )()
 
 

@@ -4,6 +4,7 @@ import dataclasses
 from pathlib import Path
 from typing import Any, Literal
 
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
 
 #: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
@@ -190,13 +191,15 @@ class JudgeSpec:
     Present only when a scenario's pass/fail is not cleanly matcher-gradeable
     (e.g. "the explanation is faithful to the diff", "the tone is non-blaming").
     A judge model reads the captured transcript and the ``rubric`` and returns
-    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the Sonnet run
-    tier) and ``max_output_tokens`` caps the judge's reply — both cost controls.
+    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the mid run
+    tier) — the per-scenario cost control, alongside the per-call
+    ``JUDGE_DEFAULT_BUDGET_USD`` cap and the process-wide ``JudgeBudget``.
     """
 
     rubric: str
-    model: str = "claude-sonnet-5"
-    max_output_tokens: int = 512
+    #: DERIVED from the tier catalog (the conservative mid tier), never pinned —
+    #: a hardcoded id would leave the judge a generation behind the runs it grades.
+    model: str = TIER_MODELS[DEFAULT_TIER]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -440,3 +443,42 @@ class EvalRun:
     #: shrinks the shared permit count, ``0``-and-clean grows it back — so a
     #: throttled suite backs its parallel load off the single shared OAuth token.
     throttle_retries: int = 0
+
+    @classmethod
+    def skipped(cls, spec_name: str, reason: str) -> "EvalRun":
+        """A skip-shaped run for an un-provisioned lane — no transcript, not an error.
+
+        Every fresh-run backend shares this shape when its provisioning gate is
+        unmet (no ``claude`` binary, no ``ANTHROPIC_API_KEY``, …): the terminal
+        reason is stamped ``skipped: <reason>`` so the report renders a clean SKIP,
+        and ``is_error`` stays False — a skip is not a failure.
+        """
+        return cls(
+            spec_name=spec_name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=f"skipped: {reason}",
+            is_error=False,
+            raw_stdout="",
+            raw_stderr="",
+        )
+
+    @classmethod
+    def terminal(cls, spec_name: str, *, terminal_reason: str, cost_usd: float = 0.0) -> "EvalRun":
+        """An error-shaped run that never produced a transcript (timeout / budget cap).
+
+        No captured tool calls or text, ``is_error=True``, and a ``terminal_reason``
+        that grades the cell to a FAIL signal rather than crashing the run. The
+        optional ``cost_usd`` carries a budget-exceeded cap's floored cost (``0.0``
+        for a timeout, which paid nothing).
+        """
+        return cls(
+            spec_name=spec_name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=terminal_reason,
+            is_error=True,
+            raw_stdout="",
+            raw_stderr="",
+            cost_usd=cost_usd,
+        )

@@ -18,8 +18,13 @@ import git_merge_generated as driver
 import pytest
 
 from teatree.cli.setup.merge_driver_installer import GitMergeDriverInstaller
-from teatree.core.git_merge_driver import install_merge_driver, merge_driver_command
+from teatree.core.git_merge_driver import install_merge_driver
 from tests._git_repo import make_git_repo, run_git
+
+# The literal git config value the driver contract is pinned to. Asserting the
+# installed value against the production constant would be tautological — both
+# sides would read the same string, so a broken command could never fail here.
+_EXPECTED_DRIVER_COMMAND = "uv run python scripts/hooks/git_merge_generated.py %O %A %B %P"
 
 
 def _forbidden_regenerate(generator_argv: list[str], output_path: str) -> bool:
@@ -88,7 +93,7 @@ class TestInstallMergeDriver:
 
         assert line.startswith("OK")
         configured = run_git(repo, "config", "--get", "merge.generated.driver")
-        assert configured == merge_driver_command()
+        assert configured == _EXPECTED_DRIVER_COMMAND
         assert run_git(repo, "config", "--get", "merge.generated.name")
 
     def test_missing_git_dir_degrades_to_warn(self, tmp_path):
@@ -109,7 +114,7 @@ class TestGitMergeDriverInstaller:
         assert len(echoed) == len(repos)
         assert all(line.startswith("OK") for line in echoed)
         for repo in repos:
-            assert run_git(repo, "config", "--get", "merge.generated.driver") == merge_driver_command()
+            assert run_git(repo, "config", "--get", "merge.generated.driver") == _EXPECTED_DRIVER_COMMAND
 
 
 class TestEndToEndConflictResolution:

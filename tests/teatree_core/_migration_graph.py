@@ -25,3 +25,14 @@ def core_migration_names() -> list[str]:
     ``max_migration.txt``) so the returned set is exactly the real migration graph.
     """
     return sorted(path.stem for path in CORE_MIGRATIONS_DIR.glob("[0-9]*.py"))
+
+
+def core_head_migration() -> str:
+    """The current head ``core`` migration name, read from ``max_migration.txt``.
+
+    Derived from disk (never hardcoded) so a future squash or new leaf cannot
+    silently drift the tests that name the head. On a fresh/zero DB the migration
+    executor applies exactly this head — a squash replaces the range it collapses
+    — so this is the migration a stale-DB report or a fresh apply names first.
+    """
+    return (CORE_MIGRATIONS_DIR / "max_migration.txt").read_text().strip()

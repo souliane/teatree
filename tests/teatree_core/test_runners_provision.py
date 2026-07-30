@@ -19,6 +19,7 @@ from django.test import TestCase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import WorktreeProvisioner
 from teatree.utils import git
+from tests._git_repo import make_git_repo
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -972,8 +973,11 @@ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
         self.workspace.mkdir()
 
     def _init_clone(self, path: Path, remote_url: str) -> None:
-        path.mkdir(parents=True)
-        git.run_strict(repo=str(path), args=["init", "-q"])
+        # ``make_git_repo`` (not a hand-rolled ``git init``): the provisioner runs a
+        # real ``git worktree add``, which needs a HEAD it can resolve. A repo with no
+        # commits only works from git 2.44 on — on the older git in a slim CI image it
+        # is `fatal: invalid reference: HEAD`, and the guard under test never runs.
+        make_git_repo(path)
         git.run_strict(repo=str(path), args=["remote", "add", "origin", remote_url])
 
     def _scoped_ticket(self, repos: list[str], *, branch: str) -> Ticket:

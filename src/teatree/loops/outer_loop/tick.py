@@ -55,9 +55,8 @@ class OuterLoopTickResult:
 
 def _ticket_merged(experiment: OuterLoopExperiment) -> bool:
     """Whether the experiment's synthetic ticket has reached a merged-or-past state."""
-    merged_states = {Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED}
     ticket = experiment.ticket
-    return ticket is not None and ticket.state in merged_states
+    return ticket is not None and ticket.state in Ticket.merged_states()
 
 
 def run_tick(

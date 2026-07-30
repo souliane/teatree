@@ -201,6 +201,23 @@ class TestFindMissingAuthorizations:
         assert "slack-owner-id-lookup" not in missing_keys
         assert "provision-config-writes" not in missing_keys
 
+    def test_classifier_deference_rules_absent_on_empty_settings(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"autoMode": {"allow": []}}), encoding="utf-8")
+        missing_keys = {r.key for r in find_missing_authorizations(path)}
+        assert {
+            "teatree-owns-the-safety-layer",
+            "read-only-inspection",
+            "reland-on-a-fresh-branch",
+        } <= missing_keys
+
+    def test_classifier_deference_rules_covered_when_present(self, tmp_path):
+        keys = {"teatree-owns-the-safety-layer", "read-only-inspection", "reland-on-a-fresh-branch"}
+        covering = [r.sentence for r in RECOMMENDED_AUTHORIZATIONS if r.key in keys]
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"autoMode": {"allow": covering}}), encoding="utf-8")
+        assert keys.isdisjoint({r.key for r in find_missing_authorizations(path)})
+
     def test_does_not_modify_the_settings_file(self, tmp_path):
         path = tmp_path / "settings.json"
         original = json.dumps({"autoMode": {"allow": ["something unrelated"]}})

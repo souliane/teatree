@@ -25,7 +25,12 @@ overlay's provisioning IMPLEMENTATION legitimately still couples to internal plu
 ``teatree.paths``, ``teatree.core.models`` ORM types): those are deliberately NOT part of
 this frozen set — they may change, and such imports are the overlay's own maintenance
 surface, not a stability promise. Widening ``__all__`` to span them would freeze internals
-that must stay free to evolve. What IS guaranteed frozen is the authoring contract below
+that must stay free to evolve.
+
+One timing rule applies regardless: entry-point modules load before ``django.setup()``
+(CLI assembly), so ORM imports — ``teatree.core.models`` and friends — belong in function
+bodies or ``if TYPE_CHECKING:`` blocks, never at overlay module level; annotate hooks with
+the frozen ``WorktreeLike``/``TicketLike``. What IS guaranteed frozen is the authoring contract below
 plus the headless-factory seam a factory overlay dispatches through (proven spanned by
 ``test_overlay_sdk_surface``).
 
@@ -39,6 +44,8 @@ programmatic dispatch, attempt recording, harness registration, the neutral
 Lane-B toolset registration, the context/cache plan) is re-exported from
 :mod:`teatree.overlay_sdk.factory`.
 """
+
+from typing import TYPE_CHECKING
 
 from teatree._overlay_api import __overlay_api_version__
 from teatree.config import clone_root, discover_overlays
@@ -68,40 +75,44 @@ from teatree.core.worktree.readiness import (
 )
 from teatree.core.worktree.worktree_env import compose_project, env_cache_path
 from teatree.docker.reap import reap_compose_project
-from teatree.overlay_sdk.factory import (
-    AttemptUsage,
-    CacheBreakpoint,
-    CompactionPolicy,
-    ContextPlan,
-    ContextSegment,
-    CostBreakdown,
-    CostReport,
-    Harness,
-    HarnessBuildContext,
-    HarnessCapabilities,
-    HarnessOptions,
-    HarnessSession,
-    HarnessSpec,
-    LaneBToolConfig,
-    LoopWatchdog,
-    ResultEnvelopeError,
-    SegmentStability,
-    TicketBudget,
-    UnknownHarnessError,
-    UnstableCacheHeadError,
-    assert_byte_stable_head,
-    build_lane_b_toolsets,
-    cache_control_plan,
-    find_unstable_tokens,
-    headless_cost_breakdown,
-    parse_result_envelope,
-    record_result_envelope,
-    register_harness,
-    registered_harness_names,
-    resolve_harness_spec,
-    run_headless,
-    validate_result_keys,
-)
+
+if TYPE_CHECKING:
+    from teatree.overlay_sdk.factory import (
+        AttemptUsage,
+        CacheBreakpoint,
+        CompactionPolicy,
+        ContextPlan,
+        ContextSegment,
+        CostBreakdown,
+        CostReport,
+        Harness,
+        HarnessBuildContext,
+        HarnessCapabilities,
+        HarnessOptions,
+        HarnessSession,
+        HarnessSpec,
+        LaneBToolConfig,
+        LoopWatchdog,
+        ResultEnvelopeError,
+        SegmentStability,
+        TicketBudget,
+        UnknownHarnessError,
+        UnstableCacheHeadError,
+        assert_byte_stable_head,
+        build_lane_b_toolsets,
+        cache_control_plan,
+        find_unstable_tokens,
+        headless_cost_breakdown,
+        parse_result_envelope,
+        record_result_envelope,
+        register_harness,
+        registered_harness_names,
+        resolve_harness_spec,
+        run_headless,
+        validate_result_keys,
+    )
+
+from teatree.overlay_sdk._lazy import FACTORY_EXPORTS
 from teatree.overlay_sdk.protocols import TicketLike, WorktreeLike
 from teatree.types import (
     BaseImageConfig,
@@ -118,6 +129,20 @@ from teatree.types import (
 from teatree.utils.django_db import DjangoDbImportConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 from teatree.visual_qa import matches_triggers
+
+
+def __getattr__(name: str) -> object:
+    if name in FACTORY_EXPORTS:
+        from teatree.overlay_sdk import factory  # noqa: PLC0415 — deferred: lazy factory leaf
+
+        return getattr(factory, name)
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *FACTORY_EXPORTS])
+
 
 __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",

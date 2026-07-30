@@ -138,6 +138,10 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """Open issues *author* FILED, scoped to *repo_slugs* (empty = global) — intake query (#3235)."""
         return self._client.list_open_issues_for_author(author, project_slugs=repo_slugs)
 
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues carrying *label*, scoped to *repo_slugs* (empty = global) — #3634."""
+        return self._client.list_open_issues_for_label(label, project_slugs=repo_slugs)
+
     def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
         return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
 

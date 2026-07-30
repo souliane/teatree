@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests._db_template import build_or_reuse_template, restore_from_template
+from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
 # Ensure unit tests use the settings declared in pyproject.toml, not a stale
 # DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
@@ -202,6 +203,24 @@ def _reset_quote_blocklist_cache() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_seed_defaults_cache() -> Iterator[None]:
+    """Reset the shipped seed-table parse memo around every test (TSH-2/TSH-7).
+
+    ``seed_defaults._cache`` memoises the parsed ``defaults.toml`` for the loop / mode /
+    schedule seeds, and both the seed loaders and the ``config_setting import`` classifier
+    read it. Tests re-point ``DEFAULTS_TOML`` at a fixture, so a parse that outlived its
+    test would classify a later import against the wrong shipped table.
+    """
+    from teatree.config.seed_defaults import (  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+        reset_seed_defaults_cache,
+    )
+
+    reset_seed_defaults_cache()
+    yield
+    reset_seed_defaults_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scope_cache() -> Iterator[None]:
     """Reset the process-singleton token-scope cache with a no-op banner sink (PR-19).
 
@@ -280,6 +299,17 @@ def _clean_registry() -> Iterator[None]:
     clear()
     yield
     clear()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Arm the worker-thread DB-handle sentinel for the whole suite.
+
+    Always on: a stranded handle reds a random bystander test in a random shard,
+    so the sentinel that names the culprit has to already be running when it
+    happens — an opt-in flag would only ever be switched on after the fact. See
+    ``tests/_thread_db_sentinel.py``.
+    """
+    config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

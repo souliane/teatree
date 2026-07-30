@@ -416,7 +416,7 @@ class EvalScenarioResult(models.Model):
     # never invoicing. See ``float-for-money`` in src/teatree/quality/antipatterns.yaml.
     cost_usd = models.FloatField(default=0.0)
     # Metered cost split: the requested MAIN model vs the AUXILIARY background
-    # (Claude Code's claude-haiku-4-5), from per-model model_usage.costUSD. 0.0 on
+    # (Claude Code's Haiku model), from per-model model_usage.costUSD. 0.0 on
     # a non-metered/subscription row (cost_usd is also 0 there, so 0 is unambiguous).
     main_cost_usd = models.FloatField(default=0.0)
     aux_cost_usd = models.FloatField(default=0.0)

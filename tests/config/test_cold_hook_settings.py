@@ -29,7 +29,7 @@ from teatree.config import (
     SettingHome,
     UserSettings,
 )
-from teatree.config.settings import _parse_strict_bool, _parse_strict_int
+from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_int
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HOOK_SCRIPTS = _REPO_ROOT / "hooks" / "scripts"

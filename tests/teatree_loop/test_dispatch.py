@@ -99,12 +99,12 @@ def test_reviewer_pr_new_sha_dispatches_to_reviewer_agent() -> None:
     assert actions[0].zone == "t3:reviewer"
 
 
-def test_issue_implementer_claimed_dispatches_to_orchestrator_and_statusline() -> None:
-    """A claimed auto-implement issue is a maker-side kickoff to ``t3:orchestrator`` (#1554)."""
+def test_issue_intake_admitted_dispatches_to_orchestrator_and_statusline() -> None:
+    """An admitted issue is a maker-side kickoff to ``t3:orchestrator`` (#3634)."""
     actions = dispatch(
         [
             ScanSignal(
-                kind="issue_implementer.claimed",
+                kind="issue_intake.admitted",
                 summary="Claimed for auto-implement: do it",
                 payload={"url": "https://github.com/souliane/teatree/issues/100"},
             ),
@@ -432,24 +432,6 @@ def test_slack_signal_with_non_string_text_emits_only_statusline() -> None:
     payload: dict[str, object] = {"event": {"text": 42}}
     actions = dispatch([ScanSignal(kind="slack.dm", summary="x", payload=payload)])
     assert [a.kind for a in actions] == ["statusline"]
-
-
-def test_assigned_issue_ready_with_auto_start_dispatches_to_orchestrator() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5", payload={"auto_start": True})])
-    assert actions[0].kind == "agent"
-    assert actions[0].zone == "t3:orchestrator"
-
-
-def test_assigned_issue_ready_without_auto_start_goes_to_statusline() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5", payload={"auto_start": False})])
-    assert actions[0].kind == "statusline"
-    assert actions[0].zone == "action_needed"
-
-
-def test_assigned_issue_ready_default_payload_goes_to_statusline() -> None:
-    actions = dispatch([ScanSignal(kind="assigned_issue.ready", summary="Issue 5")])
-    assert actions[0].kind == "statusline"
-    assert actions[0].zone == "action_needed"
 
 
 def _answering_signal(extra: dict[str, object] | None = None) -> ScanSignal:

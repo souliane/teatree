@@ -33,6 +33,7 @@ from django.db import OperationalError
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db, pending_migrations
 from teatree.core.models import Ticket
+from tests.teatree_core._migration_graph import core_head_migration
 from tests.teatree_core.conftest import SchemaGuardAlias
 
 
@@ -60,7 +61,9 @@ class TestMigrateSelfDbInProcess:
 
         assert pending_migrations(alias) == [], "migrate_self_db must converge the aliased connection"
         assert applied, "must report the migration labels it applied"
-        assert any("0001_initial" in label for label in applied)
+        # A zero DB applies the current head (the squash replaces the range it
+        # collapses); derive it from disk so a future squash never re-breaks this.
+        assert any(core_head_migration() in label for label in applied)
 
     def test_idempotent_noop_on_current_db(self, schema_guard_alias: SchemaGuardAlias) -> None:
         alias = schema_guard_alias.register_current()

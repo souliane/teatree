@@ -23,7 +23,7 @@ from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Loop, LoopLease, Mode, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 from teatree.loop.tick import TickReport
-from teatree.loops.timer_chains import TICK_SUBPROCESS_ENV_MARKER
+from teatree.loops.deadlined_tick import TICK_SUBPROCESS_ENV_MARKER
 
 _MODE_SEAM = "teatree.core.management.commands.loops_tick.resolve_active_mode"
 
@@ -65,9 +65,12 @@ class TestHardExitGuard:
 
 
 def _run(**kwargs: object) -> str:
+    # emit() sends JSON to stdout and the human view to stderr — one channel per
+    # call — so their concatenation is the single populated output stream.
     out = io.StringIO()
-    call_command("loops_tick", stdout=out, **kwargs)
-    return out.getvalue()
+    err = io.StringIO()
+    call_command("loops_tick", stdout=out, stderr=err, **kwargs)
+    return out.getvalue() + err.getvalue()
 
 
 class _CleanOverlay(OverlayBase):
@@ -195,7 +198,9 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         from teatree.loop.tick import TickRequest  # noqa: PLC0415
 
         jobs_builder = run_tick.call_args.kwargs["jobs_builder"]
-        with patch("teatree.loops.loop_table.build_loop_table_jobs", return_value=[]) as build:
+        # The builder consumes the REASONED fan-out (#3843) so it can report why a
+        # refused loop produced no jobs; the `only` scoping it pins is unchanged.
+        with patch("teatree.loops.loop_table.dispatch_loop_table", return_value=[]) as build:
             jobs_builder(TickRequest(), dt.datetime.now(dt.UTC))
         assert build.call_args.kwargs["only"] == "inbox"
 

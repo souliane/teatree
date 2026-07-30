@@ -22,7 +22,7 @@ partition (``config/homes.py``):
 ``OVERLAY_OVERRIDABLE_SETTINGS``) to allow + validate a key, so an admin cannot
 stash a row no reader would consult. These keys are deliberately NOT in
 ``OVERLAY_OVERRIDABLE_SETTINGS`` (the ``UserSettings`` partition), so the resolver's
-``_coerce_db_rows`` ignores them and they never masquerade as a settings field.
+``_coerce_setting_rows`` ignores them and they never masquerade as a settings field.
 """
 
 from collections.abc import Callable
@@ -39,6 +39,10 @@ def _parse_registry_dict(raw: object) -> dict[str, Any]:
     return cast("dict[str, Any]", raw)
 
 
+#: Where these keys render in the settings hierarchy — declared HERE, beside the keys
+#: they group, so adding one below needs no edit in ``setting_groups``.
+REGISTRY_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Definitions")
+
 REGISTRY_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "overlays": _parse_registry_dict,
     "e2e_repos": _parse_registry_dict,
@@ -50,19 +54,29 @@ REGISTRY_KEYS: tuple[str, ...] = tuple(REGISTRY_SETTINGS)
 # The cold-read DB keys: read straight from the canonical config DB by the hook /
 # CLI layer via ``cold_reader.read_setting`` (Django-free), so they are set with
 # ``config_setting set`` (validated through the parser here) and never touch a file.
+COLD_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Term scanning, agent tables & cold reads")
+
 COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # Customer / brand / partner codename lists (stored as JSON arrays). The DB is
     # personal, so these are safe here; ``SECRET_SETTINGS`` keeps them out of a
-    # shared ``config_setting export``.
+    # shared ``config_setting export``. These four are now LEGACY sources folded into
+    # ``banned_term_registry`` (``banned_brands`` → leak, ``banned_terms`` →
+    # prose_collider, ``overlay_leak_terms`` → overlay, ``banned_terms_allowlist`` →
+    # allow); every gate resolves through the registry via
+    # ``banned_term_registry.terms_for_gate`` and only FALLS BACK to these rows when
+    # the registry is unset. They stay registered as that fallback tier — do not
+    # delete them.
     "banned_terms": _parse_str_list,
     "banned_terms_allowlist": _parse_str_list,
     "banned_brands": _parse_str_list,
-    # The consolidated class-tagged registry (`leak`/`prose_collider`/`tone`/`allow`
-    # → term lists) the three lists above collapse into. A JSON table, so it is
-    # validated by the registry-dict parser, not the str-list one.
+    # The class-tagged registry (`leak`/`prose_collider`/`tone`/`overlay`/`allow` →
+    # term lists) the four legacy lists fold into — the single source every
+    # term-scanning gate resolves through. A JSON table, so it is validated by the
+    # registry-dict parser, not the str-list one.
     "banned_term_registry": _parse_registry_dict,
     "internal_publish_namespaces": _parse_str_list,
     "private_repos": _parse_str_list,
+    # Legacy overlay-leak fallback (folded into the registry's ``overlay`` class).
     "overlay_leak_terms": _parse_str_list,
     # ``[agent]`` spawn tables (str->str/bool/int maps) + scalars, read by the
     # dispatch paths (``config.agent_spawn`` / ``model_tiering``) via ``cold_reader``.

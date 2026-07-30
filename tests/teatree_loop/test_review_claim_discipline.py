@@ -19,7 +19,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-import pytest
 from django.test import TestCase
 
 from teatree.core.models import LoopState, OutboundClaim, ReviewRequestPost, ReviewVerdict
@@ -34,15 +33,18 @@ from teatree.loop.review_claim import (
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
-from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
-
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+from tests.teatree_core._on_behalf_gate_helpers import mode_immediate_cm
 
 
-@pytest.fixture(autouse=True)
-def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+class _GateOffTestCase(TestCase):
+    """``on_behalf_post_mode`` is IMMEDIATE for the lifetime of each test.
+
+    These exercise the reaction/claim mechanics, not the on-behalf gate — which
+    has its own suites — so the gate is lifted rather than satisfied per post.
+    """
+
+    def setUp(self) -> None:
+        self.enterContext(mode_immediate_cm())
 
 
 CHANNEL = "C0REVIEW"
@@ -63,9 +65,19 @@ class _FakeMessaging:
     routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
     dm_calls: list[tuple[str, str]] = field(default_factory=list)
 
+    live_message: RawAPIDict | None = None
+    fetch_message_calls: list[tuple[str, str]] = field(default_factory=list)
+    fetch_message_error: Exception | None = None
+
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
+
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        self.fetch_message_calls.append((channel, ts))
+        if self.fetch_message_error is not None:
+            raise self.fetch_message_error
+        return dict(self.live_message or {})
 
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         self.react_routed_calls.append((channel, ts, emoji))
@@ -125,7 +137,7 @@ def _review_intent_signal() -> ScanSignal:
     )
 
 
-class TestNoClaimAtDiscovery(TestCase):
+class TestNoClaimAtDiscovery(_GateOffTestCase):
     """Rule 1: discovery emits the dispatch signal but NEVER a claim reaction."""
 
     def test_open_colleague_mr_dispatches_without_eyes_reaction(self) -> None:
@@ -144,7 +156,7 @@ class TestNoClaimAtDiscovery(TestCase):
         assert OutboundClaim.objects.filter(kind=OutboundClaim.Kind.SLACK_REACTION).count() == 0
 
 
-class TestReviewDoneReactions(TestCase):
+class TestReviewDoneReactions(_GateOffTestCase):
     """Rule 1 + 5: the verdict emoji set fires at review-DONE, deduped, no DM."""
 
     def _post(self) -> ReviewRequestPost:
@@ -199,7 +211,7 @@ class TestReviewDoneReactions(TestCase):
         assert backend.react_routed_calls == []
 
 
-class TestReactionDedup(TestCase):
+class TestReactionDedup(_GateOffTestCase):
     """Rule 3 + 4: never re-add a reaction already present or already recorded."""
 
     def _post(self) -> None:
@@ -233,6 +245,30 @@ class TestReactionDedup(TestCase):
         # Only the first tick reacted — the second is fully deduped.
         assert backend.react_routed_calls == [(CHANNEL, TS, "eyes"), (CHANNEL, TS, "white_check_mark")]
 
+    def test_emit_skips_an_emoji_a_colleague_already_placed_live(self) -> None:
+        """#3564 — the emit path reads LIVE reactions, not only teatree's own ledger."""
+        self._post()
+        backend = _FakeMessaging(
+            live_message={"reactions": [{"name": "white_check_mark", "users": [COLLEAGUE], "count": 1}]}
+        )
+
+        posted = emit_review_done_reactions(
+            slug="team/project", pr_id=7567, emojis=("eyes", "white_check_mark"), messaging=backend
+        )
+
+        assert posted == ["eyes"]
+        assert backend.react_routed_calls == [(CHANNEL, TS, "eyes")]
+        # One live read per emission, not one per emoji.
+        assert backend.fetch_message_calls == [(CHANNEL, TS)]
+
+    def test_an_unreadable_live_message_falls_back_to_the_ledger(self) -> None:
+        self._post()
+        backend = _FakeMessaging(fetch_message_error=RuntimeError("slack down"))
+
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        assert posted == ["eyes"]
+
     def test_reaction_present_from_colleague_on_message_is_skipped(self) -> None:
         message = {
             "reactions": [{"name": "white_check_mark", "users": [COLLEAGUE], "count": 1}],
@@ -241,7 +277,7 @@ class TestReactionDedup(TestCase):
         assert reaction_already_present(message=message, channel=CHANNEL, ts=TS, emoji="eyes") is False
 
 
-class TestReviewLoopStopped(TestCase):
+class TestReviewLoopStopped(_GateOffTestCase):
     """Rule 2: a stopped review loop emits zero review-intent signals/dispatches."""
 
     def test_signals_pass_through_when_review_loop_enabled(self) -> None:
@@ -272,7 +308,7 @@ class TestReviewLoopStopped(TestCase):
         assert any(a.kind == "agent" and a.zone == "t3:reviewer" for a in actions)
 
 
-class TestEgressReactPayload(TestCase):
+class TestEgressReactPayload(_GateOffTestCase):
     """Pin the EXACT colleague-egress payload ``_egress_react`` builds (#2413 PR-2).
 
     ``emit_review_done_reactions`` asserts only the posted emoji list; the
@@ -305,7 +341,7 @@ class TestEgressReactPayload(TestCase):
         backend = _FakeMessaging()
         captured: list[dict[str, str]] = []
 
-        with patch("teatree.loop.review_claim.OnBehalfSlackEgress", self._captured_react_kwargs(captured)):
+        with patch("teatree.loop.review_done_reactions.OnBehalfSlackEgress", self._captured_react_kwargs(captured)):
             posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
 
         assert posted == ["eyes"]
@@ -357,7 +393,7 @@ class TestEgressReactPayload(TestCase):
         assert posted == []
 
 
-class TestSlackMessageResolution(TestCase):
+class TestSlackMessageResolution(_GateOffTestCase):
     """Pin ``_slack_message_for_pr`` row selection (#2413 PR-2 mutation paydown).
 
     The resolver matches the FIRST ``ReviewRequestPost`` whose URL parses to the
@@ -429,7 +465,7 @@ class TestSlackMessageResolution(TestCase):
         assert backend.react_routed_calls == []
 
 
-class TestReviewRecordCommandEmitsReaction(TestCase):
+class TestReviewRecordCommandEmitsReaction(_GateOffTestCase):
     """``t3 review record`` posts the verdict reaction set, never an author DM."""
 
     def test_record_merge_safe_posts_eyes_and_check_no_dm(self) -> None:

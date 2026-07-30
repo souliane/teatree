@@ -584,13 +584,15 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
             "stale open review request daily digest batch surfacing notify channel dm "
             "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
         )
-        # Many >90d near-duplicate feedback files (pairs of the same lesson) so the
-        # rendered index is well over the ~24 KB session-load byte budget.
+        # Many >90d near-duplicate feedback files (pairs of the same lesson) with
+        # long descriptive slugs so even the bare `- name.md` pointer index is
+        # well over the ~24 KB session-load byte budget.
+        slug_tail = "followup-loop-pull-reminder-cadence-nag-interval-threshold"
         for i in range(180):
             for half in ("a", "b"):
-                f = self.memdir / f"feedback_dup_{i:03d}_{half}.md"
+                f = self.memdir / f"feedback_dup_{i:03d}_{half}_{slug_tail}.md"
                 f.write_text(
-                    f"---\nname: feedback_dup_{i:03d}_{half}\ntype: feedback\n---\n{topic} lesson {i}\n",
+                    f"---\nname: feedback_dup_{i:03d}_{half}_{slug_tail}\ntype: feedback\n---\n{topic} lesson {i}\n",
                     encoding="utf-8",
                 )
                 os.utime(f, (old, old))

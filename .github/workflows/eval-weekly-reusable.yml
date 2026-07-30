@@ -40,7 +40,22 @@
 #   caller's default branch when it changed. The benchmark HTML is itself the
 #   publish-safe artifact. A red weekly run is surfaced by GitHub's NATIVE
 #   failed-run email (no extra secret, no bot).
+#
+# RED-LEG DIAGNOSIS (souliane/teatree#3744, mirroring `eval.yml`)
+#   A metered leg is expensive to re-run, so a red leg MUST be diagnosable from the
+#   run it already spent — never by firing another one. Two artifacts back that, both
+#   uploaded `if: always()` and both named per matrix leg (`<lane>-<shard>-<effort>`,
+#   so parallel legs cannot collide):
+#     * `eval-run-log-*`   — the raw teed stdout/stderr of EVERY attempt. Exists from
+#       the first byte, so it is the only one that survives a leg that dies mid-run.
+#     * `eval-benchmark-*` — the sanitized matrix dashboard (rendered at end of run).
+#   And the first diagnosis needs NO download: on a non-zero exit the eval step
+#   re-prints the captured tail into the job log, then re-raises the real exit code.
 # ============================================================
+
+# TRIGGER: workflow_call only — invoked by `eval-benchmark.yml` (manual dispatch)
+# and by an overlay's thin weekly caller; it is never triggered on its own.
+name: Reusable · Weekly benchmark eval
 
 on:
   workflow_call:
@@ -61,7 +76,7 @@ on:
         default: ""
         type: string
       efforts:
-        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). The scheduled weekly run still fans all three."
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). This reusable is the MANUAL benchmark, so the fan is exactly what the caller passes — the weekly cron (eval.yml) runs the cheap --preset baseline leg, not this 3-tier fan."
         required: false
         default: ""
         type: string
@@ -104,6 +119,9 @@ on:
       subscription-oauth-token:
         description: "The plan's CLAUDE_CODE_OAUTH_TOKEN, used when `credential` is subscription_oauth (the default)."
         required: false
+      eval-oauth-tokens:
+        description: "Newline-separated subscription OAuth tokens; the pre-eval step probes each and rides the FRESHEST. Omit to use `subscription-oauth-token` unchanged."
+        required: false
       anthropic-api-key:
         description: "The metered API key (sk-ant-api03…), used when `credential` is api_key."
         required: false
@@ -117,10 +135,10 @@ jobs:
       run_eval: ${{ steps.gate.outputs.run_eval }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -131,7 +149,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -170,23 +188,25 @@ jobs:
       # Compute the {lane, shard[, effort]} matrix the eval job fans out over.
       # Empty `lane` = every permitted lane, sharded into budget-safe legs on the
       # lane-aware ceiling. `efforts` adds the model-tier axis: each {lane, shard}
-      # leg runs once per reasoning-effort tier. The SCHEDULED cron run defaults to
-      # all three (low,medium,high), so the weekly run measures pass-rate vs effort
-      # across the whole suite; a manual run with an empty `efforts` keeps the
-      # single-tier {lane, shard} matrix (lane default). The 3-tier default is keyed
-      # on the schedule EVENT (not a blanket `|| 'low,medium,high'`, which would fan
-      # a blank field 3x and triple the metered spend). `shards` narrows the matrix
-      # to a subset of shard indices (per lane) so a caller can dispatch a few legs
-      # at a time — empty keeps the full fan-out. An unknown lane/effort, or a
-      # `shards` request that matches no leg, fails loud here rather than producing
-      # an empty/invalid matrix. All three inputs are routed through `env:` vars
-      # (never inlined into the script).
+      # leg runs once per reasoning-effort tier. This reusable is the MANUAL
+      # benchmark (invoked by eval-benchmark.yml's workflow_dispatch), so the
+      # effort axis is exactly what the caller passes in `efforts` — an empty
+      # `efforts` keeps the single-tier {lane, shard} matrix (lane default), and a
+      # `low,medium,high` fans all three. There is no scheduled caller, so the
+      # matrix is never keyed on the schedule event: the WEEKLY cron is eval.yml,
+      # which runs the cheap `--preset baseline` leg (one per scenario, no effort
+      # fan) — a 3-tier fan belongs only to this manual benchmark. `shards` narrows
+      # the matrix to a subset of shard indices (per lane) so a caller can dispatch
+      # a few legs at a time — empty keeps the full fan-out. An unknown lane/effort,
+      # or a `shards` request that matches no leg, fails loud here rather than
+      # producing an empty/invalid matrix. All three inputs are routed through
+      # `env:` vars (never inlined into the script).
       - name: Compute the lane+shard+effort matrix
         id: matrix
         if: steps.gate.outputs.run_eval == 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
-          EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || '') }}
+          EVAL_EFFORTS: ${{ inputs.efforts }}
           EVAL_SHARDS: ${{ inputs.shards }}
         run: |
           MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS" --shards "$EVAL_SHARDS")"
@@ -224,10 +244,10 @@ jobs:
     # hang is killed and surfaced as a red, diagnosable run instead of stalling.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -238,7 +258,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -250,9 +270,14 @@ jobs:
           command: uv sync
       # Install the Claude CLI the metered api backend shells out to, then ASSERT
       # it — a missing binary must FAIL the job, not skip every scenario green.
+      # Pinned to the CLI generation `claude-agent-sdk` BUNDLES — the binary the eval
+      # runner actually execs (`_find_cli` returns the bundle first; this global install
+      # is only the presence-gate). Matching it stops the two CLIs in one image from
+      # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
+      # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code
+          npm install -g @anthropic-ai/claude-code@2.1.169
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
@@ -309,32 +334,92 @@ jobs:
           ACCOUNT="${{ vars.CLAUDE_CODE_OAUTH_ACCOUNT }}"
           echo "### Cost basis" >> "$GITHUB_STEP_SUMMARY"
           echo "OAuth account: ${ACCOUNT:-unrecorded}" >> "$GITHUB_STEP_SUMMARY"
+      # Point CLAUDE_CODE_OAUTH_TOKEN at the FRESHEST subscription account before the
+      # benchmark runs, so a large fan-out never lands every leg on one
+      # throttled/exhausted window. `eval-oauth-tokens` (a newline-separated secret the
+      # caller may pass) is probed per token for remaining usage-window headroom
+      # (scripts/eval/select_oauth.py) and the freshest is exported — masked — into
+      # $GITHUB_ENV, which the eval step below reads. BACKWARD-SAFE: with the secret
+      # unset/empty it passes the existing single `subscription-oauth-token` through
+      # unchanged. This step OWNS the credential decision, so it also exports
+      # T3_AGENT_HARNESS_PROVIDER (an all-exhausted set flips to api_key ONLY when the
+      # opt-in EVAL_API_KEY_FALLBACK repo variable is set, else it fails loud). NOTE: on a
+      # dynamic multi-account run the selected account is in this step's log, not the
+      # cost-basis var above (which tracks the single-secret host switcher).
+      - name: Select the freshest eval OAuth account
+        env:
+          EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          EVAL_API_KEY_FALLBACK: ${{ vars.EVAL_API_KEY_FALLBACK }}
+        run: uv run python scripts/eval/select_oauth.py
       - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          # Both credentials are wired so the `credential` knob is a pure config
-          # flip, exactly like `eval.yml`. `T3_AGENT_HARNESS_PROVIDER` selects which one
-          # every eval chokepoint (make_runner, the judge, the docker `-e`
-          # passthrough) resolves; docker forwards only the SELECTED credential's
-          # var into the container.
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          # `CLAUDE_CODE_OAUTH_TOKEN` and `T3_AGENT_HARNESS_PROVIDER` come from the
+          # "Select the freshest eval OAuth account" step above via `$GITHUB_ENV` (that
+          # step owns the credential decision) — NOT pinned here, since a step-level
+          # `env:` would override the dynamic `$GITHUB_ENV` value. `ANTHROPIC_API_KEY`
+          # stays wired for an api_key run / exhausted-OAuth fallback; docker forwards
+          # only the SELECTED credential's var into the container.
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
-          T3_AGENT_HARNESS_PROVIDER: ${{ inputs.credential || 'subscription_oauth' }}
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
           EVAL_EFFORT: ${{ matrix.effort }}
-          SUMMARY_SUFFIX: ${{ steps.artifact.outputs.suffix }}
+          EVAL_SUFFIX: ${{ steps.artifact.outputs.suffix }}
         with:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
+          # FAILURE OBSERVABILITY (#3744) — the same contract `eval.yml` carries, on the
+          # leg that spends per-token credit. A red leg used to emit ONLY the retry
+          # action's `Child_process exited with error code 1`: no scenario name, no
+          # verdict, no traceback. Two gaps caused that, and `tee` closes both:
+          #   * The container's output was STREAMED but never STORED. `t3 eval run
+          #     --docker` does inherit the container's stdio and nick-fields/retry does
+          #     forward the child's stdout, so the bytes reach the live log — but nothing
+          #     wrote them to a file, so nothing could be uploaded, and anything lost to
+          #     the 80min SIGTERM kill was gone for good.
+          #   * The matrix dashboard is rendered from the COMPLETED rows (after
+          #     `collect_matrix_rows`), so a leg that dies mid-matrix NEVER writes it.
+          #     The upload step's `if: always()` was already correct; the file simply did
+          #     not exist, which is why the artifact looked un-uploaded on exactly the
+          #     failures that needed it.
+          # So the run is teed to a durable $RUNNER_TEMP log (uploaded as its own per-leg
+          # artifact below, and the ONLY artifact that survives a pre-dashboard death),
+          # and on non-zero exit the tail is re-printed from that file into the job log —
+          # the first diagnosis needs no download. The dashboard is an HTML file, useless
+          # catted into a log, so the block points at the uploaded artifact instead; its
+          # text twin (the matrix table `t3 eval run` echoes before writing the HTML) is
+          # already inside the tail. `set -o pipefail` keeps `tee` from masking the eval's
+          # exit code, and the block ends in `exit "$rc"`: this adds visibility, it never
+          # swallows the failure. Printing INSIDE the command block is what makes EACH
+          # attempt visible — attempt 1's tail lands before the retry's "Attempt 1 failed"
+          # line instead of being discarded when attempt 2 starts. `tee -a` keeps both
+          # attempts in the one uploaded log.
           command: |
+            set -o pipefail
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
+            TAIL_LINES=400
+            MATRIX_HTML="$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.html"
+            LOG="$RUNNER_TEMP/eval-run-$EVAL_SUFFIX.log"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" >> "$LOG"
             uv run t3 eval run --benchmark --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
-              --transcript-html "$RUNNER_TEMP/eval-benchmark-$SUMMARY_SUFFIX.html"
+              --transcript-html "$MATRIX_HTML" 2>&1 | tee -a "$LOG"
+            rc=$?
+            [ "$rc" -eq 0 ] && exit 0
+            echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
+            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            echo "::endgroup::"
+            if [ -s "$MATRIX_HTML" ]; then
+              echo "The matrix dashboard rendered: download artifact eval-benchmark-$EVAL_SUFFIX."
+            else
+              echo "No dashboard at $MATRIX_HTML: the run died before rendering one, so the tail above is the whole diagnosis."
+            fi
+            exit "$rc"
       # Publish the benchmark matrix HTML dashboard THIS leg emitted. The name is
       # per-lane-and-shard (and effort) so parallel matrix legs never collide. The
       # matrix HTML is itself sanitized (no reasoning/tool-call transcript — only
@@ -346,6 +431,21 @@ jobs:
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
+          if-no-files-found: warn
+      # The RAW captured stdout/stderr of every attempt (the `tee -a` target in the
+      # eval command). Unlike the matrix dashboard — rendered only if the run reaches
+      # its end — this file exists from the first byte, so it is the one artifact that
+      # survives a leg that died mid-run, which is precisely the failure class that
+      # used to leave a maintainer with nothing but "exit code 1". `if: always()`
+      # because a GREEN leg needs none of this; a red one needs all of it. NOT
+      # collected by the `publish` job (which globs `eval-benchmark-*` only) — it is
+      # unsanitized, so it stays out of the public dashboard.
+      - name: Upload the raw eval run log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-run-log-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
           if-no-files-found: warn
 
   # PUBLISH: collect every shard's benchmark matrix HTML into the public
@@ -360,10 +460,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
@@ -374,7 +474,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)

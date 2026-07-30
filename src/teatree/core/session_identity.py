@@ -18,13 +18,23 @@ re-exporters are allowed to reach.
 
 #1107 — the headline incident root cause: Claude Code delivers the
 session id ONLY in the hook JSON payload, never as an env var inside a
-Bash-tool subprocess, so in agent-driven mode both env vars are empty and
-``current_session_id()`` returned ``""`` → ``t3 loop claim`` hard-refused
-→ t3-master could never be claimed → every owner-gated slot (#1075
-reactive answer, self-improve, the claim-next spawn pump) was permanently
-dead (131 user DMs reacted/answered never). The precedence is now:
+Bash-tool subprocess, so in agent-driven mode the session-id env vars are
+empty and ``current_session_id()`` returned ``""`` → ``t3 loop claim``
+hard-refused → t3-master could never be claimed → every owner-gated slot
+(#1075 reactive answer, self-improve, the claim-next spawn pump) was
+permanently dead (131 user DMs reacted/answered never). The precedence is
+now:
 
-    ``CLAUDE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
+    ``CLAUDE_SESSION_ID`` → ``CLAUDE_CODE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
+
+#3554 — Claude Code exports the live session id as ``CLAUDE_CODE_SESSION_ID``,
+not ``CLAUDE_SESSION_ID``, so a resolver reading only the old name fell
+through to ``""`` in every interactive session (``handover create``
+refused, ``loop whoami`` reported no session). ``CLAUDE_SESSION_ID`` is
+kept ahead of it for backward compatibility. The accepted names live in
+one place — :data:`SESSION_ID_ENV_VARS` — so a future upstream rename is a
+one-line change caught by a single pinning test rather than silent
+degradation at every call site.
 
 The durable session *pid* (the t3-master lease anchor) resolves with a
 parallel precedence so an env-restricted subprocess that cannot read the
@@ -50,6 +60,44 @@ and fails open (any OSError/JSON error → ``""``).
 import json
 import os
 from pathlib import Path
+
+# The session id lands under whichever name the harness exports it, most-
+# to least-preferred. ``CLAUDE_CODE_SESSION_ID`` is what a live Claude Code
+# session exports (#3554); ``CLAUDE_SESSION_ID`` is the legacy name kept for
+# backward compatibility; ``T3_LOOP_SESSION_ID`` is the test/manual override.
+# Single source of truth: ``teatree.hooks._hook_state`` redeclares the same
+# list (it cannot import across the module-boundary graph) and a test pins
+# the two in sync.
+SESSION_ID_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "T3_LOOP_SESSION_ID",
+)
+
+#: The loop runner's own durable principal (#3810). The runner (``t3 worker``)
+#: is a long-lived daemon with NO Claude session, so every resolver above comes
+#: back empty for it and :func:`current_session_id` fell through to the loop
+#: registry — a shared file EVERY ``SessionStart`` hook rewrites. The runner's
+#: identity therefore rotated between its OWN consecutive ticks: tick N claimed
+#: ``loop:<name>`` under registry id A, a foreign session started and the
+#: record became B, and tick N+1 read B, found A's still-live lease and
+#: SKIPped. The loop then ran once per lease TTL instead of once per cadence,
+#: and a ``claim`` could not be matched by the ``release`` seconds later because
+#: the two reads of that shared file disagreed.
+#:
+#: A CONSTANT (not a per-process uuid) is deliberate: there is exactly one loop
+#: runner per teatree deployment, and its restarts must NOT rotate its identity
+#: — a restarted runner claiming under a fresh id would be locked out of its own
+#: leases for a full TTL, which is the very starvation this fixes. Liveness is
+#: carried by :data:`RUNNER_PID_ENV` instead, which is what a pid is for.
+LOOP_RUNNER_SESSION_ID = "loop-runner"
+
+#: Env vars carrying the runner principal into a tick subprocess. They are read
+#: as a PAIR and outrank every session-id source, so a runner launched from
+#: inside a Claude session never inherits that session's identity for work the
+#: runner — not the session — is doing.
+RUNNER_SESSION_ENV = "T3_LOOP_RUNNER_SESSION"
+RUNNER_PID_ENV = "T3_LOOP_RUNNER_PID"
 
 # Deliberately redeclared (not imported) — ``teatree.core`` must not
 # depend on ``teatree.loop``/hooks. Mirrors ``hook_router._OWNER_LOOP``
@@ -164,23 +212,88 @@ def current_session_pid() -> int | None:
     return _coerce_pid(os.environ.get("T3_LOOP_SESSION_PID")) or _pid_from_loop_registry()
 
 
+def session_id_from_env() -> str | None:
+    """The active session id from :data:`SESSION_ID_ENV_VARS`, ``None`` when none is set.
+
+    The env-only slice of the resolver, shared with the loop-slot commands
+    (``loop_slack_answer`` / ``loop_self_improve``) whose t3-master gate
+    consults the registry separately and only needs the env value.
+    """
+    for name in SESSION_ID_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def current_session_id() -> str:
     """The active Claude session id, or ``""`` when not resolvable.
 
-    ``CLAUDE_SESSION_ID`` is set by Claude Code; ``T3_LOOP_SESSION_ID`` is
-    the test/manual override. When both are absent (#1107: agent-driven
-    Bash-tool subprocesses never see the id as an env var) the loop
-    registry's ``t3-loop-tick-owner`` record is the lowest-precedence
+    Claude Code exports the id as ``CLAUDE_CODE_SESSION_ID`` (#3554);
+    ``CLAUDE_SESSION_ID`` is the legacy name kept ahead of it for backward
+    compatibility, and ``T3_LOOP_SESSION_ID`` is the test/manual override
+    (all three in :data:`SESSION_ID_ENV_VARS`). When none is set (#1107:
+    agent-driven Bash-tool subprocesses never see the id as an env var) the
+    loop registry's ``t3-loop-tick-owner`` record is the lowest-precedence
     fallback. Empty string means anonymous (no session) — the t3-master
     gate treats an anonymous caller as a non-owner whenever a live owner
     exists.
     """
-    return (
-        os.environ.get("CLAUDE_SESSION_ID")
-        or os.environ.get("T3_LOOP_SESSION_ID")
-        or _session_id_from_loop_registry()
-        or ""
-    )
+    return session_id_from_env() or _session_id_from_loop_registry() or ""
 
 
-__all__ = ["current_session_id", "current_session_pid", "owner_record"]
+def runner_identity_env(pid: int) -> dict[str, str]:
+    """The env pair a loop-runner-spawned subprocess carries to declare its principal.
+
+    Written by the runner at spawn time (:func:`teatree.loops.deadlined_tick.
+    tick_subprocess_env`) and read back by :func:`runner_principal` in the child.
+    """
+    return {RUNNER_SESSION_ENV: LOOP_RUNNER_SESSION_ID, RUNNER_PID_ENV: str(pid)}
+
+
+def runner_principal() -> tuple[str, int] | None:
+    """``(session_id, owner_pid)`` when this process runs as the loop runner, else ``None``.
+
+    Both env vars must be present and the pid well-formed: a half-set pair is
+    treated as absent so a partially-inherited environment can never produce a
+    principal with no checkable process behind it.
+    """
+    session_id = (os.environ.get(RUNNER_SESSION_ENV) or "").strip()
+    pid = _coerce_pid(os.environ.get(RUNNER_PID_ENV))
+    if not session_id or pid is None:
+        return None
+    return session_id, pid
+
+
+def loop_principal() -> tuple[str, int | None]:
+    """``(session_id, owner_pid)`` for whoever is claiming a loop lease right now (#3810).
+
+    The ONE identity seam every loop-ownership call site shares — the per-loop
+    tick, ``t3 loop claim`` and ``t3 loop release`` — so a claim and the release
+    that follows it can never resolve to two different principals. The loop
+    runner's explicit principal wins; otherwise this is a Claude session and the
+    session resolvers answer exactly as before.
+
+    Returns ``("", None)`` when nothing resolves. Callers decide what an
+    anonymous principal means for them: the tick treats it as the #1107
+    pure-cron case, ``t3 loop claim`` refuses outright.
+    """
+    runner = runner_principal()
+    if runner is not None:
+        return runner
+    return current_session_id(), current_session_pid()
+
+
+__all__ = [
+    "LOOP_RUNNER_SESSION_ID",
+    "RUNNER_PID_ENV",
+    "RUNNER_SESSION_ENV",
+    "SESSION_ID_ENV_VARS",
+    "current_session_id",
+    "current_session_pid",
+    "loop_principal",
+    "owner_record",
+    "runner_identity_env",
+    "runner_principal",
+    "session_id_from_env",
+]

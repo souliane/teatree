@@ -27,7 +27,7 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
                 "explicit opt-in), 'anthropic_api' (RUN the same Claude model fresh through the "
                 "Anthropic Messages API DIRECTLY, no `claude` CLI child — the CLI-free lane, metered "
                 "on ANTHROPIC_API_KEY), or 'pydantic_ai' (RUN a non-Claude model through the "
-                "provider-agnostic harness seam, OrcaRouter BYOK)."
+                "provider-agnostic harness seam, the OpenAI-compatible backend)."
             ),
         ),
         transcript_dir: Path | None = typer.Option(
@@ -35,10 +35,10 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
             "--transcript-dir",
             help="Directory of <scenario>.jsonl transcripts for the AI lane (default: cwd).",
         ),
-        free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        model_free: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
             False,
-            "--free-only",
-            help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
+            "--model-free",
+            help="Run only the model-free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
         ),
         strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
             False,
@@ -71,7 +71,7 @@ def register_full_suite_callback(eval_app: typer.Typer) -> None:
         run_full_suite(
             backend=backend,
             transcript_dir=transcript_dir,
-            free_only=free_only,
+            model_free=model_free,
             docker=docker,
             strict=strict,
             parallel=parallel,

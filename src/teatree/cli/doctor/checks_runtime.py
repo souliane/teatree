@@ -10,18 +10,24 @@ import typer
 
 
 def _check_singletons() -> bool:
-    """Clean up stale pid files for known singleton processes."""
+    """Report a singleton lock file that is stale AND idle (no live flock holder).
+
+    Never unlinks: the lock file is the ``flock`` anchor, so removing one that a
+    live worker holds orphans its kernel lock and blinds every later probe (#3617).
+    A stale pid alongside a FREE flock is harmless (the next start reuses the file
+    in place) — reported for visibility only, not reaped.
+    """
     from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: keeps the doctor-check import light)
         WORKER_SINGLETON,
         default_pid_path,
+        flock_is_held,
         read_pid,
     )
 
     for name in (WORKER_SINGLETON, "slack-listener", "loop-tick"):
         path = default_pid_path(name)
-        had_file = path.is_file()
-        if read_pid(path) is None and had_file:
-            typer.echo(f"OK    Cleared stale {name} pid file")
+        if path.is_file() and read_pid(path) is None and not flock_is_held(name, pid_path=path):
+            typer.echo(f"OK    {name} pid file is stale but idle (reused in place on next start)")
     return True
 
 

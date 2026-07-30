@@ -10,13 +10,12 @@ are not forge URLs and resolve to ``""``.
 from typing import TYPE_CHECKING
 
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.forge_url import is_forge_url
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
-
-_HTTP_SCHEMES = ("http://", "https://")
 
 
 def read_issue_title(issue: RawAPIDict) -> str:
@@ -32,7 +31,7 @@ def fetch_issue_title(ticket: "Ticket") -> str:
     so each caller decides how to degrade — the signal hook logs and drops it,
     the backfill sweep skips that one ticket and continues.
     """
-    if not ticket.issue_url.startswith(_HTTP_SCHEMES):
+    if not is_forge_url(ticket.issue_url):
         return ""
     overlay = get_overlay_for_ticket(ticket)
     host = get_backend_provider().get_code_host_for_url(overlay, ticket.issue_url)

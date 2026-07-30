@@ -11,7 +11,9 @@ in-process against the ephemeral test DB, never the canonical queue.
 """
 
 import datetime as dt
-import os
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -198,32 +200,77 @@ class TestDrainReadyBatch:
 
         assert a_worker_is_running() is False
 
+    def test_a_worker_is_running_reads_the_flock_not_the_recorded_pid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A live pid recorded in the file but NO flock held — the probe reads the kernel
+        # lock (free), never the recyclable pid (which pid-file blindness read as "held"): #3617.
+        import os  # noqa: PLC0415 — test-local deferred import (#3617)
+
+        from teatree.loop.queue_drain import a_worker_is_running  # noqa: PLC0415 — test-local deferred import (#3617)
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+        from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import (#3617)
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+        (tmp_path / f"{WORKER_SINGLETON}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        assert a_worker_is_running() is False
+
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestWorkerSingletonProbe:
     """The drain stands down for the REAL worker singleton, never a wrong-name ghost (#5).
 
-    The probe must read the SAME constant every worker acquires — the one
+    The probe reads the SAME constant every worker acquires — the one
     ``WORKER_SINGLETON`` (the #1796 :class:`LoopWorker` AND the ``t3 <overlay> worker``
-    db_worker spawner, after PR-28 completed the #5 deprecation of ``teatree-worker``).
-    A pid file at it forces the tick drain to stand down.
+    db_worker spawner, after PR-28 completed the #5 deprecation of ``teatree-worker``) —
+    via the KERNEL flock, not the recorded pid (#3617). A live flock holder forces the
+    tick drain to stand down; a stale pid alone (no live holder) does not.
     """
 
-    def _hold_pid(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    @contextmanager
+    def _hold_flock(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Iterator[None]:
         from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
 
         monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
-        (tmp_path / f"{name}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        ready, release = threading.Event(), threading.Event()
+
+        def _hold() -> None:
+            with singleton_mod.singleton(name, pid_path=tmp_path / f"{name}.pid"):
+                ready.set()
+                release.wait(timeout=10)
+
+        holder = threading.Thread(target=_hold)
+        holder.start()
+        try:
+            assert ready.wait(timeout=5), "holder never acquired the flock"
+            yield
+        finally:
+            release.set()
+            holder.join(timeout=5)
 
     def test_drain_stands_down_for_live_worker_singleton(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
 
         refresh_followup_snapshot.enqueue()
-        self._hold_pid(tmp_path, monkeypatch, WORKER_SINGLETON)
-
-        assert drain_ready_batch(max_jobs=5) == 0
+        with self._hold_flock(tmp_path, monkeypatch, WORKER_SINGLETON):
+            assert drain_ready_batch(max_jobs=5) == 0
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+    def test_drain_stands_up_for_a_stale_pid_with_no_live_holder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A dead pid in the lock file but NO live flock holder: the drain must PROCEED,
+        # never blocked by a ghost pid (the flock, not the pid, is the truth — #3617).
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+        from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+        (tmp_path / f"{WORKER_SINGLETON}.pid").write_text("999999999\n", encoding="utf-8")
+        refresh_followup_snapshot.enqueue()
+
+        assert drain_ready_batch(max_jobs=5) == 1
 
     def test_drain_proceeds_when_no_singleton_pid_is_held(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

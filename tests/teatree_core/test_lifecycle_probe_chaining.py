@@ -14,6 +14,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.core.management.commands._workspace.anchor as anchor_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 from teatree.config.settings import UserSettings
@@ -236,7 +237,7 @@ class TestWorkspaceStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
                 pytest.raises(SystemExit) as exc,
@@ -270,7 +271,7 @@ class TestWorkspaceStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
             ):
@@ -303,7 +304,7 @@ class TestWorkspaceStartChainsProbes(TestCase):
             mock_runner.run.return_value = RunnerResult(ok=True, detail="started")
 
             with (
-                patch.object(workspace_mod, "resolve_worktree", return_value=anchor),
+                patch.object(anchor_mod, "resolve_worktree", return_value=anchor),
                 patch.object(workspace_mod, "get_overlay", return_value=mock_overlay),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=mock_runner),
             ):

@@ -28,6 +28,7 @@ from teatree.core.models.loop_lease import LoopLease
 from teatree.loop.loop_state_db import control_planes_in_db, loop_state_admits
 from teatree.loop.preset_resolution import preset_state_for, resolve_active_preset
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
+from teatree.request_cache import cached_per_request
 from teatree.utils.singleton import pid_alive
 
 if TYPE_CHECKING:
@@ -125,6 +126,7 @@ class LoopStatusReport:
         return age > STALL_FACTOR * self.tick_cadence_seconds
 
 
+@cached_per_request
 def build_report(*, now: dt.datetime | None = None) -> LoopStatusReport:
     moment = now if now is not None else timezone.now()
     leases = {row.name: row for row in LoopLease.objects.all()}

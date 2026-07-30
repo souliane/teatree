@@ -5,14 +5,17 @@ from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.types import validated_ticket_extra
+from teatree.core.models.types import ac_label, spec_coverage_criteria, validated_ticket_extra
 
 if TYPE_CHECKING:
     from teatree.core.models.types import (
+        AcceptanceCriterion,
         AntiVacuityAttestation,
         JSONObject,
         ReviewContext,
         ReviewSkillRun,
+        SpecCoverageManifest,
+        SpecCoverageOverride,
         TicketExtra,
         TicketSiblingFields,
     )
@@ -26,6 +29,41 @@ class TicketEvidenceModel(TicketFacet):
 
     def _extra(self) -> "TicketExtra":
         return validated_ticket_extra(self.extra)
+
+    def consume_phase_attempt(self, phase: str, *, max_attempts: int) -> bool:
+        """Spend one *phase* attempt from this ticket's budget; False once it is exhausted.
+
+        The durable bound behind an artifact-dedup scanner. Such a scanner asks "is
+        the field this phase owed still blank?" rather than "did a task run?", which
+        is the only honest question — a terminal task proves an attempt happened,
+        never that it delivered. That honesty is what lets a lying completion heal,
+        and it is also what makes an undeliverable phase re-enqueue every tick, so
+        the budget is the other half of the same change. The mechanism lives here;
+        *max_attempts* is the caller's policy, since what counts as enough tries
+        depends on the phase's runner, not on the ticket.
+
+        Counted in ``extra["phase_attempts"]`` rather than by counting terminal
+        ``Task`` rows: a ticket's existing terminal tasks were produced by whatever
+        mechanism ran before, and charging those to the current one attributes old
+        failures to a path that never made them. A fresh key starts every ticket at
+        zero. The budget is spent monotonically and is never refunded by a
+        completion — a completion that left the artifact absent is precisely the
+        failure being bounded, so refunding on one turns the ceiling into a
+        livelock. Exhaustion is therefore terminal, not a backoff: a permanently
+        broken write path is not a slow one.
+
+        The decision and the increment share one locked row so two concurrent
+        scanners cannot both read the same remaining budget; the mutation itself
+        still routes through ``merge_extra``, the single ``extra`` RMW primitive.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            spent = dict((locked.extra or {}).get("phase_attempts") or {})
+            already = int(spent.get(phase, 0))
+            if already >= max_attempts:
+                return False
+            self.merge_extra(merge_into_dicts={"phase_attempts": {phase: already + 1}})
+            return True
 
     def merge_extra(
         self,
@@ -71,6 +109,14 @@ class TicketEvidenceModel(TicketFacet):
         appends only the new item to whatever the locked re-read holds, so the
         concurrent writer's entry survives. Items already present are not
         duplicated.
+
+        A merge that changes nothing issues no ``UPDATE``. Re-stamping a value the
+        row already holds is what a replaying caller does — the review sweep
+        re-stamps every closed reviewer ticket's ``reviewed_sha`` on every tick —
+        and on the write-serialised production SQLite each such write takes the
+        database's single write lock to store the bytes already there. Whether the
+        merge is a no-op is only knowable from the locked re-read, so the lock is
+        still taken; the write it was taken for is not.
         """
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
@@ -87,9 +133,14 @@ class TicketEvidenceModel(TicketFacet):
                 merged[key] = base
             for key in pop_keys or []:
                 merged.pop(key, None)
+            unchanged = locked.extra == merged and all(
+                getattr(locked, field) == value for field, value in (also_set or {}).items()
+            )
             self.extra = merged
             for field, value in (also_set or {}).items():
                 setattr(self, field, value)
+            if unchanged:
+                return
             type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
 
     def record_review_skill_run(self, skill: str) -> None:
@@ -150,6 +201,31 @@ class TicketEvidenceModel(TicketFacet):
             "at": timezone.now().isoformat(),
         }
         self.merge_extra(set_keys={"anti_vacuity_attestation": attestation})
+
+    def record_spec_coverage(self, criteria: "list[AcceptanceCriterion]", *, replace: bool = False) -> None:
+        """Stamp the per-ticket spec-coverage manifest the DoD gate reads (#2232).
+
+        The producer half of ``teatree.core.gates.spec_coverage_gate``, which
+        without one made ``require_spec_coverage`` unsatisfiable — its ON state
+        refused every delivery because nothing could ever write the manifest.
+
+        Criteria are upserted by :func:`ac_label`, so a later run adds tests to
+        one AC without restating the rest; ``replace`` records exactly *criteria*
+        (the only way to drop a mis-recorded AC). The read side runs against the
+        ``select_for_update``-locked row rather than the possibly-stale in-memory
+        ``extra``, so a concurrent writer's AC survives the merge.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            merged = {} if replace else {ac_label(ac): ac for ac in spec_coverage_criteria(locked.extra)}
+            merged.update({ac_label(ac): ac for ac in criteria})
+            manifest: SpecCoverageManifest = {"acceptance_criteria": list(merged.values())}
+            self.merge_extra(set_keys={"spec_coverage": manifest})
+
+    def record_spec_coverage_override(self, reason: str) -> None:
+        """Stamp the audited escape hatch for a genuinely AC-less ticket (#2232)."""
+        override: SpecCoverageOverride = {"reason": reason}
+        self.merge_extra(set_keys={"spec_coverage_override": override})
 
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.

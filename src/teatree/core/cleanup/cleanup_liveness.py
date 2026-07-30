@@ -4,9 +4,11 @@ The reaper's FIRST gate, ahead of done-detection and redundancy analysis: an
 item a human or agent is mid-task in must be SKIPPED-and-reported, never wiped
 and never emitted for the salvage skill to delete. A worktree/branch is LIVE
 when ANY of these hold (fail-safe — uncertainty resolves to LIVE/keep): (a) its
-ticket has a live :class:`Session` (``ended_at`` null) or an active
-:class:`Task` (``PENDING`` / ``CLAIMED``) — the same busy-ticket signal the
-idle-stack reaper uses; (b) the ticket carries a live external-delivery lease, a
+ticket has a live :class:`Session` (open AND active within
+``session_stale_after_hours`` — an abandoned session must not pin a ticket
+forever) or an active :class:`Task` (``PENDING`` / ``CLAIMED``, no time bound)
+— the same busy-ticket signal the idle-stack reaper uses; (b) the ticket
+carries a live external-delivery lease, a
 recent E2E/evidence run touched the worktree, or it is explicitly
 ``reaper_pinned`` — the shared #2227/#2773 active-delivery guards, folded in via
 :func:`teatree.core.gates.idle_stack.active_delivery_keep_reason` so this reaper

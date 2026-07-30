@@ -30,6 +30,7 @@ from teatree.cli.eval.merge_summary_json import merge_summary_json
 from teatree.cli.eval.merged_prs_since import merged_prs_since
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.prepare_transcript import prepare_transcript
+from teatree.cli.eval.reachability_lane import reachability
 from teatree.cli.eval.set_baseline import set_baseline
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
@@ -46,6 +47,7 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("coverage")(coverage)
     eval_app.command("pinned-regressions")(pinned_regressions)
     eval_app.command("skill-command-validity")(skill_command_validity)
+    eval_app.command("reachability")(reachability)
     eval_app.command("skill-prose-judge")(skill_prose_judge)
     eval_app.command("audit")(audit)
     eval_app.command("changed-scenarios")(changed_scenarios)

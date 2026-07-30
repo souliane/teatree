@@ -2,16 +2,16 @@
 
 The command is read-only: it fetches MR metadata, classifies complexity,
 counts unresolved discussions + draft notes + approvals, and emits a
-JSON summary to stdout. These tests pin three branches that the issue
-acceptance criteria call out:
+JSON summary to stdout. These tests pin the GitLab branches that the
+issue acceptance criteria call out:
 
 * GitLab MR URL → JSON summary on stdout with ``mr``, ``forge``,
     ``changes``, ``complexity``, ``existing_review``, ``findings_catalog``,
     and ``verdict`` keys. Exit code 0.
-* GitHub PR URL → ``unsupported_forge`` JSON error, exit code 2 (so the
-    skill prompts can detect the unsupported branch deterministically
-    instead of relying on prose-level "only GitLab" rules).
 * Malformed URL → ``bad_url`` JSON error, exit code 2.
+
+The GitHub branch lives in the sibling ``review/test_run_github.py``,
+mirroring its own ``teatree.cli.review.run_github`` module.
 
 The GitLab branch patches :class:`teatree.backends.gitlab.api.GitLabAPI`
 so no network is touched. Mirrors the sibling
@@ -130,23 +130,6 @@ class TestReviewRunHappyPath:
         assert payload["existing_review"]["approvals"] == 0
         # An open discussion is enough to flag the MR as needs_attention.
         assert payload["verdict"] == "needs_attention"
-
-
-class TestReviewRunUnsupportedForge:
-    """A GitHub PR URL returns ``unsupported_forge`` so the skills can branch."""
-
-    def test_github_pr_url_exits_two_with_error_json(self) -> None:
-        runner = CliRunner()
-
-        result = runner.invoke(review_app, ["run", "https://github.com/souliane/teatree/pull/1"])
-
-        assert result.exit_code == 2, f"output={result.output!r} exc={result.exception!r}"
-        payload = json.loads(result.output.strip())
-        assert payload == {
-            "error": "unsupported_forge",
-            "forge": "github",
-            "url": "https://github.com/souliane/teatree/pull/1",
-        }
 
 
 class TestReviewRunBadUrl:

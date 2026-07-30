@@ -34,12 +34,17 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr, resolve_pr_repo_slug
 from teatree.core.merge.authorization import assert_review_verdict_gate
-from teatree.core.models import ClearIssuanceError, ConfigSetting, MergeAudit, MergeClear, ReviewVerdict, Ticket
+from teatree.core.models import (
+    ClearIssuanceError,
+    ConfigSetting,
+    MergeAudit,
+    MergeClear,
+    PullRequest,
+    ReviewVerdict,
+    Ticket,
+)
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import seed_merge_safe_verdict
-
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +154,50 @@ class TestClearIssuanceSeam(TestCase):
         assert clear.reviewed_sha == _SHA
         assert clear.blast_class == MergeClear.BlastClass.DOCS
         assert clear.ticket_id == ticket.pk
+
+    def test_clear_without_ticket_id_adopts_the_prs_owning_ticket(self) -> None:
+        # ``--ticket-id`` is optional and no caller passes it, so a CLEAR was born
+        # with no FSM for the keystone to advance. The PR knows its own ticket.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay=ticket.overlay,
+            url="https://github.com/souliane/teatree/pull/860",
+            repo="souliane/teatree",
+            iid="860",
+        )
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "860",
+                "souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+            ),
+        )
+        assert result["ticket_id"] == ticket.pk
+        assert MergeClear.objects.get(pk=result["clear_id"]).ticket_id == ticket.pk
+
+    def test_clear_for_an_unlinked_pr_stays_ticketless(self) -> None:
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "862",
+                "souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+            ),
+        )
+        assert "ticket_id" not in result
+        assert MergeClear.objects.get(pk=result["clear_id"]).ticket_id is None
 
     def test_clear_then_merge_round_trip(self) -> None:
         """The seam closes the loop: issue a CLEAR, the loop merges by its id."""
@@ -1493,11 +1542,15 @@ class TestClearResolvesVerdictSlugBeforeIssuing(TestCase):
                     blast_class="logic",
                 ),
             )
-        assert result["issued"]
-        clear = MergeClear.objects.get(pk=result["clear_id"])
-        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
-        assert verdict.slug == "souliane/teatree"
-        assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+            assert result["issued"]
+            clear = MergeClear.objects.get(pk=result["clear_id"])
+            verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+            assert verdict.slug == "souliane/teatree"
+            # Inside the patch: the CLEAR's slug is a WORKSTREAM slug, so this
+            # re-resolution takes fallback (3) — the live clone origin — exactly
+            # like the issuance above. Asserted outside, it reads the developer's
+            # real `origin` and only passes in a clone of souliane/teatree itself.
+            assert resolve_pr_repo_slug(clear) == "souliane/teatree"
         assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
 
 

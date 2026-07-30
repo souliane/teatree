@@ -19,12 +19,17 @@ class TicketIntrospectionModel(TicketFacet):
         abstract = True
 
     def has_active_work(self) -> bool:
-        """True iff this ticket has an open session or an active (pending/claimed) task.
+        """True iff this ticket has a LIVE session or an active (pending/claimed) task.
 
         The single owner of the ticket-liveness rule the reapers and the relocate
         command consult — a busy ticket must never be torn down.
+
+        A session counts as live while it is open AND its last recorded activity
+        is inside ``session_stale_after_hours`` (:meth:`SessionQuerySet.live`).
+        The bound is what lets the reapers converge; it cannot mask real in-flight
+        work, because the task half below carries no time bound at all.
         """
-        if self.sessions.filter(ended_at__isnull=True).exists():  # type: ignore[attr-defined]  # Django reverse FK
+        if self.sessions.live().exists():  # type: ignore[attr-defined]  # Django reverse FK
             return True
         # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
         task_model = apps.get_model("core", "Task")

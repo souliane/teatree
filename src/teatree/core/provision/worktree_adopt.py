@@ -18,7 +18,9 @@ way to re-ship merged work.
 from pathlib import Path
 
 from teatree.core.models import Ticket, Worktree
+from teatree.core.work_lease import WorkIdentity, register_work_claim
 from teatree.core.worktree.worktree_paths import _candidate_paths
+from teatree.instance_id import instance_id
 from teatree.utils import git
 
 # The terminal states a follow-up adoption must reopen to reach a shippable FSM
@@ -95,13 +97,18 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
         )
         raise WorktreeAdoptError(msg)
 
-    return Worktree.objects.create(
+    worktree = Worktree.objects.create(
         ticket=ticket,
         overlay=ticket.overlay,
         repo_path=repo_name,
         branch=branch,
         extra={"worktree_path": str(cwd_path)},
     )
+    # Adoption is one of the two moments raw branch work becomes visible to the
+    # lifecycle, so it is where the branch/PR lease is registered (#3561) — the
+    # loop then sees this session's work instead of racing it on the same branch.
+    register_work_claim(WorkIdentity(repo=repo_name, branch=branch, issue_url=ticket.issue_url), owner=instance_id())
+    return worktree
 
 
 def reopen_ticket_for_followup(ticket: Ticket) -> None:

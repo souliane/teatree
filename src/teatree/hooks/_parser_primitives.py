@@ -33,6 +33,22 @@ _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*
 # the leader canonicalises to the real forge tool.
 _WRAPPER_PROGRAMS: Final[frozenset[str]] = frozenset({"command", "time", "nohup", "exec", "xargs", "env"})
 
+# Bash compound-command reserved words and the brace-group opener that can LEAD a
+# command segment without being the executed program: the body of an
+# ``if``/``for``/``while``/``until``/``case`` compound command, and a
+# ``{ …; }`` brace group, put the real publish verb one or more tokens in
+# (``then gh …``, ``do gh …``, ``{ gh …``). Stripping them as leading tokens lets
+# the leader-keyed publish/leak detectors see the ``gh``/``glab`` the wrapper
+# hides (F1). Stripping can only REVEAL a deeper leader, never hide one, and the
+# leader-keyed catalogue still requires a forge leader — so a read command in a
+# loop body (``do grep "gh pr create"``) canonicalises to ``grep`` and stays a
+# non-publish. A bare ``(`` subshell opener needs no entry here: the shell lexer
+# emits it as a command separator, so the subshell body is already its own
+# segment leading with the forge tool.
+_STRUCTURAL_LEADERS: Final[frozenset[str]] = frozenset(
+    {"if", "then", "else", "elif", "fi", "while", "until", "for", "do", "done", "case", "esac", "in", "!", "{"}
+)
+
 # Sentinel string that downstream scanning treats as a HIGH match. Any
 # indirect or undecodable body source surfaces this so the gate fails
 # closed (codex CRITICAL #5 round 1, codex round-2 #4).
@@ -145,18 +161,20 @@ def canonical_leader(word: str) -> str:
 
 
 def strip_wrapper_prefix(words: list[str]) -> list[str]:
-    """Strip leading env-assignments, ``cd``/``pushd`` nav, and ONE transparent wrapper.
+    """Strip leading env-assignments, ``cd``/``pushd`` nav, structural words, and ONE wrapper.
 
     Mirrors :func:`raw_merge_detect._program_words`: consumes a leading
     ``NAME=val`` env run (case-insensitive per :data:`_ENV_ASSIGNMENT_RE`, so a
     lowercase ``foo=1 gh`` is stripped too), a ``cd``/``pushd`` navigation pair,
-    and one transparent argv wrapper (``command``/``time``/``nohup``/``exec``/
-    ``xargs``/``env``) WITH that wrapper's own leading ``NAME=val`` args (so
-    ``env GH_PAGER= gh`` reaches ``gh``). The returned list LEADS with the real
-    executed program word (its path form intact; :func:`canonical_leader`
-    reduces it to the basename at the compare site). A read-only inspection
-    leader (``grep``/``rg``/``cat``) is not a wrapper, so the list is returned
-    unchanged and its leader stays non-forge.
+    the compound-command reserved words and brace-group opener that lead a
+    wrapped segment (:data:`_STRUCTURAL_LEADERS` -- ``then``/``do``/``{``/… hide a
+    ``gh``/``glab`` publish one token in, F1), and one transparent argv wrapper
+    (``command``/``time``/``nohup``/``exec``/``xargs``/``env``) WITH that wrapper's
+    own leading ``NAME=val`` args (so ``env GH_PAGER= gh`` reaches ``gh``). The
+    returned list LEADS with the real executed program word (its path form intact;
+    :func:`canonical_leader` reduces it to the basename at the compare site). A
+    read-only inspection leader (``grep``/``rg``/``cat``) is not a wrapper, so the
+    list is returned unchanged and its leader stays non-forge.
     """
     index = 0
     consumed_wrapper = False
@@ -168,6 +186,9 @@ def strip_wrapper_prefix(words: list[str]) -> list[str]:
             continue
         if word in {"cd", "pushd"} and index + 1 < n:
             index += 2
+            continue
+        if word in _STRUCTURAL_LEADERS:
+            index += 1
             continue
         if not consumed_wrapper and canonical_leader(word) in _WRAPPER_PROGRAMS:
             consumed_wrapper = True

@@ -27,6 +27,8 @@ target.
 
 import re
 
+from teatree.hooks._diff_lines import SLASH_COMMENT_SUFFIXES, is_doc_path, iter_added_lines
+
 # Inline allow-annotation, shared with ``privacy_scan.py``. A comment line
 # carrying this literal marker is exempt (used by the scanner's own
 # fixtures and doc examples).
@@ -66,28 +68,10 @@ _SELF_REF_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bpentest\b", re.IGNORECASE),
 )
 
-# File suffixes whose languages use ``#`` line comments.
+# File suffixes whose languages use ``#`` line comments. Unlike the density
+# pass, YAML/TOML count here: a ``#`` comment in config CAN carry a bookkeeping
+# self-reference worth flagging.
 _HASH_COMMENT_SUFFIXES = (".py", ".sh", ".bash", ".rb", ".yml", ".yaml", ".toml")
-# File suffixes whose languages use ``//`` line comments and ``/* */`` blocks.
-_SLASH_COMMENT_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".c", ".cpp", ".cs", ".scss", ".css")
-
-# Docs / markdown files legitimately cite MRs / tickets — fully exempt.
-_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
-_DOC_PATH_PREFIXES = ("docs/",)
-_DOC_BASENAME_PREFIXES = ("CHANGELOG",)
-
-_FILE_HEADER_RE = re.compile(r"^\+\+\+ (?:b/)?(.+?)(?:\t.*)?$")
-
-
-def _is_doc_file(path: str) -> bool:
-    """True when ``path`` is markdown/docs and therefore exempt."""
-    lowered = path.lower()
-    if lowered.endswith(_DOC_SUFFIXES):
-        return True
-    if any(lowered.startswith(prefix) or f"/{prefix}" in lowered for prefix in _DOC_PATH_PREFIXES):
-        return True
-    basename = path.rsplit("/", 1)[-1]
-    return any(basename.startswith(prefix) for prefix in _DOC_BASENAME_PREFIXES)
 
 
 def _comment_text(path: str, code: str) -> str | None:
@@ -106,7 +90,7 @@ def _comment_text(path: str, code: str) -> str | None:
     if lowered.endswith(_HASH_COMMENT_SUFFIXES):
         marker = code.find("#")
         return code[marker:] if marker != -1 else None
-    if lowered.endswith(_SLASH_COMMENT_SUFFIXES):
+    if lowered.endswith(SLASH_COMMENT_SUFFIXES):
         line_marker = code.find("//")
         block_open = code.find("/*")
         markers = [m for m in (line_marker, block_open) if m != -1]
@@ -149,23 +133,15 @@ def scan_diff(text: str) -> list[tuple[int, str, str]]:
     files** are scanned, and only the **comment** portion of each.
     """
     findings: list[tuple[int, str, str]] = []
-    current_path: str | None = None
-    for lineno, raw in enumerate(text.splitlines(), 1):
-        header = _FILE_HEADER_RE.match(raw)
-        if header is not None:
-            current_path = header.group(1)
+    for line in iter_added_lines(text):
+        if is_doc_path(line.path):
             continue
-        if not raw.startswith("+") or raw.startswith("+++"):
+        if _ALLOW_MARKER in line.body:
             continue
-        if current_path is None or _is_doc_file(current_path):
-            continue
-        added = raw[1:]
-        if _ALLOW_MARKER in added:
-            continue
-        comment = _comment_text(current_path, added)
+        comment = _comment_text(line.path, line.body)
         if comment is None:
             continue
         match = _matches_self_ref(comment)
         if match is not None:
-            findings.append((lineno, CATEGORY, match))
+            findings.append((line.lineno, CATEGORY, match))
     return findings

@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from teatree.core.models import Worktree
+from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +59,50 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
     return matches[0]
 
 
+def stored_clone_path(worktree: Worktree) -> Path | None:
+    """``worktree.extra['clone_path']``, but only while it still resolves as a checkout.
+
+    The recorded path is a claim, not a fact: a deploy that relocates (or a
+    hand-moved clone) leaves the row pointing at nothing, and every git probe run
+    against that path answers "could not read" — which the redundancy layers then
+    render as an empty unique-commit list, indistinguishable from a branch proven
+    to hold nothing. Positive proof is required, so an ``INCONCLUSIVE`` probe
+    falls through to a fresh scan instead of being trusted.
+    """
+    stored = (worktree.extra or {}).get("clone_path", "")
+    if not stored:
+        return None
+    return Path(stored) if probe_checkout(Path(stored)) is CheckoutState.CHECKOUT else None
+
+
 def resolve_clone_path(workspace: Path, worktree: Worktree) -> Path | None:
     """Return the source clone path for *worktree*, with namespace fallback.
 
-    Prefers ``worktree.extra['clone_path']`` (set at provision time). Falls
-    back to a fresh :func:`find_clone_path` scan for rows without the field.
-    Returns ``None`` when no clone exists anywhere.
+    Prefers a :func:`stored_clone_path` that is still a live checkout; a stale or
+    unverifiable stored value falls through to a fresh :func:`find_clone_path`
+    scan, exactly like a row that never carried the field. ``None`` means no clone
+    exists anywhere — callers read that as unverifiable and keep, never as
+    "nothing here to lose".
     """
-    stored = (worktree.extra or {}).get("clone_path", "")
-    if stored:
-        return Path(stored)
+    stored = stored_clone_path(worktree)
+    if stored is not None:
+        return stored
     return find_clone_path(workspace, worktree.repo_path)
+
+
+def repair_stale_clone_path(workspace: Path, worktree: Worktree) -> Path | None:
+    """Rewrite a stale ``extra['clone_path']`` to the clone that exists; ``None`` when untouched.
+
+    Only ever moves the row toward the truth: a stored path the checkout probe
+    confirms is left alone, and a scan that finds nothing leaves the stale value
+    in place as a breadcrumb rather than blanking the only record of where the
+    clone used to be.
+    """
+    if stored_clone_path(worktree) is not None:
+        return None
+    found = find_clone_path(workspace, worktree.repo_path)
+    if found is None or str(found) == (worktree.extra or {}).get("clone_path", ""):
+        return None
+    worktree.extra = {**(worktree.extra or {}), "clone_path": str(found)}
+    worktree.save(update_fields=["extra"])
+    return found

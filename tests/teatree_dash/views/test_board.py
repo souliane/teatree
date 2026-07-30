@@ -51,21 +51,22 @@ class BoardPageTestCase(TestCase):
 
 
 class BoardCardIssueLinkTestCase(TestCase):
-    """A card renders a clickable forge link next to the number, none for a sentinel."""
+    """The card's id IS the forge link (#3624); a sentinel renders plain text."""
 
-    def test_forge_ticket_renders_clickable_issue_anchor(self) -> None:
+    def test_forge_ticket_renders_the_number_as_a_clickable_anchor(self) -> None:
         ticket = TicketFactory(state=State.STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
         body = self.client.get(reverse("dash:board_columns")).content.decode()
         card = _card_fragment(body, ticket.pk)
-        assert 'class="card-issue mono"' in card
+        assert 'class="card-num mono"' in card
         assert 'href="https://github.com/souliane/teatree/issues/3205"' in card
         assert ">#3205</a>" in card
 
-    def test_sentinel_ticket_renders_no_issue_anchor(self) -> None:
+    def test_sentinel_ticket_renders_no_anchor(self) -> None:
         ticket = TicketFactory(state=State.NOT_STARTED, issue_url="scanning-news://t3-teatree")
         body = self.client.get(reverse("dash:board_columns")).content.decode()
         card = _card_fragment(body, ticket.pk)
-        assert "card-issue" not in card
+        assert '<span class="card-num mono">' in card
+        assert "<a " not in card
 
 
 def _card_fragment(body: str, ticket_id: int) -> str:

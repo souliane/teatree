@@ -37,6 +37,26 @@ from teatree.core.managers import (
 )
 from teatree.core.models import LoopLease
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
+from tests._loop_principal_env import pinned_loop_principal
+
+
+def _seed_dead_pid_lease(slot: str, *, session_id: str, owner_pid: int, ttl_seconds: int) -> None:
+    """Write a live-TTL lease anchored on a DEAD pid, bypassing the claim path.
+
+    The claim path refuses to anchor on a provably-dead pid (#3646), so this
+    state only arises when the owning process dies mid-lease — which is exactly
+    what ``evict_stale_owner``'s dead-pid branch exists to resolve.
+    """
+    now = timezone.now()
+    LoopLease.objects.update_or_create(
+        name=slot,
+        defaults={
+            "session_id": session_id,
+            "owner_pid": owner_pid,
+            "acquired_at": now,
+            "lease_expires_at": now + timedelta(seconds=ttl_seconds),
+        },
+    )
 
 
 class TestClaimOwnership(TestCase):
@@ -249,12 +269,10 @@ class TestSessionIdentity(TestCase):
 
     def test_outbound_claim_reexport_is_the_same_callable(self) -> None:
         from teatree.core.session_identity import current_session_id as core_impl  # noqa: PLC0415
-        from teatree.loop.session_identity import current_session_id as loop_reexport  # noqa: PLC0415
         from teatree.outbound_claim import _resolve_agent_session_id  # noqa: PLC0415
 
-        # core is the canonical home; both the loop re-export and the
-        # outbound_claim backward-compat alias resolve to the same object.
-        assert loop_reexport is core_impl
+        # core is the canonical home; the outbound_claim backward-compat alias
+        # resolves to the same object.
         assert _resolve_agent_session_id is core_impl
 
 
@@ -456,7 +474,7 @@ class TestEvictStaleOwner(TestCase):
 
     def test_live_dead_pid_is_evicted(self) -> None:
         """Live lease whose owner process is dead → EVICT."""
-        LoopLease.objects.claim_ownership("t3-master", session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        _seed_dead_pid_lease("t3-master", session_id="dead-owner", owner_pid=999999, ttl_seconds=1800)
 
         evicted = LoopLease.objects.evict_stale_owner("t3-master", keep_session_id="new", current_pid=None)
         assert evicted == 1
@@ -623,7 +641,7 @@ class TestPerLoopOwnershipReusesGlobalMachinery(TestCase):
     def test_per_loop_dead_pid_evicted(self) -> None:
         """evict_stale_owner decision table applies per-loop (dead pid → EVICT)."""
         slot = per_loop_owner_slot("dispatch")
-        LoopLease.objects.claim_ownership(slot, session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        _seed_dead_pid_lease(slot, session_id="dead-owner", owner_pid=999999, ttl_seconds=1800)
         evicted = LoopLease.objects.evict_stale_owner(slot, keep_session_id="new", current_pid=None)
         assert evicted == 1
         assert LoopLease.objects.get(name=slot).session_id == ""
@@ -651,7 +669,7 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
 
         slot = per_loop_owner_slot("dispatch")
         with (
-            mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"),
+            pinned_loop_principal("sess-dispatch"),
             mock.patch("teatree.loop.driver_detection.detect_driver", return_value=""),
         ):
             out = io.StringIO()
@@ -676,9 +694,6 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
         from django.core.management import call_command  # noqa: PLC0415
 
         slot = per_loop_owner_slot("dispatch")
-        with (
-            mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"),
-            mock.patch("teatree.loop.session_identity.current_session_pid", return_value=os.getpid()),
-        ):
+        with pinned_loop_principal("sess-dispatch", pid=os.getpid()):
             call_command("loop_owner", "claim", slot=slot, stdout=io.StringIO())
         assert LoopLease.objects.get(name=slot).owner_pid == os.getpid()

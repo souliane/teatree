@@ -14,6 +14,25 @@ import os
 import sys
 from pathlib import Path
 
+# Redeclared (not imported): the module-boundary graph forbids
+# ``teatree.hooks`` importing ``teatree.core``. Kept in sync with
+# ``teatree.core.session_identity.SESSION_ID_ENV_VARS`` — a test pins the
+# two identical (#3554).
+_SESSION_ID_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "T3_LOOP_SESSION_ID",
+)
+
+
+def _current_session_key() -> str:
+    """The session id under whichever name the harness exports it, ``""`` when none."""
+    for name in _SESSION_ID_ENV_VARS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
 
 def hook_state_root() -> Path:
     """The single root for hook on-disk state.
@@ -38,16 +57,16 @@ def note_env_override_once(override_name: str) -> None:
     ``export`` or a Docker-composed env) silently disables every publish leak scan
     for the whole session. A session-keyed marker under :func:`hook_state_root`
     makes the standing disable VISIBLE without spamming every subsequent gated
-    call. With no ``CLAUDE_SESSION_ID`` (marker un-keyable) the NOTE is emitted
-    every time — still visible, never silent; a marker write failure still emits
-    the NOTE (the NOTE matters more than the dedup).
+    call. With no session id (marker un-keyable) the NOTE is emitted every time
+    — still visible, never silent; a marker write failure still emits the NOTE
+    (the NOTE matters more than the dedup).
     """
     message = (
         f"NOTE: {override_name}=1 is set in the process environment (os.environ), not on this "
         f"command — it disables the publish leak scan for EVERY publish this session. "
         f"Unset it if that was unintended.\n"
     )
-    session = os.environ.get("CLAUDE_SESSION_ID", "").strip()
+    session = _current_session_key()
     if not session:
         sys.stderr.write(message)
         return

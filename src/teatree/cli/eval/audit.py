@@ -7,7 +7,7 @@ ground-truth label when a corpus entry's ``source_session_id`` matches, and
 audited + persisted by
 :func:`teatree.eval.conversation_audit.run_conversation_audit`. ``--confusion
 <axis>`` then renders the categorical grid from the persisted ledger
-(``--json`` for the machine form). Free and deterministic — no judge, no model
+(``--json`` for the machine form). Model-free and deterministic — no judge, no model
 call — and privacy-safe: the table carries ONLY ids, slugs, and categorical
 labels, never a payload.
 """

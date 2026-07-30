@@ -11,13 +11,18 @@ already persisted with the wrong overlay can be corrected.
 """
 
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import ClassVar, cast
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.intake.resolve import _auto_register_from_git
+from teatree.core.management.commands._workspace.ticket_intake import locked_get_or_create_ticket
 from teatree.core.models import Ticket
+from teatree.core.overlay_loader import get_overlay_for_ticket
 
 type _Reattribute = dict[str, object]
 
@@ -191,3 +196,92 @@ class TestReconcileOverlayCommand(TestCase):
         assert right.overlay == "gitlab-overlay"
         reattributed = [r for r in results if r["action"] == "reattributed"]
         assert [r["ticket_id"] for r in reattributed] == [wrong.pk]
+
+
+class _RegisteredOverlay:
+    """A stand-in for a registered overlay; identity is all ``overlay_name_of`` needs."""
+
+    def __init__(self, repos: list[str] | None = None) -> None:
+        self._repos = repos or []
+
+    def get_workspace_repos(self) -> list[str]:
+        return self._repos
+
+
+class TestCreationSeamStampsOverlay(TestCase):
+    """Both ticket-creation seams must STAMP the overlay, never rely on URL inference.
+
+    A blank ``Ticket.overlay`` makes ``get_overlay_for_ticket`` fall through to
+    ``get_overlay(None)``, which raises ``Multiple overlays found`` on any
+    install with more than one overlay registered (souliane/teatree#1814).
+    Inference cannot cover either seam: a synthetic ``auto:<branch>`` URL names
+    no repo at all, and an issue filed in a shared tracker repo that no overlay
+    lists among its workspace repos matches nothing. Both callers already know
+    the overlay they are running under, so they stamp it at creation.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _make_git_worktree(self, name: str) -> Path:
+        wt_dir = self._tmp_path / name
+        wt_dir.mkdir()
+        (wt_dir / ".git").write_text(f"gitdir: /some/.git/worktrees/{name}\n")
+        return wt_dir
+
+    @staticmethod
+    def _two_overlays() -> dict[str, _RegisteredOverlay]:
+        return {"overlay-a": _RegisteredOverlay(), "overlay-b": _RegisteredOverlay()}
+
+    def test_auto_branch_ticket_carries_the_cwd_overlay(self) -> None:
+        overlays = self._two_overlays()
+        manual = self._make_git_worktree("some-repo")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch("teatree.core.intake.resolve.get_overlay_for_repo", return_value=overlays["overlay-a"]),
+            patch("teatree.core.intake.resolve.git.current_branch", return_value="fix/no-ticket-number"),
+        ):
+            worktree = _auto_register_from_git(str(manual))
+            assert worktree is not None
+            ticket = worktree.ticket
+            assert ticket.issue_url == "auto:fix/no-ticket-number"
+            assert ticket.overlay == "overlay-a"
+            # The regression: this raised ``Multiple overlays found`` on a blank overlay.
+            assert get_overlay_for_ticket(ticket) is overlays["overlay-a"]
+
+    def test_auto_branch_ticket_stays_blank_when_cwd_names_no_overlay(self) -> None:
+        """No signal must stay no signal — the seam stamps, it never guesses."""
+        manual = self._make_git_worktree("some-repo")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=self._two_overlays()),
+            patch("teatree.core.intake.resolve.get_overlay_for_repo", return_value=None),
+            patch("teatree.core.intake.resolve.git.current_branch", return_value="fix/no-ticket-number"),
+        ):
+            worktree = _auto_register_from_git(str(manual))
+
+        assert worktree is not None
+        assert worktree.ticket.overlay == ""
+
+    def test_workspace_intake_stamps_invoking_overlay_when_url_inference_is_blind(self) -> None:
+        """A tracker-repo issue URL no overlay declares must still be attributed."""
+        overlays = self._two_overlays()
+        tracker_url = "https://gitlab.com/acme/bugs/-/work_items/2374"
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            ticket = locked_get_or_create_ticket(tracker_url, "", ["widgets"], overlay_name="overlay-b")
+            assert ticket._infer_overlay() == ""  # inference is blind here — the stamp is the only signal
+            assert ticket.overlay == "overlay-b"
+            assert get_overlay_for_ticket(ticket) is overlays["overlay-b"]
+
+    def test_workspace_intake_never_reattributes_an_existing_ticket(self) -> None:
+        """``overlay_name`` is a create-only default, exactly like ``kind``."""
+        url = "https://gitlab.com/acme/bugs/-/work_items/7"
+        Ticket.objects.create(overlay="overlay-a", issue_url=url)
+
+        ticket = locked_get_or_create_ticket(url, "", ["widgets"], overlay_name="overlay-b")
+
+        assert ticket.overlay == "overlay-a"
+        assert Ticket.objects.filter(issue_url=url).count() == 1

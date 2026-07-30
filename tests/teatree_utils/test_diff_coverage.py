@@ -28,8 +28,10 @@ import coverage
 import pytest
 
 from teatree.utils.diff_coverage import (
+    UNREFERENCED_SYMBOL_IMPORT_HINT,
     CoverageScope,
     DiffCoverageReport,
+    UncoveredFile,
     added_lines_by_file,
     load_coverage_scope,
     measure_diff_coverage,
@@ -429,6 +431,17 @@ class TestSummaryRendering:
         assert "FAILED" in text
         assert "src/x.py" in text
         assert "widget" in text
+
+    def test_unreferenced_symbol_summary_names_the_import_only_workaround(self) -> None:
+        text = DiffCoverageReport(unreferenced_symbols=["widget"]).summary()
+        assert UNREFERENCED_SYMBOL_IMPORT_HINT in text
+        assert "import statements only" in text
+        assert "does not count as a reference" in text
+        assert "from module import symbol" in text
+
+    def test_import_only_workaround_absent_for_pure_uncovered_line_finding(self) -> None:
+        text = DiffCoverageReport(uncovered=[UncoveredFile(path="src/x.py", lines=[3])]).summary()
+        assert UNREFERENCED_SYMBOL_IMPORT_HINT not in text
 
 
 class TestFreshAnalysisAndEdgeCases:

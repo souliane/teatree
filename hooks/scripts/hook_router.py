@@ -52,8 +52,6 @@ if str(Path(__file__).resolve().parents[2]) not in sys.path:
 if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
-from hooks.scripts.availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
-from hooks.scripts.availability_away_probe import resolved_defers_questions as _resolved_defers_questions
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
@@ -67,6 +65,8 @@ from hooks.scripts.config_overwrite_guard import handle_block_config_overwrite
 from hooks.scripts.coverage_gate import coverage_gate_repo_dir as _coverage_gate_repo_dir
 from hooks.scripts.coverage_gate import diff_coverage_argv as _diff_coverage_argv
 from hooks.scripts.coverage_gate import diff_coverage_finding as _diff_coverage_finding
+from hooks.scripts.coverage_gate import is_merge_class_command as _is_merge_class_command
+from hooks.scripts.coverage_gate import measured_repo_is_publish_target as _measured_repo_is_publish_target
 from hooks.scripts.cron_tracking import (
     cron_cadence_seconds as _cron_cadence_seconds,  # noqa: F401 re-export for test access
 )
@@ -90,6 +90,7 @@ from hooks.scripts.direct_command_guard import deny_match as _deny_match  # noqa
 from hooks.scripts.direct_command_guard import handle_block_direct_commands
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.engagement import engage
+from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
 from hooks.scripts.forge_api_detect import (
     _API_CREATE_ENDPOINT_RE,  # noqa: F401 re-export for test access
     _GLAB_GH_API_RE,
@@ -127,6 +128,8 @@ from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_pa
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
 from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
+from hooks.scripts.mode_posture_probe import resolved_defers_questions as _resolved_defers_questions
+from hooks.scripts.mode_posture_probe import resolved_pauses_self_pump as _resolved_pauses_self_pump_stdlib
 from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
     extract_cli_mr_fields,
@@ -143,6 +146,7 @@ from hooks.scripts.plan_edit_gate import skip_plan_gate_token
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
+    handle_resolve_answered_question,
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
@@ -162,6 +166,8 @@ from hooks.scripts.raw_review_post_guard import (
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
+from hooks.scripts.session_end_work_check import handle_session_end
+from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
 from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
@@ -177,6 +183,8 @@ from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
+from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
+from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
 from hooks.scripts.turn_inspect import current_turn_tool_commands
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
@@ -701,13 +709,12 @@ def _is_bare_loop_prompt(prompt: str) -> bool:
 def handle_record_presence(data: dict) -> None:
     """Stamp a live-presence heartbeat — a prompt proves the user is here.
 
-    ``availability.resolve_mode`` reads this stamp to upgrade a
-    schedule-derived ``away`` to ``present``: a user actively submitting
-    prompts is demonstrably reachable, so their ``AskUserQuestion`` calls
-    must not be deferred just because the clock is outside their configured
-    work hours. Fail-open and silent on the happy path — a heartbeat that
-    cannot be written never blocks the prompt (the schedule then decides
-    as before).
+    Both mode readers — ``core.mode_resolution`` and the Django-free
+    ``config.cold_mode`` — read this stamp to upgrade a schedule-derived
+    deferring mode to a reachable one: a user actively submitting prompts is
+    demonstrably reachable, so their ``AskUserQuestion`` calls must not be
+    deferred just because the clock is outside their configured work hours.
+    Fail-open and silent — an unwritable heartbeat never blocks the prompt.
     """
     prompt = data.get("prompt")
     if not prompt:
@@ -2488,10 +2495,6 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
 # a merge-class mutation. Treating a crash as a coverage finding turned
 # every ``gh pr create`` into a deny; that is the bug this closes.
 
-_GH_PR_READY_RE = re.compile(r"\bgh\s+pr\s+ready\b")
-_PR_MR_CREATE_RE = re.compile(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b")
-_DRAFT_FLAG_RE = re.compile(r"(?:^|\s)(?:--draft|--undo)\b")
-
 
 def _is_merge_class_mutation(data: dict) -> bool:
     """Whether this tool call moves a PR toward review/merge.
@@ -2500,19 +2503,14 @@ def _is_merge_class_mutation(data: dict) -> bool:
     ``glab mr create`` or a ``gh api``/``glab api`` POST to a PR/MR
     collection endpoint (F2 — same semantic effect, same gate coverage
     needed). ``gh pr ready --undo`` (return-to-draft, the gate's own
-    remediation) and ``--draft`` creation are excluded.
+    remediation) and ``--draft`` creation are excluded. The verb detection
+    (:func:`coverage_gate.is_merge_class_command`) runs on the quote/heredoc-
+    stripped skeleton, so a mere MENTION inside a quoted argument or heredoc
+    body never fires the gate.
     """
     if data.get("tool_name") != "Bash":
         return False
-    command = data.get("tool_input", {}).get("command", "")
-    if _GH_PR_READY_RE.search(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    if _PR_MR_CREATE_RE.search(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    # F2: gh/glab api POST to a PR/MR create endpoint is merge-class too.
-    if re.search(r"\b(?:gh|glab)\s+api\b", command) and _is_api_create_endpoint_write(command):
-        return not _DRAFT_FLAG_RE.search(command)
-    return False
+    return _is_merge_class_command(data.get("tool_input", {}).get("command", ""))
 
 
 def handle_block_uncovered_diff(data: dict) -> bool:
@@ -2544,6 +2542,11 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     # unrelated worktree.
     command = data.get("tool_input", {}).get("command", "")
     repo_dir = _coverage_gate_repo_dir(command, data.get("cwd"))
+    # A publish to repo X must never be gated on uncommitted symbols in repo Y:
+    # when the command names an explicit target repo that is NOT the measured
+    # repo, skip the measurement entirely (§17.6.3 scope, fail-open #122).
+    if not _measured_repo_is_publish_target(command, repo_dir):
+        return False
     argv = _diff_coverage_argv(repo_dir)
     if argv is None:
         return False
@@ -2566,10 +2569,10 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 
     return _fail_open_or_deny(
         data,
-        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
-        "An added production line is uncovered or a changed symbol is not "
-        "referenced by a changed test. Cover/reference it, then re-mark the "
-        "PR ready (resolve the finding before re-requesting review).\n" + finding,
+        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). An added production line is uncovered, or a "
+        "changed symbol is not imported by a changed test — it reads name-level imports only, not `mod.sym()` "
+        "attribute access. If the symbol is already exercised, add `from <module> import <symbol>` to a changed "
+        "test to make the reference visible, then re-mark the PR ready (resolve the finding first).\n" + finding,
     )
 
 
@@ -3358,6 +3361,11 @@ def handle_read_dedup(data: dict) -> None:
         "\n".join(f"{mtime}\t{path}" for path, mtime in reads.items()) + "\n",
         encoding="utf-8",
     )
+
+
+# ``handle_resolve_answered_question`` (+ its ``_answer_text_from_tool_response``
+# helper) lives in the ``question_gates`` sibling — the AskUserQuestion
+# decision-policy home — and is imported into the PostToolUse chain above.
 
 
 # ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
@@ -4239,86 +4247,11 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
         return
 
 
-def _claim_session_handover(session_id: str) -> str | None:
-    """Claim an unclaimed session hand-off for *session_id*, or ``None``.
-
-    The zero-copy-paste takeover: a fresh / non-owner session picks up a
-    hand-off targeted AT it or parked for "next session" from the
-    ``SessionHandover`` DB table (the source of truth), marks it claimed so
-    it injects exactly once, and returns its payload to merge into the
-    SessionStart ``additionalContext``. Falls back to the XDG file mirror
-    when the DB is unreachable (a brand-new session whose process predates
-    a readable DB). Best-effort: any Django/DB error fails open to the file
-    fallback, then to ``None`` — a hand-off pickup must never block the
-    SessionStart directive.
-    """
-    payload = ""
-    from_session = ""
-    if bootstrap_teatree_django():
-        try:
-            from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM/app-registry
-
-            claimed = SessionHandover.objects.claim_next(session_id)
-            if claimed is not None:
-                payload = claimed.payload
-                from_session = claimed.from_session
-        except Exception:  # noqa: BLE001 — never block SessionStart on a DB hiccup
-            payload = ""
-
-    if not payload:
-        payload, from_session = _claim_session_handover_from_file()
-    if not payload:
-        return None
-    origin = f" from session `{from_session}`" if from_session else ""
-    return (
-        f"SESSION HAND-OFF RECEIVED{origin} — another session handed its full "
-        "in-flight work to you. Read the durable-state snapshot below, then "
-        "resume that work (re-derive identity, worktrees, open PRs, and the "
-        "next action):\n\n" + payload
-    )
-
-
-def _claim_session_handover_from_file() -> tuple[str, str]:
-    """Read the XDG mirror as a one-shot hand-off fallback, renaming it on claim.
-
-    Returns ``(payload, from_session)`` or ``("", "")``. The mirror is the
-    bootstrap path for a brand-new session that cannot reach the DB. To keep
-    the file single-use (mirroring the DB ``claimed_at`` once-only contract)
-    the claimed file is renamed to ``latest.claimed.md`` so a re-fired
-    SessionStart does not re-inject it.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        # ``handover_mirror_path`` is DB-home. Read it Django-free via ``cold_reader``
-        # (the canonical sqlite); an absent row / unreachable DB fails open through
-        # the parser to the default bootstrap path.
-        from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701 — cold-hook import
-
-        path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path", default=""))
-        text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-        if not text:
-            return "", ""
-        with contextlib.suppress(OSError):
-            path.replace(path.with_name("latest.claimed.md"))
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return "", ""
-    else:
-        return text, ""
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
 def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
     The Claude Code harness silently disables auto-compaction on
-    1M-capable models (currently claude-opus-4-7) unless an
+    1M-capable models unless an
     explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW (or settings.json
     autoCompactWindow) is set — CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
     alone is silently dropped. The advisory tells the agent the
@@ -4436,14 +4369,6 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     return context
 
 
-# #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
-# autoload is DB-home: the auto-start opt-in is set via the ConfigSetting store.
-_TEATREE_NOT_ACTIVE_ADVISORY = (
-    "teatree is installed but not active in this session — run /teatree to start it "
-    "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
-)
-
-
 def _emit_session_start_context(context: str) -> None:
     # #1452: the harness silently drops the legacy flat top-level
     # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
@@ -4500,10 +4425,17 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if _autoload_enabled():
         engage(session_id, seed_skills=True)
     elif not _teatree_active(session_id):
-        advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
+        advisory = "" if source in {"compact", "resume"} else _session_start_advisory()
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
+        # The loop gate decides whether this session ARMS the loop machinery. It
+        # must not also decide whether a parked hand-off is delivered (#3810):
+        # the two are unrelated, and stapling the drain to the loop gate meant
+        # any session that did not arm loops silently stranded the whole queue.
+        # Every SessionStart path now merges, so exactly one thing gates the
+        # drain — a session starting.
+        _emit_session_start_context(_merge_session_start_context("", session_id, source))
         return
     agent_id = data.get("agent_id", "")
 
@@ -4822,19 +4754,18 @@ def _resolve_loop_env(name: str) -> str:
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
-    The self-pump is teatree's own re-firing Stop directive (#2247/#2250). Only
-    holiday-``away`` pauses it — ``_resolved_away_mode`` is ``away``-only, so
-    ``autonomous_away`` (#2544, defers questions but keeps the factory running)
-    is correctly NOT a pause here.
+    The self-pump is teatree's own re-firing Stop directive (#2247/#2250). Only the
+    holiday posture (``pauses_self_pump``) parks it — an unattended mode defers
+    questions but keeps the factory running (#2544), so it is correctly NOT a pause
+    here.
 
-    FAIL SAFE — suppress on indeterminate: ``_resolved_away_mode`` collapses a
-    missing/unimportable ``teatree`` or a read error to ``False`` ("not away"),
-    which here would mean "keep pumping" — the UNSAFE direction for a Stop hook.
-    So an away mode AND any resolution error both suppress; it pumps ONLY when
-    availability resolves cleanly to a non-pausing mode.
+    FAIL SAFE — suppress on a raising probe: the stdlib probe already collapses an
+    unreadable posture to "does not pause" (it fails toward asking, #3826), which
+    here would mean "keep pumping"; this arm additionally suppresses if the call
+    itself raises, so the pump runs ONLY when the posture resolved cleanly.
     """
     try:
-        return _resolved_away_mode()
+        return _resolved_pauses_self_pump()
     except Exception:  # noqa: BLE001 — indeterminate ⇒ suppress (allow stop, never nag through a pause)
         return True
 
@@ -5116,80 +5047,6 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
 # handler + detection primitives are re-exported at the top of this module.
 
 
-_SESSION_END_ORPHAN_TIMEOUT = 4
-_SESSION_END_ORPHAN_PREVIEW = 5
-
-
-def _fetch_orphans() -> list[dict]:
-    """Invoke ``t3 teatree workspace list-orphans`` and return its JSON, or ``[]``."""
-    t3_bin = shutil.which("t3")
-    if not t3_bin:
-        return []
-    try:
-        result = subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
-            [t3_bin, "teatree", "workspace", "list-orphans"],
-            capture_output=True,
-            text=True,
-            timeout=_SESSION_END_ORPHAN_TIMEOUT,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
-
-
-def _format_orphan_summary(orphans: list[dict]) -> str:
-    """Return a one-line-per-orphan bullet list, truncated to _SESSION_END_ORPHAN_PREVIEW entries."""
-    preview = orphans[:_SESSION_END_ORPHAN_PREVIEW]
-    lines = [f"  - {o.get('repo', '?')} ({o.get('branch', '?')}, {o.get('ahead_count', 0)} ahead)" for o in preview]
-    if len(orphans) > _SESSION_END_ORPHAN_PREVIEW:
-        lines.append(f"  - …and {len(orphans) - _SESSION_END_ORPHAN_PREVIEW} more")
-    return "\n".join(lines)
-
-
-def handle_session_end(data: dict) -> None:
-    """Suggest retro and surface orphan branches at session close."""
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-
-    skills_file = STATE_DIR / f"{session_id}.skills"
-    loaded: set[str] = set()
-    if skills_file.is_file():
-        loaded = {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
-
-    lifecycle_skills = {"t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket"}
-    retro_relevant = bool(loaded & lifecycle_skills)
-
-    orphans = _fetch_orphans() if retro_relevant else []
-
-    if not retro_relevant and not orphans:
-        return
-
-    parts: list[str] = []
-    if retro_relevant:
-        parts.append(
-            "SESSION ENDING — lifecycle skills were loaded during this session "
-            f"({', '.join(sorted(loaded & lifecycle_skills))}). "
-            "Consider running /t3:retro to capture learnings before the session ends.",
-        )
-    if orphans:
-        parts.append(
-            f"ORPHAN BRANCHES DETECTED ({len(orphans)}) — branches with local work and no open PR:\n"
-            f"{_format_orphan_summary(orphans)}\n"
-            "Run `t3 teatree pr ensure-pr --branch <name>` to track them, "
-            "or `t3 teatree workspace clean-all` to reap synced ones.",
-        )
-
-    json.dump({"additionalContext": "\n\n".join(parts)}, sys.stdout)
-
-
 # ── PostToolUse: track-cron-jobs ──────────────────────────────────────
 
 
@@ -5380,22 +5237,32 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     already short-circuited an away turn). Three present-mode arms:
 
     - live user turn (the user typed a prompt seconds ago, in this
-    session) — mirror to Slack and return ``False`` so the question
+    session) — capture and mirror, then return ``False`` so the question
     renders in-client. Preserves ``TestPresentModeMirrorsButDoesNotDeny``
     and the #189 live-turn escape.
     - attended non-owner turn (a different live session owns the loop; a
-    human is reading the prose) — mirror and return ``False``.
+    human is reading the prose) — same: capture, mirror, return ``False``.
     - loop-driven / autonomous turn (this session drives the loop, or
     there is no live owner) — the broken path: rendering in-client
     suspends the session with no way for a Slack reply to reach it.
     Instead capture a generation-stamped mirror-linked
     ``DeferredQuestion``, then deny so the agent narrates the deferral and
     proceeds; the answer arrives later via ``additionalContext``.
+
+    All three arms now record the question (#3642). The interactive arms used to
+    post the DM WITHOUT a row, which made the mirror unanswerable — a Slack reply had
+    no live generation to bind, and an owner who walked away from the terminal lost the
+    question entirely. Recording puts it in the same owner-thread queue the headless
+    lane feeds (:mod:`teatree.core.owner_threads`); the fast path is unchanged because
+    the arm still returns ``False`` and the modal renders. An in-client answer resolves
+    the row via :func:`handle_resolve_answered_question`, so neither surface can apply
+    an answer the other already took.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
-        _post_question_to_slack(data)
+        if _capture_and_defer_question(data, mode="present") is None:
+            _post_question_to_slack(data)
         return False
     if not str(_first_question(data).get("question", "")).strip():
         _post_question_to_slack(data)
@@ -5541,18 +5408,16 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
     return int(row.pk)
 
 
-def _resolved_away_mode() -> bool:
-    """Resolve the effective availability mode; True when ``away`` (#2559).
+def _resolved_pauses_self_pump() -> bool:
+    """True when the active mode parks the Stop self-pump (#3826, #2559).
 
-    Delegates to the stdlib sibling :func:`availability_away_probe.resolved_away_mode`,
-    which reads the resolved mode by subprocessing ``t3 <overlay> availability
-    show`` instead of an in-process ``django.setup()`` — the bare-``python3``
-    hook has no ``uv`` env, so the old bootstrap returned ``False`` (never away)
-    and silently neutered ``t3 <overlay> availability away`` as a suppressor. The
-    thin wrapper stays here as the single patchable seam every caller and test
-    already targets.
+    Delegates to the stdlib sibling
+    :func:`mode_posture_probe.resolved_pauses_self_pump`, which cold-reads the mode
+    posture off the control DB — the bare-``python3`` hook has no ``uv`` env, so an
+    in-process ``django.setup()`` cannot be relied on. The thin wrapper stays here as
+    the single patchable seam every caller and test already targets.
     """
-    return resolved_away_mode_stdlib()
+    return _resolved_pauses_self_pump_stdlib()
 
 
 def _is_live_user_turn(data: dict) -> bool:
@@ -5569,9 +5434,9 @@ def _is_live_user_turn(data: dict) -> bool:
     if not bootstrap_teatree_django():
         return False
     try:
-        from teatree.core import availability  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+        from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
-        return availability.PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
+        return PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
@@ -5589,9 +5454,9 @@ def _refresh_live_turn(data: dict) -> None:
     if not bootstrap_teatree_django():
         return
     try:
-        from teatree.core import availability  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+        from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
 
-        availability.PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
+        PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
 
@@ -5677,7 +5542,6 @@ def handle_inject_pending_questions(data: dict) -> None:
     if not (has_pending_question_work() and bootstrap_teatree_django()):
         return
     try:
-        from teatree.core.availability import pending_questions_count  # noqa: PLC0415 — deferred: cold-hook import
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return
@@ -5694,7 +5558,7 @@ def handle_inject_pending_questions(data: dict) -> None:
                     f'"{row.answer_text}". Apply it now.'
                 )
     try:
-        count = pending_questions_count()
+        count = DeferredQuestion.pending().count()
         if count == 0:
             return
         rows = list(DeferredQuestion.pending()[:5])
@@ -5916,79 +5780,6 @@ def classify_session_edit(file_path: str) -> str | None:
         if pattern.search(file_path):
             return "P"
     return None
-
-
-_EDIT_TOOL_NAMES = frozenset({"Edit", "Write", "NotebookEdit"})
-
-
-def _edit_block_path(block: dict) -> str | None:
-    """File path for an ``Edit``/``Write``/``NotebookEdit`` tool_use block.
-
-    Caller pre-filters with ``isinstance(block, dict)`` (mirrors the
-    ``_block_is_settings_write`` contract).
-    """
-    if block.get("type") != "tool_use":
-        return None
-    name = block.get("name")
-    if name not in _EDIT_TOOL_NAMES:
-        return None
-    tool_input = block.get("input")
-    if not isinstance(tool_input, dict):
-        return None
-    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if isinstance(raw, str) and raw:
-        return raw
-    return None
-
-
-def _current_turn_edits(transcript_path: str) -> list[str]:
-    """File paths edited by the assistant in the most recent turn.
-
-    Walks the transcript newest→oldest; the most recent ``user`` entry
-    is the boundary. Returns the file paths from every ``Edit`` /
-    ``Write`` / ``NotebookEdit`` ``tool_use`` block after that
-    boundary, in transcript order. Duplicates kept — the caller
-    classifies + dedupes.
-    """
-    entries = _read_transcript_entries(transcript_path)
-    if not entries:
-        return []
-    edits: list[str] = []
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if not isinstance(block, dict):
-                continue
-            path = _edit_block_path(block)
-            if path is not None:
-                edits.append(path)
-    edits.reverse()
-    return edits
-
-
-def _current_turn_assistant_text(transcript_path: str) -> str:
-    """Concatenated assistant text blocks in the most recent turn.
-
-    Used to detect a teatree-issue reference that clears the gate.
-    """
-    chunks: list[str] = []
-    entries = _read_transcript_entries(transcript_path)
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-    return "\n".join(chunks)
 
 
 # ── Stop: speak-on-stop arm (local == all, #2060) ───────────────────────────
@@ -6245,6 +6036,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_agents,
+        handle_resolve_answered_question,
     ],
     "TaskCreated": [
         handle_enforce_skill_loading_on_task_create,

@@ -8,9 +8,8 @@ each via ``spawn-claim`` so the next tick doesn't see them as pending.
 """
 
 import contextlib
-import json
 import logging
-from typing import Annotated, Any
+from typing import IO, Annotated, Any, cast
 
 import typer
 from django.core.exceptions import ObjectDoesNotExist
@@ -18,9 +17,11 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.config import cadence_seconds
+from teatree.core.machine_output import emit
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.dispatch_gates import spawn_display_name
 from teatree.loop.statusline import default_path
@@ -48,7 +49,18 @@ def _dispatchable_q() -> Q:
     in-session AND run headless. The admit-budget count deliberately does NOT
     apply this narrowing (``_admit_budget_exhausted``), so a headless claim in
     flight still consumes the boost budget.
+
+    ``execution_target`` alone is not sufficient, because it is written at
+    INSERT time: a phase task created before the runtime was flipped to
+    ``headless`` keeps ``INTERACTIVE`` and would stay claimable in-session. So
+    the LIVE ``agent_runtime`` decides first — under a headless runtime the
+    headless factory owns EVERY loop-dispatched phase, and the in-session
+    claimer matches nothing at all.
     """
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415 — deferred: call-time import
+
+    if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
+        return Q(pk__in=[])
     return Task.dispatchable_q() & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
 
@@ -66,6 +78,13 @@ def _admit_budget_exhausted() -> bool:
     (medium / toggle-off — today's throughput), stale (> TTL, a dead loop wrote
     it), or any read error — a dead loop must never wrongly clamp live dispatch.
 
+    #3644: this is the admission chokepoint, so it is where the adaptive governor is
+    ASKED (event-driven, at the decision point). The governor's verdict either denies
+    outright — token quota first, machine load second, both logged — or supplies a live
+    ceiling; the sidecar budget becomes the operator's upper BOUND on it. A ``None``
+    verdict (kill-switch off, or a failed probe) leaves the pre-governor behaviour
+    byte-for-byte intact.
+
     #6: the in-flight count runs over ``Task.dispatchable_q()`` WITHOUT the
     ``execution_target == INTERACTIVE`` narrowing — the SAME filter set the
     ``orchestrate`` planner used to compute the target. A HEADLESS loop-dispatched
@@ -77,6 +96,11 @@ def _admit_budget_exhausted() -> bool:
         budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
     except Exception:  # noqa: BLE001 — a budget-read failure degrades to no-budget
         return False
+    governed = governor_verdict(statusline_path=default_path(), static_ceiling=budget)
+    if governed is not None:
+        if not governed.admit:
+            return True
+        budget = governed.ceiling
     if budget is None:
         return False
     return Task.objects.in_flight_claimed_count(Task.dispatchable_q()) >= budget
@@ -246,17 +270,21 @@ class Command(TyperCommand):
                 .order_by("pk")
             )
             payload = [_task_to_dict(task) for task in pending]
-        if json_output:
-            self.stdout.write(json.dumps(payload, indent=2))
-            return
         if not payload:
-            self.stdout.write("No pending spawn requests.")
-            return
-        for entry in payload:
-            self.stdout.write(
+            human: str | None = "No pending spawn requests."
+        else:
+            human = "\n".join(
                 f"task={entry['task_id']:<5} subagent={entry['subagent']:<18} "
-                f"phase={entry['phase']:<10} url={entry['issue_url']}",
+                f"phase={entry['phase']:<10} url={entry['issue_url']}"
+                for entry in payload
             )
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
 
     @command(name="claim-next")
     def claim_next(
@@ -333,16 +361,20 @@ class Command(TyperCommand):
             )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
 
-        if json_output:
-            self.stdout.write(json.dumps(payload, indent=2))
-            return
         if not payload:
-            self.stdout.write("No pending spawn requests.")
-            return
-        entry = payload[0]
-        self.stdout.write(
-            f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
-            f"phase={entry['phase']} url={entry['issue_url']}",
+            human: str | None = "No pending spawn requests."
+        else:
+            entry = payload[0]
+            human = (
+                f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
+                f"phase={entry['phase']} url={entry['issue_url']}"
+            )
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
         )
 
     @command(name="spawn-claim")

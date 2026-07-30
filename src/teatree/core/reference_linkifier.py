@@ -215,12 +215,12 @@ def _db_issue_url(iid: int, *, slug: str) -> str | None:
     return None
 
 
-_TRAILING_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"(\d+)/?$")
-
-
 def _issue_number_of(issue_url: str) -> int | None:
-    match = _TRAILING_NUMBER_RE.search(issue_url)
-    return int(match.group(1)) if match else None
+    # Lazy like the ORM lookups above: the models package needs the app registry.
+    from teatree.core.models.ticket_number import derive_issue_number  # noqa: PLC0415 — deferred: needs app registry
+
+    number = derive_issue_number(issue_url)
+    return int(number) if number else None
 
 
 def linkify(

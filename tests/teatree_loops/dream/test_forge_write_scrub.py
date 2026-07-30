@@ -60,7 +60,7 @@ class ReconciliationRoutesThroughSeam(TestCase):
         host = _fake_host()
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["BINDING"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["BINDING"], [])),
         ):
             outcomes = file_binding_reconciliation_tickets(host, repo=REPO, conflicts=[_conflict()])
         assert outcomes[0].withheld is True
@@ -81,7 +81,7 @@ class UmbrellaUpdateRoutesThroughSeam(TestCase):
         host = _fake_host(body="## Open gaps\n")
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate._overlay_privacy_rules", return_value=(["Contoso"], [])),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=(["Contoso"], [])),
         ):
             added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="g", title="ship for Contoso")
         assert added is False

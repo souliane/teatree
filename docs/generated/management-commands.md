@@ -11,18 +11,6 @@ Edit the source command, not this file.
 | `clear` | Remove *action_class* from *overlay*'s dial table (it falls back to ASK) |
 | `show` | Render every class's configured trust, never-fades floor, breach, and verdict |
 
-## `availability`
-
-``t3 teatree availability`` group root.
-
-| Subcommand | Description |
-| --- | --- |
-| `away` | Alias: set the holiday ``offline`` mode (defer + pause) until *until* — or forever |
-| `present` | Alias: set the ``engaged`` present-class mode until *until* — or forever |
-| `auto` | Clear the manual mode override; the schedule / default mode decides again |
-| `show` | Print the current resolved mode and which layer decided it |
-| `autonomous-away` | Force autonomous-away — defer questions but KEEP self-pumping (#2544) |
-
 ## `checking`
 
 ``t3 <overlay> checking`` group root.
@@ -41,7 +29,8 @@ Edit the source command, not this file.
 | `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
 | `get` | Print the resolved value for *key* and name its source (DB vs env/default) |
 | `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
-| `list` | List every DB config override row, naming each row's scope (read-only) |
+| `list` | List every DB config override row under its group, naming each row's scope |
+| `import` | Load a ``config_setting export`` TOML dump into the store — the inverse of ``export`` |
 
 ## `cost`
 
@@ -99,6 +88,8 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
 
 ## `e2e`
+
+Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
 
 | Subcommand | Description |
 | --- | --- |
@@ -245,7 +236,7 @@ Claim, inspect, or release the session-scoped t3-master slot (#1073).
 | `claim` | Claim the t3-master slot for this session |
 | `owner` | Show which session owns the t3-master slot |
 | `whoami` | Print this Claude session's own id |
-| `release` | Release this session's t3-master claim (CAS — non-owner is a no-op) |
+| `release` | Release this session's t3-master claim (CAS — non-owner is a no-op unless --force) |
 
 ## `loop_preset`
 
@@ -255,7 +246,7 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | --- | --- |
 | `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
 | `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
-| `auto` | Clear the manual override so the active schedule decides again |
+| `auto` | Clear the manual override so the active schedule / default mode decides again |
 | `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
 | `edit` | Edit a preset's entries / description / pin / scope in place |
 | `delete` | Delete a preset (a slot/override still pointing at it fails open to base config) |
@@ -368,6 +359,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 | `create` | Validate ship gates and trigger the ship transition |
 | `merge` | REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone |
 | `sweep` | List all open PRs/MRs authored by the current user across the forge |
+| `discharge-pending` | Drop a deferred-PR obligation the drain can never discharge |
 | `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
 | `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
 | `fetch-issue` | Fetch issue details with embedded image URLs and external links |
@@ -404,6 +396,8 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 ## `recipe`
 
+Score the factory against the committed recipe, and pin an approved recipe sha.
+
 | Subcommand | Description |
 | --- | --- |
 | `score` | Compute the recipe-weighted factory score over the trailing window |
@@ -423,6 +417,14 @@ Group root — forces sub-commands to be addressed by name.
 | `status` | Show the recorded RED/GREEN/provenance/waiver state for a ticket (audit) |
 | `record-red` | Record the harness-run FAILING RED reproduction for a FIX ticket (#118) |
 | `record-green` | Record the harness-run PASSING GREEN and freeze the provenance verdict (#118) |
+
+## `retention`
+
+``t3 <overlay> retention`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
 
 ## `retro`
 
@@ -480,10 +482,17 @@ Session-lifecycle operations.
 | Subcommand | Description |
 | --- | --- |
 | `prepare-stop` | Refresh the durable recovery artifacts (idempotent, safe to re-run) |
+| `todo-add` | Append an item to this session's durable working list |
+| `todo-list` | List this session's working items, in working order |
+| `todo-set` | Move one working item to *status* |
 
 ## `signals`
 
 Print the five factory signals over the trailing window vs its baseline.
+
+## `snapshot_settings_defaults`
+
+Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).
 
 ## `speak`
 
@@ -539,7 +548,9 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
-| `sync-completions` | Check post-ship tickets against upstream issues and advance completed ones |
+| `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
+| `record-spec-coverage` | Record the spec-coverage manifest the delivery DoD gate reads (#2232) |
+| `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
@@ -603,11 +614,13 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `emit` | Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763) |
 | `salvage` | Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
-| `stamp-identity` | Stamp the scoped noreply git identity onto an existing souliane clone (#762) |
+| `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
+| `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |
 | `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
+| `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
 
 ## `worktree`
 

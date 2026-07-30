@@ -1,0 +1,3 @@
+# Absent module
+
+Notifications go out through `teatree.notify.notify_user`.

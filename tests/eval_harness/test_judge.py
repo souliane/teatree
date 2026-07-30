@@ -7,6 +7,7 @@ format and reads the ``{verdict, reason}`` off ``ResultMessage.structured_output
 """
 
 import asyncio
+import dataclasses
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -78,6 +79,19 @@ def _fake_query(messages: list[Any]):
             yield message
 
     return _query, captured
+
+
+class TestJudgeSpecCarriesNoUnreadField:
+    """Every ``JudgeSpec`` field reaches the judge call — no documented-but-dead knob.
+
+    ``max_output_tokens`` was loaded, validated as a positive integer and
+    documented as capping the judge's reply, while ``judge.py`` never read it. A
+    field the judge never consumes reads as a live cost control it is not.
+    """
+
+    def test_fields_are_exactly_the_ones_the_judge_consumes(self) -> None:
+        consumed = {"rubric", "model"}
+        assert {field.name for field in dataclasses.fields(JudgeSpec)} == consumed
 
 
 class TestBuildJudgePrompt:

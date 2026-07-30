@@ -8,10 +8,12 @@ stamping) live in that command.
 
 ``t3 dream run [--since <iso>] [--dry-run]`` runs a pass NOW (manual escape
 hatch; ignores cadence; ``--dry-run`` does everything except writing rows).
-``t3 dream tick`` is the cron entry point; it runs only when the dream cadence
-has elapsed — schedule it ~04:00 (decoupled from the live 12-minute loop).
+``t3 dream tick`` is the off-live-tick entry point the worker's
+:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` chain fires; it runs
+only when the dream cadence has elapsed (the ``dream`` row's ~04:00 slot, decoupled
+from the live 12-minute loop).
 
-The CLI, the off-live-tick cron, and the 48h staleness alarm (``t3 doctor``) are
+The CLI, the off-live-tick driver, and the 48h staleness alarm (``t3 doctor``) are
 the thin surface; the distillation engine (phases 1-3) and the file-side phases
 4-6 live behind the ``dream`` management command.
 """

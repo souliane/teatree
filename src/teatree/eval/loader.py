@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS
 from teatree.eval.git_fixture import KNOWN_FIXTURES
 from teatree.eval.matcher_vacuity import is_positive_anchor
@@ -41,8 +41,10 @@ DEFAULT_MODEL = ""
 # DEFAULT_MAX_TURNS is the single canonical default, reused from
 # teatree.eval.models (the data-layer owner of EvalSpec.max_turns's default).
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
-DEFAULT_JUDGE_MODEL = "claude-sonnet-5"
-DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512
+# The judge rides the conservative mid tier, DERIVED from the tier catalog so a
+# generation bump carries it — a pinned id would leave the judge a generation
+# behind the runs it grades.
+DEFAULT_JUDGE_MODEL = TIER_MODELS[DEFAULT_TIER]
 
 # Compiled FROM the single-source-of-truth operator set (teatree.eval.models) so the
 # loader, the grader, and the dream synthesizer prompt cannot drift apart on which
@@ -195,14 +197,7 @@ def _parse_judge(entry: Mapping[str, Any], spec_name: str, path: Path) -> JudgeS
     rubric = judge_map.get("rubric")
     if not isinstance(rubric, str) or not rubric.strip():
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge.rubric` must be a non-empty string")
-    raw_tokens = judge_map.get("max_output_tokens", DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
-    if isinstance(raw_tokens, bool) or not isinstance(raw_tokens, int) or raw_tokens <= 0:
-        raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge.max_output_tokens` must be a positive integer")
-    return JudgeSpec(
-        rubric=rubric,
-        model=str(judge_map.get("model") or DEFAULT_JUDGE_MODEL),
-        max_output_tokens=raw_tokens,
-    )
+    return JudgeSpec(rubric=rubric, model=str(judge_map.get("model") or DEFAULT_JUDGE_MODEL))
 
 
 def _parse_max_turns(entry: Mapping[str, Any], spec_name: str, path: Path) -> int:

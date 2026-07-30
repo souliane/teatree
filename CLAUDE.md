@@ -43,22 +43,42 @@ the necessary-and-sufficient local check: CI's required, sharded `test (3.13)` l
 the authority on the whole-tree 93% branch floor, and running its byte-equivalent
 duplicate locally buys nothing but wall-clock.
 
+A change to a `dev/` lane runner (`push-gate.sh`, `test-shuffle.sh`, …) now SCOPES rather
+than escalating to the whole tree ([#3817](https://github.com/souliane/teatree/issues/3817)) —
+nothing imports a shell/compose asset, so it is mapped to the tests that NAME it. A change
+to the lane's own selection machinery (`SELECTION_DEFINING_PATHS` in
+`teatree.quality.affected_tests`) still forces FULL, because a selection cannot validate
+its own change; bound `PYTEST_XDIST_AUTO_NUM_WORKERS` on a memory-tight host rather than
+skip the run.
+
 **`bash dev/ci-parity.sh` is the opt-in deep lane**, not the pre-push mandate: reach for
 it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests,
-adding a low-coverage module). It chains the exact blocking CI predicate (prek all-files,
-`makemigrations --check`, `t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`).
+adding a low-coverage module). It chains the exact blocking CI predicate, cheapest-first so a
+failure surfaces in seconds rather than after the coverage lane (`makemigrations --check`,
+`t3 tool test-path-mirror`, `check_module_health.py --from-ref`, prek all-files, `dev/test-cov.sh`, `t3 ci coverage`).
+The step SET and every predicate are unchanged — only the order is.
 Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree
 property no diff-scoped push subset can prove, and the full suite must never gate a push
 (`tests/test_no_full_suite_on_pre_push.py`). The push-stage `ci-critical-parity` hook
-runs `dev/push-gate.sh` — the never-lockout safety contract plus the incremental
-push gate (scoped doctest + ast-grep, FULL on any uncertainty, behind the
-default-TRUE `incremental_push_gate` flag — ON scopes the diff, OFF is the pre-#122
-whole-tree run; the CI whole-tree backstop is untouched). The broad `tests/quality`
-dir is CI-only (it ran ~420s locally — the `test (3.13)` shard covers it whole-tree).
+runs `dev/push-gate.sh` — the never-lockout safety contract, the `tests/conformance`
+lane, plus the incremental push gate (scoped doctest + ast-grep, FULL on any
+uncertainty, behind the default-TRUE `incremental_push_gate` flag — ON scopes the diff,
+OFF is the pre-#122 whole-tree run; the CI whole-tree backstop is untouched). The broad
+`tests/quality` dir is CI-only (it ran ~420s locally — the `test (3.13)` shard covers it
+whole-tree); `tests/conformance` is NOT, because a conformance assertion's input is the
+whole tree, so no diff-scoped lane can prove it unaffected (measured 34s at `-n auto`).
+
+**The order-dependence (shuffle) lane has a local runner: `bash dev/test-shuffle.sh`.**
+`pytest-randomly` is out of the default `dev` group on purpose, so a hand-rolled
+`uv run pytest -p randomly … | tail` on a plain env raises a plugin ImportError while the
+PIPELINE exits 0 — a lane that collected nothing reading green. The runner installs the
+group, preflights the import, passes `-o required_plugins=pytest-randomly`, and never
+pipes pytest; `tests/test_ci_shuffle_lane_scope.py` pins those guards and the byte-level
+directory parity with CI's `test-shuffle` job.
 
 **CI's `lint` job runs prek inside a prebuilt Docker image** (`dev/Dockerfile.test`'s
 `lint` stage, `FROM base`, bakes prek's per-hook environments — same hooks, same
-`SKIP` list as before, a venue-only change). `bash dev/ci-parity.sh`'s step 1 stays
+`SKIP` list as before, a venue-only change). `bash dev/ci-parity.sh`'s prek step stays
 host-native (`uv run prek run --all-files`) by default; set `LINT_DOCKER=1` to run
 that step inside a locally-built `lint` image instead, for an exact CI-lint
 reproduction (catches an environment-only lint difference the host-native run

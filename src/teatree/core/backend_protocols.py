@@ -78,15 +78,6 @@ class PullRequestSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageSpec:
-    """Fields for an outgoing chat message."""
-
-    channel: str
-    text: str
-    thread_ts: str = ""
-
-
-@dataclass(frozen=True, slots=True)
 class PrMergeState:
     """The PR/MR's merge state from the forge — used for the §928 reconciliation.
 
@@ -308,6 +299,13 @@ class CodeHostBackend(Protocol):
         repo_slugs: tuple[str, ...] = (),
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_labeled_issues(
+        self,
+        *,
+        label: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def create_issue(
         self,
         *,
@@ -412,6 +410,18 @@ class MessagingBackend(Protocol):
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    # The honest peer of ``fetch_channel_history``: same read, but a channel the
+    # backend may not read RAISES instead of returning ``[]``. Poll loops keep the
+    # swallowing form (one unreadable channel must not break a scan over many);
+    # interactive single-channel callers use this one, because "quiet" and "the bot
+    # was never invited" are opposite facts an empty list cannot tell apart.
+    def fetch_channel_history_or_refuse(  # pragma: no branch
+        self,
+        *,
+        channel: str,
+        limit: int = 50,
+    ) -> list[RawAPIDict]: ...
 
     def post_message(  # pragma: no branch
         self,

@@ -3,9 +3,9 @@
     <span class="fsm-node" data-group="{{ group.name|lower }}"><span class="fsm-dot"></span>{{ group.name }}</span>
     {% if not forloop.last %}<span class="fsm-link" data-group="{{ group.name|lower }}"></span>{% endif %}
   {% endfor %}
-  {% if board.include_ignored and board.ignored %}
+  {% if board.include_ignored and board.hidden %}
     <span class="fsm-gap"></span>
-    <span class="fsm-node" data-group="ignored"><span class="fsm-dot"></span>Ignored</span>
+    <span class="fsm-node" data-group="ignored"><span class="fsm-dot"></span>Hidden</span>
   {% endif %}
 </div>
 <div class="kanban-groups">
@@ -22,14 +22,16 @@
       </div>
     </section>
   {% endfor %}
-  {% if board.include_ignored and board.ignored %}
+  {% if board.include_ignored and board.hidden %}
     <section class="kanban-group" data-group="ignored">
-      <h2>Ignored</h2>
+      <h2>Hidden</h2>
       <div class="kanban-columns">
-        <div class="kanban-column" data-state="{{ board.ignored.state }}">
-          <h3><span>{{ board.ignored.label }}</span><span class="count">{{ board.ignored.count }}</span></h3>
-          {% for card in board.ignored.cards %}{% include "dash/partials/_card.html" %}{% empty %}<p class="column-empty">—</p>{% endfor %}
+        {% for column in board.hidden %}
+        <div class="kanban-column" data-state="{{ column.state }}">
+          <h3><span>{{ column.label }}</span><span class="count">{{ column.count }}</span></h3>
+          {% for card in column.cards %}{% include "dash/partials/_card.html" %}{% empty %}<p class="column-empty">—</p>{% endfor %}
         </div>
+        {% endfor %}
       </div>
     </section>
   {% endif %}

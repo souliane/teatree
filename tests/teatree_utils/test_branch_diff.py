@@ -7,11 +7,12 @@ unrelated dirt and missing the very lines the PR adds (they live in HEAD, absent
 from ``git diff HEAD``).
 """
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 from teatree.cli.enforcement_tools import diff_coverage
-from teatree.utils.git import branch_diff, full_worktree_diff
+from teatree.utils.git import branch_diff, full_worktree_diff, resolve_diff_base
 from teatree.utils.git_run import run_strict
 
 
@@ -63,6 +64,25 @@ def test_branch_diff_is_committed_diff_vs_base_not_worktree(tmp_path: Path) -> N
     assert "def feature" not in worktree
     assert "def dirty" in worktree
     assert "def untracked" in worktree
+
+
+def test_resolve_diff_base_qualifies_the_configured_base() -> None:
+    with patch.dict(os.environ, {"T3_DIFF_COVERAGE_BASE": "develop"}, clear=False):
+        # a bare name is remote-qualified
+        assert resolve_diff_base(".") == "origin/develop"
+    with patch.dict(os.environ, {"T3_DIFF_COVERAGE_BASE": "origin/release"}, clear=False):
+        # an already-qualified ref passes through untouched
+        assert resolve_diff_base(".") == "origin/release"
+
+
+def test_resolve_diff_base_falls_back_to_origin_main_when_default_is_unresolvable(tmp_path: Path) -> None:
+    repo = tmp_path / "clone"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("T3_DIFF_COVERAGE_BASE", None)
+        # no origin remote → default branch is unresolvable → last-resort fallback
+        assert resolve_diff_base(str(repo)) == "origin/main"
 
 
 def test_diff_coverage_cli_uses_branch_diff_not_worktree(tmp_path: Path) -> None:

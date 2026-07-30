@@ -63,15 +63,20 @@ class SynthOptionsTierResolutionTestCase(SimpleTestCase):
         # RED before the fix: the model was the hardcoded ``_SYNTH_MODEL``, so an
         # ``agent_tier_models`` DB override for the cheap tier was silently ignored.
         db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
-        _seed_config_setting(db, "agent_tier_models", json.dumps({"cheap": "orcarouter/custom-cheap"}))
+        _seed_config_setting(db, "agent_tier_models", json.dumps({"cheap": "vendor/custom-cheap"}))
         with patch.dict("os.environ", {"T3_CONFIG_DB": str(db)}):
             options = sdk_eval_synthesizer._synth_options()
-        assert options.model == "orcarouter/custom-cheap"
+        assert options.model == "vendor/custom-cheap"
 
     def test_system_prompt_is_a_plain_string(self) -> None:
         options = sdk_eval_synthesizer._synth_options()
         assert isinstance(options.system_prompt, str)
         assert "eval" in options.system_prompt.lower()
+
+
+def _no_credentials() -> dict[str, str] | None:
+    """#3512: the SimpleTestCase turns inject the credential resolver, never read the DB."""
+    return None
 
 
 class SdkSynthesizerGuardTestCase(SimpleTestCase):
@@ -80,7 +85,21 @@ class SdkSynthesizerGuardTestCase(SimpleTestCase):
             patch("shutil.which", return_value=None),
             pytest.raises(RuntimeError, match="claude is not installed"),
         ):
-            sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE)
+            sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE, child_env=_no_credentials)
+
+    def test_a_malformed_reply_raises_so_the_candidate_is_dropped(self) -> None:
+        # A reply carrying no JSON object must RAISE, so the caller drops the candidate
+        # rather than staging an unproven spec from a fake success.
+        async def _reply(_prompt: str, *, env: dict[str, str] | None = None) -> str:
+            await asyncio.sleep(0)
+            return "not a JSON object at all"
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(sdk_eval_synthesizer, "_collect_synth_turn", _reply),
+            pytest.raises(ValueError, match="no JSON object"),
+        ):
+            sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE, child_env=_no_credentials)
 
 
 class _HangOnConnectClient:
@@ -119,7 +138,7 @@ class SdkSynthesizerWatchdogTestCase(SimpleTestCase):
 
         def _run() -> None:
             try:
-                sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE)
+                sdk_eval_synthesizer.sdk_spec_synthesizer(_CANDIDATE, _SLICE, child_env=_no_credentials)
                 captured["exc"] = None
             except BaseException as exc:  # noqa: BLE001 - record whatever the turn raised
                 captured["exc"] = exc

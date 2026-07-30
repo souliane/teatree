@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from hooks.scripts.hook_router import handle_banned_terms_pretool, handle_quote_scanner_pretool
-from teatree.hooks import _repo_visibility, public_visibility
+from teatree.hooks import _repo_visibility, leak_policy, public_visibility, publish_destination
 from teatree.hooks.publish_destination import resolve_publish_destination
 
 _BANNED_TERM = "acmecorp"
@@ -362,3 +362,32 @@ class TestProbeErrorFailsClosed:
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         cmd = "gh issue create --repo declaredowner/svc --body x"
         assert public_visibility.gate_skips_for_visibility(cmd, cwd=None, config_path=db) is True
+
+
+class TestGenuinelyUnresolvableFailsClosed:
+    """A publish whose destination is GENUINELY unresolvable is scanned, not skipped (#3477).
+
+    Owner decision, taken fail-CLOSED. ``_destination_visibility`` used to classify an
+    EMPTY slug and a slug carrying an unexpanded ``$VAR`` as ``NON_PUBLIC``
+    (skip-eligible) on the reasoning that there is no target to probe. But a
+    ``$OWNER`` expands at run time and can expand to a PUBLIC repo, and the sibling
+    classifier ``publish_destination.is_public_destination`` already treated both as
+    PUBLIC — the two disagreed. They now agree: unresolvable is ``UNKNOWN``, which
+    scans. The offline ``private_repos`` allowlist stays the network-free way to keep a
+    genuinely-own-private post skip-eligible.
+    """
+
+    @staticmethod
+    def _skips(command: str, monkeypatch: pytest.MonkeyPatch) -> bool:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        return public_visibility.gate_skips_for_visibility(command, cwd=None)
+
+    def test_dollar_slug_structured_post_does_not_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._skips('gh issue create --repo "$OWNER/repo" --body leak', monkeypatch) is False
+
+    def test_two_classifiers_agree_on_an_unresolvable_slug(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        dest = resolve_publish_destination('gh issue create --repo "$OWNER/repo" --body leak')
+        assert dest is not None
+        assert publish_destination.is_public_destination(dest) is True
+        assert public_visibility.destination_visibility(dest) is leak_policy.Visibility.UNKNOWN

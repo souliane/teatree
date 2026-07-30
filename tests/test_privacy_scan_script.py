@@ -384,3 +384,143 @@ class TestPrivacyScanBannedTermsSource:
         result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "inert" not in result.stderr.lower()
+
+
+class TestPrivacyScanAllowlistFromRegistry:
+    """The company-identifier carve-out resolves through the registry ``allow`` class."""
+
+    def _seed_registry(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        db = tmp_path / "registry.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_registry_allow_class_carves_out_the_identifier(self, tmp_path: Path) -> None:
+        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"], "allow": ["acme-product"]})
+        result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "banned_term" not in result.stdout
+
+    def test_without_allow_class_the_bare_slug_is_flagged(self, tmp_path: Path) -> None:
+        # Anti-vacuous control: drop the allow class and the same line flags the slug.
+        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"]})
+        result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term" in result.stdout
+
+
+class TestPrivacyScanDiffAddedLineScoping:
+    """The per-line detectors scan ADDED diff lines only, not context/removed (#3681).
+
+    A context (`` ``) or removed (``-``) hunk line is already-public by
+    definition — it exists unchanged on the parent commit the push builds
+    onto — so a credential/PII finding on it is a false positive that blocks
+    a legitimate push (a synthetic-fixture refactor pulling the fixtures into
+    the diff as context/removed lines). Every genuinely-new secret still
+    appears as an added (``+``) line or in a commit-message body, so the
+    gate's teeth are preserved.
+    """
+
+    def test_removed_line_match_is_not_flagged(self) -> None:
+        # RED before fix: the removed line's home-path tripped the scanner.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            '-old = "/Users/someone/secret/path"\n'  # privacy-scan:allow self-fixture
+            '+new = "a clean replacement value"\n'
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_context_line_match_is_not_flagged(self) -> None:
+        # RED before fix: the unchanged context line's home-path tripped it.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            ' ctx = "/home/carol/data/store"\n'  # privacy-scan:allow self-fixture
+            "-removed = 1\n"
+            "+added = 2\n"
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_added_line_match_still_flagged(self) -> None:
+        # Anti-vacuity: the SAME match on an added line keeps the gate's teeth.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            '+leak = "/Users/someone/secret/path"\n'  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "home_path" in result.stdout
+
+    def test_commit_message_body_line_still_flagged(self) -> None:
+        # The push-gate blob is `%B` message + patch; a message-body line is new
+        # content on the pushed range (the #703 Co-authored-by case) and must
+        # still be scanned — the added-only scoping must not silence it.
+        blob = (
+            "Fix the thing\n"
+            "\n"
+            "Co-authored-by: someone@gmail.com\n"  # privacy-scan:allow (dummy example address, test input)
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old = 1\n"
+            "+new = 2\n"
+        )
+        result = _run(blob)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+    def test_three_component_version_or_section_is_not_a_private_ip(self) -> None:
+        # A private IP has FOUR octets. The `10` branch of the matcher used to
+        # carry only three, so a doc section reference or a version string of
+        # the same shape was reported as a leaked address — and a real
+        # a real four-octet address matched only its first three octets. This
+        # blocked a real push over an unchanged doc section reference.
+        diff = (
+            "diff --git a/BLUEPRINT.md b/BLUEPRINT.md\n"
+            "--- a/BLUEPRINT.md\n"
+            "+++ b/BLUEPRINT.md\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            "+Config lives in appendix \u00a710.1.1, shipped since version 10.2.3.\n"  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "private_ip" not in result.stdout
+
+    def test_a_real_private_ip_is_still_flagged_whole(self) -> None:
+        # The counterpart to the test above: narrowing the matcher must not
+        # stop it catching an actual address, and it must report all four
+        # octets rather than a truncated prefix.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            '+HOST = "10.1.1.5"\n'  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "private_ip" in result.stdout
+        assert "10.1.1.5" in result.stdout  # privacy-scan:allow self-fixture

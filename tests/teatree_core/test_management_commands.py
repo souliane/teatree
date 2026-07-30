@@ -12,6 +12,7 @@ from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
 import teatree.core.management.commands.tasks as tasks_cmd
+import teatree.core.management.commands.tasks_interactive_launch as tasks_launch
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -64,6 +65,8 @@ class CommandOverlay(OverlayBase):
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 COMMAND_SETTINGS: dict[str, object] = {}
+
+_NO_SESSION_ENV = {"CLAUDE_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}
 
 
 class TestLifecycleCommands(TestCase):
@@ -396,7 +399,8 @@ class TestTasksListSession(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_anonymous_session_lists_nothing(self) -> None:
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": "", "XDG_DATA_HOME": ""}):
+        anon_env = {**_NO_SESSION_ENV, "XDG_DATA_HOME": ""}
+        with patch.dict("os.environ", anon_env):
             ticket = Ticket.objects.create(overlay="test")
             session = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             Task.objects.create(ticket=ticket, session=session, phase="coding")
@@ -411,7 +415,7 @@ class TestTasksListSession(TestCase):
         # list and a CLI subprocess can only read a stale on-disk snapshot
         # (`~/.claude/tasks/<session>/*.json`) that lags the live session. The
         # CLI must NOT pretend to show the harness TODO list — it scopes the
-        # teatree DB Task rows only, so `/t3:todos` builds the harness half from
+        # teatree DB Task rows only, so `/t3:checking` builds the harness half from
         # the live TaskList tool instead. The session view must therefore never
         # feed harness-store rows into the renderer (no `harness_todos`), which
         # goes RED on the old view that read the stale store and rendered it.
@@ -446,7 +450,7 @@ class TestSessionTodoRendering(TestCase):
     """The session-scoped renderer prints the teatree tasks only, grouped by status.
 
     The harness TODO list is NOT rendered here — it is the agent's live
-    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:todos``
+    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:checking``
     builds that half from the live ``TaskList`` harness tool.
     """
 
@@ -659,7 +663,7 @@ class TestReconcileChecklist(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_no_session_still_emits_the_discipline(self) -> None:
         out = io.StringIO()
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", _NO_SESSION_ENV):
             call_command("tasks", "reconcile-checklist", stdout=out)
         printed = _strip_ansi(out.getvalue())
         # An anonymous caller has no session-scoped teatree tasks, but the
@@ -1481,7 +1485,7 @@ class TestTasksStartCommand(TestCase):
     def _patch_env(run_mock: MagicMock) -> list[AbstractContextManager[object]]:
         return [
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(tasks_cmd.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(tasks_launch.shutil, "which", return_value="/usr/bin/claude"),
             patch("teatree.utils.run.run_streamed", new=run_mock),
         ]
 

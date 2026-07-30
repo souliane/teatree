@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.agents import prompt
+from teatree.agents import phase_blocks, prompt
 from teatree.agents.prompt import build_system_context, build_task_prompt
 from teatree.core.models import Session, Task, Ticket
 
@@ -33,7 +33,7 @@ class TestBuildTaskPromptCodingAlias(TestCase):
 
 class TestPhaseSpecificLinesAlias(TestCase):
     def _lines(self, phase: str) -> tuple[str, ...]:
-        return prompt._phase_specific_lines(_task(phase), [])
+        return phase_blocks.phase_specific_lines(_task(phase), [])
 
     def test_coding_short_verb_matches_gerund(self) -> None:
         lines = self._lines("code")

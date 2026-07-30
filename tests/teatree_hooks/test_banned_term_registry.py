@@ -26,7 +26,13 @@ import pytest
 from teatree.config.registries import COLD_SETTINGS
 from teatree.config.secret_settings import SECRET_SETTINGS
 from teatree.hooks import banned_term_registry
-from teatree.hooks.banned_term_registry import allowlist_terms, load_registry, registry_terms_for_gate, terms_for_gate
+from teatree.hooks.banned_term_registry import (
+    allowlist_terms,
+    export_scan_terms,
+    load_registry,
+    registry_terms_for_gate,
+    terms_for_gate,
+)
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError, load_brand_terms
 
@@ -253,3 +259,110 @@ def test_registry_key_is_a_registered_settable_secret() -> None:
 def test_unknown_gate_name_is_a_value_error() -> None:
     with pytest.raises(ValueError, match="unknown banned-terms gate"):
         banned_term_registry._classes_union({"leak": (), "prose_collider": (), "tone": (), "allow": ()}, "bogus")
+
+
+class TestOverlayGateRouting:
+    """The overlay class routes to the overlay gate only, and is inert-when-empty."""
+
+    def test_gate_classes_maps_overlay_to_the_overlay_class(self) -> None:
+        assert banned_term_registry.GATE_CLASSES["overlay"] == (banned_term_registry.OVERLAY,)
+        assert banned_term_registry.OVERLAY in banned_term_registry.REGISTRY_TERM_CLASSES
+
+    def test_registry_overlay_class_is_scanned_only_by_the_overlay_gate(self, tmp_path: Path) -> None:
+        db = _seed(
+            tmp_path,
+            banned_term_registry={
+                "leak": ["democorp"],
+                "prose_collider": ["widget-margin"],
+                "overlay": ["acme-internal"],
+            },
+        )
+        assert terms_for_gate("overlay", db_path=db) == ("acme-internal",)
+        assert "acme-internal" not in terms_for_gate("diff", db_path=db)
+        assert "acme-internal" not in terms_for_gate("core", db_path=db)
+        assert "acme-internal" not in terms_for_gate("tree", db_path=db)
+
+    def test_overlay_falls_back_to_legacy_overlay_leak_terms(self, tmp_path: Path) -> None:
+        db = _seed(tmp_path, overlay_leak_terms=["acme-internal", "widget-svc"])
+        assert terms_for_gate("overlay", db_path=db) == ("acme-internal", "widget-svc")
+
+    def test_overlay_is_inert_when_registry_and_legacy_both_unset(self, tmp_path: Path) -> None:
+        # The overlay gate NEVER fail-closes (unlike diff/core/tree): an operator with
+        # no overlay-scoped names is a legitimate no-op, so both-unset yields ().
+        assert terms_for_gate("overlay", db_path=_empty_db(tmp_path)) == ()
+
+    def test_overlay_is_inert_when_registry_present_without_overlay_class(self, tmp_path: Path) -> None:
+        db = _seed(tmp_path, banned_term_registry={"leak": ["democorp"]})
+        assert terms_for_gate("overlay", db_path=db) == ()
+
+    def test_registry_wins_over_legacy_overlay_row(self, tmp_path: Path) -> None:
+        db = _seed(
+            tmp_path,
+            overlay_leak_terms=["legacy-overlay"],
+            banned_term_registry={"leak": ["democorp"], "overlay": ["acme-internal"]},
+        )
+        assert terms_for_gate("overlay", db_path=db) == ("acme-internal",)
+        assert "legacy-overlay" not in terms_for_gate("overlay", db_path=db)
+
+    def test_registry_terms_for_gate_overlay(self, tmp_path: Path) -> None:
+        legacy = _seed(tmp_path, overlay_leak_terms=["legacy-overlay"])
+        assert registry_terms_for_gate("overlay", db_path=legacy) is None
+        with_reg = _seed(tmp_path, banned_term_registry={"overlay": ["acme-internal"]})
+        assert registry_terms_for_gate("overlay", db_path=with_reg) == ("acme-internal",)
+
+    def test_env_registry_overlay_class(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"overlay": ["acme-internal"]}))
+        assert terms_for_gate("overlay", db_path=_empty_db(tmp_path)) == ("acme-internal",)
+
+
+class TestOverlayMigrationRoundTrip:
+    """build_registry_from_legacy carries overlay_leak_terms; verify_migration round-trips it."""
+
+    def test_build_maps_overlay_leak_terms_to_overlay_class(self, tmp_path: Path) -> None:
+        db = _seed(tmp_path, banned_terms=["acme"], overlay_leak_terms=["acme-internal", "widget-svc"])
+        registry = banned_term_registry.build_registry_from_legacy(db_path=db)
+        assert set(registry["overlay"]) == {"acme-internal", "widget-svc"}
+
+    def test_verify_is_lossless_including_overlay(self, tmp_path: Path) -> None:
+        db = _seed(tmp_path, banned_terms=["acme"], overlay_leak_terms=["acme-internal"])
+        registry = banned_term_registry.build_registry_from_legacy(db_path=db)
+        verification = banned_term_registry.verify_migration(registry, db_path=db)
+        assert verification.ok
+        assert verification.overlay_mismatch is False
+
+    def test_dropped_overlay_term_is_caught(self, tmp_path: Path) -> None:
+        db = _seed(tmp_path, banned_terms=["acme"], overlay_leak_terms=["acme-internal"])
+        good = banned_term_registry.build_registry_from_legacy(db_path=db)
+        lossy = {**good, "overlay": []}  # drop the overlay term
+        verification = banned_term_registry.verify_migration(lossy, db_path=db)
+        assert not verification.ok
+        assert verification.overlay_mismatch
+        assert "overlay class" in verification.failure_reason()
+
+
+class TestExportScanTermsUnion:
+    """export_scan_terms unions every ban class (incl overlay), fail-safe to empty."""
+
+    def test_registry_union_includes_overlay_excludes_allow(self, tmp_path: Path) -> None:
+        db = _seed(
+            tmp_path,
+            banned_term_registry={
+                "leak": ["democorp"],
+                "prose_collider": ["widget-margin"],
+                "tone": ["synergy"],
+                "overlay": ["acme-internal"],
+                "allow": ["myorg-product"],
+            },
+        )
+        terms = set(export_scan_terms(db_path=db))
+        assert terms == {"democorp", "widget-margin", "synergy", "acme-internal"}
+        assert "myorg-product" not in terms
+
+    def test_legacy_fallback_is_banned_terms_and_brands(self, tmp_path: Path) -> None:
+        db = _seed(tmp_path, banned_terms=["acme"], banned_brands=["democorp"], overlay_leak_terms=["acme-internal"])
+        # Registry unset -> the legacy two rows only (overlay_leak_terms is NOT part of
+        # the pre-registry export scan set).
+        assert set(export_scan_terms(db_path=db)) == {"acme", "democorp"}
+
+    def test_fail_safe_to_empty_when_all_unset(self, tmp_path: Path) -> None:
+        assert export_scan_terms(db_path=_empty_db(tmp_path)) == ()

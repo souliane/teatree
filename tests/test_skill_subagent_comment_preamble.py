@@ -28,7 +28,7 @@ PREAMBLE = (
 )
 
 DISPATCH_SKILLS = (
-    "teatree-batch",
+    "wip",
     "code",
     "ship",
 )

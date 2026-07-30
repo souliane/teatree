@@ -23,11 +23,40 @@ caller (the keystone, the sweep) refuses the auto-merge.
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 
 from django.apps import apps
 from django.db import OperationalError, ProgrammingError
 
 logger = logging.getLogger(__name__)
+
+
+class TrustVerdict(Enum):
+    """Whether the factory may act on an artifact unattended.
+
+    Named ``TrustVerdict`` rather than ``Autonomy`` because :class:`teatree.config.Autonomy`
+    already names the operator's babysit/notify/full autonomy TIER — a different axis.
+    """
+
+    AUTONOMOUS = "autonomous"
+    HUMAN_REVIEW = "human_review"
+
+
+class AutonomyGate(Enum):
+    """The two gates the ONE trust boundary governs (#3577).
+
+    ``INTAKE`` — may the factory turn this author's ISSUE into work?
+    ``MERGE`` — may the factory auto-merge this author's PR?
+
+    Intake is deliberately STRICTER: it additionally requires EXPLICIT membership
+    of the trusted set, so the private-repo bypass (right for judging a merge on a
+    repo whose access the owner controls) cannot hand an unlisted collaborator the
+    keys to the autonomous factory. Merge is the one that additionally applies the
+    strict fork model.
+    """
+
+    INTAKE = "intake"
+    MERGE = "merge"
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +203,7 @@ def classify_pr_provenance(
     *,
     same_repo: bool | None,
     host_kind: str = "github",
+    extra_trusted: frozenset[str] = frozenset(),
 ) -> AuthorClassification:
     """Classify a merge by the PR head branch's PROVENANCE — the two merge gates' seam.
 
@@ -197,4 +227,57 @@ def classify_pr_provenance(
     if same_repo is False:
         return AuthorClassification(trusted=False, untrusted=True, internal_repo=False)
     # same_repo True or None: still require internal-repo OR a trusted author.
-    return classify_author(slug, author, host_kind=host_kind)
+    return classify_author(slug, author, host_kind=host_kind, extra_trusted=extra_trusted)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorSubject:
+    """The artifact whose author is being judged — one bundle for both gates.
+
+    ``same_repo`` is the PR head branch's provenance and applies only at the
+    ``MERGE`` gate; an issue leaves it ``None``.
+    """
+
+    slug: str
+    author: str
+    host_kind: str = "github"
+    same_repo: bool | None = None
+
+
+def decide_author_trust(
+    subject: AuthorSubject,
+    *,
+    gate: AutonomyGate,
+    extra_trusted: frozenset[str] = frozenset(),
+) -> TrustVerdict:
+    """The ONE autonomy decision, applied at BOTH the intake and merge gates (#3577).
+
+    The owner's principle: the factory works autonomously on the owner's own issues
+    and PRs; an external contributor's must be carefully reviewed by a human. That
+    is one trust boundary, so it gets one application over the shared resolver —
+    :func:`classify_author` / :func:`classify_pr_provenance` — rather than a
+    hand-rolled conjunction at each gate.
+
+    ``INTAKE`` conjoins the repo-scoped classification with EXPLICIT trusted-set
+    membership (see :class:`AutonomyGate`); ``subject.same_repo`` does not apply and
+    is ignored. ``MERGE`` runs the strict fork model: a fork / cross-repo head branch
+    is held for a human even from a trusted author, and unreported provenance falls
+    back to the identity+visibility check.
+
+    Fail-closed throughout: an empty / unknown author, an unresolvable repo, and a
+    fork head all resolve :attr:`TrustVerdict.HUMAN_REVIEW`.
+    """
+    if gate is AutonomyGate.INTAKE:
+        classification = classify_author(
+            subject.slug, subject.author, host_kind=subject.host_kind, extra_trusted=extra_trusted
+        )
+        trusted = classification.trusted and is_trusted_author(subject.author, extra_trusted=extra_trusted)
+    else:
+        trusted = classify_pr_provenance(
+            subject.slug,
+            subject.author,
+            same_repo=subject.same_repo,
+            host_kind=subject.host_kind,
+            extra_trusted=extra_trusted,
+        ).trusted
+    return TrustVerdict.AUTONOMOUS if trusted else TrustVerdict.HUMAN_REVIEW

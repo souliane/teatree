@@ -3,7 +3,7 @@
 Reuses ``dev/Dockerfile.test`` (the image the CI test job builds) so a containerized
 run reproduces CI's environment exactly. The fresh-run AI lane (``t3 eval run
 --backend api``) and ``t3 eval benchmark`` default to running IN the container —
-the reproducible gate must never accidentally run a model on the host. The free /
+the reproducible gate must never accidentally run a model on the host. The model-free /
 deterministic lanes stay host-default; ``--local`` is the explicit host escape
 hatch for durable-history gates or quick checks. No PyPI — the image installs
 the working tree via the mounted repo and ``uv``. The fresh-run lane authenticates
@@ -179,7 +179,7 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
     in-process Agent SDK's ``claude`` child authenticates in-container on the
     selected credential — the run just works without a manual ``export``. That one
     forwarded var is also what the in-container ``make_runner`` reads back to resolve
-    the same kind. The free / transcript lanes never authenticate ``claude``, so the
+    the same kind. The model-free / transcript lanes never authenticate ``claude``, so the
     secret store is not touched for them (empty ``auth_env_vars``).
 
     ``artifacts_dir`` (when set) is bind-mounted WRITABLE at

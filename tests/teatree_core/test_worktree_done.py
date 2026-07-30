@@ -13,18 +13,22 @@ unpushed work even on a done ticket; and the done-wipe tears the docker volumes 
 """
 
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
-from teatree.core.models import Ticket, Worktree
+from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
+from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.runners import worktree_start
+from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import (
     ChangeAnalysis,
     _effective_default_target,
+    _verdict_provenance,
     analyze_worktree_changes,
     reap_done_worktree,
     reap_done_worktrees,
@@ -93,7 +97,7 @@ class _ReaperFixture(TestCase):
         # These tests model SETTLED worktrees (cleanup's target), not live ones; the
         # liveness guard has its own dedicated tests, so neutralise it here.
         monkeypatch.setattr(
-            "teatree.core.worktree.worktree_done.worktree_liveness",
+            "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
             lambda *_a, **_k: LivenessVerdict(active=False),
         )
 
@@ -381,7 +385,7 @@ class TestDryRunAndCleanIgnore(_ReaperFixture):
 
     def test_clean_ignored_branch_is_skipped(self) -> None:
         worktree = self._make_worktree(Ticket.State.MERGED)
-        with patch("teatree.core.worktree.worktree_done.is_clean_ignored", return_value=True):
+        with patch("teatree.core.cleanup.reap_pre_gates.is_clean_ignored", return_value=True):
             outcome = self._reap(worktree)
         assert outcome.action == "skipped"
         assert self.wt_path.exists()
@@ -419,7 +423,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
     def test_active_item_is_skipped_and_emitted(self) -> None:
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(
-            "teatree.core.worktree.worktree_done.worktree_liveness",
+            "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
             return_value=LivenessVerdict(active=True, reason="ticket has a live session or active/claimed task"),
         ):
             outcome = self._reap(worktree)
@@ -435,7 +439,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
 
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(
-            "teatree.core.worktree.worktree_done.is_excluded_by_ownership",
+            "teatree.core.cleanup.reap_pre_gates.is_excluded_by_ownership",
             return_value=OwnershipVerdict(excluded=True, reason="colleague-authored (bob) on a product repo"),
         ):
             outcome = self._reap(worktree)
@@ -444,6 +448,55 @@ class TestReaperGatesAndEmit(_ReaperFixture):
         assert "colleague-authored" in outcome.label
         assert self.wt_path.exists(), "a colleague's work must never be wiped"
         assert outcome.emit is not None
+
+
+class TestStaleSessionReachesTheDonePath(_ReaperFixture):
+    """End-to-end: an abandoned open Session must stop returning ACTIVE before done-detection.
+
+    The consequence chain the session-close defect produced — never-written
+    ``ended_at`` → ``has_active_work`` permanently true → ``reap_pre_gate``
+    returning ACTIVE ahead of done-detection → ``clean-all`` never converging.
+    These run the REAL liveness guard (the fixture's stub is restored per test).
+    """
+
+    def _reap_with_real_liveness(self, worktree: Worktree) -> object:
+        with patch("teatree.core.cleanup.reap_pre_gates.worktree_liveness", worktree_liveness):
+            return self._reap(worktree)
+
+    def _backdate_head(self) -> None:
+        """Age HEAD past the recent-commit window so the SESSION signal is the decider."""
+        stamp = "2020-01-01T00:00:00 +0000"
+        env = {**_clean_env(), "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp}
+        subprocess.run(
+            [_GIT, "-C", str(self.wt_path), "commit", "-q", "--amend", "--no-edit"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+
+    def test_merged_ticket_with_a_stale_session_is_wiped(self) -> None:
+        self._backdate_head()
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        session = Session.objects.create(overlay="test", ticket=worktree.ticket)
+        Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(days=7))
+
+        outcome = self._reap_with_real_liveness(worktree)
+
+        assert outcome.action == "wiped", outcome.label
+        assert not self.wt_path.exists()
+
+    def test_merged_ticket_with_a_recent_session_is_still_skipped(self) -> None:
+        """The fail-CLOSED control: a genuinely live session keeps the worktree."""
+        self._backdate_head()
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        Session.objects.create(overlay="test", ticket=worktree.ticket)
+
+        outcome = self._reap_with_real_liveness(worktree)
+
+        assert outcome.action == "active", outcome.label
+        assert self.wt_path.exists()
 
 
 class TestPostMergeWorkEmitTag(_ReaperFixture):
@@ -466,6 +519,59 @@ class TestPostMergeWorkEmitTag(_ReaperFixture):
         assert outcome.emit is not None
         assert outcome.emit.merged_with_post_merge_work is True
         assert outcome.emit.unique_commit_shas, "post-merge SHAs must be emitted for a fresh PR"
+
+
+class TestEmitVerdictProvenance(_ReaperFixture):
+    """An empty ``unique_commit_shas`` must never mean two opposite things.
+
+    A probe that could not run and a tip proven to hold nothing unique both leave
+    the list empty; only ``content_verified`` tells the judgment skill which one it
+    is looking at, and only the second may be routed to DELETE.
+    """
+
+    def _make_unresolvable_clone(self, state: str) -> Worktree:
+        worktree = self._make_worktree(state)
+        worktree.repo_path = "ghostrepo"
+        worktree.extra = {**worktree.extra, "clone_path": str(self.tmp_path / "moved-away" / "ghostrepo")}
+        worktree.save(update_fields=["repo_path", "extra"])
+        return worktree
+
+    def test_an_unresolvable_clone_emits_an_unverified_record(self) -> None:
+        outcome = self._reap(self._make_unresolvable_clone(Ticket.State.STARTED))
+
+        assert outcome.action == "kept", outcome.label
+        assert outcome.emit is not None
+        assert outcome.emit.unique_commit_shas == [], "no probe ran, so no commit can be named"
+        assert outcome.emit.content_verified is False
+        assert outcome.emit.verdict_source == "clone-unresolvable"
+
+    def test_a_proven_redundant_record_still_emits_the_deletable_shape(self) -> None:
+        _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)  # the tip's content ships…
+        _run_git("commit", "-q", "-m", "squash: ship the feature (#2761)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        (self.wt_path / "wip.txt").write_text("uncommitted work in progress\n", encoding="utf-8")  # …this keeps it
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert outcome.emit is not None
+        assert outcome.emit.unique_commit_shas == []
+        assert outcome.emit.content_verified is True
+        assert outcome.emit.verdict_source == "cherry-zero-unique"
+
+
+def test_inconclusive_verdict_over_a_real_clone_is_not_verified(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True, env=_clean_env())
+
+    inconclusive = RedundancyVerdict(redundant=False, forge_merged=False, source="inconclusive")
+
+    assert _verdict_provenance(repo, inconclusive) == (False, "inconclusive")
+    assert _verdict_provenance(repo, RedundancyVerdict(redundant=False, forge_merged=False)) == (True, "not-redundant")
+    assert _verdict_provenance(tmp_path / "absent", inconclusive) == (False, "clone-unresolvable")
 
 
 class TestSnapshotModulesRemoved:

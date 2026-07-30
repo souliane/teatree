@@ -21,6 +21,7 @@ from typing import Any, NamedTuple
 from django.db.models import Count, Q
 
 from teatree.config import get_effective_settings
+from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_score import score as factory_score_compute
 from teatree.core.factory.factory_signals import DEFAULT_WINDOW_DAYS, FactorySignalsReportDict, compute_factory_signals
 from teatree.core.modelkit.phases import phase_spellings
@@ -172,7 +173,7 @@ def worktree_status(
             resolved = Ticket.objects.resolve(ticket)
         except Ticket.DoesNotExist:
             return []
-        queryset = Worktree.objects.filter(ticket=resolved)
+        queryset = Worktree.objects.for_ticket(resolved)
     elif active_only:
         queryset = Worktree.objects.active(overlay)
     else:
@@ -238,7 +239,7 @@ def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WI
     return report.to_dict()
 
 
-def factory_score(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
+def factory_score(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> FactoryScoreDict:
     """The recipe-weighted factory score over the trailing window (read-only).
 
     Delegates to :func:`teatree.core.factory.factory_score.score` — the same recipe fold

@@ -27,11 +27,6 @@ _DRIVER_NAME = "regenerate generated docs on conflict (souliane/teatree#3582)"
 _DRIVER_COMMAND = "uv run python scripts/hooks/git_merge_generated.py %O %A %B %P"
 
 
-def merge_driver_command() -> str:
-    """The ``merge.generated.driver`` value teatree registers."""
-    return _DRIVER_COMMAND
-
-
 def install_merge_driver(checkout: "Path") -> str:
     """Register the ``generated`` merge driver in *checkout*; return a status line.
 

@@ -44,6 +44,12 @@
 #   2. DMing the author as the signal instead of reacting.
 #   3. adding a second `:white_check_mark:` a colleague already placed (no dedup).
 #
+# Regressions 1 and 2 share ONE scenario (#3566): both are the same decision from
+# the same finished-clean-review state — emit the verdict reaction on
+# `(C_REVIEW, 171.5)` — so a trajectory that satisfies one satisfies the other,
+# and the two negatives (`:eyes:`, author DM) simply hang off that one positive.
+# Regression 3 stays separate: a different verdict from a different state.
+#
 # Fixtures use placeholder identities (`C_REVIEW` channel, `171.5` ts) per the
 # eval README's overlay-agnostic convention.
 
@@ -63,21 +69,6 @@
       args.command: '~ "t3 slack react C_REVIEW 171\.5 (white_check_mark|heavy_check_mark|\+1)"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 slack react \S+ \S+ eyes\b"'
-
-- name: review_signal_is_reaction_not_author_dm
-  agent_path: skills/review/SKILL.md
-  scenario: "the review verdict is signalled by a reaction on the broadcast, never a DM to the MR author"
-  tier: balanced
-  max_turns: 3
-  tools: [Bash]
-  prompt: >-
-    You have FINISHED reviewing colleague MR !4120 and it is clean. The
-    review-broadcast message is `(C_REVIEW, 171.5)`. The reaction (not a direct
-    message to the author) is the signal. Run the ONE Bash command you would
-    issue to emit the verdict signal. One command only, no narration.
-  expect:
-    - tool_call: Bash
-      args.command: '~ "(t3 slack react C_REVIEW 171\.5|slack_react(?=.*C_REVIEW)(?=.*171\.5)|reactions\.add(?=.*C_REVIEW)(?=.*171\.5))"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(notify (send|dm)|slack dm|chat\.postMessage|--dm-author|message the author)"'
 

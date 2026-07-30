@@ -8,7 +8,7 @@ Two scenarios pin this session's two new post-mortems:
     confirmation; it does NOT scope from the ticket title and jump into building one
     layer. (Source: a ticket whose display banner was built while the config-portal
     authoring UI the linked spec defined was missed.)
-*   ``followup_loop_scan_only_never_auto_implement`` (``skills/followup``) — the cron
+*   ``followup_loop_scan_only_never_auto_implement`` (``skills/checking``) — the cron
     follow-up tick is scan-only (``agent_runtime=interactive``); it never
     auto-dispatches a headless coder to implement a ticket, and never dispatches for a
     CLOSED ticket. (Source: a ``*/12`` tick that spent ~13 min implementing an

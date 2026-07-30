@@ -7,6 +7,8 @@ so ``from teatree.agents.headless import _provider_child_env`` stays valid.
 """
 
 import logging
+import os
+from collections.abc import Callable
 
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
@@ -15,6 +17,12 @@ from teatree.llm.credentials import CredentialError, reject_ambient_base_url_red
 from teatree.utils.git_run import git_env_without_overrides
 
 logger = logging.getLogger(__name__)
+
+#: The injectable seam a SYSTEM ``claude`` spawn resolves its child env through (#3512).
+#: :func:`system_child_env` is the production resolver; it reads the ``ConfigSetting``
+#: account-path rows, which Django forbids from a ``SimpleTestCase``, so a caller whose
+#: unit tests exercise the turn without needing credentials injects its own resolver.
+ChildEnvResolver = Callable[[], dict[str, str] | None]
 
 
 def _overlay_scope(task: Task) -> str:
@@ -47,7 +55,7 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch, so a
     NON-``None`` *provider* must be a Layer-2 provider valid under Layer 1
     ``agent_harness=claude_sdk`` (:meth:`~teatree.config.AgentHarnessProvider.valid_for`) —
-    an ``orca_router_byok`` provider reaching here is a genuine cross-layer
+    an ``openai_compatible`` provider reaching here is a genuine cross-layer
     misconfiguration and raises :class:`CredentialError` loud rather than
     silently falling through to the ambient env. Also raises when the selected
     token resolves from neither the env nor the ``pass`` store (or every
@@ -71,6 +79,32 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     if provider is AgentHarnessProvider.API_KEY:
         return resolve_api_key_credential(scope=scope).child_env(base)
     return resolve_subscription_credential(scope=scope).child_env(base)
+
+
+#: pytest-xdist resolves ``-n auto`` through this env var, so bounding it bounds every
+#: agent's suite run without touching the addopts (a human running the suite alone still
+#: gets the whole box).
+XDIST_WORKERS_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+
+
+def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> dict[str, str] | None:
+    """Bound the child agent's pytest parallelism so N agents cannot multiply into N x cores.
+
+    The measured meltdown was 12 agents each auto-detecting 8 workers ≈ 96 workers at
+    load ~70 (#3644): the per-agent expansion is the melt driver, not the agent count.
+    A ``None`` *env* means "inherit the ambient environment"; the cap is still applied,
+    as a one-key overlay the SDK merges over the inherited env, so the ambient auth
+    state is untouched. Returns *env* unchanged when the governor kill-switch is off.
+    """
+    from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: avoids a core import at module load
+        governor_enabled,
+        per_agent_test_workers,
+    )
+
+    if not governor_enabled():
+        return env
+    workers = per_agent_test_workers(cores=os.cpu_count() or 1, active_agents=active_agents)
+    return {**(env or {}), XDIST_WORKERS_VAR: str(workers)}
 
 
 def system_child_env() -> dict[str, str] | None:

@@ -41,6 +41,10 @@ from typing import Any
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
+# The one RedundancyVerdict.source that means no content layer decided anything.
+# Named so every consumer of the verdict's provenance reads the same token.
+INCONCLUSIVE_SOURCE = "inconclusive"
+
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
 _RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
 _TYPE_PREFIX_RE = re.compile(r"^[a-z]+(?:\([^)]+\))?!?:\s*", re.IGNORECASE)
@@ -444,7 +448,7 @@ def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> Re
         redundant=False,
         forge_merged=forge_merged,
         unique_shas=unique_shas,
-        source="inconclusive" if inconclusive else "not-redundant",
+        source=INCONCLUSIVE_SOURCE if inconclusive else "not-redundant",
     )
 
 

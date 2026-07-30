@@ -23,11 +23,13 @@ dependencies = [
   # boundary inside the async tools; declared alongside since it is imported
   # directly by ``teatree.mcp.server``.
   "asgiref>=3.8",
-  # EXACT pin, not a floor: a ``>=`` floor let the installed t3 drift to
-  # 0.2.113 (with claude CLI 2.1.204), which emits a markdown
-  # ``**AskUserQuestion**`` chip instead of a ``tool_use`` block — breaking the
-  # eval AskUserQuestion flow and the question-drain. 0.2.94 is the known-green
-  # build; any bump must be deliberate and re-verified (souliane/teatree#3125).
+  # EXACT pin, not a floor, and QUARANTINED from automated bumps (the
+  # ``.github/dependabot.yml`` ignore entry): a claude CLI at/after 2.1.204
+  # emits a markdown ``**AskUserQuestion**`` chip instead of a ``tool_use``
+  # block — breaking the eval AskUserQuestion flow and the question-drain
+  # (``teatree.eval.message_mapping`` maps only a ``ToolUseBlock``). 0.2.94
+  # (claude CLI 2.1.19x) is the known-green build; any bump must be opened by
+  # hand and re-verified against the metered eval lane (souliane/teatree#3125).
   "claude-agent-sdk==0.2.94",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
@@ -69,6 +71,13 @@ dependencies = [
   # that forbids the Claude Code CLI can adopt these eval lanes
   # ([#3222](https://github.com/souliane/teatree/issues/3222)).
   "pydantic-ai-slim[anthropic,openai]>=2.3",
+  # ``teatree.config.schema.TeatreeSettingsSchema`` is a ``pydantic_settings``
+  # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
+  # a RUNTIME import (``shipped_defaults()``), same class as the runtime deps
+  # above, so it must be in the installed tool env, not only transitively via
+  # ``mcp``. The ``>=2.14.2`` floor stays in ``constraint-dependencies`` below
+  # (GHSA-4xgf-cpjx-pc3j) and continues to gate this direct dependency.
+  "pydantic-settings>=2.14.2",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
   # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
@@ -109,7 +118,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.3.13",
+  "prek==0.4.11",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
@@ -319,6 +328,15 @@ addopts = """
 --color=yes --strict-config --strict-markers --reuse-db -n auto
 """
 timeout = 60
+# Keep only a FAILING test's scratch — a passing one's tmp_path is nothing anyone
+# reads. pytest's "all" default retains it (measured: 200 KB and a surviving
+# run-dir for one trivial passing test), and the run-dirs then outlive their
+# retention count because an OOM SIGKILL under `-n auto` skips the atexit lock
+# removal, leaving a `.lock` that `_pytest.pathlib.ensure_deletable` refuses to
+# clear for LOCK_TIMEOUT = 3 days. Under "failed" a passing dir is rmtree'd
+# inline, before a kill can orphan its lock (#3852).
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 3
 DJANGO_SETTINGS_MODULE = "tests.django_settings"
 django_find_project = false
 testpaths = [ "tests" ]
@@ -434,6 +452,15 @@ modules = [
   "teatree.loops.tickets",
 ]
 
+# Binaries teatree's runtime MANDATES. Read by the general provisioning gate
+# (``teatree.provisioning.declared``): `t3 doctor` FAILs, naming the tool and the
+# remediation, when a declared one is absent from PATH. Adding an entry here is
+# the whole change — the gate enumerates this table rather than carrying its own
+# list, so a newly mandated tool cannot be forgotten (#3652, epic #3445).
+
+[tool.teatree.provisioning]
+required_binaries = [ "direnv", "git", "jq" ]
+
 [tool.teatree.coverage]
 per_module_floors = [
   { path = "src/teatree/loop/persistence.py", floor = 80 },
@@ -491,16 +518,20 @@ baseline_file = "tests/skill_cli_ratchet_grandfathered.txt"
 # worst: a fail-closed gate that stops failing closed, a lost-update in a
 # claim/CAS path, a merge-clear/keystone that stops gating. ``t3 mutation
 # run`` mutates ONLY the registry entries a PR's diff touches and no-ops when
-# none are touched, so most PRs pay nothing. ``mode`` defaults to "warn"
-# (the CI ``mutation-diff`` job never fails the pipeline); flip to "block" to
-# promote it to a gate without a workflow change. ``baseline_surviving`` is the
-# ratchet floor (only shrinks): a per-module count of mutants knowingly left
-# alive, so "block" mode fails only on a NEW survivor, never on the documented
-# backlog. NARROW BY DESIGN — do NOT add the whole codebase; the conformance
-# test ``tests/quality/test_mutation.py`` caps the registry size.
+# none are touched, so most PRs pay nothing. The verdict is the
+# ``baseline_surviving`` ratchet floor (only shrinks): a per-module count of
+# mutants knowingly left alive, so a run FAILS only on a NEW survivor above the
+# recorded total, never on the documented backlog — and it fails that way in
+# BOTH modes. ``mode`` is validated against {"warn", "block"} and does nothing
+# else: the two values resolve to the identical ratchet verdict, so setting
+# "block" changes no behaviour (pinned by ``TestModeIsInertToday`` in
+# ``tests/quality/test_mutation_run.py``). It is reserved for the follow-up that
+# gates on survivors existing at all, which needs the recorded survivor backlog
+# paid down first — that paydown has no tracking issue. NARROW BY DESIGN — do
+# NOT add the whole codebase; the conformance test
+# ``tests/quality/test_mutation.py`` caps the registry size.
 
 [tool.teatree.mutation]
-mode = "warn"
 timeout_seconds = 540
 high_value_modules = [
   "src/teatree/on_behalf_gate.py",
@@ -508,7 +539,7 @@ high_value_modules = [
   "src/teatree/core/merge/authorization.py",
   "src/teatree/core/merge/execution.py",
   "src/teatree/core/models/merge_clear.py",
-  "src/teatree/core/availability.py",
+  "src/teatree/live_presence.py",
   "src/teatree/core/loop_lease_manager.py",
   "src/teatree/loop/review_claim.py",
 ]
@@ -519,7 +550,7 @@ high_value_modules = [
 # only a subset had an entry the `--all` total always exceeded the partial sum
 # and the gate was permanently red (738 measured vs 131 baselined), blocking the
 # first PR of every ISO week (#2142). The counts below come from the gate's own
-# Linux CI output and sum to 622 (738 before #44 paid availability 124 -> 8;
+# Linux CI output and sum to 622 (738 before #44 paid the presence module 124 -> 8;
 # 760 before PR-2 of #2413 paid review_claim back 109 -> 87). From here the floor
 # only ever SHRINKS:
 # any NEW survivor on any safety module pushes the total above the recorded floor
@@ -530,16 +561,17 @@ high_value_modules = [
 # ratchet is designed for. Tighten with `t3 mutation run --all --update-baseline`
 # as the suite kills more of them.
 #
-# #44 paid availability.py 124 -> 8: tests/teatree_core/test_availability.py gained
-# mutation kill-proofs pinning every behavioural point (schedule/override parsing,
-# naive-datetime normalisation, the away->present drain forwarding, the atomic-write
-# utf-8/sorted/same-dir contract, the live-turn wall-clock default, the sparse-window
-# fixed anchor, the pending-question DB forwarding). Verified by a local Linux-container
+# #44 paid the module 124 -> 8: tests/test_live_presence.py gained
+# mutation kill-proofs pinning every behavioural point (heartbeat parsing,
+# naive-datetime normalisation, the atomic-write utf-8/sorted/same-dir contract, the
+# live-turn wall-clock default and window boundary, the same-session guard). #3826
+# renamed the module to teatree.live_presence when the legacy availability layer was
+# retired; the count is a shrink-only ceiling, and the module got smaller. Verified by a local Linux-container
 # mutmut run (326 killed / 8 survived / 0 inconclusive of 334) — mutmut fork-segfaults
 # on the macOS host, so the mutation lane runs in an Ubuntu container. The 8 residual
 # are irreducible: five are provably-equivalent mutants (a redundant `.get(key, default)`
 # default a downstream guard collapses to the identical result — load_schedule
-# availability and load_override mode), and three are mutmut coverage-selection artifacts
+# schedule + override reads), and three are mutmut coverage-selection artifacts
 # on def-signature string defaults (write_override user_id/overlay, record session_id):
 # the tests DO kill them logically, but mutmut cannot attribute a covering test to a
 # default evaluated at import time. Neither class carries real-safety value.
@@ -567,7 +599,7 @@ baseline_surviving = [
   { path = "src/teatree/core/merge/authorization.py", count = 48 },
   { path = "src/teatree/core/merge/execution.py", count = 204 },
   { path = "src/teatree/core/models/merge_clear.py", count = 9 },
-  { path = "src/teatree/core/availability.py", count = 8 },
+  { path = "src/teatree/live_presence.py", count = 8 },
   { path = "src/teatree/core/loop_lease_manager.py", count = 253 },
   { path = "src/teatree/loop/review_claim.py", count = 87 },
 ]
@@ -587,7 +619,7 @@ default = [ "tests/" ]
 "src/teatree/core/merge/authorization.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/merge/execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
-"src/teatree/core/availability.py" = [ "tests/teatree_core/test_availability.py" ]
+"src/teatree/live_presence.py" = [ "tests/test_live_presence.py" ]
 "src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]
 "src/teatree/loop/review_claim.py" = [ "tests/teatree_loop/test_review_claim_discipline.py" ]
 

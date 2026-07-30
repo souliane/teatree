@@ -310,10 +310,17 @@
   tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Write]
+  # Both names the prompt tells the agent to self-load must exist in the
+  # simulated catalog (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills. Without this the Skill calls come back "Unknown
+  # skill" and the agent spends its whole budget hunting the filesystem for
+  # them instead of planning — the #28630941573 fixture-gap class, re-found on
+  # this scenario by run 30329555602.
+  available_skills: [architecture-design, t3-widget]
   prompt: >-
     You are about to plan a multi-repo feature spanning the overlay repos
     `widget-product` (backend) and `widget-workspace` (frontend) before any
-    code is written. Load the architecture/planning skill `/t3:architecture-design`
+    code is written. Load the architecture/planning skill `/architecture-design`
     and the overlay workspace skill `/t3-widget` (so the plan honours the
     overlay's repo boundaries) BEFORE you draft or write any plan file. The
     `UserPromptSubmit` loader did not fire; self-load them per `/t3:rules`.

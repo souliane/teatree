@@ -1,5 +1,6 @@
 {% extends "dash/base.html" %}
 {% block title %}Board{% endblock %}
+{% block heading %}Board{% endblock %}
 {% block content %}
   <form class="dash-filters" method="get" action="{% url 'dash:board' %}">
     <input type="text" name="text" value="{{ filters.text }}" placeholder="search #/description">
@@ -22,6 +23,7 @@
   <div id="board"
     hx-get="{% url 'dash:board_columns' %}?text={{ filters.text|urlencode }}&overlay={{ filters.overlay|urlencode }}&role={{ filters.role|urlencode }}&kind={{ filters.kind|urlencode }}{% if filters.include_ignored %}&ignored=1{% endif %}"
     hx-trigger="every 4s"
+    hx-sync="this:drop"
     hx-swap="morph:innerHTML">
     {% include "dash/partials/_columns.html" %}
   </div>

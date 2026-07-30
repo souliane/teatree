@@ -114,6 +114,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "Reclaim disk via zero-data-loss docker prunes (builder + dangling images + unreferenced volumes).",
             ),
             ("stamp-identity", "Stamp the repo's local git identity to the GitHub noreply form (public-push safety)."),
+            (
+                "stamp-owners",
+                "Record which checkout owns each auto-isolated env dir this venue can see (deletes nothing).",
+            ),
+            (
+                "release-dead-rows",
+                "Delete Worktree rows whose checkout is provably gone — the row alone, nothing else touched.",
+            ),
             ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
             ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
         ],
@@ -223,6 +231,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "retention": DjangoGroup(
+        "Age-based pruning of the high-churn control-DB tables (#3693).",
+        [
+            ("prune", "Prune terminal-owned rows past the retention window (dry-run unless --apply)."),
+        ],
+        # Reads/deletes rows in the teatree-core control DB — dispatch via
+        # ``python -m teatree`` so a cwd inside a ticket worktree resolves core,
+        # not that worktree's per-worktree DB (same #2925/#126 class as queue).
+        core_dispatch=True,
+    ),
     "followup": DjangoGroup(
         "Follow-up snapshots.",
         [
@@ -326,10 +344,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
-            ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
+            ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("create-sub", "Create a child work item nested under a parent issue/work item."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
+            ("show", "Show a ticket's state plus the per-phase attempt counts."),
+            ("expedite", "Flag a ticket as an expedite/release-blocker."),
+            ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
+            ("record-spec-coverage", "Record the spec-coverage manifest the delivery gate reads (#2232)."),
+            ("rubric-set", "Set a ticket's rubric from explicit JSON criteria (#2241)."),
+            ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
         ],
         core_dispatch=True,
     ),
@@ -338,21 +362,29 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         [
             ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
             ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
+            ("lock-acquire", "Acquire the per-MR review-dispatch lock before a manual review."),
+            ("lock-status", "Report the current MRReviewLock state for an MR (read-only)."),
+            ("rebind-clearance", "Re-bind a CLEAR to a conflict-only merge commit."),
         ],
         core_dispatch=True,
     ),
-    "availability": DjangoGroup(
-        "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
+    "repro": DjangoGroup(
+        "Forced-repro gate: record the RED/GREEN reproduction a fix must carry.",
         [
-            ("away", "Set manual away-mode override (questions queue as DeferredQuestion rows)."),
-            (
-                "autonomous-away",
-                "Set manual autonomous-away override (questions queue; the self-pump keeps running, #2544).",
-            ),
-            ("present", "Set manual present-mode override (questions ask interactively)."),
-            ("auto", "Clear manual override and fall back to schedule/default."),
-            ("show", "Print the currently resolved mode and source (override/schedule/default)."),
+            ("record-red", "Record the harness-run FAILING red reproduction for a fix ticket."),
+            ("record-green", "Record the harness-run PASSING green and freeze the provenance."),
+            ("waive", "Record a human-authorized waiver of the forced-repro gate."),
+            ("status", "Show the recorded red/green/provenance/waiver state for a ticket."),
         ],
+        core_dispatch=True,
+    ),
+    "recipe": DjangoGroup(
+        "Read seam over the recipe-weighted factory score.",
+        [
+            ("score", "Compute the recipe-weighted factory score over the trailing window."),
+            ("approve", "Pin the committed recipe's sha into approved_recipe_sha."),
+        ],
+        core_dispatch=True,
     ),
     "config_setting": DjangoGroup(
         "DB-home settings store — the sole tier for a DB-home setting below env (#1775).",
@@ -363,6 +395,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clear", "Remove a DB row, falling back to the dataclass default."),
             ("list", "List every DB config setting row (read-only)."),
             ("import", "Seed the DB store from operational [teatree] toml keys (one-time)."),
+            ("export", "Dump the ConfigSetting store to TOML — the inverse of import."),
+            ("flags", "Read-only dead-toggle audit report over the FEATURE_FLAGS registry."),
         ],
         core_dispatch=True,
     ),

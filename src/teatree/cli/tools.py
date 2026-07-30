@@ -163,12 +163,15 @@ def _validation_errors(
 ) -> list[str]:
     """Return the overlay's ``validate_pr`` errors for ``title``/``description``.
 
-    ``require_sections`` is forwarded only when it deviates from the default, so
-    an overlay whose ``validate_pr`` predates the #3254 keyword still validates
-    the common (sections-required) path unchanged.
+    ``require_sections`` is always forwarded (#3526). Conditionally forwarding it
+    "only when it deviates from the default" hid a non-conforming overlay's
+    ``validate_pr(title, description)`` on the common path and crashed it on the
+    rarely-taken one — the inverse of safe. An overlay that cannot accept the
+    documented keyword is rejected loudly at registration by
+    ``overlay_signature_violations``; forwarding unconditionally keeps the call
+    site honest to the documented signature.
     """
-    kwargs = {} if require_sections else {"require_sections": False}
-    result = overlay.metadata.validate_pr(title, description, **kwargs)
+    result = overlay.metadata.validate_pr(title, description, require_sections=require_sections)
     return list(result.get("errors", []))
 
 

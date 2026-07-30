@@ -15,18 +15,17 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands.ticket_short_describe import (
+from teatree.agents.ticket_short_description import (
     _FALLBACK_LEN,
-    _describe_all_missing,
-    _generate_short_description,
     _summarize,
     _truncation_fallback,
-    describe_ticket,
+    generate_short_description,
 )
+from teatree.core.management.commands.ticket_short_describe import _describe_all_missing, describe_ticket
 from teatree.core.models import Ticket
 
-_SUMMARIZE = "teatree.core.management.commands.ticket_short_describe._summarize"
-_RUN_ONE_SHOT = "teatree.core.management.commands.ticket_short_describe.run_one_shot"
+_SUMMARIZE = "teatree.agents.ticket_short_description._summarize"
+_RUN_ONE_SHOT = "teatree.agents.ticket_short_description.run_one_shot"
 
 
 class TestTruncationFallback:
@@ -52,26 +51,26 @@ class TestTruncationFallback:
 
 class TestGenerateShortDescription:
     def test_blank_title_returns_empty(self) -> None:
-        assert _generate_short_description("") == ""
-        assert _generate_short_description("   ") == ""
+        assert generate_short_description("") == ""
+        assert generate_short_description("   ") == ""
 
     def test_summary_from_model_is_truncated_to_eighty(self) -> None:
         long_summary = "x" * 200
         with patch(_SUMMARIZE, return_value=long_summary):
-            result = _generate_short_description("Some ticket title")
+            result = generate_short_description("Some ticket title")
         assert len(result) == 80
         assert result == "x" * 80
 
     def test_falls_back_to_truncation_when_model_returns_empty(self) -> None:
         title = "z" * 100
         with patch(_SUMMARIZE, return_value=""):
-            result = _generate_short_description(title)
+            result = generate_short_description(title)
         assert result.endswith("…")
         assert len(result) == _FALLBACK_LEN
 
     def test_short_title_with_failed_model_returns_title_as_is(self) -> None:
         with patch(_SUMMARIZE, return_value=""):
-            assert _generate_short_description("hi") == "hi"
+            assert generate_short_description("hi") == "hi"
 
 
 class TestSummarize:
@@ -120,8 +119,6 @@ class TestSummarize:
         assert spawn_calls == []
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
 class TestDescribeOne(TestCase):
     def test_missing_ticket_emits_noop_and_exits_one(self) -> None:
         captured: list[str] = []
@@ -150,8 +147,6 @@ class TestDescribeOne(TestCase):
         assert ticket.short_description == "dogfood smoke scanner"
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
 class TestDescribeAllMissing(TestCase):
     def test_skips_tickets_without_title(self) -> None:
         Ticket.objects.create(overlay="t3-teatree", extra={})
@@ -179,8 +174,6 @@ class TestDescribeAllMissing(TestCase):
         assert any("DONE  described 2 ticket(s)" in line for line in captured)
 
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-@pytest.mark.django_db
 class TestCommandDescribeMethod(TestCase):
     """Cover the ``Command.describe`` argument-validation branches directly."""
 

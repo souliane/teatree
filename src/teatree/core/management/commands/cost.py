@@ -28,19 +28,37 @@ Read-only: every query underneath is a select. The billing-cycle anchor day and
 the credit are configurable via ``t3 <overlay> config_setting set
 billing_cycle_anchor_day <value>`` / ``sdk_monthly_credit_usd``; with no anchor
 the cycle is the calendar month.
-The structured value is the return (django-typer serialises it) — JSON when
-``--json``, else the human report.
+The report is routed through the machine-output seam — JSON on stdout under
+``--json``, the human view on stderr — and returned as the typed payload.
 """
 
-import json
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django.utils import timezone
-from django_typer.management import TyperCommand
+
+from teatree.core.machine_output import MachineOutputCommand, emit
 
 
-class Command(TyperCommand):
+class CostPayload(TypedDict):
+    """The wire shape of ``t3 cost --json``."""
+
+    chip: str
+    cycle_start: str
+    cycle_to_date_usd: float
+    credit_usd: float
+    projected_month_end_usd: float
+    attempts: int
+    per_model_usd: dict[str, float]
+    effective_tokens_total: float
+    per_lane_usd: dict[str, float]
+    per_lane_effective_tokens: dict[str, float]
+    estimated_usd: float
+    per_lane_cache_hit_ratio: dict[str, float]
+    per_phase_cache_hit_ratio: dict[str, float]
+
+
+class Command(MachineOutputCommand):
     def handle(
         self,
         *,
@@ -48,7 +66,7 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the structured report as JSON instead of the human view."),
         ] = False,
-    ) -> str:
+    ) -> CostPayload:
         """Print cycle-to-date SDK-equivalent spend vs the monthly credit."""
         from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps command import light
         from teatree.core.cost import (  # noqa: PLC0415 — deferred: keeps command import light
@@ -71,28 +89,33 @@ class Command(TyperCommand):
             today=today,
         )
 
-        if json_output:
-            return json.dumps(
-                {
-                    "chip": report.chip(),
-                    "cycle_start": report.cycle_start_date.isoformat(),
-                    "cycle_to_date_usd": round(breakdown.total_usd, 4),
-                    "credit_usd": report.credit_usd,
-                    "projected_month_end_usd": round(report.projected_month_end_usd, 4),
-                    "attempts": breakdown.attempts,
-                    "per_model_usd": {tier: round(amount, 4) for tier, amount in breakdown.per_tier_usd.items()},
-                    "effective_tokens_total": round(breakdown.effective_tokens_total, 2),
-                    "per_lane_usd": {lane: round(amount, 4) for lane, amount in breakdown.per_lane_usd.items()},
-                    "per_lane_effective_tokens": {
-                        lane: round(amount, 2) for lane, amount in breakdown.per_lane_effective_tokens.items()
-                    },
-                    "estimated_usd": round(breakdown.estimated_usd, 4),
-                    "per_lane_cache_hit_ratio": {
-                        lane: round(ratio, 4) for lane, ratio in breakdown.per_lane_cache_hit_ratio.items()
-                    },
-                    "per_phase_cache_hit_ratio": {
-                        phase: round(ratio, 4) for phase, ratio in breakdown.per_phase_cache_hit_ratio.items()
-                    },
-                },
-            )
-        return "\n".join(report.render_lines())
+        payload: CostPayload = {
+            "chip": report.chip(),
+            "cycle_start": report.cycle_start_date.isoformat(),
+            "cycle_to_date_usd": round(breakdown.total_usd, 4),
+            "credit_usd": report.credit_usd,
+            "projected_month_end_usd": round(report.projected_month_end_usd, 4),
+            "attempts": breakdown.attempts,
+            "per_model_usd": {tier: round(amount, 4) for tier, amount in breakdown.per_tier_usd.items()},
+            "effective_tokens_total": round(breakdown.effective_tokens_total, 2),
+            "per_lane_usd": {lane: round(amount, 4) for lane, amount in breakdown.per_lane_usd.items()},
+            "per_lane_effective_tokens": {
+                lane: round(amount, 2) for lane, amount in breakdown.per_lane_effective_tokens.items()
+            },
+            "estimated_usd": round(breakdown.estimated_usd, 4),
+            "per_lane_cache_hit_ratio": {
+                lane: round(ratio, 4) for lane, ratio in breakdown.per_lane_cache_hit_ratio.items()
+            },
+            "per_phase_cache_hit_ratio": {
+                phase: round(ratio, 4) for phase, ratio in breakdown.per_phase_cache_hit_ratio.items()
+            },
+        }
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human="\n".join(report.render_lines()),
+        )
+        return payload

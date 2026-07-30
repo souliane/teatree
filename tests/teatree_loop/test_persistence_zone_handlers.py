@@ -299,8 +299,8 @@ class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
 
     def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:
         return ScanSignal(
-            kind="assigned_issue.ready",
-            summary=f"Ready to start: {url}",
+            kind="issue_intake.admitted",
+            summary=f"Admitted for auto-implement: {url}",
             payload={"url": url, "auto_start": True, "overlay": "acme"},
         )
 

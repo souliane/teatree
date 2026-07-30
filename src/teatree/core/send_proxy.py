@@ -48,8 +48,7 @@ from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
 from teatree.config.enums import SendProxyMode
-from teatree.core.gates.privacy_gate import PrivacyGateResult, format_refusal, scan_outbound_text
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.gates.privacy_gate import PrivacyGateResult, format_refusal, overlay_privacy_rules, scan_outbound_text
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
 
@@ -195,18 +194,33 @@ def destination_allowed(channel: SendChannel, destination: str, *, overlay: str,
 
 
 def _redact_terms(overlay: str) -> list[str]:
-    """The active overlay's ``privacy_redact_terms`` — the redaction vocabulary.
+    """*overlay*'s ``privacy_redact_terms`` — the redaction vocabulary.
 
-    Best-effort: when no overlay resolves the list is empty and redaction is a
-    no-op (the allowlist is still evaluated). Reuses the same per-overlay term
-    set the #1295 publication privacy gate scans, so redaction and the leak gate
-    never drift.
+    Resolution runs THROUGH the #1295 publication privacy gate
+    (:func:`~teatree.core.gates.privacy_gate.overlay_privacy_rules`), so redaction
+    and the leak gate cannot drift on WHICH terms apply — the docstring claim this
+    module always made, previously re-implemented here and broken.
+
+    *overlay* is threaded into resolution rather than resolved ambiently: a bare
+    ``get_overlay()`` raises ``Multiple overlays found`` wherever more than one
+    overlay is installed, and swallowing that turned redaction into a silent
+    no-op on every send. A blank *overlay* (the shape ``route_forge_write``
+    produces) resolves to the union of every registered overlay's terms rather
+    than to nothing.
+
+    Best-effort by contract: a genuine resolution failure yields an empty list so
+    the hot outbound path can never break on it. The hard stop for a public
+    target lives in the leak gate, which fails CLOSED ahead of this.
     """
     try:
-        return list(get_overlay().config.privacy_redact_terms)
+        rules = overlay_privacy_rules(overlay)
     except Exception as exc:  # noqa: BLE001 — overlay redact rules are a best-effort add.
         logger.debug("send_proxy: redact-term resolution failed for overlay=%r (%s)", overlay, exc)
         return []
+    if rules is None:
+        logger.debug("send_proxy: overlay privacy rules unresolvable for overlay=%r — no redaction terms", overlay)
+        return []
+    return list(rules[0])
 
 
 def redact_payload(payload: str, *, overlay: str) -> tuple[str, tuple[str, ...]]:

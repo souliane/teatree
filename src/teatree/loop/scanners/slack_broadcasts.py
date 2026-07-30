@@ -30,9 +30,16 @@ Idempotency
 -----------
 
 The :class:`ScannedBroadcast` ledger key ``(channel, slack_ts)`` makes
-re-scanning safe. A re-classification (pending → all_merged once the
-last open MR closes) updates the row and re-reacts; an unchanged
-classification is a no-op.
+re-scanning safe: one row per broadcast, whatever the tick count. A
+re-classification (pending → all_merged once the last open MR closes)
+updates the row and re-reacts.
+
+Emission is gated separately, on
+:attr:`~teatree.core.models.ScannedBroadcast.awaiting_reviewer_dispatch` —
+a pending broadcast no reviewer task covers is emitted again, so a dispatch
+lost to a dead worker or an exhausted budget is recoverable rather than
+unreachable forever. Duplicate work is prevented downstream, where
+``persist_agent_actions`` reuses the existing Ticket + open reviewing Task.
 
 Channel-list and MR-state lookup are dependency-injected
 -------------------------------------------------------
@@ -85,17 +92,21 @@ _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
 class ConnectChannelBotRestrictedError(RuntimeError):
     """Raised when a broadcast in a Slack-Connect channel cannot be reacted to.
 
-    The bot token is rejected on Connect channels and the dual-token
-    fallback (post via the user ``xoxp``) is tracked in #1209 — until
-    that lands, the scanner must hard-fail loudly rather than silently
-    swallow the failed reaction. The error carries the channel id so
-    callers can surface a single actionable message.
+    A Connect channel rejects the bot token, so
+    :func:`teatree.backends.slack.token_policy.channel_token` already routes every
+    WRITE there to the personal ``xoxp``. Reaching this error therefore means that
+    routed token failed too — no user token is configured (the policy falls back to
+    the rejected bot token), or the user token lacks ``reactions:write`` or
+    membership of the partner channel. The scanner hard-fails rather than silently
+    swallowing the dropped reaction; the error carries the channel id so callers can
+    surface a single actionable message.
     """
 
     def __init__(self, channel: str) -> None:
         super().__init__(
-            f"Slack-Connect channel {channel!r} rejected the bot reaction "
-            "and the user-token fallback is not wired (tracked in #1209). "
+            f"Slack-Connect channel {channel!r} rejected the reaction under the routed "
+            "token. Provision the personal token with `t3 setup slack-user-token` and "
+            "confirm it carries reactions:write and membership of the channel. "
             "Scanner is failing loudly per #1131 to avoid silent drops.",
         )
         self.channel = channel
@@ -114,12 +125,23 @@ class MrState:
     ``author.username`` / GitHub ``user.login``) so the scanner can skip
     the ``:eyes:`` review reaction on the user's own MR broadcasts (#1384).
     Empty when the classifier could not read it — treated as "not mine".
+
+    ``head_sha`` carries the MR's current head commit so the review-intent
+    signal can seed ``Ticket.extra["reviewed_sha"]`` the same way the
+    forge-assignment path does. Without it the whole at-head dedup chain
+    (``_already_reviewed_at_head``, ``mark_reviewed_externally``'s stamp,
+    ``ReviewedPrHeadScanner``) has nothing to key on and a broadcast MR is
+    reviewed exactly once, forever — the 2026-07-22 incident. The classifier
+    already fetches the full forge JSON, so this costs no extra I/O. Empty
+    when the classifier could not read it — a fail-open "unknown head", never
+    treated as a moved head.
     """
 
     url: str
     merged: bool
     approved: bool
     author_username: str = ""
+    head_sha: str = ""
 
 
 MrStateClassifier = Callable[[Sequence[str]], list[MrState]]
@@ -483,11 +505,10 @@ class SlackBroadcastsScanner:
         except ConnectChannelBotRestrictedError:
             raise
         except Exception as exc:
-            # A Slack-Connect channel rejecting the bot token is the
-            # specific failure #1131 must surface loudly until #1209
-            # lands; the backend reports it as a generic exception, so
-            # we lift it here. Any other reaction failure is logged
-            # and left to the next tick.
+            # A Connect channel rejecting the reaction is the specific failure
+            # #1131 must surface loudly; the backend reports it as a generic
+            # exception, so we lift it here. Any other reaction failure is
+            # logged and left to the next tick.
             if _looks_like_connect_restriction(exc):
                 raise ConnectChannelBotRestrictedError(channel) from exc
             logger.exception("Failed to react :%s: on %s/%s", emoji, channel, ts)
@@ -496,14 +517,15 @@ class SlackBroadcastsScanner:
 
 
 def _looks_like_connect_restriction(exc: BaseException) -> bool:
-    """Heuristic for the Slack-Connect bot-restricted error shape.
+    """Heuristic for the Slack-Connect restricted-reaction error shape.
 
-    Slack's API returns ``not_in_channel`` / ``channel_not_found`` /
-    ``is_archived`` for the Connect-bot-restricted case. The backend
-    wraps the response in a generic exception with the error code in
-    the message, so the scanner matches on the string. Once #1209
-    introduces typed errors on the backend the heuristic moves to an
-    ``isinstance`` check.
+    Slack returns ``not_in_channel`` / ``channel_not_found`` / ``is_ext_shared``
+    for the Connect-restricted case. ``SlackBotBackend.react`` posts
+    ``reactions.add`` through the transport directly rather than through
+    :mod:`teatree.backends.slack.reactions`, so the typed
+    :class:`~teatree.backends.slack.react_errors.SlackReactionError` never reaches
+    this scanner — the error code arrives only inside a generic exception's
+    message, which is what the match below reads.
     """
     message = str(exc)
     return any(token in message for token in ("not_in_channel", "channel_not_found", "is_ext_shared"))
@@ -534,6 +556,12 @@ def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: st
     signal kind, no parallel dispatch path. An untrusted author on a PUBLIC
     repo flags the signal ADVERSARIAL (#1773) so the reviewer treats it as a
     potential malicious actor rather than a colleague MR.
+
+    ``head_sha`` rides the payload so ``persistence._handle_reviewer`` seeds
+    ``Ticket.extra["reviewed_sha"]`` — the key every downstream at-head check
+    reads. Before this the broadcast path was the ONLY discovery route that
+    recorded no SHA, which is why a broadcast-discovered MR was reviewed once
+    and then invisible to a colleague's later push (2026-07-22 incident).
     """
     mr_url = state.url
     ref = pr_ref_from_url(mr_url)
@@ -544,6 +572,7 @@ def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: st
         payload={
             "url": mr_url,
             "mr_url": mr_url,
+            "head_sha": state.head_sha,
             "channel": row.channel,
             "ts": row.slack_ts,
             "trigger": "broadcast",

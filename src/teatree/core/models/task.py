@@ -15,6 +15,7 @@ from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import renew_lease as _renew_task_lease
+from teatree.core.models.task_claim import window_parked as _window_parked
 from teatree.core.models.task_phase_disposition import (
     dispose_unshippable_review,
     escalate_unmatched_phase_transition,
@@ -196,6 +197,9 @@ class Task(models.Model):
     def renew_lease(self, *, lease_seconds: int = 300) -> None:
         _renew_task_lease(self, lease_seconds=lease_seconds)
 
+    def is_window_parked(self, now: datetime | None = None) -> bool:
+        return _window_parked(self, now)
+
     def route_to_headless(self, *, reason: str = "") -> None:
         self._route(self.ExecutionTarget.HEADLESS, reason)
 
@@ -319,8 +323,11 @@ class Task(models.Model):
         through code→test→review finds no matching guard and no-ops, so a
         ticket can never reach a state it did not earn. The guards also
         make the call idempotent — once the ticket has advanced, a repeat
-        call (parallel child task, or a replay of an already-applied
-        transition) finds the state mismatch and no-ops.
+        call (a parallel child task) finds the state mismatch and no-ops.
+        ``mark_reviewed_externally`` is the one exception, by design: it
+        accepts its own target so a re-review at a moved head SHA can
+        re-stamp the reviewed-at record, which is why the replay sweep
+        drops terminal tickets rather than leaning on this guard (#3879).
 
         A task held for human input (#927) never fires its transition
         here — the agent said it could not finish this phase, so neither

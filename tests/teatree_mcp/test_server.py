@@ -17,9 +17,11 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.backends.types import Service
+from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.models import Task
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
+from teatree.mcp.search import factory_score
 from teatree.mcp.server import _required_services
 from tests.factories import TaskFactory, TicketFactory
 
@@ -271,3 +273,8 @@ class TestFactoryScoreFlagGating(TestCase):
         assert payload["verdict"] in {"ok", "regressing", "red"}
         assert "recipe_sha" in payload
         assert len(payload["signals"]) == 5
+
+
+class TestFactoryScoreWireShape(TestCase):
+    def test_read_tool_returns_the_declared_typed_dict(self) -> None:
+        assert set(factory_score()) == set(FactoryScoreDict.__annotations__)
