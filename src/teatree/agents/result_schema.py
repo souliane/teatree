@@ -465,11 +465,12 @@ class ProseSummaryPolicy:
 
         * :meth:`accepted` — the lightweight phases, exempt by design.
         * A phase that HAS an evidence requirement — the manufactured summary is
-            already refused downstream by :func:`check_evidence`, with a message naming
-            the missing field, and only after ``attempt_recorder._salvage_coding_result``
-            has had its chance to rescue a coder that committed real work but omitted the
-            envelope (#3263). Refusing here would preempt both, replacing a specific
-            diagnosis with a generic one and stranding a landed branch.
+            already refused downstream by :func:`check_evidence`, but only after
+            ``attempt_recorder._salvage_coding_result`` has had its chance to rescue a
+            coder that committed real work but omitted the envelope (#3263). Refusing
+            here would preempt the salvage and strand a landed branch. The recorder is
+            told the envelope was never parsed (``envelope_parsed=False``) so its
+            refusal still names the omitted envelope, not an omitted key (#3905).
 
         Every other phase has no gate at all, so this is the only thing between a
         vacuous run and a completed task.

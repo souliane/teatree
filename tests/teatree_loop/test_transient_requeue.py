@@ -16,6 +16,7 @@ from unittest import mock
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -205,6 +206,24 @@ class TestTransientRequeue(TestCase):
         assert reopened == 0
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_testing_no_envelope_refusal_gets_the_corrective_retry(self) -> None:
+        # #3905. A `testing` run that emitted no JSON at all used to be recorded
+        # with the RECORDER's per-field message, and `testing` is not in
+        # _CORRECTIVE_PHASES — so the most literal omitted-envelope failure there
+        # is never earned the retry and paged a human on the first miss. Recorded
+        # honestly as the RUNNER refusal, it takes the ungated no-envelope branch
+        # this function's own docstring already describes.
+        task = _failed_task(phase="testing")
+        _add_failed_attempt(task, error=NO_ENVELOPE_ERROR)
+
+        reopened = requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert reopened == 1
+        assert task.status == Task.Status.PENDING
+        assert "tests_run" in task.execution_reason
+        assert "envelope" in task.execution_reason.lower()
 
     def test_non_envelope_deterministic_failure_is_escalated_not_retried(self) -> None:
         # A real test failure is not an omitted-envelope class: no corrective

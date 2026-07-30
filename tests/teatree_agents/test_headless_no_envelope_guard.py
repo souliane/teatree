@@ -25,10 +25,11 @@ from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
-from teatree.agents.envelope_refusal import is_envelope_refusal
+from teatree.agents.attempt_recorder import record_result_envelope
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_envelope_refusal
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.headless import TaskUsage, run_headless
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 _PROSE = "I finished the work but forgot to emit the JSON result envelope."
 
@@ -139,6 +140,88 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         )
         # Control: the classifier can say NO — it is not a rubber stamp.
         assert not is_envelope_refusal("AssertionError: expected 3 got 4")
+
+    def test_evidence_phase_with_no_json_is_diagnosed_as_no_envelope(self) -> None:
+        # #3905. `testing` carries an evidence requirement, so an envelope-less run
+        # is handed on to the recorder (so the salvage and the per-field diagnosis
+        # keep their turn) — and the recorder then refused it with "result must
+        # include one of [tests_run | tests_passed]". That reads as "the agent
+        # emitted an envelope and omitted a key". It emitted nothing at all, and
+        # the misdiagnosis sent the investigation of two halted tickets after the
+        # wrong hypothesis.
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+
+        with _fake_sdk(_PROSE):
+            attempt = run_headless(task, phase="testing", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert attempt.error == NO_ENVELOPE_ERROR, (
+            f"a run that produced NO JSON must be diagnosed as such; got: {attempt.error!r}"
+        )
+        assert "missing required evidence" not in attempt.error
+        assert attempt.result["summary"] == _PROSE[:1000], "the prose must stay on the attempt for diagnosis"
+
+    def test_a_parsed_envelope_missing_its_evidence_key_keeps_the_per_field_diagnosis(self) -> None:
+        # Behaviour preservation, and the control for the test above: when an
+        # envelope WAS parsed, "you omitted the key" is the true diagnosis and
+        # must survive untouched.
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+
+        with _fake_sdk('{"summary": "ran them, honest"}'):
+            attempt = run_headless(task, phase="testing", overlay_skill_metadata={})
+
+        assert "missing required evidence" in attempt.error
+        assert attempt.error != NO_ENVELOPE_ERROR
+
+    def test_both_diagnoses_stay_classified_as_envelope_refusals(self) -> None:
+        # The consumer contract: `transient_requeue` routes on
+        # `is_envelope_refusal`, so re-diagnosing must not drop either path out
+        # of the corrective lane.
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        no_json = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+        parsed = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+
+        with _fake_sdk(_PROSE):
+            no_json_attempt = run_headless(no_json, phase="testing", overlay_skill_metadata={})
+        with _fake_sdk('{"summary": "ran them, honest"}'):
+            parsed_attempt = run_headless(parsed, phase="testing", overlay_skill_metadata={})
+
+        assert is_envelope_refusal(no_json_attempt.error)
+        assert is_envelope_refusal(parsed_attempt.error)
+        assert not is_envelope_refusal("AssertionError: expected 3 got 4")
+
+    def test_the_halt_fingerprint_is_stable_across_two_no_envelope_runs(self) -> None:
+        # `task_repair` halts on two consecutive IDENTICAL fingerprints, so a
+        # diagnosis carrying run-specific prose would make every no-envelope run
+        # look fresh and defeat the stall check.
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        first = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+        second = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+
+        with _fake_sdk(_PROSE):
+            run_headless(first, phase="testing", overlay_skill_metadata={})
+        with _fake_sdk("A completely different prose ending, still no envelope."):
+            run_headless(second, phase="testing", overlay_skill_metadata={})
+
+        fingerprints = {
+            TaskAttempt.objects.get(task=first).error_fingerprint,
+            TaskAttempt.objects.get(task=second).error_fingerprint,
+        }
+        assert len(fingerprints) == 1, f"the fingerprint must not vary with the agent's prose; got {fingerprints}"
+        assert fingerprints != {""}
+
+    def test_the_in_session_recorder_path_keeps_the_per_field_diagnosis(self) -> None:
+        # `manage.py task record-attempt` hands over an envelope it already
+        # parsed, so its evidence refusal is genuinely "you omitted the key".
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
+
+        attempt = record_result_envelope(task, {"summary": "handed back in-session"}, phase="testing")
+
+        assert "missing required evidence" in attempt.error
 
     def test_exempt_phase_keeps_prose_fallback(self) -> None:
         # Behaviour preservation: an exempt phase (``retro``) still records the
