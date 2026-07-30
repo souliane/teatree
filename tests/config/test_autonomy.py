@@ -50,7 +50,7 @@ class TestAutonomyParse:
             Autonomy.parse("yolo")
 
     def test_tier_ordering_full_gt_notify_gt_babysit(self) -> None:
-        """Documented tier ordering: full > notify > babysit (default babysit)."""
+        """Documented tier ordering: full > notify > babysit (default full)."""
         members = list(Autonomy)
         assert members == [Autonomy.BABYSIT, Autonomy.NOTIFY, Autonomy.FULL]
 
@@ -67,8 +67,13 @@ class TestAutonomyDefault(TestCase):
     def test_full_default_collapses_the_gate_values(self) -> None:
         settings = get_effective_settings()
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        assert settings.require_human_approval_to_merge is False
         assert settings.require_human_approval_to_answer is False
+
+    def test_the_default_tier_still_does_not_remove_review_before_merge(self) -> None:
+        # #3630: the merge gate is not a tier-collapsed gate, so raising the SHIPPED
+        # default to ``full`` cannot silently drop review-before-merge either. Merging
+        # unreviewed stays its own named opt-in.
+        assert get_effective_settings().require_human_approval_to_merge is True
 
 
 class _AutonomyDbBase(TestCase):

@@ -88,11 +88,12 @@ class _LoopFlagAndCredentialSettings:
     # can never be flipped default-ON without a code-reviewed stage demotion.
     outer_loop_enabled: bool = False
     # North-star PR-6 — the master gate for the directive-driven self-modification
-    # front-end (intake + interpret + ratify), a SETTLING ``FEATURE_FLAGS`` entry.
-    # Default ON, but the loop's guard chain still requires ``factory_score_enabled``
-    # (default OFF) and a live critic before any directive advances, so a directive
-    # event still DROPs at default resolution until those are armed. DB-home (#1775),
-    # per-overlay overridable — flip OFF to disable directive intake entirely.
+    # front-end (intake + interpret + ratify), graduated DARK -> SETTLING by #3895.
+    # Default ON: a captured directive IS interpreted, and the intake arc terminates at
+    # the structural human ratify gate. The EXECUTION arc past that gate additionally
+    # needs ``factory_score_enabled`` (default OFF) and a live critic, so nothing
+    # self-modifies at default resolution. DB-home (#1775), per-overlay overridable —
+    # flip OFF to disable directive intake entirely.
     directive_loop_enabled: bool = True
     # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
     # activation is applied, the five evidence classes (activation live, acceptance green,

@@ -514,6 +514,15 @@ _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
 
 _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
 
+#: Every field :func:`_apply_autonomy` may write. Each still has its own home and its own
+#: shipped default, but an autonomous ``autonomy`` tier DERIVES its resolved value, so it
+#: can differ from that default with no ``defaults_approvals.toml`` entry — the reviewed
+#: decision is the tier, not the per-field value. Sourced from the collapse itself so the
+#: set cannot drift from what the resolver actually writes.
+AUTONOMY_COLLAPSED_FIELDS: frozenset[str] = frozenset(
+    {*_AUTONOMY_COLLAPSED_GATE_VALUES, "mode", "notify_on_behalf", "review_request_post_disabled"}
+)
+
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
     """Collapse the tier-governed approval gates for ``full`` / ``notify``.

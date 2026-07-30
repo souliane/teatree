@@ -100,16 +100,18 @@ class TestDirectionIsDbIntoTheFile:
 
 class TestNeverMovedThroughThisPath:
     def test_safety_posture_live_override_is_declined(self) -> None:
-        plan = _plan({"autonomy": "full"})
+        # The live box moved the key AWAY from what ships; the snapshot declines either
+        # direction — a safety-posture key never travels this path.
+        plan = _plan({"autonomy": "babysit"})
         assert plan.changes == ()
-        assert _emitted(plan.toml)["autonomy"] == "babysit"
+        assert _emitted(plan.toml)["autonomy"] == _shipped()["autonomy"]
         assert {d.key: d.reason for d in plan.declined}["autonomy"] == "safety-posture"
 
     def test_dark_flag_live_override_is_declined(self) -> None:
-        plan = _plan({"directive_loop_enabled": True})
+        plan = _plan({"outer_loop_enabled": True})
         assert plan.changes == ()
-        assert _emitted(plan.toml)["directive_loop_enabled"] is False
-        assert {d.key: d.reason for d in plan.declined}["directive_loop_enabled"] == "dark-flag"
+        assert _emitted(plan.toml)["outer_loop_enabled"] is False
+        assert {d.key: d.reason for d in plan.declined}["outer_loop_enabled"] == "dark-flag"
 
     def test_every_safety_and_dark_key_is_declined_even_when_the_live_box_moved_it(self) -> None:
         moved = dict.fromkeys(SAFETY_POSTURE_KEYS | frozenset(dark_flags()), "__moved__")

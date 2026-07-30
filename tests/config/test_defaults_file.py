@@ -142,11 +142,42 @@ class TestTaxonomy:
 
 
 class TestSafetyAndDarkFlagsPinned:
-    """Safety-posture + dark-flag defaults are pinned to their fail-closed/off literals."""
+    """Every safety-posture key and dark flag ships at exactly the literal pinned here.
+
+    The pin is per-key and exhaustive: :meth:`test_pinned_set_covers_safety_posture_and_dark_flags`
+    refuses a member of either registry that no literal below covers, so a key can only
+    move by editing this table — which is the reviewed decision. ``autonomy`` is the one
+    member NOT at its fail-closed literal: #3895 raised it to ``full`` on the owner's
+    explicit authorization, recorded in :data:`_OWNER_RAISED` so the divergence from
+    fail-closed is named rather than silent. Every other key is fail-closed/off.
+    """
+
+    #: What "safe" MEANS for each safety-posture key, independent of what ships. The
+    #: audited delta against :attr:`_PINNED` is the whole point: a key whose shipped
+    #: literal leaves this value needs an :attr:`_OWNER_RAISED` entry.
+    _FAIL_CLOSED: ClassVar[dict[str, Any]] = {
+        "autonomy": "babysit",
+        "enforce_regulated_path": False,
+        "regulated_path_model_allowlist": [],
+        "substrate_self_signoff": False,
+        "substrate_auto_merge_authorized_by": "",
+        "on_behalf_post_mode": "draft_or_ask",
+        "on_behalf_auto_actions": ["post_e2e_evidence"],
+        "send_proxy_allowlist": [],
+        "trusted_issue_authors": [],
+        "bulk_close_threshold": 5,
+    }
+
+    #: Safety-posture keys deliberately shipped ABOVE their fail-closed value, each with
+    #: the owner authorization that moved it. A key here is still pinned — it just has a
+    #: recorded reason for its literal.
+    _OWNER_RAISED: ClassVar[dict[str, str]] = {
+        "autonomy": "#3895 — owner-authorised autonomous-by-default posture",
+    }
 
     _PINNED: ClassVar[dict[str, Any]] = {
-        # SAFETY_POSTURE_KEYS — the ten write-is-an-authorization keys, at their safe values.
-        "autonomy": "babysit",
+        # SAFETY_POSTURE_KEYS — the ten write-is-an-authorization keys.
+        "autonomy": "full",
         "enforce_regulated_path": False,
         "regulated_path_model_allowlist": [],
         "substrate_self_signoff": False,
@@ -161,7 +192,6 @@ class TestSafetyAndDarkFlagsPinned:
         "factory_score_enabled": False,
         "require_plan_adequacy": False,
         "critic_gate_mode": "off",
-        "directive_loop_enabled": False,
         "send_proxy_mode": "warn",
         "require_debt_delta": False,
         "require_executed_repro": False,
@@ -176,6 +206,23 @@ class TestSafetyAndDarkFlagsPinned:
     @pytest.mark.parametrize("key", sorted(_PINNED))
     def test_shipped_default_matches_pinned_literal(self, key: str) -> None:
         assert _toml_teatree()[key] == self._PINNED[key]
+
+    def test_every_dark_flag_is_pinned_to_its_own_off_value(self) -> None:
+        # A dark flag's literal is not free-form: it must equal the flag's declared
+        # off_value, so editing this table can never quietly ship a dark feature ON.
+        for key, flag in dark_flags().items():
+            assert self._PINNED[key] == flag.off_value
+
+    def test_fail_closed_table_covers_every_safety_posture_key(self) -> None:
+        assert set(self._FAIL_CLOSED) == SAFETY_POSTURE_KEYS
+
+    def test_only_recorded_owner_authorizations_leave_the_fail_closed_value(self) -> None:
+        # The guard on the table itself: raising a safety-posture key above its
+        # fail-closed literal requires an entry naming the authorization. Without one
+        # the raise is unrecorded and this goes red.
+        raised = {key for key in SAFETY_POSTURE_KEYS if self._PINNED[key] != self._FAIL_CLOSED[key]}
+        assert raised == set(self._OWNER_RAISED)
+        assert all(self._OWNER_RAISED[key].strip() for key in raised)
 
 
 # ---- The parity matrix (the load-bearing test) -----------------------------------------

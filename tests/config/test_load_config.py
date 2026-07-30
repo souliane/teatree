@@ -53,15 +53,15 @@ class TestDbTierDefaults(TestCase):
             monkeypatch.delenv(env, raising=False)
 
     def test_security_and_autonomy_gate_defaults(self) -> None:
-        # The default ``autonomy = full`` collapses the three approval gates and
-        # pins ``mode = auto``; the safety floor (bash gate, agent-signature) is
-        # untouched, and ``notify_on_post_on_behalf`` stays on.
+        # The shipped ``autonomy = full`` collapses the tier-governed gates and pins
+        # ``mode = auto``. Untouched by the tier: the merge gate (#3630), the safety
+        # floor (bash gate, agent-signature) and the on-behalf notify receipt.
         settings = get_effective_settings()
         assert settings.mode is Mode.AUTO
-        assert settings.require_human_approval_to_merge is False
         assert settings.require_human_approval_to_answer is False
-        assert settings.notify_on_post_on_behalf is True
         assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+        assert settings.require_human_approval_to_merge is True
+        assert settings.notify_on_post_on_behalf is True
         assert settings.agent_signature is False
         assert settings.orchestrator_bash_gate_enabled is True
 

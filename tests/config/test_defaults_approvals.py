@@ -25,11 +25,12 @@ from teatree.config.defaults_approvals import (
     resolved_shipped_value,
     shipped_divergences,
 )
+from teatree.config.defaults_snapshot import pinned_fail_closed_keys
 from teatree.config.settings import UserSettings
 
 _DIVERGENT_KEY = "session_stale_after_hours"
 _SAFETY_KEY = "on_behalf_post_mode"
-_DARK_KEY = "directive_loop_enabled"
+_DARK_KEY = "outer_loop_enabled"
 
 
 @pytest.fixture
@@ -111,6 +112,11 @@ class TestGateBothDirections:
 
 
 class TestSafetyPostureAndDarkFlagsCannotMoveEvenWithApproval:
+    def test_the_two_exemplars_are_genuinely_pinned_keys(self) -> None:
+        # Anti-vacuity: a flag that graduates out of DARK (or a key dropped from
+        # SAFETY_POSTURE_KEYS) would make the cases below prove nothing about pinning.
+        assert {_SAFETY_KEY, _DARK_KEY} <= pinned_fail_closed_keys()
+
     @pytest.mark.parametrize(
         ("key", "body"),
         [(_SAFETY_KEY, f'{_SAFETY_KEY} = "immediate"\n'), (_DARK_KEY, f"{_DARK_KEY} = true\n")],

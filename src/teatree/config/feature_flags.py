@@ -108,10 +108,13 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     "directive_loop_enabled": FeatureFlag(
         field="directive_loop_enabled",
         stage=FlagStage.SETTLING,
-        tracking_issue="souliane/teatree — north-star PR-6 directive intake",
+        tracking_issue="souliane/teatree#3895 — north-star PR-6 directive intake",
         summary=(
-            "Master gate for the directive self-modification front-end (intake+interpret+ratify). Default ON; "
-            "the guard chain still requires factory_score_enabled + a live critic, so it survives as an escape hatch."
+            "Master gate for the directive self-modification front-end (intake+interpret+ratify). Default ON "
+            "(graduated DARK->SETTLING by #3895 under the owner-authorised autonomous-by-default posture), so a "
+            "captured directive is interpreted without an operator opt-in. The EXECUTION arc past the human ratify "
+            "gate still needs factory_score_enabled (default OFF) and a live critic; survives as a per-overlay "
+            "escape hatch during the soak. OFF restores the pre-graduation total no-op."
         ),
     ),
     "send_proxy_mode": FeatureFlag(

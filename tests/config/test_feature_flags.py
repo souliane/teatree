@@ -10,11 +10,11 @@ not a real ``bool``-or-``StrEnum`` ``UserSettings`` field registered in
 ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
 without a code-reviewed stage demotion.
 
-The live registry is seeded with several real flags — mostly ``DARK`` plus a couple
-of ``SETTLING`` (``incremental_push_gate``, graduated by #122, and
-``limit_autorecovery_enabled``, graduated by #3691). ``REMOVE`` is not represented
-live, so the stage-discrimination invariants are proven non-vacuously over a MIXED
-FIXTURE rather than the live set's accidental composition.
+The live registry is seeded with several real flags — mostly ``DARK`` plus a few
+``SETTLING`` (``incremental_push_gate``, graduated by #122; ``limit_autorecovery_enabled``,
+by #3691; ``directive_loop_enabled``, by #3895). ``REMOVE`` is not represented live, so
+the stage-discrimination invariants are proven non-vacuously over a MIXED FIXTURE rather
+than the live set's accidental composition.
 """
 
 import dataclasses
@@ -237,6 +237,38 @@ class TestResilienceRecoveryGraduation:
             flag = FEATURE_FLAGS[key]
             assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it is a safety-posture gate"
             assert getattr(defaults, key) == flag.off_value, f"{key!r} must ship OFF by default"
+
+
+class TestDirectiveIntakeGraduation:
+    """``directive_loop_enabled`` graduated DARK -> SETTLING (default ON) — #3895.
+
+    The owner-authorised autonomous-by-default posture: a captured directive is
+    interpreted with no operator opt-in, and the intake arc terminates at the structural
+    human ratify gate. The EXECUTION arc's own guards (``factory_score_enabled``, a live
+    critic) did NOT graduate with it, so nothing self-modifies at default resolution.
+    """
+
+    def test_directive_loop_graduated_to_settling(self) -> None:
+        flag = FEATURE_FLAGS["directive_loop_enabled"]
+        assert flag.stage is FlagStage.SETTLING
+        assert flag.off_value is False
+
+    def test_directive_loop_defaults_on_for_a_fresh_deploy(self) -> None:
+        assert UserSettings().directive_loop_enabled is True
+
+    def test_the_graduated_flag_left_the_dark_set(self) -> None:
+        # The stage move is what releases the key from `pinned_fail_closed_keys()`; a
+        # flag still in `dark_flags()` cannot ship default-ON at all.
+        assert "directive_loop_enabled" not in dark_flags()
+
+    def test_the_execution_arc_guards_did_not_graduate(self) -> None:
+        # The bound on self-modification: the score metric and the critic gate stay DARK
+        # and OFF, so intake being live never reaches a config write or a merge.
+        defaults = UserSettings()
+        for key in ("factory_score_enabled", "critic_gate_mode"):
+            flag = FEATURE_FLAGS[key]
+            assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it bounds self-modification"
+            assert getattr(defaults, key) == flag.off_value
 
 
 class TestQueryHelpers:
