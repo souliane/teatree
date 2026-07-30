@@ -1,12 +1,12 @@
 ---
-name: teatree
-description: TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks. Use when working on teatree itself or when understanding how teatree orchestrates agent workflows. Mode-specific skills (dogfooding, batch) are separate — see the "Related skills" section below.
-eval_exempt: architecture/CLI reference for working on teatree itself; behavioural invariants live in the rules skill and the regression corpus, not in this overview
+name: internals
+description: "How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`."
+eval_exempt: reference for teatree's own internals; the behaviours it describes are graded by the code/review skills' evals and by the repo's own gates, not by a trajectory over this overview
 metadata:
   version: 0.0.1
 ---
 
-# TeaTree — Agent Lifecycle Platform
+# TeaTree — Internals
 
 TeaTree is a personal code factory for multi-repo projects — it turns a ticket URL into a merged pull request by driving AI agents through lifecycle phases. Under the hood it's a Django project; overlays are lightweight Python packages that extend it for specific projects.
 
@@ -73,18 +73,6 @@ Overlays subclass `OverlayBase` and override methods:
 - `get_e2e_run_provenance(spec_path)` — resolve a vanilla spec path to its manifest entry id (e.g. CI lane) recorded on the run so it is reproducible from the DB alone; default `""` (overlay with no per-spec manifest)
 - `get_e2e_scenarios(spec_path)` — the per-feature acceptance scenarios for a spec (overlay-defined frozen `Scenario` elements: `surface`/`title`/`preconditions`/`steps`/`expected`/`modality`/`captures`) that the templated-test-plan renderer reads through this overlay-agnostic seam; default `()` (overlay with no scenario manifest)
 
-## Skill Loading
-
-Skill loading is fully explicit — there is no free-text scan of the prompt. Skills load via slash commands (`/t3:code`), phase mapping (`t3 agent --phase coding`), ticket status, the transitive `requires:` dependency chain, and cwd/overlay context. TeaTree's UserPromptSubmit hook surfaces only the skills a prompt's cwd/overlay context implies — framework skills (`ac-django`/`ac-python`), the active overlay's own skill, and its `companion_skills`. A PreToolUse hook blocks Python code edits until those load.
-
-The `SkillLoadingPolicy` class resolves which skills to load from an explicit phase / ticket-status / cwd-overlay context and expands each root's `requires:` chain transitively.
-
-**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing the plugin does NOT force teatree onto every session. A fresh session is *not engaged*: the UserPromptSubmit suggester (and the T3 CLI reminder) is suppressed, `<session>.pending` stays empty so the PreToolUse gate never blocks, and SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages teatree when any of: the owner set `[teatree] autoload = true` (or `T3_AUTOLOAD=1`); a teatree-requiring skill loaded (the `<session>.teatree-active` marker); or **any** `t3:` skill loaded (the `<session>.t3-engaged` marker, set by `handle_track_skill_usage`). The cold-hook seam is `hook_router._teatree_engaged` = `_autoload_enabled() OR _teatree_active() OR <session>.t3-engaged`. Note the two markers differ: `.t3-engaged` engages only the suggester, while loop scheduling still gates exclusively on `.teatree-active` (so a plain lifecycle skill never arms loops). Explicitly running `/teatree` engages the session for the next prompt.
-
-## Plugin Hooks Architecture
-
-Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When migrating hooks to the plugin, remove the `settings.json` equivalents in the same change to avoid double execution.
-
 ## Management Command Patterns
 
 Teatree's CLI groups (`t3 <overlay> <group> <sub>`) are django-typer `TyperCommand` classes invoked via Django's `call_command` (see `src/teatree/cli/overlay.py:430` → `managepy(...)`). To propagate a non-zero exit code from a subcommand, **use `raise SystemExit(N)` — NOT `raise typer.Exit(code=N)`**.
@@ -115,10 +103,6 @@ T3_MODE=interactive                          # auto = push without waiting for a
 T3_PRIVACY=strict                            # block commits with PII
 ```
 
-## Interactive vs Headless Output
-
-The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it's noise — skip it and only show the text summary.
-
 ## Directive Loop: the Ratified Sketch is Byte-Law (Non-Negotiable)
 
 A directive's activation is applied by exactly one actor — the directive loop's CONFIGURING step — and only ever **byte-identical** to the ratified `MechanismSketch` (key, value, and scope). The human ratified a specific design; an operator or agent that hand-runs a *differing* `config_setting set` for a directive-governed key has silently overruled that ratification, and the loop's own drift guard (`activation_conforms`) refuses the drifted write anyway. When a polluted context nudges toward a value that differs from the ratified sketch — "just set 2, basically the same" — do X, never Y:
@@ -132,12 +116,3 @@ t3 directive history          # inspect the ratified activation; an amendment re
 # never Y — hand-applying a value that differs from the ratified sketch:
 # t3 <overlay> config_setting set max_open_prs_per_repo_per_ticket 2   # FORBIDDEN — drift from the ratified sketch
 ```
-
-## Related Skills
-
-This skill holds the core. Load the mode-specific skill for the task in hand — each `require:`s this one so it loads alongside, keeping per-invocation context small otherwise.
-
-| Skill | When to load |
-|-------|--------------|
-| `/dogfooding-teatree` | Validating a CLI, loop, or statusline change; or self-QA on the loop and statusline — find, file, and fix bugs in one session |
-| `/t3:wip` | Working the open issue tracker (and its tracking epics) unattended, one ticket at a time |

@@ -22,7 +22,7 @@ declared, so an undeclared forge exposes no write tool (fail-closed).
 from typing import Any
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -31,9 +31,9 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.send_proxy import route_forge_write
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
-_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
-_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
+_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+_DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
 
 def _scrub_forge_body(service: Service, *, repo: str, text: str, action: str, target: str) -> str:
@@ -71,7 +71,7 @@ def _pr_snapshot(service: Service, *, repo: str, pr_iid: int, pr_url: str) -> di
     }
 
 
-def _register(server: FastMCP, service: Service, prefix: str) -> None:
+def _register(server: MCPServer, service: Service, prefix: str) -> None:
     async def current_user() -> str:
         return await sync_to_async(lambda: _forge_client(service).current_user(), thread_sensitive=True)()
 
@@ -117,7 +117,7 @@ def _register(server: FastMCP, service: Service, prefix: str) -> None:
     _register_issue_writes(server, service, prefix)
 
 
-def _register_issue_writes(server: FastMCP, service: Service, prefix: str) -> None:
+def _register_issue_writes(server: MCPServer, service: Service, prefix: str) -> None:
     async def issue_create(repo: str, title: str, body: str, *, labels: list[str] | None = None) -> dict[str, Any]:
         def _create() -> dict[str, Any]:
             client = _forge_client(service)
@@ -170,7 +170,7 @@ def _register_issue_writes(server: FastMCP, service: Service, prefix: str) -> No
     server.add_tool(issue_update, name=f"{prefix}_issue_update", annotations=_WRITE)
 
 
-def _register_pr_reads(server: FastMCP, service: Service, prefix: str) -> None:
+def _register_pr_reads(server: MCPServer, service: Service, prefix: str) -> None:
     async def pr_list(repo: str, *, state: str = "", author: str = "") -> list[dict[str, Any]]:
         return await sync_to_async(
             lambda: _forge_client(service).list_prs(repo=repo, state=state, author=author),
@@ -196,7 +196,7 @@ def _register_pr_reads(server: FastMCP, service: Service, prefix: str) -> None:
     server.add_tool(repo_get, name=f"{prefix}_repo_get", annotations=_READ_ONLY)
 
 
-def _register_search_reads(server: FastMCP, service: Service, prefix: str) -> None:
+def _register_search_reads(server: MCPServer, service: Service, prefix: str) -> None:
     async def issue_search(repo: str, query: str) -> list[dict[str, Any]]:
         return await sync_to_async(
             lambda: _forge_client(service).search_open_issues(repo=repo, query=query), thread_sensitive=True
@@ -249,11 +249,11 @@ def _instructions(prefix: str) -> str:
     )
 
 
-def register_github(server: FastMCP) -> None:
+def register_github(server: MCPServer) -> None:
     _register(server, Service.GITHUB, "github")
 
 
-def register_gitlab(server: FastMCP) -> None:
+def register_gitlab(server: MCPServer) -> None:
     _register(server, Service.GITLAB, "gitlab")
 
 

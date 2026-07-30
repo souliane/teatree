@@ -1,9 +1,9 @@
-"""FastMCP server wiring for teatree's structured search + gate-preserving writes.
+"""MCP server wiring for teatree's structured search + gate-preserving writes.
 
-:func:`build_server` assembles a fresh :class:`~mcp.server.fastmcp.FastMCP`
+:func:`build_server` assembles a fresh :class:`~mcp.server.mcpserver.MCPServer`
 instance and registers the read tools (structured search over the internal
 model) plus the gate-preserving write tools. The registered tools are thin
-``async`` wrappers: FastMCP invokes a tool inside its running event loop, so each
+``async`` wrappers: MCPServer invokes a tool inside its running event loop, so each
 wrapper crosses into Django's synchronous ORM through ``sync_to_async`` (the
 framework-standard async-safe boundary) and returns the already-serialized JSON
 the underlying function produced.
@@ -15,7 +15,7 @@ each write handler calls the exact seam the corresponding ``t3`` CLI command
 calls, so every gate (shipping-phase FSM, sanctioned-merge keystone, on-behalf
 verdict, leak scrub / send-proxy) fires identically on both surfaces — the
 orchestrator-decides / loop-executes topology is preserved through the seams, not
-by withholding writes. The read tools carry ``readOnlyHint``; the write tools
+by withholding writes. The read tools carry ``read_only_hint``; the write tools
 name their gated seam in :data:`teatree.mcp.write_tools.TOOL_SEAMS`.
 """
 
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -43,14 +43,14 @@ from teatree.mcp import (
     write_tools,
 )
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 # Per-service tool groups, registered iff the service is in the union of
 # ``required_third_party_services`` across all registered overlays. Each entry
 # is ``(register, instructions)``; the instructions block is appended to the
 # server instructions only when the group registers, so the instructions never
 # advertise an unregistered tool.
-_SERVICE_GROUPS: dict[Service, tuple[Callable[[FastMCP], None], str]] = {
+_SERVICE_GROUPS: dict[Service, tuple[Callable[[MCPServer], None], str]] = {
     Service.GITHUB: (services_forge.register_github, services_forge.INSTRUCTIONS_GITHUB),
     Service.GITLAB: (services_forge.register_gitlab, services_forge.INSTRUCTIONS_GITLAB),
     Service.SLACK: (services_slack.register, services_slack.INSTRUCTIONS),
@@ -384,7 +384,7 @@ _FACTORY_SCORE_TOOL = _ReadTool(
 )
 
 
-def build_server() -> FastMCP:
+def build_server() -> MCPServer:
     """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
@@ -416,7 +416,7 @@ def build_server() -> FastMCP:
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
     )
-    server: FastMCP = FastMCP("teatree", instructions=instructions)
+    server: MCPServer = MCPServer("teatree", instructions=instructions)
     for tool in read_tools:
         server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):

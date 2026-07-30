@@ -7,7 +7,7 @@ the ``UserPromptSubmit`` hook uses (``teatree.loops.dream.recall``), exposed as 
 manual lookup and inspection.
 
 Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's ``call_command``;
-``typer.Exit`` is the wrong primitive on that path (see /t3:teatree "Management Command
+``typer.Exit`` is the wrong primitive on that path (see /t3:internals "Management Command
 Patterns"). Every ``typer.Option``-annotated param carries a default.
 """
 

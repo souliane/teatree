@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from teatree.cli.eval.docker import ARTIFACTS_MOUNT
 from teatree.cli.eval.run_docker import RunDockerArgs
@@ -21,6 +22,7 @@ def _args(**overrides: object) -> RunDockerArgs:
     base: dict[str, object] = {
         "name": None,
         "lane": None,
+        "surface": None,
         "shard": None,
         "output_format": "text",
         "max_turns": None,
@@ -51,6 +53,28 @@ class TestTranscriptHtmlPassthrough:
         # The container is ephemeral, so the run stays --no-persist regardless of
         # the new artifact flag — the artifact is the durable output, not the ledger.
         assert "--no-persist" in _args(transcript_html=Path("/tmp/x.html")).passthrough()
+
+
+class TestCatalogSlicePassthrough:
+    """``--lane`` / ``--surface`` / ``--shard`` all SLICE the catalog, so all three cross.
+
+    Every metered workflow passes ``--docker``, so a slice flag dropped here does not
+    error — it silently runs the FULL catalog in-container on metered spend (#3855).
+    """
+
+    def test_forwards_the_surface_slice_into_the_container(self) -> None:
+        passthrough = _args(surface="headless").passthrough()
+        index = passthrough.index("--surface")
+        assert passthrough[index + 1] == "headless"
+
+    def test_omits_the_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
+        assert "--surface" not in _args(surface=None).passthrough()
+
+    def test_forwards_lane_surface_and_shard_together(self) -> None:
+        passthrough = _args(lane="clean_room", surface="interactive", shard="1/2").passthrough()
+        assert passthrough[passthrough.index("--lane") + 1] == "clean_room"
+        assert passthrough[passthrough.index("--surface") + 1] == "interactive"
+        assert passthrough[passthrough.index("--shard") + 1] == "1/2"
 
 
 class TestEscalationPassthrough:
@@ -135,3 +159,31 @@ class TestDispatchMountsHostParentDir:
         ):
             _args(transcript_html=None, summary_md=None).dispatch()
         assert run_in_docker.call_args.kwargs["artifacts_dir"] is None
+
+
+class TestTheCliWiresSurfaceIntoTheContainer:
+    """``t3 eval run --surface … --docker`` end to end through the typer command.
+
+    ``RunDockerArgs`` carrying the field is only half of it — ``app.py`` has to hand
+    it over. Without this the flag is accepted, the slice is applied to the HOST
+    selection that is then thrown away, and the container runs the whole catalog.
+    """
+
+    def _forwarded_args(self, argv: list[str]) -> list[str]:
+        from teatree.cli import app  # noqa: PLC0415 — the CLI app is expensive to import at module scope.
+
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": ""}, clear=False),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+        ):
+            CliRunner().invoke(app, argv)
+        assert run_in_docker.called, "the run was not routed into the container"
+        return list(run_in_docker.call_args.args[0])
+
+    def test_surface_reaches_the_in_container_invocation(self) -> None:
+        forwarded = self._forwarded_args(["eval", "run", "--surface", "headless", "--docker"])
+        assert "--surface" in forwarded, f"--surface was dropped: {forwarded}"
+        assert forwarded[forwarded.index("--surface") + 1] == "headless"
+
+    def test_no_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
+        assert "--surface" not in self._forwarded_args(["eval", "run", "--docker"])

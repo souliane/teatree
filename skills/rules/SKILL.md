@@ -389,11 +389,11 @@ This is the structural-action sibling of § "Read the Canonical Source Before Fi
 Load the overlay playbook skill (`/t3-<overlay>`) for **any** task in an overlay-managed repo — and ONLY for those. A non-overlay task needs no overlay skill.
 
 - **Overlay-repo task** (coding/reviewing in an overlay's product repo): self-load the overlay skill `/t3-<overlay>` alongside the dev + language skills **before** reading a diff or editing source — it carries the repo's run/test/review wiring (see `overlay_work_requires_overlay_skill.yaml`).
-- **Non-overlay task** (a change inside `souliane/teatree` itself, or any standalone repo with no active overlay): load only the skill(s) that actually apply — `ac-django` / `/t3:code` / `/t3:teatree` for a teatree Django change. Do NOT pull in a different project's overlay skill; teatree is its own Django project, not an overlay repo.
+- **Non-overlay task** (a change inside `souliane/teatree` itself, or any standalone repo with no active overlay): load only the skill(s) that actually apply — `ac-django` / `/t3:code` / `/t3:internals` for a teatree Django change. Do NOT pull in a different project's overlay skill; teatree is its own Django project, not an overlay repo.
 
 ```text
 # teatree-only change → load what applies, not an overlay skill:
-Skill(skill="ac-django")   # or t3:code / t3:teatree
+Skill(skill="ac-django")   # or t3:code / t3:internals
 # do NOT: Skill(skill="t3-<overlay>")   ← wrong scope for a non-overlay task
 ```
 
@@ -741,7 +741,7 @@ Decision rubric (apply silently — don't narrate to the user):
 | **Small (≤ ~50 LOC, no architectural decisions)** | Bundle into the current PR. Skip the "Isolate Unrelated Fixes" rule from `t3:ship` — small fixes have lower scope-creep cost than coordination cost. |
 | **Medium (related domain, fits the current ticket's spirit)** | Still bundle if the PR title can fairly cover it (e.g., assorted shipping-flow bug fixes during a CLI refactor). Mention in the PR body so reviewers see it. |
 | **Large (architectural, cross-cutting, or genuinely orthogonal)** | Create a worktree + PR immediately, implement, ship. No new ticket. |
-| **Truly large work that cannot fit a session** | File a ticket and leave it. Last resort. |
+| **Truly large work that cannot fit a session** | Still ship it — split the run, not the work. A ticket is a record of work in flight, never a place to leave work you already understand (`AGENTS.md` First Principles 8 and 10). |
 
 **Only stop and ask when:**
 
@@ -751,15 +751,15 @@ Decision rubric (apply silently — don't narrate to the user):
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
 
-**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment / follow-up issue) rather than touching code another contributor owns; still fix anything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric.
+**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment, or an issue the user has approved) rather than touching code another contributor owns; still fix everything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric. This is not a deferral loophole and First Principles 8-10 do not override it: those principles bind the surface THIS change touches, and another contributor's unrelated code is not on it — flagging there is the complete action, not a postponement.
 
 **When genuinely unsure, ASK — never silently defer.** If the fix is borderline (small but truly orthogonal, or medium-sized but the current PR is already large), present three explicit options to the user via `AskUserQuestion`:
 
 1. **Fix right now and bundle into the current PR** (default — pick this unless reason not to)
-2. **Add to the session TODO list** (fix later this same session, before wrapping up)
-3. **File as a separate issue** (truly out-of-scope or would balloon the change)
+2. **Fix it before this PR ships** (same session, same PR — a session TODO entry, never a `TODO` marker left in the code)
+3. **Fix it in its own PR, now** (genuinely orthogonal — worktree + PR immediately, no new ticket)
 
-Use options 2 and 3 only when there is a concrete reason against option 1. Asking is acceptable; silently writing "worth filing later" and moving on is not.
+Options 2 and 3 need a concrete reason against option 1; none of the three is a deferral. If the finding is genuinely outside the surface this change touches, state it in the PR body as a finding and let the user decide whether it becomes an issue — `AGENTS.md` § "Issue Creation" forbids filing one without their approval, and First Principles 8-10 forbid filing one for work you could have done here. Asking is acceptable; silently writing "worth filing later" and moving on is not.
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
@@ -1006,6 +1006,17 @@ The test is sharp: _can I reach the best outcome by doing the work?_ If yes → 
 **This is hook-enforced, not a remembered preference (#807).** A `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, a "let me know if/whether …" soft-ask, an ANNOUNCED-but-unissued ask — "**Action:** Ask about X" / "I'll ask the user which …" with no tool call — or a PRINTED call, `AskUserQuestion(...)` emitted as text instead of invoked; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it, and the legitimate one-ask-then-wait disposition ("once you answer, I'll ask the second decision") is guarded so a compliant walk-through is never re-ask-looped. **Scope:** the gate only enforces on a loop-driven turn (`_session_drives_loop`: this session owns the tick, or there is no live owner) — that is where an inline question is invisible (it reads as a log line, so the decision is lost). In an attended interactive session that a _different_ live owner is driving, a human is reading the prose, so the gate is skipped; an unknown/unreadable ownership signal fails safe and keeps it firing. See `BLUEPRINT.md` §17.1 invariant 9 and its production-hooks eval-lane bullet for the surrounding contract; the heuristic itself lives in `hooks/scripts/question_gates.py`.
 
 **Away-mode (24/7 dual question-mode, #58).** When the active mode's posture defers questions (`t3 loop preset show`), the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:mode` for the configuration surface (`t3 loop preset use offline`, `t3 loop preset use engaged`, `t3 loop preset auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
+
+**Headless has no interactive tool surface — record the question durably yourself (do X, never Y).** `AskUserQuestion` is the INTERACTIVE implementation of the contract; the contract itself is that the question **reaches the user and an answer comes back**. In a headless run your prose goes to a transcript no human reads, so narrating a blocker loses the decision exactly as an inline question does on a loop turn. When the interactive tool is unavailable — or its call was denied and nothing reached the owner — put the question on the durable Slack path yourself; do not silently pick an answer.
+
+```bash
+# do X — record it durably so the Slack drain delivers it to the owner:
+t3 <overlay> questions record 'Which region should this deploy to?' --options '<verbatim-options-json>'
+# never Y — narrate the blocker into a transcript, or guess the answer and proceed:
+#   "I could not reach the owner for the region, so I picked eu."   # FORBIDDEN — the decision was theirs
+```
+
+Read the reply back with `t3 <overlay> questions list` and apply it per "Receiving a structured answer" below. Pinned by `evals/scenarios/headless_question_contract.yaml` (the outbound half) and `evals/scenarios/askuserquestion_slack_resolution.yaml` (the inbound half) — the BLOCKING `surface: headless` lane, because a contract graded through the interactive tool call would be pinned to a bundled CLI's rendering instead (`evals/README.md` § `surface`).
 
 ### Receiving a structured answer (apply X — never apply a stale Y)
 

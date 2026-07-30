@@ -8,7 +8,7 @@ surface.
 """
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -16,7 +16,7 @@ from teatree.core.backend_factory import notion_client_from_overlay
 from teatree.core.backend_registry import NotionPageClient
 from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 INSTRUCTIONS = "- notion_page_status(page_id, property_name): one Notion page's status property value."
 
@@ -31,5 +31,5 @@ async def _notion_page_status(page_id: str, *, property_name: str = "Status") ->
     )()
 
 
-def register(server: FastMCP) -> None:
+def register(server: MCPServer) -> None:
     server.add_tool(_notion_page_status, name="notion_page_status", annotations=_READ_ONLY)

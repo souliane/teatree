@@ -149,7 +149,7 @@ def watch_until_orphaned(
 def _hard_exit() -> None:
     """Exit the orphaned server immediately (``os._exit`` — no atexit, no flush).
 
-    The FastMCP anyio loop is blocked on a stdin that will never close; a
+    The MCPServer anyio loop is blocked on a stdin that will never close; a
     cooperative shutdown has nothing to cooperate with, and an orphan has no
     in-flight client work to preserve. Mirrors the ``loops_tick`` deadline exit.
     """

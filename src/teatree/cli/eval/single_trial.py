@@ -21,6 +21,7 @@ from teatree.cli.eval.escalate import (
     EscalationConfig,
     EscalationReport,
     TrialRunner,
+    describe_classification,
     escalate_failures,
     render_escalation_markdown,
 )
@@ -182,7 +183,8 @@ def _render_escalation_text(report: EscalationReport) -> str:
         return "ESCALATION: no scenario failed the single trial — nothing to escalate."
     lines = ["ESCALATION:"]
     lines.extend(
-        f"  {outcome.classification.upper()} {outcome.spec_name} ({outcome.passes}/{outcome.trials} escalation trials)"
+        f"  {describe_classification(outcome).upper()} {outcome.spec_name} "
+        f"({outcome.passes}/{outcome.trials} escalation trials)"
         for outcome in report.outcomes
     )
     return "\n".join(lines)

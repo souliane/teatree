@@ -104,6 +104,7 @@
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   tier: balanced
   max_turns: 4
+  surface: interactive
   tools: [Bash, AskUserQuestion]
   prompt: >-
     To finish the task you need the private staging deploy URL — it is not in the

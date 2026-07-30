@@ -1,12 +1,11 @@
 """Tests for the teatree-own MCP write tools (#3076).
 
-Each tool is exercised end to end through ``FastMCP.call_tool`` against the
+Each tool is exercised end to end through ``MCPServer.call_tool`` against the
 test DB, proving the handler reaches the same seam the ``t3`` CLI calls and
 that the seam's gates fire identically over MCP.
 """
 
 import asyncio
-import json
 from typing import Any
 from unittest.mock import patch
 
@@ -28,11 +27,7 @@ from teatree.mcp import build_server, review_seam, write_tools
 from teatree.mcp.review_seam import register_review_post_seam
 from tests.factories import MergeClearFactory, TaskFactory, TicketFactory
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
-
-
-def _payloads(result: Any) -> list[Any]:
-    blocks = result[0] if isinstance(result, tuple) else result
-    return [json.loads(block.text) for block in blocks if getattr(block, "text", None) is not None]
+from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
@@ -68,7 +63,7 @@ class TestConfigSettingSetGateRefusal(TestCase):
 
 class TestCliErrorPrimitiveSurfacesStructured(TestCase):
     # The wrapped commands signal input errors with SystemExit/typer.Exit — a
-    # BaseException FastMCP does NOT wrap, so without the guard the tool call
+    # BaseException MCPServer does NOT wrap, so without the guard the tool call
     # crashes. Each error path must instead surface as a caught error carrying the
     # command's own message. (pytest.raises(Exception) would NOT catch a bare
     # SystemExit, so these are RED on the unguarded code.)

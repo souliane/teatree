@@ -145,12 +145,19 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # django_tasks_db's own shipped prune is retention/task_results.py, kept apart so the
 # orchestrator never imports a third-party table's library directly. Two root leaves collapse
 # to one package entry, mirroring cleanup/ and evidence/.
-# 103: +schema_readiness.py (#3901) — the schema-vs-code admission predicate plus the
+# 103: +managers_inbound.py (#3910) — the IncomingEvent/ReplyDispatch queryset predicates carved
+# out of managers.py, which had reached the 500-LOC module-health ceiling and could not take
+# another method. The inbound queue answers "what is still owed a drain", a different question
+# from the ticket/worktree/task lifecycle the hub keeps. It lands at the root beside the four
+# managers_* leaves it belongs with (managers_overlay, managers_issue_match,
+# managers_phase_cadence, managers_task_claim); filing it under a subpackage would separate it
+# from its siblings to satisfy a counter.
+# 104: +schema_readiness.py (#3901) — the schema-vs-code admission predicate plus the
 # `pending_migrations` graph walk it now owns. A genuine new root concern with no other
 # home: the claim chokepoint reads it through managers_task_claim (its own tach node), and
 # core/gates/schema_guard reads the same primitive, so putting it under gates/ would put
 # managers on the teatree.core node it is itself a dependency OF — a cycle tach refuses.
-PINNED_FLAT_CORE_MODULES = 103
+PINNED_FLAT_CORE_MODULES = 104
 
 
 def _flat_core_modules() -> list[str]:

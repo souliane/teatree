@@ -180,7 +180,7 @@ _DESIGN_DECISION_TABLE = (
     "- Stack: build directly on a thin Python harness on the Claude Agent SDK (locked)\n"
     "- Runtime: no sandcastle runtime, build native from day one (locked)\n"
     "- Hosting: run the model via Vertex aligned with the GCP infra (locked)\n"
-    "- Client libs: adopt FastMCP plus openapi-python-client (locked)\n"
+    "- Client libs: adopt MCPServer plus openapi-python-client (locked)\n"
     "- Token budget: per-endpoint metering analysis (locked)\n"
     "- Measurement: 10x baseline vs the manual approach (locked)\n"
     "Everything is locked. We're done here — ready to go when you start the build.\n"

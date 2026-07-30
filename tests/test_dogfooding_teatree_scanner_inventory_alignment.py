@@ -1,6 +1,6 @@
 """Doc-invariant guard against a closed bug-hunt-mode scanner inventory.
 
-The ``dogfooding-teatree`` skill's "Hunt for bugs" mode has one job: find
+The ``dogfooding`` skill's "Hunt for bugs" mode has one job: find
 missing-signal / broken-scanner bugs. Its Reference section used to
 enumerate (back when this lived in the standalone ``teatree-bughunt``
 skill) a *closed* six-item scanner list (``pending_tasks, my_prs,
@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_PATH = REPO_ROOT / "skills" / "dogfooding-teatree" / "SKILL.md"
+SKILL_PATH = REPO_ROOT / "skills" / "dogfooding" / "SKILL.md"
 SCANNERS_DIR = REPO_ROOT / "src" / "teatree" / "loop" / "scanners"
 
 # Module stems that are infrastructure, not a scanner the loop fans out.
@@ -85,7 +85,7 @@ class TestNewerFamilySiblingsCited:
         ["resource_pressure", "task_sweep", "pr_sweep", "self_update", "codex_review"],
     )
     def test_family_sibling_named(self, skill_text: str, scanner: str) -> None:
-        assert scanner in skill_text, f"{scanner} scanner missing from the dogfooding-teatree bug-hunt reference"
+        assert scanner in skill_text, f"{scanner} scanner missing from the dogfooding bug-hunt reference"
 
     def test_mechanical_handlers_for_new_signals_named(self, skill_text: str) -> None:
         # The handlers a hunting agent would otherwise not know exist.

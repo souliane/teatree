@@ -89,7 +89,7 @@ class TestSeamAllowlistCoverage:
     def test_every_write_tool_declares_its_seam(self) -> None:
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _AllForgeOverlay()}):
             tools = asyncio.run(build_server().list_tools())
-        write_tool_names = {tool.name for tool in tools if not (tool.annotations and tool.annotations.readOnlyHint)}
+        write_tool_names = {tool.name for tool in tools if not (tool.annotations and tool.annotations.read_only_hint)}
 
         undeclared = write_tool_names - set(write_tools.TOOL_SEAMS)
         assert not undeclared, f"write tools without a declared seam: {sorted(undeclared)}"
