@@ -174,10 +174,10 @@ class TestAutonomyShow(TestCase):
         assert result.exit_code == 0
         assert result.stdout.strip() == Autonomy.NOTIFY.value
 
-    def test_show_defaults_to_babysit_when_unset(self) -> None:
+    def test_show_reports_the_shipped_full_tier_when_unset(self) -> None:
         result = runner.invoke(_app(), ["autonomy", "show"])
         assert result.exit_code == 0
-        assert result.stdout.strip() == Autonomy.BABYSIT.value
+        assert result.stdout.strip() == Autonomy.FULL.value
 
     def test_show_is_read_only(self) -> None:
         ConfigSetting.objects.set_value("autonomy", Autonomy.FULL.value)
@@ -217,18 +217,19 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
     def _fixtures(self, isolated_resolution: None, monkeypatch: pytest.MonkeyPatch) -> None:
         self.monkeypatch = monkeypatch
 
-    def test_full_must_allow_colleague_autoapprove_but_keeps_merge_review(self) -> None:
-        """``autonomy set full`` collapses on-behalf-post; the merge gate is separate (#3630)."""
+    def test_full_must_allow_autonomous_answering_but_keeps_the_human_gates(self) -> None:
+        """``autonomy set full`` collapses answering; merge (#3630) and egress (#3895) are separate."""
         result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
         assert result.exit_code == 0
 
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
-        # must-ALLOW: colleague auto-approve (on-behalf posts publish immediately).
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+        # must-ALLOW: the agent answers without a per-answer approval.
         assert settings.require_human_approval_to_answer is False
-        # must-KEEP: review before merge is never a side effect of the tier.
+        # must-KEEP: review before merge, and the owner's colleague-facing voice, are
+        # never side effects of the tier — each is its own named opt-in.
         assert settings.require_human_approval_to_merge is True
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
         # And the merge-autonomy path is otherwise reachable (gated on mode == AUTO).
         assert settings.mode is Mode.AUTO
 

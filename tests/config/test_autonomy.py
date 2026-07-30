@@ -1,19 +1,21 @@
 # test-path: cross-cutting
 """The single per-overlay ``autonomy`` switch (souliane/teatree#1668).
 
-One coherent value — three tiers ``full > notify > babysit`` (default
-``babysit``) — that governs the whole USER-in-the-loop approval surface for an
-overlay. Under ``full`` OR ``notify`` the collapsed approval gates
-(``on_behalf_post_mode``, ``require_human_approval_to_answer``) take their
-autonomous value in ``get_effective_settings`` and ``mode`` is pinned to ``auto``,
-UNLESS the user pinned an explicit per-gate override (explicit always wins —
-autonomy never silently overrides an opinion). ``notify`` additionally derives
+One coherent value — three tiers ``full > notify > babysit`` (shipped ``full``) —
+that governs the whole USER-in-the-loop approval surface for an overlay. Under
+``full`` OR ``notify`` the collapsed approval gate
+(``require_human_approval_to_answer``) takes its autonomous value in
+``get_effective_settings`` and ``mode`` is pinned to ``auto``, UNLESS the user
+pinned an explicit per-gate override (explicit always wins — autonomy never
+silently overrides an opinion). ``notify`` additionally derives
 ``notify_on_behalf = True``; ``full`` and ``babysit`` keep it ``False``.
 
-``require_human_approval_to_merge`` is deliberately NOT in that set (#3630): review
-before merge is a separate concern from how far the agent carries work on its own,
-and no tier may remove it as a side effect. Merging without a review gate is its own
-named opt-in — an explicit ``require_human_approval_to_merge = false``.
+Two gates are deliberately NOT in that set, for the same reason: how far the agent
+carries work on its own is a separate concern from surrendering a distinct human
+control, and no tier may remove one as a side effect. Each is its own named opt-in
+— ``require_human_approval_to_merge = false`` for review before merge (#3630), and
+``on_behalf_post_mode = "immediate"`` for speaking to a colleague under the owner's
+identity (#3895).
 
 Under the #1775 DB partition, ``autonomy`` / ``mode`` / the three gates are all
 DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
@@ -64,16 +66,19 @@ class TestAutonomyDefault(TestCase):
     def test_defaults_to_full(self) -> None:
         assert get_effective_settings().autonomy is Autonomy.FULL
 
-    def test_full_default_collapses_the_gate_values(self) -> None:
-        settings = get_effective_settings()
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        assert settings.require_human_approval_to_answer is False
+    def test_full_default_collapses_the_answering_gate(self) -> None:
+        assert get_effective_settings().require_human_approval_to_answer is False
 
     def test_the_default_tier_still_does_not_remove_review_before_merge(self) -> None:
         # #3630: the merge gate is not a tier-collapsed gate, so raising the SHIPPED
         # default to ``full`` cannot silently drop review-before-merge either. Merging
         # unreviewed stays its own named opt-in.
         assert get_effective_settings().require_human_approval_to_merge is True
+
+    def test_the_default_tier_still_does_not_open_colleague_egress(self) -> None:
+        # #3895, the same argument one gate over: raising the SHIPPED default to
+        # ``full`` cannot silently hand the agent the owner's colleague-facing voice.
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
 
 class _AutonomyDbBase(TestCase):
@@ -85,12 +90,11 @@ class _AutonomyDbBase(TestCase):
 
 
 class TestAutonomyFullResolution(_AutonomyDbBase):
-    def test_per_overlay_full_flips_the_collapsed_gates(self) -> None:
+    def test_per_overlay_full_flips_the_collapsed_gate(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.FULL
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert settings.require_human_approval_to_answer is False
 
     def test_full_never_removes_the_merge_review_gate(self) -> None:
@@ -99,11 +103,23 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert get_effective_settings().require_human_approval_to_merge is True
 
+    def test_full_never_opens_colleague_egress(self) -> None:
+        """#3895 — the highest tier must not silently hand over the owner's voice."""
+        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+
     def test_merge_without_review_is_its_own_explicit_opt_in(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         ConfigSetting.objects.set_value("require_human_approval_to_merge", value=False, scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert get_effective_settings().require_human_approval_to_merge is False
+
+    def test_opening_colleague_egress_is_its_own_explicit_opt_in(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
 
     def test_full_leaves_safety_floor_untouched(self) -> None:
         # ``autoload`` / ``orchestrator_bash_gate_enabled`` are untouched by the
@@ -120,8 +136,9 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True, scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert settings.require_human_approval_to_answer is True
+        # The tier still resolved — the pin beat the collapse, it did not skip it.
+        assert settings.mode is Mode.AUTO
 
     def test_babysit_overlay_keeps_gates_blocking(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "babysit", scope="careful")
@@ -137,10 +154,10 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         ConfigSetting.objects.set_value("autonomy", "babysit", scope="careful")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
         careful = get_effective_settings()
-        assert careful.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert careful.require_human_approval_to_answer is True
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         trusted = get_effective_settings()
-        assert trusted.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+        assert trusted.require_human_approval_to_answer is False
 
     def test_full_keeps_mode_auto_consistent(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
@@ -159,12 +176,11 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
 
 
 class TestAutonomyNotifyTier(_AutonomyDbBase):
-    def test_notify_flips_the_same_gates_as_full(self) -> None:
+    def test_notify_flips_the_same_gate_as_full(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.NOTIFY
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert settings.require_human_approval_to_answer is False
         assert settings.mode is Mode.AUTO
 
@@ -172,6 +188,11 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         assert get_effective_settings().require_human_approval_to_merge is True
+
+    def test_notify_never_opens_colleague_egress(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
     def test_notify_derives_notify_on_behalf_true(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")

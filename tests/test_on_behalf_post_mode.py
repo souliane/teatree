@@ -166,13 +166,18 @@ class TestReviewRequestPostDrivenByTier(_OnBehalfDbBase):
     review loop), ``full`` → False (PROCEED — solo tooling overlays auto-request),
     ``babysit`` → default False (review-request follows ``on_behalf_post_mode``).
     An explicit per-overlay pin of ``review_request_post_disabled`` always wins.
+
+    Since #3895 no tier collapses ``on_behalf_post_mode``, so every case that wants
+    the tier's review-request behaviour to be the OBSERVABLE variable pins
+    ``immediate`` itself — under the shipped ``draft_or_ask`` the gate BLOCKs first
+    and the tier bool is never reached.
     """
 
     def test_notify_tier_blocks_review_request_under_immediate(self) -> None:
-        # The ``notify`` collapse sets ``on_behalf_post_mode = immediate`` AND the
-        # resolved ``review_request_post_disabled = True`` — so review-request
-        # BLOCKs even though every other post would proceed under immediate.
+        # The resolved ``review_request_post_disabled = True`` outranks the mode: with
+        # the gate explicitly opened, review-request alone still BLOCKs.
         ConfigSetting.objects.set_value("autonomy", "notify", scope="customer")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="customer")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "customer")
         assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
 
@@ -180,14 +185,24 @@ class TestReviewRequestPostDrivenByTier(_OnBehalfDbBase):
         # The tier disable must NOT collapse every colleague-visible action — only
         # the review-request post. Other ``immediate`` posts keep proceeding.
         ConfigSetting.objects.set_value("autonomy", "notify", scope="customer")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="customer")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "customer")
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
 
     def test_full_tier_proceeds_review_request(self) -> None:
         # A ``full`` overlay is a solo tooling surface — review-request PROCEEDs.
         ConfigSetting.objects.set_value("autonomy", "full", scope="tooling")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="tooling")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "tooling")
         assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.PROCEED
+
+    def test_full_tier_review_request_still_obeys_the_shipped_gate(self) -> None:
+        # #3895: the ``full`` tier says "auto-request review", not "open the gate".
+        # With ``on_behalf_post_mode`` left at its shipped ``draft_or_ask``, the
+        # review-request post BLOCKs on the gate before the tier bool is consulted.
+        ConfigSetting.objects.set_value("autonomy", "full", scope="tooling")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "tooling")
+        assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
 
     def test_babysit_review_request_follows_on_behalf_post_mode_immediate(self) -> None:
         # Under ``babysit`` review-request is gated by ``on_behalf_post_mode`` like
@@ -209,6 +224,7 @@ class TestReviewRequestPostDrivenByTier(_OnBehalfDbBase):
         # The Option-A per-overlay escape: an explicit ``review_request_post_disabled``
         # pin wins over the ``full`` tier's PROCEED default.
         ConfigSetting.objects.set_value("autonomy", "full", scope="tooling")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="tooling")
         ConfigSetting.objects.set_value("review_request_post_disabled", value=True, scope="tooling")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "tooling")
         assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
@@ -218,6 +234,7 @@ class TestReviewRequestPostDrivenByTier(_OnBehalfDbBase):
         # pin wins over the ``notify`` tier's BLOCK default — the overlay opts back
         # into auto-request despite running ``notify``.
         ConfigSetting.objects.set_value("autonomy", "notify", scope="customer")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="customer")
         ConfigSetting.objects.set_value("review_request_post_disabled", value=False, scope="customer")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "customer")
         assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.PROCEED
@@ -232,12 +249,14 @@ class TestReviewRequestPostDrivenByTier(_OnBehalfDbBase):
         # The customer-overlay scenario: a solo tooling overlay runs ``full`` and
         # auto-requests; the customer overlay runs ``notify`` and BLOCKs.
         ConfigSetting.objects.set_value("autonomy", "notify", scope="customer")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="customer")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "customer")
         assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
 
     def test_other_overlay_unaffected_by_per_overlay_notify(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="customer")
         ConfigSetting.objects.set_value("autonomy", "full", scope="tooling")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="tooling")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "tooling")
         assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.PROCEED
 
