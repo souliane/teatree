@@ -207,6 +207,21 @@ def _orphaned_task_signals(
     if overlay:
         candidates = candidates.filter(overlay=overlay)
     candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
+    # One query for the whole sweep — this walks every reviewer ticket per tick,
+    # so the armed check must not become a per-ticket round trip.
+    # A POSITIVE filter, so all three conditions bind to the same joined task row.
+    # `.exclude(tasks__auto_review_dispatches__isnull=True)` reads like the same
+    # thing but compiles to an UNCORRELATED `NOT EXISTS` over every task on the
+    # ticket in any phase — it means "every task is armed", so one ordinary
+    # sibling task empties this set and the terminal branch reaps the armed
+    # review again.
+    armed_ticket_ids = set(
+        ticket_model.objects.filter(
+            tasks__phase="reviewing",
+            tasks__status__in=open_statuses,
+            tasks__auto_review_dispatches__isnull=False,
+        ).values_list("pk", flat=True)
+    )
     signals: list[ScanSignal] = []
     for ticket in candidates:
         # #1431: the LOCAL FSM is authoritative for the user's own
@@ -216,14 +231,18 @@ def _orphaned_task_signals(
         # regardless of forge state (a self-authored MR with no review owed
         # legitimately stays OPEN). This is terminal-LOCAL-FSM *proof*, not
         # absence/UNKNOWN doubt — the fail-open default below is untouched.
-        if ticket.is_terminal:
-            signals.append(
-                ScanSignal(
-                    kind="reviewer_pr.task_orphaned",
-                    summary=f"Reviewing task orphaned (ticket terminal: {ticket.state}): {ticket.issue_url}",
-                    payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
-                ),
-            )
+        #
+        # #3910: EXCEPT when ``pr_sweep`` armed a cold review on this ticket. A
+        # reviewer ticket goes terminal (``review_posted``) after ANY review of
+        # the PR, so the ship loop routinely arms its own-PR review on a ticket
+        # that is ALREADY terminal — and reaping on local state alone killed
+        # that review while the PR was still open and still unmergeable without
+        # a verdict. An armed ticket falls through to the forge check below, so
+        # a genuinely merged/closed PR still reaps (an armed review on dead work
+        # is still dead work) and only STALE LOCAL state stops killing a
+        # deliberately-scheduled review.
+        if ticket.is_terminal and ticket.pk not in armed_ticket_ids:
+            signals.append(_orphan_signal(ticket, f"ticket terminal: {ticket.state}"))
             continue
         try:
             state = host.get_pr_open_state(pr_url=ticket.issue_url)
@@ -233,14 +252,24 @@ def _orphaned_task_signals(
         if state not in {PrOpenState.MERGED, PrOpenState.CLOSED}:
             # OPEN → live review still owed; UNKNOWN → fail open. Never reap.
             continue
-        signals.append(
-            ScanSignal(
-                kind="reviewer_pr.task_orphaned",
-                summary=f"Reviewing task orphaned (PR {state.value}): {ticket.issue_url}",
-                payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
-            ),
-        )
+        signals.append(_orphan_signal(ticket, f"PR {state.value}"))
     return signals
+
+
+def _orphan_signal(ticket: "_Ticket", reason: str) -> ScanSignal:
+    """One ``reviewer_pr.task_orphaned`` signal carrying the ground it was reaped on (#3910).
+
+    The sweep reaps on two non-interchangeable grounds — terminal local FSM
+    (#1431) and forge state MERGED/CLOSED (#1074). ``reason`` travels in the
+    payload so the handler logs the one actually used: a terminal ticket on a
+    still-OPEN PR is a correct reap, and crediting it to the forge proof reads
+    as a forge bug.
+    """
+    return ScanSignal(
+        kind="reviewer_pr.task_orphaned",
+        summary=f"Reviewing task orphaned ({reason}): {ticket.issue_url}",
+        payload={"url": ticket.issue_url, "ticket_id": ticket.pk, "reason": reason},
+    )
 
 
 def _is_dismissed_from_approved(previous: str, current: ReviewState) -> bool:
@@ -373,17 +402,20 @@ class ReviewerPrsScanner:
         debugger + a colleague review-request, never a ``t3:reviewer``
         sub-agent. The mechanical handler completes the task so
         ``pending-spawn`` stops surfacing it.
+
+        A task the #68 auto-review dispatch armed is exempt (#3910): on a solo
+        overlay the agent cold-reviewer IS the checker, so that task is the
+        only route to a merge, not a stray.
         """
         if ticket_model is None or not url:
             return []
         from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        open_statuses = Task.Status.active()
+        strays = Task.objects.filter(phase="reviewing", status__in=Task.Status.active()).not_auto_review_armed()
         candidates = ticket_model.objects.filter(
             role="reviewer",
             issue_url=url,
-            tasks__phase="reviewing",
-            tasks__status__in=open_statuses,
+            tasks__in=strays,
         )
         if self.overlay_name:
             candidates = candidates.filter(overlay=self.overlay_name)

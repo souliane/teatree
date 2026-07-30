@@ -5,6 +5,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
@@ -61,6 +62,21 @@ class TestWorktreeQuerySet(TestCase):
         Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
 
         assert list(Worktree.objects.for_ticket(wanted_ticket).order_by("pk")) == [mine, also_mine]
+
+
+class TestInboundManagersStayWired(TestCase):
+    """The inbound querysets still back their models after moving to `managers_inbound`.
+
+    The move is a pure relocation, so nothing below asserts behaviour — it pins
+    the wiring, which is the only thing a relocation can break. Every predicate
+    test in this module reaches these classes through `Model.objects`, so a
+    manager silently rebuilt from a plain `QuerySet` would leave them all
+    passing while `unprocessed()` and `due_for_retry()` vanish at runtime.
+    """
+
+    def test_managers_are_built_from_the_relocated_querysets(self) -> None:
+        assert isinstance(IncomingEvent.objects.all(), IncomingEventQuerySet)
+        assert isinstance(ReplyDispatch.objects.all(), ReplyDispatchQuerySet)
 
 
 class TestIncomingEventQuerySet(TestCase):

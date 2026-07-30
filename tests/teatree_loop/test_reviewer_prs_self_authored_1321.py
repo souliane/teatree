@@ -30,6 +30,7 @@ from typing import Any
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
@@ -193,3 +194,146 @@ class TestReconcileExistingSelfAuthoredReviewingTask(TestCase):
         assert [s.kind for s in signals if s.kind == "reviewer_pr.task_self_authored"] == []
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+
+
+class TestSoloOverlayArmedReviewIsNotReaped(TestCase):
+    """The #1321 reconcile must not reap the review the ship loop armed (#3910).
+
+    On a solo overlay the ship loop's ``pr_sweep`` is the ONLY path by which
+    the operator's own PR can merge: ``_evaluate_solo_overlay`` refuses to
+    self-merge, arms exactly one claimable reviewing task, and waits for its
+    ``merge_safe`` verdict. That task sits on a reviewer-role ticket whose MR
+    is, by construction, self-authored — precisely the shape #1321 reaps.
+
+    The two sweeps therefore cancel: ship arms the review, this scanner
+    completes it minutes later, and because ``AutoReviewDispatch`` dedups per
+    head the sweep never re-arms it. The PR is stuck at
+    ``no_independent_review`` for that head until someone force-pushes.
+
+    The dispatch row is what distinguishes a deliberately-armed review from
+    the stray #1321 was written to reap, so it is the discriminator here.
+    """
+
+    def test_reviewing_task_with_an_auto_review_dispatch_survives(self) -> None:
+        url = "https://gitlab/x/-/merge_requests/302"
+        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
+        task = schedule_external_review(ticket)
+        AutoReviewDispatch.objects.create(
+            slug="x",
+            pr_id=302,
+            head_sha="abc",
+            pr_url=url,
+            task=task,
+        )
+        host = FakeCodeHost(
+            user="user-gl",
+            review_requested_by_reviewer={
+                "user-gl": [
+                    {"web_url": url, "sha": "abc", "author": {"username": "user-gl"}, "state": "opened"},
+                ],
+            },
+        )
+        scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
+
+        signals = [s for s in scanner.scan() if s.kind == "reviewer_pr.task_self_authored"]
+
+        assert signals == [], (
+            "the ship loop's armed cold review was reaped as a self-authored stray — "
+            "the own PR can never reach an independent verdict, so it can never merge"
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_stray_self_authored_task_without_a_dispatch_is_still_reaped(self) -> None:
+        """The control: #1321's own behaviour is unchanged for a genuine stray."""
+        url = "https://gitlab/x/-/merge_requests/303"
+        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
+        task = schedule_external_review(ticket)
+        host = FakeCodeHost(
+            user="user-gl",
+            review_requested_by_reviewer={
+                "user-gl": [
+                    {"web_url": url, "sha": "abc", "author": {"username": "user-gl"}, "state": "opened"},
+                ],
+            },
+        )
+        scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
+
+        signals = [s for s in scanner.scan() if s.kind == "reviewer_pr.task_self_authored"]
+
+        assert [s.payload["ticket_id"] for s in signals] == [ticket.pk]
+        _ = task
+
+
+class TestTerminalTicketDoesNotReapArmedReview(TestCase):
+    """The #1431 terminal-FSM reap must also spare a deliberately-armed review (#3910).
+
+    This is the branch that actually stalled the factory. ``pr_sweep`` arms its
+    cold review on the reviewer-role ticket for the PR — and that ticket is
+    routinely ALREADY terminal (``review_posted``) from an earlier review of the
+    same PR. ``_orphaned_task_signals`` reaps a non-terminal reviewing task on a
+    terminal ticket *regardless of forge state*, so the freshly-armed review died
+    on the next tick while the PR was still open and still needed a verdict.
+
+    Forge truth is left fully in charge: a genuinely merged/closed PR still reaps
+    its armed review below. Only stale LOCAL FSM state stops being a reason to
+    kill work that was deliberately scheduled.
+    """
+
+    def _armed(self, url: str, state: str) -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=state)
+        task = schedule_external_review(ticket)
+        AutoReviewDispatch.objects.create(slug="x", pr_id=400, head_sha="abc", pr_url=url, task=task)
+        return ticket, task
+
+    def test_armed_review_survives_alongside_an_unarmed_sibling_task(self) -> None:
+        """A ticket is exempt when it carries an armed review, not only when EVERY task is armed.
+
+        The reason this case is spelled out rather than folded into the test
+        above: a single-task ticket passes under `.exclude(...__isnull=True)`,
+        which compiles to an UNCORRELATED `NOT EXISTS` over every task on the
+        ticket in any phase, and so silently means "all tasks are armed". A
+        terminal reviewer ticket almost always carries a completed earlier
+        review — that is WHY it went terminal — so the single-task shape is the
+        rare one and this is the shape the factory actually deadlocked in.
+        """
+        url = "https://github.com/souliane/teatree/pull/402"
+        ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        schedule_external_review(ticket)
+        host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
+        scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
+
+        signals = [s for s in scanner.scan() if s.kind == "reviewer_pr.task_orphaned"]
+
+        assert signals == [], (
+            "one ordinary sibling task made the ticket look unarmed, so the terminal branch "
+            "reaped the armed review and the open PR is deadlocked again"
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_armed_review_on_a_terminal_ticket_survives_while_the_pr_is_open(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/400"
+        _ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
+        scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
+
+        signals = [s for s in scanner.scan() if s.kind == "reviewer_pr.task_orphaned"]
+
+        assert signals == [], (
+            "a stale terminal reviewer ticket reaped the cold review the ship loop just armed, "
+            "so the open PR can never reach an independent verdict"
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_forge_truth_still_reaps_an_armed_review_on_a_merged_pr(self) -> None:
+        """The control: forge state remains authoritative, so real orphans still die."""
+        url = "https://github.com/souliane/teatree/pull/401"
+        ticket, _task = self._armed(url, Ticket.State.STARTED)
+        host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.MERGED})
+        scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
+
+        signals = [s for s in scanner.scan() if s.kind == "reviewer_pr.task_orphaned"]
+
+        assert [s.payload["ticket_id"] for s in signals] == [ticket.pk]
