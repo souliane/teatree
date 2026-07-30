@@ -159,6 +159,11 @@ def main() -> int:
         # Renamed-in-place suppressions (same marker removed and re-added in
         # the same file) cancel out. Build a counter of removed markers per
         # file, then decrement as we encounter matching adds.
+        # Removals are read against the branch tip only. Mid-merge that set also
+        # holds removals the incoming side made, so a marker it dropped could
+        # cancel an identical one added here. That errs toward reporting less,
+        # which is the safe direction for a cancellation rule; the additions
+        # themselves are still scoped to this author.
         removed_markers: Counter[tuple[str, str]] = Counter()
         for filename, line in _removed_lines(code_diff):
             marker = _suppression_marker(line)
