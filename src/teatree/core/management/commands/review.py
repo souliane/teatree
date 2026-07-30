@@ -149,6 +149,14 @@ class Command(TyperCommand):
             str, typer.Option("--findings-json", help='JSON array of {"severity","summary","file","line"} findings.')
         ] = "",
         ticket_id: Annotated[int, typer.Option(help="Optional teatree Ticket id this verdict is for.")] = 0,
+        lock_holder: Annotated[
+            str,
+            typer.Option(
+                "--lock-holder",
+                help="Identity this reviewer holds the MRReviewLock under (the --holder passed to "
+                "`review lock-acquire`). Releases that lock; only the holder may. Omit if no lock was taken.",
+            ),
+        ] = "",
     ) -> RecordResult:
         """Persist a cold-review verdict for a PR at an exact reviewed SHA.
 
@@ -197,6 +205,7 @@ class Command(TyperCommand):
                 blast_class=blast_class,
                 gh_verify_result=gh_verify_result,
                 ticket=resolved_ticket,
+                lock_holder=lock_holder,
             )
         except ReviewVerdictError as exc:
             self.stdout.write(f"  record refused: {exc}")

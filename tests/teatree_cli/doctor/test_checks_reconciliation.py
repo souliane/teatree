@@ -18,7 +18,18 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
-from teatree.core.models import DeferredQuestion, EvalRunRecord, IncomingEvent, Loop, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import (
+    AutoReviewDispatch,
+    DeferredQuestion,
+    EvalRunRecord,
+    IncomingEvent,
+    Loop,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
+from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
 from teatree.core.models.eval_run import EvalVerdict
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -354,6 +365,7 @@ class DoctorHookTestCase(TestCase):
             "open_question_age",
             "duplicate_execution_count",
             "high_churn_table_size",
+            "review_dispatch_saturation",
         }
 
 
@@ -447,3 +459,47 @@ class HighChurnTableSizeTestCase(TestCase):
             finding = recon._check_high_churn_table_size()
         assert finding.is_alarm
         assert "DBTaskResult" in finding.message
+
+
+class TestReviewDispatchSaturation(TestCase):
+    """The bounded retry must be visible when it runs out, or it is a quieter deadlock."""
+
+    SLUG = "souliane/teatree"
+    HEAD = "b" * 40
+
+    def _claim(self, *, attempts: int, expired: bool) -> AutoReviewDispatch:
+        row = AutoReviewDispatch.enqueue(
+            slug=self.SLUG, pr_id=3920, head_sha=self.HEAD, pr_url=f"https://github.com/{self.SLUG}/pull/3920"
+        )
+        assert row is not None
+        deadline = timezone.now() - dt.timedelta(minutes=1) if expired else timezone.now() + dt.timedelta(hours=1)
+        AutoReviewDispatch.objects.filter(pk=row.pk).update(attempts=attempts, deadline=deadline)
+        row.refresh_from_db()
+        return row
+
+    def test_a_healthy_factory_is_ok(self) -> None:
+        self._claim(attempts=1, expired=False)
+        finding = recon._check_review_dispatch_saturation()
+        assert not finding.is_alarm
+
+    def test_an_expired_claim_with_budget_left_is_not_saturation(self) -> None:
+        # It will simply be re-armed by the next sweep — alarming here would make
+        # every ordinary crashed reviewer page the owner.
+        self._claim(attempts=1, expired=True)
+        assert not recon._check_review_dispatch_saturation().is_alarm
+
+    def test_an_exhausted_expired_claim_alarms_and_names_the_pr(self) -> None:
+        self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert f"{self.SLUG}#3920" in finding.message
+
+    def test_a_resolved_claim_never_alarms(self) -> None:
+        self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
+        AutoReviewDispatch.mark_resolved(slug=self.SLUG, pr_id=3920, head_sha=self.HEAD)
+        assert not recon._check_review_dispatch_saturation().is_alarm
+
+    def test_the_check_is_registered_in_the_ledger(self) -> None:
+        assert recon._check_review_dispatch_saturation in recon.CHECKS

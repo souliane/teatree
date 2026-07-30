@@ -422,3 +422,58 @@ class TestHeldLockLeavesNoOrphanClaim:
             "dedup the next tick out of arming a review that was never dispatched"
         )
         assert Task.objects.filter(phase=REVIEWING_PHASE).count() == 0
+
+
+class TestUnverdictedHeadIsAlwaysReArmable:
+    """The #3920 invariant, stated once and asserted end to end.
+
+    A PR with no ``merge_safe`` verdict at its live head and no review still in
+    flight is always re-armable. #3887, #3893 and #3914 were each in exactly
+    that state while the sweep declined to act, because the dispatch claim they
+    had already spent was permanent.
+
+    Liveness is read from the claim's DEADLINE and nowhere else — the same proxy
+    ``MRReviewLock`` uses. A second liveness answer (the task's status) would
+    deadlock on the zombie a crashed worker leaves in ``claimed``, which is the
+    failure this fix exists to remove.
+    """
+
+    def test_the_head_re_arms_and_the_merge_lock_is_free_again(self) -> None:
+        first = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        assert first is not None
+        assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=6230) is not None
+
+        # The reviewer dies: no verdict is ever recorded, and both claims expire.
+        past = timezone.now() - dt.timedelta(minutes=1)
+        AutoReviewDispatch.objects.filter(pk=first.pk).update(deadline=past)
+        MRReviewLock.objects.filter(slug=SLUG, pr_id=6230).update(deadline=past)
+
+        assert ReviewVerdict.objects.filter(slug=SLUG, pr_id=6230, reviewed_sha=HEAD).count() == 0
+        assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=6230) is None, (
+            "an expired lock must not read as a review in flight"
+        )
+
+        again = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert again is not None
+        assert again.task is not None
+        assert again.task.status == Task.Status.PENDING
+        assert MRReviewLock.active_lock_for(slug=SLUG, pr_id=6230) is not None
+
+    def test_the_superseded_task_stops_counting_as_armed(self) -> None:
+        # The claim carries exactly one task FK, so re-arming moves it to the new
+        # task and the dead one falls out of `not_auto_review_armed()`. That is
+        # what lets the loop's orphan reaper clear the zombie: #3910 keeps it off
+        # ARMED tasks, and after the re-arm this one is no longer armed.
+        first = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        assert first is not None
+        assert first.task is not None
+        stale_task_pk = first.task.pk
+        assert Task.objects.filter(pk=stale_task_pk).not_auto_review_armed().count() == 0
+
+        past = timezone.now() - dt.timedelta(minutes=1)
+        AutoReviewDispatch.objects.filter(pk=first.pk).update(deadline=past)
+        MRReviewLock.objects.filter(slug=SLUG, pr_id=6230).update(deadline=past)
+        assert AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL) is not None
+
+        assert Task.objects.filter(pk=stale_task_pk).not_auto_review_armed().count() == 1

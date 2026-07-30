@@ -10364,6 +10364,11 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
 │                                     is for.                                  │
 │                                     [default: 0]                             │
+│ --lock-holder              TEXT     Identity this reviewer holds the         │
+│                                     MRReviewLock under (the --holder passed  │
+│                                     to `review lock-acquire`). Releases that │
+│                                     lock; only the holder may. Omit if no    │
+│                                     lock was taken.                          │
 │ --help                              Show this message and exit.              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
