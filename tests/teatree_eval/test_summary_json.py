@@ -14,7 +14,15 @@ from typing import Any
 
 import pytest
 
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher, TokenUsage
+from teatree.eval.models import (
+    HEADLESS_SURFACE,
+    INTERACTIVE_SURFACE,
+    EvalRun,
+    EvalSpec,
+    EvalToolCall,
+    Matcher,
+    TokenUsage,
+)
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.eval.summary_json import render_summary_json, write_summary_json
@@ -24,7 +32,9 @@ _MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="c
 _HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
-def _spec(name: str, *, lane: str = "clean_room", model: str = "claude-sonnet-4-6") -> EvalSpec:
+def _spec(
+    name: str, *, lane: str = "clean_room", model: str = "claude-sonnet-4-6", surface: str = HEADLESS_SURFACE
+) -> EvalSpec:
     return EvalSpec(
         name=name,
         scenario="s",
@@ -34,6 +44,7 @@ def _spec(name: str, *, lane: str = "clean_room", model: str = "claude-sonnet-4-
         source_path=Path("evals/scenarios/x.yaml"),
         model=model,
         lane=lane,
+        surface=surface,
     )
 
 
@@ -51,9 +62,11 @@ def _run(name: str, *, terminal_reason: str = "success", is_error: bool = False)
     )
 
 
-def _behavioral_red(name: str = "alpha", *, lane: str = "clean_room") -> ScenarioResult:
+def _behavioral_red(
+    name: str = "alpha", *, lane: str = "clean_room", surface: str = HEADLESS_SURFACE
+) -> ScenarioResult:
     return ScenarioResult(
-        spec=_spec(name, lane=lane),
+        spec=_spec(name, lane=lane, surface=surface),
         run=_run(name),
         matcher_results=(MatcherResult(matcher=_MATCHER, passed=False, message=SENTINEL),),
         skipped=False,
@@ -121,15 +134,39 @@ class TestShape:
         assert set(scenario) == {
             "name",
             "lane",
+            "surface",
             "verdict",
             "is_error",
             "terminal_reason",
             "matcher_failed",
             "judge_failed",
             "triage_class",
+            "advisory",
         }
         assert scenario["name"] == "alpha"
         assert scenario["lane"] == "under_load"
+
+
+class TestSurfaceCarriedToTheMergedVerdict:
+    """The row carries the surface AND the gating decision derived from it (#3921).
+
+    ``green-proof`` reads the merged artifact, not the specs, so without these keys
+    the combine job cannot apply the exemption every in-process lane applies.
+    """
+
+    def test_a_surface_agnostic_scenario_defaults_to_the_gating_surface(self) -> None:
+        scenario = _render([_behavioral_red()])["scenarios"][0]
+        assert scenario["surface"] == HEADLESS_SURFACE
+        assert scenario["advisory"] is False
+
+    def test_an_interactive_scenario_is_flagged_advisory(self) -> None:
+        scenario = _render([_behavioral_red(surface=INTERACTIVE_SURFACE)])["scenarios"][0]
+        assert scenario["surface"] == INTERACTIVE_SURFACE
+        assert scenario["advisory"] is True
+
+    def test_an_advisory_row_still_carries_its_triage_class(self) -> None:
+        # Non-gating is not invisible: triage still sees the interactive regression.
+        assert _render([_behavioral_red(surface=INTERACTIVE_SURFACE)])["scenarios"][0]["triage_class"] == "behavioral"
 
 
 class TestTriageClassEmbedded:

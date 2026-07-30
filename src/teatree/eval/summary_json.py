@@ -10,6 +10,11 @@ contract as :func:`teatree.eval.report.render_summary_markdown`, so the CI heal
 workflow can upload it as a published artifact. Works for a single-trial run and
 for a ``--trials``/pass@k run (the aggregate discriminators fold over each
 scenario's per-trial results).
+
+Each row also carries the spec's question ``surface`` and the ``advisory`` flag
+derived from it, so the merged-artifact verdict
+(:mod:`teatree.eval.green_proof`) applies the same interactive-surface exemption
+the in-process lanes apply (souliane/teatree#3855, souliane/teatree#3921).
 """
 
 import dataclasses
@@ -21,6 +26,7 @@ from pathlib import Path
 
 from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.discovery import find_spec
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import ScenarioResult
 from teatree.eval.triage import ScenarioRecord, ScenarioTriage, classify_red
@@ -40,6 +46,7 @@ class _ScenarioRow:
 
     name: str
     lane: str
+    surface: str
     verdict: str
     is_error: bool
     terminal_reason: str
@@ -56,15 +63,20 @@ class _ScenarioRow:
                 judge_failed=self.judge_failed,
             )
         )
+        # A red row keeps its triage_class whatever the surface — the artifact is the
+        # triage record, so an interactive regression stays VISIBLE. `advisory` is the
+        # separate question of whether that red may GATE (#3855, #3921).
         return {
             "name": self.name,
             "lane": self.lane,
+            "surface": self.surface,
             "verdict": self.verdict,
             "is_error": self.is_error,
             "terminal_reason": self.terminal_reason,
             "matcher_failed": self.matcher_failed,
             "judge_failed": self.judge_failed,
             "triage_class": triage.value if triage is not None else None,
+            "advisory": self.surface == INTERACTIVE_SURFACE,
         }
 
 
@@ -76,6 +88,7 @@ def _row_from_scenario(result: ScenarioResult) -> _ScenarioRow:
     return _ScenarioRow(
         name=result.spec.name,
         lane=result.spec.lane,
+        surface=result.spec.surface,
         verdict=result.verdict,
         is_error=result.run.is_error,
         terminal_reason=result.run.terminal_reason,
@@ -100,6 +113,9 @@ def _row_from_pass_at_k(result: PassAtKResult) -> _ScenarioRow:
     return _ScenarioRow(
         name=result.spec_name,
         lane=spec.lane if spec is not None else "unknown",
+        # An unresolvable spec falls back to the GATING surface: a row whose surface
+        # cannot be proven advisory must never be exempted by default.
+        surface=spec.surface if spec is not None else HEADLESS_SURFACE,
         verdict=verdict,
         # An errored aggregate needs EVERY executed trial to have errored — one
         # clean trial with a real matcher diff is behavioral signal, not transport.
