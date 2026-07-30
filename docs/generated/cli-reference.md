@@ -7617,7 +7617,7 @@ Usage: t3 teatree workspace release-dead-rows [OPTIONS]
  unless --apply).
 
  The narrow alternative to ``clean-all`` for the doctor's "registered
- worktree ... is not a git checkout" finding: the SAME #706 classifier and
+ worktree ... never was a git checkout" finding: the SAME #706 classifier and
  freshness precondition, deleting the ``Worktree`` row and nothing else.
  Which rows are KEPT, and why, is
  :mod:`teatree.core.worktree.dead_row_release`.

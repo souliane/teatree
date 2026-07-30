@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.core.management.commands._workspace import helpers as _wh
-from teatree.core.management.commands._workspace.broken_worktrees import reap_broken_worktree_dirs
+from teatree.core.management.commands._workspace.broken_worktrees import report_unresolvable_worktree_dirs
 from teatree.core.management.commands._workspace.cleanup import (
     WorktreeReaper,
     _raise_on_cleanup_failures,
@@ -62,9 +62,10 @@ def run_clean_all(
     no preview at all. A failed teardown line exits 1 via
     :func:`_raise_on_cleanup_failures` (the #932 failure contract).
 
-    One pass is preview-blind: :func:`reap_broken_worktree_dirs` takes no
-    ``dry_run``, so a dry run reports it as NOT PREVIEWED rather than silently
-    omitting it.
+    :func:`report_unresolvable_worktree_dirs` takes no ``dry_run`` because it
+    deletes nothing: a checkout this venue cannot resolve is UNKNOWN, never proven
+    dead, so the pass reports and stops. Its lines are therefore identical in a
+    preview and a live run.
 
     ``workspace`` reaches :func:`reap_orphan_isolated_worktree_roots` because that
     pass now asks git which checkouts exist, not only the ``Worktree`` table
@@ -88,11 +89,10 @@ def run_clean_all(
     cleaned.extend(reap_orphan_isolated_worktree_roots(workspace, dry_run=dry_run))
     cleaned.extend(reap_orphan_raw_worktrees(workspace, dry_run=dry_run))
     # Runs AFTER the raw-orphan pass: that one disposes of checkouts git can
-    # still resolve, leaving only the dirs git cannot resolve at all (#3583).
-    if dry_run:
-        cleaned.append("NOT PREVIEWED: broken-worktree-dir reap (pass has no dry-run mode) — a live run includes it")
-    else:
-        cleaned.extend(reap_broken_worktree_dirs(*broken_dir_roots))
+    # still resolve, leaving only the dirs this venue cannot resolve at all. It
+    # needs no dry-run branch because it removes nothing — an unresolvable
+    # checkout is UNKNOWN, and UNKNOWN never authorises a deletion (#3912).
+    cleaned.extend(report_unresolvable_worktree_dirs(*broken_dir_roots))
 
     repo_root = Path.cwd()
     if (repo_root / ".git").exists():

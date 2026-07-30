@@ -1,63 +1,49 @@
-"""Reap BROKEN worktree checkouts that no longer resolve as git repos (#3583).
+"""Report worktree dirs this venue cannot resolve — and delete none of them (#3912, #3853).
 
-A worktree dir whose ``.git`` pointer no longer resolves — its admin entry was
-pruned from the source clone, or the clone itself was removed — is a dead
-checkout: ``git rev-parse`` fails inside it, so no git operation can reach its
-contents and no reaper keyed on ``git worktree list`` can see it either. They
-accumulate silently (a real host carried 16, each emitting a setup-time
-``is not a git checkout`` WARN on every session) and cost agents time reasoning
-about whether a stale sibling is live.
+A dir carrying a ``.git`` whose pointer does not resolve here used to be removed
+outright, on the reasoning that a broken checkout can hold no recoverable git
+work. That reasoning does not survive contact with a second execution context: a
+checkout records its admin dir as an absolute path written by whatever context
+created it, so one that is perfectly healthy in its own context produces exactly
+the evidence this pass read as proof of death. Measured, the misread covered
+every registered worktree created in a context other than the sweep's.
 
-The pass is deliberately narrow. Only an immediate child dir of a worktree root
-that CARRIES a ``.git`` entry is a candidate — a dir with no ``.git`` was never a
-checkout (an auto-isolated env dir, a scratch dir) and belongs to another reaper
-or to nobody. Of those candidates, one that still resolves is a healthy worktree
-and is left to the row-driven and raw-orphan reapers; one git PROVES is not a
-repo is broken by definition and is removed, since a broken checkout can hold no
-recoverable git work. A probe that merely errored proves nothing and is kept.
+So the pass keeps its discovery and loses its deletion. It walks the same
+candidates — immediate child dirs of a worktree root that carry a ``.git`` entry
+— and reports each one that this venue cannot resolve, as UNKNOWN. Nothing here
+may remove a directory, because no evidence available to a single venue can prove
+a checkout dead, and the evidence it does have is produced equally by live work.
 
-The safety guards mirror the #706/#835 data-loss discipline: a dir a live
-``Worktree`` row still points at is never touched here (its row owns its
-lifecycle), and a ``clean_ignore`` match is always skipped. The row-tracked skip
-is not a dead end any more: ``clean-all`` runs the ROW reaper first, and its
-dead-checkout branch (``core.worktree.broken_checkout``) releases the row of a
-provably-dead checkout whose branch holds nothing unrecoverable — so by the time
-this pass runs, a still-tracked dir is one the row reaper deliberately kept.
+The two recovery paths the report names are the ones that ask something better
+than an unreadable dir: ``t3 <overlay> workspace salvage`` for the work, and
+:mod:`teatree.core.worktree.broken_checkout` for a registered row, which decides
+from the BRANCH in the source clone.
 """
 
-import logging
-import shutil
 from pathlib import Path
 
-from teatree.core.cleanup.clean_ignore import is_clean_ignored
-from teatree.core.models import Worktree
-from teatree.core.worktree.worktree_paths import paths_match
+from teatree.core.worktree.broken_checkout import unresolved_checkout_reason
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
-
-logger = logging.getLogger(__name__)
-
-
-def _db_tracked_paths() -> list[str]:
-    return [wt.worktree_path for wt in Worktree.objects.all() if wt.worktree_path]
 
 
 def _candidate_dirs(root: Path) -> list[Path]:
-    """Immediate child dirs of *root* that carry a ``.git`` entry (former checkouts)."""
+    """Immediate child dirs of *root* that carry a ``.git`` entry (checkouts, live or not)."""
     if not root.is_dir():
         return []
     return sorted(child for child in root.iterdir() if child.is_dir() and (child / ".git").exists())
 
 
-def reap_broken_worktree_dirs(*roots: Path) -> list[str]:
-    """Remove dead worktree checkouts under each root in *roots*; report every decision.
+def report_unresolvable_worktree_dirs(*roots: Path) -> list[str]:
+    """Name every candidate under *roots* whose checkout this venue cannot resolve.
 
     A root is scanned only for its immediate children. Passing several roots is
-    how the alternate-root split is drained: an operator who accumulated
+    how the alternate-root split stays visible: an operator who accumulated
     worktrees outside the canonical :func:`teatree.config.worktree_root` hands
-    both roots in and ends up with one location, since only the canonical root is
-    ever written to afterwards.
+    both roots in and reads one report.
+
+    Read-only by construction — the returned lines are the whole effect, which is
+    why a ``clean-all`` preview and a live run cannot disagree about this pass.
     """
-    tracked = _db_tracked_paths()
     outcomes: list[str] = []
     seen: set[Path] = set()
     for root in roots:
@@ -65,28 +51,26 @@ def reap_broken_worktree_dirs(*roots: Path) -> list[str]:
             if candidate in seen:
                 continue
             seen.add(candidate)
-            outcomes.extend(_reap_one(candidate, tracked=tracked))
+            outcomes.extend(_report_one(candidate))
     return outcomes
 
 
-def _reap_one(candidate: Path, *, tracked: list[str]) -> list[str]:
-    state = probe_checkout(candidate)
-    if state is CheckoutState.CHECKOUT:
+def _report_one(candidate: Path) -> list[str]:
+    """One candidate's line, or none when it resolves cleanly.
+
+    A raw dir names no clone — that link exists only for a registered row — so the
+    probe runs without one and an unresolvable pointer stays UNKNOWN. Over a pass
+    that only reports, the cost of not upgrading is one informational line, which
+    is the right way round: the row reaper, which DOES act, is the surface that
+    consults the clone.
+    """
+    if probe_checkout(candidate) is CheckoutState.CHECKOUT:
         return []
-    label = candidate.name
-    if state is CheckoutState.INCONCLUSIVE:
-        return [f"SKIPPED broken worktree '{label}': git declined to say whether it is a checkout — keeping"]
-    if is_clean_ignored(label):
-        return [f"SKIPPED broken worktree '{label}': matches clean_ignore — keeping"]
-    if any(paths_match(str(candidate), path) for path in tracked):
-        kept = f"SKIPPED broken worktree '{label}': a Worktree row still tracks it — the row reaper ran first "
-        return [kept + "and kept it, so its work is unverified"]
-    try:
-        shutil.rmtree(candidate)
-    except OSError as exc:
-        logger.warning("Could not remove broken worktree dir %s: %s", candidate, exc)
-        return [f"SKIPPED broken worktree '{label}': removal failed ({exc})"]
-    return [f"Removed broken worktree (git rev-parse fails, no recoverable work): {label}"]
+    line = (
+        f"UNKNOWN worktree dir '{candidate.name}': {unresolved_checkout_reason(candidate)} — "
+        "reported, never removed; salvage it with t3 <overlay> workspace salvage"
+    )
+    return [line]
 
 
-__all__ = ["reap_broken_worktree_dirs"]
+__all__ = ["report_unresolvable_worktree_dirs"]

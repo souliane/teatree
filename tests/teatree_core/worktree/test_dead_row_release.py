@@ -83,10 +83,19 @@ class _DeadRowCase(TestCase):
         return wt_path
 
     def _break_checkout(self, wt_path: Path) -> None:
+        """Reduce the checkout to the one dead shape a single venue can PROVE.
+
+        The admin entry goes, and so does the checkout's own ``.git``: what
+        remains claims nothing, so no other execution context can be holding a
+        pointer that still resolves. Leaving the gitfile in place would instead
+        produce the shape a live checkout created elsewhere presents, which is
+        UNKNOWN and releases nothing (#3912).
+        """
         admin = self.clone / ".git" / "worktrees" / wt_path.name
         for child in sorted(admin.rglob("*"), reverse=True):
             child.unlink() if child.is_file() else child.rmdir()
         admin.rmdir()
+        (wt_path / ".git").unlink()
 
     def _dead_row_with_gone_ref(self, branch: str = "vanished") -> tuple[Worktree, Path]:
         """The production shape: dir exists, is not a repo, and its branch ref is gone."""
