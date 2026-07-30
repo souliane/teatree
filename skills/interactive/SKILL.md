@@ -7,11 +7,14 @@ requires:
 eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
 metadata:
   version: 0.0.1
+  subagent_safe: false
 ---
 
 # TeaTree — Interactive Session
 
 The Claude Code side of teatree: what engages a session, how skills reach an agent, how hooks are registered — and the one rule an attended session must not break. Loading this skill is itself the engagement act.
+
+Not `subagent_safe`: loading it writes the `.teatree-active` engagement marker and its procedures run `t3` commands, so it is not the pure methodology that flag is reserved for.
 
 ## No work-bearing state is terminal
 
@@ -29,7 +32,7 @@ Work is *work-bearing* from the moment it exists in the working tree. There are 
 
 Every state either advances or leaves a durable record that something else drains. Nothing may exit 0 having observed work and stored nothing.
 
-A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is reclaimed when the agent exits or dies, taking uncommitted work with it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
+A dispatched agent's HARNESS worktree (`.claude/worktrees/agent-*`) is auto-cleaned only when the agent leaves it UNCHANGED. One holding uncommitted work is not reclaimed — it survives on one machine's disk and outside teatree's `Worktree` ledger, so `workspace emit` never surfaces it and nothing advances it. Dispatch work that must survive into a teatree-managed worktree instead, and push once a result is worth keeping — a remote ref is the only state wholly independent of the local machine.
 
 ### The mechanisms
 
