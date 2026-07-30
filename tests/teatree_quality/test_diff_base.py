@@ -13,6 +13,7 @@ branch, one commit, no merge — passes both before and after the fix, which is
 exactly why the merge case is the one that has to be written.
 """
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -192,3 +193,74 @@ class TestGateRelaxationHookOnAMerge:
             monkeypatch.setenv(var, value)
 
         assert not [f.path for f in check_gate_relaxation._authored_findings()]
+
+
+class TestIntersectionCannotSilenceRealFindings:
+    """The intersection must never turn a finding into silence.
+
+    Both cases below made the gate pass a relaxation the operator authored — the
+    exact false green the named base exists to prevent, arrived at from the
+    opposite direction.
+    """
+
+    def test_a_base_relative_finding_field_does_not_drop_the_finding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key that varies with the base empties the intersection.
+
+        `fail_under` findings quote the value they were measured against, so the
+        two scans disagree on `message` for one and the same lowering.
+        """
+        repo = make_git_repo(tmp_path / "floor")
+        coveragerc = repo / ".coveragerc"
+        coveragerc.write_text("[report]\nfail_under = 90\n", encoding="utf-8")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "base")
+
+        run_git(repo, "checkout", "-q", "-b", "feature")
+        (repo / "unrelated.py").write_text("VALUE = 1\n", encoding="utf-8")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "branch work")
+
+        run_git(repo, "checkout", "-q", "main")
+        coveragerc.write_text("[report]\nfail_under = 95\n", encoding="utf-8")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "main raises the floor")
+
+        run_git(repo, "checkout", "-q", "feature")
+        run_git(repo, "merge", "--no-commit", "--no-ff", "main", check=False)
+
+        # The operator lowers the floor themselves while resolving.
+        coveragerc.write_text("[report]\nfail_under = 80\n", encoding="utf-8")
+        run_git(repo, "add", ".coveragerc")
+
+        monkeypatch.chdir(repo)
+        for var, value in git_identity_env().items():
+            monkeypatch.setenv(var, value)
+
+        kinds = [f.kind for f in check_gate_relaxation._authored_findings()]
+        assert "coverage_floor_lowered" in kinds, "a floor the operator lowered during the merge was silently dropped"
+
+    def test_an_unreadable_incoming_side_reports_everything(
+        self, merging_cwd: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A git failure on the incoming side must not read as 'authored nothing'.
+
+        Faked at the subprocess seam, so the gate sees exactly what a real
+        mid-merge git failure produces: a non-zero exit on the second diff only.
+        """
+        real_run = diff_base.run_allowed_to_fail
+
+        def fail_on_incoming(cmd: list[str], **kwargs: object) -> object:
+            result = real_run(cmd, **kwargs)
+            if "MERGE_HEAD" in cmd and "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, "", "fatal: bad object")
+            return result
+
+        monkeypatch.setattr(diff_base, "run_allowed_to_fail", fail_on_incoming)
+
+        found = diff_base.authored_findings(
+            lambda diff: [line for line in diff.splitlines() if line.startswith("+")],
+            lambda base: diff_base.staged_diff(base, "--diff-filter=ACMR", "-U0", "--", "pyproject.toml"),
+        )
+        assert [line for line in found if "S999" in line], "an unreadable incoming side silently cleared every finding"

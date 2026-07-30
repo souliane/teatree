@@ -59,18 +59,25 @@ def _gate_enabled() -> bool:
     return bool(get_effective_settings().gate_relaxation_gate_enabled)
 
 
-def _staged_diff(base: diff_base.DiffBase) -> str:
+def _staged_diff(base: diff_base.DiffBase) -> str | None:
+    """The staged diff against *base*, or ``None`` when git could not produce it."""
     return diff_base.staged_diff(base, "--src-prefix=a/", "--dst-prefix=b/")
 
 
 def _authored_findings() -> list[RelaxationFinding]:
     """Relaxations THIS commit's author introduced, not ones a merge brought in.
 
-    Findings are frozen dataclasses carrying the offending path and line text and
-    no diff-relative offset, so they compare directly across the two bases — no
-    key function needed.
+    Keyed on ``(kind, path, line)`` — the fields that identify the relaxation
+    itself. ``message`` is deliberately excluded because it can quote the base
+    it was measured against (``fail_under`` lowered "from 90" against the branch
+    tip but "from 95" against the incoming side), which would make the two scans
+    disagree and silently drop a floor the operator really did lower.
     """
-    return diff_base.authored_findings(scan_relaxation, _staged_diff)
+    return diff_base.authored_findings(
+        scan_relaxation,
+        _staged_diff,
+        key=lambda finding: (finding.kind, finding.path, finding.line),
+    )
 
 
 def _scan_and_decide(findings: list[RelaxationFinding]) -> int:

@@ -66,25 +66,36 @@ def merge_incoming() -> DiffBase | None:
     ``MERGE_HEAD`` exists only between ``git merge`` and the commit that
     concludes it — precisely the window in which the staged diff stops being a
     faithful record of what this commit's author wrote.
+
+    Not every merge-shaped operation has one. ``git merge --squash`` records no
+    ref for the incoming side, and rebase / cherry-pick / revert set their own
+    refs instead. Those all fall back to the branch tip. For rebase and friends
+    that is right — there the staged diff IS the operator's own change — but a
+    squash merge is a genuine blind spot git gives us no ref to close.
     """
     if _rev_exists("MERGE_HEAD"):
         return DiffBase(ref="MERGE_HEAD", label="the incoming side (theirs)")
     return None
 
 
-def staged_diff(base: DiffBase, *args: str) -> str:
-    """The staged diff against *base*, or ``""`` when git refuses.
+def staged_diff(base: DiffBase, *args: str) -> str | None:
+    """The staged diff against *base*, or ``None`` when git could not produce it.
+
+    ``None`` is deliberately NOT ``""``. An empty diff means "nothing changed
+    against this base"; a git failure means "unknown". Collapsing the two is how
+    a fail-safe primitive becomes a false green in a caller that reads emptiness
+    as an answer — so the distinction is carried in the type.
 
     *args* are appended verbatim, so a caller keeps its own ``--diff-filter`` /
     ``-U0`` / pathspec choices; only the base is decided here.
     """
     result = run_allowed_to_fail(["git", "diff", "--cached", base.ref, *args], expected_codes=None)
-    return result.stdout if result.returncode == 0 else ""
+    return result.stdout if result.returncode == 0 else None
 
 
 def authored_findings[T](
     scan: Callable[[str], Iterable[T]],
-    diff_for: Callable[[DiffBase], str],
+    diff_for: Callable[[DiffBase], str | None],
     *,
     key: Callable[[T], Hashable] = lambda finding: finding,
 ) -> list[T]:
@@ -102,13 +113,24 @@ def authored_findings[T](
     the same command — two bases compared like for like. :func:`staged_diff` is
     the obvious thing to build it from.
 
-    *key* exists because a finding usually carries a line NUMBER, and the same
-    authored line sits at different offsets in the two diffs. Key on the parts
-    that identify the change (path and text), not on where it happens to land.
+    *key* must be BASE-INVARIANT, and choosing it is the subtle part. A finding
+    usually carries a line NUMBER, and the same authored line sits at different
+    offsets in the two diffs. Worse, a finding's prose can quote the base it was
+    measured against (``lowered from 90 to 80`` vs ``from 95 to 80``). Key only
+    on the parts that identify the change itself — kind, path, offending text.
+    A key that varies with the base makes the intersection empty and SILENTLY
+    drops real findings, which is the failure this whole module exists to avoid.
+
+    If the incoming side cannot be read, every finding is reported unfiltered
+    rather than dropped: over-reporting is recoverable by a human, a false green
+    is not.
     """
-    ours = list(scan(diff_for(branch_tip())))
+    ours = list(scan(diff_for(branch_tip()) or ""))
     theirs = merge_incoming()
     if theirs is None:
         return ours
-    authored = {key(finding) for finding in scan(diff_for(theirs))}
+    theirs_diff = diff_for(theirs)
+    if theirs_diff is None:
+        return ours
+    authored = {key(finding) for finding in scan(theirs_diff)}
     return [finding for finding in ours if key(finding) in authored]

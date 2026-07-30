@@ -52,10 +52,13 @@ _RULE_CODE_RE = re.compile(r'^\s*"[A-Z]+\d+[A-Z]?\d*"')
 
 
 # The scan's shape, held in one place so the two bases are compared like for like.
-_DIFF_ARGS: tuple[str, ...] = ("--diff-filter=ACMR", "-U0")
+# The prefixes are pinned because ``_added_lines`` strips a literal "b/": a repo
+# with ``diff.mnemonicPrefix`` or ``diff.noPrefix`` set would otherwise hand it
+# paths it cannot normalise, and every violation would name the wrong file.
+_DIFF_ARGS: tuple[str, ...] = ("--diff-filter=ACMR", "-U0", "--src-prefix=a/", "--dst-prefix=b/")
 
 
-def _staged_diff(path_filter: str = "", base: diff_base.DiffBase | None = None) -> str:
+def _staged_diff(path_filter: str = "", base: diff_base.DiffBase | None = None) -> str | None:
     """The staged diff against *base*, defaulting to the branch tip ("ours").
 
     The single place this hook talks to git, so both sides of a merge are
@@ -160,10 +163,12 @@ def main() -> int:
         # the same file) cancel out. Build a counter of removed markers per
         # file, then decrement as we encounter matching adds.
         # Removals are read against the branch tip only. Mid-merge that set also
-        # holds removals the incoming side made, so a marker it dropped could
-        # cancel an identical one added here. That errs toward reporting less,
-        # which is the safe direction for a cancellation rule; the additions
-        # themselves are still scoped to this author.
+        # holds removals the incoming side made, so a marker it dropped can
+        # cancel an identical one the operator added while resolving. That is a
+        # narrow FALSE-NEGATIVE window, not a "safe" simplification — named
+        # plainly here because this gate has no escape hatch and a reader
+        # deserves to know where it under-reports. The additions themselves are
+        # correctly scoped to this author.
         removed_markers: Counter[tuple[str, str]] = Counter()
         for filename, line in _removed_lines(code_diff):
             marker = _suppression_marker(line)
