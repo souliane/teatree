@@ -27,15 +27,18 @@ from teatree.utils.run import run_allowed_to_fail
 class CheckoutState(StrEnum):
     """What a directory was PROVED to be — three answers, and each is an authorisation.
 
-    ``CHECKOUT`` means live: hands off. It covers a checkout git resolved here and
-    one proven live through the clone that created it, because a caller does the
-    same thing with either — nothing.
+    Read these as verdicts on what a caller may DO, never as claims about what a
+    caller can RUN. ``CHECKOUT`` means live: hands off. It covers a checkout git
+    resolved here AND one only the clone vouches for, and in the second case git
+    commands in that directory still fail — the two collapse into one value because
+    the correct action for both is identical, which is nothing.
 
     ``NOT_A_CHECKOUT`` is the only state that may authorise a destructive release,
-    so it demands positive proof: the directory carries no ``.git`` entry at all
-    and git agrees there is no repository. Nothing there ever claimed to be a
-    checkout, so there is no pointer this context might merely be failing to
-    follow.
+    and even then only of a registry ROW: it is never licence to remove a directory,
+    which no single context has the evidence to justify. It demands positive proof:
+    the directory carries no ``.git`` entry at all and git agrees there is no
+    repository. Nothing there ever claimed to be a checkout, so there is no pointer
+    this context might merely be failing to follow.
 
     ``INCONCLUSIVE`` is the load-bearing one — the UNKNOWN a fail-open reaper
     keeps. git declining to speak (dubious ownership, a permission error, a

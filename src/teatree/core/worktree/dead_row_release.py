@@ -148,8 +148,9 @@ def release_dead_rows(workspace: Path, *, dry_run: bool) -> DeadRowReleaseOutcom
     The delete is a plain row delete — never ``cleanup_worktree``, whose job is to
     tear down the git worktree, the branch, the database and the docker artifacts.
     Here the checkout is already gone and the surviving on-disk directory may hold
-    files nothing has proven redundant, so removing it is a separate decision that
-    belongs to the operator (or to the broken-DIR pass), not to a row release.
+    files nothing has proven redundant, so removing it belongs to the operator —
+    reached through ``workspace salvage``, since no automatic pass removes a
+    checkout directory any more (#3912) — never to a row release.
     """
     verdicts = tuple(plan_dead_row_release(workspace))
     released: set[int] = set()

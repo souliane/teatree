@@ -9,7 +9,12 @@ scratch checkouts that no surface named, and it took a person noticing.
 
 That is the shape the guard itself creates: a reaper correctly refuses to remove
 a checkout holding work, and a permanently-kept checkout looks exactly like a
-legitimately busy one. Age is what separates them, so age is what this reports.
+legitimately busy one. Age is what separates them, so age is what this reports —
+and specifically ``first_captured_at``, never ``captured_at``. The capture pass
+re-runs on every non-dry-run sweep over every kept checkout, so the last-capture
+stamp is reset continuously and an age built on it reads zero forever on exactly
+the host that sweeps most: a surface that always says "just now" reports nothing
+at all.
 """
 
 from datetime import timedelta
@@ -36,7 +41,7 @@ def check_unshipped_work() -> bool:
     from teatree.core.models import UnshippedWorkRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     try:
-        records = list(UnshippedWorkRecord.objects.order_by("captured_at"))
+        records = list(UnshippedWorkRecord.objects.order_by("first_captured_at"))
     except Exception as exc:  # noqa: BLE001 — a doctor check must never crash the run
         typer.echo(
             f"WARN  Unshipped-work capture UNVERIFIED: the record ledger could not be read "
@@ -47,12 +52,13 @@ def check_unshipped_work() -> bool:
         return True
     now = timezone.now()
     typer.echo(
-        f"WARN  {len(records)} checkout(s) hold captured unshipped work, oldest {_age(now - records[0].captured_at)} "
-        "old — recorded before any reaper could act on them, and still unshipped. Nothing reaps them, so they "
-        "stay until someone decides. Recover one with t3 <overlay> workspace salvage."
+        f"WARN  {len(records)} checkout(s) hold captured unshipped work, oldest "
+        f"{_age(now - records[0].first_captured_at)} old — recorded before any reaper could act on them, and still "
+        "unshipped. Nothing reaps them, so they stay until someone decides. Recover one with "
+        "t3 <overlay> workspace salvage."
     )
     for record in records[:_LISTED]:
-        typer.echo(f"      {_describe(record, age=_age(now - record.captured_at))}")
+        typer.echo(f"      {_describe(record, age=_age(now - record.first_captured_at))}")
     if len(records) > _LISTED:
         typer.echo(f"      … and {len(records) - _LISTED} more (t3 <overlay> workspace emit lists every one).")
     return True
