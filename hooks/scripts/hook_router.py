@@ -537,7 +537,7 @@ def _loop_auto_load_active(session_id: str) -> bool:
 
 def _is_teatree_skill(name: str) -> bool:
     normalized = normalize_skill_name(name)
-    return normalized in {"t3:teatree", "teatree"}
+    return normalized in {"t3:interactive", "interactive"}
 
 
 def _bare_skill_segment(name: str) -> str:
@@ -545,7 +545,7 @@ def _bare_skill_segment(name: str) -> str:
 
     ``build_requires_index`` keys every entry (and its ``requires:`` members)
     by the bare skill-directory name, so a qualified Skill-tool token like
-    ``t3:dogfooding-teatree`` must be mapped DOWN to ``dogfooding-teatree`` to match
+    ``t3:dogfooding`` must be mapped DOWN to ``dogfooding`` to match
     an index entry and resolve its ``requires:`` closure.
     """
     return name.rstrip("/").removesuffix("/SKILL.md").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
@@ -555,7 +555,7 @@ def _skill_load_activates_teatree(skills: list[str]) -> bool:
     """Does loading *skills* opt the session into teatree (directly or via requires:)?
 
     Resolves the ``requires:`` closure against a bare-mapped copy of the input
-    so a qualified Skill-tool token (``t3:dogfooding-teatree``) expands the same as
+    so a qualified Skill-tool token (``t3:dogfooding``) expands the same as
     its bare InstructionsLoaded spelling — the trigger index is bare-keyed. The
     bare mapping is scoped to this detection only; the recorded ``.skills``
     closure keeps its own resolution + canonicalization contract.
@@ -655,7 +655,7 @@ def handle_user_prompt_submit(data: dict) -> None:
     # teatree/t3: skill loaded) gets NO skill suggestion, NO ``.pending`` write,
     # and NO T3 CLI reminder. ``.pending`` stays empty above, so the PreToolUse
     # skill-loading gate never blocks (never-lockout). The owner opts in via
-    # ``/teatree`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
+    # ``/t3:interactive`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
     if not _teatree_engaged(session_id):
         return
 

@@ -84,4 +84,4 @@ class TestSentryToolCalls(TestCase):
 
         sentry_tools = [tool for name, tool in tools.items() if name.startswith("sentry_")]
         assert len(sentry_tools) == 4
-        assert all(tool.annotations and tool.annotations.readOnlyHint for tool in sentry_tools)
+        assert all(tool.annotations and tool.annotations.read_only_hint for tool in sentry_tools)

@@ -5,11 +5,10 @@
 #1094 dedup + #960 on-behalf + review-state gate chain), and ``slack_react``
 routes through :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` — the
 single colleague-surface Slack egress owner (send-proxy + on-behalf gate +
-notify receipt). Each tool is exercised through ``FastMCP.call_tool`` so the
+notify receipt). Each tool is exercised through ``MCPServer.call_tool`` so the
 gates fire identically over MCP.
 """
 
-import json
 import sys
 from typing import Any
 from unittest.mock import patch
@@ -23,11 +22,7 @@ from teatree.core.gates.review_request_guard import GuardTarget
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
 from teatree.mcp.write_tool_run import _last_json_object, run_command, run_emitting_command
-
-
-def _payloads(result: Any) -> list[Any]:
-    blocks = result[0] if isinstance(result, tuple) else result
-    return [json.loads(block.text) for block in blocks if getattr(block, "text", None) is not None]
+from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
@@ -138,7 +133,7 @@ class TestJsonEmittingCommandHelpers(TestCase):
                 stderr.write("refused: not clear")
             raise SystemExit(2)
 
-        # FastMCP only converts Exception (not BaseException) — run_command must
+        # MCPServer only converts Exception (not BaseException) — run_command must
         # re-raise the SystemExit as a plain RuntimeError carrying the stderr message.
         with (
             patch("teatree.mcp.write_tool_run.call_command", side_effect=_boom),

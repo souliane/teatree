@@ -39,7 +39,7 @@ AUTOLOAD_FROM_DEFAULT = "default"
 AUTOLOAD_UNREADABLE = "unreadable"
 
 TEATREE_NOT_ACTIVE_ADVISORY = (
-    "teatree is installed but not active in this session — run /teatree to start it "
+    "teatree is installed but not active in this session — run /t3:interactive to start it "
     "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
 )
 
@@ -52,7 +52,7 @@ TEATREE_SETTINGS_UNREADABLE_ADVISORY = (
     "auto-start and every cold-hook gate is running on its built-in default rather "
     "than your configuration. This is a broken install, not an opt-out — run "
     "`t3 doctor check` to diagnose (typically the hook's interpreter cannot import "
-    "teatree). /teatree still starts this session manually."
+    "teatree). /t3:interactive still starts this session manually."
 )
 
 

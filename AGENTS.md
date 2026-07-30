@@ -12,6 +12,18 @@ These are the owner's standing directives. Where anything else in this repo conf
 4. **Checks and gates are a safety net** for whatever could not be properly ENFORCED. They catch what the design failed to prevent; they are not the design.
 5. **The factory requires as little human intervention as possible.** Every question asked of the owner is a cost — remove its cause where you can.
 6. **The factory is RESILIENT: it auto-repairs and auto-improves itself.** A failure that needs a human to notice it is an unfinished failure.
+7. **The factory is RELIABLE.** It does the same thing every time, and what it verifies is what it runs. A green check that proves a different environment than production is not a check — pin the versions, run the real path, and make the surface that ships the surface that was tested. Flakiness is a defect, not a condition to retry around.
+8. **No known gap outlives the PR that revealed it.** A gap an agent becomes aware of that concerns what it is working on is closed in the SAME pull request. No follow-up issue, no "phase 2", no `TODO`, no deferral to the next ticket. Filing a gap you could have fixed is not progress — it is the work, moved.
+9. **One phase, one PR per repository.** A plan has exactly one phase, and implements EVERYTHING in at most one PR per repo it touches. Do not propose staged rollouts, phase 1/2/3 sequencing, or a "foundation now, rest later" shape — if it is in the plan, it ships in that single PR.
+10. **An agent terminates only when its knowledge is fully implemented.** On finishing, everything the agent knows needs doing is done — 100%, by that agent. Nothing understood is handed to somebody else, to a future session, or to the owner. "Out of scope" is not a place to put work you already know how to do.
+11. **The owner's attention is the scarcest resource in the factory.** Assume the owner never reads Claude Code messages, and reads Slack only when forced to. Volume is what makes that true: every extra message lowers the odds the one that matters is read. So raise only what genuinely cannot be decided without a human, and decide and deliver everything else in silence.
+
+Read 8, 9 and 10 together — they are one requirement seen at three moments. 9 is completeness at plan time, 8 at implementation time, 10 at exit. Each exists because the other two are evaded the same way: by naming known work "later". There is no later.
+
+**What 8-10 bind — and what they do not.** They bind *deferral*. They do not widen scope, and they grant no authority:
+
+- **Scope.** They reach what the change in front of you touches — what it leaves broken, half-done, or contradicted. A gap uncovered while closing one is in scope only if it sits on that same surface; past it, name the finding in the PR body and stop. "Everything the agent knows needs doing" means everything in scope, not everything it noticed. Closing a gap must terminate, so the surface is the bound.
+- **Authority.** Maker is still not checker: a reviewer reports what it finds and never fixes it (§ "Reused-ticket attestation" below; `skills/review/SKILL.md`, `skills/ship/SKILL.md` § "Merging is the §17.4 keystone transition", `skills/wip/SKILL.md` § "Hard rails parallelization must not break"). Every recorded approval gate still holds — issue creation and plan/memory files (both below), remote-DB writes, on-behalf and live posts, review requests, merges, the E2E bypass. Evals, tests and the ship gates are never skipped to satisfy a principle. An agent stopped at a gate has finished by asking; "do it now" is not consent.
 
 Read 3 and 4 together, and mind *who acts*:
 
@@ -61,8 +73,9 @@ It provides:
 src/teatree/           Python package (the Django app + CLI)
   cli/                 Typer CLI package — the `t3` entry point
   config.py            settings resolution (DB ConfigSetting store), overlay discovery
-  skill_loading.py     Skill selection policy (phase → skills, companion resolution)
-  skill_deps.py        Transitive dependency and companion resolution
+  skill_support/       Skill selection policy (`loading.py` — phase → skills, cwd detection),
+                       transitive `requires` / soft `companions` resolution (`deps.py`),
+                       and the `agents/*.md` frontmatter reader (`agent_declarations.py`)
   core/                Django app: models, managers, views, selectors, management commands
     models/            Model package — Ticket/Worktree/Task/PullRequest (FSM) + Session, TaskAttempt, TicketTransition, etc.
     selectors/         Selector functions (no domain logic in views)

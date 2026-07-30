@@ -49,7 +49,7 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
 This module is a top-level Typer group reached through the typer runner
 directly (sibling of ``t3 setup`` / ``t3 doctor``), so it raises
 ``typer.Exit(code=N)`` — *not* ``SystemExit`` (which is for ``TyperCommand``
-groups reached via Django ``call_command``; see ``skills/teatree`` § "CLI exit
+groups reached via Django ``call_command``; see ``skills/internals`` § "CLI exit
 codes").  Precedent: ``cli/setup/clone.py`` ``validate_repo`` → ``raise typer.Exit``.
 """
 

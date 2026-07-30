@@ -16,7 +16,6 @@ never ship silently MCP-settable — the classification MUST be made deliberatel
 """
 
 import dataclasses
-import json
 from fnmatch import fnmatch
 from typing import Any
 
@@ -28,6 +27,7 @@ from teatree.config import SAFETY_POSTURE_KEYS, UserSettings
 from teatree.core.models import ConfigSetting
 from teatree.mcp import build_server, write_tools
 from teatree.mcp.write_tools import MCP_SETTABLE_OK, refuse_reason
+from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
 # The delegation / authorization / fail-closed-boundary NAME shapes. Deliberately BROAD
 # (name-shaped) so the walk over-captures — every match must then be EXPLICITLY sorted
@@ -70,11 +70,6 @@ def _delegation_shaped_fields() -> set[str]:
 def _unclassified(safety: frozenset[str], settable_ok: frozenset[str]) -> set[str]:
     """Delegation-shaped fields in NEITHER the refuse set NOR the reviewed allowlist."""
     return {name for name in _delegation_shaped_fields() if name not in safety and name not in settable_ok}
-
-
-def _payloads(result: Any) -> list[Any]:
-    blocks = result[0] if isinstance(result, tuple) else result
-    return [json.loads(block.text) for block in blocks if getattr(block, "text", None) is not None]
 
 
 def _call(tool: str, args: dict[str, Any]) -> Any:

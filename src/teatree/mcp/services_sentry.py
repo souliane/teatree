@@ -12,7 +12,7 @@ declaring overlay with a configured ``sentry_org`` (token via the
 from typing import TYPE_CHECKING, Any
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -22,7 +22,7 @@ from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 if TYPE_CHECKING:
     from teatree.core.backend_registry import SentryReadClient
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 INSTRUCTIONS = (
     "- sentry_top_issues(project, limit): the most frequent unresolved Sentry "
@@ -61,7 +61,7 @@ async def _sentry_projects() -> list[dict[str, Any]]:
     return await sync_to_async(lambda: _client().list_projects(), thread_sensitive=True)()
 
 
-def register(server: FastMCP) -> None:
+def register(server: MCPServer) -> None:
     server.add_tool(_sentry_top_issues, name="sentry_top_issues", annotations=_READ_ONLY)
     server.add_tool(_sentry_issue_get, name="sentry_issue_get", annotations=_READ_ONLY)
     server.add_tool(_sentry_issue_events, name="sentry_issue_events", annotations=_READ_ONLY)

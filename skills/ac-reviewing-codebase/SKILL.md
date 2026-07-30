@@ -54,7 +54,7 @@ You run **shell-enabled** (`read_file`/`search_files`/`shell`/`web` — the same
 - Fallback chain that hides the primary failure
 - List/fetch reads only the first page (silent truncation)
 
-Re-read `docs/generated/antipattern-catalog.md` at review time rather than trusting the list above — the catalog is the source of truth and grows. For each judgement entry, sample across the tree (you do not need to read every file; prioritize modules that changed since the last review — see § 3) and check whether the anti-pattern's `preferred_pattern` is actually followed. File a ticket per confirmed instance (not per entry scanned) using the normal ticket pipeline — do not fix inline; this is a review pass, not a fix pass. Reference the catalog entry id in the ticket so the fixer has the anti-pattern/preferred-pattern pair without re-deriving it.
+Re-read `docs/generated/antipattern-catalog.md` at review time rather than trusting the list above — the catalog is the source of truth and grows. For each judgement entry, sample across the tree (you do not need to read every file; prioritize modules that changed since the last review — see § 3) and check whether the anti-pattern's `preferred_pattern` is actually followed. File a ticket per confirmed instance (not per entry scanned) using the normal ticket pipeline — do not fix inline; this is a review pass, not a fix pass. Reference the catalog entry id in the ticket so the fixer has the anti-pattern/preferred-pattern pair without re-deriving it. Filing is the whole action here, and `AGENTS.md` First Principles 8-10 do not turn it into a deferral: those bind the surface a *change* touches, and this pass authors no change — maker is not checker, so fixing what you reviewed is the one thing this pass may not do. Each ticket still needs the owner's approval before it is created (`AGENTS.md` § "Issue Creation"); present the batch and let them decide.
 
 ### 2. Check BLUEPRINT.md tightness and staleness
 
@@ -66,7 +66,7 @@ You do not have unlimited budget to re-read the entire tree every cadence. Scope
 
 ### 4. File findings through the normal pipeline; never fix inline
 
-This review produces tickets, not commits. For each confirmed finding (catalog anti-pattern instance or BLUEPRINT staleness), file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later implementation session does not have to re-derive your reasoning. Do not batch everything into one mega-issue; one finding (or one tightly-related cluster) per ticket, same discipline as `t3:dogfooding-teatree`'s "dedupe aggressively, one root cause per ticket" rule.
+This review produces tickets, not commits. For each confirmed finding (catalog anti-pattern instance or BLUEPRINT staleness), file a normal GitHub issue through the standard pipeline (see `skills/platforms/SKILL.md` for the mechanics) with enough detail — file:line, the catalog entry id if applicable, expected vs actual — that a later implementation session does not have to re-derive your reasoning. Do not batch everything into one mega-issue; one finding (or one tightly-related cluster) per ticket, same discipline as `t3:dogfooding`'s "dedupe aggressively, one root cause per ticket" rule.
 
 ## What NOT to do
 

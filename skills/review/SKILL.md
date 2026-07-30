@@ -124,7 +124,7 @@ After verifying repo rules, **check the full file** (not just changed lines) of 
    - Module-level function count and justification
    - God-module detection (unrelated concerns in one file)
    - Complexity rule suppressions in `pyproject.toml` — any `C901`/`PLR09xx` per-file-ignores beyond the project's boilerplate baseline are findings
-3. **When a threshold is crossed**, either refactor to comply or create a ticket for the debt — do not suppress the lint rule.
+3. **When a threshold is crossed**, never suppress the lint rule. On **your own** change, refactor to comply in this same PR — the module is one this diff already touches, so `AGENTS.md` First Principles 8-10 put the fix here, not in a follow-up ticket. When reviewing **someone else's** change, post it as a finding and leave the fix to the author (maker ≠ checker).
 4. **Check `pyproject.toml` per-file-ignores** for the touched files. If any suppress complexity rules that are not in the project's boilerplate baseline, flag them as findings.
 
 This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
@@ -492,6 +492,8 @@ A `// TODO`, `# TODO`, `/* TODO */`, `// FIXME`, `# FIXME`, `// XXX`, `# XXX`, `
 `t3 review post-comment` and `post-draft-note` enforce this deterministically via `src/teatree/cli/review/todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
 
 Failure mode this prevents: re-asking a colleague to do work they have explicitly deferred makes the reviewer (and the user, whose identity posts on-behalf) look unable to read code.
+
+**Scope — this is a reviewer rule, not a licence to leave one.** It governs how you treat *another author's* deferral on *their* MR: their scope decision is theirs, and re-litigating it in a blocker is the failure above. It says nothing about the work you author yourself, where `AGENTS.md` First Principle 8 forbids leaving a `TODO`/"follow-up"/"out of scope" marker at all — self-review catches it before the diff leaves your hands. The two never collide, because they never apply to the same author.
 
 **Step 3 — Post Draft Review Comments (babysit tier):**
 

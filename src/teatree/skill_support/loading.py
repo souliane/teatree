@@ -73,6 +73,23 @@ _FASTAPI_DEPENDENCY_RE = re.compile(r'(?:^|["\'])fastapi[>=<~\[]', re.IGNORECASE
 # summary (#1368).
 FRAMEWORK_SKILL_NAMES = frozenset({"ac-django", "ac-python", "fastapi"})
 
+#: Teatree's own architecture + management-command rules. Keyed on the CHECKOUT
+#: rather than declared per agent: those rules matter on a teatree ticket and
+#: are noise on a customer ticket, and a dispatched worker runs in its ticket's
+#: worktree — so the checkout is what separates the two. Declaring it on
+#: ``agents/*.md`` instead would put it in every customer dispatch as well.
+INTERNALS_SKILL_NAME = "internals"
+
+#: The marker a teatree checkout is identified by. Present in the source tree
+#: and in any worktree of it, absent from a repo that merely depends on teatree.
+_INTERNALS_MARKER = Path("src") / "teatree" / "__init__.py"
+
+#: Skills the policy DETECTS rather than reads from the index. Absence from the
+#: index is normal ONLY for these — they ship outside this repo, so a missing
+#: entry is not drift. ``internals`` is deliberately EXCLUDED: it ships a
+#: SKILL.md here, so its absence from the index IS drift and must keep warning.
+_DETECTED_SKILL_NAMES = FRAMEWORK_SKILL_NAMES
+
 
 def _framework_skills_for_content(content: str) -> list[str]:
     if _DJANGO_DEPENDENCY_RE.search(content):
@@ -129,7 +146,7 @@ class SkillLoadingPolicy:
         resolved = resolve_requires(skills, skill_index)
         known = {str(e.get("skill", "")) for e in skill_index if e.get("skill")}
         for skill in resolved:
-            if skill not in known and skill not in FRAMEWORK_SKILL_NAMES:
+            if skill not in known and skill not in _DETECTED_SKILL_NAMES:
                 logger.warning("Required skill %r has no SKILL.md — continuing", skill)
         return resolved
 
@@ -313,6 +330,7 @@ class SkillLoadingPolicy:
             skill_path = str(overlay_skill_metadata.get("skill_path", "")).strip()
             if skill_path:
                 ordered.append(skill_path)
+        ordered.extend(self.detect_internals_skill(cwd))
         ordered.extend(self.detect_framework_skills(cwd))
         if overlay_in_scope and companion_skills:
             ordered.extend(s for s in companion_skills if isinstance(s, str) and s)
@@ -346,6 +364,20 @@ class SkillLoadingPolicy:
         if not patterns:
             return False
         return _matches_any_remote(cwd, patterns)
+
+    @staticmethod
+    def detect_internals_skill(cwd: Path) -> list[str]:
+        """``["internals"]`` when *cwd* sits in a teatree checkout, else ``[]``.
+
+        Scoped by the checkout so a customer ticket — whose worktree is the
+        customer's repo — never carries teatree's own architecture and
+        management-command rules, while a teatree ticket does, in the headless
+        lane as much as the interactive one.
+        """
+        for directory in [cwd, *cwd.parents]:
+            if (directory / _INTERNALS_MARKER).is_file():
+                return [INTERNALS_SKILL_NAME]
+        return []
 
     @staticmethod
     def detect_framework_skills(cwd: Path) -> list[str]:

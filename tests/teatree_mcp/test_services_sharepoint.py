@@ -84,4 +84,4 @@ class TestSharePointToolCalls(TestCase):
 
         sp_tools = [tool for name, tool in tools.items() if name.startswith("sharepoint_")]
         assert len(sp_tools) == 4
-        assert all(tool.annotations and tool.annotations.readOnlyHint for tool in sp_tools)
+        assert all(tool.annotations and tool.annotations.read_only_hint for tool in sp_tools)
