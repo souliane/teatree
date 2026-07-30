@@ -387,8 +387,8 @@ class _OnBehalfSettings:
     # Whether agent-driven review-request posting is BLOCKED for this overlay
     # (#2579). Resolved off the autonomy TIER by ``_apply_autonomy``: the
     # ``notify`` tier (collaborative/customer surface) sets it ``True`` so
-    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even though the
-    # collapse forces ``on_behalf_post_mode = immediate``; the ``full`` tier (solo
+    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even under an
+    # explicitly pinned ``on_behalf_post_mode = immediate``; the ``full`` tier (solo
     # tooling surface) leaves it ``False`` so review-request PROCEEDs; ``babysit``
     # keeps the default ``False`` and review-request follows ``on_behalf_post_mode``
     # like any other colleague-visible post. This is the customer-overlay

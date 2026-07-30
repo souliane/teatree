@@ -127,9 +127,11 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
 
     One mode-independent override sits above the table: when the resolved
     ``review_request_post_disabled`` is true, the single action
-    ``review_request_post`` BLOCKs regardless of ``on_behalf_post_mode`` — even
-    the ``IMMEDIATE`` value the autonomy collapse (``notify``/``full``) forces.
-    The autonomy TIER drives this (#2579): the ``notify`` tier resolves it true
+    ``review_request_post`` BLOCKs regardless of ``on_behalf_post_mode`` — even an
+    explicitly pinned ``IMMEDIATE``. No autonomy tier reaches the mode (#3895):
+    opening colleague egress is its own named opt-in, so an autonomous overlay
+    still BLOCKs here on the shipped ``DRAFT_OR_ASK`` before the flag is read.
+    The autonomy TIER drives the flag (#2579): the ``notify`` tier resolves it true
     (a collaborative/customer surface keeps a human in the merge loop and stops at
     "MR is mergeable + review-requestable", never auto-requesting review), while
     the ``full`` tier resolves it false (a solo tooling surface auto-requests). An
@@ -139,8 +141,8 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     settings = get_effective_settings()
     # Mode-independent override: review-request posting is BLOCKed when the
     # resolved ``review_request_post_disabled`` is true (the ``notify`` tier sets
-    # it, or the user pinned it), so this one action BLOCKs even when the autonomy
-    # collapse has forced ``on_behalf_post_mode = IMMEDIATE``. Scoped to
+    # it, or the user pinned it), so this one action BLOCKs even under an
+    # explicitly pinned ``on_behalf_post_mode = IMMEDIATE``. Scoped to
     # ``review_request_post`` — it never collapses any other action.
     if action == _REVIEW_REQUEST_POST_ACTION and settings.review_request_post_disabled:
         return OnBehalfVerdict.BLOCK

@@ -103,12 +103,12 @@ class Wip(StrEnum):
 
 
 class Autonomy(StrEnum):
-    """The single per-overlay trust switch collapsing the three user-approval gates.
+    """The single per-overlay trust switch collapsing the tier-governed approval gates.
 
     Tiers (``FULL`` > ``NOTIFY`` > ``BABYSIT``, default ``FULL``):
 
     *   :attr:`BABYSIT` — every approval gate keeps its own value; the user
-        stays in the loop on merges, answers, and colleague-visible posts.
+        stays in the loop on merges and answers.
         Review-request posting follows ``on_behalf_post_mode`` like any other
         colleague-visible post.
     *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
@@ -125,10 +125,13 @@ class Autonomy(StrEnum):
         tooling surface: the resolved ``review_request_post_disabled`` is ``False``
         so review-request proceeds.
 
-    Both autonomous tiers collapse the three gates, pin ``mode = auto``, and set
-    the resolved ``review_request_post_disabled`` off the tier (#2579, replacing
+    Both autonomous tiers collapse the tier-governed gates, pin ``mode = auto``, and
+    set the resolved ``review_request_post_disabled`` off the tier (#2579, replacing
     the deleted ``agent_review_request_disabled`` side flag) — see
-    :func:`_apply_autonomy`. An explicit per-gate value always wins. The
+    :func:`_apply_autonomy`. Two gates are deliberately outside that set, each its
+    own named opt-in no tier touches: ``require_human_approval_to_merge`` for review
+    before merge (#3630), and ``on_behalf_post_mode`` for speaking to a colleague
+    under the owner's own identity (#3895). An explicit per-gate value always wins. The
     safety floor (privacy/leak gate, cold-review with reviewer != maker,
     CI-green, not-draft, never-lockout, the SHA-bound audited keystone
     transition) is out of scope and never touched — under ``full`` the substrate
