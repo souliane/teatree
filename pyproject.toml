@@ -30,7 +30,7 @@ dependencies = [
   # (``teatree.eval.message_mapping`` maps only a ``ToolUseBlock``). 0.2.94
   # (claude CLI 2.1.19x) is the known-green build; any bump must be opened by
   # hand and re-verified against the metered eval lane (souliane/teatree#3125).
-  "claude-agent-sdk==0.2.94",
+  "claude-agent-sdk==0.2.128",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
