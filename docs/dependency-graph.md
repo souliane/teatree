@@ -65,6 +65,7 @@ graph TD
     teatree.core.managers --> teatree.core.modelkit
     teatree.core.managers --> teatree.core.models.errors
     teatree.core.managers --> teatree.core.loop_lease_manager
+    teatree.core.managers --> teatree.core.managers_inbound
     teatree.core.managers --> teatree.core.managers_issue_match
     teatree.core.managers --> teatree.core.managers_overlay
     teatree.core.managers --> teatree.core.managers_phase_cadence
@@ -382,6 +383,7 @@ graph TD
     teatree.core.repair_loop
     teatree.core.managers_overlay
     teatree.core.managers_task_claim
+    teatree.core.managers_inbound
     teatree.core.managers_issue_match
     teatree.core.managers_phase_cadence
     teatree.backends.errors
