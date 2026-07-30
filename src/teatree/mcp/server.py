@@ -1,4 +1,4 @@
-"""MCPServer server wiring for teatree's structured search + gate-preserving writes.
+"""MCP server wiring for teatree's structured search + gate-preserving writes.
 
 :func:`build_server` assembles a fresh :class:`~mcp.server.mcpserver.MCPServer`
 instance and registers the read tools (structured search over the internal

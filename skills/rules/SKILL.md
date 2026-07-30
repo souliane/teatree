@@ -741,7 +741,7 @@ Decision rubric (apply silently — don't narrate to the user):
 | **Small (≤ ~50 LOC, no architectural decisions)** | Bundle into the current PR. Skip the "Isolate Unrelated Fixes" rule from `t3:ship` — small fixes have lower scope-creep cost than coordination cost. |
 | **Medium (related domain, fits the current ticket's spirit)** | Still bundle if the PR title can fairly cover it (e.g., assorted shipping-flow bug fixes during a CLI refactor). Mention in the PR body so reviewers see it. |
 | **Large (architectural, cross-cutting, or genuinely orthogonal)** | Create a worktree + PR immediately, implement, ship. No new ticket. |
-| **Truly large work that cannot fit a session** | Still ship it — split the run, not the work. A ticket is a record of work in flight, never a place to leave work you already understand (`AGENTS.md` First Principles 7 and 9). |
+| **Truly large work that cannot fit a session** | Still ship it — split the run, not the work. A ticket is a record of work in flight, never a place to leave work you already understand (`AGENTS.md` First Principles 8 and 10). |
 
 **Only stop and ask when:**
 
@@ -751,15 +751,15 @@ Decision rubric (apply silently — don't narrate to the user):
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
 
-**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment / follow-up issue) rather than touching code another contributor owns; still fix anything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric.
+**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment, or an issue the user has approved) rather than touching code another contributor owns; still fix everything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric. This is not a deferral loophole and First Principles 8-10 do not override it: those principles bind the surface THIS change touches, and another contributor's unrelated code is not on it — flagging there is the complete action, not a postponement.
 
 **When genuinely unsure, ASK — never silently defer.** If the fix is borderline (small but truly orthogonal, or medium-sized but the current PR is already large), present three explicit options to the user via `AskUserQuestion`:
 
 1. **Fix right now and bundle into the current PR** (default — pick this unless reason not to)
-2. **Add to the session TODO list** (fix later this same session, before wrapping up)
-3. **File as a separate issue** (truly out-of-scope or would balloon the change)
+2. **Fix it before this PR ships** (same session, same PR — a session TODO entry, never a `TODO` marker left in the code)
+3. **Fix it in its own PR, now** (genuinely orthogonal — worktree + PR immediately, no new ticket)
 
-Use options 2 and 3 only when there is a concrete reason against option 1. Asking is acceptable; silently writing "worth filing later" and moving on is not.
+Options 2 and 3 need a concrete reason against option 1; none of the three is a deferral. If the finding is genuinely outside the surface this change touches, state it in the PR body as a finding and let the user decide whether it becomes an issue — `AGENTS.md` § "Issue Creation" forbids filing one without their approval, and First Principles 8-10 forbid filing one for work you could have done here. Asking is acceptable; silently writing "worth filing later" and moving on is not.
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 

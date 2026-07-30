@@ -4,7 +4,7 @@ Carved out of ``write_tools.py`` to hold that handler module under the 500-LOC
 module-health cap. Each runner invokes ``django.core.management.call_command``
 — the literal CLI code path every write handler routes through — and converts
 the CLI's ``SystemExit`` / ``typer.Exit`` primitive into a structured
-``RuntimeError`` so a MCPServer tool call is never crashed by it.
+``RuntimeError`` so an MCPServer tool call is never crashed by it.
 """
 
 import contextlib
@@ -55,7 +55,7 @@ def run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[
     ``SystemExit`` (0 for post/draft/suppress, 2 for refused). Capture stdout and
     return the parsed verdict — the ``action`` field carries the outcome, so the
     exit code is not needed. Surface stderr as a structured ``RuntimeError`` when
-    the command emitted no JSON (so a MCPServer tool call is never crashed by the
+    the command emitted no JSON (so an MCPServer tool call is never crashed by the
     ``SystemExit`` primitive the CLI uses).
     """
     out = io.StringIO()
