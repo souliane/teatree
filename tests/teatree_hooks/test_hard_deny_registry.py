@@ -19,6 +19,11 @@ _DENIED = [
     ),
     pytest.param("glab mr update 7 --reviewer alice", "self_reviewer_assign", id="reviewer-assign"),
     pytest.param("kill -9 4242", "raw_pid_kill", id="raw-pid-kill"),
+    pytest.param(
+        "until gh pr checks 1 | grep -q pass; do sleep 180; done",
+        "unbounded_wait",
+        id="unbounded-wait",
+    ),
 ]
 
 
@@ -32,7 +37,17 @@ def test_each_family_denies(command: str, expected_family: str) -> None:
     assert predicate(command) is not None
 
 
-@pytest.mark.parametrize("command", ["ls -la", "gh pr view 5", "git commit -m 'ok'", ""])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls -la",
+        "gh pr view 5",
+        "git commit -m 'ok'",
+        "",
+        # A wait with a deadline is legitimate on both lanes.
+        "timeout 900 bash -c 'until gh pr checks 1; do sleep 30; done'",
+    ],
+)
 def test_benign_commands_are_allowed(command: str) -> None:
     assert hard_deny_reason(command) is None
 
@@ -47,4 +62,5 @@ def test_registry_covers_every_named_family() -> None:
         "raw_review_post",
         "self_reviewer_assign",
         "raw_pid_kill",
+        "unbounded_wait",
     }

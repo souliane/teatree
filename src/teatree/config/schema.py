@@ -230,6 +230,7 @@ class TeatreeSettingsSchema(BaseSettings):
     gate_relaxation_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     gitlab_approval_scanner_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     handover_mirror_path: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
+    headless_max_turns: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     hook_fetch_titles: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     idle_stack_e2e_recent_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     idle_stack_idle_minutes: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

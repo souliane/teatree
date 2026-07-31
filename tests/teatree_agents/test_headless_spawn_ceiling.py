@@ -9,6 +9,7 @@ from django.test import TestCase
 
 from teatree.agents._headless_options import _build_options, resolve_spawn_ceiling
 from teatree.agents.subagent_ceiling import DEFAULT_SPAWN_CEILING, SPAWN_TOOL_MATCHER
+from teatree.config import UserSettings
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 
 
@@ -37,11 +38,13 @@ class TestBuildOptionsArmsTheCeiling(_Dispatch):
         assert second.hooks is not None
         assert first.hooks["PreToolUse"][0].hooks[0] is not second.hooks["PreToolUse"][0].hooks[0]
 
-    def test_the_sdk_max_turns_pin_is_left_alone(self) -> None:
-        # The ceiling bounds fan-out, not turns. Changing max_turns here would be a
-        # second, silent cap on a dimension this change did not measure.
+    def test_the_spawn_ceiling_does_not_move_the_turn_ceiling(self) -> None:
+        # The spawn ceiling bounds fan-out; the TURN ceiling is its own DB-home
+        # setting (``headless_max_turns``). Deriving one from the other would make a
+        # fan-out retune silently change a run's turn budget.
+        ConfigSetting.objects.set_value("subagent_spawn_ceiling", 3, scope="")
         options = _build_options(self._task("coding"), "ctx", phase="coding", skills=[])
-        assert options.max_turns == 0
+        assert options.max_turns == UserSettings().headless_max_turns
 
 
 class TestResolveSpawnCeiling(TestCase):

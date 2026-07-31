@@ -242,6 +242,20 @@ class _ModeHarnessSettings:
     # and never re-refuses a turn another Stop hook blocked; ``0`` disables it,
     # matching the ceilings above. Per-overlay overridable.
     envelope_stop_gate_refusals: int = 2
+    # Per-RUN turn ceiling pinned on the headless ``claude_sdk`` spawn
+    # (``ClaudeAgentOptions.max_turns`` via ``agents/_headless_options``). Cache-read
+    # cost is ``turns x context_size`` and each turn re-reads the run's whole context,
+    # so the turn count is the multiplier on a dispatch's bill — a dimension the
+    # wall-clock ``watchdog_max_runtime_seconds`` cannot see and the
+    # ``watchdog_max_turns`` ceiling reads only from COMPLETED attempts, never the
+    # in-flight one. The default clears a long healthy phase run with headroom while
+    # bounding a run that has stopped converging. Reaching it is NOT silent: the CLI
+    # ends the run with ``ResultMessage(subtype="error_max_turns")``, which
+    # ``agents/headless`` records FAILED naming this setting AND escalates to the owner
+    # (``agents/headless_truncation``), so the ceiling is raised deliberately rather
+    # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
+    # escape hatch, matching the ceilings above). Per-overlay overridable.
+    headless_max_turns: int = 250
 
 
 @dataclass

@@ -736,6 +736,18 @@ def _raw_pid_kill_allow(_ctx: GateContext) -> dict:
     return _bash("kill -0 4242")
 
 
+# block-unbounded-wait (PreToolUse Bash): an `until`/`while … sleep` with no
+# deadline denies; the same wait under a `timeout` wrapper allows.
+
+
+def _unbounded_wait_deny(_ctx: GateContext) -> dict:
+    return _bash("until gh pr checks 3882 | grep -q pass; do sleep 180; done")
+
+
+def _unbounded_wait_allow(_ctx: GateContext) -> dict:
+    return _bash("timeout 1800 bash -c 'until gh pr checks 3882 | grep -q pass; do sleep 180; done'")
+
+
 # block-secret-file-print (PreToolUse Bash): printing a credential file to the
 # transcript denies; capturing the value into a variable allows.
 
@@ -996,6 +1008,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_raw_pid_kill_deny,
         allow_input=_raw_pid_kill_allow,
+    ),
+    GateRow(
+        gate_id="block-unbounded-wait",
+        handler=router.handle_block_unbounded_wait,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_unbounded_wait_deny,
+        allow_input=_unbounded_wait_allow,
     ),
     GateRow(
         gate_id="block-secret-file-print",

@@ -42,7 +42,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # assistant text) moved into the turn_inspect sibling.
 # Lowered by #3810, which moved the SessionStart hand-off pickup into the
 # session_handover_pickup sibling.
-_CEILING_LOC = 4289
+# Lowered by #3882, which moved the Slack self-DM destination helpers
+# (tool-suffix + destination lookup) into the self_dm_destinations sibling.
+_CEILING_LOC = 4284
 
 
 def _count_loc(text: str) -> int:

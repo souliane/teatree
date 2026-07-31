@@ -300,8 +300,8 @@ class PydanticAiHarnessSession:
         A provider/run failure (:data:`_RUN_ERRORS`) ends the turn with an
         ``is_error`` :class:`~claude_agent_sdk.ResultMessage` instead of escaping as a
         raw exception, so the driver's own taxonomy —
-        :func:`teatree.agents.headless._limit_match` → ``park_or_rotate_on_limit``,
-        :func:`teatree.agents.headless._error_result_reason` → ``_record_failure`` —
+        :func:`teatree.agents.headless_failure_taxonomy.limit_match` → ``park_or_rotate_on_limit``,
+        :func:`teatree.agents.headless_failure_taxonomy.error_result_reason` → ``_record_failure`` —
         fires on this lane exactly as it does on the ``claude_sdk`` one, with no
         driver change and no transport special-casing.
         """
@@ -408,11 +408,11 @@ class PydanticAiHarnessSession:
         """A truthful terminal ``ResultMessage`` for a provider/run error (``is_error=True``).
 
         The SAME error-shaped envelope the claude_sdk lane yields, so the driver's
-        failure taxonomy (:func:`headless._limit_match` / ``_error_result_reason``)
+        failure taxonomy (:mod:`teatree.agents.headless_failure_taxonomy`)
         keys on ``is_error`` and classifies (or fails) it without special-casing the
         transport. ``api_error_status`` carries the HTTP status for a
         :class:`~pydantic_ai.exceptions.ModelHTTPError` (rendered by
-        ``_error_result_reason``), ``None`` otherwise.
+        ``error_result_reason``), ``None`` otherwise.
         """
         return ResultMessage(
             subtype=subtype,
