@@ -32,5 +32,5 @@ MINI_LOOP = MiniLoop(
     default_cadence_seconds=_CADENCE_SECONDS,
     build_jobs=_build_jobs,
     declared_reach=frozenset({LoopReach.INGRESS, LoopReach.EGRESS}),
-    determinism=LoopDeterminism.DETERMINISTIC,
+    determinism=LoopDeterminism.AI,
 )

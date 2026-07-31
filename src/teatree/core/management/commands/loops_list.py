@@ -25,24 +25,39 @@ from django_typer.management import TyperCommand
 
 from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState, LoopStatus
-from teatree.loops.base import LoopDeterminism, LoopReach
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
 from teatree.loops.registry import iter_loops
 
 _NEVER = "—"
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
+KNOWN_TAGS: frozenset[str] = frozenset(
+    [*(member.value for member in LoopReach), *(member.value for member in LoopDeterminism)]
+)
 _TAG_CHOICES = "|".join([*(member.value for member in LoopReach), *(member.value for member in LoopDeterminism)])
 
 
-def _tags_by_name() -> dict[str, tuple[str, ...]]:
-    """Each registered mini-loop's code-declared tags, keyed by its DB row name.
+def _loops_by_name() -> dict[str, MiniLoop]:
+    """The registered mini-loops, keyed by the name their DB row carries.
 
     A ``Loop`` row with no ``MINI_LOOP`` behind it (an operator-created row, a
-    retired loop's leftover) simply has no tags — the registry is the only source,
-    so nothing can render a classification the code does not declare.
+    retired loop's leftover) is absent here and renders no tags — the registry is
+    the only source, so nothing can show a classification the code does not declare.
     """
-    return {mini_loop.name: mini_loop.tags for mini_loop in iter_loops()}
+    return {mini_loop.name: mini_loop for mini_loop in iter_loops()}
+
+
+def _tags_of(mini_loop: MiniLoop | None) -> frozenset[str]:
+    return frozenset(mini_loop.tags) if mini_loop is not None else frozenset()
+
+
+def _validated_tags(requested: list[str] | None) -> frozenset[str]:
+    unknown = sorted(set(requested or ()) - KNOWN_TAGS)
+    if unknown:
+        message = f"unknown tag(s) {', '.join(unknown)} — choose from {_TAG_CHOICES}"
+        raise typer.BadParameter(message)
+    return frozenset(requested or ())
 
 
 def _effective_state(loop: Loop, status: LoopStatus) -> str:
@@ -96,13 +111,19 @@ def _preset_note(verdict: LoopVerdict | None) -> str:
     return f"  {tag} ({verdict.detail})"
 
 
-def _line(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None, tags: tuple[str, ...]) -> str:
+def _line(
+    loop: Loop,
+    status: LoopStatus,
+    now: dt.datetime,
+    verdict: LoopVerdict | None,
+    mini_loop: MiniLoop | None,
+) -> str:
     state = _effective_state(loop, status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(loop, status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
-    if tags:
-        line += f"  [{' '.join(tags)}]"
+    if mini_loop is not None and mini_loop.tags:
+        line += f"  [{' '.join(mini_loop.tags)}]"
     if loop.colleague_facing:
         line += "  away-gated"
     return line + _preset_note(verdict)
@@ -124,10 +145,9 @@ def _payload(
     status: LoopStatus,
     now: dt.datetime,
     verdict: LoopVerdict | None,
-    tags: tuple[str, ...],
+    mini_loop: MiniLoop | None,
 ) -> dict[str, Any]:
     next_at = loop.next_run_at()
-    determinisms = {member.value for member in LoopDeterminism}
     return {
         "name": loop.name,
         "enabled": loop.enabled,
@@ -140,9 +160,9 @@ def _payload(
         "next_run_at": next_at.isoformat() if next_at else "",
         "due": loop.is_due(now),
         "colleague_facing": loop.colleague_facing,
-        "reach": [tag for tag in tags if tag not in determinisms],
-        "determinism": next((tag for tag in tags if tag in determinisms), ""),
-        "tags": list(tags),
+        "reach": [member.value for member in LoopReach if mini_loop is not None and member in mini_loop.reach],
+        "determinism": mini_loop.determinism.value if mini_loop is not None and mini_loop.determinism else "",
+        "tags": list(mini_loop.tags) if mini_loop is not None else [],
         "effective_admitted": verdict.admitted if verdict is not None else None,
         "effective_layer": verdict.layer if verdict is not None else "base",
     }
@@ -161,9 +181,9 @@ class Command(TyperCommand):
         ] = None,
     ) -> None:
         now = timezone.now()
-        tags_by_name = _tags_by_name()
-        wanted = frozenset(tag or ())
-        loops = [row for row in Loop.objects.all() if wanted <= set(tags_by_name.get(row.name, ()))]
+        registered = _loops_by_name()
+        wanted = _validated_tags(tag)
+        loops = [row for row in Loop.objects.all() if wanted <= _tags_of(registered.get(row.name))]
         # One read of the LoopState control plane; an absent name → ENABLED default.
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
         # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
@@ -174,7 +194,7 @@ class Command(TyperCommand):
                 held.get(loop.name, LoopStatus.ENABLED),
                 now,
                 verdicts.get(loop.name),
-                tags_by_name.get(loop.name, ()),
+                registered.get(loop.name),
             )
             for loop in loops
         ]
@@ -186,7 +206,7 @@ class Command(TyperCommand):
                     held.get(loop.name, LoopStatus.ENABLED),
                     now,
                     verdicts.get(loop.name),
-                    tags_by_name.get(loop.name, ()),
+                    registered.get(loop.name),
                 )
             )
             description_line = _description_line(loop)

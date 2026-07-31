@@ -9,11 +9,13 @@ it registers a synthetic tagless loop and requires the guard to name it.
 
 The second lane is the one that stops a *lie*. ``deterministic`` is worth nothing
 if a loop that spawns an agent can carry it, so the declared value is cross-checked
-against the loop's real dispatch behaviour: the agent-routing signal kinds
-(``AGENT_BY_KIND``, the ``("agent", …)`` rows of ``MECHANICAL_BY_KIND``, the
-conditional handlers) and the agent-dispatched phase vocabulary, read out of the
-loop's own package and the scanner modules it actually wires this tick. A loop
-declaring ``deterministic`` while that evidence exists fails.
+against the loop's real dispatch behaviour — agent-routing signal kinds, ``phase=``
+arguments naming an agent-dispatched phase, and imports of a model-calling module,
+read out of the loop's own package and the scanner modules it actually wires this
+tick. A signal routed to a MECHANICAL executor is followed through that executor's
+import closure too, which is the only way ``ci_eval_heal`` is caught: nothing it
+names is an agent, and the headless turn lives two modules down its handler chain.
+A loop declaring ``deterministic`` while any of that evidence exists fails.
 """
 
 import importlib
@@ -38,6 +40,12 @@ from teatree.loops.seed import DEFAULT_LOOPS
 #: setting. The floor stops the cross-check going vacuously green if the
 #: evidence extractor stops finding anything.
 _MIN_DERIVED_AI_LOOPS = 10
+
+#: Anti-vacuity floors for the two enumerations the lanes read. Both are far
+#: below today's real sizes; they exist so an emptied registry or an emptied
+#: routing table cannot make a lane pass by having nothing to check.
+_MIN_REGISTERED_LOOPS = 20
+_MIN_VOCABULARY_TOKENS = 15
 
 
 def _stub_backend() -> OverlayBackends:
@@ -80,7 +88,7 @@ class LoopClassificationConformanceTestCase(TestCase):
         assert unclassified_loops(iter_loops()) == ()
 
     def test_registry_is_not_empty(self) -> None:
-        assert len(iter_loops()) > _MIN_DERIVED_AI_LOOPS
+        assert len(iter_loops()) >= _MIN_REGISTERED_LOOPS
 
     def test_rejects_a_loop_that_declares_nothing(self) -> None:
         tagless = MiniLoop(name="tagless", default_cadence_seconds=60, build_jobs=lambda **_: [])
@@ -146,7 +154,7 @@ class DeterministicClaimTestCase(TestCase):
     """A ``deterministic`` claim is cross-checked against real dispatch behaviour."""
 
     def test_agent_dispatch_vocabulary_is_populated(self) -> None:
-        assert len(agent_dispatch_vocabulary()) > _MIN_DERIVED_AI_LOOPS
+        assert len(agent_dispatch_vocabulary()) >= _MIN_VOCABULARY_TOKENS
 
     def test_no_deterministic_loop_reaches_an_agent(self) -> None:
         claimed_pure = [loop for loop in iter_loops() if loop.determinism is LoopDeterminism.DETERMINISTIC]
@@ -162,3 +170,13 @@ class DeterministicClaimTestCase(TestCase):
     def test_evidence_names_the_route_it_found(self) -> None:
         review = next(loop for loop in iter_loops() if loop.name == "review")
         assert "reviewer_pr.new_sha" in _evidence(review)
+
+    def test_evidence_follows_a_mechanical_executor_to_the_model_it_spawns(self) -> None:
+        """ci_eval_heal routes to a MECHANICAL zone whose executor runs a headless turn.
+
+        Nothing in the loop package or its scanner names an agent — the model call
+        lives two modules down the executor's import chain, which is exactly the
+        shape a dispatch-table-only check would call deterministic.
+        """
+        ci_eval_heal = next(loop for loop in iter_loops() if loop.name == "ci_eval_heal")
+        assert "claude_agent_sdk" in _evidence(ci_eval_heal)

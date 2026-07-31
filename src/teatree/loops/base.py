@@ -138,10 +138,6 @@ class MiniLoop:
         return declared
 
     @property
-    def colleague_facing(self) -> bool:
-        return LoopReach.COLLEAGUE in self.reach
-
-    @property
     def tags(self) -> tuple[str, ...]:
         reached = tuple(member.value for member in LoopReach if member in self.reach)
         if self.determinism is None:
