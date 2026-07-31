@@ -6,7 +6,7 @@ Issue intake used to live here too; #3634 folded it into the ONE unified
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -34,4 +34,6 @@ MINI_LOOP = MiniLoop(
     name="followup",
     default_cadence_seconds=600,  # 10m — intake is not bursty
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.COLLEAGUE}),
+    determinism=LoopDeterminism.DETERMINISTIC,
 )

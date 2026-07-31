@@ -8,7 +8,7 @@ loop-table fan-out drives the hourly cadence off the DB row, like every other lo
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -41,4 +41,6 @@ MINI_LOOP = MiniLoop(
     name=DM_SWEEP_LOOP_NAME,
     default_cadence_seconds=DM_SWEEP_DEFAULT_CADENCE_SECONDS,
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS}),
+    determinism=LoopDeterminism.DETERMINISTIC,
 )

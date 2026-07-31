@@ -16,7 +16,7 @@ claimed issue, issuing no ``MergeClear`` and gaining no merge authority.
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -45,4 +45,6 @@ MINI_LOOP = MiniLoop(
     name="issue_implementer",
     default_cadence_seconds=3600,  # 1h tick rate — matches issue_implementer_cadence_hours default
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS}),
+    determinism=LoopDeterminism.AI,
 )

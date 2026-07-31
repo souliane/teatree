@@ -22,6 +22,10 @@ def _prompt(name: str = "demo-prompt") -> Prompt:
     return prompt
 
 
+def _loop_names(payload: str) -> set[str]:
+    return {entry["name"] for entry in json.loads(payload)["loops"]}
+
+
 def _run(*args: str) -> str:
     # The emit() seam sends JSON to stdout and the human view to stderr; exactly
     # one channel is populated per invocation, so their concatenation is the output.
@@ -56,15 +60,49 @@ class TestLoopsListText(django.test.TestCase):
         assert "last —" in line
         assert "next due" in line
 
-    def test_colleague_facing_loop_is_tagged(self) -> None:
+    def test_away_gated_loop_is_marked(self) -> None:
         Loop.objects.create(name="demo-cf", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-cf"))
-        assert "colleague-facing" in line
+        assert "away-gated" in line
 
-    def test_non_colleague_facing_loop_is_not_tagged(self) -> None:
+    def test_loop_the_away_gate_ignores_is_not_marked(self) -> None:
         Loop.objects.create(name="demo-internal", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-internal"))
-        assert "colleague-facing" not in line
+        assert "away-gated" not in line
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListTags(django.test.TestCase):
+    """The code-declared reach/determinism tags render, and filter, from the registry."""
+
+    def test_renders_the_declared_tags_of_a_colleague_reaching_ai_loop(self) -> None:
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("review"))
+        assert "[ingress egress colleague ai]" in line
+
+    def test_renders_deterministic_for_a_local_only_loop(self) -> None:
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("db_backup"))
+        assert "[deterministic]" in line
+
+    def test_a_row_with_no_registered_loop_renders_no_tags(self) -> None:
+        Loop.objects.create(name="demo-unregistered", delay_seconds=60, prompt=_prompt())
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-unregistered"))
+        assert "[" not in line
+
+    def test_tag_filter_keeps_only_matching_loops(self) -> None:
+        names = _loop_names(_run("--json", "--tag", "ai"))
+        assert "review" in names
+        assert "db_backup" not in names
+
+    def test_tag_filters_compose_as_and(self) -> None:
+        names = _loop_names(_run("--json", "--tag", "ai", "--tag", "colleague"))
+        assert "review" in names
+        assert "tickets" not in names
+
+    def test_egress_filter_catches_every_colleague_loop(self) -> None:
+        colleague = _loop_names(_run("--json", "--tag", "colleague"))
+        egress = _loop_names(_run("--json", "--tag", "egress"))
+        assert colleague
+        assert colleague <= egress
 
 
 @django.test.override_settings(USE_TZ=True)
@@ -127,6 +165,13 @@ class TestLoopsListJson(django.test.TestCase):
         payload = json.loads(_run("--json"))
         demo = next(e for e in payload["loops"] if e["name"] == "demo-json-cf")
         assert demo["colleague_facing"] is True
+
+    def test_json_carries_the_declared_reach_and_determinism(self) -> None:
+        payload = json.loads(_run("--json"))
+        review = next(e for e in payload["loops"] if e["name"] == "review")
+        assert review["reach"] == ["ingress", "egress", "colleague"]
+        assert review["determinism"] == "ai"
+        assert review["tags"] == ["ingress", "egress", "colleague", "ai"]
 
 
 @django.test.override_settings(USE_TZ=True)

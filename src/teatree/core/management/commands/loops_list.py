@@ -2,8 +2,10 @@
 
 Backs the read-only ``t3 loops list``. Reads :class:`teatree.core.models.Loop`
 rows and prints each loop's name, effective admitted state, cadence (interval or
-daily schedule), last run, next-due, and a ``[colleague-facing]`` tag (#2904)
-when the row is gated off during any availability-deferring mode. The state
+daily schedule), last run, next-due, the loop's code-declared ``[reach … determinism]``
+tags (#3959), and an ``away-gated`` marker when the row is gated off during any
+availability-deferring mode. ``--tag`` narrows the listing to the loops carrying
+every named tag. The state
 column folds a :class:`teatree.core.models.LoopState` pause/disable hold into the
 row's ``enabled`` flag (#3117) — ``t3 loop pause`` holds a loop WITHOUT flipping
 ``Loop.enabled``, so a pause is now confirmable at a glance. ORM access lives in
@@ -23,11 +25,24 @@ from django_typer.management import TyperCommand
 
 from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState, LoopStatus
+from teatree.loops.base import LoopDeterminism, LoopReach
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
+from teatree.loops.registry import iter_loops
 
 _NEVER = "—"
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
+_TAG_CHOICES = "|".join([*(member.value for member in LoopReach), *(member.value for member in LoopDeterminism)])
+
+
+def _tags_by_name() -> dict[str, tuple[str, ...]]:
+    """Each registered mini-loop's code-declared tags, keyed by its DB row name.
+
+    A ``Loop`` row with no ``MINI_LOOP`` behind it (an operator-created row, a
+    retired loop's leftover) simply has no tags — the registry is the only source,
+    so nothing can render a classification the code does not declare.
+    """
+    return {mini_loop.name: mini_loop.tags for mini_loop in iter_loops()}
 
 
 def _effective_state(loop: Loop, status: LoopStatus) -> str:
@@ -81,13 +96,15 @@ def _preset_note(verdict: LoopVerdict | None) -> str:
     return f"  {tag} ({verdict.detail})"
 
 
-def _line(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None) -> str:
+def _line(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None, tags: tuple[str, ...]) -> str:
     state = _effective_state(loop, status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(loop, status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
+    if tags:
+        line += f"  [{' '.join(tags)}]"
     if loop.colleague_facing:
-        line += "  [colleague-facing]"
+        line += "  away-gated"
     return line + _preset_note(verdict)
 
 
@@ -102,8 +119,15 @@ def _description_line(loop: Loop) -> str | None:
     return f"      {loop.description}"
 
 
-def _payload(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None) -> dict[str, Any]:
+def _payload(
+    loop: Loop,
+    status: LoopStatus,
+    now: dt.datetime,
+    verdict: LoopVerdict | None,
+    tags: tuple[str, ...],
+) -> dict[str, Any]:
     next_at = loop.next_run_at()
+    determinisms = {member.value for member in LoopDeterminism}
     return {
         "name": loop.name,
         "enabled": loop.enabled,
@@ -116,6 +140,9 @@ def _payload(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerd
         "next_run_at": next_at.isoformat() if next_at else "",
         "due": loop.is_due(now),
         "colleague_facing": loop.colleague_facing,
+        "reach": [tag for tag in tags if tag not in determinisms],
+        "determinism": next((tag for tag in tags if tag in determinisms), ""),
+        "tags": list(tags),
         "effective_admitted": verdict.admitted if verdict is not None else None,
         "effective_layer": verdict.layer if verdict is not None else "base",
     }
@@ -128,19 +155,40 @@ class Command(TyperCommand):
         self,
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit the loops as JSON.")] = False,
+        tag: Annotated[
+            list[str] | None,
+            typer.Option("--tag", help=f"Keep only loops carrying this tag ({_TAG_CHOICES}); repeatable, ANDed."),
+        ] = None,
     ) -> None:
         now = timezone.now()
-        loops = list(Loop.objects.all())
+        tags_by_name = _tags_by_name()
+        wanted = frozenset(tag or ())
+        loops = [row for row in Loop.objects.all() if wanted <= set(tags_by_name.get(row.name, ()))]
         # One read of the LoopState control plane; an absent name → ENABLED default.
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
         # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
         verdicts = {verdict.name: verdict for verdict in effective_verdicts(now)}
         payload = [
-            _payload(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)) for loop in loops
+            _payload(
+                loop,
+                held.get(loop.name, LoopStatus.ENABLED),
+                now,
+                verdicts.get(loop.name),
+                tags_by_name.get(loop.name, ()),
+            )
+            for loop in loops
         ]
         human_lines = ["loops:"]
         for loop in loops:
-            human_lines.append(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)))
+            human_lines.append(
+                _line(
+                    loop,
+                    held.get(loop.name, LoopStatus.ENABLED),
+                    now,
+                    verdicts.get(loop.name),
+                    tags_by_name.get(loop.name, ()),
+                )
+            )
             description_line = _description_line(loop)
             if description_line is not None:
                 human_lines.append(description_line)

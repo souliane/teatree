@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -26,4 +26,6 @@ MINI_LOOP = MiniLoop(
     name="dispatch",
     default_cadence_seconds=300,
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.COLLEAGUE}),
+    determinism=LoopDeterminism.AI,
 )

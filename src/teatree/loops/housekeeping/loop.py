@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -40,4 +40,6 @@ MINI_LOOP = MiniLoop(
     name="housekeeping",
     default_cadence_seconds=3600,  # 1h — git pulls are not user-visible
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.COLLEAGUE}),
+    determinism=LoopDeterminism.DETERMINISTIC,
 )
