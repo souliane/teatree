@@ -47,6 +47,7 @@ __all__ = [
     "ActionKind",
     "ActionPayload",
     "DispatchAction",
+    "conditional_dispatch_kinds",
     "dispatch",
 ]
 
@@ -63,6 +64,18 @@ _CONDITIONAL_HANDLERS: dict[str, "Callable[[ScanSignal], list[DispatchAction] | 
     "incoming_event.task_needed": dispatch_incoming_task,
     "codex_review.dispatch": codex_review_dispatch,
 }
+
+
+def conditional_dispatch_kinds() -> frozenset[str]:
+    """The kinds routed by a payload-conditional handler rather than the generic tables.
+
+    Every one of these reaches an agent on at least one payload — the phase
+    sub-agent for ``pending_task``, the reviewer for a PR-bearing Slack message or
+    a flagged sweep, the answerer for an inbound event — so
+    :mod:`teatree.loops.classification` reads this as agent-dispatch evidence
+    alongside the two static tables.
+    """
+    return frozenset(_CONDITIONAL_HANDLERS)
 
 
 def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:

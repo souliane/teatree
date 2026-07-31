@@ -15,7 +15,7 @@ command, not through the scanner-signal dispatch pipeline.
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -37,4 +37,6 @@ MINI_LOOP = MiniLoop(
     build_jobs=_build_jobs,
     off_live_tick=True,
     off_tick_command=("outer", "tick"),
+    declared_reach=frozenset({LoopReach.COLLEAGUE}),
+    determinism=LoopDeterminism.AI,
 )

@@ -698,6 +698,12 @@ table.dash th.num {
   display: flex;
   gap: var(--sp-1);
 }
+.row-tags {
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  margin: 2px 0;
+}
 
 /* --- Toolbars (danger form / debug commands) --- */
 .toolbar {

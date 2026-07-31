@@ -9,7 +9,7 @@ per-item backoff granularity (mirrors the resource-pressure mini-loop).
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -34,4 +34,6 @@ MINI_LOOP = MiniLoop(
     default_cadence_seconds=_REGISTRY_CADENCE_FLOOR,
     cadence_is_floor=True,
     build_jobs=_build_jobs,
+    declared_reach=frozenset(),
+    determinism=LoopDeterminism.DETERMINISTIC,
 )

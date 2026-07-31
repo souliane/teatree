@@ -40,6 +40,23 @@ class LoopRowsTestCase(TestCase):
         assert "Loop.enabled off" in row.deciding_layer
 
 
+class LoopRowTagsTestCase(TestCase):
+    """The row's tags come from the ``MiniLoop`` declaration, never from the DB row."""
+
+    def test_registered_loop_carries_its_declared_tags(self) -> None:
+        row = next(r for r in loop_control.build_loop_rows() if r.name == "review")
+        assert row.tags == ("ingress", "egress", "colleague", "ai")
+
+    def test_local_only_loop_carries_determinism_alone(self) -> None:
+        row = next(r for r in loop_control.build_loop_rows() if r.name == "db_backup")
+        assert row.tags == ("deterministic",)
+
+    def test_row_with_no_registered_loop_carries_no_tags(self) -> None:
+        _make_loop("dash-unregistered")
+        row = next(r for r in loop_control.build_loop_rows() if r.name == "dash-unregistered")
+        assert row.tags == ()
+
+
 class LoopRowsPresetMaskTestCase(TestCase):
     """The dashboard verdict honours the #3159 preset mask, not just enabled+held."""
 

@@ -59,9 +59,11 @@ class LoopSeedSpec:
     interval for a once-per-day loop. ``description`` is the loop's real one-line
     "what it does and when" — the source of truth populated onto ``Loop.description``
     (and the prompt-backed loop's ``Prompt.description``) and rendered by
-    ``t3 loops list``. ``colleague_facing`` (#2904) marks a loop that reaches or
-    reads from a colleague — the #2904 admission gate skips it whenever
-    availability defers questions (away / autonomous_away). ``default_enabled``
+    ``t3 loops list``. ``colleague_facing`` (#2904) is the AWAY-GATE policy —
+    the #2904 admission gate skips the loop whenever availability defers questions
+    (away / autonomous_away). It is operator-editable and narrower than the
+    ``colleague`` reach tag every loop declares in code (#3959): ``review`` reaches
+    colleagues and deliberately keeps running while the owner is away. ``default_enabled``
     ships the local/read-only operational core ON out of the box (the sound
     default the squashed ``0001_initial`` seeds ``enabled=True`` on a fresh DB);
     every colleague-facing, externally-visible, destructive-capable, or

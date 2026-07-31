@@ -23,9 +23,11 @@ set (both ``None``) the loop is due every tick.
 A never-run loop is due immediately (interval / every-tick) or at its first
 scheduled time (daily), so a fresh install fires without waiting a whole window.
 
-``colleague_facing`` (#2904) marks a loop that reaches or reads from a
-colleague — reviewing someone else's PR, nagging a reviewer, posting where a
-teammate reads it — as opposed to internal/self-improvement work. The unified
+``colleague_facing`` (#2904) is the operator-editable AWAY-GATE policy: which
+loops sit out while the owner is unreachable to weigh in. It is narrower than the
+``colleague`` reach tag each ``MiniLoop`` declares in code (#3959) and stays a
+strict subset of it — ``review`` reaches colleagues yet deliberately keeps
+running when away, so self-review does not stall. The unified
 admission verdict in ``teatree.loops.loop_table`` gates a ``colleague_facing``
 row off whenever the resolved :class:`~teatree.core.models.Mode` reports
 ``defers_questions`` (an away-class mode, the same

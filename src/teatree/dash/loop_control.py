@@ -22,6 +22,7 @@ from teatree.dash.gate_state import dash_gate_fail_open
 from teatree.loops.live import LoopStatusEntry, build_report
 from teatree.loops.loop_cadence_editing import CadenceBounds, cadence_bounds_for
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
+from teatree.loops.registry import iter_loops
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class LoopRow:
     bounds: CadenceBounds
     last_run_at: dt.datetime | None
     next_run_at: dt.datetime | None
+    tags: tuple[str, ...]
 
     @property
     def is_daily(self) -> bool:
@@ -120,17 +122,27 @@ def build_loop_rows() -> tuple[LoopRow, ...]:
     (description, cadence, the paused-vs-disabled hold status) are joined by name
     from one ``Loop`` and one ``LoopState`` read; a verdict whose ``Loop`` row
     vanished between the two reads is skipped rather than raising.
+
+    The reach/determinism tags (#3959) are joined from the ``MiniLoop`` registry, not
+    the row, so the table cannot render a classification that disagrees with the code;
+    a row with no registered loop behind it simply carries none.
     """
     loops = {loop.name: loop for loop in Loop.objects.all()}
     status_by_name = {row.name: row.status for row in LoopState.objects.all()}
+    tags_by_name = {mini_loop.name: mini_loop.tags for mini_loop in iter_loops()}
     return tuple(
-        _loop_row(loop, status_by_name.get(verdict.name, LoopStatus.ENABLED.value), verdict)
+        _loop_row(
+            loop,
+            status_by_name.get(verdict.name, LoopStatus.ENABLED.value),
+            verdict,
+            tags_by_name.get(verdict.name, ()),
+        )
         for verdict in effective_verdicts()
         if (loop := loops.get(verdict.name)) is not None
     )
 
 
-def _loop_row(loop: Loop, status: str, verdict: LoopVerdict) -> LoopRow:
+def _loop_row(loop: Loop, status: str, verdict: LoopVerdict, tags: tuple[str, ...]) -> LoopRow:
     return LoopRow(
         name=loop.name,
         description=loop.description,
@@ -144,6 +156,7 @@ def _loop_row(loop: Loop, status: str, verdict: LoopVerdict) -> LoopRow:
         bounds=cadence_bounds_for(loop.name),
         last_run_at=loop.last_run_at,
         next_run_at=loop.next_run_at(),
+        tags=tags,
     )
 
 
