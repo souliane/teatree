@@ -180,6 +180,13 @@ ENV PATH="/opt/teatree/uv/bin:/home/teatree/.local/bin:${PATH}" \
     PASSWORD_STORE_DIR=/home/teatree/.password-store \
     GNUPGHOME=/home/teatree/.gnupg
 
+# `uv tool install` never reads the installed package's own `[tool.uv]
+# override-dependencies`, so the SDK's `mcp` cap would make every install in this
+# image unresolvable. `UV_OVERRIDE` is the one setting that reaches ALL of them —
+# the bake below, the entrypoint's runtime reinstall, `t3 update`, doctor repair.
+# A separate ENV so it can expand $TEATREE_CLONE_DIR from the block above.
+ENV UV_OVERRIDE="${TEATREE_CLONE_DIR}/uv-overrides.txt"
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # ============================================================

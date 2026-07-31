@@ -631,7 +631,12 @@ init)
         # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
         # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
         # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
-        uv tool install --editable "${CLONE_DIR}[slack]" --reinstall --python 3.13
+        # `--overrides` is REQUIRED, and explicit rather than relying on the image ENV:
+        # `uv tool install` never reads the package's own `[tool.uv] override-dependencies`,
+        # so without it the SDK's `mcp` cap makes this reinstall unresolvable and the box
+        # cannot boot. See uv-overrides.txt.
+        uv tool install --editable "${CLONE_DIR}[slack]" --reinstall --python 3.13 \
+            --overrides "${CLONE_DIR}/uv-overrides.txt"
         # prek (the pre-commit reimplementation) is a DEV-group dependency, so the
         # editable tool install above does NOT provide it. Worktree provisioning
         # (`prek_hook.install`) and the base-clone commit/push gates need `prek` on

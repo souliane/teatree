@@ -27,6 +27,7 @@ from teatree.utils.dep_drift import (
     running_python,
 )
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+from teatree.utils.uv_overrides import uv_overrides_args
 
 DRIFT_GUARD_ENV = "_T3_DRIFT_REPAIR_ATTEMPTED"
 
@@ -85,10 +86,10 @@ def resolve_repair_plan(missing: list[str]) -> RepairPlan | str:
                 f"WARN  Editable install missing deps ({', '.join(missing)}) but "
                 "`uv` is not on PATH — install uv and re-run `t3 setup`."
             )
-        return RepairPlan(
-            cmd=[uv_bin, "tool", "install", "--editable", str(source), "--reinstall"],
-            label=f"uv tool install --editable {source} --reinstall",
-        )
+        command = [uv_bin, "tool", "install", "--editable", str(source), *uv_overrides_args(source), "--reinstall"]
+        # The label is the command MINUS the absolute uv path, so what the operator reads is
+        # what actually runs — including the `--overrides` the install cannot resolve without.
+        return RepairPlan(cmd=command, label=" ".join(["uv", *command[1:]]))
 
     # The running t3 is a plain editable install (pip install -e .) into a
     # pyenv/virtualenv that uv tool does not manage.  Repair THAT env.

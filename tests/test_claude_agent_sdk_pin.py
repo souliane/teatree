@@ -32,6 +32,7 @@ import ast
 import importlib
 import importlib.metadata
 import importlib.util
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from packaging.requirements import Requirement
 
 from teatree.eval.discovery import discover_specs
 from teatree.eval.surface import is_advisory, mislabelled_interactive_specs
+from teatree.utils.uv_overrides import UV_OVERRIDES_FILENAME, uv_overrides_args
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
@@ -54,6 +56,17 @@ _SDK_MODULE = "claude_agent_sdk"
 #: The dependency the SDK's declared bound and teatree's own disagree on. ``teatree.mcp``
 #: imports the 2.0 module layout (``mcp.server.mcpserver.MCPServer``) across eight modules.
 _MCP = "mcp"
+
+#: A ``uv tool install`` that names a TARGET — what separates a runnable command from prose
+#: mentioning one. ``--editable`` must be followed by a real path rather than a closing
+#: backtick, so a doc fragment like ``uv tool install --editable`` is not swept up.
+_RUNNABLE_UV_TOOL_INSTALL = re.compile(
+    r"uv tool install(?: +(?:-[^\s]+|\"[^\"]*\"|'[^']*'|[^\s`]+))*? +(?:--editable +[^\s`]|--from +git\+)[^\n`]*"
+)
+
+#: The surfaces that run ``uv tool install`` UNATTENDED — a missing override there is a
+#: build failure, not advice a reader can correct.
+_AUTOMATED_INSTALL_ROOTS = ("deploy", "dev", ".github/workflows", ".gitlab-ci.yml")
 
 
 def _sdk_constraint() -> str:
@@ -139,6 +152,38 @@ def _sdk_mcp_imports() -> dict[str, set[str]]:
             ):
                 imports.setdefault(node.module, set()).update(alias.name for alias in node.names)
     return imports
+
+
+def _overrides_file_requirements() -> list[Requirement]:
+    lines = (_REPO_ROOT / UV_OVERRIDES_FILENAME).read_text(encoding="utf-8").splitlines()
+    return [Requirement(line.strip()) for line in lines if line.strip() and not line.lstrip().startswith("#")]
+
+
+def _automated_uv_tool_installs() -> list[tuple[str, str]]:
+    """``(repo-relative path, command)`` for every ``uv tool install`` of teatree run UNATTENDED.
+
+    Scoped to the build/deploy/CI surfaces, where a missing override is not advice a human
+    can correct but a hard build failure. A command counts once it names a target —
+    ``--editable <path>`` or ``--from git+…`` — which is what separates an invocation from
+    prose mentioning one. Backslash continuations are joined first, so a flag on the next
+    line still belongs to the same command.
+    """
+    installs: list[tuple[str, str]] = []
+    for root in _AUTOMATED_INSTALL_ROOTS:
+        base = _REPO_ROOT / root
+        candidates = sorted(base.rglob("*")) if base.is_dir() else [base]
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            joined = text.replace("\\\n", " ")
+            for match in _RUNNABLE_UV_TOOL_INSTALL.finditer(joined):
+                flagged = "--overrides" in match.group(0) or "UV_OVERRIDE" in joined
+                installs.append((path.relative_to(_REPO_ROOT).as_posix(), "flagged" if flagged else match.group(0)))
+    return installs
 
 
 def _pip_update_entries() -> list[dict[str, Any]]:
@@ -242,6 +287,68 @@ class TestTheOverrideIsHonest:
             f"`teatree.mcp.server` imports `{_MCP}.server.mcpserver.MCPServer`, so a resolution "
             "that drops below the bound crashes the MCP server on import."
         )
+
+
+class TestTheOverrideReachesEveryInstallSurface:
+    """``[tool.uv] override-dependencies`` alone does not reach the installed ``t3``.
+
+    ``uv tool install`` resolves the package it installs WITHOUT reading that package's
+    ``[tool.uv]`` overrides — the working directory makes no difference — so the deployed
+    and global installs fail outright with an unsatisfiable-requirements resolver error
+    while ``uv lock``/``uv sync``/CI all stay green. That is the same shape of blind spot
+    ``tests/conformance/test_import_pinned_dependency_bounds.py`` exists for: the lockfile
+    pins CI, and the container re-resolves.
+
+    So the override is ALSO committed as :data:`UV_OVERRIDES_FILENAME` and passed by every
+    install site. Two copies of one decision drift, hence the equality assertion; a site
+    that forgets the flag is invisible until a build fails, hence the site sweep.
+    """
+
+    def test_the_overrides_file_matches_the_pyproject_overrides(self) -> None:
+        declared = sorted(str(requirement) for requirement in _override_requirements())
+        committed = sorted(str(requirement) for requirement in _overrides_file_requirements())
+        assert declared == committed, (
+            f"{UV_OVERRIDES_FILENAME} and `[tool.uv] override-dependencies` are two copies of one "
+            f"decision and must be identical. pyproject: {declared}; {UV_OVERRIDES_FILENAME}: {committed}."
+        )
+
+    def test_every_unattended_install_resolves_with_the_override(self) -> None:
+        unflagged = sorted(
+            f"{path}: {command}" for path, command in _automated_uv_tool_installs() if command != "flagged"
+        )
+        assert not unflagged, (
+            "every unattended `uv tool install` of teatree must resolve with the override — via "
+            "`--overrides` on the command or an ambient `UV_OVERRIDE`. Without it uv ignores the "
+            f"`mcp` override entirely and the install fails to resolve at all. Missing it: {unflagged}"
+        )
+
+    def test_the_sweep_sees_the_surface_it_is_meant_to_guard(self) -> None:
+        # The control: a sweep matching nothing would pass the assertion above. The deployed
+        # image's bake and the entrypoint's runtime reinstall are the two that must be in it.
+        paths = {path for path, _ in _automated_uv_tool_installs()}
+        assert {"deploy/Dockerfile", "deploy/entrypoint.sh"} <= paths
+
+    def test_the_deployed_image_exports_the_override_to_every_install_it_runs(self) -> None:
+        # The image's own bake, the entrypoint's runtime `--reinstall`, and every in-container
+        # `t3 update` / doctor repair are separate `uv tool install` invocations. `UV_OVERRIDE`
+        # is the one setting that reaches all of them, so it is set once in the image ENV.
+        dockerfile = (_REPO_ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
+        assert f'UV_OVERRIDE="${{TEATREE_CLONE_DIR}}/{UV_OVERRIDES_FILENAME}"' in dockerfile, (
+            "deploy/Dockerfile must export UV_OVERRIDE — without it the image's bake and the "
+            "entrypoint's reinstall both fail to resolve, and the box never boots."
+        )
+        entrypoint = (_REPO_ROOT / "deploy" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert "uv tool install --editable" in entrypoint, (
+            "the entrypoint no longer reinstalls editable; re-check that UV_OVERRIDE still covers whatever replaced it."
+        )
+
+    def test_the_argv_builder_points_at_the_committed_file(self) -> None:
+        assert uv_overrides_args(_REPO_ROOT) == ["--overrides", str(_REPO_ROOT / UV_OVERRIDES_FILENAME)]
+
+    def test_the_argv_builder_omits_the_flag_for_a_checkout_without_the_file(self, tmp_path: Path) -> None:
+        # A reinstall is the path that REPAIRS a broken install; pointing uv at a missing
+        # file would turn that repair into a hard resolver error.
+        assert uv_overrides_args(tmp_path) == []
 
 
 class TestTheGuardThatReplacedTheQuarantine:

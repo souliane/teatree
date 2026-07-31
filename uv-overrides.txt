@@ -1,0 +1,19 @@
+# uv dependency overrides for `uv tool install` (the deployed/global `t3`).
+#
+# `uv tool install` does NOT read `[tool.uv] override-dependencies` from the package
+# it installs — not even with the checkout as the working directory — so the override
+# that lets `uv lock` / `uv sync` resolve has no effect on a tool install. Every
+# `uv tool install` of teatree therefore passes this file:
+#
+#     uv tool install --editable . --overrides uv-overrides.txt
+#
+# Its contents must match `[tool.uv] override-dependencies` in pyproject.toml exactly;
+# `tests/test_claude_agent_sdk_pin.py::TestTheOverrideReachesEveryInstallSurface`
+# reds when the two drift, and when a `uv tool install` site drops the flag.
+#
+# `mcp` — `claude-agent-sdk` declares `mcp<2.0.0`, a bound broader than its usage: it
+# imports only the low-level `mcp.server.Server` / `mcp.types` surface, which mcp 2.x
+# still provides. `teatree.mcp.server` uses `mcp.server.mcpserver.MCPServer`, a
+# different surface. See the `[tool.uv] override-dependencies` comment in
+# pyproject.toml for the full derivation and the guard that keeps it honest.
+mcp>=2,<3

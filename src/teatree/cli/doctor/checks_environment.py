@@ -131,13 +131,14 @@ def _check_dangling_editable_pth() -> bool:
             f"FAIL  teatree editable .pth points at a non-existent dir: {dangling.pth_dangling_dir} "
             f"({dangling.pth}). A reaped worktree left it dangling — t3 dies with "
             f"ModuleNotFoundError. Re-anchor: re-run `t3 setup` from the canonical clone "
-            f"(or rewrite the .pth to $T3_REPO/src), then `cd $T3_REPO && uv tool install --editable . --force`."
+            f"(or rewrite the .pth to $T3_REPO/src), then `cd $T3_REPO && uv tool install --editable . "
+            f"--overrides uv-overrides.txt --force`."
         )
     if dangling.receipt_source is not None:
         typer.echo(
             f"FAIL  uv tool receipt records a non-existent editable source: {dangling.receipt_source}. "
             f"It re-breaks the .pth on the next `t3 update`/reinstall. Fix: "
-            f"`cd $T3_REPO && uv tool install --editable . --force`."
+            f"`cd $T3_REPO && uv tool install --editable . --overrides uv-overrides.txt --force`."
         )
     return False
 

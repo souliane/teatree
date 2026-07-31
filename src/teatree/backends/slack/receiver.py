@@ -153,7 +153,10 @@ def _run_single_overlay(
         from slack_sdk.socket_mode.response import SocketModeResponse  # noqa: PLC0415 — deferred: heavy/optional dep
         from slack_sdk.web import WebClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     except ImportError:
-        logger.warning("slack_sdk not installed — reinstall with: uv tool install --editable '.[slack]'")
+        logger.warning(
+            "slack_sdk not installed — reinstall with: "
+            "uv tool install --editable '.[slack]' --overrides uv-overrides.txt"
+        )
         return
 
     web_client = WebClient(token=bot_token)

@@ -225,7 +225,8 @@ class DoctorService:
                 "teatree is editable but contribute=false in the DB config. "
                 "If you are contributing to teatree, set contribute=true. "
                 "If not, run "
-                "`uv tool install --from git+https://github.com/souliane/teatree.git teatree` "
+                "`uv tool install --from git+https://github.com/souliane/teatree.git teatree "
+                "--overrides https://raw.githubusercontent.com/souliane/teatree/main/uv-overrides.txt` "
                 "to drop the editable install.",
             )
 
@@ -317,7 +318,8 @@ class DoctorService:
                 typer.echo(f"FAIL  uv sync failed after patching sources: {result.stderr.strip()}")
         else:
             typer.echo(
-                f"WARN  {package} is not in host pyproject.toml sources. Fix: `uv tool install --editable {repo_path}`"
+                f"WARN  {package} is not in host pyproject.toml sources. Fix: "
+                f"`uv tool install --editable {repo_path} --overrides {repo_path}/uv-overrides.txt`"
             )
 
     @staticmethod

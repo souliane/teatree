@@ -573,7 +573,7 @@ Skills declare dependencies via a single YAML frontmatter `requires:` field (tra
 **Distribution.** Two install paths, one source of truth:
 
 - **APM**: `apm install souliane/teatree`
-- **CLI-first**: `git clone … && uv tool install --editable . && t3 setup` — also registers the plugin in `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the main clone (no `~/.claude/plugins/t3` symlink; always live)
+- **CLI-first**: `git clone … && uv tool install --editable . --overrides uv-overrides.txt && t3 setup` (the flag is required — `uv tool install` does not read `[tool.uv] override-dependencies`, so the SDK's `mcp` bound goes uncorrected without it) — also registers the plugin in `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the main clone (no `~/.claude/plugins/t3` symlink; always live)
 
 On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the editable install and reinstalls + `execv`-restarts if a declared dep is missing. The same run re-syncs runtime skill links and **prunes stale ones** — a teatree-managed link whose skill was removed or renamed upstream is removed so the dropped skill stops resolving, while contribute-mode workspace links and a user's own real skill directories are left untouched. Because `t3 update` re-runs `t3 setup`, updating teatree auto-cleans skills dropped upstream.
 
