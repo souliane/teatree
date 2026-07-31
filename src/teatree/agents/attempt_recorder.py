@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
@@ -112,6 +113,7 @@ def record_result_envelope(
     *,
     phase: str = "",
     usage: AttemptUsage | None = None,
+    envelope_parsed: bool = True,
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
@@ -127,7 +129,18 @@ def record_result_envelope(
     outage check runs BEFORE the evidence gate so an outage death that happens
     to carry evidence (the "API error laundered as a completion" class) still
     lands FAILED with the diagnostic signature, never COMPLETED — the ticket FSM
-    must not advance over work an outage interrupted. On success the attempt is
+    must not advance over work an outage interrupted.
+
+    *envelope_parsed* is how the RUNNER tells this recorder whether the blob it
+    hands over was actually parsed out of the agent's output. It is ``False``
+    only for the manufactured ``{"summary": <prose>}`` of a run that emitted no
+    JSON at all: the evidence gate then refuses "you omitted `tests_run`", which
+    reads as an envelope with a missing key and is not what happened. On an
+    evidence phase that refusal is therefore re-diagnosed as
+    :data:`~teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`. The salvage still
+    runs first, so a coder that landed real work is still rescued; the in-session
+    ``record-attempt`` path parsed its own envelope and keeps the per-field
+    diagnosis by default. On success the attempt is
     COMPLETED and ``task.complete`` fires, auto-advancing the ticket FSM (a
     ``needs_user_input`` result completes the task too — ``_advance_ticket`` then
     schedules the interactive follow-up rather than firing the phase
@@ -146,7 +159,8 @@ def record_result_envelope(
     if evidence_error:
         salvaged = _salvage_coding_result(task, result, phase=phase)
         if salvaged is None:
-            return _record_failure(task, error=evidence_error, result=result)
+            diagnosis = evidence_error if envelope_parsed else NO_ENVELOPE_ERROR
+            return _record_failure(task, error=diagnosis, result=result)
         result = salvaged
 
     landing_error = landing_verification_error(task, phase=phase)

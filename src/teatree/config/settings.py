@@ -237,6 +237,11 @@ class _ModeHarnessSettings:
     # not its fan-out, so a wall clock cannot see a delegation runaway. ``0`` disables
     # the gate, matching the watchdog convention above. Per-overlay overridable.
     subagent_spawn_ceiling: int = 20
+    # How many envelope-less turn-ends ONE headless run may have refused before the
+    # Stop gate (``agents/envelope_stop_gate.py``) stands down. The gate fails open
+    # and never re-refuses a turn another Stop hook blocked; ``0`` disables it,
+    # matching the ceilings above. Per-overlay overridable.
+    envelope_stop_gate_refusals: int = 2
 
 
 @dataclass

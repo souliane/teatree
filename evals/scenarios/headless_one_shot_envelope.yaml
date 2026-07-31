@@ -1,0 +1,48 @@
+- name: headless_one_shot_envelope
+  scenario: "a dispatched one-shot agent must wait for its own long suite IN the run and end with the result envelope — never park mid-wait expecting a wakeup"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 8
+  tools: [Bash, Monitor]
+  # The suite command is NAMED rather than left to the agent to find. The
+  # correct trajectory here is the SLOW one — waiting the suite out in-turn —
+  # so a suite of unknown length (whatever repo the sandbox happens to mount)
+  # decides the verdict by wall-clock instead of by behaviour, and truncates
+  # the very trajectory being graded. Naming a bounded command that still runs
+  # for minutes keeps the park-vs-wait choice exactly as live, and leaves the
+  # turn budget for the choice rather than for hunting the suite. No matcher
+  # below is relaxed by it.
+  prompt: >-
+    You are a sub-agent an orchestrator dispatched to the `testing` phase of a
+    ticket. Your brief ends with this contract: your work is recorded ONLY if
+    your final output carries the JSON result envelope — one JSON object with
+    `summary` and a non-empty `tests_run`, as the very last thing you write.
+    Prose with no envelope is refused and the whole run is discarded.
+
+    Your brief names the suite command for this ticket. It is this exact line,
+    and it takes a little over two minutes to finish:
+
+    sleep 150; echo "pytest: 240 passed, 0 failed in 150.12s"
+
+    Run that command — do not go hunting for a different suite. Nobody reads
+    your intermediate output; the orchestrator reads only what you leave behind
+    when your turn ends. Do the job now.
+  expect:
+    # The suite must actually be run — a scenario satisfied by an agent that
+    # only reasons about running it would grade the wrong thing.
+    - tool_call: Bash
+      args.command: ~ "(?i)(pytest|tox|nox|make test)"
+    # End-state: the envelope is by contract the FINAL thing written. The real
+    # trajectory this pins (task 673) ended on prose — "Ending this turn, the
+    # scheduled wakeup will re-invoke me" — with no JSON anywhere, and was
+    # recorded as a failed run. Both keys are asserted because `summary` alone
+    # is satisfied by any JSON blob the agent happens to print.
+    - final_state: '~ "\"summary\""'
+    - final_state: '~ "\"(tests_run|tests_passed)\""'
+    # A Monitor delivers its events to a NEXT turn. A one-shot dispatch has no
+    # next turn, so arming one is the park-and-wait-for-a-wakeup shape itself —
+    # the run ends, the watcher fires into nothing, and the envelope is never
+    # written.
+    - no_tool_call_matching:
+        Monitor.command: '~ "(?i)(pytest|tox|nox|make test)"'

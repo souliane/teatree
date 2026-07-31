@@ -219,6 +219,7 @@ class TeatreeSettingsSchema(BaseSettings):
     e2e_confidence_threshold: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     e2e_mandatory_gate_enabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     enforce_regulated_path: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
+    envelope_stop_gate_refusals: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     eval_local_cadence_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     eval_local_disabled: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     eval_local_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]

@@ -609,14 +609,17 @@ def _record_success(
     through here, so the refusal is shared (the ``pydantic_ai`` lane merely makes
     it likelier: no built-in tools, so the model stops early). The exempt phases
     (``scoping``, ``retro``) keep the fallback byte-identically, and a phase that
-    carries its own evidence requirement is still handed on so the recorder's
-    per-field diagnosis and the #3263 coding salvage both get their turn.
+    carries its own evidence requirement is still handed on so the #3263 coding
+    salvage gets its turn — with ``envelope_parsed=False``, so a refusal past the
+    salvage is diagnosed as the omitted ENVELOPE it is rather than as an omitted
+    key (#3905).
     """
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — deferred: call-time import
     from teatree.agents.headless_result import parse_result  # noqa: PLC0415 — deferred: call-time import
 
-    result = parse_result(outcome.agent_text)
-    if not result:
+    parsed = parse_result(outcome.agent_text)
+    result = parsed
+    if not parsed:
         prose: AgentResultBlob = {"summary": outcome.agent_text[:_PROSE_SUMMARY_CHARS]}
         if not ProseSummaryPolicy.allowed(phase or task.phase):
             logger.warning("Task %s produced no result envelope; refusing to record success", task.pk)
@@ -631,7 +634,7 @@ def _record_success(
         reasoning_effort=provenance.reasoning_effort,
         skills_loaded=list(provenance.skills_loaded),
     )
-    return record_result_envelope(task, result, phase=phase, usage=usage)
+    return record_result_envelope(task, result, phase=phase, usage=usage, envelope_parsed=bool(parsed))
 
 
 def _record_failure(

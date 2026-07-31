@@ -19,6 +19,7 @@ import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
 from teatree.agents._headless_env import system_child_env
 from teatree.agents._headless_options import _get_resume_session_id
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
 from teatree.agents.headless import (
     LoopWatchdog,
@@ -163,11 +164,11 @@ class TestRunHeadless(TestCase):
 
     def test_no_json_fails_phase_with_evidence_requirement(self) -> None:
         # A phase that carries its OWN evidence requirement is NOT refused early by the
-        # no-envelope guard: it is handed to the recorder so `check_evidence` can name
-        # the missing field AND `_salvage_coding_result` (#3263) can still rescue a coder
-        # that committed real work but omitted the envelope. Refusing here would strand
-        # a landed branch behind a generic diagnostic. The envelope guard covers the
-        # phases with no gate at all — see test_headless_no_envelope_guard.py.
+        # no-envelope guard: it is handed to the recorder so `_salvage_coding_result`
+        # (#3263) can still rescue a coder that committed real work but omitted the
+        # envelope. Refusing here would strand a landed branch. Past the salvage the
+        # recorder names the omitted ENVELOPE (#3905) — the run emitted no JSON, so
+        # "you omitted `files_modified`" would be a false account of what happened.
         with _fake_sdk([_assistant_text("no structured output"), _result_message()]):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -176,7 +177,7 @@ class TestRunHeadless(TestCase):
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
-        assert "missing required evidence for phase 'coding'" in attempt.error
+        assert attempt.error == NO_ENVELOPE_ERROR
         assert task.status == Task.Status.FAILED
 
     def test_fails_when_result_violates_schema(self) -> None:
