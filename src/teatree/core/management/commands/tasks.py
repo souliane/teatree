@@ -17,6 +17,7 @@ from teatree.core.management.commands.tasks_session_view import (
     render_session_view,
     render_tasks_table,
 )
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
@@ -123,11 +124,12 @@ class Command(TyperCommand):
     ) -> None:
         """Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
 
-        An optional ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring
-        ``complete --note``) so the audit trail records WHY the task was cancelled
-        — the cancel transition is otherwise indistinguishable from any other
-        failure (#2559). A blank/whitespace reason records no attempt (no empty
-        audit row); the cancellation itself is unchanged.
+        ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring ``complete
+        --note``) so the audit trail records WHY the task was cancelled — the cancel
+        transition is otherwise indistinguishable from any other failure (#2559).
+        Omitting it does not skip the audit row: the cancellation is still recorded
+        under the ``cancelled`` failure kind, because a FAILED task that names no cause
+        is exactly what makes the board unreadable (#3957).
         """
         from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
@@ -147,16 +149,19 @@ class Command(TyperCommand):
                 self.stderr.write(f"Task {task_id} already finished ({task.status}).")
                 raise SystemExit(1)
 
-            if reason.strip():
-                TaskAttempt.objects.create(
-                    task=task,
-                    execution_target=task.execution_target,
-                    ended_at=timezone.now(),
-                    exit_code=1,
-                    error=reason.strip(),
-                    result={"cancel_reason": reason.strip()},
-                )
-            task.fail()
+            # An operator who gives no reason still leaves one behind (#3957): the
+            # attempt used to be written ONLY when ``--reason`` was passed, so a bare
+            # cancel produced a cause-less FAILED row indistinguishable from a crash.
+            cancel_reason = f"{CANCELLED_PREFIX}{reason.strip() or 'cancelled by an operator with no reason given'}"
+            TaskAttempt.objects.create(
+                task=task,
+                execution_target=task.execution_target,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=cancel_reason,
+                result={"cancel_reason": cancel_reason},
+            )
+            task.fail(reason=cancel_reason)
         self.stdout.write(f"Task {task_id} cancelled.")
 
     @command()
@@ -554,6 +559,9 @@ def _task_row(task: Task) -> TaskRow:
         phase=task.phase,
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
+        failure_kind=task.failure_kind,
+        failure_reason=task.failure_reason,
+        failure_environmental=is_environmental(task.failure_kind),
     )
 
 

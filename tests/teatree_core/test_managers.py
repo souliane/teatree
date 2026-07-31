@@ -958,7 +958,7 @@ class TestTaskClaimAtomic(TestCase):
         from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
 
         task = self._task()
-        task.fail()  # terminal
+        task.fail(reason="test: deliberate failure")  # terminal
 
         with pytest.raises(InvalidTransitionError):
             task.claim(claimed_by="session-A")

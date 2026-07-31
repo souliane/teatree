@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models.functions import Coalesce
 
 from teatree.core.modelkit.gate_registry import get
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
@@ -268,6 +269,12 @@ class TaskAttempt(models.Model):
     # exit_code + error on every save (see _classify_outcome). Blank while the
     # attempt is still in flight (no exit_code yet).
     outcome = models.CharField(max_length=16, choices=Outcome.choices, blank=True, default="")
+    # #3957: the NAMED cause of this attempt's failure, stamped from ``error`` on every
+    # save (see _classify_failure_kind). ``outcome`` says whether the attempt failed;
+    # this says WHY, in the shared FailureKind vocabulary — so failures are groupable by
+    # cause ("how many of these are lost leases vs real review defects?") instead of
+    # needing every reader to pattern-match free text. Blank on a clean attempt.
+    failure_kind = models.CharField(max_length=32, choices=FailureKind.choices, blank=True, default="")
     # #3673 Tier 3: dispatch provenance the drawer surfaces alongside model/lane.
     # reasoning_effort is the per-tier effort the spawn resolved (an EFFORT_SCALE
     # member, or blank when the tier inherits the SDK default); skills_loaded is
@@ -316,7 +323,20 @@ class TaskAttempt(models.Model):
         if self._state.adding:
             self._stamp_repair_loop_fields()
         self.outcome = self._classify_outcome()
+        self.failure_kind = self._classify_failure_kind()
         super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _classify_failure_kind(self) -> str:
+        """Name this attempt's failure cause from ``error`` (#3957), blank when it did not fail.
+
+        Keyed on ``error`` rather than ``exit_code`` for the same reason ``outcome`` is
+        not: an envelope refusal is recorded with ``exit_code=0`` AND a non-empty error,
+        so an ``exit_code``-only reader would classify a refusal as a clean run. An
+        attempt still in flight has no error yet and is left blank.
+        """
+        if not self.error.strip():
+            return ""
+        return classify_failure(self.error)
 
     def _classify_outcome(self) -> str:
         """Derive the terminal outcome from ``exit_code`` + ``error`` (#16).

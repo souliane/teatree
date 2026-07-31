@@ -103,7 +103,7 @@ class TestDirectiveDispatchReArm(TestCase):
         first = DirectiveDispatch.enqueue(directive=directive, contract="c")
         assert first is not None
         assert first.task is not None
-        first.task.fail()  # run-then-fail: bad envelope, evidence gate refused it
+        first.task.fail(reason="missing required evidence: bad envelope")  # run-then-fail
         rearmed = DirectiveDispatch.enqueue(directive=directive, contract="c")
         assert rearmed is not None
         assert rearmed.task is not None

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
@@ -112,6 +113,12 @@ class KanbanCard:
     claimed_by: str
     last_error: str
     dwell: str
+    # #3957: the NAMED cause behind ``last_error``. A card used to render a cause-less
+    # error chip, so a genuine review defect and a lost lease looked identical;
+    # ``failure_environmental`` is what lets the chip say which of the two it is.
+    failure_kind: str = ""
+    failure_kind_label: str = ""
+    failure_environmental: bool = False
     pr_chips: tuple[PrChip, ...] = ()
 
 
@@ -161,6 +168,7 @@ class _CardContext:
     active_phase: dict[int, str] = field(default_factory=dict)
     claimed_by: dict[int, str] = field(default_factory=dict)
     last_error: dict[int, str] = field(default_factory=dict)
+    failure_kind: dict[int, str] = field(default_factory=dict)
     latest_transition_at: dict[int, datetime] = field(default_factory=dict)
     pr_chips: dict[int, tuple[PrChip, ...]] = field(default_factory=dict)
 
@@ -216,11 +224,15 @@ def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
 def _card_context(ticket_ids: list[int]) -> _CardContext:
     if not ticket_ids:
         return _CardContext()
+    # One fetch feeds both maps so the chip's TEXT and its NAMED KIND can never
+    # disagree about which attempt they describe.
+    failures = _last_failure_by_ticket(ticket_ids)
     return _CardContext(
         active_ticket_ids=_active_ticket_ids(ticket_ids),
         active_phase=_active_phase(ticket_ids),
         claimed_by=_claimed_by(ticket_ids),
-        last_error=_last_error_by_ticket(ticket_ids),
+        last_error={ticket_id: error for ticket_id, (error, _) in failures.items()},
+        failure_kind={ticket_id: kind for ticket_id, (_, kind) in failures.items()},
         latest_transition_at=_latest_transition_at(ticket_ids),
         pr_chips=_pr_chips_by_ticket(ticket_ids),
     )
@@ -267,12 +279,18 @@ def _claimed_by(ticket_ids: list[int]) -> dict[int, str]:
     return claimed
 
 
-def _last_error_by_ticket(ticket_ids: list[int]) -> dict[int, str]:
-    # Take the LATEST attempt per ticket (regardless of error), then keep its
-    # error only if that most-recent attempt carries one. Filtering to
-    # ``error__gt=""`` first would surface a stale error from an old failed
-    # attempt even after a later attempt succeeded — a recovered/shipped ticket
-    # still rendered red on the board (#3313).
+def _last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]:
+    """Per ticket, the latest attempt's ``(error, failure_kind)`` — empty when it did not fail.
+
+    The NAMED kind travels with the error text (#3957) so the card can say what KIND of
+    failure it is showing, rather than rendering a cause-less error chip an operator
+    cannot tell apart from a genuine review defect.
+
+    Take the LATEST attempt per ticket (regardless of error), then keep its error only if
+    that most-recent attempt carries one. Filtering to ``error__gt=""`` first would surface
+    a stale error from an old failed attempt even after a later attempt succeeded — a
+    recovered/shipped ticket still rendered red on the board (#3313).
+    """
     latest_pks = (
         TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids)
         .values("task__ticket_id")
@@ -283,7 +301,7 @@ def _last_error_by_ticket(ticket_ids: list[int]) -> dict[int, str]:
         pk__in=list(latest_pks),
         started_at__gte=timezone.now() - STALE_ERROR_AFTER,
     ).select_related("task")
-    return {attempt.task.ticket_id: attempt.error for attempt in attempts if attempt.error}
+    return {attempt.task.ticket_id: (attempt.error, attempt.failure_kind) for attempt in attempts if attempt.error}
 
 
 def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
@@ -321,6 +339,9 @@ def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
         active_phase=context.active_phase.get(ticket.pk, ""),
         claimed_by=context.claimed_by.get(ticket.pk, ""),
         last_error=context.last_error.get(ticket.pk, ""),
+        failure_kind=(kind := context.failure_kind.get(ticket.pk, "")),
+        failure_kind_label=FailureKind(kind).label if kind else "",
+        failure_environmental=is_environmental(kind),
         dwell=_dwell(context.latest_transition_at.get(ticket.pk)),
         pr_chips=context.pr_chips.get(ticket.pk, ()),
     )

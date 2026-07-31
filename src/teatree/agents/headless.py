@@ -642,5 +642,5 @@ def _record_failure(
         error=error,
         result=result or {},
     )
-    task.fail()
+    task.fail(reason=error)
     return attempt

@@ -60,6 +60,8 @@ graph TD
     teatree.core.loop_lease_liveness --> teatree.utils
     teatree.core.loop_lease_manager --> teatree.utils
     teatree.core.managers_task_claim --> teatree.core.schema_readiness
+    teatree.core.managers_task_sweeps --> teatree.core.modelkit
+    teatree.core.managers_task_sweeps --> teatree.core.repair_loop
     teatree.core.managers_session --> teatree.config
     teatree.core.managers_session --> teatree.core.managers_overlay
     teatree.core.schema_readiness --> teatree.config
@@ -74,6 +76,7 @@ graph TD
     teatree.core.managers --> teatree.core.managers_phase_cadence
     teatree.core.managers --> teatree.core.managers_session
     teatree.core.managers --> teatree.core.managers_task_claim
+    teatree.core.managers --> teatree.core.managers_task_sweeps
     teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
     teatree.core.models --> teatree.core.modelkit
