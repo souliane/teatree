@@ -112,6 +112,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "attachment_gate_enabled": _parse_strict_bool,
     "snapshot_baseline_gate_enabled": _parse_strict_bool,
     "gate_relaxation_gate_enabled": _parse_strict_bool,
+    "phase_coverage_gate_enabled": _parse_strict_bool,
     "incremental_push_gate": _parse_strict_bool,
     "chrome_devtools_mcp_enabled": _parse_strict_bool,
     "chrome_devtools_headless": _parse_strict_bool,

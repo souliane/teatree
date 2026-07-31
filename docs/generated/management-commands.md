@@ -219,6 +219,7 @@ Group root — forces sub-commands to be addressed by name.
 | `record-review-context` | Record durable evidence the referenced context was retrieved + analyzed |
 | `record-e2e-run` | Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
+| `approve-out-of-band` | Record a single-use override of the lifecycle phase-coverage gate (#3762) |
 
 ## `loop_dispatch`
 

@@ -45,6 +45,24 @@ class TestRubricPopulation(TestCase):
             Rubric.populate(ticket, ["   ", ""])
         assert ticket.rubrics.count() == 0
 
+    def test_populate_refuses_a_rubric_whose_criteria_are_all_satisfiable_by_inaction(self) -> None:
+        # The absence-satisfied shape: "the existing resolver test suite passes UNMODIFIED"
+        # is satisfied by never touching the resolver, so it certifies a skip.
+        ticket = _ticket()
+        with pytest.raises(RubricError, match="satisfiable by INACTION"):
+            Rubric.populate(ticket, ["the existing resolver test suite passes UNMODIFIED"])
+        assert ticket.rubrics.count() == 0
+
+    def test_populate_accepts_an_absence_criterion_paired_with_a_positive_one(self) -> None:
+        rubric = Rubric.populate(
+            _ticket(),
+            [
+                "the resolver reads defaults.toml, so editing a value there changes the resolved setting",
+                "the existing resolver test suite passes UNMODIFIED",
+            ],
+        )
+        assert rubric.criteria.count() == 2
+
 
 class TestRecordGrade(TestCase):
     def _criterion(self) -> RubricCriterion:

@@ -14,6 +14,7 @@ from teatree.core.modelkit.phases import normalize_phase, phase_transition
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
+from teatree.core.models.out_of_band_approval import OutOfBandWorkApproval, OutOfBandWorkApprovalError
 from teatree.core.models.ticket_ledger import retire_phase_ledger
 from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 
@@ -31,6 +32,17 @@ class RecordE2ERunResult(TypedDict, total=False):
     head_sha: str
     result: str
     posted_url: str
+
+
+class ApproveOutOfBandResult(TypedDict, total=False):
+    """Result of ``lifecycle approve-out-of-band`` (#3762)."""
+
+    recorded: bool
+    error: str
+    ticket_id: int
+    head_sha: str
+    approver: str
+    reason: str
 
 
 class ReviewerAttestationError(RuntimeError):
@@ -314,6 +326,53 @@ class Command(TyperCommand):
         ticket.record_anti_vacuity_attestation(head_sha, ac_coverage, proven, no_new_tests=no_new_tests)
         proven_summary = f"{len(proven)} proven test(s)" if proven else "no new tests"
         return f"Recorded anti-vacuity attestation for ticket {ticket.pk} ({proven_summary})"
+
+    @command(name="approve-out-of-band")
+    def approve_out_of_band(
+        self,
+        ticket_id: str,
+        *,
+        approver: Annotated[
+            str,
+            typer.Option("--approver", help="Human user id authorising the override; a maker/loop id is refused."),
+        ],
+        head_sha: Annotated[
+            str, typer.Option("--head-sha", help="Full 40-char hex SHA of the reviewed tree the override binds to.")
+        ],
+        reason: Annotated[str, typer.Option("--reason", help="Why this work was legitimately out of band (required).")],
+    ) -> "ApproveOutOfBandResult":
+        """Record a single-use override of the lifecycle phase-coverage gate (#3762).
+
+        The gate refuses a ``merge_safe`` verdict for a ticket whose work never
+        entered ``coding`` or ``testing`` — implementation done out of band, with
+        every phase-keyed gate structurally absent rather than satisfied. Some
+        out-of-band work is legitimate (a docs typo, a revert, a dependency
+        bump); this is its escape, and it is explicit and attributable by
+        construction: bound to one tree, consumed once, refused for a
+        maker/coding-agent/loop ``--approver``, and worthless without a
+        ``--reason``. The alternative satisfier is to record the work that
+        actually happened with ``lifecycle visit-phase <id> coding``.
+        """
+        ticket = Ticket.objects.resolve(ticket_id)
+        assert_lifecycle_db_is_canonical(ticket)
+        try:
+            approval = OutOfBandWorkApproval.record(
+                ticket=ticket, head_sha=head_sha, approver_id=approver, reason=reason
+            )
+        except OutOfBandWorkApprovalError as exc:
+            self.stderr.write(f"  approve-out-of-band refused: {exc}")
+            return {"recorded": False, "error": str(exc)}
+        self.stdout.write(
+            f"  out-of-band override recorded for ticket {ticket.pk} @ {approval.head_sha[:8]} "
+            f"by {approval.approver_id}: {approval.reason}"
+        )
+        return {
+            "recorded": True,
+            "ticket_id": int(ticket.pk),
+            "head_sha": approval.head_sha,
+            "approver": approval.approver_id,
+            "reason": approval.reason,
+        }
 
 
 def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:

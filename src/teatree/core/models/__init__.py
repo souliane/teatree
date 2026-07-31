@@ -75,6 +75,11 @@ from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, Me
 from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
+from teatree.core.models.out_of_band_approval import (
+    OutOfBandWorkApproval,
+    OutOfBandWorkApprovalError,
+    OutOfBandWorkAudit,
+)
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.outer_loop_experiment import (
     OuterLoopExperiment,
@@ -242,6 +247,9 @@ __all__ = [
     "OnBehalfApproval",
     "OnBehalfApprovalError",
     "OnBehalfAudit",
+    "OutOfBandWorkApproval",
+    "OutOfBandWorkApprovalError",
+    "OutOfBandWorkAudit",
     "OutboundClaim",
     "OuterLoopExperiment",
     "OuterLoopExperimentError",

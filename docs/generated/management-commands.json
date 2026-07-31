@@ -437,6 +437,10 @@
         {
           "help": "Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829)",
           "name": "record-anti-vacuity"
+        },
+        {
+          "help": "Record a single-use override of the lifecycle phase-coverage gate (#3762)",
+          "name": "approve-out-of-band"
         }
       ]
     },

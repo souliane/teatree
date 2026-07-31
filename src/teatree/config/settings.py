@@ -1049,6 +1049,16 @@ class _PrePublishGateSettings:
     # the hook; the reader resolves it through `get_effective_settings`, so a DB
     # `config_setting set` actuates it exactly like the sibling gates.
     gate_relaxation_gate_enabled: bool = True
+    # Lifecycle phase-coverage gate at the merge_safe verdict chokepoint (#3762).
+    # When enabled (default), `ReviewVerdict.record` refuses the FIRST merge_safe
+    # verdict for a PR whose ticket's ledger shows the work entered the lifecycle
+    # only at `reviewing` — no coding and no testing phase visit or task — the
+    # shape of work implemented out of band and handed to teatree as a finished
+    # PR, which leaves every phase-keyed gate structurally absent. Its OWN
+    # kill-switch — `phase_coverage_gate_enabled` (per-overlay overridable,
+    # DB-first) — is the operator escape; the per-tree escape is a single-use
+    # `OutOfBandWorkApproval` with a human approver and a mandatory reason.
+    phase_coverage_gate_enabled: bool = True
     # #122 Safety-biased incremental push gate. SETTLING feature flag: ON (default)
     # => `dev/push-gate.sh` scopes the diff (doctest + ast-grep), FULL on every
     # uncertainty; OFF => whole-tree both sweeps (the pre-#122 behaviour). The

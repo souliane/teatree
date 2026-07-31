@@ -34,6 +34,7 @@ from django.utils import timezone
 
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha, is_non_reviewer_role
 from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.phase_coverage_gate import PhaseCoverageError, assert_phase_coverage_for_verdict
 from teatree.core.models.ticket import Ticket
 
 
@@ -305,23 +306,7 @@ class ReviewVerdict(models.Model):
         if normalized_verify not in valid_verify:
             msg = f"Unknown gh_verify_result {gh_verify_result!r}; valid: {sorted(valid_verify)}"
             raise ReviewVerdictError(msg)
-        if normalized_verdict == cls.Verdict.MERGE_SAFE:
-            if normalized_verify == MergeClear.VerifyResult.FAILED:
-                msg = (
-                    f"a merge_safe verdict can never carry gh_verify_result=failed (got "
-                    f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
-                    f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
-                    f"a failed CLEAR)"
-                )
-                raise ReviewVerdictError(msg)
-            if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
-                msg = (
-                    f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
-                    f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
-                    f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
-                    f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
-                )
-                raise ReviewVerdictError(msg)
+        cls._assert_checks_snapshot_allows_merge_safe(normalized_verdict, normalized_verify, expedited=expedited)
 
         reviewer = reviewer_identity.strip()
         if not reviewer:
@@ -344,6 +329,9 @@ class ReviewVerdict(models.Model):
                 f"full 40-char SHA (e.g. `git rev-parse HEAD`)"
             )
             raise ReviewVerdictError(msg)
+
+        if normalized_verdict == cls.Verdict.MERGE_SAFE:
+            cls._assert_lifecycle_coverage(slug=slug, pr_id=pr_id, reviewed_sha=reviewed_sha, ticket=ticket)
 
         with transaction.atomic():
             # Idempotent on the normalized-identity key (F8): a re-review of the
@@ -369,6 +357,63 @@ class ReviewVerdict(models.Model):
             )
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id)
             return recorded
+
+    @classmethod
+    def _assert_checks_snapshot_allows_merge_safe(
+        cls, normalized_verdict: str, normalized_verify: str, *, expedited: bool
+    ) -> None:
+        """Refuse a ``merge_safe`` verdict whose recorded checks snapshot forbids it.
+
+        A FAILED required check is a real red verdict expedite can never waive; a
+        PENDING one is accepted only under the human-authorized, SHA-bound
+        expedite waiver ``MergeClear.issue`` records (§17.8 clause 3). A HOLD
+        carries any snapshot, so it returns immediately.
+        """
+        if normalized_verdict != cls.Verdict.MERGE_SAFE:
+            return
+        if normalized_verify == MergeClear.VerifyResult.FAILED:
+            msg = (
+                f"a merge_safe verdict can never carry gh_verify_result=failed (got "
+                f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
+                f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
+                f"a failed CLEAR)"
+            )
+            raise ReviewVerdictError(msg)
+        if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
+            msg = (
+                f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
+                f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
+                f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
+                f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
+            )
+            raise ReviewVerdictError(msg)
+
+    @classmethod
+    def _assert_lifecycle_coverage(cls, *, slug: str, pr_id: int, reviewed_sha: str, ticket: Ticket | None) -> None:
+        """Gate the FIRST ``merge_safe`` verdict for a PR on lifecycle phase coverage (#3762).
+
+        A ``merge_safe`` verdict is the one artifact every merge needs, so it is
+        the one door work implemented OUT OF BAND — never entering ``coding`` or
+        ``testing`` — cannot route around. Only the first such verdict per PR is
+        judged: coverage is a ticket-level property, so a re-review at a moved
+        head and :meth:`carry_forward`'s conflict-only rebind re-assert an
+        already-granted clearance rather than request a new one.
+
+        A refusal surfaces as :class:`ReviewVerdictError` — this IS a record-time
+        contract failure, so it reaches every caller through the one error type
+        they already handle, with the gate's own
+        :class:`~teatree.core.models.phase_coverage_gate.PhaseCoverageError`
+        preserved as the cause.
+        """
+        already_cleared = cls.objects.filter(slug=slug.strip(), pr_id=pr_id, verdict=cls.Verdict.MERGE_SAFE).exists()
+        if already_cleared:
+            return
+        try:
+            assert_phase_coverage_for_verdict(
+                ticket=ticket, slug=slug.strip(), pr_id=pr_id, head_sha=reviewed_sha.strip().lower()
+            )
+        except PhaseCoverageError as exc:
+            raise ReviewVerdictError(str(exc)) from exc
 
     def carry_forward(self, *, reviewed_sha: str) -> "ReviewVerdict":
         """Re-record this verdict at *reviewed_sha*, preserving the expedite waiver.
