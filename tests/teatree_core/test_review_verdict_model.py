@@ -424,6 +424,21 @@ class TestRecordResolvesReviewLock(TestCase):
         lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
         assert lock.state == MRReviewLock.State.RESOLVED
 
+    def test_recording_with_a_mismatched_lock_holder_cannot_steal_the_release(self) -> None:
+        MRReviewLock.acquire(slug="souliane/teatree", pr_id=42, holder="t3:reviewer-agent-a")
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            lock_holder="codex-self-review",
+        )
+
+        lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
+        assert lock.state == MRReviewLock.State.REVIEW_DISPATCHED
+
     def test_recording_with_no_held_lock_is_a_no_op(self) -> None:
         ReviewVerdict.record(
             pr_id=42,

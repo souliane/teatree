@@ -7617,7 +7617,7 @@ Usage: t3 teatree workspace release-dead-rows [OPTIONS]
  unless --apply).
 
  The narrow alternative to ``clean-all`` for the doctor's "registered
- worktree ... is not a git checkout" finding: the SAME #706 classifier and
+ worktree ... never was a git checkout" finding: the SAME #706 classifier and
  freshness precondition, deleting the ``Worktree`` row and nothing else.
  Which rows are KEPT, and why, is
  :mod:`teatree.core.worktree.dead_row_release`.
@@ -10376,6 +10376,13 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
 │                                     is for.                                  │
 │                                     [default: 0]                             │
+│ --lock-holder              TEXT     Lock identity the MRReviewLock is held   │
+│                                     under (the --holder passed to `review    │
+│                                     lock-acquire`), when you know it. Omit   │
+│                                     when you do not: the verdict releases    │
+│                                     the lock either way, since a concluded   │
+│                                     review must never strand one. Naming a   │
+│                                     DIFFERENT identity releases nothing.     │
 │ --help                              Show this message and exit.              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

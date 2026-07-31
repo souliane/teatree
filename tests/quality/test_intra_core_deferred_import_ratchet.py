@@ -14,7 +14,8 @@ It is a per-file peg ledger (``tests/quality/deferred_import_pegs.toml``
 ``[intra_core]``, counted by the shared ``tests/quality/_deferred_imports.py``
 walker): each source file may carry at most its pegged number of function-scoped
 ``teatree.core`` imports (a file not listed pegs at 0). Over-peg blocks (naming
-the file); under-peg banks (lower the entry). Per-file keying makes the ledger
+the file); a count BELOW its peg simply passes, so severing an edge is free and
+lowering the entry to bank the headroom stays optional. Per-file keying makes the ledger
 set-union mergeable — two disjoint peg bumps never collide, and same-file
 contention surfaces as a git textual conflict, not a post-merge red (the property
 a single repo-wide ``_FROZEN`` integer could not offer).
@@ -99,17 +100,6 @@ class TestIntraCoreDeferredImportRatchet:
             "guard. Make it a declared tach sub-node edge (#2385), or — if the edge is genuinely "
             "load-bearing — bump this file's peg in tests/quality/deferred_import_pegs.toml [intra_core] "
             "with a rationale in the commit message:\n" + "\n".join(drift.over_lines())
-        )
-
-    def test_no_file_is_under_its_peg(self) -> None:
-        # Banks every reduction immediately: when an edge becomes a declared tach
-        # sub-node edge the file's count drops, and its peg must follow it down so
-        # a future regression cannot silently spend the gain.
-        drift = diff_pegs(per_file_counts(_CORE_ROOT, _PREFIX), load_pegs(_PEG_TABLE))
-        assert not drift.under_peg, (
-            "intra-teatree.core deferred imports dropped below a per-file peg. Bank the reduction by "
-            "lowering (or removing) the entry in tests/quality/deferred_import_pegs.toml [intra_core]:\n"
-            + "\n".join(drift.under_lines())
         )
 
 

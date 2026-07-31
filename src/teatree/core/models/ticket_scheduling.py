@@ -1,4 +1,7 @@
+import logging
 from typing import TYPE_CHECKING
+
+from django.db import transaction
 
 from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
@@ -11,6 +14,8 @@ if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
+
+logger = logging.getLogger(__name__)
 
 
 def _auto_ship_enabled() -> bool:
@@ -59,6 +64,33 @@ class TicketSchedulingModel(TicketFacet):
         Optionally enforces ``role=author`` and runs an FSM ``gate`` (the
         plan-currency leak-close), then mints the ``phase`` Session + headless Task.
         The session ``agent_id`` is the ``phase`` (``reviewing`` uses ``review``).
+
+        **Idempotent in its side effects, not merely in the state it converges to**
+        (#3903). An in-flight sibling — a PENDING or CLAIMED Task on the same
+        ``(ticket, phase)``, in any accepted spelling — is RETURNED rather than
+        raced: two coding Tasks were once claimed and dispatched concurrently
+        against one worktree because the only guards were read-then-write checks in
+        the callers, and one of them raced. The dedupe lock is
+        :meth:`TaskQuerySet.in_flight_for_phase`, the same SSOT the periodic
+        scanners read, consulted here at the write.
+
+        Callers keep their own pre-checks (``loop/persistence.py``,
+        ``loops/outer_loop/implement.py``, ``loops/directive_loop/implement.py``,
+        ``loops/dream/umbrella_ledger.py``): they short-circuit before doing useless
+        setup work, which is worth having. What changed is that they are no longer
+        load-bearing for CORRECTNESS — a caller that forgets one, or whose
+        read-then-write races, can no longer mint a rival task, because this seam
+        checks under the same lock it writes in.
+
+        The check and the mint share one ``atomic`` block, so the guard is a real
+        CAS: SQLite is opened in ``transaction_mode="IMMEDIATE"``, so the first
+        writer holds the reserved lock for the whole block and a concurrent tick
+        cannot pass the same check.
+
+        A TERMINAL sibling is not a duplicate. A COMPLETED, FAILED or CANCELLED
+        task is a finished attempt, so the next call mints a fresh Session + Task —
+        the rework paths (``_cancel_pending_tasks``) fail their active tasks first
+        precisely so a genuine second attempt is never swallowed by this guard.
         """
         from teatree.core.models.session import Session  # noqa: PLC0415 — import cycle
         from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
@@ -68,17 +100,28 @@ class TicketSchedulingModel(TicketFacet):
             raise InvalidTransitionError(msg)
         if gate is not None:
             get_gate(gate)(self)
-        session = Session.objects.create(
-            ticket=self, agent_id="review" if normalize_phase(phase) == "reviewing" else phase
-        )
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase=phase,
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason=reason,
-            parent_task=parent_task,
-        )
+        with transaction.atomic():
+            in_flight = Task.objects.in_flight_for_phase(self.overlay, phase).filter(ticket=self).order_by("pk").first()
+            if in_flight is not None:
+                logger.info(
+                    "schedule_%s reused in-flight task %s for ticket %s (status=%s)",
+                    phase,
+                    in_flight.pk,
+                    self.pk,
+                    in_flight.status,
+                )
+                return in_flight
+            session = Session.objects.create(
+                ticket=self, agent_id="review" if normalize_phase(phase) == "reviewing" else phase
+            )
+            return Task.objects.create(
+                ticket=self,
+                session=session,
+                phase=phase,
+                execution_target=Task.ExecutionTarget.HEADLESS,
+                execution_reason=reason,
+                parent_task=parent_task,
+            )
 
     def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless testing task after coding completes."""

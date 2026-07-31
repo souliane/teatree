@@ -16,6 +16,7 @@ from __future__ import annotations  # noqa: TID251 — standalone script, not a 
 
 import json
 import operator
+import os
 import re
 import sys
 from pathlib import Path
@@ -28,8 +29,26 @@ if str(_SRC_DIR) not in sys.path:
 
 from teatree.skill_support.loading import SkillLoadingPolicy
 
-XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
-SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"
+
+def xdg_data_dir() -> Path:
+    """The teatree data dir, resolved the way the Django writer resolves it.
+
+    ``teatree.paths.resolve_data_dir`` honours ``XDG_DATA_HOME`` before
+    falling back to ``~/.local/share``; this reader must too, or an install
+    with an XDG sandbox has ``t3 config write-skill-cache`` writing one file
+    while the UserPromptSubmit hook reads another — and a cache the reader
+    cannot find is indistinguishable from a cache with no skills in it
+    (souliane/teatree#3829). Resolved per call rather than at import so the
+    answer tracks the environment the hook actually runs under.
+    """
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "teatree"
+
+
+def skill_metadata_cache() -> Path:
+    """The skill-metadata cache file ``teatree.core.skill_cache`` writes."""
+    return xdg_data_dir() / "skill-metadata.json"
 
 
 def _get_installed_version() -> str:
@@ -48,10 +67,11 @@ def _read_metadata_cache() -> dict:
     Returns an empty dict when the cache is missing, corrupt, was
     written by a different teatree version, or has stale mtimes.
     """
-    if not SKILL_METADATA_CACHE.is_file():
+    cache_path = skill_metadata_cache()
+    if not cache_path.is_file():
         return {}
     try:
-        metadata = json.loads(SKILL_METADATA_CACHE.read_text(encoding="utf-8"))
+        metadata = json.loads(cache_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
     if not isinstance(metadata, dict):

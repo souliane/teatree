@@ -60,11 +60,14 @@ class ProbeCheckoutTest(_RootsTestCase):
         plain.mkdir()
         assert probe_checkout(plain) is CheckoutState.NOT_A_CHECKOUT
 
-    def test_a_dangling_gitfile_is_proven_not_a_checkout(self) -> None:
-        dead = self.tmp / "dead"
-        dead.mkdir()
-        (dead / ".git").write_text("gitdir: /nonexistent/clone/.git/worktrees/gone\n", encoding="utf-8")
-        assert probe_checkout(dead) is CheckoutState.NOT_A_CHECKOUT
+    def test_a_dangling_gitfile_proves_nothing_and_is_never_called_dead(self) -> None:
+        # git answers "not a git repository" here in the same words it uses for a
+        # dir that never held one — but this dir CLAIMS to be a checkout, and the
+        # admin dir it claims may exist in whatever context created it (#3912).
+        unresolvable = self.tmp / "unresolvable"
+        unresolvable.mkdir()
+        (unresolvable / ".git").write_text("gitdir: /nonexistent/clone/.git/worktrees/gone\n", encoding="utf-8")
+        assert probe_checkout(unresolvable) is CheckoutState.INCONCLUSIVE
 
     def test_an_absent_path_proves_nothing(self) -> None:
         # "cannot change to <path>" says nothing about whether a repo lives there.

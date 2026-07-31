@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
+from teatree.core.modelkit.phases import phase_spellings
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
 
 
@@ -330,8 +331,11 @@ class TestTaskPhaseCadenceQueries(TestCase):
     def test_manager_methods_delegate_to_module_helpers(self) -> None:
         pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=3)
 
-        # The module-level helpers are the concern-split home the manager methods delegate to.
-        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)) == [pending]
+        # The module-level helpers are the concern-split home the manager methods
+        # delegate to. The helper matches a set of stored spellings; resolving a
+        # phase to that set is the manager's job, because the layering keeps
+        # ``modelkit`` out of the helper module.
+        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, phase_spellings(self.PHASE))) == [pending]
         direct = last_run_at_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)
         via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
         assert direct == via_manager

@@ -19,18 +19,33 @@ from pathlib import Path
 
 from teatree.config import worktree_root
 from teatree.core.models import Worktree
+from teatree.core.worktree.checkout_liveness import admin_entry_for, claims_to_be_a_checkout
 from teatree.utils.git_run import git_env_without_overrides
 from teatree.utils.run import run_allowed_to_fail
 
 
 class CheckoutState(StrEnum):
-    """What ``git rev-parse`` proved about a directory — three answers, not two.
+    """What a directory was PROVED to be — three answers, and each is an authorisation.
 
-    ``INCONCLUSIVE`` is the load-bearing one: git declining to speak (dubious
-    ownership, a permission error, a missing binary) looks exactly like a dead
-    checkout to a boolean probe, and a boolean probe is what let the reaper treat
-    "git would not answer" as "this dir holds nothing". Only ``NOT_A_CHECKOUT``
-    is positive proof, so only it may authorise a destructive release.
+    Read these as verdicts on what a caller may DO, never as claims about what a
+    caller can RUN. ``CHECKOUT`` means live: hands off. It covers a checkout git
+    resolved here AND one only the clone vouches for, and in the second case git
+    commands in that directory still fail — the two collapse into one value because
+    the correct action for both is identical, which is nothing.
+
+    ``NOT_A_CHECKOUT`` is the only state that may authorise a destructive release,
+    and even then only of a registry ROW: it is never licence to remove a directory,
+    which no single context has the evidence to justify. It demands positive proof:
+    the directory carries no ``.git`` entry at all and git agrees there is no
+    repository. Nothing there ever claimed to be a checkout, so there is no pointer
+    this context might merely be failing to follow.
+
+    ``INCONCLUSIVE`` is the load-bearing one — the UNKNOWN a fail-open reaper
+    keeps. git declining to speak (dubious ownership, a permission error, a
+    missing binary) and a checkout whose recorded admin dir is absent from THIS
+    execution context both land here: each looks exactly like a dead checkout to a
+    boolean probe, and a boolean probe is what let the reaper treat "git would not
+    answer" as "this dir holds nothing".
     """
 
     CHECKOUT = "checkout"
@@ -43,7 +58,7 @@ class CheckoutState(StrEnum):
 _NOT_A_CHECKOUT_STDERR = ("not a git repository", "not a working tree", "invalid gitfile format")
 
 
-def probe_checkout(path: Path) -> CheckoutState:
+def probe_checkout(path: Path, *, clone: Path | None = None) -> CheckoutState:
     """Classify *path* as a live checkout, a proven non-checkout, or unanswerable.
 
     The one probe the broken-dir reaper, the row reaper and ``t3 doctor`` share,
@@ -51,6 +66,11 @@ def probe_checkout(path: Path) -> CheckoutState:
     whose failure the setup-time ``is not a git checkout`` WARN reports. Runs with
     every ``GIT_*`` override stripped so an ambient hook environment cannot answer
     for a different repo.
+
+    Pass *clone* — the source clone as THIS context reaches it — whenever the
+    caller knows it. Without it the probe can only ever downgrade an unresolvable
+    pointer to ``INCONCLUSIVE``; with it, the clone's own admin entry proves the
+    checkout live and the answer is exact.
     """
     try:
         result = run_allowed_to_fail(
@@ -62,10 +82,27 @@ def probe_checkout(path: Path) -> CheckoutState:
         return CheckoutState.INCONCLUSIVE
     if result.returncode == 0 and result.stdout.strip():
         return CheckoutState.CHECKOUT
-    stderr = result.stderr.lower()
-    if any(marker in stderr for marker in _NOT_A_CHECKOUT_STDERR):
-        return CheckoutState.NOT_A_CHECKOUT
+    return _refusal_state(path, clone=clone, stderr=result.stderr.lower())
+
+
+def _refusal_state(path: Path, *, clone: Path | None, stderr: str) -> CheckoutState:
+    """What git's refusal proves — which is far less than its wording suggests.
+
+    ``fatal: not a git repository`` is git's answer both for a directory that
+    never held one and for a checkout whose recorded admin dir this context
+    cannot reach, so the wording alone cannot separate them. The directory's own
+    ``.git`` entry can: a checkout that staked the claim is never called dead on a
+    pointer this context failed to follow.
+    """
+    if not claims_to_be_a_checkout(path):
+        return CheckoutState.NOT_A_CHECKOUT if _reads_as_no_repository(stderr) else CheckoutState.INCONCLUSIVE
+    if clone is not None and admin_entry_for(path, clone) is not None:
+        return CheckoutState.CHECKOUT
     return CheckoutState.INCONCLUSIVE
+
+
+def _reads_as_no_repository(stderr: str) -> bool:
+    return any(marker in stderr for marker in _NOT_A_CHECKOUT_STDERR)
 
 
 def canonical_worktree_root() -> Path:

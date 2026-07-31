@@ -515,7 +515,7 @@ class Ticket(
         crash. The ``execute_teardown`` enqueue is the ``post_transition``
         receiver's job (``teatree.core.signals``), keyed on the transition (#2385)
         and on ENTRY into the terminal state (#3879) — so that no-op mints no
-        duplicate job, and ``enqueue_teardown_for_terminal_tickets`` is the retry.
+        duplicate job, and ``TeardownDispatch.drain_terminal_backlog`` is the retry.
 
         The ``merge_evidence`` gate (#4a) preflights: MERGED is unreachable without
         a real merged-SHA row, so the ungated ``_advance_ticket`` walk fails loud.

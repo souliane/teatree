@@ -18,6 +18,7 @@ wedged push; CI's whole-tree scan is the guarantor. The whole-tree CI backstop i
 never on the push path alone.
 """
 
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,12 @@ _FLAG_OFF_REASON = "incremental_push_gate is OFF — whole-tree doctest + whole-
 # nothing and pytest exits 5 — teatree is near-zero-comments, so most modules have
 # no doctests. That is NOT a doctest failure (only exit 1 is); the gate must pass.
 _PYTEST_NO_TESTS_COLLECTED = 5
+
+# Enough of a failing sweep's tail to name the offending module and its error, short
+# enough that the gate's verdict stays readable.
+DOCTEST_FAILURE_TAIL_LINES = 40
+
+_SETTINGS_MODULE_ENV = "DJANGO_SETTINGS_MODULE"
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,20 @@ class PushGatePlan:
             f"push-gate: SCOPED — {len(self.doctest_targets)} doctest module(s), "
             f"{len(self.astgrep_scope or ())} ast-grep file(s) of the diff; full-run triggers: none"
         )
+
+
+@dataclass(frozen=True)
+class DoctestOutcome:
+    """What the ``--doctest-modules`` sweep did — verdict, exit code, and its own output.
+
+    The gate reports the sweep to a human, so the run's own words have to survive it
+    (#3808): a bare ``ok`` reduces a real collection error to an exit code the
+    operator cannot tell from an environmental flake.
+    """
+
+    ok: bool
+    returncode: int
+    output: str
 
 
 @dataclass(frozen=True)
@@ -130,19 +151,65 @@ def pytest_prefix(repo_root: Path) -> list[str]:
     return [*runner_prefix(repo_root), "-m", "pytest"]
 
 
-def _run_doctests(targets: Sequence[Path], repo_root: Path) -> bool:
+def sweep_env() -> dict[str, str]:
+    """This process's environment minus ``DJANGO_SETTINGS_MODULE`` (#3808).
+
+    The gate reads its own feature flag through the sanctioned ``django.setup()``
+    entry point, whose ``setdefault`` leaves ``DJANGO_SETTINGS_MODULE`` in
+    ``os.environ`` — so an inherited environment is never the caller's shell alone.
+    pytest-django ranks that variable ABOVE the ini, so an inherited value silently
+    swaps the settings module out from under the sweep and it collects the tree under
+    application settings CI never uses. Dropping it hands the choice back to the ini,
+    the same strip :func:`teatree.cli.overlay._base_env` and
+    :func:`teatree.loop.dogfood_smoke._clean_subprocess_env` do for their children.
+    """
+    return {key: value for key, value in os.environ.items() if key != _SETTINGS_MODULE_ENV}
+
+
+def sweep_argv(repo_root: Path, targets: Sequence[Path]) -> list[str]:
+    """The sweep's argv — the one list :func:`_run_doctests` runs and ``--emit-cmd`` prints."""
+    return [*pytest_prefix(repo_root), "--no-header", "-q", "--doctest-modules", *[str(t) for t in targets]]
+
+
+def sweep_command(repo_root: Path, targets: Sequence[Path]) -> list[str]:
+    """:func:`sweep_argv` with :func:`sweep_env`'s strip made visible, for pasting into a shell.
+
+    ``--emit-cmd`` exists so the operator can re-run a failing sweep by hand, so it
+    has to carry the strip too — otherwise the reproduction diverges from the run it
+    claims to reproduce, in exactly the direction that manufactures a phantom failure.
+    """
+    return ["env", f"-u{_SETTINGS_MODULE_ENV}", *sweep_argv(repo_root, targets)]
+
+
+def _run_doctests(targets: Sequence[Path], repo_root: Path) -> DoctestOutcome:
     if not targets:
-        return True
-    cmd = [*pytest_prefix(repo_root), "--no-header", "-q", "--doctest-modules", *[str(t) for t in targets]]
-    result = run_allowed_to_fail(cmd, expected_codes=None, cwd=repo_root)
-    return result.returncode in {0, _PYTEST_NO_TESTS_COLLECTED}
+        return DoctestOutcome(ok=True, returncode=0, output="")
+    result = run_allowed_to_fail(sweep_argv(repo_root, targets), expected_codes=None, cwd=repo_root, env=sweep_env())
+    streams = [stream for stream in (result.stdout, result.stderr) if stream]
+    return DoctestOutcome(
+        ok=result.returncode in {0, _PYTEST_NO_TESTS_COLLECTED},
+        returncode=result.returncode,
+        output="\n".join(stream.rstrip("\n") for stream in streams),
+    )
+
+
+def _sweep_failure_note(sweep: DoctestOutcome, targets: Sequence[Path]) -> str:
+    """Say what the sweep did, so an exit 1 is never mistaken for an environmental flake.
+
+    A gate that fails with no diagnostic is worse than no gate: it is unactionable,
+    indistinguishable from a flake, and it teaches its users to bypass it (#3808).
+    """
+    scope = " ".join(str(target) for target in targets)
+    tail = sweep.output.rstrip().splitlines()[-DOCTEST_FAILURE_TAIL_LINES:]
+    detail = f"Its last {len(tail)} output line(s):\n" + "\n".join(tail) if tail else "It printed nothing."
+    return f"FAILED: the doctest sweep over {scope} exited {sweep.returncode}. {detail}"
 
 
 def run_push_gate(
     plan: PushGatePlan,
     *,
     repo_root: Path,
-    doctest_runner: Callable[[Sequence[Path], Path], bool] = _run_doctests,
+    doctest_runner: Callable[[Sequence[Path], Path], DoctestOutcome] = _run_doctests,
     astgrep_scanner: Callable[..., list[dict]] = scan_findings,
 ) -> PushGateResult:
     """Execute the two engines behind *plan* and report the combined verdict.
@@ -152,7 +219,9 @@ def run_push_gate(
     CI's whole-tree scan is the guarantor (R7 never-lockout).
     """
     notes: list[str] = [plan.report(), f"reason: {plan.reason}"]
-    doctest_ok = doctest_runner(plan.doctest_targets, repo_root)
+    sweep = doctest_runner(plan.doctest_targets, repo_root)
+    if not sweep.ok:
+        notes.append(_sweep_failure_note(sweep, plan.doctest_targets))
 
     findings: list[dict] = []
     deferred = False
@@ -166,10 +235,10 @@ def run_push_gate(
             "whole-tree backstop. The push is NOT blocked (CI is the guarantor); this is not a skip-as-pass."
         )
 
-    ok = doctest_ok and not findings
+    ok = sweep.ok and not findings
     return PushGateResult(
         ok=ok,
-        doctest_ok=doctest_ok,
+        doctest_ok=sweep.ok,
         astgrep_findings=tuple(findings),
         astgrep_deferred=deferred,
         notes=tuple(notes),

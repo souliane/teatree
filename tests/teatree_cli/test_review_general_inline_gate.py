@@ -26,6 +26,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.general_inline_gate import check_general_inline_findings, looks_like_inline_findings
+from teatree.cli.review.guarded_read import ReadOutcome
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
 
@@ -291,7 +292,9 @@ class TestForceGeneralReachesGateViaCLI:
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _gate_immediate(tmp_path, monkeypatch)
         self.stub = _StubAPI()
-        monkeypatch.setattr(ReviewService, "get_gitlab_token", staticmethod(lambda: "t"))
+        monkeypatch.setattr(
+            ReviewService, "read_gitlab_token", staticmethod(lambda _repo="": ReadOutcome(value="t", failed=False))
+        )
         monkeypatch.setattr(ReviewService, "_get_api", lambda _self: self.stub)
         # Own MR → shape gate no-op; isolates this gate end to end.
         from teatree.cli.review import shape_gate as shape_mod  # noqa: PLC0415

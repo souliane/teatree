@@ -14,17 +14,26 @@ from django.db import models
 from django.db.models import Max
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from teatree.core.models.task import Task
 
 
-def in_flight_for_phase(qs: models.QuerySet, overlay: str, phase: str) -> models.QuerySet:
+def in_flight_for_phase(qs: models.QuerySet, overlay: str, spellings: "Sequence[str]") -> models.QuerySet:
     """Pending/claimed tasks for one overlay+phase — the scanners' dedupe lock.
 
     ``Status.active()`` (PENDING|CLAIMED) is the SSOT for "in flight", so no
     scanner carries a private ``{"pending","claimed"}`` constant.
+
+    *spellings* is every stored spelling of one phase, resolved by the caller
+    through ``phase_spellings`` (the layering keeps ``modelkit`` out of this
+    module). Matching the whole set is what makes this a lock: a row stored with a
+    short verb (``review``, written by the unnormalized ``tasks create <id> review``
+    path) must read as in flight for its gerund (``reviewing``), or one spelling
+    mints a rival for the other.
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
-    return qs.filter(ticket__overlay=overlay, phase=phase, status__in=task_model.Status.active())
+    return qs.filter(ticket__overlay=overlay, phase__in=spellings, status__in=task_model.Status.active())
 
 
 def last_run_at_for_phase(

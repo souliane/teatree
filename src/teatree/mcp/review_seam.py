@@ -21,10 +21,10 @@ class ReviewPostSeam(Protocol):
     def post_comment(self, repo: str, mr: int, note: str, *, live: bool = False) -> tuple[str, int]: ...
 
 
-SeamFactory = Callable[[], ReviewPostSeam]
+SeamFactory = Callable[[str], ReviewPostSeam]
 
 
-def _unregistered_factory() -> ReviewPostSeam:
+def _unregistered_factory(_repo: str) -> ReviewPostSeam:
     msg = "review-post seam not registered — teatree.cli must call register_review_post_seam() at import time"
     raise RuntimeError(msg)
 
@@ -38,6 +38,11 @@ def register_review_post_seam(factory: SeamFactory) -> None:
     _factory = factory
 
 
-def review_post_seam() -> ReviewPostSeam:
-    """The gated review poster via the registered factory."""
-    return _factory()
+def review_post_seam(repo: str) -> ReviewPostSeam:
+    """The gated review poster for *repo*, via the registered factory.
+
+    *repo* is the ``owner/name`` slug the tool was called with: the service resolves
+    its forge base URL and API token from the overlay that owns it, so the target is
+    derived from the call rather than from whichever overlay is ambient (#3793).
+    """
+    return _factory(repo)

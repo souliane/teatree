@@ -33,6 +33,19 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
 
+
+def _phase_spellings(phase: str) -> tuple[str, ...]:
+    """Every stored spelling of *phase* — the one call-time hop to the phase vocabulary.
+
+    ``completed_in_phase`` / ``pending_in_phase`` / ``in_flight_for_phase`` all key on
+    the same spelling set, so the deferred ``modelkit.phases`` import lives here once
+    rather than being restated in each — one intra-core edge, not three.
+    """
+    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+    return phase_spellings(phase)
+
+
 __all__ = [
     "PER_LOOP_OWNER_PREFIX",
     "T3_MASTER_SLOT",
@@ -185,11 +198,9 @@ class TaskQuerySet(models.QuerySet):
         ``reviewing`` one, mirroring the ``normalize_phase`` contract the
         rest of the system honours.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self.filter(phase__in=phase_spellings(phase), status=task_model.Status.COMPLETED)
+        return self.filter(phase__in=_phase_spellings(phase), status=task_model.Status.COMPLETED)
 
     def pending_in_phase(self, phase: str) -> models.QuerySet:
         """Non-terminal tasks whose phase normalizes to ``phase`` (#769).
@@ -201,26 +212,34 @@ class TaskQuerySet(models.QuerySet):
         as a zombie session. Same SSOT (``phase_spellings``), opposite
         status set.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         return self.filter(
-            phase__in=phase_spellings(phase),
+            phase__in=_phase_spellings(phase),
             status__in=task_model.Status.active(),
         )
 
     def not_auto_review_armed(self) -> models.QuerySet:
         """Tasks the #68 auto-review dispatch did NOT arm — the stray/armed discriminator (#3910).
 
-        Reaping an armed task deadlocks its PR permanently: the dispatch dedups
-        per ``(slug, pr_id, head_sha)``, so no later tick re-arms it.
+        Reaping an armed task costs its PR a full dispatch deadline: the claim is
+        keyed per ``(slug, pr_id, head_sha)``, so nothing re-arms that head until
+        the deadline passes and the next sweep reclaims it (#3920). Bounded, not
+        permanent — but still a wasted cycle, so an armed task stays off the
+        reaper's list.
         """
         return self.filter(auto_review_dispatches__isnull=True)
 
     def in_flight_for_phase(self, overlay: str, phase: str) -> models.QuerySet:
-        """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
-        return _in_flight_for_phase(self, overlay, phase)
+        """Pending/claimed tasks for one overlay+phase — the dedupe lock (SSOT).
+
+        Read by the periodic cadence scanners AND by the phase-task mint itself
+        (``Ticket._schedule_headless``, #3903), so the one lock the codebase
+        documents is consulted at the write rather than restated per caller.
+        Matches every accepted spelling of *phase* via ``phase_spellings``, the
+        same SSOT ``pending_in_phase`` reads.
+        """
+        return _in_flight_for_phase(self, overlay, _phase_spellings(phase))
 
     def last_run_at_for_phase(
         self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None

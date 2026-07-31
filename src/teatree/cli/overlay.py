@@ -536,28 +536,30 @@ class OverlayAppBuilder:
         back to ``<project>/skills`` — the documented per-overlay layout (one skill
         dir per package), which is fast and side-steps an unbounded ``rglob`` over
         the whole project tree (``.venv/``, ``__pycache__/``, ``node_modules/``).
-        """
-        from teatree.core.overlay_skills import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-            overlay_skill_metadata,
-            overlay_skills_root,
-        )
 
-        metadata = overlay_skill_metadata(self.overlay_name)
-        skills_root = overlay_skills_root(metadata, self.project_path)
+        The manifest REGISTERS the group; ``get_tool_commands()`` DECLARES the
+        surface. The two disagreeing is the warned condition (#3904, #3915) —
+        never the mere presence of a skills root.
+        """
+        from teatree.core import overlay_skills  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        metadata = overlay_skills.overlay_skill_metadata(self.overlay_name)
+        skills_root = overlay_skills.overlay_skills_root(metadata, self.project_path)
         if skills_root is None:
             return
 
         tool_commands = self._read_tool_commands(skills_root)
         if not tool_commands:
-            # A declared root that yields nothing is a real misconfiguration — the
-            # operator has a documented tool surface that would silently not exist.
-            # Name the searched path instead of returning silently (#3355). The
-            # default ``<project>/skills`` fallback stays quiet: an overlay that
-            # simply ships no tools is not a misconfiguration.
-            if metadata.get("skill_root"):
+            # A DECLARED tool surface that yields no manifest is the real
+            # misconfiguration — the operator has documented commands that would
+            # silently not exist. Name the searched path instead of returning
+            # silently (#3355). Keying this on ``skill_root`` instead fired on
+            # every invocation of every overlay that merely ships skills (#3904,
+            # #3915) — the same judgement the ``<project>/skills`` fallback got.
+            if overlay_skills.overlay_declares_tool_commands(self.overlay_name):
                 logger.warning(
-                    "overlay %r declares a skills root (%s) but no */hook-config/tool-commands.json "
-                    "was found there — the `t3 %s tool` command group is not registered.",
+                    "overlay %r declares tool commands but no */hook-config/tool-commands.json "
+                    "was found under %s — the `t3 %s tool` command group is not registered.",
                     self.overlay_name,
                     skills_root,
                     self.overlay_name,

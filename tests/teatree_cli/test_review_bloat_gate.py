@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.bloat_gate import check_review_bloat, references_project_chatter
+from teatree.cli.review.guarded_read import ReadOutcome
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
 
@@ -223,7 +224,9 @@ class TestAllowBloatReachesGateViaCLI:
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _gate_immediate(tmp_path, monkeypatch)
         self.stub = _StubAPI()
-        monkeypatch.setattr(ReviewService, "get_gitlab_token", staticmethod(lambda: "t"))
+        monkeypatch.setattr(
+            ReviewService, "read_gitlab_token", staticmethod(lambda _repo="": ReadOutcome(value="t", failed=False))
+        )
         monkeypatch.setattr(ReviewService, "_get_api", lambda _self: self.stub)
         from teatree.cli.review import shape_gate as shape_mod  # noqa: PLC0415
 
