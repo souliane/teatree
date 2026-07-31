@@ -70,6 +70,7 @@ from teatree.cli.doctor.checks_session import (
 )
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
+from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
 from teatree.cli.doctor.checks_unshipped_work import check_unshipped_work
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
@@ -170,6 +171,7 @@ __all__ = (
     "check_slack_roundtrip",
     "check_statusline",
     "check_statusline_freshness",
+    "check_stranded_prek_patches",
     "check_unshipped_work",
     "doctor_app",
 )
@@ -382,7 +384,17 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # those rows visible with an age (#3891). Nothing reaps them, so without a
     # surface nobody looks. The tuple calls all three before ``all`` short-circuits,
     # so no finding masks another.
-    ok = all((check_worktree_health(), check_pending_pull_requests(), check_unshipped_work())) and ok
+    ok = (
+        all(
+            (
+                check_worktree_health(),
+                check_pending_pull_requests(),
+                check_unshipped_work(),
+                check_stranded_prek_patches(),
+            )
+        )
+        and ok
+    )
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok
