@@ -34,6 +34,8 @@ from teatree.config import cold_defaults
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode
 from teatree.config.overlay_code_defaults import overlay_code_defaults
+from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES
+from teatree.config.override_reader import GLOBAL_SCOPE_LABEL, OVERLAY_SCOPE_LABEL, load_global_rows, load_overlay_rows
 from teatree.config.retired_settings import RENAMED_SETTING_KEYS, removed_setting, warn_removed_setting
 from teatree.config.setting_layers import (
     SettingLayers,
@@ -194,10 +196,18 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     hard_pinned = set(overrides) | set(layers.overlay_db)
     overrides.update(layers.global_db)
     overrides.update(layers.overlay_db)
+    env_overrides: dict[str, Any] = {}
     if overlay_name is None:
         env_overrides = env_setting_overrides()
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)
+    # #3873: an override tier that could not be READ is not an override tier that is empty.
+    # The safety keys resolve to their most restrictive value while it is unreadable, and
+    # are HARD-PINNED so the autonomy collapse cannot re-expand what the degradation just
+    # closed. Empty (and therefore inert) on every healthy read.
+    fail_closed = fail_closed_overrides(layers.degraded_scopes, supplied_by_env=set(env_overrides))
+    overrides.update(fail_closed)
+    hard_pinned |= set(fail_closed)
     defaults_base = shipped_defaults_base(base, layers)
     layered = {**code_defaults, **overrides}
     settings = defaults_base if not layered else replace(defaults_base, **layered)
@@ -224,9 +234,40 @@ def read_setting_layers(overlay_name: str) -> SettingLayers:
     WHICH one supplied a value. A second reader would be a second resolution path.
     """
     toml_rows = _toml_default_rows()
-    db_rows = (_load_global_rows(), _load_overlay_rows(overlay_name))
+    global_rows, global_degraded = load_global_rows()
+    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
+    db_rows = (global_rows, overlay_rows)
     global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
-    return SettingLayers(toml_rows, _coerce_setting_rows(toml_rows), db_rows, global_db, overlay_db)
+    degraded = frozenset(
+        label
+        for label, failed in ((GLOBAL_SCOPE_LABEL, global_degraded), (OVERLAY_SCOPE_LABEL, overlay_degraded))
+        if failed
+    )
+    return SettingLayers(
+        toml_rows, _coerce_setting_rows(toml_rows), db_rows, global_db, overlay_db, degraded_scopes=degraded
+    )
+
+
+def fail_closed_overrides(degraded_scopes: frozenset[str], *, supplied_by_env: set[str]) -> dict[str, Any]:
+    """The coerced safety values that apply while the DB override tier is UNREADABLE (#3873).
+
+    Empty when nothing degraded, so a healthy resolution is byte-identical to before this
+    existed. Otherwise every :data:`SAFETY_FAIL_CLOSED_STORED_VALUES` key resolves to its
+    most restrictive value — because the tier that would have said otherwise could not be
+    read, and a shipped default is not a safe answer when two of them (``autonomy = full``,
+    ``mode = auto``) are the most permissive value the setting has.
+
+    *supplied_by_env* is excluded: ``T3_*`` reached this process through the environment,
+    which the failed DB read cannot have affected, so it is readable operator intent rather
+    than a guess and keeps its precedence.
+
+    The values go through :func:`_coerce_setting_rows` — the same registry parsers a stored
+    row goes through — so a fail-closed value can never be a type the resolver would reject.
+    """
+    if not degraded_scopes:
+        return {}
+    stored = {key: value for key, value in SAFETY_FAIL_CLOSED_STORED_VALUES.items() if key not in supplied_by_env}
+    return _coerce_setting_rows(stored)
 
 
 def _active_overlay_overrides() -> dict[str, Any]:
@@ -297,7 +338,7 @@ def _db_global_overrides() -> dict[str, Any]:
     the autonomy collapse (mirroring the old global-``[teatree] mode`` rule). See
     :func:`_coerce_setting_rows` for the type coercion and the loud-on-corruption rule.
     """
-    return _coerce_setting_rows(_load_global_rows())
+    return _coerce_setting_rows(load_global_rows()[0])
 
 
 def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
@@ -309,7 +350,7 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     request for ``teatree`` also reads the ``t3-teatree`` entry-point overlay's
     rows and vice versa) so a row written under either spelling resolves.
     """
-    return _coerce_setting_rows(_load_overlay_rows(overlay_name))
+    return _coerce_setting_rows(load_overlay_rows(overlay_name)[0])
 
 
 # Retired ConfigSetting keys mapped to their current ``UserSettings`` field, and
@@ -376,108 +417,6 @@ def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
         if not is_alias:
             fields_from_canonical_key.add(field_name)
     return overrides
-
-
-def _app_registry_ready() -> bool:
-    """True when Django is configured AND its app registry is fully populated (post-``django.setup()``)."""
-    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
-    from django.conf import settings as django_settings  # noqa: PLC0415 — deferred: settings read at call time
-
-    return django_settings.configured and apps.ready
-
-
-def _override_read_degrades_silently(exc: BaseException) -> bool:
-    """Whether a caught override-read exception is a genuine BOOTSTRAP no-op (silent ``{}``).
-
-    ``ImproperlyConfigured`` / ``AppRegistryNotReady`` are unambiguous bootstrap states —
-    always silent. ``OperationalError`` / ``ProgrammingError`` are AMBIGUOUS: a bootstrap
-    signal (missing table, DB not ready) before ``django.setup()``, but ALSO a real RUNTIME
-    fault (a locked SQLite DB, a lock timeout, a mid-session drop) once the registry is
-    ready — the TYPE alone can't tell them apart, so they are silent ONLY while the registry
-    is not ready (:func:`_app_registry_ready`); a runtime one logs loud. Any OTHER exception
-    is a real read bug — always loud.
-    """
-    from django.core.exceptions import (  # noqa: PLC0415 — deferred: Django import at call time
-        AppRegistryNotReady,
-        ImproperlyConfigured,
-    )
-    from django.db.utils import (  # noqa: PLC0415 — deferred: Django import at call time
-        OperationalError,
-        ProgrammingError,
-    )
-
-    if isinstance(exc, ImproperlyConfigured | AppRegistryNotReady):
-        return True
-    if isinstance(exc, OperationalError | ProgrammingError):
-        return not _app_registry_ready()
-    return False
-
-
-# The loud SIGNAL for a non-bootstrap ``ConfigSetting`` read fault. Such a failure is a
-# fail-OPEN of the ENTIRE DB override tier — it drops the ``autonomy`` /
-# ``require_human_approval_to_merge`` safety gates back to the dataclass defaults — so it
-# is logged ``ERROR`` + traceback (the "raise or log-and-signal, not SILENTLY fail-open"
-# contract) rather than swallowed: operator error-monitoring surfaces the real fault.
-_OVERRIDE_READ_FAILURE_MSG = (
-    "ConfigSetting %s-scope override read FAILED unexpectedly — resolving with NO DB override tier for this "
-    "read (safety gates fall back to dataclass defaults). This is a real read fault, not a bootstrap no-op; "
-    "fix the DB/read error."
-)
-
-
-def _load_global_rows() -> dict[str, Any]:
-    """Read the GLOBAL-scope (``scope=""``) ``{key: value}`` rows, or ``{}`` on failure.
-
-    Reaches the model via Django's app registry (no static ``teatree.core`` import — that
-    would be a backwards ``platform -> domain`` tach edge). A genuine bootstrap state
-    degrades SILENTLY (:func:`_override_read_degrades_silently`); a RUNTIME fault — incl.
-    an ``OperationalError`` / ``ProgrammingError`` raised while the app registry is ready —
-    is logged loud (:data:`_OVERRIDE_READ_FAILURE_MSG`), never silently emptying the tier.
-    """
-    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
-
-    try:
-        model = apps.get_model("core", "ConfigSetting")
-        return dict(model.objects.overrides_for_scope(""))
-    except Exception as exc:
-        if not _override_read_degrades_silently(exc):
-            _logger.exception(_OVERRIDE_READ_FAILURE_MSG, "global")
-        return {}
-
-
-def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
-    """Read the active overlay's ``{key: value}`` rows, alias-tolerant, or ``{}``.
-
-    Matches the row's scope to *overlay_name* canonical-alias-tolerantly (a row
-    under either the short alias or the ``t3-``-prefixed entry-point name resolves
-    for the active overlay) and MERGES every canonically-equivalent scope group —
-    a row scoped ``myovl`` and one scoped ``t3-myovl`` both apply. Alias groups
-    apply in sorted-scope order, then the exact-name group last, so on a key
-    collision the exact-name row wins. Same signal-on-real-failure posture as
-    :func:`_load_global_rows`: a genuine bootstrap state is silent, a runtime fault
-    (incl. a ready-registry ``OperationalError`` / ``ProgrammingError``) logs loud.
-    """
-    if not overlay_name:
-        return {}
-    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
-
-    try:
-        model = apps.get_model("core", "ConfigSetting")
-        canonical = OverlayEntry.canonical_overlay_name(overlay_name)
-        scope_values: dict[str, dict[str, Any]] = {}
-        for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
-            if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
-                scope_values.setdefault(scope, {})[key] = value
-        merged: dict[str, Any] = {}
-        for scope in sorted(scope_values):
-            if scope != overlay_name:
-                merged.update(scope_values[scope])
-        merged.update(scope_values.get(overlay_name, {}))
-    except Exception as exc:
-        if not _override_read_degrades_silently(exc):
-            _logger.exception(_OVERRIDE_READ_FAILURE_MSG, f"overlay {overlay_name!r}")
-        return {}
-    return merged
 
 
 def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:

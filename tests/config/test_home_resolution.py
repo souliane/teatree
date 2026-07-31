@@ -117,9 +117,13 @@ class TestDbHomeKeyInOverlayRegistryIsLoud:
         _seed_config_db(config_db, overlays={"my-overlay": {"class": "x.y:Z", "mode": "interactive"}})
         with caplog.at_level(logging.WARNING, logger="teatree.config"):
             settings = get_effective_settings()
-        # The overlay-TOML ``mode = interactive`` is a DB-home key, so it is ignored
-        # on read; ``mode`` falls to the resolved default (``auto``).
-        assert settings.mode is Mode.AUTO
+        # The overlay-TOML ``mode = interactive`` is a DB-home key, so it is ignored on
+        # read. What ``mode`` then falls to is NOT this test's subject — the loud drop
+        # WARN below is. This case runs with no Django DB, so the ConfigSetting tier is
+        # genuinely unreadable and ``mode`` takes its fail-closed value (#3873) rather than
+        # the shipped default; either way the registry value had no effect, which is the
+        # property under test.
+        assert settings.mode is Mode.INTERACTIVE
         joined = "\n".join(_drop_warnings(caplog))
         assert "mode" in joined
         assert "my-overlay" in joined

@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _AMBIENT_STRIP_MAX_CHARS, _build_skill_loader_input, _strip_ambient_context
+from hooks.scripts.skill_loader_input import _AMBIENT_STRIP_MAX_CHARS, build_skill_loader_input, strip_ambient_context
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -93,7 +93,7 @@ def _suggest(prompt: str, skills_dir: Path, config: Path) -> list[str]:
     """Run the real matcher on *prompt* exactly as the hook does (ambient stripped)."""
     return suggest_skills(
         {
-            "prompt": _strip_ambient_context(prompt),
+            "prompt": strip_ambient_context(prompt),
             "cwd": str(skills_dir.parent),
             "loaded_skills": [],
             "skill_search_dirs": [str(skills_dir)],
@@ -106,22 +106,22 @@ class TestStripAmbientContext:
     """The pure stripper drops harness wrappers, keeps real task text."""
 
     def test_drops_system_reminder_block(self) -> None:
-        stripped = _strip_ambient_context(f"fix the parser bug\n{_MEMORY_INDEX_AMBIENT}")
+        stripped = strip_ambient_context(f"fix the parser bug\n{_MEMORY_INDEX_AMBIENT}")
         assert "blog" not in stripped.lower()
         assert "fix the parser bug" in stripped
 
     def test_keeps_real_intent_text(self) -> None:
-        stripped = _strip_ambient_context(f"write a blog post about teatree\n{_MEMORY_INDEX_AMBIENT}")
+        stripped = strip_ambient_context(f"write a blog post about teatree\n{_MEMORY_INDEX_AMBIENT}")
         assert "write a blog post about teatree" in stripped
 
     def test_drops_unterminated_block(self) -> None:
         # A truncated injection (no closing tag) must not leak ambient text.
-        stripped = _strip_ambient_context("do the refactor <system-reminder>\nblog blog blog")
+        stripped = strip_ambient_context("do the refactor <system-reminder>\nblog blog blog")
         assert "blog" not in stripped.lower()
         assert "do the refactor" in stripped
 
     def test_drops_command_wrappers(self) -> None:
-        stripped = _strip_ambient_context("real task <command-name>blog</command-name>")
+        stripped = strip_ambient_context("real task <command-name>blog</command-name>")
         assert "blog" not in stripped.lower()
         assert "real task" in stripped
 
@@ -131,7 +131,7 @@ class TestStripAmbientContext:
         router.STATE_DIR = tmp_path / "state"
         router.STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            built = _build_skill_loader_input(f"implement the fix\n{_MEMORY_INDEX_AMBIENT}", "sess-x")
+            built = build_skill_loader_input(f"implement the fix\n{_MEMORY_INDEX_AMBIENT}", "sess-x")
         finally:
             router.STATE_DIR = router_state
         assert "blog" not in built["prompt"].lower()
@@ -154,14 +154,14 @@ class TestInputLengthCap:
         # (deterministic, not timing-dependent).
         sentinel = "ZZSENTINELZZ"
         filler = "x" * (_AMBIENT_STRIP_MAX_CHARS + 100)
-        stripped = _strip_ambient_context(f"real task {filler}{sentinel}")
+        stripped = strip_ambient_context(f"real task {filler}{sentinel}")
         assert sentinel not in stripped
 
     def test_text_within_cap_survives(self) -> None:
         # A keyword just inside the cap is still processed normally.
         sentinel = "ZZSENTINELZZ"
         prefix = "y" * (_AMBIENT_STRIP_MAX_CHARS - len(sentinel) - 10)
-        stripped = _strip_ambient_context(f"{prefix}{sentinel}")
+        stripped = strip_ambient_context(f"{prefix}{sentinel}")
         assert sentinel in stripped
 
     def test_unterminated_open_tag_flood_stays_fast(self) -> None:
@@ -174,7 +174,7 @@ class TestInputLengthCap:
         flood = "<system-reminder> blog " * 9000
         assert len(flood) > 200_000
         start = time.process_time()
-        _strip_ambient_context(flood)
+        strip_ambient_context(flood)
         assert time.process_time() - start < 2.0
 
 
