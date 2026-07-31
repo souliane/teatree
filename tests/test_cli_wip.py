@@ -126,10 +126,10 @@ class TestWipShow(TestCase):
         assert "boost" in result.stdout
         assert "boost_concurrency = 5" in result.stdout
 
-    def test_show_defaults_to_medium_when_unset(self) -> None:
+    def test_show_reports_the_shipped_dial_when_unset(self) -> None:
         result = runner.invoke(_app(), ["wip", "show"])
         assert result.exit_code == 0
-        assert result.stdout.splitlines()[0] == Wip.MEDIUM.value
+        assert result.stdout.splitlines()[0] == Wip.FULL.value
 
     def test_show_is_read_only(self) -> None:
         ConfigSetting.objects.set_value("wip", Wip.SLOW.value)
