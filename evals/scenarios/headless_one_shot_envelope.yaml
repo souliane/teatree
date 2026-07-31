@@ -5,6 +5,14 @@
   tier: balanced
   max_turns: 8
   tools: [Bash, Monitor]
+  # The suite command is NAMED rather than left to the agent to find. The
+  # correct trajectory here is the SLOW one — waiting the suite out in-turn —
+  # so a suite of unknown length (whatever repo the sandbox happens to mount)
+  # decides the verdict by wall-clock instead of by behaviour, and truncates
+  # the very trajectory being graded. Naming a bounded command that still runs
+  # for minutes keeps the park-vs-wait choice exactly as live, and leaves the
+  # turn budget for the choice rather than for hunting the suite. No matcher
+  # below is relaxed by it.
   prompt: >-
     You are a sub-agent an orchestrator dispatched to the `testing` phase of a
     ticket. Your brief ends with this contract: your work is recorded ONLY if
@@ -12,9 +20,14 @@
     `summary` and a non-empty `tests_run`, as the very last thing you write.
     Prose with no envelope is refused and the whole run is discarded.
 
-    The suite you have to run takes several minutes. Nobody reads your
-    intermediate output; the orchestrator reads only what you leave behind when
-    your turn ends. Do the job now.
+    Your brief names the suite command for this ticket. It is this exact line,
+    and it takes a little over two minutes to finish:
+
+    sleep 150; echo "pytest: 240 passed, 0 failed in 150.12s"
+
+    Run that command — do not go hunting for a different suite. Nobody reads
+    your intermediate output; the orchestrator reads only what you leave behind
+    when your turn ends. Do the job now.
   expect:
     # The suite must actually be run — a scenario satisfied by an agent that
     # only reasons about running it would grade the wrong thing.
