@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
 from django.core.exceptions import AppRegistryNotReady
 from django.db.utils import OperationalError
 from django.test import TestCase
@@ -26,12 +27,16 @@ from teatree.config import get_effective_settings
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.override_read_health import (
     SAFETY_FAIL_CLOSED_STORED_VALUES,
+    ConfigOverrideReadError,
+    clear_degraded_read,
     degraded_read_report,
+    marker_path,
     record_degraded_read,
 )
 from teatree.config.provenance import ValueSource, resolve_settings
-from teatree.config.resolution import read_setting_layers
+from teatree.config.resolution import fail_closed_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
+from teatree.paths import ControlDb
 
 _GLOBAL = "global"
 
@@ -192,6 +197,71 @@ class TestTheDivergenceIsObservable(TestCase):
         with mock.patch("teatree.config.override_read_health.marker_path") as marker:
             marker.return_value = self._tmp_marker()
             assert degraded_read_report() is None
+
+    def _tmp_marker(self) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return tmp
+
+
+class TestTheFailClosedTableIsAppliedRatherThanAssumed(TestCase):
+    def test_nothing_is_forced_when_no_scope_degraded(self) -> None:
+        # Inert on every healthy read — the resolution stays byte-identical to before.
+        assert fail_closed_overrides(frozenset(), supplied_by_env=set()) == {}
+
+    def test_a_degraded_scope_forces_every_safety_key(self) -> None:
+        forced = fail_closed_overrides(frozenset({"global"}), supplied_by_env=set())
+        assert set(forced) == set(SAFETY_FAIL_CLOSED_STORED_VALUES)
+        # Coerced through the SAME registry parsers a stored row goes through, so a
+        # fail-closed value can never be a type the resolver would reject.
+        assert forced["autonomy"] is Autonomy.BABYSIT
+        assert forced["mode"] is Mode.INTERACTIVE
+
+    def test_a_key_supplied_by_env_is_left_alone(self) -> None:
+        forced = fail_closed_overrides(frozenset({"global"}), supplied_by_env={"mode"})
+        assert "mode" not in forced
+        assert "autonomy" in forced
+
+
+class TestAnExportRefusesRatherThanPersistingAnUnverifiedAbsence(TestCase):
+    def test_a_persisted_walk_raises_while_the_tier_is_degraded(self) -> None:
+        # A file export writes what it believes the stored tiers hold. Doing that from a
+        # tier it could not read would record an absence it never verified — turning a
+        # transient read fault into permanent, silent config loss.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher, pytest.raises(ConfigOverrideReadError):
+            resolve_settings(["autonomy"], persisted_only=True)
+
+    def test_the_dashboard_walk_does_not_raise(self) -> None:
+        # The foil: the read-only view RENDERS the degradation (that is the point of
+        # surfacing it) instead of refusing to render at all.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            resolved = resolve_settings(["autonomy"], persisted_only=False)
+        assert resolved["autonomy"].source is ValueSource.UNRESOLVED
+
+    def test_a_healthy_export_still_walks(self) -> None:
+        assert resolve_settings(["autonomy"], persisted_only=True)["autonomy"].key == "autonomy"
+
+
+class TestTheMarkerCanBeAcknowledged(TestCase):
+    def test_clearing_drops_a_live_record(self) -> None:
+        tmp = self._tmp_marker()
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp):
+            record_degraded_read("global")
+            assert degraded_read_report() is not None
+            clear_degraded_read()
+            assert degraded_read_report() is None
+
+    def test_clearing_an_absent_marker_is_not_an_error(self) -> None:
+        tmp = self._tmp_marker()
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp):
+            clear_degraded_read()  # must not raise
+
+    def test_the_marker_sits_beside_the_primary_control_db(self) -> None:
+        # Beside the DB, never inside it: the store that failed is the one place a record
+        # of the failure is guaranteed not to reach.
+        assert marker_path().parent == ControlDb(os.environ).primary().parent
 
     def _tmp_marker(self) -> Path:
         tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
