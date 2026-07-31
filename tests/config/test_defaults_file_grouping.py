@@ -106,9 +106,12 @@ class TestTheShippedBlockIsNested:
 
     def test_a_genuine_sub_table_setting_stays_at_its_own_top_level_path(self) -> None:
         # ``speak`` and ``mr_reminder`` are declared settings whose value IS a table. They
-        # are not group wrappers, so they keep the paths every reader already knows.
+        # are not group wrappers, so they keep the paths every reader already knows. Each
+        # header carries its key's help text as the trailing comment every other key's line
+        # carries, so the path is read off the line with that comment removed.
+        headers = {line.split(" #")[0] for line in _file_text().splitlines()}
         for key in _SUBTABLE_KEYS:
-            assert f"\n[teatree.{key}]\n" in _file_text()
+            assert f"[teatree.{key}]" in headers
 
 
 class TestNestingMovedNoValue:

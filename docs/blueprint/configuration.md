@@ -854,9 +854,46 @@ while `key`/`scope` moved into the `hx-post` URL instead of hidden fields and th
 readouts with `assertNumQueries`, as an EQUALITY between the smallest and the largest
 section rather than a ceiling a growing schema would hide an N+1 under.
 
-**Value provenance, not the setting's kind.** Each row names the tier of the resolution
-chain that actually supplied its effective value — env / DB overlay scope / DB global scope
-/ overlay code default / shipped file / code default. That replaces a `category` column
+**One row per setting, every scope on it** ([#3880](https://github.com/souliane/teatree/issues/3880)).
+The page is a comparison GRID rather than a per-scope list: a row carries the setting, its
+shipped default, and then one cell per scope — `global` first, then each overlay. A cell is
+green while it still equals the default and brown once someone has changed it, so which
+dials this box has moved is visible at a glance instead of taking a per-scope hunt — the
+divergence class this exists for is an overlay row silently shadowing a global one. Each
+section in the left nav carries a brown count of the settings in it that DIFFER from their
+default, and a setting that drifts in several scopes counts ONCE: the number answers "how
+many settings here has someone changed", not "how many override rows exist". Every scope is
+resolved in ONE `resolve_settings` call that every cell in that column reads out of, so the
+page's query cost is the number of SCOPES and constant in the number of settings — which is
+what the `assertNumQueries` pins below hold against the N+1 a per-cell read would be.
+
+**Editing is in place, with no save button.** A cell posts ITSELF on change and the whole
+`<tr>` swaps back — the row, not the cell, because a global write changes what every overlay
+column inherits. Emptying a cell clears that scope's row, which IS the restore gesture, so
+the row carries no separate restore control (`settings_restore` remains as a route for the
+same delete). A refused write answers 400 carrying the row RE-READ plus its reason, so a
+failed edit can never leave text that looks saved. Anything the schema constrains to a
+listable set — `bool`, an enum, a `Literal` — renders as a SELECT whose options come from
+`schema.setting_choices`, derived from the field's own annotation: an invalid value is then
+impossible to ENTER rather than merely rejected afterwards, and there is no hand-written
+option list to go stale the first time a `Literal` changes.
+
+**Help text is authored once** (`config/setting_help.py`). One sentence per key, rendered
+twice: as the tooltip on the setting's name here, and as the trailing comment beside that
+key in `config/defaults.toml` (`setting_groups.grouped_settings_table` emits it, so both
+TOML surfaces carry it and the byte-identical round trip still holds). It is a trailing
+comment rather than a line above because the shipped-file conformance suite pins that no
+line inside `[teatree]` starts with `#` — that shape was the retired comment-banner group
+headings. `tests/config/test_setting_help.py` pins the table TOTAL over the schema, so a new
+setting with no sentence fails the build rather than shipping unexplained. The module is
+deliberately Django- AND pydantic-free: the shipped file is written from the cold path,
+which must never reach `schema`, so a `Field(description=...)` on the model would put the
+help text behind exactly that import.
+
+**Value provenance, not the setting's kind.** Each cell names — as its TOOLTIP, never a
+column of its own — the tier of the resolution chain that actually supplied its effective
+value: env / DB overlay scope / DB global scope / overlay code default / shipped file / code
+default. That replaces a `category` column
 showing the setting's KIND, which read `default` for hundreds of consecutive rows and, next
 to a *shipped default* column, was misread as "this value came from the default" on rows
 saying the value differs from it. `teatree.config.provenance` walks the resolver's OWN layer

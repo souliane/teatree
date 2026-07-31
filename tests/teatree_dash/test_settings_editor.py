@@ -14,6 +14,7 @@ from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.provenance import ValueSource
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
+from teatree.config.setting_help import setting_help
 from teatree.core.config_display import MASKED, render_value
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
@@ -32,8 +33,13 @@ def _section_of(key: str) -> str:
     return next(section.slug for section in build_settings_sections() if section.path == path)
 
 
-def _row(key: str, scope: str = ""):
-    return next(s for s in build_settings_group(_section_of(key), scope).settings if s.name == key)
+def _row(key: str):
+    return next(s for s in build_settings_group(_section_of(key)).settings if s.name == key)
+
+
+def _cell(key: str, scope: str = ""):
+    """*key*'s cell in *scope*'s column — the per-scope half of a grid row."""
+    return next(cell for cell in _row(key).cells if cell.scope == scope)
 
 
 class TestSectionsPartitionTheSchema:
@@ -95,12 +101,20 @@ class TestMaskingAndOverrideState(TestCase):
         ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
         row = _row("banned_terms")
         assert row.is_secret is True
-        assert row.value == MASKED
-        assert "supersecretcodename" not in row.value
+        assert _cell("banned_terms").value == MASKED
+        assert "supersecretcodename" not in str(row)
+
+    def test_a_secret_cell_masks_its_wire_value_too_not_only_its_display_text(self) -> None:
+        # A cell carries the stored value TWICE — once as display text, once as the JSON a
+        # control holds and posts. Masking only the first leaves the real secret in the view
+        # context, one template read away from the page.
+        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
+        assert all(cell.selected == MASKED for cell in _row("banned_terms").cells)
+        assert "supersecretcodename" not in str(_row("banned_terms"))
 
     def test_a_secret_default_is_also_masked(self) -> None:
         # No override — the secret still renders MASKED, never its (empty) default.
-        assert _row("banned_terms").value == MASKED
+        assert _cell("banned_terms").value == MASKED
 
     def test_a_personal_identifier_not_on_the_denylist_is_masked(self) -> None:
         # slack_user_id is a personal identifier (NOT in SECRET_SETTINGS) — the exact
@@ -108,17 +122,16 @@ class TestMaskingAndOverrideState(TestCase):
         ConfigSetting.objects.set_value("slack_user_id", "U-OWNER-SECRET")
         row = _row("slack_user_id")
         assert row.is_secret is True
-        assert row.value == MASKED
-        assert "U-OWNER-SECRET" not in row.value
+        assert _cell("slack_user_id").value == MASKED
+        assert "U-OWNER-SECRET" not in str(row)
 
     def test_a_non_secret_override_shows_its_value(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto")
-        row = _row("mode")
-        assert row.value == "auto"
-        assert row.is_overridden is True
+        ConfigSetting.objects.set_value("mode", "interactive")
+        assert _cell("mode").value == "interactive"
+        assert _cell("mode").matches_default is False
 
-    def test_an_unset_key_is_not_overridden(self) -> None:
-        assert _row("mode").is_overridden is False
+    def test_an_unset_key_reads_as_its_default(self) -> None:
+        assert _cell("mode").matches_default is True
 
     def test_safety_posture_keys_are_flagged(self) -> None:
         assert _row("enforce_regulated_path").is_safety_posture is True
@@ -134,29 +147,29 @@ class TestValueProvenance(TestCase):
     """
 
     def test_an_unset_key_comes_from_the_shipped_file(self) -> None:
-        assert _row("mode").source == ValueSource.SHIPPED_FILE.value
+        assert _cell("mode").source == ValueSource.SHIPPED_FILE.value
 
     def test_a_global_row_says_so(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
-        assert _row("mode").source == ValueSource.DB_GLOBAL.value
+        assert _cell("mode").source == ValueSource.DB_GLOBAL.value
 
     def test_an_overlay_row_beats_the_global_one_and_says_which(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("mode", "interactive", scope="proj")
-        assert _row("mode", "proj").source == ValueSource.DB_OVERLAY.value
-        assert _row("mode").source == ValueSource.DB_GLOBAL.value
+        assert _cell("mode", "proj").source == ValueSource.DB_OVERLAY.value
+        assert _cell("mode").source == ValueSource.DB_GLOBAL.value
 
     def test_an_env_override_is_named_rather_than_hidden(self) -> None:
         with patch.dict("os.environ", {"T3_MERGE_WIP": "9"}):
-            row = _row("merge_wip")
-        assert row.source == ValueSource.ENV.value
-        assert row.value == "9"
+            cell = _cell("merge_wip")
+        assert cell.source == ValueSource.ENV.value
+        assert cell.value == "9"
 
     def test_the_value_and_its_source_never_disagree(self) -> None:
         # One resolution, so a row cannot show a DB value while naming the shipped file.
         ConfigSetting.objects.set_value("merge_wip", 7)
-        row = _row("merge_wip")
-        assert (row.value, row.source, row.is_overridden) == ("7", ValueSource.DB_GLOBAL.value, True)
+        cell = _cell("merge_wip")
+        assert (cell.value, cell.source, cell.matches_default) == ("7", ValueSource.DB_GLOBAL.value, False)
 
 
 class TestBuildSettingRow(TestCase):
@@ -170,12 +183,13 @@ class TestBuildSettingRow(TestCase):
         ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
         row = build_setting_row("banned_terms")
         assert row.is_secret is True
-        assert row.value == MASKED
+        assert all(cell.value == MASKED for cell in row.cells)
 
-    def test_it_reads_the_requested_scope(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto", scope="proj")
-        assert build_setting_row("mode", "proj").is_overridden is True
-        assert build_setting_row("mode").is_overridden is False
+    def test_it_reads_every_scope_so_the_swapped_row_is_never_half_stale(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive", scope="proj")
+        cells = {cell.scope: cell for cell in build_setting_row("mode").cells}
+        assert cells["proj"].matches_default is False
+        assert cells[""].matches_default is True
 
 
 class TestReadFailureDegrades(TestCase):
@@ -227,22 +241,30 @@ class TestShippedDefaultComparison(TestCase):
         assert row.shipped_default == render_value(shipped_defaults_table()["mode"])
 
     def test_an_unset_key_reads_as_matching_its_shipped_default(self) -> None:
-        row = _row("mode")
-        assert row.is_overridden is False
-        assert row.matches_shipped_default is True
-        assert row.default_comparison == "same as default"
+        assert _cell("mode").source == ValueSource.SHIPPED_FILE.value
+        assert _cell("mode").matches_default is True
+        assert _row("mode").drifts is False
 
     def test_an_override_equal_to_the_shipped_default_still_reads_as_matching(self) -> None:
         ConfigSetting.objects.set_value("mode", shipped_defaults_table()["mode"])
-        row = _row("mode")
-        assert row.is_overridden is True
-        assert row.matches_shipped_default is True
+        assert _cell("mode").source == ValueSource.DB_GLOBAL.value
+        assert _cell("mode").matches_default is True
+        assert _row("mode").drifts is False
 
     def test_an_override_away_from_the_shipped_default_reads_as_differing(self) -> None:
         ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        row = _row("provision_ram_ceiling_percent")
-        assert row.matches_shipped_default is False
-        assert row.default_comparison == "differs from default"
+        assert _cell("provision_ram_ceiling_percent").matches_default is False
+        assert _row("provision_ram_ceiling_percent").drifts is True
+
+    def test_a_setting_drifts_once_however_many_scopes_override_it(self) -> None:
+        # The nav's per-section count is a sum over this, so counting cells here would
+        # report one changed setting three times.
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="alpha")
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="beta")
+        row = _row("merge_wip")
+        assert row.drifts is True
+        assert sum(1 for cell in row.cells if not cell.matches_default) >= 3
 
     def test_a_key_with_no_toml_default_offers_no_comparison(self) -> None:
         # Personal/Secret keys are absent from the shipped file by construction, so there is
@@ -251,13 +273,13 @@ class TestShippedDefaultComparison(TestCase):
         assert row.is_secret is False
         assert row.has_shipped_default is False
         assert row.shipped_default == ""
-        assert row.default_comparison == ""
+        assert row.drifts is False
 
     def test_a_secret_key_offers_no_comparison_and_still_masks(self) -> None:
         row = _row("slack_user_id")
         assert row.has_shipped_default is False
         assert row.shipped_default == MASKED
-        assert row.default_comparison == ""
+        assert row.drifts is False
 
     def test_a_secret_default_is_masked_before_it_reaches_the_row(self) -> None:
         # Belt and braces: a secret key that ever gained a shipped default still masks.
@@ -266,8 +288,8 @@ class TestShippedDefaultComparison(TestCase):
         assert row.shipped_default == MASKED
         assert "leaky" not in row.shipped_default
 
-    def test_the_comparison_text_stands_alone_without_the_colour(self) -> None:
-        # Colour is not the only signal: every comparison carries words of its own.
-        assert _row("mode").default_comparison
-        ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        assert _row("provision_ram_ceiling_percent").default_comparison
+    def test_every_key_carries_the_sentence_that_explains_it(self) -> None:
+        # Authored once and rendered as the tooltip; the shipped file comments the same key
+        # with the same sentence, so the two surfaces cannot drift apart.
+        assert _row("mode").help_text == setting_help("mode")
+        assert _row("workspace_dir").help_text

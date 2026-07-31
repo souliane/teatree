@@ -23,6 +23,7 @@ from django.test import TestCase
 from teatree.config import defaults_snapshot
 from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.defaults_snapshot import default_category_keys
+from teatree.config.setting_help import setting_help
 from teatree.core import config_migration
 from teatree.core.config_migration import export_db_to_toml, import_toml_to_db
 from teatree.core.models import ConfigSetting
@@ -63,12 +64,14 @@ class TestBothFiltersOffChangesNothing(TestCase):
         assert tomllib.loads(dump)["overlays"] == {"demo": {"issue_implementer_label": "scoped"}}
 
     def test_the_unfiltered_dump_renders_the_deltas_in_the_nested_shape(self) -> None:
+        # Each `[teatree]` key carries its authored help text as a trailing comment; the
+        # sentences are read from the one table that authors them, never re-typed here.
         assert export_db_to_toml(scan_terms=()).toml == (
             '[teatree.Agents."Mode & harness"]\n'
-            'mode = "auto"\n'
+            f'mode = "auto" # {setting_help("mode")}\n'
             "\n"
             '[teatree.Loops."Cadence & throughput"]\n'
-            "merge_wip = 4\n"
+            f"merge_wip = 4 # {setting_help('merge_wip')}\n"
             "\n"
             "[overlays.demo]\n"
             'issue_implementer_label = "scoped"\n'
@@ -188,7 +191,7 @@ class TestTheByteIdenticalRoundTrip(TestCase):
             for line, shipped in zip(exported.splitlines(), _SHIPPED_TEXT.splitlines(), strict=True)
             if line != shipped
         ]
-        assert differing == ["merge_wip = 4"]
+        assert differing == [f"merge_wip = 4 # {setting_help('merge_wip')}"]
 
 
 class TestOneEmitterForBothWriters(TestCase):

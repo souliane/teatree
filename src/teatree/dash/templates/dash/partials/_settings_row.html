@@ -1,44 +1,57 @@
 {% comment %}
-One editable setting. The key and the scope ride in the hx-post URL, so the row carries no
-hidden inputs and no CSRF token of its own — the body's hx-headers in base.html supplies
-one token for the whole page. hx-target="closest tr" keeps an edit a single-row swap: the
-document is never re-rendered and the scroll position never moves.
+One setting, every scope on its own row. The key rides in each control's hx-post URL and the
+cell's scope in that URL's query string, so the row carries no hidden inputs and no CSRF
+token of its own — the body's hx-headers in base.html supplies one token for the whole page.
+
+There is no <form> and no save button: the control posts itself on change (htmx sends a named
+input's own value), and hx-target="closest tr" swaps the WHOLE row back, because a global
+write changes what every overlay column inherits. Emptying a cell clears that scope's row,
+which is how a value goes back to the default now that there is no separate restore control.
+
+A control holds the JSON literal the write expects, not the display text, so what is shown is
+what would be posted. The drift verdict is never colour alone — each one carries a text icon
+and its own words, so it survives greyscale, colour blindness and a screen reader.
 {% endcomment %}
 <tr class="{% if s.is_safety_posture %}stalled{% endif %}" id="setting-{{ s.name }}">
-  <td class="mono">{{ s.name }}{% if s.is_safety_posture %} <span class="muted">(safety-posture)</span>{% endif %}</td>
-  <td class="mono">{{ s.value }}</td>
-  <td><span class="setting-source" title="which tier of the resolution chain supplied this value">{{ s.source }}</span></td>
-  <td>
-    {% if s.has_shipped_default %}
-      <span class="mono">{{ s.shipped_default }}</span>
-      {% if s.matches_shipped_default %}
-        <span class="default-match" title="the effective value is the shipped default">&#10003; {{ s.default_comparison }}</span>
-      {% else %}
-        <span class="default-differs" title="the effective value overrides the shipped default">&#9679; {{ s.default_comparison }}</span>
-      {% endif %}
-    {% else %}
-      <span class="muted">no shipped default</span>
-    {% endif %}
-  </td>
-  <td>
+  <td class="mono setting-name">
+    <span class="setting-help-anchor" title="{{ s.help_text }}">{{ s.name }}</span>
+    {% if s.is_safety_posture %}<span class="muted">(safety-posture)</span>{% endif %}
     {% if row_error %}<p class="banner-red">{{ row_error }}</p>{% endif %}
-    <form class="row-actions"
-      hx-post="{% url 'dash:settings_set' s.name %}{% if scope %}?scope={{ scope|urlencode }}{% endif %}"
-      hx-target="closest tr" hx-swap="outerHTML">
-      {% if s.is_secret %}
-        <input type="password" name="value" placeholder="new JSON value (write-only)" autocomplete="off">
+  </td>
+  <td class="mono setting-default">
+    {% if s.has_shipped_default %}{{ s.shipped_default }}{% else %}<span class="muted">none</span>{% endif %}
+  </td>
+  {% for cell in s.cells %}
+    <td class="setting-cell {% if cell.matches_default %}cell-at-default{% else %}cell-drifted{% endif %}">
+      {% if cell.matches_default %}
+        <span class="default-match" title="{{ cell.label }}: value came from {{ cell.source }}">&#10003; same as default</span>
       {% else %}
-        <input type="text" name="value" placeholder="JSON value, e.g. true / 3 / &quot;x&quot;">
+        <span class="default-differs" title="{{ cell.label }}: value came from {{ cell.source }}">&#9679; differs from default</span>
+      {% endif %}
+      {% if s.is_secret %}
+        <span class="mono">{{ cell.value }}</span>
+        <input type="password" name="value" autocomplete="off" placeholder="new value (write-only)"
+          aria-label="{{ s.name }} in {{ cell.label }}" hx-post="{{ cell.post_url }}"
+          hx-target="closest tr" hx-swap="outerHTML" hx-trigger="change"
+          {% if s.is_safety_posture %}hx-include="closest td"{% endif %}>
+      {% elif s.choices %}
+        <select name="value" aria-label="{{ s.name }} in {{ cell.label }}" hx-post="{{ cell.post_url }}"
+          hx-target="closest tr" hx-swap="outerHTML" hx-trigger="change"
+          {% if s.is_safety_posture %}hx-include="closest td"{% endif %}>
+          {% for choice in s.choices %}
+            <option value="{{ choice.value }}" {% if choice.value == cell.selected %}selected{% endif %}>{{ choice.label }}</option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <input type="text" name="value" value="{{ cell.selected }}" autocomplete="off"
+          aria-label="{{ s.name }} in {{ cell.label }}" hx-post="{{ cell.post_url }}"
+          hx-target="closest tr" hx-swap="outerHTML" hx-trigger="change"
+          {% if s.is_safety_posture %}hx-include="closest td"{% endif %}>
       {% endif %}
       {% if s.is_safety_posture %}
-        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off">
+        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
+          aria-label="{{ s.name }} in {{ cell.label }} confirm phrase">
       {% endif %}
-      <button type="submit">Save</button>
-    </form>
-    {% if s.is_overridden %}
-      <button type="button" class="dash-btn"
-        hx-post="{% url 'dash:settings_restore' s.name %}{% if scope %}?scope={{ scope|urlencode }}{% endif %}"
-        hx-target="closest tr" hx-swap="outerHTML">Restore default</button>
-    {% endif %}
-  </td>
+    </td>
+  {% endfor %}
 </tr>

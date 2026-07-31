@@ -68,15 +68,48 @@ def test_every_section_is_reachable_and_renders_its_own_rows(live_server: LiveSe
 
 
 @pytest.mark.usefixtures("seeded_board")
-def test_a_row_edit_swaps_that_row_alone_and_never_moves_the_page(live_server: LiveServer, page: Page) -> None:
+def test_a_click_to_edit_persists_with_no_save_button(live_server: LiveServer, page: Page) -> None:
+    # `mode` is a Literal, so its cell is a select and picking an option IS the write. There
+    # is no Save anywhere on the page — that is the whole point of editing in place.
     section = _section(("Agents", "Mode & harness"))
     page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
-    row = page.locator("#setting-mode")
-    row.get_by_placeholder("JSON value").fill('"auto"')
-    row.get_by_role("button", name="Save").click()
-    expect(page.locator("#setting-mode")).to_contain_text("auto")
+    expect(page.get_by_role("button", name="Save")).to_have_count(0)
+    page.get_by_label("mode in global").select_option('"interactive"')
+    expect(page.locator("#setting-mode")).to_contain_text("differs from default")
     expect(page.locator("#setting-mode")).to_contain_text("DB global scope")
+    # It PERSISTED rather than only re-rendering: a fresh load shows the same value.
+    page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
+    expect(page.get_by_label("mode in global")).to_have_value('"interactive"')
     expect(page.locator('tr[id^="setting-"]')).to_have_count(section.key_count)
+
+
+@pytest.mark.usefixtures("seeded_board")
+def test_a_refused_edit_says_why_and_leaves_no_stale_text_looking_saved(live_server: LiveServer, page: Page) -> None:
+    # `merge_wip` is an int, so its cell is free text and a non-JSON value reaches the
+    # validator. The refusal has to be VISIBLE in the row, and the cell has to come back
+    # holding what is actually stored rather than the text that failed.
+    section = _section(("Loops", "Cadence & throughput"))
+    page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
+    cell = page.get_by_label("merge_wip in global")
+    cell.fill("not-json")
+    cell.blur()
+    expect(page.locator("#setting-merge_wip")).to_contain_text("invalid JSON value")
+    expect(page.get_by_label("merge_wip in global")).not_to_have_value("not-json")
+
+
+@pytest.mark.usefixtures("seeded_board")
+def test_one_row_carries_every_scope_and_the_nav_counts_what_drifted(live_server: LiveServer, page: Page) -> None:
+    ConfigSetting.objects.set_value("merge_wip", 4)
+    ConfigSetting.objects.set_value("merge_wip", 7, scope="demo-overlay")
+    section = _section(("Loops", "Cadence & throughput"))
+    page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
+    # ONE row, however many scopes hold a row for it — and a column for each.
+    expect(page.locator("#setting-merge_wip")).to_have_count(1)
+    expect(page.get_by_role("columnheader", name="global", exact=True)).to_be_visible()
+    expect(page.get_by_role("columnheader", name="demo-overlay", exact=True)).to_be_visible()
+    # The setting drifted in two scopes and its own nav entry counts it ONCE.
+    nav_item = page.locator(".settings-nav-item", has_text=section.label).first
+    expect(nav_item.locator(".settings-nav-drift")).to_have_text("1")
 
 
 @pytest.mark.usefixtures("seeded_board")
