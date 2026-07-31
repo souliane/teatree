@@ -21,7 +21,8 @@ from django.db import transaction
 from teatree.core.models import Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
-from teatree.loop.persistence import _create_phase_task, _get_or_create_ticket, _has_open_task, _owning_overlay
+from teatree.loop.persistence import _get_or_create_ticket, _owning_overlay
+from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
             overlay=_owning_overlay(pr_url, overlay),
             extra={"reviewed_sha": head_sha, "self_pr_review_variant": variant},
         )
-        if ticket.role != Ticket.Role.REVIEWER or _has_open_task(ticket, phase="reviewing"):
+        if ticket.role != Ticket.Role.REVIEWER or has_open_task(ticket, phase="reviewing"):
             return None
         marker = CodexReviewMarker.claim(
             slug=slug,
@@ -56,7 +57,7 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
         )
         if marker is None:
             return None
-        return _create_phase_task(
+        return create_phase_task(
             ticket,
             phase="reviewing",
             agent_id="reviewer",

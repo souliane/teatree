@@ -84,7 +84,7 @@ class TestDebugZoneRevived(TestCase):
         # Force the Task write to fail AFTER the marker claim: the shared atomic
         # block must roll the RedMrFixAttempt row back so the dropped action does
         # not burn its idempotency marker (#1 blocker — markers survive for retry).
-        with patch("teatree.loop.persistence._create_phase_task", side_effect=RuntimeError("boom")):
+        with patch("teatree.loop.persistence.create_phase_task", side_effect=RuntimeError("boom")):
             errors: dict[str, str] = {}
             created = persist_agent_actions(
                 _agent_actions(self._signal(pr_url="https://x/pr/12", head_sha="sha-12")),
@@ -162,7 +162,7 @@ class TestCodexReviewZoneRevived(TestCase):
         assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=13).exists()
 
     def test_task_creation_failure_rolls_back_marker(self) -> None:
-        with patch("teatree.loop.persistence._create_phase_task", side_effect=RuntimeError("boom")):
+        with patch("teatree.loop.persistence.create_phase_task", side_effect=RuntimeError("boom")):
             errors: dict[str, str] = {}
             created = persist_agent_actions(
                 _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/14", pr_id=14, head_sha="csha-14")),
@@ -256,7 +256,7 @@ class TestSelfPrReviewZoneRevived(TestCase):
 
     def test_task_creation_failure_rolls_back_marker(self) -> None:
         with patch(
-            "teatree.loop.persistence_self_pr_review._create_phase_task",
+            "teatree.loop.persistence_self_pr_review.create_phase_task",
             side_effect=RuntimeError("boom"),
         ):
             errors: dict[str, str] = {}
