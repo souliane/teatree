@@ -6,6 +6,7 @@ from django.db import transaction
 from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
@@ -176,11 +177,11 @@ class TicketSchedulingModel(TicketFacet):
         )
 
     def _cancel_pending_tasks(self) -> None:
-        """Fail all pending/claimed tasks when reworking."""
+        """Fail all pending/claimed tasks when reworking, each naming rework as its cause."""
         from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
 
         for task in self.tasks.filter(status__in=Task.Status.active()):  # type: ignore[attr-defined]  # Django reverse FK
-            task.fail()
+            task.fail(reason=f"{SUPERSEDED_PREFIX}ticket reworked — this task's phase is being redone")
 
     def _refuse_if_worktree_dirty(self: "Ticket", phase: str) -> None:
         """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.

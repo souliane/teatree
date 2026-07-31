@@ -247,6 +247,11 @@ layer = "domain"
 depends_on = ["teatree.core.schema_readiness"]
 
 [[modules]]
+path = "teatree.core.managers_task_sweeps"
+layer = "domain"
+depends_on = ["teatree.core.modelkit", "teatree.core.repair_loop"]
+
+[[modules]]
 path = "teatree.core.managers_inbound"
 layer = "domain"
 depends_on = []
@@ -286,6 +291,7 @@ depends_on = [
   "teatree.core.managers_phase_cadence",
   "teatree.core.managers_session",
   "teatree.core.managers_task_claim",
+  "teatree.core.managers_task_sweeps",
   "teatree.core.repair_loop",
   "teatree.core.session_handover_manager"
 ]

@@ -128,7 +128,8 @@ records.
 
 ### Task — Agent work unit (FSM, FK → Ticket, Session)
 
-- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_target (headless/interactive), execution_reason, status (FSMField: pending/claimed/completed/failed)
+- **Fields:** ticket (FK), session (FK), parent_task (self FK), phase, execution_target (headless/interactive), execution_reason, failure_reason + failure_kind, status (FSMField: pending/claimed/completed/failed)
+- `execution_reason` is why the task was SCHEDULED; `failure_reason` is why it FAILED, named by `core/task_failure_taxonomy.py`. `Task.fail()` requires a reason, so no failure path can land a task in FAILED with no cause attached.
 - **Claim/lease:** claimed_at, claimed_by, lease_expires_at, heartbeat_at, result_artifact_path
 - **Key methods:** claim(), route_to_headless(), route_to_interactive(), complete(), fail()
 

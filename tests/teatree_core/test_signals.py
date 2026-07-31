@@ -720,7 +720,7 @@ class TestSessionClosedOnTerminalTask(TestCase):
     def test_failing_the_owning_task_ends_the_session(self) -> None:
         session, task = self._session_with_task()
 
-        task.fail()
+        task.fail(reason="test: deliberate failure")
 
         session.refresh_from_db()
         assert session.ended_at is not None
@@ -734,7 +734,7 @@ class TestSessionClosedOnTerminalTask(TestCase):
             execution_target=Task.ExecutionTarget.INTERACTIVE,
         )
 
-        task.fail()
+        task.fail(reason="test: deliberate failure")
 
         session.refresh_from_db()
         assert session.ended_at is None
@@ -750,6 +750,6 @@ class TestSessionClosedOnTerminalTask(TestCase):
     def test_the_ticket_stops_reading_busy_once_its_task_terminates(self) -> None:
         session, task = self._session_with_task()
 
-        task.fail()
+        task.fail(reason="test: deliberate failure")
 
         assert session.ticket.has_active_work() is False

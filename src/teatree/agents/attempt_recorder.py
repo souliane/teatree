@@ -403,5 +403,5 @@ def _record_failure(task: Task, *, error: str, result: AgentResultBlob | None = 
         error=error,
         result=result or {},
     )
-    task.fail()
+    task.fail(reason=error)
     return attempt
