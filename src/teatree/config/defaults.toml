@@ -218,6 +218,7 @@ deny_circuit_breaker_enabled = true
 deny_circuit_breaker_threshold = 3
 dispatch_quote_gate_on_task_create_enabled = false
 hook_validator_timeout_seconds = 60
+headless_authoring_gate_enabled = true
 main_clone_guard_gate_enabled = true
 mcp_privacy_gate_enabled = true
 mcp_slack_write_gate_enabled = true

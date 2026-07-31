@@ -1,0 +1,199 @@
+"""A failed ``ConfigSetting`` override read must not resolve like an absent override (#3873).
+
+The defect: :func:`teatree.config.resolution._load_global_rows` caught every read
+exception and returned ``{}`` — the SAME value the success-with-no-rows path returns. So
+"there is no override" and "I could not determine whether there is an override" reached
+every call site as one answer, and the safety gates resolved to their SHIPPED defaults
+(``autonomy = full``, ``mode = auto``) rather than to whatever the operator configured.
+
+Each case below pins one half of the distinction. The paired foils matter as much as the
+assertions: a resolver that degraded EVERYTHING would satisfy the fail-closed cases while
+being useless, so every fail-closed case has an absent-override twin that must still
+resolve to the shipped default.
+"""
+
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+from django.core.exceptions import AppRegistryNotReady
+from django.db.utils import OperationalError
+from django.test import TestCase
+
+from teatree.config import get_effective_settings
+from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
+from teatree.config.override_read_health import (
+    SAFETY_FAIL_CLOSED_STORED_VALUES,
+    degraded_read_report,
+    record_degraded_read,
+)
+from teatree.config.provenance import ValueSource, resolve_settings
+from teatree.config.resolution import read_setting_layers
+from teatree.core.models import ConfigSetting
+
+_GLOBAL = "global"
+
+
+class _RaisingOverrides:
+    """A ``ConfigSetting.objects`` stand-in whose scope reads raise *exc* the first *times* calls."""
+
+    def __init__(self, exc: BaseException, *, times: int = 10**6, rows: dict[str, Any] | None = None) -> None:
+        self._exc = exc
+        self._remaining = times
+        self._rows = rows or {}
+        self.calls = 0
+
+    def overrides_for_scope(self, scope: str) -> dict[str, Any]:
+        self.calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise self._exc
+        return dict(self._rows)
+
+    def exclude(self, **_kwargs: object) -> "_RaisingOverrides":
+        return self
+
+    def values_list(self, *_fields: str) -> list[tuple[str, str, Any]]:
+        self.calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise self._exc
+        return []
+
+
+def _with_failing_reads(exc: BaseException, **kwargs: object) -> Any:
+    """Patch the app-registry model lookup so every ``ConfigSetting`` scope read raises *exc*."""
+    manager = _RaisingOverrides(exc, **kwargs)
+    model = mock.Mock(objects=manager)
+    patcher = mock.patch("django.apps.apps.get_model", return_value=model)
+    return patcher, manager
+
+
+class TestAFailedReadIsNotAnAbsentOverride(TestCase):
+    def test_a_runtime_read_fault_marks_the_scope_degraded(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert _GLOBAL in layers.degraded_scopes
+
+    def test_a_clean_read_with_no_rows_is_not_degraded(self) -> None:
+        # The foil for the case above: an EMPTY table must stay indistinguishable from
+        # today's behaviour, or every install would resolve as if its config were broken.
+        assert read_setting_layers("").degraded_scopes == frozenset()
+
+    def test_a_bootstrap_state_is_not_reported_as_degraded(self) -> None:
+        # Django not yet set up is a genuine no-op, not a fault — degrading here would
+        # fail-close every cold-start read.
+        patcher, _ = _with_failing_reads(AppRegistryNotReady("apps aren't loaded yet"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert layers.degraded_scopes == frozenset()
+
+
+class TestSafetyGatesFailClosedRatherThanToAShippedDefault(TestCase):
+    def test_autonomy_fails_closed_when_the_override_read_fails(self) -> None:
+        # The shipped default is FULL. A read fault must NOT resolve to it: the operator
+        # may have stored `babysit`, and a gate cannot tell the two apart today.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.autonomy is Autonomy.BABYSIT
+
+    def test_autonomy_still_resolves_to_the_shipped_default_when_the_read_succeeds(self) -> None:
+        # The foil. Without it, a resolver that always fail-closed would pass the case above.
+        assert get_effective_settings("t3-teatree").autonomy is Autonomy.FULL
+
+    def test_the_merge_approval_gate_fails_closed(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.require_human_approval_to_merge is True
+        assert settings.require_human_approval_to_answer is True
+
+    def test_a_stored_restrictive_tier_is_not_replaced_by_the_permissive_shipped_one(self) -> None:
+        # The sharpest shape, and the reason the shipped default is the wrong fallback:
+        # `autonomy` ships as FULL, so an operator who deliberately stored BABYSIT has
+        # their restraint UPGRADED to full autonomy by a read that merely failed. The
+        # stored value and the failure are indistinguishable at the call site today.
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        assert get_effective_settings("t3-teatree").autonomy is Autonomy.BABYSIT
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.autonomy is Autonomy.BABYSIT
+
+    def test_mode_and_on_behalf_posting_fail_closed(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.mode is Mode.INTERACTIVE
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+
+    def test_an_env_override_still_wins_over_the_fail_closed_value(self) -> None:
+        # `T3_*` is process state the failed DB read cannot have affected, so it is a
+        # readable operator intent and must not be overridden by the degradation.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher, mock.patch.dict(os.environ, {"T3_MODE": "auto"}):
+            settings = get_effective_settings()
+        assert settings.mode is Mode.AUTO
+
+    def test_every_fail_closed_value_names_a_real_settings_field(self) -> None:
+        settings = get_effective_settings("t3-teatree")
+        for key in SAFETY_FAIL_CLOSED_STORED_VALUES:
+            assert hasattr(settings, key), f"{key!r} is not a UserSettings field"
+
+
+class TestATransientLockIsRetriedRatherThanDegradedStraightAway(TestCase):
+    def test_a_read_that_succeeds_on_retry_resolves_the_stored_override(self) -> None:
+        # Reproduces the MECHANISM (a transient SQLite lock), not the load: one contended
+        # read raises, the next succeeds. Today the first exception ends the read.
+        patcher, manager = _with_failing_reads(
+            OperationalError("database is locked"),
+            times=1,
+            rows={"require_human_approval_to_merge": False},
+        )
+        with patcher:
+            layers = read_setting_layers("")
+        assert manager.calls > 1, "the read was not retried"
+        assert layers.degraded_scopes == frozenset()
+        assert layers.global_db["require_human_approval_to_merge"] is False
+
+    def test_a_persistently_failing_read_degrades_rather_than_retrying_forever(self) -> None:
+        patcher, manager = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert _GLOBAL in layers.degraded_scopes
+        assert manager.calls < 10, "the retry budget is unbounded"
+
+
+class TestTheDivergenceIsObservable(TestCase):
+    def test_provenance_names_the_unresolved_tier_instead_of_crediting_a_shipped_one(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            resolved = resolve_settings(["autonomy"])["autonomy"]
+        assert resolved.source is ValueSource.UNRESOLVED
+
+    def test_provenance_still_credits_the_shipped_file_on_a_clean_read(self) -> None:
+        assert resolve_settings(["autonomy"])["autonomy"].source is ValueSource.SHIPPED_FILE
+
+    def test_a_degraded_read_is_recorded_outside_the_database_it_could_not_read(self) -> None:
+        # The record cannot live in the DB — the DB is the thing that failed.
+        with mock.patch("teatree.config.override_read_health.marker_path") as marker:
+            marker.return_value = self._tmp_marker()
+            record_degraded_read("global")
+            report = degraded_read_report()
+        assert report is not None
+        assert report.scopes == ("global",)
+        assert report.occurrences == 1
+
+    def test_no_report_when_nothing_degraded(self) -> None:
+        with mock.patch("teatree.config.override_read_health.marker_path") as marker:
+            marker.return_value = self._tmp_marker()
+            assert degraded_read_report() is None
+
+    def _tmp_marker(self) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return tmp
