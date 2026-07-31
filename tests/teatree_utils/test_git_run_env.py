@@ -7,7 +7,28 @@ so this locks the contract that the base strips ONLY ``GIT_*`` overrides and nev
 drops ``TMPDIR`` (or any other non-git var).
 """
 
-from teatree.utils.git_run import git_env_without_overrides
+import pytest
+
+from teatree.utils.git_run import git_env_non_interactive, git_env_without_overrides
+
+
+class TestGitEnvNonInteractive:
+    """The credential-prompt kill switch every remote-touching git call runs under (#3927)."""
+
+    def test_disables_every_interactive_credential_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GIT_ASKPASS", "/usr/bin/some-gui-askpass")
+        env = git_env_non_interactive()
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["GIT_ASKPASS"] == ""
+        assert env["SSH_ASKPASS"] == ""
+        assert env["GCM_INTERACTIVE"] == "never"
+
+    def test_still_strips_git_overrides_and_keeps_the_rest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GIT_DIR", "/somewhere/.git")
+        monkeypatch.setenv("TMPDIR", "/var/tmp")
+        env = git_env_non_interactive()
+        assert "GIT_DIR" not in env
+        assert env["TMPDIR"] == "/var/tmp"
 
 
 class TestGitEnvWithoutOverrides:

@@ -25,6 +25,7 @@ import teatree.cli.capabilities as _capabilities
 import teatree.cli.cost as _cost
 import teatree.cli.fast_push as _fast_push
 import teatree.cli.info as _info
+import teatree.cli.push as _push
 import teatree.cli.sessions as _sessions
 import teatree.cli.speak as _speak
 import teatree.cli.speak_dm as _speak_dm
@@ -172,6 +173,7 @@ app.command()(_cost.cost)
 app.command()(_tokens.tokens)
 app.command()(_speak.speak)
 app.command(name="speak-dm")(_speak_dm.speak_dm)
+app.command()(_push.push)
 app.command(name="fast-push")(_fast_push.fast_push)
 app.add_typer(_info.info_app, name="info")
 app.command()(_ui.ui)
