@@ -20,11 +20,13 @@ it is what earns Dependabot the right to watch the package again.
 # test-path: cross-cutting — a dependency-manifest contract test that also reads the eval
 # catalog, because the manifest's `ignore` entry and the catalog's labelling are one decision.
 
+import importlib.metadata
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import yaml
+from packaging.requirements import Requirement
 
 from teatree.eval.discovery import discover_specs
 from teatree.eval.surface import is_advisory, mislabelled_interactive_specs
@@ -34,8 +36,12 @@ _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 
-_PINNED_VERSION = "0.2.94"
+_PINNED_VERSION = "0.2.95"
 _PACKAGE = "claude-agent-sdk"
+
+#: The dependency whose major the pin's ceiling is set by. ``teatree.mcp`` imports the
+#: 2.0 module layout (``mcp.server.mcpserver.MCPServer``) across eight modules.
+_MCP = "mcp"
 
 
 def _sdk_constraint() -> str:
@@ -43,6 +49,38 @@ def _sdk_constraint() -> str:
     matches = [d for d in deps if d.replace(" ", "").startswith(_PACKAGE)]
     assert len(matches) == 1, f"expected exactly one {_PACKAGE} dependency, got {matches}"
     return matches[0].replace(" ", "")
+
+
+def _project_requirement(name: str) -> Requirement:
+    deps = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["dependencies"]
+    matches = [Requirement(d) for d in deps]
+    hits = [r for r in matches if r.name == name]
+    assert len(hits) == 1, f"expected exactly one {name} dependency, got {hits}"
+    return hits[0]
+
+
+def _sdk_requirement_on(name: str) -> Requirement:
+    """The pinned SDK's OWN declared requirement on *name*, read from its metadata.
+
+    ``uv.lock`` records a resolved dependency graph with no specifiers, so the wheel's
+    own bound is only readable from the installed distribution.
+    """
+    installed = importlib.metadata.version(_PACKAGE)
+    assert installed == _PINNED_VERSION, (
+        f"the environment has {_PACKAGE}=={installed} but the pin is {_PINNED_VERSION}; "
+        "run `uv sync` so this reads the pinned wheel's own metadata."
+    )
+    requirements = [Requirement(r) for r in importlib.metadata.requires(_PACKAGE) or []]
+    hits = [r for r in requirements if r.name == name and not r.marker]
+    assert len(hits) == 1, f"expected exactly one unconditional {name} requirement, got {hits}"
+    return hits[0]
+
+
+def _locked_version_of(package: str) -> str:
+    lock = tomllib.loads(_LOCK.read_text(encoding="utf-8"))
+    matches = [p["version"] for p in lock["package"] if p["name"] == package]
+    assert len(matches) == 1, f"expected exactly one locked {package}, got {matches}"
+    return matches[0]
 
 
 def _locked_version() -> str:
@@ -69,6 +107,38 @@ class TestClaudeAgentSdkPin:
 
     def test_lock_resolves_sdk_to_pinned_version(self) -> None:
         assert _locked_version() == _PINNED_VERSION
+
+
+class TestThePinsCeilingIsTheMcpMajor:
+    """The pin has a CEILING, and it is ``mcp``'s major — not a matter of taste.
+
+    ``claude-agent-sdk`` 0.2.96 added an ``mcp<2.0.0`` cap, while ``teatree.mcp``
+    imports the 2.0 layout (``mcp.server.mcpserver.MCPServer``) under the project's
+    ``mcp>=2,<3`` bound. The two are strictly disjoint, so the combination does not
+    resolve AT ALL: ``uv sync`` fails before a single test runs and every downstream
+    lane reds with no stated cause. These name the cause where a bump is made, so
+    raising the pin past the ceiling reds here on the reason rather than as an opaque
+    resolver error. Lifting the ceiling means the SDK dropping its cap — never moving
+    ``mcp`` back to 1.x, which the module layout above cannot survive.
+    """
+
+    def test_the_locked_mcp_satisfies_the_pinned_sdks_own_bound(self) -> None:
+        requirement = _sdk_requirement_on(_MCP)
+        locked = _locked_version_of(_MCP)
+        assert requirement.specifier.contains(locked), (
+            f"{_PACKAGE}=={_PINNED_VERSION} requires {requirement}, which excludes the locked "
+            f"{_MCP}=={locked}. This SDK release cannot be used while teatree imports the "
+            f"{_MCP} 2.0 module layout; pin the SDK back below its {_MCP} cap."
+        )
+
+    def test_the_locked_mcp_satisfies_the_projects_own_bound(self) -> None:
+        requirement = _project_requirement(_MCP)
+        locked = _locked_version_of(_MCP)
+        assert requirement.specifier.contains(locked), (
+            f"the lock resolved {_MCP}=={locked}, outside the project's own {requirement}. "
+            f"`teatree.mcp.server` imports `{_MCP}.server.mcpserver.MCPServer`, so a resolution "
+            "that drops below the bound crashes the MCP server on import."
+        )
 
 
 class TestTheGuardThatReplacedTheQuarantine:

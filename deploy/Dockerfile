@@ -25,7 +25,7 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # bundles (which every eval/test image pins). This image feeds the paths that exec
 # the GLOBAL binary — `t3 loop start`'s os.execv, the agent command, the ttyd web
 # terminal, the tasks command — so it needs a current known-good release; the
-# bundle's 2.1.169 predates `claude-opus-5`, which model_tiering resolves as the
+# bundle's 2.1.170 predates `claude-opus-5`, which model_tiering resolves as the
 # `frontier` tier. Both tiers are guarded by tests/test_claude_cli_pin.py.
 # bash with `pipefail`, not the default dash `/bin/sh`. dash has no `pipefail`, so
 # a `curl ... | bash` whose FETCH fails still reports only the shell's exit status
