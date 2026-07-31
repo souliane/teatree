@@ -174,7 +174,7 @@ def _strip_ambient(prompt: str) -> str:
     stripped = _AMBIENT_CONTEXT_RE.sub(" ", capped)
     # An UNTERMINATED open tag drops from the tag to end-of-string — so an unterminated
     # <system-reminder> mention in a genuine prompt truncates the rest of the query.
-    # Intentional, mirrors hook_router._strip_ambient_context: leaked ambient text must
+    # Intentional, mirrors skill_loader_input.strip_ambient_context: leaked ambient text must
     # never reach the matcher, and genuine intent sits early (the harness appends blocks).
     return _AMBIENT_OPEN_RE.sub(" ", stripped)
 

@@ -75,12 +75,15 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
 
     canonical = OverlayEntry.canonical_overlay_name(overlay_name)
 
-    def _staged_overlay_rows(name: str = "") -> dict[str, str]:
-        return {"autonomy": autonomy} if OverlayEntry.canonical_overlay_name(name) == canonical else {}
+    def _staged_overlay_rows(name: str = "") -> tuple[dict[str, str], bool]:
+        # ``(rows, degraded)`` — the readers report whether the scope could be READ, not just
+        # what it held (#3873). ``False`` here is "read fine, these are the rows".
+        rows = {"autonomy": autonomy} if OverlayEntry.canonical_overlay_name(name) == canonical else {}
+        return rows, False
 
     with (
-        patch("teatree.config.resolution._load_global_rows", return_value={}),
-        patch("teatree.config.resolution._load_overlay_rows", side_effect=_staged_overlay_rows),
+        patch("teatree.config.resolution.load_global_rows", return_value=({}, False)),
+        patch("teatree.config.resolution.load_overlay_rows", side_effect=_staged_overlay_rows),
         patch("teatree.config.resolution.env_setting_overrides", return_value={}),
     ):
         yield

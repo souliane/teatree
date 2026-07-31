@@ -18,7 +18,7 @@ from teatree.cli.doctor.checks_bootstrap import (
     _check_provision_concurrency_from_host,
     run_bootstrap_checks,
 )
-from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable
+from teatree.cli.doctor.checks_cold_hooks import _check_cold_hook_settings_readable, _check_config_override_tier_healthy
 from teatree.cli.doctor.checks_docker import _check_docker_workflow_wired
 from teatree.cli.doctor.checks_environment import (
     _check_configured_review_skills,
@@ -115,6 +115,7 @@ __all__ = (
     "_check_claude_settings_drift",
     "_check_cold_hook_settings_readable",
     "_check_compose_output_root_pinned",
+    "_check_config_override_tier_healthy",
     "_check_configured_review_skills",
     "_check_connector_manifest",
     "_check_control_db_agreement",
@@ -390,7 +391,12 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a
     # store the CLI reads fine can be unreadable to every cold-hook gate. Runs after
     # ensure_django() above: it compares the hook's answer against the Django-side one.
-    ok = _check_cold_hook_settings_readable() and ok
+    # #3873 rides alongside: a runtime ConfigSetting read fault resolves every gate to a
+    # shipped default and says so only in a worker log. The resolver records it beside the
+    # control DB; this is the surface that makes an operator see it. The tuple calls BOTH
+    # before ``all`` short-circuits, so an unreadable-store FAIL never masks a degraded-tier
+    # FAIL — they are different faults with different remedies.
+    ok = all((_check_cold_hook_settings_readable(), _check_config_override_tier_healthy())) and ok
     # Verify the Claude Code statusLine block (PR-17: present, absolute path, executable
     # target — a missing block WARNs, a relative/non-executable one hard-FAILs) AND its
     # freshness. The freshness backstop hard-FAILs a pre-rendered statusline gone stale past
