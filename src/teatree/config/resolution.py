@@ -32,7 +32,7 @@ from typing import Any
 import teatree.config as _facade
 from teatree.config import cold_defaults
 from teatree.config.discovery import _active_overlay_entry
-from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
+from teatree.config.enums import Autonomy, Mode
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.retired_settings import RENAMED_SETTING_KEYS, removed_setting, warn_removed_setting
 from teatree.config.setting_layers import (
@@ -163,9 +163,9 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     ``speak`` as a MERGE up the layers (a partial row overrides only the keys it sets).
 
     As a final step the single ``autonomy`` switch is applied: under
-    :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the three approval gates
-    collapse to their autonomous value and ``mode`` is pinned to ``auto``
-    (unless the user pinned a gate explicitly). See :func:`_apply_autonomy`.
+    :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the collapsed approval gates
+    take their autonomous value and ``mode`` is pinned to ``auto`` (unless the
+    user pinned a gate explicitly). See :func:`_apply_autonomy`.
     """
     config = _facade.load_config()
     base = config.user
@@ -500,26 +500,38 @@ def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
     return {}
 
 
-#: The approval gates an autonomous tier collapses. ``require_human_approval_to_merge``
-#: is deliberately absent (#3630): "carry the work end to end" and "merge without a
-#: review gate" are different decisions, and a tier switch that silently made the second
-#: one for the operator removed review-before-merge with no signal. Merging without
-#: review is now its own named opt-in — an explicit
-#: ``require_human_approval_to_merge = false`` — which every tier reads unchanged.
+#: The approval gates an autonomous tier collapses. Two gates are deliberately absent,
+#: for the same reason: "carry the work end to end" is a different decision from
+#: surrendering a distinct human control, and a tier switch that silently made the
+#: second one for the operator removed that control with no signal. Each stays its own
+#: named opt-in, which every tier reads unchanged —
+#: ``require_human_approval_to_merge = false`` for review before merge (#3630), and
+#: ``on_behalf_post_mode = "immediate"`` for colleague egress under the owner's own
+#: identity (#3895).
 _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
-    "on_behalf_post_mode": OnBehalfPostMode.IMMEDIATE,
     "require_human_approval_to_answer": False,
 }
 
 
 _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
 
+#: Every field :func:`_apply_autonomy` may write. Each still has its own home and its own
+#: shipped default, but an autonomous ``autonomy`` tier DERIVES its resolved value, so it
+#: can differ from that default with no ``defaults_approvals.toml`` entry — the reviewed
+#: decision is the tier, not the per-field value. Sourced from the collapse itself so the
+#: set cannot drift from what the resolver actually writes.
+AUTONOMY_COLLAPSED_FIELDS: frozenset[str] = frozenset(
+    {*_AUTONOMY_COLLAPSED_GATE_VALUES, "mode", "notify_on_behalf", "review_request_post_disabled"}
+)
+
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
     """Collapse the tier-governed approval gates for ``full`` / ``notify``.
 
     The set is :data:`_AUTONOMY_COLLAPSED_GATE_VALUES`, which excludes
-    ``require_human_approval_to_merge`` (#3630) — no tier removes review before merge.
+    ``require_human_approval_to_merge`` (#3630) — no tier removes review before merge —
+    and ``on_behalf_post_mode`` (#3895) — no tier opens colleague egress under the
+    owner's own identity.
 
     Both autonomous tiers fill only the gates the user left unpinned and pin
     ``mode`` to ``auto`` (the merge-autonomy path is gated on ``mode == AUTO``,
@@ -535,7 +547,7 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
 
     Pin precedence:
 
-    *   For the three approval gates, an explicit pin of EITHER kind
+    *   For the collapsed approval gates, an explicit pin of EITHER kind
         (``hard_pinned`` = env / per-overlay override, or ``global_pinned`` =
         a global ``[teatree]`` key) wins — a deliberate opinion is never
         silently overridden.

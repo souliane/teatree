@@ -13,6 +13,7 @@ while ``agent_runtime=interactive`` (a headless runtime lifts the refusal).
 """
 
 import json
+from collections.abc import Iterator
 from io import StringIO
 
 import pytest
@@ -20,6 +21,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from tests._agent_runtime_env import interactive_runtime
 
 IMMEDIATE_BACKEND = {
     "TASKS": {"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}},
@@ -107,6 +109,13 @@ class TestPhaseTaskDefaultsInteractive(TestCase):
 
 
 class TestRecordAttemptCommand(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     def _claimed_task(self, *, phase: str = "coding") -> Task:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)

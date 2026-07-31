@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from django.test import TestCase
 from teatree.config import OnBehalfPostMode, UserSettings
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewEvidence, ReviewRequestPost, Ticket
+from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
@@ -359,6 +361,13 @@ class TestReviewRequestPostDedup(TestCase):
 class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
     """Risk-c regression: a refusal must NOT leave an orphan claim wedging future posts."""
 
+    @pytest.fixture(autouse=True)
+    def _gate_on(self) -> Iterator[None]:
+        # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
+        # case is about the gate BLOCKING, so it pins the mode it exercises.
+        with mode_gate_on_cm():
+            yield
+
     def test_refuses_without_approval_and_rolls_back_claim(self) -> None:
         backend = _FakeBackend()
         # Real guard would claim ReviewRequestPost; mock it to the post verdict
@@ -508,6 +517,13 @@ class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
 
 
 class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
+    @pytest.fixture(autouse=True)
+    def _gate_on(self) -> Iterator[None]:
+        # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
+        # case is about the gate BLOCKING, so it pins the mode it exercises.
+        with mode_gate_on_cm():
+            yield
+
     def test_records_consumes_audits_and_persists(self) -> None:
         OnBehalfApproval.record(
             target=_MR_URL,

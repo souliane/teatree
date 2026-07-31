@@ -13,8 +13,10 @@ so ``persist_agent_actions`` returned ``[]`` and created no rows — every
 ``created`` / ``Task.objects.filter(...)`` assertion here was RED before the fix.
 """
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import Task, Ticket
@@ -23,6 +25,7 @@ from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
+from tests._agent_runtime_env import interactive_runtime
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -32,6 +35,13 @@ def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
 
 class TestDebugZoneRevived(TestCase):
     """``my_pr.failed`` → author ``debugging`` task + persist-time RedMrFixAttempt."""
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
 
     def _signal(self, *, pr_url: str = "https://example.com/o/r/pull/5", head_sha: str = "sha-red-1") -> ScanSignal:
         return ScanSignal(

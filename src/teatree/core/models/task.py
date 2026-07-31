@@ -164,7 +164,7 @@ class Task(models.Model):
         """Route a freshly-created loop-dispatched phase task to INTERACTIVE.
 
         The single chokepoint for "phase tasks default to interactive": when the
-        ``agent_runtime`` setting selects ``interactive`` (the default) the loop
+        ``agent_runtime`` setting selects ``interactive`` the loop
         is their sole dispatcher, so every ``schedule_*`` / scanner / CLI creation
         site inherits the rule here without each having to know it. Under
         ``agent_runtime=headless`` the row is left HEADLESS so the headless lane

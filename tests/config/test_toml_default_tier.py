@@ -24,6 +24,8 @@ from django.test import TestCase
 
 from teatree.config import (
     ENV_SETTING_OVERRIDES,
+    Autonomy,
+    Mode,
     OnBehalfPostMode,
     TeaTreeConfig,
     cold_defaults,
@@ -36,7 +38,7 @@ from teatree.config.defaults_approvals import read_approvals
 from teatree.config.overlay_code_defaults import PROMOTED_OVERLAY_CODE_DEFAULT_KEYS
 from teatree.config.registries import COLD_SETTINGS
 from teatree.config.resolution import _BESPOKE_STRUCTURED_FIELDS as _STRUCTURED_KEYS
-from teatree.config.resolution import _coerce_setting_rows
+from teatree.config.resolution import AUTONOMY_COLLAPSED_FIELDS, _coerce_setting_rows
 from teatree.config.settings import UserSettings
 from teatree.core.models import ConfigSetting
 
@@ -229,7 +231,12 @@ class TestResolvedFieldsMoveOnlyWhereApproved(TestCase):
     coerced through the key's own registry parser, so it never changes a field's type.
 
     The promoted overlay-code-default keys are excluded: a DIFFERENT, pre-existing tier
-    (#36) legitimately moves those, and this PR does not touch it.
+    (#36) legitimately moves those, and this PR does not touch it. So are the
+    ``AUTONOMY_COLLAPSED_FIELDS``, which the resolver DERIVES from the ``autonomy`` tier
+    rather than reads — their reviewed decision is the tier, and it is pinned separately by
+    ``test_autonomy.py``. That exemption is not a hole:
+    :meth:`test_every_collapsed_field_moves_only_to_what_the_tier_prescribes` pins each of
+    them to the exact value the collapse writes.
     """
 
     @pytest.fixture(autouse=True)
@@ -239,7 +246,8 @@ class TestResolvedFieldsMoveOnlyWhereApproved(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def _guarded_fields(self) -> list[str]:
-        return [f.name for f in dataclasses.fields(UserSettings) if f.name not in PROMOTED_OVERLAY_CODE_DEFAULT_KEYS]
+        exempt = PROMOTED_OVERLAY_CODE_DEFAULT_KEYS | AUTONOMY_COLLAPSED_FIELDS
+        return [f.name for f in dataclasses.fields(UserSettings) if f.name not in exempt]
 
     def test_every_resolved_field_keeps_its_dataclass_type(self) -> None:
         assert ConfigSetting.objects.count() == 0
@@ -261,3 +269,19 @@ class TestResolvedFieldsMoveOnlyWhereApproved(TestCase):
         }
         unrecorded = {name: pair for name, pair in moved.items() if name not in read_approvals()}
         assert not unrecorded, f"the resolver moves a field off its dataclass default unapproved: {unrecorded}"
+
+    def test_every_collapsed_field_moves_only_to_what_the_tier_prescribes(self) -> None:
+        # The exemption above is bounded here: at the shipped ``autonomy = full`` the
+        # collapse writes exactly these values, so a collapsed field cannot drift to
+        # something the tier never prescribed.
+        resolved = get_effective_settings()
+        assert resolved.autonomy is Autonomy.FULL
+        assert resolved.mode is Mode.AUTO
+        assert resolved.require_human_approval_to_answer is False
+        assert resolved.review_request_post_disabled is False
+        # ``notify_on_behalf`` is the NOTIFY tier's derivation; ``full`` leaves it alone.
+        assert resolved.notify_on_behalf is UserSettings().notify_on_behalf
+        # #3630 / #3895: neither the merge gate nor colleague egress is collapsed by any
+        # tier, so both stay guarded fields above and keep their shipped values here.
+        assert resolved.require_human_approval_to_merge is True
+        assert resolved.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK

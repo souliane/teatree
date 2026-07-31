@@ -40,7 +40,7 @@ _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
 _READOUT_HEADINGS = ("Model &amp; reasoning effort", "Credentials", "Self-repairs")
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
-_SAFETY_TOML = '[teatree]\nautonomy = "full"\n'
+_SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 
 #: The page's whole DB cost: the readouts' reads plus the scope picker's DISTINCT, and the
 #: ONE settings read every row of the pane is resolved from. Constant in the row count, and
@@ -502,12 +502,12 @@ class TestSettingsImportTakesAFile(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_apply_writes_the_rows(self) -> None:
-        self._post('[teatree]\nmode = "auto"\n', apply="1")
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        self._post('[teatree]\nmode = "interactive"\n', apply="1")
+        assert ConfigSetting.objects.get_effective("mode") == "interactive"
 
     def test_a_nested_file_imports_exactly_as_a_flat_one_does(self) -> None:
-        self._post('[teatree.Agents."Mode & harness"]\nmode = "auto"\n', apply="1")
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        self._post('[teatree.Agents."Mode & harness"]\nmode = "interactive"\n', apply="1")
+        assert ConfigSetting.objects.get_effective("mode") == "interactive"
 
     def test_no_file_is_refused_with_a_reason_rather_than_a_crash(self) -> None:
         response = self.client.post(reverse("dash:settings_import"), {"apply": ""}, **_LOOPBACK)
@@ -538,7 +538,7 @@ class TestSettingsImportTakesAFile(TestCase):
 
     def test_a_safety_posture_key_is_written_with_the_confirm_phrase(self) -> None:
         self._post(_SAFETY_TOML, apply="1", confirm=SAFETY_CONFIRM_PHRASE)
-        assert ConfigSetting.objects.get_effective("autonomy") == "full"
+        assert ConfigSetting.objects.get_effective("autonomy") == "babysit"
 
     def test_the_dry_run_preview_flags_the_safety_posture_row(self) -> None:
         response = self._post(_SAFETY_TOML, apply="")
@@ -572,7 +572,7 @@ class TestShippedDefaultColumn(TestCase):
         assert "<th>category</th>" not in body
 
     def test_the_provenance_names_the_tier_that_actually_supplied_the_value(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("mode", "interactive")
         body = self._body()
         row = body[body.index('id="setting-mode"') :][:900]
         assert "DB global scope" in row

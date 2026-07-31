@@ -100,16 +100,15 @@ class _ModeHarnessSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Agents", "Mode & harness")
 
-    mode: Mode = Mode.INTERACTIVE
-    autonomy: Autonomy = Autonomy.BABYSIT
+    mode: Mode = Mode.AUTO
+    autonomy: Autonomy = Autonomy.FULL
     # The single LANE selector for loop-dispatched phase agents (those whose
-    # (role, phase) has a registered phase sub-agent). ``interactive`` (default,
-    # today's behaviour) dispatches them in-session via the ``/loop`` slot's
-    # ``Agent`` tool; ``headless`` runs them via ``agents/headless.py`` behind the
-    # two-layer ``agent_harness`` (transport) / ``agent_harness_provider``
-    # (credential) pair (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env
-    # wins.
-    agent_runtime: AgentRuntime = AgentRuntime.INTERACTIVE
+    # (role, phase) has a registered phase sub-agent). ``interactive`` dispatches
+    # them in-session via the ``/loop`` slot's ``Agent`` tool; ``headless`` (the
+    # default) runs them via ``agents/headless.py`` behind the two-layer
+    # ``agent_harness`` (transport) / ``agent_harness_provider`` (credential) pair
+    # (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
+    agent_runtime: AgentRuntime = AgentRuntime.HEADLESS
     # Layer 1 of the two-layer harness config model (#2887): which in-process
     # TRANSPORT a headless run uses. Orthogonal to ``agent_runtime`` (which LANE —
     # interactive vs headless — a task dispatches into): once a run IS headless,
@@ -246,16 +245,16 @@ class _LoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Cadence & throughput")
 
-    # How much new work a loop tick admits at once — the bounded-WIP dial. The
-    # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
-    # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
-    # provide throughput. ``slow`` caps to one impl worker; ``full`` arms the
-    # /t3:wip loop; ``boost`` keeps ``boost_concurrency = N`` workers live,
-    # refilling the pool each tick as workers exit. Orthogonal
+    # How much new work a loop tick admits at once — the bounded-WIP dial.
+    # ``slow`` caps to one impl worker; ``medium`` is the conservative baseline
+    # (NO orchestrator fan-out — only the intrinsic loop + PR sweep + per-overlay
+    # ``max_concurrent_auto_starts`` provide throughput); ``full`` (the default)
+    # arms the /t3:wip loop; ``boost`` keeps ``boost_concurrency = N`` workers
+    # live, refilling the pool each tick as workers exit. Orthogonal
     # to ``mode``/``autonomy`` (those gate *whether* a publish proceeds; this
     # governs *how many* threads run) and never relaxes a safety gate.
     # Per-overlay overridable; ``T3_WIP`` env wins over both.
-    wip: Wip = Wip.MEDIUM
+    wip: Wip = Wip.FULL
     # #3634 The wip dial's PHASE SPLIT, replacing the single blunt concurrency knob.
     # ``write_wip`` is how many implementation workers (coding / testing / reviewing)
     # run concurrently; ``merge_wip`` is the merge lane, single-flight by design so
@@ -388,8 +387,8 @@ class _OnBehalfSettings:
     # Whether agent-driven review-request posting is BLOCKED for this overlay
     # (#2579). Resolved off the autonomy TIER by ``_apply_autonomy``: the
     # ``notify`` tier (collaborative/customer surface) sets it ``True`` so
-    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even though the
-    # collapse forces ``on_behalf_post_mode = immediate``; the ``full`` tier (solo
+    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even under an
+    # explicitly pinned ``on_behalf_post_mode = immediate``; the ``full`` tier (solo
     # tooling surface) leaves it ``False`` so review-request PROCEEDs; ``babysit``
     # keeps the default ``False`` and review-request follows ``on_behalf_post_mode``
     # like any other colleague-visible post. This is the customer-overlay

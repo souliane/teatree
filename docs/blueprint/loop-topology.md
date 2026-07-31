@@ -155,10 +155,10 @@ Two scanner-side gates make the row honest:
 
 ## 5.6.2 Mode + training-wheel
 
-The loop respects the active overlay's `mode` (§ 10.1, canonical default `interactive`). When an overlay opts into `mode = "auto"`, three training wheels keep specific actions gated while the rest of the pipeline runs autonomously.
+The loop respects the active overlay's `mode` (§ 10.1, shipped `auto`). Under `mode = "auto"`, three training wheels keep specific actions gated while the rest of the pipeline runs autonomously.
 
 - **`require_human_approval_to_merge` (DB-home, default `true`).** Push and PR creation run autonomously, but merge stays gated — it requires a user reaction (👍 or `/merge`) on the statusline entry or the PR thread.
-- **`require_human_approval_to_answer` (DB-home, default `true`).** Gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation. Set it `false` per-overlay (`config_setting set require_human_approval_to_answer false --overlay <name>`) to let answers post directly.
+- **`require_human_approval_to_answer` (DB-home, default `true`).** Gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation. Set it `false` per-overlay (`config_setting set require_human_approval_to_answer false --overlay <name>`), or raise the overlay's `autonomy` tier, to drop that DM round-trip. It is the only gate the tier collapses, and it is not the egress control: the answer's `post_in_thread` / `post_comment` still passes the `on_behalf_post_mode` pre-gate below, which BLOCKs under the shipped `draft_or_ask` at every tier.
 - **`on_behalf_post_mode` (DB-home, default `"draft_or_ask"`).** The tri-state *pre*-gate over every post the agent makes under the user's identity to a colleague/customer surface — a PR/MR comment, an issue comment, a Slack channel/thread message, a Notion post, a PR/MR **approval**, or a reaction on someone else's message.
 
 The three `on_behalf_post_mode` values form an autonomy ramp. The gate
@@ -168,7 +168,7 @@ approval:
 
 - `immediate` — gate off; every action publishes directly.
 - `ask` — every colleague-VISIBLE action requires an explicit recorded approval before publishing; a draft is exempt and auto-publishes (+ DMs the user) without approval.
-- `draft_or_ask` (the new default) — identical to `ask`: `t3 review post-draft-note` publishes autonomously (drafts are colleague-invisible and revocable, and the agent DMs the user with the publish/delete commands); every colleague-visible action BLOCKs until the user records an approval.
+- `draft_or_ask` (the shipped default, which no `autonomy` tier collapses — #3895) — identical to `ask`: `t3 review post-draft-note` publishes autonomously (drafts are colleague-invisible and revocable, and the agent DMs the user with the publish/delete commands); every colleague-visible action BLOCKs until the user records an approval.
 
 The legacy boolean `ask_before_post_on_behalf` is retired (souliane/teatree#2731): its `UserSettings` field is gone and a leftover `[teatree]` / `[overlays.<name>]` key is ignored on read (`load_config` warns). Set the successor `on_behalf_post_mode` (DB-home) instead. The setting is resolved through the env (`T3_ON_BEHALF_POST_MODE`) → active-overlay → global → default chain (`teatree.on_behalf_gate.resolve_on_behalf_verdict`); it is the *pre*-gate companion to the notify-*after* path (#949). Both ship on; the user flips this one off per-overlay first.
 

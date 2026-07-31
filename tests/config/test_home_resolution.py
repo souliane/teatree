@@ -36,11 +36,11 @@ class TestDbHomeResolution(TestCase):
 
     def test_db_home_field_falls_to_default_with_empty_table(self) -> None:
         assert ConfigSetting.objects.count() == 0
-        assert get_effective_settings().issue_implementer_enabled is False
+        assert get_effective_settings().issue_implementer_enabled is True
 
     def test_db_home_field_resolves_from_db_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert get_effective_settings().issue_implementer_enabled is True
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
+        assert get_effective_settings().issue_implementer_enabled is False
 
     def test_db_is_the_sole_authority_for_a_db_home_field(self) -> None:
         # A DB row is the sole source; clearing it restores the dataclass default
@@ -114,10 +114,12 @@ class TestDbHomeKeyInOverlayRegistryIsLoud:
     ) -> None:
         monkeypatch.delenv("T3_MODE", raising=False)
         monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        _seed_config_db(config_db, overlays={"my-overlay": {"class": "x.y:Z", "mode": "auto"}})
+        _seed_config_db(config_db, overlays={"my-overlay": {"class": "x.y:Z", "mode": "interactive"}})
         with caplog.at_level(logging.WARNING, logger="teatree.config"):
             settings = get_effective_settings()
-        assert settings.mode is Mode.INTERACTIVE
+        # The overlay-TOML ``mode = interactive`` is a DB-home key, so it is ignored
+        # on read; ``mode`` falls to the resolved default (``auto``).
+        assert settings.mode is Mode.AUTO
         joined = "\n".join(_drop_warnings(caplog))
         assert "mode" in joined
         assert "my-overlay" in joined
@@ -152,7 +154,7 @@ class TestEnvWinsOverDbHome(TestCase):
 
 
 class TestAutonomyCollapseWithDbHomeGates(TestCase):
-    """The three approval gates are DB-home; the autonomy collapse honours a global DB pin."""
+    """The approval gates are DB-home; the autonomy collapse honours a global DB pin."""
 
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,17 +165,19 @@ class TestAutonomyCollapseWithDbHomeGates(TestCase):
         ConfigSetting.objects.set_value("autonomy", "full")
         settings = get_effective_settings()
         assert settings.require_human_approval_to_answer is False
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
         assert settings.mode is Mode.AUTO
-        # #3630: the merge review gate is not tier-governed and keeps its default.
+        # #3630 / #3895: the merge review gate and colleague egress are not tier-governed
+        # and keep their defaults.
         assert settings.require_human_approval_to_merge is True
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
     def test_autonomy_collapse_respects_db_global_pin(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full")
         ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True)
         settings = get_effective_settings()
         assert settings.require_human_approval_to_answer is True
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+        # The tier still resolved — the global pin beat the collapse, it did not skip it.
+        assert settings.mode is Mode.AUTO
 
 
 class TestSpeakAndMrReminderDbHome(TestCase):

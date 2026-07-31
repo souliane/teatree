@@ -22,6 +22,7 @@ from teatree.core.tasks import (
     refresh_followup_snapshot,
     sync_followup,
 )
+from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_core.conftest import CommandOverlay
 
 IMMEDIATE_BACKEND = {
@@ -91,6 +92,13 @@ def _stub_headless_runner(testcase: TestCase) -> None:
 
 class TestDrainHeadlessQueue(TestCase):
     """Drain is a safety net for tasks that missed the post_save auto-enqueue."""
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
 
     def setUp(self) -> None:
         from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
@@ -1307,6 +1315,13 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
 
 class TestHeadlessClaimLease(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     @override_settings(**IMMEDIATE_BACKEND)
     def test_headless_worker_claims_with_heartbeat_matched_lease(self) -> None:
         # The initial claim lease must equal the heartbeat renewal window (900s),

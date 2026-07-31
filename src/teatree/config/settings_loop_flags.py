@@ -19,12 +19,11 @@ class _LoopFlagAndCredentialSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Kill switches & credentials")
 
-    # #1548 Opt-in, default-OFF gate for the always-on issue-implementer
-    # loop. The loop is a hard NO-OP unless ``issue_implementer_enabled``
-    # is flipped on, mirroring the ``review_skill = ""`` opt-in (#1541) and
-    # the ``scanning_news_*`` cadence pattern. This PR adds only the config
-    # surface — the scanner and dispatch land in later PRs.
-    issue_implementer_enabled: bool = False
+    # #1548 The master gate for the always-on issue-implementer loop. Flipped ON by
+    # #3895 (owner-authorised autonomous-by-default posture): the factory intakes
+    # admitted issues without an operator opt-in. Flip OFF to make the loop a hard
+    # NO-OP. The per-issue admission decision table still applies.
+    issue_implementer_enabled: bool = True
     # #3634 The owner-applied ADMISSION label — rule 4 of the intake decision
     # table, and the label-scoped discovery query. It is the ONLY route by which an
     # UNTRUSTED author's issue reaches the factory; a trusted author needs no label
@@ -88,16 +87,14 @@ class _LoopFlagAndCredentialSettings:
     # pins stage=DARK => this default == its off_value (False), so the outer loop
     # can never be flipped default-ON without a code-reviewed stage demotion.
     outer_loop_enabled: bool = False
-    # North-star PR-6 — the OFF switch the directive-driven self-modification front-end
-    # (intake + interpret + ratify) ships behind, and a DARK ``FEATURE_FLAGS`` entry.
-    # Ships behaviorally inert: the ``DIRECTIVE``-intent router is parity-off while this
-    # is off (a directive event DROPs exactly as an unrouteable intent), so nothing
-    # writes a ``Directive`` row unless the explicit ``t3 <overlay> directive capture``
-    # CLI is used. DB-home (#1775), per-overlay overridable — an overlay can trial
-    # directive intake on its own budget. The conformance suite pins stage=DARK => this
-    # default == its off_value (False), so it can never ship default-ON without a
-    # code-reviewed stage demotion.
-    directive_loop_enabled: bool = False
+    # North-star PR-6 — the master gate for the directive-driven self-modification
+    # front-end (intake + interpret + ratify), graduated DARK -> SETTLING by #3895.
+    # Default ON: a captured directive IS interpreted, and the intake arc terminates at
+    # the structural human ratify gate. The EXECUTION arc past that gate additionally
+    # needs ``factory_score_enabled`` (default OFF) and a live critic, so nothing
+    # self-modifies at default resolution. DB-home (#1775), per-overlay overridable —
+    # flip OFF to disable directive intake entirely.
+    directive_loop_enabled: bool = True
     # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
     # activation is applied, the five evidence classes (activation live, acceptance green,
     # behavior probe clean, no collateral regression, zero open critic findings) are
@@ -148,12 +145,12 @@ class _LoopFlagAndCredentialSettings:
     # Upper bound on close-candidate signals emitted per tick — keeps an
     # auto-close pass bounded and reviewable.
     auto_disposition_max_closes_per_tick: int = 5
-    # Opt-in, default-OFF gate for the needs-triage assessor loop. When False (the
-    # default) no scanner is built, so the loop emits nothing and never queues an
-    # assessment. When on, the scanner discovers OPEN needs-triage issues and queues
-    # ONE shell-denied assessment task behind an ask-gate — it performs ZERO host
-    # writes and NOTHING acts autonomously (per-item approval via t3:triaging-issues).
-    triage_assessor_enabled: bool = False
+    # Master gate for the needs-triage assessor loop. Default ON: the scanner
+    # discovers OPEN needs-triage issues and queues ONE shell-denied assessment
+    # task behind an ask-gate — it performs ZERO host writes and NOTHING acts
+    # autonomously (per-item approval via t3:triaging-issues). Flip OFF to make the
+    # loop emit nothing.
+    triage_assessor_enabled: bool = True
     # Min interval between assessment passes (the scanner self-gates on this).
     triage_assessor_cadence_hours: int = 24
     # Upper bound on issues serialized into one queued assessment task — keeps the

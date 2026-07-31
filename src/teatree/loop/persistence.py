@@ -350,8 +350,9 @@ def _create_phase_task(ticket: Ticket, *, phase: str, agent_id: str, reason: str
     Mirrors ``ticket.schedule_coding`` / ``schedule_external_review`` for the
     phases those methods do not cover (``debugging``/``e2e``/``answering``/
     ``codex_reviewing``). ``Task.save`` routes a loop-dispatched ``(role, phase)``
-    to INTERACTIVE under the default ``agent_runtime`` (the /loop slot is its
-    dispatcher), so no explicit ``execution_target`` is set here.
+    to INTERACTIVE under an ``interactive`` ``agent_runtime`` (the /loop slot is its
+    dispatcher) and leaves it HEADLESS under the shipped headless one, so no explicit
+    ``execution_target`` is set here.
     """
     from teatree.core.models.session import Session  # noqa: PLC0415 — lazy: avoids the models import cycle
 

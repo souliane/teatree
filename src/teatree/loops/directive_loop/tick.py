@@ -3,7 +3,7 @@
 :func:`run_tick` is the whole behaviour and structurally mirrors
 :func:`teatree.loops.outer_loop.tick.run_tick`. It ALWAYS runs an unconditional
 guard chain first; a refusal returns a typed no-op result with zero mutation (the
-QUADRUPLE-OFF flag-off parity property) and is LOGGED at warning level, so a refused
+TRIPLE-OFF no-op property) and is LOGGED at warning level, so a refused
 tick is never indistinguishable from an idle one (#3643). When the chain allows, each
 advanced directive takes exactly one FSM step:
 

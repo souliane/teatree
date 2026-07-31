@@ -37,6 +37,7 @@ from teatree.config import AgentHarnessProvider
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.llm.anthropic_limits import LimitCause
 from teatree.llm.credentials import CredentialError
+from tests._agent_runtime_env import interactive_runtime
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
@@ -192,12 +193,14 @@ class TestRunHeadless(TestCase):
         assert task.status == Task.Status.FAILED
 
     def test_routes_to_interactive_when_needs_user_input(self) -> None:
+        # The interactive-followup arm exists only under the interactive runtime; the
+        # shipped one is headless (#3895), which records a DeferredQuestion instead.
         result = {
             "summary": "Blocked on design",
             "needs_user_input": True,
             "user_input_reason": "Need design decision",
         }
-        with _fake_sdk(_success_stream(result)):
+        with interactive_runtime(), _fake_sdk(_success_stream(result)):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(
                 ticket=self.ticket,

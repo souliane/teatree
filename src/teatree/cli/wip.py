@@ -1,7 +1,7 @@
 """``t3 <overlay> wip`` — show / set the bounded-WIP throughput dial.
 
 The ``wip`` dial (``slow`` < ``medium`` < ``full`` < ``boost``, default
-``medium``) governs how much new work a loop tick admits at once —
+``full``) governs how much new work a loop tick admits at once —
 orthogonal to ``mode``/``autonomy``, which gate *whether* a publish proceeds.
 ``wip split N`` sets the #3634 phase split: implementation runs ``N`` wide, the
 merge lane stays single-flight.

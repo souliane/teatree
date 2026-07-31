@@ -22,6 +22,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -33,6 +34,7 @@ from django.test import TestCase
 from teatree.agents.prompt import build_system_context
 from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
+from tests._agent_runtime_env import interactive_runtime
 
 
 def _config(fanout: dict[str, bool | int]) -> Path:
@@ -59,6 +61,13 @@ def _config(fanout: dict[str, bool | int]) -> Path:
 
 
 class _FanoutDispatchTest(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     def _reviewer_task(self, *, url: str = "https://example.com/pr/1") -> Task:
         ticket = Ticket.objects.create(
             overlay="acme",

@@ -1,4 +1,4 @@
-"""The directive-loop guard chains — the code half of QUADRUPLE-OFF (north-star PR-7).
+"""The directive-loop guard chains — the code half of TRIPLE-OFF (north-star PR-7).
 
 Fail-closed and ordered: the first (most fundamental) refusal wins. Two chains split
 by arc (#3643, #3649): the pre-admission INTAKE chain runs G1 flag, G3 signal-trust, G4

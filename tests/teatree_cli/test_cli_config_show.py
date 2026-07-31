@@ -33,8 +33,9 @@ class TestBuildConfigView(TestCase):
 
     def test_defaults_resolve_when_no_overrides(self) -> None:
         view = build_config_view()
-        # Defaults still resolve so the view is never empty.
-        assert view.intent["mode"] == "interactive"
+        # Defaults still resolve so the view is never empty; the shipped one is `auto`
+        # (#3895's autonomous posture), not the enum's conservative member.
+        assert view.intent["mode"] == "auto"
 
     def test_derived_section_labels_regenerability_per_entry(self) -> None:
         view = build_config_view()

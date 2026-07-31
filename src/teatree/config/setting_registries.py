@@ -348,6 +348,11 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
+    # #3895 shipped these two master gates ON, so each needs the same one-command
+    # kill switch its sibling loop gates already had — an operator stopping a
+    # default-ON loop cannot be made to write a DB row first.
+    "T3_TRIAGE_ASSESSOR_ENABLED": ("triage_assessor_enabled", _parse_env_bool),
+    "T3_DIRECTIVE_LOOP_ENABLED": ("directive_loop_enabled", _parse_env_bool),
     "T3_TRUSTED_ISSUE_AUTHORS": ("trusted_issue_authors", _parse_env_str_list),
     "T3_FLEET_CLAIM_ENABLED": ("fleet_claim_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),

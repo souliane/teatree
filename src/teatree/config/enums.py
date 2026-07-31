@@ -6,9 +6,9 @@ from enum import StrEnum
 class Mode(StrEnum):
     """Operating mode for agent sessions.
 
-    ``interactive`` (default, conservative on security) gates publishing actions
+    ``interactive`` (conservative on security) gates publishing actions
     on explicit user approval — push, PR creation/merge, external writes all
-    stop and ask. ``auto`` grants full autonomy: the agent ships end-to-end
+    stop and ask. ``auto`` (the default) grants full autonomy: the agent ships end-to-end
     without confirmation, falling back to interactive only for the non-
     negotiable always-gated list (force-push to default branches, destructive
     shared-state ops). ``mode`` is a DB-home setting: opt in via ``t3 <overlay>
@@ -24,9 +24,9 @@ class Mode(StrEnum):
     def parse(cls, value: str) -> "Mode":
         """Parse a mode string. Invalid values raise ``ValueError``.
 
-        The conservative default (``INTERACTIVE``) is applied by the caller
-        when the setting is absent — this function only validates explicit
-        values, so typos never silently downgrade to a less-safe mode.
+        The dataclass default (``AUTO``) is applied by the caller when the
+        setting is absent — this function only validates explicit values, so a
+        typo raises loud rather than silently resolving to a mode.
         """
         normalised = value.strip().lower()
         try:
@@ -55,7 +55,7 @@ class Wip(StrEnum):
     action may proceed); ``wip`` governs *how many* threads of work run
     concurrently — it never relaxes a safety gate.
 
-    Tiers (``SLOW`` < ``MEDIUM`` < ``FULL`` < ``BOOST``, default ``MEDIUM``):
+    Tiers (``SLOW`` < ``MEDIUM`` < ``FULL`` < ``BOOST``, default ``FULL``):
 
     *   :attr:`SLOW` — at most one implementation worker in flight at a time
         (the cold-review reviewer still runs separately). The cautious dial
@@ -86,9 +86,9 @@ class Wip(StrEnum):
     def parse(cls, value: str) -> "Wip":
         """Parse a wip string, accepting friendly aliases; typos raise ``ValueError``.
 
-        Mirrors :meth:`Mode.parse`: the conservative default (:attr:`MEDIUM`)
-        is applied by the caller when the setting is absent, so this validates
-        only explicit values and a typo never silently changes throughput.
+        Mirrors :meth:`Mode.parse`: the dataclass default (:attr:`FULL`) is
+        applied by the caller when the setting is absent, so this validates
+        only explicit values and a typo raises rather than changing throughput.
         ``low``/``normal``/``high`` map onto ``slow``/``medium``/``full``.
         """
         normalised = value.strip().lower()
@@ -103,12 +103,12 @@ class Wip(StrEnum):
 
 
 class Autonomy(StrEnum):
-    """The single per-overlay trust switch collapsing the three user-approval gates.
+    """The single per-overlay trust switch collapsing the tier-governed approval gates.
 
-    Tiers (``FULL`` > ``NOTIFY`` > ``BABYSIT``, default ``BABYSIT``):
+    Tiers (``FULL`` > ``NOTIFY`` > ``BABYSIT``, default ``FULL``):
 
     *   :attr:`BABYSIT` — every approval gate keeps its own value; the user
-        stays in the loop on merges, answers, and colleague-visible posts.
+        stays in the loop on merges and answers.
         Review-request posting follows ``on_behalf_post_mode`` like any other
         colleague-visible post.
     *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
@@ -125,10 +125,13 @@ class Autonomy(StrEnum):
         tooling surface: the resolved ``review_request_post_disabled`` is ``False``
         so review-request proceeds.
 
-    Both autonomous tiers collapse the three gates, pin ``mode = auto``, and set
-    the resolved ``review_request_post_disabled`` off the tier (#2579, replacing
+    Both autonomous tiers collapse the tier-governed gates, pin ``mode = auto``, and
+    set the resolved ``review_request_post_disabled`` off the tier (#2579, replacing
     the deleted ``agent_review_request_disabled`` side flag) — see
-    :func:`_apply_autonomy`. An explicit per-gate value always wins. The
+    :func:`_apply_autonomy`. Two gates are deliberately outside that set, each its
+    own named opt-in no tier touches: ``require_human_approval_to_merge`` for review
+    before merge (#3630), and ``on_behalf_post_mode`` for speaking to a colleague
+    under the owner's own identity (#3895). An explicit per-gate value always wins. The
     safety floor (privacy/leak gate, cold-review with reviewer != maker,
     CI-green, not-draft, never-lockout, the SHA-bound audited keystone
     transition) is out of scope and never touched — under ``full`` the substrate
@@ -143,9 +146,9 @@ class Autonomy(StrEnum):
     def parse(cls, value: str) -> "Autonomy":
         """Parse an autonomy string; invalid values raise ``ValueError``.
 
-        Mirrors :meth:`Mode.parse`: the conservative default
-        (:attr:`BABYSIT`) is applied by the caller when the setting is
-        absent, so a typo never silently grants full autonomy.
+        Mirrors :meth:`Mode.parse`: the dataclass default (:attr:`FULL`) is
+        applied by the caller when the setting is absent, so this validates
+        only explicit values and a typo raises rather than resolving to a tier.
         """
         normalised = value.strip().lower()
         try:

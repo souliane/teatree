@@ -27,13 +27,11 @@ pytestmark = pytest.mark.django_db
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
-    # ``on_behalf_post_mode`` is DB-home (#1775) and drives the gate. Gate OFF =
-    # ``immediate`` (the store row), gate ON = ``draft_or_ask`` (the dataclass
-    # default — clear any row).
-    if on:
-        ConfigSetting.objects.clear("on_behalf_post_mode")
-    else:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+    # ``on_behalf_post_mode`` is DB-home (#1775) and drives the gate. Both states are
+    # an explicit row: the shipped ``autonomy = full`` collapses an UNSET mode to
+    # ``immediate`` (#3895), so clearing the row would silently mean gate-OFF. A
+    # pinned gate is never overridden by the collapse, so the pin is the gate.
+    ConfigSetting.objects.set_value("on_behalf_post_mode", "draft_or_ask" if on else "immediate")
 
 
 class _ApproveStubAPI:

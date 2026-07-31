@@ -206,10 +206,10 @@ def _runs_in_session(instance: Task) -> bool:
 
     Delegates to ``headless_dispatch.runs_in_session``: a ``(ticket.role, phase)``
     with a registered phase agent runs in-session ONLY under
-    ``agent_runtime=interactive`` (the default), where it defaults to INTERACTIVE
+    ``agent_runtime=interactive``, where it defaults to INTERACTIVE
     at creation (``Task.save`` chokepoint) and the ``execution_target`` guard below
     already skips it — this remains as defense-in-depth for a row that reaches
-    HEADLESS some other way. Under a headless ``agent_runtime`` the same pair runs
+    HEADLESS some other way. Under the shipped headless ``agent_runtime`` the pair runs
     headless, so this returns ``False`` and the auto-enqueue ships it to
     ``execute_headless_task``. A pair with NO registered agent is free-form
     headless and is never in-session — never zero dispatch.
@@ -264,7 +264,7 @@ def _auto_enqueue_headless_task(
 ) -> None:
     """Auto-enqueue HEADLESS tasks for execution when created or re-routed.
 
-    Under ``agent_runtime=interactive`` (default), loop-dispatched phase tasks
+    Under ``agent_runtime=interactive``, loop-dispatched phase tasks
     default to INTERACTIVE at creation and so fail the ``execution_target`` guard;
     ``_runs_in_session`` stays as a belt-and-braces skip for any HEADLESS row of
     such a pair, so a ``db_worker`` draining the queue never double-runs loop phase

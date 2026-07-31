@@ -32,6 +32,7 @@ from teatree.core.overlay import (
     ToolCommand,
 )
 from teatree.core.overlay_loader import reset_overlay_cache
+from tests._agent_runtime_env import interactive_runtime
 
 pytestmark = [
     pytest.mark.filterwarnings(
@@ -424,6 +425,13 @@ class TestOverlayFiltering(TestCase):
 
 
 class TestTaskWorkflow(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
