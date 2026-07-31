@@ -9,7 +9,7 @@ handler advances each one FSM step — observe-only, never a fix (PR-3b).
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -31,4 +31,6 @@ MINI_LOOP = MiniLoop(
     name="ci_eval_heal",
     default_cadence_seconds=_CADENCE_SECONDS,
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.EGRESS}),
+    determinism=LoopDeterminism.AI,
 )

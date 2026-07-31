@@ -7,7 +7,7 @@ short because user-facing inbox lag is felt within seconds.
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -54,4 +54,6 @@ MINI_LOOP = MiniLoop(
     name="inbox",
     default_cadence_seconds=60,  # 1 minute — inbox lag is user-visible
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.COLLEAGUE}),
+    determinism=LoopDeterminism.AI,
 )

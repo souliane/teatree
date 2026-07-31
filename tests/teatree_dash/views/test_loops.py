@@ -156,6 +156,27 @@ class LoopsTableContextualVerbsTestCase(TestCase):
         assert 'value="enable"' not in row
 
 
+class LoopsTableTagsTestCase(TestCase):
+    """The declared reach/determinism tags render as chips on each loop's row."""
+
+    def _row_for(self, name: str) -> str:
+        body = self.client.get(reverse("dash:loops_table")).content.decode()
+        rows = re.findall(r"<tr>.*?</tr>", body, re.DOTALL)
+        matching = [row for row in rows if f">{name}<" in row]
+        assert matching, f"no loops-table row for {name!r}"
+        return matching[0]
+
+    def test_colleague_reaching_ai_loop_shows_every_tag(self) -> None:
+        row = self._row_for("review")
+        for tag in ("ingress", "egress", "colleague", "ai"):
+            assert f'<span class="chip small">{tag}</span>' in row
+
+    def test_local_only_loop_shows_deterministic_alone(self) -> None:
+        row = self._row_for("db_backup")
+        assert '<span class="chip small">deterministic</span>' in row
+        assert ">ingress<" not in row
+
+
 class LoopsHtmxSwapTestCase(TestCase):
     """A loop control POST answers the page body, not a full-document redirect.
 

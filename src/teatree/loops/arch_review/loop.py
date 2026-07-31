@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -30,4 +30,6 @@ MINI_LOOP = MiniLoop(
     name="arch_review",
     default_cadence_seconds=3600,  # 1h tick rate — internal cadence gates daily firing
     build_jobs=_build_jobs,
+    declared_reach=frozenset(),
+    determinism=LoopDeterminism.AI,
 )

@@ -2,8 +2,10 @@
 
 Backs the read-only ``t3 loops list``. Reads :class:`teatree.core.models.Loop`
 rows and prints each loop's name, effective admitted state, cadence (interval or
-daily schedule), last run, next-due, and a ``[colleague-facing]`` tag (#2904)
-when the row is gated off during any availability-deferring mode. The state
+daily schedule), last run, next-due, the loop's code-declared ``[reach … determinism]``
+tags (#3959), and an ``away-gated`` marker when the row is gated off during any
+availability-deferring mode. ``--tag`` narrows the listing to the loops carrying
+every named tag. The state
 column folds a :class:`teatree.core.models.LoopState` pause/disable hold into the
 row's ``enabled`` flag (#3117) — ``t3 loop pause`` holds a loop WITHOUT flipping
 ``Loop.enabled``, so a pause is now confirmable at a glance. ORM access lives in
@@ -23,11 +25,39 @@ from django_typer.management import TyperCommand
 
 from teatree.core.machine_output import emit
 from teatree.core.models import Loop, LoopState, LoopStatus
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 from teatree.loops.preset_status import LoopVerdict, effective_verdicts
+from teatree.loops.registry import iter_loops
 
 _NEVER = "—"
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
+KNOWN_TAGS: frozenset[str] = frozenset(
+    [*(member.value for member in LoopReach), *(member.value for member in LoopDeterminism)]
+)
+_TAG_CHOICES = "|".join([*(member.value for member in LoopReach), *(member.value for member in LoopDeterminism)])
+
+
+def _loops_by_name() -> dict[str, MiniLoop]:
+    """The registered mini-loops, keyed by the name their DB row carries.
+
+    A ``Loop`` row with no ``MINI_LOOP`` behind it (an operator-created row, a
+    retired loop's leftover) is absent here and renders no tags — the registry is
+    the only source, so nothing can show a classification the code does not declare.
+    """
+    return {mini_loop.name: mini_loop for mini_loop in iter_loops()}
+
+
+def _tags_of(mini_loop: MiniLoop | None) -> frozenset[str]:
+    return frozenset(mini_loop.tags) if mini_loop is not None else frozenset()
+
+
+def _validated_tags(requested: list[str] | None) -> frozenset[str]:
+    unknown = sorted(set(requested or ()) - KNOWN_TAGS)
+    if unknown:
+        message = f"unknown tag(s) {', '.join(unknown)} — choose from {_TAG_CHOICES}"
+        raise typer.BadParameter(message)
+    return frozenset(requested or ())
 
 
 def _effective_state(loop: Loop, status: LoopStatus) -> str:
@@ -81,13 +111,21 @@ def _preset_note(verdict: LoopVerdict | None) -> str:
     return f"  {tag} ({verdict.detail})"
 
 
-def _line(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None) -> str:
+def _line(
+    loop: Loop,
+    status: LoopStatus,
+    now: dt.datetime,
+    verdict: LoopVerdict | None,
+    mini_loop: MiniLoop | None,
+) -> str:
     state = _effective_state(loop, status)
     last = _human_duration(loop.seconds_since_run(now))
     nxt = _next_label(loop, status, now)
     line = f"  {loop.name:<22} {state:<8} {loop.cadence_label:<13} last {last:<10} next {nxt}"
+    if mini_loop is not None and mini_loop.tags:
+        line += f"  [{' '.join(mini_loop.tags)}]"
     if loop.colleague_facing:
-        line += "  [colleague-facing]"
+        line += "  away-gated"
     return line + _preset_note(verdict)
 
 
@@ -102,7 +140,13 @@ def _description_line(loop: Loop) -> str | None:
     return f"      {loop.description}"
 
 
-def _payload(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerdict | None) -> dict[str, Any]:
+def _payload(
+    loop: Loop,
+    status: LoopStatus,
+    now: dt.datetime,
+    verdict: LoopVerdict | None,
+    mini_loop: MiniLoop | None,
+) -> dict[str, Any]:
     next_at = loop.next_run_at()
     return {
         "name": loop.name,
@@ -116,6 +160,9 @@ def _payload(loop: Loop, status: LoopStatus, now: dt.datetime, verdict: LoopVerd
         "next_run_at": next_at.isoformat() if next_at else "",
         "due": loop.is_due(now),
         "colleague_facing": loop.colleague_facing,
+        "reach": [member.value for member in LoopReach if mini_loop is not None and member in mini_loop.reach],
+        "determinism": mini_loop.determinism.value if mini_loop is not None and mini_loop.determinism else "",
+        "tags": list(mini_loop.tags) if mini_loop is not None else [],
         "effective_admitted": verdict.admitted if verdict is not None else None,
         "effective_layer": verdict.layer if verdict is not None else "base",
     }
@@ -128,19 +175,40 @@ class Command(TyperCommand):
         self,
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit the loops as JSON.")] = False,
+        tag: Annotated[
+            list[str] | None,
+            typer.Option("--tag", help=f"Keep only loops carrying this tag ({_TAG_CHOICES}); repeatable, ANDed."),
+        ] = None,
     ) -> None:
         now = timezone.now()
-        loops = list(Loop.objects.all())
+        registered = _loops_by_name()
+        wanted = _validated_tags(tag)
+        loops = [row for row in Loop.objects.all() if wanted <= _tags_of(registered.get(row.name))]
         # One read of the LoopState control plane; an absent name → ENABLED default.
         held = {row.name: LoopStatus(row.status) for row in LoopState.objects.all()}
         # One read of the preset mask (L3/L2): the per-loop effective verdict + layer.
         verdicts = {verdict.name: verdict for verdict in effective_verdicts(now)}
         payload = [
-            _payload(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)) for loop in loops
+            _payload(
+                loop,
+                held.get(loop.name, LoopStatus.ENABLED),
+                now,
+                verdicts.get(loop.name),
+                registered.get(loop.name),
+            )
+            for loop in loops
         ]
         human_lines = ["loops:"]
         for loop in loops:
-            human_lines.append(_line(loop, held.get(loop.name, LoopStatus.ENABLED), now, verdicts.get(loop.name)))
+            human_lines.append(
+                _line(
+                    loop,
+                    held.get(loop.name, LoopStatus.ENABLED),
+                    now,
+                    verdicts.get(loop.name),
+                    registered.get(loop.name),
+                )
+            )
             description_line = _description_line(loop)
             if description_line is not None:
                 human_lines.append(description_line)

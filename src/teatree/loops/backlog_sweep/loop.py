@@ -11,7 +11,7 @@ scanners its kill switch ships ON.
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -31,4 +31,6 @@ MINI_LOOP = MiniLoop(
     name="backlog_sweep",
     default_cadence_seconds=86400,  # 1d tick rate — weekly sweep cadence enforced internally
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.EGRESS}),
+    determinism=LoopDeterminism.AI,
 )

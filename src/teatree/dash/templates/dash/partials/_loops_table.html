@@ -14,6 +14,11 @@
         <tr>
           <td>
             <div class="mono">{{ loop.name }}</div>
+            {% if loop.tags %}
+              <div class="row-tags">
+                {% for tag in loop.tags %}<span class="chip small">{{ tag }}</span>{% endfor %}
+              </div>
+            {% endif %}
             <div class="muted">{{ loop.description }}</div>
           </td>
           <td>

@@ -16,7 +16,7 @@ gaining no merge authority.
 
 from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
@@ -45,4 +45,6 @@ MINI_LOOP = MiniLoop(
     name="issue_disposition",
     default_cadence_seconds=300,  # 5m tick rate — the scanner self-bounds via max_closes_per_tick
     build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.EGRESS}),
+    determinism=LoopDeterminism.DETERMINISTIC,
 )
