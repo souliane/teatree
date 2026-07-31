@@ -53,6 +53,13 @@ sys.modules.setdefault("hooks.scripts.headless_authoring_gate", sys.modules[__na
 #: trying to repair, but it must leave a trace. An empty reason does not unblock.
 _OVERRIDE_RE = re.compile(r"\[headless-authoring-ok:\s*(\S[^\]]*?)\s*\]")
 
+#: How much of a call's text the override scanner reads. A ``git commit`` puts its message
+#: — the documented place to carry the token in an emergency — thousands of characters into
+#: the command, so a window sized for a flag line makes the escape unreachable for exactly
+#: the calls most likely to need it. Bounded rather than unlimited because a ``Write``
+#: ``content`` field has no size ceiling and the hook has a 30s one.
+_OVERRIDE_SCAN_MAX_CHARS = 64 * 1024
+
 #: The directories that ARE teatree's authored source. A path outside them (a scratch file,
 #: a log, a note) is not authoring and is never refused.
 _AUTHORED_DIRS: tuple[str, ...] = ("src", "tests", "skills", "hooks", "docs", "agents", "evals", "scripts")
@@ -82,7 +89,8 @@ _REFUSAL = (
     "run `t3`, and FILE what it finds.\n"
     "Do this instead: find or file the issue (`gh issue create --repo souliane/teatree ...`), then "
     "let intake pick it up; check progress with `t3 teatree followup sync`.\n"
-    "Already-started work is exempt — an edit inside a live t3 worktree for the ticket is allowed. "
+    "Already-started work is exempt — an edit OR a commit inside a live t3 worktree for the "
+    "ticket is allowed. "
     "For a genuine emergency (the factory itself is down), add "
     "`[headless-authoring-ok: <reason>]` to this call; it unblocks exactly this one action and is "
     "recorded. To turn the gate off entirely: "
@@ -184,6 +192,17 @@ def _path_is_in_live_worktree(file_path: str) -> bool:
         return True
 
 
+def _bash_repo_probe(cwd: str) -> str:
+    """The stand-in path a ``Bash`` call is judged by, since it names no file.
+
+    Both repo questions the file branch asks of a real ``file_path`` — is this teatree's
+    authored source (:func:`_targets_teatree_repo`), and is it already a live checkout
+    (:func:`_path_is_in_live_worktree`) — are asked of this ONE probe, so the two can never
+    resolve to different repos for the same command.
+    """
+    return str(Path(cwd) / "src" / "_")
+
+
 def _call_text(data: dict) -> str:
     """The tool call's own text, where a per-call override token would appear."""
     tool_input = data.get("tool_input", {}) or {}
@@ -191,7 +210,7 @@ def _call_text(data: dict) -> str:
         str(tool_input.get(field, "") or "")
         for field in ("command", "new_string", "content", "file_path", "prompt", "new_source")
     ]
-    return " ".join(parts)[:512]
+    return " ".join(parts)[:_OVERRIDE_SCAN_MAX_CHARS]
 
 
 def _consume_override(data: dict, session_id: str) -> str:
@@ -231,8 +250,13 @@ def _is_authoring_call(data: dict) -> bool:
         return str(tool_input.get("subagent_type", "")).strip() in _IMPLEMENTATION_SUBAGENTS
     if tool == "Bash":
         command = str(tool_input.get("command", "") or "")
-        cwd = str(data.get("cwd", "") or Path.cwd())
-        return bool(_AUTHORING_BASH_RE.search(command)) and _targets_teatree_repo(str(Path(cwd) / "src" / "_"))
+        if not _AUTHORING_BASH_RE.search(command):
+            return False
+        # Same two questions, same order, same carve-out as the file branch above. Without
+        # the second, an agent could author a change inside a live worktree and then not
+        # commit it — the edit allowed, the commit refused, for one piece of work.
+        probe = _bash_repo_probe(str(data.get("cwd", "") or Path.cwd()))
+        return _targets_teatree_repo(probe) and not _path_is_in_live_worktree(probe)
     return False
 
 

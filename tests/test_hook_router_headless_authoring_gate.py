@@ -25,6 +25,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts import headless_authoring_gate as gate
+from tests._git_repo import make_git_repo, run_git
 
 #: The env an INTERACTIVE Claude Code CLI session presents. The SDK transport sets
 #: ``CLAUDE_CODE_ENTRYPOINT=sdk-py`` and strips ``CLAUDECODE`` from the child env, so these
@@ -242,3 +243,126 @@ class TestThePostureReadIsRealRatherThanAlwaysUnreadable:
     def test_an_absent_store_is_unreadable_rather_than_a_verdict(self, tmp_path: Path) -> None:
         with mock.patch.dict(os.environ, {"T3_CONFIG_DB": str(tmp_path / "missing.sqlite3")}):
             assert gate._posture_is_headless() is None
+
+
+def _bash(command: str, cwd: str) -> dict:
+    return {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd}
+
+
+def _run_gate(data: dict) -> bool:
+    """Run ONLY this gate's handler; ``True`` when IT denied.
+
+    :func:`_run_chain` cannot settle a ``git commit`` case: several other ``PreToolUse``
+    gates also have an opinion about a commit, so a chain-level refusal would not attribute
+    the verdict to this gate. The cases above already cover that this gate is wired in.
+    """
+    return gate.handle_block_interactive_authoring(data) is True
+
+
+@pytest.fixture
+def clone_and_live_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """A real primary clone and a real LINKED worktree of it, each carrying a ``src/`` dir.
+
+    The carve-out dimension is deliberately NOT mocked here: the clone gets a ``.git``
+    DIRECTORY and the worktree a ``.git`` FILE, which is the whole of what distinguishes
+    them, and a mock of that distinction would test only the mock.
+    """
+    clone = make_git_repo(tmp_path / "clone")
+    (clone / "src").mkdir()
+    (clone / "src" / "seed.py").write_text("x = 1\n", encoding="utf-8")
+    run_git(clone, "add", "src/seed.py")
+    run_git(clone, "commit", "-q", "-m", "seed")
+    worktree = tmp_path / "wt"
+    run_git(clone, "worktree", "add", "-q", str(worktree), "-b", "3962-ticket")
+    return clone, worktree
+
+
+@pytest.fixture
+def headless_interactive(tmp_path: Path) -> Iterator[None]:
+    """An engaged interactive session under the headless posture, with the carve-out LIVE.
+
+    The sibling :func:`engaged_session` pins ``_path_is_in_live_worktree`` to ``False``,
+    which is precisely the answer these cases exist to compute. Only the orthogonal
+    "is this repo teatree-managed" dimension is pinned.
+    """
+    with (
+        mock.patch.object(router, "STATE_DIR", tmp_path / "state"),
+        mock.patch.object(router, "_teatree_engaged", return_value=True),
+        mock.patch.object(gate, "_gate_enabled", return_value=True),
+        mock.patch.object(gate, "_posture_is_headless", return_value=True),
+        mock.patch.object(gate, "_targets_teatree_repo", return_value=True),
+        mock.patch.dict(os.environ, _INTERACTIVE_ENV, clear=False),
+    ):
+        yield
+
+
+class TestACommitCanFollowTheEditThatProducedIt:
+    """The ``Bash`` branch honours the same live-worktree carve-out as the file branch.
+
+    Applying the carve-out to ``Edit``/``Write`` but not to ``git commit`` left an agent
+    able to author a change inside a live worktree and then unable to commit it — with the
+    refusal text advertising the very exemption the ``Bash`` branch did not implement.
+    """
+
+    def test_a_commit_inside_a_live_worktree_is_allowed(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        _clone, worktree = clone_and_live_worktree
+        assert _run_gate(_bash("git commit -m 'fix the thing'", str(worktree))) is False
+
+    def test_the_edit_that_produced_that_commit_is_allowed_too(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        # The pair the defect split apart: one worktree, one piece of work, two verdicts
+        # that must agree. This side was already allowed; the commit side was not.
+        _clone, worktree = clone_and_live_worktree
+        assert _run_gate(_edit(str(worktree / "src" / "seed.py"))) is False
+
+    def test_a_commit_in_the_primary_clone_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        # The control that proves the carve-out discriminates rather than swallowing the
+        # branch: deleting the ``Bash`` arm outright would pass the worktree case above.
+        clone, _worktree = clone_and_live_worktree
+        assert _run_gate(_bash("git commit -m 'new work'", str(clone))) is True
+
+    def test_a_push_from_the_primary_clone_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, _worktree = clone_and_live_worktree
+        assert _run_gate(_bash("git push origin HEAD", str(clone))) is True
+
+    def test_a_read_only_git_in_the_primary_clone_is_still_allowed(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, _worktree = clone_and_live_worktree
+        assert _run_gate(_bash("git log --oneline -5", str(clone))) is False
+
+
+class TestTheOverrideIsReachableFromACommitMessage:
+    """The audited escape must be reachable from the calls most likely to need it.
+
+    The scan window stopped at 512 characters, so a token placed in a commit message — the
+    documented emergency shape, and the one call a truncating scanner is guaranteed to miss
+    — was never seen, and the escape hatch did not exist for it.
+    """
+
+    @staticmethod
+    def _long_message(tail: str) -> str:
+        body = "restore the factory\n\n" + ("detail line for the commit message\n" * 40)
+        assert len(body) > 512, "the body must clear the old window for this case to mean anything"
+        return body + tail
+
+    def test_a_token_beyond_the_old_window_is_seen(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, _worktree = clone_and_live_worktree
+        message = self._long_message("[headless-authoring-ok: the factory itself is down]")
+        assert _run_gate(_bash(f"git commit -m '{message}'", str(clone))) is False
+
+    def test_the_same_long_message_without_a_token_is_still_refused(
+        self, headless_interactive: None, clone_and_live_worktree: tuple[Path, Path]
+    ) -> None:
+        clone, _worktree = clone_and_live_worktree
+        message = self._long_message("ordinary work, no emergency")
+        assert _run_gate(_bash(f"git commit -m '{message}'", str(clone))) is True
