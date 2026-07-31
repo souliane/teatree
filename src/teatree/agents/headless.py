@@ -33,7 +33,15 @@ from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
 from teatree.agents.headless_budget import TicketBudget
-from teatree.agents.headless_truncation import alert_owner_max_tokens_truncation, is_max_tokens_truncation
+from teatree.agents.headless_failure_taxonomy import error_result_reason as _error_result_reason
+from teatree.agents.headless_failure_taxonomy import limit_match as _limit_match
+from teatree.agents.headless_truncation import (
+    alert_owner_max_tokens_truncation,
+    alert_owner_max_turns_truncation,
+    is_max_tokens_truncation,
+    is_max_turns_truncation,
+    max_turns_failure_reason,
+)
 from teatree.agents.headless_usage import DispatchProvenance, _attempt_usage
 from teatree.agents.headless_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.model_tiering import resolve_spawn_effort
@@ -50,7 +58,6 @@ from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import LeaseLostError, Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import AllTokensExhaustedError
-from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
@@ -83,59 +90,9 @@ _HEARTBEAT_INTERVAL = 60  # seconds
 _LEASE_SECONDS = 15 * _HEARTBEAT_INTERVAL  # 900s
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
-_RESULT_ERROR_PREFIX = "result_error: "
 
 #: Truncation applied to the agent's raw text when it stands in for an envelope.
 _PROSE_SUMMARY_CHARS = 1000
-
-
-def _error_result_reason(message: ResultMessage | None) -> str | None:
-    """Return a failure reason when the run did NOT complete cleanly, else ``None``.
-
-    A missing terminal ``ResultMessage`` (the stream ended before the CLI emitted
-    one) and a ``ResultMessage(is_error=True)`` that is NOT a usage-limit message
-    are both genuine FAILED runs (#1764 class): they must record a failed attempt
-    carrying the CLI's own ``result`` / ``errors`` / ``api_error_status``, never
-    be laundered into a completion that advances the ticket FSM over a failed run.
-    Called only AFTER :func:`_limit_match` has already claimed a limit error,
-    so a limit message never reaches here.
-    """
-    if message is None:
-        return f"{_RESULT_ERROR_PREFIX}no terminal ResultMessage — the run ended without completing"
-    if not message.is_error:
-        return None
-    detail = str(message.result or "").strip()
-    if not detail and message.errors:
-        detail = "; ".join(str(err) for err in message.errors)
-    status = message.api_error_status
-    parts = [f"subtype={message.subtype}"]
-    if status:
-        parts.append(f"api_error_status={status}")
-    if detail:
-        parts.append(detail)
-    return _RESULT_ERROR_PREFIX + " — ".join(parts)
-
-
-def _limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | None = None) -> LimitMatch | None:
-    """Return the classified :class:`LimitMatch`, or ``None`` when not a limit error.
-
-    Keyed on ``is_error`` so a healthy result whose text merely discusses limits
-    is never flagged. When the run IS an error and the stream carried a rejected
-    :class:`~claude_agent_sdk.types.RateLimitInfo`, classify from its TYPED
-    ``rate_limit_type`` window (unambiguous structured data — a ``seven_day_opus``
-    is the WEEKLY cause, never a 5-hour one); otherwise fall back to phrase-matching
-    the agent's final ``result`` string. Either way
-    :func:`~teatree.llm.anthropic_limits.classify_limit` sorts it into its distinct
-    cause (API-credit / subscription-session / subscription-weekly / rate-limit),
-    so a credit-empty key is never reported as a subscription quota.
-    """
-    if message is None or not message.is_error:
-        return None
-    if rate_limit_info is not None and rate_limit_info.status == "rejected":
-        typed = classify_rate_limit_type(rate_limit_info.rate_limit_type)
-        if typed is not None:
-            return typed
-    return classify_limit(str(message.result or ""))
 
 
 @dataclass(frozen=True)
@@ -382,8 +339,12 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", la
     default records the terminal FAILED exactly as before). A park keeps the run's
     conversation so the resume continues it rather than restarting (#3605). A max-tokens
     truncation is a failed run that ALSO escalates to the owner
-    (:func:`_alert_owner_max_tokens_truncation`) so a silently-amputated envelope surfaces
-    loud, not just as one more failed attempt.
+    (:func:`~teatree.agents.headless_truncation.alert_owner_max_tokens_truncation`) so a
+    silently-amputated envelope surfaces loud, not just as one more failed attempt. A run
+    stopped at the per-run TURN ceiling gets the same treatment through its own branch
+    (:func:`~teatree.agents.headless_truncation.is_max_turns_truncation`), taken BEFORE the
+    generic error-result branch so the cap is recorded under a reason that names the
+    ceiling and the setting that moves it rather than as an anonymous ``result_error``.
     """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
@@ -396,6 +357,11 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome, *, phase: str = "", la
             return parked
         reason = limit.as_reason()
         logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
+        return _record_failure(task, error=reason)
+    if is_max_turns_truncation(outcome.result_message):
+        reason = max_turns_failure_reason(outcome.result_message)
+        alert_owner_max_turns_truncation(task, phase=phase, message=outcome.result_message)
+        logger.warning("Task %s stopped at the turn ceiling: %s", task.pk, reason)
         return _record_failure(task, error=reason)
     error_reason = _error_result_reason(outcome.result_message)
     if error_reason is not None:

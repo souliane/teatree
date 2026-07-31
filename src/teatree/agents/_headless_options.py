@@ -5,7 +5,7 @@ Split out of :mod:`teatree.agents.headless` for the module-health LOC cap: the
 the worktree-cwd resolver (:func:`_resolve_task_cwd`), the resumable-session walker
 (:func:`_get_resume_session_id`), and the spawn constants they read. Re-exported
 from ``teatree.agents.headless`` so ``from teatree.agents.headless import
-_build_options`` (and the ``_MAX_TURNS`` / ``_PERMISSION_MODE`` / ``UUID_RE`` /
+_build_options`` (and the ``_PERMISSION_MODE`` / ``UUID_RE`` /
 ``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in
 ``core.management.commands.tasks``) stays valid.
 """
@@ -36,9 +36,6 @@ from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 _PERMISSION_MODE = permission_modes.UNATTENDED
 _READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
-# The SDK spawns no max-turns ceiling of its own; the loop watchdog bounds a
-# runaway. ``0`` leaves the SDK uncapped (the watchdog is the real bound).
-_MAX_TURNS = 0
 # The external-contact / interactive built-ins — every CLI built-in that can reach
 # the user or an external endpoint directly. NO headless phase may call any of them:
 # there is no live human at the SDK/headless harness (AskUserQuestion would silently
@@ -166,7 +163,13 @@ def _build_options(
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
         disallowed_tools=_disallowed_tools_for_phase(phase),
-        max_turns=_MAX_TURNS,
+        # The per-run TURN ceiling (:func:`resolve_headless_max_turns`). Cache-read cost
+        # is ``turns x context_size`` and every turn re-reads the run's context, so turns
+        # are the multiplier on a dispatch's bill — the dimension neither the wall-clock
+        # runtime ceiling nor the completed-attempt ``watchdog_max_turns`` totals can see
+        # while the run is still in flight. Resolved per dispatch so an operator retunes
+        # it without a deploy; ``0`` (the escape hatch) leaves the spawn uncapped.
+        max_turns=resolve_headless_max_turns(),
         resume=resume_session_id or None,
         # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8
         # omits thinking by default). Guarded so the cheap/Haiku tier — which
@@ -201,6 +204,19 @@ def resolve_spawn_ceiling() -> int:
     async-context hazard. The dispatch closes over the resolved int instead.
     """
     return get_effective_settings().subagent_spawn_ceiling
+
+
+def resolve_headless_max_turns() -> int:
+    """The configured per-run turn ceiling for this dispatch; ``0`` leaves it uncapped.
+
+    Cache-read cost on this lane is ``turns x context_size`` and every turn re-reads
+    the run's context, so the turn count is the multiplier on the bill. The wall-clock
+    ``watchdog_max_runtime_seconds`` cannot see that dimension, and
+    ``watchdog_max_turns`` reads ``TaskAttempt`` totals that only land once an attempt
+    has ENDED — so neither bounds the turns of the run in flight. This does, at the one
+    place the SDK accepts it (``ClaudeAgentOptions.max_turns``).
+    """
+    return get_effective_settings().headless_max_turns
 
 
 def resolve_envelope_stop_refusals() -> int:

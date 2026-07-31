@@ -57,6 +57,7 @@ agent_runtime = "headless"
 autonomy = "full"
 enforce_regulated_path = false
 envelope_stop_gate_refusals = 2
+headless_max_turns = 250
 mode = "auto"
 openai_compatible_lane = "factory"
 pydantic_ai_max_tokens = 16384

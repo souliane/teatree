@@ -166,6 +166,8 @@ from hooks.scripts.raw_review_post_guard import (
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
+from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_destination
+from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
@@ -186,6 +188,7 @@ from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_s
 from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
 from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
 from hooks.scripts.turn_inspect import current_turn_tool_commands
+from hooks.scripts.unbounded_wait_guard import handle_block_unbounded_wait
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
 from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
 
@@ -2140,11 +2143,6 @@ _SELF_DM_MCP_WRITE_TOOLS: frozenset[str] = frozenset(
         "slack_send_message_draft",
     }
 )
-_SELF_DM_CHANNEL_FIELDS: tuple[str, ...] = ("channel", "channel_id")
-
-
-def _slack_tool_suffix(tool_name: str) -> str:
-    return tool_name.rsplit("__", 1)[-1]
 
 
 def _self_dm_gate_enabled() -> bool:
@@ -2161,14 +2159,6 @@ def _self_dm_destination_ids() -> _SelfDmDestinations:
     # DB-only: the overlay registry and the global ``slack_user_id`` resolve from the
     # DB-home ``ConfigSetting`` store, so the gate self-identifies the operator there.
     return _read_self_dm_destinations()
-
-
-def _self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
-    for field in _SELF_DM_CHANNEL_FIELDS:
-        value = tool_input.get(field)
-        if isinstance(value, str) and value in dm_ids:
-            return value
-    return ""
 
 
 def handle_block_self_dm_via_mcp(data: dict) -> bool:
@@ -6015,6 +6005,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_block_raw_pid_kill,
+        handle_block_unbounded_wait,
         handle_block_secret_file_print,
         handle_block_out_of_band_merge,
         handle_block_unknown_repo_push,

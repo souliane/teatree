@@ -35,6 +35,7 @@ from teatree.hooks import (
     safe_kill_detect,
     secret_file_print_detect,
     self_reviewer_assign_detect,
+    unbounded_wait_detect,
 )
 
 #: A pure Bash-shaped deny predicate: the refusal reason for a command, or ``None``.
@@ -45,6 +46,12 @@ def _raw_pid_kill_deny_reason(command: str) -> str | None:
     """The raw-pid-kill deny reason for *command*, or ``None`` — wraps the detection leaf."""
     detection = safe_kill_detect.detect_raw_pid_kill(command)
     return detection.message if detection.is_raw_pid_kill else None
+
+
+def _unbounded_wait_deny_reason(command: str) -> str | None:
+    """The unbounded-wait deny reason for *command*, or ``None`` — wraps the detection leaf."""
+    detection = unbounded_wait_detect.detect_unbounded_wait(command)
+    return detection.message if detection.is_unbounded_wait else None
 
 
 #: The SSOT list of ``(name, predicate)`` pairs iterated by BOTH the cold
@@ -58,6 +65,7 @@ HARD_DENY_PREDICATES: tuple[tuple[str, HardDenyPredicate], ...] = (
     ("raw_review_post", raw_review_post_detect.raw_review_deny_reason),
     ("self_reviewer_assign", self_reviewer_assign_detect.reviewer_assign_deny_reason),
     ("raw_pid_kill", _raw_pid_kill_deny_reason),
+    ("unbounded_wait", _unbounded_wait_deny_reason),
 )
 
 

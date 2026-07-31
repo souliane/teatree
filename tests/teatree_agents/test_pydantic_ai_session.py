@@ -3,8 +3,8 @@
 :class:`~teatree.agents.pydantic_ai_session.PydanticAiHarnessSession` is the single
 point translating pydantic_ai reality into the ``claude_agent_sdk`` message vocabulary
 the driver consumes, and the driver's whole failure taxonomy
-(:func:`~teatree.agents.headless._limit_match` -> ``park_or_rotate_on_limit``,
-:func:`~teatree.agents.headless._error_result_reason` -> FAILED) keys on
+(:func:`~teatree.agents.headless_failure_taxonomy.limit_match` -> ``park_or_rotate_on_limit``,
+:func:`~teatree.agents.headless_failure_taxonomy.error_result_reason` -> FAILED) keys on
 ``ResultMessage.is_error``. A terminal message that is unconditionally ``success``
 therefore makes a bad run indistinguishable from a good one on this lane: a 429
 escapes as a raw exception and lands as a ``sdk_error`` traceback instead of a park,

@@ -90,3 +90,26 @@ def read_self_dm_destinations() -> SelfDmDestinations:
     if global_user_id:
         ids.add(global_user_id)
     return SelfDmDestinations(frozenset(ids), resolved=True)
+
+
+#: The ``tool_input`` keys a Slack MCP write names its destination with. Both
+#: spellings appear across the tool surface, so both are consulted.
+_CHANNEL_FIELDS: tuple[str, ...] = ("channel", "channel_id")
+
+
+def slack_tool_suffix(tool_name: str) -> str:
+    """The bare Slack tool name behind an MCP-qualified ``mcp__<server>__<tool>``."""
+    return tool_name.rsplit("__", 1)[-1]
+
+
+def self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
+    """The self-DM destination *tool_input* targets, or ``""`` when it targets none.
+
+    A write is a self-DM only when its named destination is one of the resolved ids;
+    an unrecognised or absent destination is not a self-DM, so it is left alone.
+    """
+    for field in _CHANNEL_FIELDS:
+        value = tool_input.get(field)
+        if isinstance(value, str) and value in dm_ids:
+            return value
+    return ""
