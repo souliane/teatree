@@ -545,3 +545,12 @@ class ShipExecutor(RunnerBase):
             merge_into_dicts=merge_dicts,
             pop_keys=["pr_title_override", "ship_invoking_branch"],
         )
+        # #3840: the JSON index above is the ticket's own cache; the arbiter row is
+        # what the merge keystone, the board reconcile and the merge-evidence gate
+        # resolve the PR's owning ticket through. Write it here, where the ticket is
+        # in hand and the PR has just been verify-by-re-read confirmed, so a PR that
+        # merges before the next tick is still attributable to its ticket.
+        if url:
+            from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+            PullRequest.objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)

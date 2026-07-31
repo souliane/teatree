@@ -8,6 +8,7 @@ from teatree.url_classify import repo_and_iid
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
+    from teatree.core.models.types import JSONObject
 
 
 class PullRequestQuerySet(models.QuerySet):
@@ -25,10 +26,14 @@ class PullRequestQuerySet(models.QuerySet):
     def owning_ticket(self, *, slug: str, pr_id: int, pr_url: str = "") -> "Ticket | None":
         """The delivery ticket that owns *(slug, pr_id)*, or ``None``.
 
-        The FK is authoritative (the ship pipeline persists it). ``Ticket.extra["prs"]``
-        is the fallback for a PR opened outside the pipeline, which has no row at all.
-        A ticket whose ``issue_url`` merely equals the PR url is never the owner — that
-        shape is the reviewer-role ticket, which carries no delivery lease.
+        The FK is authoritative. The JSON fallback covers a PR with no row —
+        one opened outside the pipeline, or opened before the row write existed —
+        and reads EVERY store a ticket records its own PRs in, because a resolver
+        that reads one store while the writer fills another resolves nothing: the
+        keystone then has no FSM to advance and a merge lands with the board
+        unmoved (#3840). A ticket whose ``issue_url`` merely equals the PR url is
+        never the owner — that shape is the reviewer-role ticket, which carries no
+        delivery lease.
         """
         row = self.for_pr(slug=slug, pr_id=pr_id).select_related("ticket").order_by("-id").first()
         if row is not None:
@@ -37,7 +42,7 @@ class PullRequestQuerySet(models.QuerySet):
 
     @staticmethod
     def _names_pr(key: str, *, slug: str, pr_id: int, pr_url: str) -> bool:
-        """True iff the ``extra["prs"]`` *key* is this PR.
+        """True iff the recorded url *key* is this PR.
 
         Keyed on the PARSED ``(slug, pr_id)`` as well as the literal url, because
         the callers that most need this arm — the merge keystone and the CLEAR
@@ -48,17 +53,68 @@ class PullRequestQuerySet(models.QuerySet):
         ref = repo_and_iid(key)
         return ref is not None and ref[0].casefold() == slug.casefold() and ref[1] == pr_id
 
+    @staticmethod
+    def _recorded_pr_urls(extra: "JSONObject | None") -> list[str]:
+        """Every PR url a ticket's own ``extra`` names, across all three stores.
+
+        ``prs`` is the forge-sync map (url → payload); ``pr_urls`` is the flat list
+        and ``pr_url_by_branch`` the per-branch index, both written by the ship
+        pipeline the moment it opens a PR. All three are read together so which
+        writer ran never decides whether the PR is attributable.
+        """
+        if not isinstance(extra, dict):
+            return []
+        urls: list[str] = []
+        synced = extra.get("prs")
+        if isinstance(synced, dict):
+            urls.extend(key for key in synced if isinstance(key, str))
+        by_branch = extra.get("pr_url_by_branch")
+        if isinstance(by_branch, dict):
+            urls.extend(value for value in by_branch.values() if isinstance(value, str))
+        recorded = extra.get("pr_urls")
+        if isinstance(recorded, list):
+            urls.extend(item for item in recorded if isinstance(item, str))
+        return urls
+
     @classmethod
     def _ticket_carrying_pr(cls, *, slug: str, pr_id: int, pr_url: str) -> "Ticket | None":
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: sibling model, imported at call time
 
         for ticket in Ticket.objects.exclude(extra={}).only("issue_url", "extra", "id"):
-            prs = ticket.extra.get("prs") if isinstance(ticket.extra, dict) else None
-            if not isinstance(prs, dict):
-                continue
-            if any(cls._names_pr(key, slug=slug, pr_id=pr_id, pr_url=pr_url) for key in prs):
+            urls = cls._recorded_pr_urls(ticket.extra)
+            if any(cls._names_pr(url, slug=slug, pr_id=pr_id, pr_url=pr_url) for url in urls):
                 return ticket
         return None
+
+    def record_opened(self, *, ticket: "Ticket", url: str, overlay: str = "") -> "PullRequest | None":
+        """Persist the arbiter row for a PR *ticket* just opened; ``None`` if *url* names none.
+
+        ``PullRequest`` is the PR-facts arbiter every merge-time consumer resolves
+        through — the keystone's ticket adoption, the board reconcile's merged-row
+        rule, the merge-evidence gate. Writing it only from the tick-time open-PR
+        reconciler meant a PR that opened and merged between two ticks never got a
+        row at all, so those consumers had nothing to read. The row is written by
+        the path that opens the PR, where the ticket is already in hand.
+
+        Idempotent on the PR url (its unique key), so a ship retry reuses the row.
+        ``create_verification`` is stamped CONFIRMED because the ship path persists
+        only after its verify-by-re-read confirmed the PR is live.
+        """
+        ref = repo_and_iid(url)
+        if ref is None:
+            return None
+        row, _ = self.get_or_create(
+            url=url,
+            defaults={
+                "ticket": ticket,
+                "overlay": overlay or ticket.overlay,
+                "repo": ref[0],
+                "iid": str(ref[1]),
+                "create_verification": PullRequest.CreateVerification.CONFIRMED,
+                "create_verified_at": timezone.now(),
+            },
+        )
+        return row
 
     def record_forge_merge(self, *, slug: str, pr_id: int) -> int:
         """Transition every non-merged row for *(slug, pr_id)* to MERGED; return the count.

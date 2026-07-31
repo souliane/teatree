@@ -142,6 +142,58 @@ class TestForgeConfirmsMerged(TestCase):
         assert probe.call_args.args[0].ref.host_kind == "gitlab"
 
 
+class TestForgeConfirmsThroughTheTicketsOwnPr(TestCase):
+    """A ticket whose own ``issue_url`` names the PR is confirmable without a row (#3859).
+
+    The board reconcile's rule B exists precisely for the ticket that has NO
+    ``PullRequest`` row — it holds a definite forge MERGED verdict for the PR the
+    ticket's ``issue_url`` names. Resolving evidence only over ``PullRequest`` rows
+    made that queryset empty, so the gate found no evidence and refused the very
+    transition the reconcile was holding proof for.
+    """
+
+    URL = "https://github.com/souliane/teatree/pull/42"
+
+    def test_true_when_the_probe_reports_the_tickets_own_pr_merged(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=self.URL)
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
+        ):
+            assert forge_confirms_merged(ticket) is True
+
+    def test_false_when_the_probe_reports_it_not_merged(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=self.URL)
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=False)
+        ):
+            assert forge_confirms_merged(ticket) is False
+
+    def test_an_issue_url_is_never_probed_as_a_pull_request(self) -> None:
+        """An ``/issues/N`` url names no PR — probing it would invent evidence."""
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            issue_url="https://github.com/souliane/teatree/issues/42",
+        )
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
+        ) as probe:
+            assert forge_confirms_merged(ticket) is False
+        probe.assert_not_called()
+
+    def test_a_ticket_with_its_own_rows_does_not_fall_back(self) -> None:
+        """The rows are the evidence when they exist; the ``issue_url`` is the gap-filler."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=self.URL)
+        _pr_for(ticket)
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
+            autospec=True,
+            return_value=_pr_merge_state(merged=False),
+        ) as probe:
+            assert forge_confirms_merged(ticket) is False
+        assert probe.call_count == 1
+
+
 class TestCheckMergeEvidence(TestCase):
     def test_gate_off_passes_without_any_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)

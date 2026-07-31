@@ -3,21 +3,16 @@
 Package facade re-exporting the cross-package public surface so callers import
 from ``teatree.core.merge`` while each symbol keeps an explicit defining module
 (``errors`` / ``ci_rollup`` / ``pr_slug_resolution`` / ``authorization`` /
-``execution``). This is the package's public API, not a backward-compat alias —
+``execution`` / ``post_hook``). This is the package's public API, not a backward-compat alias —
 ``mock.patch`` targets name the defining submodule, never this facade.
 """
 
 from teatree.core.merge.authorization import MergePrecheck, PresentedApprovals, _assert_clear_authorized
 from teatree.core.merge.ci_rollup import CodeHostQuery, classify_required_rollup, failing_required_names
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
-from teatree.core.merge.execution import (
-    MergeOutcome,
-    assert_merge_preconditions,
-    execute_bound_merge,
-    merge_ticket_pr,
-    record_merge_and_advance,
-)
+from teatree.core.merge.execution import MergeOutcome, assert_merge_preconditions, execute_bound_merge, merge_ticket_pr
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
 from teatree.core.merge.pr_slug_resolution import (
     _GIT_BRANCH_PREFIXES,
     _looks_like_owner_repo,
@@ -29,6 +24,7 @@ from teatree.core.merge.pr_slug_resolution import (
 __all__ = [
     "_GIT_BRANCH_PREFIXES",
     "CodeHostQuery",
+    "MergeAuditAuthorizers",
     "MergeHeadMovedError",
     "MergeOutcome",
     "MergePrecheck",
