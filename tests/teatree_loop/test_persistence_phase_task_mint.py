@@ -24,7 +24,33 @@ from django.test import TestCase
 from teatree.core.models import Session, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import _handle_answerer
-from teatree.loop.persistence_phase_task import create_phase_task
+from teatree.loop.persistence_phase_task import create_phase_task, has_open_task, open_task_in_phase
+
+
+class TestOpenTaskLookup(TestCase):
+    """The pre-check the zone handlers short-circuit on: active-only, spelling-tolerant."""
+
+    @staticmethod
+    def _ticket() -> Ticket:
+        return Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1")
+
+    def _store(self, ticket: Ticket, *, phase: str, status: str) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id="coder")
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
+
+    def test_an_active_task_reads_as_open_in_any_spelling(self) -> None:
+        ticket = self._ticket()
+        stored = self._store(ticket, phase="code", status=Task.Status.CLAIMED)
+
+        assert open_task_in_phase(ticket, phase="coding") == stored
+        assert has_open_task(ticket, phase="coding")
+
+    def test_a_terminal_task_does_not_read_as_open(self) -> None:
+        ticket = self._ticket()
+        self._store(ticket, phase="coding", status=Task.Status.COMPLETED)
+
+        assert open_task_in_phase(ticket, phase="coding") is None
+        assert has_open_task(ticket, phase="coding") is False
 
 
 class TestPhaseTaskMintCollapsesDuplicates(TestCase):
