@@ -429,6 +429,21 @@ a.chip:hover {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
 }
+/* A failure chip names the CAUSE beside the error text. The two variants are the
+  operator's actual decision: an environmental fault may clear on its own, a
+  deterministic one will reproduce, so they must not read as the same red. */
+.chip.failure {
+  margin-right: var(--sp-1);
+  font-weight: 600;
+}
+.chip.failure.defect {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+}
+.chip.failure.environmental {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+}
 .chip.pr {
   font-family: var(--font-mono);
 }

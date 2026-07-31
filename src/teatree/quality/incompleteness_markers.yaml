@@ -10,6 +10,14 @@
 # template text, and prose about RUNTIME state ("the review has not landed"),
 # which is a different claim from prose about IMPLEMENTATION state.
 #
+# `form` splits the list in two. `form: marker` is an author's note left for the
+# next reader -- a conventional marker, recognisable on sight and never part of a
+# sentence about the code. `form: prose` (the default) is a shape a sentence
+# takes. Only the marker forms are banned outright under the verification trees
+# (tests/, evals/, e2e/), because only they are unambiguous enough that a
+# zero-tolerance gate can red a build on one: give a new family `form: marker`
+# and that ban covers it, with no second list to add it to.
+#
 # The same list drives the closed-issue sub-gate, which fires on a marker whose
 # adjacent `#N` resolves to a closed issue. A broader word list was measured for
 # that gate and rejected: in this tree 42 of 44 referenced issues are closed and
@@ -29,6 +37,7 @@ markers:
     # The only family where case is load-bearing: a marker is an uppercase
     # convention, and "a hack:" / "todo:" in ordinary prose is not one.
     case_sensitive: true
+    form: marker
     triggers: [TODO, FIXME, XXX, HACK]
     remedy: Do the work, or delete the marker. A marker is not a tracked promise.
 

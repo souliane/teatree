@@ -22,5 +22,11 @@
   </div>
   {% if card.active_phase %}<div class="card-dwell">phase <span class="mono">{{ card.active_phase }}</span>{% if card.claimed_by %} · {{ card.claimed_by }}{% endif %}</div>{% endif %}
   {% if card.dwell %}<div class="card-dwell">in column <span class="mono">{{ card.dwell }}</span></div>{% endif %}
-  {% if card.last_error %}<div class="card-error">{{ card.last_error|truncatechars:140|code_spans }}</div>{% endif %}
+  {% if card.last_error %}
+    <div class="card-error">
+      {% if card.failure_kind %}<span class="chip failure {% if card.failure_environmental %}environmental{% else %}defect{% endif %}"
+        title="{% if card.failure_environmental %}environment or infrastructure fault, not a defect in the work{% else %}deterministic failure — re-running it hits the same wall{% endif %}">{{ card.failure_kind_label }}</span>{% endif %}
+      {{ card.last_error|truncatechars:140|code_spans }}
+    </div>
+  {% endif %}
 </article>

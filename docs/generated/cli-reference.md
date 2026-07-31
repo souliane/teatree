@@ -8679,11 +8679,13 @@ Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
 
  Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
 
- An optional ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring
- ``complete --note``) so the audit trail records WHY the task was cancelled
- — the cancel transition is otherwise indistinguishable from any other
- failure (#2559). A blank/whitespace reason records no attempt (no empty
- audit row); the cancellation itself is unchanged.
+ ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring ``complete
+ --note``) so the audit trail records WHY the task was cancelled — the cancel
+ transition is otherwise indistinguishable from any other failure (#2559).
+ Omitting it does not skip the audit row: the cancellation is still recorded
+ under the ``cancelled`` failure kind, because a FAILED task that names no
+ cause
+ is exactly what makes the board unreadable (#3957).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  [required]                                        │

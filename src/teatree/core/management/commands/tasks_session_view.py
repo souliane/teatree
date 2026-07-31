@@ -46,6 +46,13 @@ class TaskRow(TypedDict):
     phase: str
     execution_reason: str
     claimed_by: str
+    # #3957: WHY the task failed, as distinct from ``execution_reason`` (why it was
+    # scheduled). Blank on every non-failed row. ``failure_environmental`` separates an
+    # infrastructure fault from a defect in the work, so an operator scanning the listing
+    # can tell a genuine review failure from a lost lease without opening anything.
+    failure_kind: str
+    failure_reason: str
+    failure_environmental: bool
 
 
 STATUS_STYLES: dict[str, str] = {
@@ -104,6 +111,10 @@ def _render_teatree_tasks_section(rows: list[TaskRow], *, console: Console) -> N
             reason = row["execution_reason"] or "-"
             ticket_ref = render_ref(f"#{row['ticket_id']}", title=row["ticket_title"])
             console.print(f"    task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
+            # A failed row says WHY on its own line — the scheduling reason above it is
+            # not the failure, and reading it as one is the #3957 defect.
+            if row["failure_kind"]:
+                console.print(f"      [red]failed[/] [bold]{row['failure_kind']}[/]: {row['failure_reason']}")
 
 
 # The fixed reconcile-discipline steps. The harness TODO list is live, in-memory
@@ -190,7 +201,11 @@ def render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) ->
     table.add_column("Target")
     table.add_column("Phase")
     table.add_column("Claimed by")
-    table.add_column("Reason", overflow="fold", max_width=60)
+    # Two REASON columns, because they answer different questions and conflating them is
+    # the #3957 defect: "Scheduled for" is why the task was dispatched, "Failed because"
+    # is why it ended. A failed row that showed only the former looked cause-less.
+    table.add_column("Scheduled for", overflow="fold", max_width=44)
+    table.add_column("Failed because", overflow="fold", max_width=44)
 
     for row in rows:
         status = row["status"]
@@ -204,6 +219,19 @@ def render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) ->
             row["phase"] or "-",
             row["claimed_by"] or "-",
             row["execution_reason"] or "-",
+            _failure_cell(row),
         )
 
     console.print(table)
+
+
+def _failure_cell(row: TaskRow) -> str:
+    """The named cause of a failed row, or ``-`` when it did not fail (#3957).
+
+    The kind leads so a scan down the column groups causes without reading prose; the
+    environmental marker tells the operator whether re-running could possibly help.
+    """
+    if not row["failure_kind"]:
+        return "-"
+    marker = "env" if row["failure_environmental"] else "deterministic"
+    return f"[bold]{row['failure_kind']}[/] ({marker})\n{row['failure_reason']}"

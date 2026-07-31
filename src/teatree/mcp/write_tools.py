@@ -35,6 +35,7 @@ from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import is_feature_flag
 from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.mcp.review_seam import review_post_seam
@@ -278,13 +279,15 @@ async def _task_complete(task_id: int, *, result_artifact_path: str = "") -> dic
     return await sync_to_async(_complete, thread_sensitive=True)()
 
 
-async def _task_fail(task_id: int) -> dict[str, Any]:
+async def _task_fail(task_id: int, reason: str = "") -> dict[str, Any]:
     """Fail a loop task — clears the claim without advancing the ticket FSM."""
 
     def _fail() -> dict[str, Any]:
         task = Task.objects.get(pk=task_id)
-        task.fail()
-        return {"ok": True, "task_id": task_id, "status": task.status}
+        # An agent that names nothing still leaves a cause behind (#3957) — the board
+        # must never show a FAILED task whose reason is blank.
+        task.fail(reason=reason.strip() or f"{AGENT_ABANDONED_PREFIX}agent failed the task without giving a reason")
+        return {"ok": True, "task_id": task_id, "status": task.status, "failure_kind": task.failure_kind}
 
     return await sync_to_async(_fail, thread_sensitive=True)()
 
@@ -481,7 +484,10 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _task_fail,
         _DESTRUCTIVE,
         "teatree.core.models.Task.fail",
-        "- task_fail(task_id): fail a loop task — clears the claim without advancing the ticket FSM.",
+        "- task_fail(task_id, reason): fail a loop task — clears the claim without advancing "
+        "the ticket FSM. Always pass a `reason` naming WHY it failed; it is what the task "
+        "listing and the ticket card show, and an omitted reason is recorded as "
+        "agent_abandoned rather than left blank.",
     ),
     _WriteTool(
         "notify_user",

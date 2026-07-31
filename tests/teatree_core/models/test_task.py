@@ -47,7 +47,7 @@ class TestTask(TestCase):
         task.complete(result_artifact_path="/tmp/result.json")
 
         failed_task = Task.objects.create(ticket=ticket, session=session)
-        failed_task.fail()
+        failed_task.fail(reason="test: deliberate failure")
 
         attempt = TaskAttempt.objects.create(
             task=task,
@@ -206,7 +206,7 @@ class TestClaimedBySessionPersistence(TestCase):
     def test_fail_blanks_session_in_db(self) -> None:
         task = self._task()
         task.claim(claimed_by="worker", claimed_by_session="sess-1")
-        task.fail()
+        task.fail(reason="test: deliberate failure")
         assert self._db_session(task) == ""
 
     def test_park_blanks_session_in_db(self) -> None:

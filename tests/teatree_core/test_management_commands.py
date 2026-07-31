@@ -20,6 +20,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.core.overlay import (
@@ -466,6 +467,8 @@ class TestSessionTodoRendering(TestCase):
         phase: str = "coding",
         reason: str = "do it",
         ticket_title: str = "",
+        failure_kind: str = "",
+        failure_reason: str = "",
     ) -> session_view.TaskRow:
         return session_view.TaskRow(
             task_id=task_id,
@@ -476,6 +479,9 @@ class TestSessionTodoRendering(TestCase):
             phase=phase,
             execution_reason=reason,
             claimed_by="",
+            failure_kind=failure_kind,
+            failure_reason=failure_reason,
+            failure_environmental=is_environmental(failure_kind),
         )
 
     def test_groups_teatree_tasks_by_status_and_omits_harness_section(self) -> None:
@@ -1214,13 +1220,18 @@ class TestTasksCancelCommand(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         attempt = task.attempts.get()
-        assert attempt.error == "superseded by !6219"
-        assert attempt.result == {"cancel_reason": "superseded by !6219"}
+        # #3957: the operator's words are kept, under the ``cancelled`` kind prefix that
+        # makes the cause machine-readable on the listing and the card.
+        assert attempt.error == "cancelled: superseded by !6219"
+        assert attempt.result == {"cancel_reason": "cancelled: superseded by !6219"}
         assert attempt.exit_code == 1  # a cancellation is a non-success terminal
+        assert task.failure_kind == FailureKind.CANCELLED
+        assert task.failure_reason == "cancelled: superseded by !6219"
 
-    def test_cancel_without_reason_records_no_attempt(self) -> None:
-        # The reason is optional — a bare cancel stays a clean no-attempt fail
-        # exactly as before (no regression).
+    def test_cancel_without_reason_still_records_the_cancellation(self) -> None:
+        # #3957: ``--reason`` is optional, recording a cause is not. A bare cancel used
+        # to leave a FAILED row with no attempt at all, which on the board is
+        # indistinguishable from a crash.
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
@@ -1233,10 +1244,12 @@ class TestTasksCancelCommand(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert task.attempts.count() == 0
+        assert task.failure_kind == FailureKind.CANCELLED
+        assert task.attempts.get().error.startswith("cancelled: ")
 
-    def test_cancel_blank_reason_records_no_attempt(self) -> None:
-        # A whitespace-only reason is treated as no reason — no empty audit row.
+    def test_cancel_blank_reason_still_records_the_cancellation(self) -> None:
+        # A whitespace-only reason is treated as no reason given — but the cancellation
+        # itself is still named, never left blank (#3957).
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
@@ -1249,7 +1262,8 @@ class TestTasksCancelCommand(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert task.attempts.count() == 0
+        assert task.failure_kind == FailureKind.CANCELLED
+        assert "no reason given" in task.failure_reason
 
 
 class TestTasksCompleteCommand(TestCase):
@@ -1457,6 +1471,9 @@ class TestTasksListCommand(TestCase):
                 phase="coding",
                 execution_reason="resume after user input",
                 claimed_by="",
+                failure_kind="",
+                failure_reason="",
+                failure_environmental=False,
             ),
         ]
         buf = StringIO()

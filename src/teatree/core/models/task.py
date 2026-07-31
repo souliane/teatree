@@ -9,6 +9,7 @@ from django_fsm import FSMField, TransitionNotAllowed
 
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, classify_failure
 from teatree.core.models.auto_implement import is_auto_implement
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
@@ -66,6 +67,14 @@ class Task(models.Model):
         default=ExecutionTarget.HEADLESS,
     )
     execution_reason = models.TextField(blank=True)
+    # #3957: why this task FAILED, as distinct from ``execution_reason`` (why it was
+    # SCHEDULED). Written only by :meth:`fail`, which REQUIRES a reason, so no failure
+    # path can land a task in FAILED carrying no cause; cleared by :meth:`reopen`.
+    # ``failure_kind`` is the :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`
+    # name derived from it, stored rather than re-derived per read so the task listing
+    # stays one query and so failures are groupable by cause in the DB.
+    failure_reason = models.TextField(blank=True, default="")
+    failure_kind = models.CharField(max_length=32, choices=FailureKind.choices, blank=True, default="")
     status = FSMField(max_length=32, choices=Status.choices, default=Status.PENDING)
     claimed_at = models.DateTimeField(null=True, blank=True)
     claimed_by = models.CharField(max_length=255, blank=True)
@@ -446,12 +455,31 @@ class Task(models.Model):
         last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
         return bool(last and isinstance(last.result, dict) and last.result.get("needs_user_input"))
 
-    def fail(self) -> None:
+    def fail(self, *, reason: str) -> None:
+        """Land this task FAILED with a NAMED cause (#3957).
+
+        *reason* is a REQUIRED keyword, and that is the whole point: a task listing and a
+        kanban card that render an error with no cause attached cannot tell a genuine
+        review defect from a lost lease, a bad harness pin, or an exhausted credential.
+        Making the reason un-omittable is what stops a NEW failure path from recording
+        nothing — a caller that forgets it fails at the call site, not silently in the DB.
+
+        The reason is classified once, here, into a
+        :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`, so every reader shares
+        one vocabulary instead of re-deriving a cause from free text.
+        """
+        if not reason.strip():
+            msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
+            raise ValueError(msg)
         self.status = self.Status.FAILED
+        self.failure_reason = reason.strip()
+        self.failure_kind = classify_failure(self.failure_reason)
         self._clear_claim()
         self.save(
             update_fields=[
                 "status",
+                "failure_reason",
+                "failure_kind",
                 "claimed_at",
                 "claimed_by",
                 "claimed_by_session",
@@ -465,7 +493,12 @@ class Task(models.Model):
             msg = f"Can only reopen failed tasks, got '{self.status}'"
             raise InvalidTransitionError(msg)
         self.status = self.Status.PENDING
-        self.save(update_fields=["status"])
+        # The recorded cause belongs to the attempt that failed; a reopened task is
+        # in flight again and must not render the previous run's error as its own.
+        # The TaskAttempt rows keep the full history.
+        self.failure_reason = ""
+        self.failure_kind = ""
+        self.save(update_fields=["status", "failure_reason", "failure_kind"])
 
     def park(self, *, not_before: datetime) -> None:
         """Return this task to the queue PENDING, gated until *not_before* (Directive #3).
@@ -514,7 +547,9 @@ class Task(models.Model):
         if exit_code == 0:
             self.complete(result_artifact_path=artifact_path)
         else:
-            self.fail()
+            # A non-zero exit with no error text still names a cause (#3957): the exit
+            # code IS the only thing known, so record that rather than nothing.
+            self.fail(reason=error.strip() or f"{AGENT_ABANDONED_PREFIX}run exited {exit_code} with no error recorded")
         return attempt
 
     def spawn_child_tasks(self, repos: list[str], *, phase: str = "") -> list["Task"]:
