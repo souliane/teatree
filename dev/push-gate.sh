@@ -26,6 +26,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
+# change — so a memory-capped container spawns host-many workers and dies as an opaque
+# xdist crash. Default the pool from the cap instead (an explicit
+# PYTEST_XDIST_AUTO_NUM_WORKERS still wins; an uncapped box is left alone).
+. dev/lib/xdist-workers.sh
+bound_xdist_workers_to_memory
+
 echo "=== [1/3] never-lockout safety contract ==="
 uv run pytest tests/test_gate_never_lockout_contract.py -q
 

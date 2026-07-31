@@ -627,3 +627,83 @@ class TestCoverageScope:
         scope = CoverageScope(source_roots=("src",), omit=())
         report = measure_diff_coverage(diff, coverage_data_file=data_file, repo_root=git_repo, scope=scope)
         assert report.passes()
+
+
+class TestReferenceResolutionSeesRealProductionUses:
+    """The anti-vacuity check must resolve the SYMBOL, not just the bound name.
+
+    The check defeats the "test-a-local-copy" vacuity: a test that redefines a
+    local copy never imports the production symbol, so a revert of production
+    would not turn it red. Two idioms are genuine production references that the
+    bound-name-only reading missed, so a thoroughly exercised symbol was reported
+    unreferenced — and the only way to satisfy the gate was to add an import
+    written for the gate rather than for the reader.
+    """
+
+    def test_aliased_import_references_the_underlying_symbol(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text("def register(x):\n    return x * 2\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "from shipped import register as register_slack\n\n\ndef test_it():\n    assert register_slack(2) == 4\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set(), (
+            "an aliased import binds a different NAME but references the same production "
+            "symbol — reverting production still turns this test red, so it is not vacuous."
+        )
+
+    def test_module_import_plus_attribute_access_is_a_reference(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text("def register(x):\n    return x * 2\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "import shipped\n\n\ndef test_it():\n    assert shipped.register(2) == 4\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set(), (
+            "module-import plus attribute access is the idiom this codebase uses; it "
+            "resolves to production at call time, so it is a genuine reference."
+        )
+
+    def test_aliased_module_import_plus_attribute_access_is_a_reference(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text("def register(x):\n    return x * 2\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "import shipped as mod\n\n\ndef test_it():\n    assert mod.register(2) == 4\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_local_copy_vacuity_is_still_caught(self, git_repo: Path) -> None:
+        # The mechanism the check exists for must survive the widening: a test that
+        # defines its own copy references nothing in production, so a revert of
+        # production leaves it green — it must stay in the failing set.
+        (git_repo / "shipped.py").write_text("def register(x):\n    return x * 2\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "def register(x):\n    return x * 2\n\n\ndef test_it():\n    assert register(2) == 4\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+
+        assert "register" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_attribute_access_on_an_unimported_name_is_not_a_reference(self, git_repo: Path) -> None:
+        # A local stub's attribute access must not be mistaken for a production one:
+        # `stub.register(...)` where `stub` is a locally built object touches no
+        # production code, so the symbol stays unreferenced.
+        (git_repo / "shipped.py").write_text("def register(x):\n    return x * 2\n", encoding="utf-8")
+        (git_repo / "tests").mkdir()
+        (git_repo / "tests" / "test_shipped.py").write_text(
+            "class Stub:\n    def register(self, x):\n        return x * 2\n\n\n"
+            "def test_it():\n    stub = Stub()\n    assert stub.register(2) == 4\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo)
+
+        assert "register" in unreferenced_changed_symbols(diff, repo_root=git_repo)

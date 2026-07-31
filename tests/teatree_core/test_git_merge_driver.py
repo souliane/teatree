@@ -161,3 +161,102 @@ class TestEndToEndConflictResolution:
         for path in ("docs/generated/cli-reference.md", "evals/README.md"):
             attr = run_git(repo_root, "check-attr", "merge", "--", path)
             assert attr.endswith("merge: generated"), f"{path} not marked merge=generated: {attr!r}"
+
+
+class TestManagementCommandsRegeneratesThroughTheRealGenerator:
+    """A genuine 3-way merge of ``management-commands.md`` regenerates, not "ours".
+
+    ``TestEndToEndConflictResolution`` above drives the merge through a STUB
+    generator, so it proves the driver's plumbing but says nothing about whether a
+    registered generator actually fills the ``%A`` slot. That gap is what let a
+    generator which derived its destination from ``argv[0].parent`` pass every
+    existing test while silently resolving each merge to "ours". This drives the
+    real ``generate_management_commands_doc.py`` end to end.
+    """
+
+    def test_real_generator_fills_the_output_slot_on_a_real_merge(self, tmp_path):
+        repo = make_git_repo(tmp_path / "repo")
+        real_root = Path(__file__).resolve().parents[2]
+        # The driver spawns its generator by REPO-RELATIVE path, resolved against the
+        # merge's cwd, so the temp repo needs the same scripts/hooks layout.
+        (repo / "scripts").symlink_to(real_root / "scripts")
+        (repo / ".git" / "info" / "exclude").write_text("/scripts\n", encoding="utf-8")
+
+        gen = repo / "docs" / "generated" / "management-commands.md"
+        gen.parent.mkdir(parents=True)
+        (repo / ".gitattributes").write_text("docs/generated/management-commands.md merge=generated\n")
+        run_git(
+            repo,
+            "config",
+            "merge.generated.driver",
+            f"{sys.executable} {real_root / 'scripts' / 'hooks' / 'git_merge_generated.py'} %O %A %B %P",
+        )
+
+        gen.write_text("# Management commands\n\n- base\n", encoding="utf-8")
+        run_git(repo, "add", ".gitattributes", "docs")
+        run_git(repo, "commit", "-q", "-m", "base")
+
+        run_git(repo, "checkout", "-q", "-b", "feat-a")
+        gen.write_text("# Management commands\n\n- base\n- OURS-ONLY\n", encoding="utf-8")
+        run_git(repo, "commit", "-q", "-am", "ours")
+
+        run_git(repo, "checkout", "-q", "main")
+        run_git(repo, "checkout", "-q", "-b", "feat-b")
+        gen.write_text("# Management commands\n\n- base\n- THEIRS-ONLY\n", encoding="utf-8")
+        run_git(repo, "commit", "-q", "-am", "theirs")
+
+        run_git(repo, "merge", "feat-a", check=False)
+
+        merged = gen.read_text(encoding="utf-8")
+        assert "<<<<<<<" not in merged, f"merge left conflict markers: {merged!r}"
+        assert ">>>>>>>" not in merged, f"merge left conflict markers: {merged!r}"
+        assert "OURS-ONLY" not in merged, (
+            "the merge resolved to the un-regenerated 'ours' side — the driver reported success "
+            "without the generator ever writing its output slot."
+        )
+        assert "THEIRS-ONLY" not in merged
+        assert "lifecycle" in merged, (
+            "the merged file must hold the REGENERATED reference built from the live command tree."
+        )
+
+    def test_a_real_merge_leaves_no_generated_litter_in_the_repo_root(self, tmp_path):
+        repo = make_git_repo(tmp_path / "repo")
+        real_root = Path(__file__).resolve().parents[2]
+        (repo / "scripts").symlink_to(real_root / "scripts")
+        (repo / ".git" / "info" / "exclude").write_text("/scripts\n", encoding="utf-8")
+
+        gen = repo / "docs" / "generated" / "management-commands.md"
+        gen.parent.mkdir(parents=True)
+        (repo / ".gitattributes").write_text("docs/generated/management-commands.md merge=generated\n")
+        run_git(
+            repo,
+            "config",
+            "merge.generated.driver",
+            f"{sys.executable} {real_root / 'scripts' / 'hooks' / 'git_merge_generated.py'} %O %A %B %P",
+        )
+
+        gen.write_text("# Management commands\n\n- base\n", encoding="utf-8")
+        run_git(repo, "add", ".gitattributes", "docs")
+        run_git(repo, "commit", "-q", "-m", "base")
+
+        run_git(repo, "checkout", "-q", "-b", "feat-a")
+        gen.write_text("# Management commands\n\n- base\n- a\n", encoding="utf-8")
+        run_git(repo, "commit", "-q", "-am", "ours")
+
+        run_git(repo, "checkout", "-q", "main")
+        run_git(repo, "checkout", "-q", "-b", "feat-b")
+        gen.write_text("# Management commands\n\n- base\n- b\n", encoding="utf-8")
+        run_git(repo, "commit", "-q", "-am", "theirs")
+
+        run_git(repo, "merge", "feat-a", check=False)
+
+        # git's %A slot lives in the repo ROOT; a generator that writes beside it
+        # rather than into it drops these there, where nothing reads them.
+        for stray in ("management-commands.md", "management-commands.json"):
+            assert not (repo / stray).exists(), (
+                f"the merge dropped {stray} in the repo root — that is the un-tracked writer that "
+                "re-dirties a working tree mid-rebase."
+            )
+
+    def test_registered_paths_cover_the_management_commands_doc(self):
+        assert "docs/generated/management-commands.md" in driver.registered_paths()

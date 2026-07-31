@@ -11,12 +11,15 @@
 # exit 0, because a shell pipeline's status is its LAST stage's. Measured on this repo:
 # the bare pytest exits 1, the identical run piped into `tail` exits 0. Anything gating
 # on that exit code reads a green shuffle lane that never collected a single test.
-# Three guards close it, cheapest first:
+# Four guards close it, cheapest first:
 #   1. `set -euo pipefail` and NO pipes — no exit code can be swallowed in here.
 #   2. an explicit `--group shuffle` install plus an import PREFLIGHT that fails loud
 #      with the fix command, BEFORE pytest is ever asked to load the plugin.
 #   3. `-o required_plugins=pytest-randomly` — pytest's own in-session assertion, so a
 #      degraded environment cannot silently produce an UNSHUFFLED green either.
+#   4. an EXIT trap announcing FAILED, because guard 1 cannot reach a pipe the CALLER
+#      wraps around this script — `… | tail -5` reports tail's status, so the verdict
+#      has to be in the output as well as in the exit code.
 # The curated directory set is pinned byte-for-byte against CI's lane by
 # tests/test_ci_shuffle_lane_scope.py, so the local twin cannot drift from the gate.
 #
@@ -30,9 +33,22 @@ SEEDS=("${@:-7}")
 
 # pytest-randomly auto-activates on import, so leaving it installed would shuffle every
 # later `uv run pytest` in this checkout — the exact destabilisation that keeps it out
-# of the `dev` group. Restore the default environment on the way out; an EXIT trap that
-# does not itself call `exit` leaves the script's own status untouched.
-trap 'uv sync --quiet || true' EXIT
+# of the `dev` group. Restore the default environment on the way out, then announce the
+# verdict: guard 1 stops a pipe INSIDE this script erasing an exit code, but a pipe the
+# CALLER wraps around the whole run (`bash dev/test-shuffle.sh | tail -5`) is beyond any
+# `pipefail` here — that pipeline reports tail's status. Announcing only success left a
+# red run's tail carrying no verdict at all, so it read as a clean one. The trap
+# re-raises the original code, leaving an unpiped caller's exit status true.
+_finish() {
+    rc=$?
+    trap - EXIT
+    uv sync --quiet || true
+    if [ "$rc" -ne 0 ]; then
+        echo "=== test-shuffle: FAILED (exit ${rc}) -- the order-dependence lane did NOT pass ==="
+    fi
+    exit "$rc"
+}
+trap _finish EXIT
 
 echo "=== [1/3] install the shuffle group (pytest-randomly is NOT in the default dev group) ==="
 uv sync --group shuffle

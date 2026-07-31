@@ -12,6 +12,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# `-n auto` sizes the worker pool from CPU count, which a cgroup memory cap does not
+# change — so a memory-capped container spawns host-many workers and dies as an opaque
+# xdist crash. Default the pool from the cap instead (an explicit
+# PYTEST_XDIST_AUTO_NUM_WORKERS still wins; an uncapped box is left alone).
+. dev/lib/xdist-workers.sh
+bound_xdist_workers_to_memory
+
 PY_VERSION="${TEATREE_TEST_PYTHON:-3.13}"
 
 echo "=== Coverage gate: Python ${PY_VERSION} (host, parallel, 93% floor) ==="

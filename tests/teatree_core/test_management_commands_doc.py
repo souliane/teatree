@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 
+import generate_management_commands_doc as generator
 import pytest
 from django.core.management import call_command
 
@@ -235,3 +236,45 @@ class TestGenerateAllDocsIncludesManagementCommands:
         output_dir = tmp_path / "generated"
         call_command("generate_all_docs", output_dir=str(output_dir))
         assert (output_dir / "management-commands.md").is_file()
+
+
+class TestGeneratorWritesTheOutputPathItIsGiven:
+    """The hook must write ``argv[0]`` itself — the merge-driver output contract.
+
+    ``git_merge_generated`` hands this generator git's ``%A`` output slot (a
+    ``.merge_file_XXXXXX`` temp path in the repo root) and takes whatever is left
+    there as the merge result. A generator that derives its own destination from
+    ``argv[0].parent`` instead of writing ``argv[0]`` therefore resolves every
+    merge to "ours" while reporting success, and drops its real output next to the
+    slot — in the repo root. Its sibling ``generate_cli_reference.py`` writes the
+    given path directly; this pins the same contract here.
+    """
+
+    def test_writes_the_given_path(self, tmp_path: Path) -> None:
+        slot_dir = tmp_path / "repo-root"
+        slot_dir.mkdir()
+        slot = slot_dir / ".merge_file_ABC123"
+        slot.write_text("OURS — the un-regenerated side\n", encoding="utf-8")
+
+        assert generator.main([str(slot)]) == 0
+
+        written = slot.read_text(encoding="utf-8")
+        assert written != "OURS — the un-regenerated side\n", (
+            "the generator left its output slot untouched — a merge driver using it "
+            "silently resolves to 'ours' instead of regenerating."
+        )
+        assert "lifecycle" in written, "the slot must hold the REGENERATED reference, not the ours-side content."
+
+    def test_writes_nothing_beside_the_given_path(self, tmp_path: Path) -> None:
+        slot_dir = tmp_path / "repo-root"
+        slot_dir.mkdir()
+        slot = slot_dir / ".merge_file_ABC123"
+        slot.write_text("OURS\n", encoding="utf-8")
+
+        generator.main([str(slot)])
+
+        strays = sorted(p.name for p in slot_dir.iterdir() if p != slot)
+        assert not strays, (
+            "the generator wrote files beside its output slot; during a real merge that slot's "
+            f"parent is the REPO ROOT, so these land there as untracked litter: {strays}"
+        )

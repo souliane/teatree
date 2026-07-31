@@ -279,23 +279,62 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
     return out
 
 
-def _test_imported_and_shadowed(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Return ``(imported_names, locally_defined_names)`` for a test module.
+def _attribute_chain_root(node: ast.Attribute) -> str | None:
+    """The root ``Name`` of an attribute chain (``a.b.c`` → ``a``), if it has one.
 
-    ``imported_names`` is every name a top-level ``import``/``from … import``
-    binds (the alias if present). ``locally_defined_names`` is every name
-    the test module itself ``def``/``class``-defines at any level — a local
-    redefinition that shadows the production symbol.
+    A chain rooted in a call or subscript (``factory().attr``) has no static
+    root name and returns ``None``.
+    """
+    current: ast.expr = node.value
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
+
+
+def _test_imported_and_shadowed(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """Return ``(referenced_names, locally_defined_names)`` for a test module.
+
+    ``referenced_names`` is every production name the test module reaches, by
+    any of the three idioms that resolve to production at call time — so a
+    revert of production turns the test red:
+
+    - ``from mod import symbol`` — the bound name;
+    - ``from mod import symbol as alias`` — BOTH the alias and the underlying
+    ``symbol``, since the alias is only a local spelling of the same object.
+    Reading the bound name alone hid the symbol and reported a thoroughly
+    exercised function as unreferenced;
+    - ``import mod`` (aliased or not) plus ``mod.symbol`` attribute access —
+    the idiom this codebase's tests actually use. The attribute name counts
+    only when its chain is rooted in an imported MODULE binding, so a local
+    stub's ``stub.symbol(...)`` is not mistaken for a production reference.
+
+    ``locally_defined_names`` is every name the test module itself
+    ``def``/``class``-defines at any level — a local redefinition that shadows
+    the production symbol. That is the "test-a-local-copy" vacuity this check
+    exists to catch, and shadowing still wins over every idiom above.
     """
     imported: set[str] = set()
+    module_bindings: set[str] = set()
+    attribute_uses: list[ast.Attribute] = []
     local: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            imported.update(alias.asname or alias.name for alias in node.names)
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
+                imported.add(alias.name)
         elif isinstance(node, ast.Import):
-            imported.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            for alias in node.names:
+                bound = (alias.asname or alias.name).split(".")[0]
+                imported.add(bound)
+                module_bindings.add(bound)
+        elif isinstance(node, ast.Attribute):
+            attribute_uses.append(node)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             local.add(node.name)
+
+    imported.update(
+        attribute.attr for attribute in attribute_uses if _attribute_chain_root(attribute) in module_bindings
+    )
     return imported, local
 
 

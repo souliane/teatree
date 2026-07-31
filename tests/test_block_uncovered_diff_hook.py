@@ -74,6 +74,45 @@ class TestMergeClassMutationDetection:
         assert _is_merge_class_mutation({"tool_name": "Bash", "tool_input": {"command": cmd}}) is False
 
 
+class TestMetadataOnlyPrEditIsNotMergeClass:
+    """Retitling an open PR creates nothing and merges nothing — the gate must not fire.
+
+    The per-diff coverage gate blocks a PUSH, so every spurious fire is paid by the
+    author. Several sibling gates *require* a PR's own description to be corrected
+    (conventional-commit first line, ``## What`` / ``## Why``); classifying that
+    correction as a merge-class write made satisfying one gate trip another. Only a
+    write that changes repository state — creating a PR, merging it, closing it —
+    is merge-class.
+    """
+
+    def _mutation(self, command: str) -> bool:
+        return _is_merge_class_mutation({"tool_name": "Bash", "tool_input": {"command": command}})
+
+    def test_patching_only_title_and_body_is_not_merge_class(self):
+        cmd = "gh api -X PATCH repos/souliane/teatree/pulls/3887 -f title=t -f body=b"
+        assert self._mutation(cmd) is False
+
+    def test_patching_only_the_description_is_not_merge_class(self):
+        cmd = "glab api -X PUT projects/12/merge_requests/77 -f description=d"
+        assert self._mutation(cmd) is False
+
+    def test_api_create_on_the_collection_endpoint_stays_merge_class(self):
+        cmd = "gh api -X POST repos/souliane/teatree/pulls -f title=t -f body=b"
+        assert self._mutation(cmd) is True
+
+    def test_closing_a_pr_stays_merge_class(self):
+        cmd = "gh api -X PATCH repos/souliane/teatree/pulls/3887 -f state=closed"
+        assert self._mutation(cmd) is True
+
+    def test_retargeting_the_base_branch_stays_merge_class(self):
+        cmd = "gh api -X PATCH repos/souliane/teatree/pulls/3887 -f base=main"
+        assert self._mutation(cmd) is True
+
+    def test_undrafting_via_the_api_stays_merge_class(self):
+        cmd = "gh api -X PATCH repos/souliane/teatree/pulls/3887 -f draft=false"
+        assert self._mutation(cmd) is True
+
+
 def _finding_json(*, uncovered: list[dict] | None = None, symbols: list[str] | None = None) -> str:
     return json.dumps(
         {

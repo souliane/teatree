@@ -53,18 +53,25 @@ _REVIEW_POST_BODY_FLAG_RE = re.compile(
 _GLAB_GH_API_RE = re.compile(r"\b(?:glab|gh)\s+api\b")
 
 
-def _effective_method_is_write(command: str) -> bool:
-    """Whether a gh/glab REST command's EFFECTIVE HTTP method is a write (not GET).
+def _effective_method(command: str) -> str:
+    """The EFFECTIVE HTTP method of a gh/glab REST command, upper-cased.
 
     The LAST ``-X``/``--method`` value wins; with no method flag the forge
-    defaults to POST when a body/field flag is present, else GET. A GET is the
-    only read. Shared by the create-endpoint and merge-endpoint gates so the
-    classifier cannot drift between them.
+    defaults to POST when a body/field flag is present, else GET.
     """
     methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
-        return methods[-1] != "GET"
-    return bool(_REVIEW_POST_BODY_FLAG_RE.search(command))
+        return methods[-1]
+    return "POST" if _REVIEW_POST_BODY_FLAG_RE.search(command) else "GET"
+
+
+def _effective_method_is_write(command: str) -> bool:
+    """Whether a gh/glab REST command's EFFECTIVE HTTP method is a write (not GET).
+
+    A GET is the only read. Shared by the create-endpoint and merge-endpoint
+    gates so the classifier cannot drift between them.
+    """
+    return _effective_method(command) != "GET"
 
 
 def _is_api_create_endpoint_write(command: str) -> bool:
@@ -84,3 +91,48 @@ def _is_api_create_endpoint_write(command: str) -> bool:
     if _MERGE_ENDPOINT_RE.search(command):
         return False
     return _effective_method_is_write(command)
+
+
+# An EXISTING PR/MR's own endpoint, carrying its number: ``/pulls/3887``,
+# ``/merge_requests/77``. The lookahead rejects a nested sub-resource
+# (``/pulls/3887/commits``) so only the PR object itself matches.
+_API_NUMBERED_PR_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)/\d+(?![/\d])")
+
+# The ``key`` of a ``-f key=value`` / ``--field`` / ``-F`` / ``--raw-field`` /
+# ``-d`` / ``--data`` argument.
+_API_FIELD_KEY_RE = re.compile(
+    r"(?:^|\s)(?:-f|--field|-F|--raw-field|-d|--data)[\s=]+['\"]?([A-Za-z_][A-Za-z0-9_]*)=",
+)
+
+# Fields carrying only a PR/MR's DESCRIPTIVE metadata. Editing these changes no
+# repository state: the PR still exists, still targets the same base branch, and
+# keeps its open/closed and draft status. Anything outside this set (``state``,
+# ``base``, ``target_branch``, ``draft``, …) is a state change and stays gated.
+_PR_METADATA_FIELDS = frozenset({"title", "body", "description"})
+
+# The update methods a metadata edit uses. A POST to a numbered endpoint is not an
+# edit (the forges treat it as a create/sub-resource action), so it stays gated.
+_PR_UPDATE_METHODS = frozenset({"PATCH", "PUT"})
+
+
+def _is_existing_pr_metadata_only_edit(command: str) -> bool:
+    """Whether *command* only edits an EXISTING PR/MR's descriptive metadata.
+
+    True for an update (``PATCH``/``PUT``) against a PR's own numbered endpoint
+    that sets ONLY fields in :data:`_PR_METADATA_FIELDS`. Retitling a PR or
+    rewriting its description creates nothing, merges nothing, and closes
+    nothing, so it must not be classified alongside the create/merge/close
+    writes that move a PR toward merge.
+
+    Deliberately narrow and fail-safe: no recognised field, an unrecognised
+    field, the collection endpoint, or any other method all return ``False``,
+    leaving the caller's existing classification in force.
+    """
+    if not _API_NUMBERED_PR_ENDPOINT_RE.search(command):
+        return False
+    if _MERGE_ENDPOINT_RE.search(command):
+        return False
+    if _effective_method(command) not in _PR_UPDATE_METHODS:
+        return False
+    keys = {m.group(1) for m in _API_FIELD_KEY_RE.finditer(command)}
+    return bool(keys) and keys <= _PR_METADATA_FIELDS
