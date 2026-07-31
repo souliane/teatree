@@ -384,6 +384,49 @@ def _main_clone_bash_allow(ctx: GateContext) -> dict:
     }
 
 
+# headless-posture authoring gate (PreToolUse Edit): an interactive session editing
+# teatree's own source while the resolved runtime is headless denies; the same edit
+# carrying the audited single-use override token allows. The runtime is SEEDED into the
+# real control DB and the lane read from the real env, so the gate's two live decisions
+# (posture, lane) are exercised rather than stubbed.
+
+
+def _arrange_headless_interactive(ctx: GateContext) -> Path:
+    ctx.write_state("teatree-active", "")
+    ctx.seed_setting("agent_runtime", "headless")
+    ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    ctx.monkeypatch.setenv("CLAUDECODE", "1")
+    ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    ctx.monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+    repo = _managed_repo(ctx, "1-feat-acme")
+    source = repo / "src" / "acme"
+    source.mkdir(parents=True, exist_ok=True)
+    target = source / "module.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    return target
+
+
+def _headless_authoring_deny(ctx: GateContext) -> dict:
+    target = _arrange_headless_interactive(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(target), "new_string": "hand-written"},
+    }
+
+
+def _headless_authoring_allow(ctx: GateContext) -> dict:
+    target = _arrange_headless_interactive(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": str(target),
+            "new_string": "hand-written [headless-authoring-ok: factory down, restoring it]",
+        },
+    }
+
+
 # validate-mr-metadata Bash arm (PreToolUse Bash): glab mr create routes to the
 # overlay validator; rc!=0 denies, rc==0 allows.
 
@@ -842,6 +885,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_main_clone_bash_deny,
         allow_input=_main_clone_bash_allow,
+    ),
+    GateRow(
+        gate_id="block-interactive-authoring",
+        handler=router.handle_block_interactive_authoring,
+        event="PreToolUse",
+        matched="Edit",
+        deny_input=_headless_authoring_deny,
+        allow_input=_headless_authoring_allow,
     ),
     GateRow(
         gate_id="validate-mr-metadata-bash",
