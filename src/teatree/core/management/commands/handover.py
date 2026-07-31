@@ -11,13 +11,14 @@ ORM access is here (a management command, not a plain typer command) per
 the project's "anything touching the ORM is a management command" rule.
 """
 
+import sys
 from pathlib import Path
-from typing import IO, Annotated, cast
+from typing import IO, Annotated, NoReturn, cast
 
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.handover import claim_handovers, create_handover
+from teatree.core.handover import PayloadSource, SelfAddressedHandoverError, claim_handovers, create_handover
 from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to_fast_push
 from teatree.core.machine_output import emit
 from teatree.loop.session_identity import current_session_id
@@ -38,6 +39,14 @@ class Command(TyperCommand):
             str,
             typer.Option("--to", help="Target session id. Omit to hand to the live loop owner, else park for next."),
         ] = "",
+        from_file: Annotated[
+            str,
+            typer.Option("--from-file", help="Read the hand-off body from this file ('-' for stdin)."),
+        ] = "",
+        body: Annotated[
+            str,
+            typer.Option("--body", help="The hand-off body, given inline."),
+        ] = "",
         drive_subagents: Annotated[
             bool,
             typer.Option(
@@ -49,6 +58,14 @@ class Command(TyperCommand):
     ) -> None:
         """Hand this session's full durable state to another session.
 
+        ``--from-file`` / ``--body`` supply the payload the session AUTHORED —
+        the reasoning no query can re-derive, and the reason a hand-off exists.
+        Without one, the payload falls back to this session's PreCompact snapshot
+        and then to live DB state, and only the first two report ``OK``: a
+        machine-derived inventory nobody vetted is recorded and reported UNVETTED,
+        because "hand-off written" over a payload the receiver cannot use is the
+        failure this command is supposed to make impossible.
+
         No ``--to`` → the live ``t3-master`` slot holder; if none, parked
         for whichever session starts next. Always persists the
         :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
@@ -59,28 +76,30 @@ class Command(TyperCommand):
         from_session = current_session_id()
         if not from_session:
             msg = "no Claude session id — run inside a Claude Code session to hand off its state"
-            emit(
-                {"ok": False, "error": msg},
-                json_output=json_output,
-                out=cast("IO[str]", self.stdout),
-                err=cast("IO[str]", self.stderr),
-                human=f"ERROR  {msg}",
-            )
-            raise SystemExit(2)
+            self._refuse(msg, json_output=json_output, code=2)
 
-        handover, mirror = create_handover(from_session=from_session, explicit_to=to)
+        authored = self._read_authored(from_file=from_file, body=body, json_output=json_output)
+
+        try:
+            created = create_handover(from_session=from_session, explicit_to=to, authored=authored)
+        except SelfAddressedHandoverError as exc:
+            self._refuse(str(exc), json_output=json_output, code=1)
+
+        handover, mirror, source = created.handover, created.mirror, created.source
         recipient = handover.to_session or "next-session"
         pushes = self._drive_subagents() if drive_subagents else []
-        # A hand-off that reports OK while transferring nothing is worse than one
-        # that fails: the operator moves on believing state was carried over, and
-        # the receiving session claims a row with nothing in it (#3551).
-        empty = not handover.payload.strip()
-        status = "WARN " if empty else "OK   "
-        human_lines = [f"{status} handed off to {recipient}; mirror written to {mirror}."]
+        # A hand-off that reports OK while transferring nothing usable is worse
+        # than one that fails: the operator moves on believing state was carried
+        # over, and the receiving session claims a row that does not hold it
+        # (#3551, #3888). Only a VETTED source may report OK.
+        empty = source is PayloadSource.EMPTY
+        status = "OK   " if source.is_vetted else "WARN "
+        human_lines = [f"{status} handed off to {recipient} ({source.value}); mirror written to {mirror}."]
         human_lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
         emit(
             {
-                "ok": not empty,
+                "ok": source.is_vetted,
+                "payload_source": source.value,
                 "empty_payload": empty,
                 "from_session": handover.from_session,
                 "to_session": handover.to_session,
@@ -95,10 +114,54 @@ class Command(TyperCommand):
         )
         if empty:
             self.stderr.write(
-                f"ERROR hand-off {handover.pk} carries NO durable state — no PreCompact snapshot for session "
-                f"{from_session}, and no in-flight worktrees, tickets or PRs to derive one from."
+                f"ERROR hand-off {handover.pk} carries NO durable state — no authored body, no PreCompact snapshot "
+                f"for session {from_session}, and no in-flight worktrees, tickets or PRs to derive one from."
             )
             raise SystemExit(1)
+        if not source.is_vetted:
+            self.stderr.write(
+                f"WARN  hand-off {handover.pk} to {recipient} is UNVETTED: no authored body and no PreCompact "
+                f"snapshot for session {from_session}, so its payload was DERIVED from the DB. It carries the "
+                f"in-flight inventory and NONE of this session's reasoning. Re-run with "
+                f"`--from-file <path>` (or `--body`) to hand over what this session actually knows."
+            )
+            raise SystemExit(3)
+
+    def _refuse(self, msg: str, *, json_output: bool, code: int) -> "NoReturn":
+        """Report a refusal on both channels and exit non-zero — never a silent no-op."""
+        emit(
+            {"ok": False, "error": msg},
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=f"ERROR  {msg}",
+        )
+        self.stderr.write(f"ERROR {msg}")
+        raise SystemExit(code)
+
+    def _read_authored(self, *, from_file: str, body: str, json_output: bool) -> str:
+        """The authored payload from ``--from-file`` / ``--body``, or ``""`` when neither was given.
+
+        An unreadable ``--from-file`` REFUSES rather than degrading to a derived
+        payload: the session asked for specific bytes to be handed over, and
+        silently handing over different ones is the defect, not a fallback.
+        """
+        if from_file and body:
+            self._refuse(
+                "--from-file and --body both given — pass exactly one, so the payload has one author",
+                json_output=json_output,
+                code=2,
+            )
+        if body:
+            return body
+        if not from_file:
+            return ""
+        if from_file == "-":
+            return sys.stdin.read()
+        try:
+            return Path(from_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            self._refuse(f"could not read --from-file {from_file}: {exc}", json_output=json_output, code=2)
 
     def _drive_subagents(self) -> list[SubagentPush]:
         """Fast-push in-flight sub-agent worktrees; a failure here never fails the hand-off.
