@@ -23,6 +23,16 @@ if TYPE_CHECKING:
     from teatree.core.models.session_handover import SessionHandover
 
 
+class SelfAddressedHandoverError(ValueError):
+    """A hand-off addressed to the session creating it, which nothing could ever claim.
+
+    Raised by :meth:`SessionHandoverQuerySet.create_handover` so the degenerate row
+    is refused where an operator can still react, rather than persisting as a row
+    that counts as pending forever. See :meth:`~SessionHandoverQuerySet.claimable_for`
+    for why such a row is unreachable.
+    """
+
+
 class SessionHandoverQuerySet(models.QuerySet):
     def create_handover(self, *, from_session: str, to_session: str, payload: str) -> "SessionHandover":
         """Persist a new pending hand-off from ``from_session``.
@@ -30,7 +40,21 @@ class SessionHandoverQuerySet(models.QuerySet):
         ``to_session == ""`` targets "whichever session starts next". The
         row is the source of truth; the caller mirrors ``payload`` to the
         XDG file separately.
+
+        A hand-off addressed to its own author is REFUSED
+        (:class:`SelfAddressedHandoverError`): :meth:`claimable_for` admits only the
+        session named by ``to_session``, and excludes the session named by
+        ``from_session``, so a row where the two are equal is claimable by nobody.
+        This is the single write seam for hand-offs, so the refusal holds for every
+        caller — the CLI, the orchestration path, and any future one.
         """
+        if from_session and to_session == from_session:
+            msg = (
+                f"session {from_session!r} cannot hand off to itself — a self-addressed hand-off is "
+                "claimable by no session (the target is excluded as its own author). "
+                "Name a different target, or omit it to park the hand-off for the next session."
+            )
+            raise SelfAddressedHandoverError(msg)
         return self.create(from_session=from_session, to_session=to_session, payload=payload)
 
     def claimable_for(self, session_id: str) -> "SessionHandoverQuerySet":
@@ -41,6 +65,12 @@ class SessionHandoverQuerySet(models.QuerySet):
         (``to_session == session_id``) or addressed to "next session"
         (``to_session == ""``). A session never claims a hand-off it itself
         created — that would re-inject a session's own snapshot back into it.
+
+        Those two conditions are mutually exclusive when ``from_session ==
+        to_session``: the address admits only that one session, and the exclusion
+        removes it, so the row is claimable by no possible ``session_id``. The
+        exclusion is what this method is for and stays; the degenerate row is
+        refused at creation instead (:meth:`create_handover`).
         """
         return (
             self.filter(claimed_at__isnull=True)

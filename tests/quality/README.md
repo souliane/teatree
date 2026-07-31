@@ -4,7 +4,8 @@ This directory holds **cross-cutting quality gates**: tests that assert a
 property over the whole `src/teatree` tree (or the repo layout) rather than
 exercising one module. Examples here: import-direction contracts, chokepoint
 enforcement, dead-plan-ref scans, mutation runs, the process-cache reset roster,
-and other AST/lint tree-walks.
+the deferred-marker ban over `tests/`, `evals/` and `e2e/`, and other AST/lint
+tree-walks.
 
 A test here is not the path-mirror of any single `src/teatree/<pkg>/<mod>.py`, so
 it carries a `# test-path: cross-cutting` pragma to tell the test-path-mirror gate

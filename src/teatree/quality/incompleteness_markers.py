@@ -12,12 +12,23 @@ scan itself -- the ratchet reads comments and docstrings of ``.py`` files, so a
 pattern table written inline here would make the detector its own largest
 offender.
 
+The registry serves two gates at two strengths. Over the code roots it is the
+shrink-only ratchet above: every family, prose and marker alike, counted against
+a per-file peg. Over the verification trees (``VERIFICATION_ROOTS``) it is an
+outright ban with no ledger -- ``DeferredMarkerBan`` -- narrowed to the families the
+registry marks ``form: marker`` and to markers that OPEN a comment. A test
+carrying a deferred marker is a test that is not finished, so there is no count
+to bank; and a marker opening a comment is the one form unambiguous enough to
+red a build on, since a guard's own tests must be free to name the strings the
+guard detects.
+
 What counts as prose -- comments and docstrings, never a string literal -- is
 ``teatree.quality.prose``'s question; this module asks only which of those lines
 declare the code unfinished.
 """
 
 import dataclasses
+import enum
 import re
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
@@ -25,7 +36,7 @@ from typing import Any
 
 import yaml
 
-from teatree.quality.prose import ProseLine, file_prose
+from teatree.quality.prose import COMMENT_SUFFIXES, ProseLine, file_comments, file_prose
 
 #: Directories whose ``.py`` files are scanned: everything that ships as code.
 CODE_ROOTS: tuple[str, ...] = ("src/teatree", "hooks", "scripts")
@@ -51,7 +62,25 @@ ONE_SHOT_DESIGN_DOCS: tuple[str, ...] = ("docs/evals/sota-eval-runner.md",)
 #: from the surrounding words.
 ISSUE_REF_PROXIMITY = 80
 
+#: Trees holding verification artefacts rather than shipped behaviour. A marker
+#: here records work a test did not do, and the marker is the only thing that
+#: records it, so the marker forms are banned outright rather than pegged.
+VERIFICATION_ROOTS: tuple[str, ...] = ("tests", "evals", "e2e")
+
+#: What a comment's own syntax puts before its first word: the sigil, a markdown
+#: bullet or heading or quote marker, and the leading dash a marker convention
+#: also allows. Stripping it is what lets the ban ask whether the marker OPENS
+#: the comment rather than appearing somewhere inside a sentence.
+_COMMENT_OPENER_RE = re.compile(r"^[\s#>*+\-]*")
+
 _ISSUE_REF_RE = re.compile(r"#(\d{1,6})\b")
+
+
+class MarkerForm(enum.StrEnum):
+    """Whether a family matches an author's note or the shape of a sentence."""
+
+    MARKER = "marker"
+    PROSE = "prose"
 
 
 class MarkerRegistryError(ValueError):
@@ -70,6 +99,7 @@ class MarkerPattern:
     remedy: str
     regex: re.Pattern[str]
     triggers: tuple[str, ...]
+    form: MarkerForm = MarkerForm.PROSE
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,6 +146,12 @@ def load_marker_patterns(path: Path | None = None) -> tuple[MarkerPattern, ...]:
         triggers = entry.get("triggers")
         if not isinstance(triggers, list) or not all(isinstance(word, str) and word for word in triggers):
             raise MarkerRegistryError(entry_id, "'triggers' must be a non-empty list of strings")
+        try:
+            form = MarkerForm(entry.get("form", MarkerForm.PROSE))
+        except ValueError as unknown:
+            raise MarkerRegistryError(
+                entry_id, f"'form' must be one of {[member.value for member in MarkerForm]}"
+            ) from unknown
         patterns.append(
             MarkerPattern(
                 id=entry_id,
@@ -130,6 +166,7 @@ def load_marker_patterns(path: Path | None = None) -> tuple[MarkerPattern, ...]:
                     flags=0 if entry.get("case_sensitive") else re.IGNORECASE,
                 ),
                 triggers=tuple(word.lower() for word in triggers),
+                form=form,
             )
         )
     return tuple(patterns)
@@ -240,3 +277,69 @@ class IssueDeferral:
 def issue_deferrals(markers: Iterable[Marker]) -> list[IssueDeferral]:
     """Every (marker, tracking issue) pair among *markers*."""
     return [IssueDeferral(marker=marker, issue=issue) for marker in markers for issue in marker.issue_refs]
+
+
+@dataclasses.dataclass(frozen=True)
+class DeferredMarkerBan:
+    """The zero-tolerance half of the registry, over ``VERIFICATION_ROOTS``.
+
+    Marker-form families only, and only where the marker OPENS a comment.
+    Anchoring at the head of the comment is the whole discrimination: a marker
+    that opens one instructs whoever reads the file next, while the same word
+    inside a sentence is the file talking ABOUT markers -- which a guard's own
+    tests and a scenario grading the anti-pattern must be free to do.
+    """
+
+    repo_root: Path
+    patterns: tuple[MarkerPattern, ...]
+
+    @classmethod
+    def over(cls, repo_root: Path, patterns: Iterable[MarkerPattern] | None = None) -> "DeferredMarkerBan":
+        resolved = tuple(patterns) if patterns is not None else load_marker_patterns()
+        return cls(repo_root=repo_root, patterns=tuple(p for p in resolved if p.form is MarkerForm.MARKER))
+
+    @property
+    def scanned_files(self) -> list[Path]:
+        found: list[Path] = []
+        for rel in VERIFICATION_ROOTS:
+            root_path = self.repo_root / rel
+            if not root_path.is_dir():
+                continue
+            found.extend(
+                path
+                for path in sorted(root_path.rglob("*"))
+                if path.suffix in COMMENT_SUFFIXES and "__pycache__" not in path.parts and path.is_file()
+            )
+        return found
+
+    def scan_file(self, path: Path, patterns: Sequence[MarkerPattern] | None = None) -> list[Marker]:
+        rel = path.relative_to(self.repo_root).as_posix()
+        candidates = self.patterns if patterns is None else patterns
+        found: list[Marker] = []
+        for comment in file_comments(path):
+            body = _COMMENT_OPENER_RE.sub("", comment.text, count=1)
+            for pattern in candidates:
+                match = pattern.regex.match(body)
+                if match is None:
+                    continue
+                found.append(
+                    Marker(
+                        path=rel,
+                        lineno=comment.lineno,
+                        pattern_id=pattern.id,
+                        remedy=pattern.remedy,
+                        phrase=match.group(0),
+                        text=body.strip()[:120],
+                        issue_refs=issue_refs_near(body, match.span()),
+                    )
+                )
+                break
+        return found
+
+    def markers(self) -> list[Marker]:
+        found: list[Marker] = []
+        for path in self.scanned_files:
+            candidates = applicable_patterns(path.read_text(encoding="utf-8", errors="replace"), self.patterns)
+            if candidates:
+                found.extend(self.scan_file(path, candidates))
+        return found

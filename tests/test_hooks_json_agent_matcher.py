@@ -49,6 +49,21 @@ def test_agent_matcher_routes_to_hook_router_pretooluse() -> None:
 
 
 def test_existing_pretooluse_matchers_preserved() -> None:
-    matchers = {entry.get("matcher", "") for entry in _pretooluse_entries()}
-    for expected in ("Bash|Edit|Write", "AskUserQuestion", "mcp__.*[Ss]lack.*", "mcp__glab__glab_mr_.*"):
-        assert expected in matchers, f"existing PreToolUse matcher {expected!r} must be preserved"
+    """Every tool the PreToolUse chain already covered must STILL be covered.
+
+    Asserted per TOOL rather than per matcher STRING: widening an alternation (adding
+    ``NotebookEdit`` beside ``Edit``/``Write``) adds coverage and must pass, while dropping
+    any tool from the chain must fail. Pinning the literal string conflated the two, so a
+    pure widening read as a regression.
+    """
+    covered = {tool for entry in _pretooluse_entries() for tool in entry.get("matcher", "").split("|")}
+    for expected in (
+        "Bash",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+        "AskUserQuestion",
+        "mcp__.*[Ss]lack.*",
+        "mcp__glab__glab_mr_.*",
+    ):
+        assert expected in covered, f"existing PreToolUse coverage of {expected!r} must be preserved"

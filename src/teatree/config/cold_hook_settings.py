@@ -52,6 +52,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "no_self_reviewer_assign_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "config_overwrite_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "completion_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "headless_authoring_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "main_clone_guard_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "deny_circuit_breaker_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "skill_loading_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),

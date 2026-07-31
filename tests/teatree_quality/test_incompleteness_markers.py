@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from teatree.quality.incompleteness_markers import (
+    DeferredMarkerBan,
+    MarkerForm,
     MarkerPattern,
     MarkerRegistryError,
     applicable_patterns,
@@ -55,6 +57,7 @@ class TestRegistry:
             (_ENTRY.replace("    concern: c\n", ""), "'concern'"),
             (_ENTRY + _ENTRY.removeprefix("markers:\n"), "duplicate marker id"),
             (_ENTRY.replace("    triggers: [x]\n", ""), "triggers"),
+            (_ENTRY + "    form: sometimes\n", "'form' must be one of"),
         ],
     )
     def test_malformed_registry_is_rejected(self, tmp_path: Path, payload: str, message: str) -> None:
@@ -62,6 +65,30 @@ class TestRegistry:
         broken.write_text(payload, encoding="utf-8")
         with pytest.raises(MarkerRegistryError, match=message):
             load_marker_patterns(broken)
+
+
+class TestMarkerForm:
+    def test_a_family_describes_a_sentence_shape_unless_it_says_otherwise(self, tmp_path: Path) -> None:
+        registry = tmp_path / "registry.yaml"
+        registry.write_text(_ENTRY, encoding="utf-8")
+        assert load_marker_patterns(registry)[0].form is MarkerForm.PROSE
+
+    def test_the_ban_scope_follows_the_registry_rather_than_a_second_list(self, tmp_path: Path) -> None:
+        # Give a NEW family `form: marker` and the verification-tree ban covers
+        # it, with nothing else to edit.
+        registry = tmp_path / "registry.yaml"
+        registry.write_text(
+            "markers:\n  - id: wip\n    name: n\n    concern: c\n    remedy: r\n"
+            "    pattern: 'WIP\\s*:'\n    triggers: [wip]\n    form: marker\n",
+            encoding="utf-8",
+        )
+        patterns = load_marker_patterns(registry)
+        assert [pattern.id for pattern in DeferredMarkerBan.over(tmp_path, patterns).patterns] == ["wip"]
+
+        probe = tmp_path / "tests" / "test_probe.py"
+        probe.parent.mkdir()
+        probe.write_text("# WIP: half an assertion\n", encoding="utf-8")
+        assert [marker.pattern_id for marker in DeferredMarkerBan.over(tmp_path, patterns).markers()] == ["wip"]
 
 
 class TestWrappedPhrases:

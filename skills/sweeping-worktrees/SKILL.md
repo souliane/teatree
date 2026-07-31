@@ -60,7 +60,7 @@ t3 <overlay> workspace emit
 ```
 
 This prints a JSON **array** of the items the CLI did NOT auto-delete — one
-`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 2`):
+`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 3`):
 
 | field | meaning you route on |
 |---|---|
@@ -70,6 +70,7 @@ This prints a JSON **array** of the items the CLI did NOT auto-delete — one
 | `content_verified` | **`false` ⇒ no content probe ran; every other field below is unproven ⇒ KEEP** |
 | `verdict_source` | which layer decided: `cherry-zero-unique` / `synthetic-squash` / `branch-merged` / `not-redundant`, or why none could: `inconclusive` / `clone-unresolvable` |
 | `unique_commit_shas` | commits whose **content** is NOT provably on target. **`[]` ⇒ nothing unique ⇒ redundant — but ONLY when `content_verified` is `true`.** |
+| `uncommitted_paths` | work-bearing files on **no ref** — staged, modified or untracked. **Non-empty ⇒ the record is forced `content_verified: false` with `verdict_source: uncommitted-work` ⇒ KEEP and salvage.** |
 | `merged_with_post_merge_work` | forge-merged BUT the current tip has unique content (commits added AFTER the merge) |
 | `banned_terms_status` | `"clean"` \| `"contains"` \| `"unknown"` — `"contains"` ⇒ clean before any push |
 | `banned_terms_found` | the distinct banned terms hit |
@@ -82,6 +83,13 @@ shipped branch does — the list is empty either way. `content_verified` is the
 only field that separates them, and a `false` there means the record is a
 question, not an answer.
 
+**A record describes TWO kinds of work, and commits are only one of them.** A
+checkout whose entire delta is staged-but-uncommitted has no commits ahead, so
+`unique_commit_shas` is empty while real work exists on no ref anywhere and is
+eventually gc-eligible. `uncommitted_paths` names that work, and any record
+carrying it serialises as unverified — so it can never reach the DELETE leaf,
+whatever the commit probe concluded.
+
 `emit` is **read-only** — it removes nothing. `clean-all` already removed the
 provably-redundant; this surfaces the rest for you to route.
 
@@ -92,7 +100,7 @@ digraph route {
   rankdir=TB; node [shape=box];
   own  [shape=diamond, label="owner a colleague\non a product repo?"];
   live [shape=diamond, label="liveness != \"\" ?"];
-  ver  [shape=diamond, label="content_verified == true ?"];
+  ver  [shape=diamond, label="content_verified == true ?\n(false whenever uncommitted_paths)"];
   pmw  [shape=diamond, label="merged_with_post_merge_work?"];
   uniq [shape=diamond, label="unique_commit_shas == [] ?"];
   rel  [shape=diamond, label="still-relevant AND\nfits current architecture?"];
@@ -151,6 +159,11 @@ re-points a stale `clone_path` at the clone that exists, after which a re-run of
   post-merge commits are unique work — salvage them to a fresh PR, then dispose of the
   worktree (step 3 — for a `kind:"worktree"` item that is `workspace salvage` **then**
   `worktree teardown`). Do NOT treat "the PR is merged" as "the branch is redundant".
+
+- **`uncommitted_paths != []` → SALVAGE the working tree, never delete.** The named files
+  exist on no ref anywhere — no commit probe speaks for them, and removing the checkout
+  destroys them outright. Commit them to a branch and push before disposing of anything;
+  such a record is always `content_verified: false`, so Gate C already keeps it.
 
 - **`unique_commit_shas == []` (verified, and not post-merge) → DELETE (redundant).** The tip has
   no content that is not already on target — this is the **shipped-to-master** case
@@ -282,10 +295,20 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 
 // E. nothing unique AND the probe proved it — shipped via a different SHA → DELETE (redundant).
 { "kind": "worktree", "branch": "old-fix", "owner": "souliane", "path": "/wk/old-fix",
-  "unique_commit_shas": [], "content_verified": true, "verdict_source": "cherry-zero-unique",
-  "merged_with_post_merge_work": false,
+  "unique_commit_shas": [], "uncommitted_paths": [], "content_verified": true,
+  "verdict_source": "cherry-zero-unique", "merged_with_post_merge_work": false,
   "banned_terms_status": "clean", "liveness": "" }
 // → t3 <overlay> worktree teardown --path /wk/old-fix   (guarded; deleted-no-PR; invariant met)
+
+// F. no commits ahead, but the work is STAGED → SALVAGE the working tree, never delete.
+{ "kind": "worktree", "branch": "feat-gate", "owner": "souliane", "path": "/wk/feat-gate",
+  "unique_commit_shas": [], "uncommitted_paths": ["src/gate.py", "tests/test_gate.py"],
+  "content_verified": false, "verdict_source": "uncommitted-work",
+  "merged_with_post_merge_work": false, "banned_terms_status": "unknown", "liveness": "" }
+// → commit the named files onto a branch and push them FIRST — they exist on no ref, so a
+//   teardown destroys them. Only then route the (now committed) work like any other record.
+//   Note the empty unique_commit_shas: the commit probe is silent because there is nothing
+//   committed to probe, which is exactly why this record can never read as redundant.
 ```
 
 ## Rationalization table — STOP if you catch yourself thinking…
@@ -293,6 +316,7 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 | Rationalization | Reality |
 |---|---|
 | "The PR is merged, so the branch is redundant — delete it." | Check `merged_with_post_merge_work`. `true` ⇒ there is work added AFTER the merge → push it to a **new PR**, never delete. |
+| "`unique_commit_shas` is empty, so nothing is at stake — delete it." | Check `uncommitted_paths` too. A checkout whose whole delta is staged has no commits ahead and real work on no ref; the record is `content_verified: false` / `uncommitted-work`. Push it before touching the checkout. |
 | "`unique_commit_shas` is empty, so the branch is redundant — delete it." | Only when `content_verified` is `true`. On `false` the list is empty because **no probe ran** (`verdict_source` says which failure) — that record is a question. KEEP. |
 | "The clone_path is stale, but the record still says no unique commits." | That IS the failure. A probe against a clone that moved away reports nothing found, identically to a shipped branch. KEEP, run `workspace doctor --fix`, re-emit. |
 | "It's a colleague's stale branch but I'll tidy it up." | `owner` not yours on a product repo ⇒ **SKIP**. Never salvage and never delete another person's work. |

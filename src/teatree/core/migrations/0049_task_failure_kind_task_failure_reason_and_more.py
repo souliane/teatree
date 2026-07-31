@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0047_alter_pullrequest_state"),
+        ("core", "0048_park_self_addressed_handovers"),
     ]
 
     operations = [

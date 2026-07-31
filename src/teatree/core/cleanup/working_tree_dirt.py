@@ -74,10 +74,16 @@ class WorkingTreeDirt:
     if any, name modified files), ``False`` for one that could not answer, where
     the reasons name the obstacle instead. A ``False`` verdict is never evidence of
     uncommitted work, only the absence of evidence either way.
+
+    ``paths`` names the modified files themselves — the same set the reasons
+    summarise in prose, kept machine-readable because the structured cleanup
+    record hands them to a judgment skill that must decide what to salvage. It is
+    empty for an unanswered probe, where no file was proven modified.
     """
 
     reasons: tuple[str, ...]
     proven: bool
+    paths: tuple[str, ...] = ()
 
 
 def real_uncommitted_reasons(wt_path: str, target: "_EffectiveTarget") -> list[str]:
@@ -155,4 +161,8 @@ def _dirt_verdict(dirty: list[str]) -> WorkingTreeDirt:
     if not dirty:
         return WorkingTreeDirt(reasons=(), proven=True)
     preview = ", ".join(dirty[:_PREVIEW_LIMIT]) + (", …" if len(dirty) > _PREVIEW_LIMIT else "")
-    return WorkingTreeDirt(reasons=(f"{len(dirty)} uncommitted change(s) not on any remote: {preview}",), proven=True)
+    return WorkingTreeDirt(
+        reasons=(f"{len(dirty)} uncommitted change(s) not on any remote: {preview}",),
+        proven=True,
+        paths=tuple(dirty),
+    )

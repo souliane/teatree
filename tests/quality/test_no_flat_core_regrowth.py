@@ -163,7 +163,15 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # (the ONE supported push path from the worker container). A flat root leaf consumed by the
 # `t3 push` CLI command and `utils/git_sync.push`; owned by no existing subpackage — merge/ is
 # the keystone transition, not a push-credential seam.
-PINNED_FLAT_CORE_MODULES = 105
+# 106: +managers_task_sweeps.py (#3957) — the boot-sweep concern carved out of managers.py,
+# which had crossed the 500-LOC module-health ceiling and could not take another method.
+# reclaim_orphaned_claims, replay_orphaned_transitions and reap_stale_claims share ONE ordering
+# contract — the run_boot_sweeps rescue-before-fail sequence — so they move together or not at
+# all. TaskQuerySet delegates, leaving the public API and every call site unchanged. It lands at
+# the root beside the managers_* leaves it belongs with (managers_overlay, managers_inbound,
+# managers_issue_match, managers_phase_cadence, managers_task_claim); filing it under a
+# subpackage would separate it from its siblings to satisfy a counter.
+PINNED_FLAT_CORE_MODULES = 106
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

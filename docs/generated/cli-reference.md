@@ -9248,6 +9248,14 @@ Usage: t3 teatree handover create [OPTIONS]
 
  Hand this session's full durable state to another session.
 
+ ``--from-file`` / ``--body`` supply the payload the session AUTHORED —
+ the reasoning no query can re-derive, and the reason a hand-off exists.
+ Without one, the payload falls back to this session's PreCompact snapshot
+ and then to live DB state, and only the first two report ``OK``: a
+ machine-derived inventory nobody vetted is recorded and reported UNVETTED,
+ because "hand-off written" over a payload the receiver cannot use is the
+ failure this command is supposed to make impossible.
+
  No ``--to`` → the live ``t3-master`` slot holder; if none, parked
  for whichever session starts next. Always persists the
  :class:`SessionHandover` row AND mirrors it to the XDG file. Then, per
@@ -9260,6 +9268,11 @@ Usage: t3 teatree handover create [OPTIONS]
 │                                                    to hand to the live loop  │
 │                                                    owner, else park for      │
 │                                                    next.                     │
+│ --from-file                                  TEXT  Read the hand-off body    │
+│                                                    from this file ('-' for   │
+│                                                    stdin).                   │
+│ --body                                       TEXT  The hand-off body, given  │
+│                                                    inline.                   │
 │ --drive-subagents    --no-drive-subagents          Fast-push in-flight       │
 │                                                    sub-agent worktrees       │
 │                                                    before they are           │
