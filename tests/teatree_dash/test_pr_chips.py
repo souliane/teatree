@@ -12,7 +12,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from teatree.core.models import PullRequest, Ticket
-from teatree.dash.selectors import build_kanban_columns
+from teatree.dash.selectors import build_kanban_columns, pr_chip
 from tests.factories import PullRequestFactory, TicketFactory
 
 State = Ticket.State
@@ -30,6 +30,12 @@ def _chips(ticket: Ticket) -> tuple:
 
 
 class ChipCarriesAHumanStateTestCase(TestCase):
+    def test_the_builder_labels_a_row_directly(self) -> None:
+        ticket = TicketFactory(state=State.SHIPPED)
+        row = PullRequestFactory(ticket=ticket, repo="acme-org/backend", iid="6", state=PullRequest.State.MERGED)
+        chip = pr_chip(row)
+        assert (chip.repo, chip.iid, chip.state, chip.label) == ("acme-org/backend", "6", "merged", "Merged")
+
     def test_a_review_requested_chip_reads_as_words_not_a_slug(self) -> None:
         ticket = TicketFactory(state=State.SHIPPED)
         PullRequestFactory(ticket=ticket, repo="acme-org/backend", iid="7", state=PullRequest.State.REVIEW_REQUESTED)

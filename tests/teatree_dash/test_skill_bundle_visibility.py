@@ -20,6 +20,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.dash.sessions import build_session_index
+from teatree.dash.skills import skill_bundle
 from tests.factories import TaskFactory, TicketFactory
 
 State = Ticket.State
@@ -31,6 +32,20 @@ def _attempt(**kwargs: object) -> TaskAttempt:
     task = TaskFactory(ticket=ticket, phase="coding")
     defaults = {"execution_target": Task.ExecutionTarget.HEADLESS, "agent_session_id": "sess-skills"}
     return TaskAttempt.objects.create(task=task, **{**defaults, **kwargs})
+
+
+class TheSharedRuleTestCase(TestCase):
+    """One rule decides what every surface renders, so they cannot disagree."""
+
+    def test_a_recorded_bundle_is_returned_and_is_no_fault(self) -> None:
+        assert skill_bundle(_attempt(skills_loaded=["t3:code"])) == (("t3:code",), False)
+
+    def test_an_empty_bundle_on_a_headless_dispatch_is_a_fault(self) -> None:
+        assert skill_bundle(_attempt(skills_loaded=[])) == ((), True)
+
+    def test_an_interactive_attempt_is_exempt(self) -> None:
+        attempt = _attempt(execution_target=Task.ExecutionTarget.INTERACTIVE, skills_loaded=[])
+        assert skill_bundle(attempt) == ((), False)
 
 
 class SessionIndexCarriesTheBundleTestCase(TestCase):
