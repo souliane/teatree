@@ -719,7 +719,7 @@ live in `UserSettings` in `src/teatree/config/settings.py`. Overlays register vi
 `teatree.overlays` entry points plus the DB `overlays` registry row.
 
 ```bash
-t3 <overlay> config_setting set mode interactive                       # "interactive" (default) | "auto"
+t3 <overlay> config_setting set mode interactive                       # "auto" (default) | "interactive"
 t3 <overlay> config_setting set privacy '""'                           # privacy-scan profile name
 t3 <overlay> config_setting set contribute false                       # enable skill self-improvement
 t3 <overlay> config_setting set excluded_skills '["my-custom-skill"]'  # extra skills to exclude
@@ -732,13 +732,14 @@ t3 <overlay> config_setting set agent_signature false                  # append 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `workspace_dir` | `~/workspace` | Root for per-ticket workspace directories |
-| `mode` | `interactive` | `interactive` confirms before publishing; `auto` is end-to-end |
+| `mode` | `auto` | `auto` is end-to-end; `interactive` confirms before publishing |
 | `privacy` | `""` | Named privacy-scan profile applied before pushes |
 | `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
 | `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
 | `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
-| `require_human_approval_to_answer` | `true` | `t3:answerer` drafts a reply and DMs for approval |
+| `require_human_approval_to_answer` | `true`, collapsed to `false` by the shipped `autonomy = full` | `t3:answerer` drafts a reply and DMs for approval. The answer's own post is separately gated by `on_behalf_post_mode`, which no tier collapses |
+| `on_behalf_post_mode` | `draft_or_ask` | Pre-gate on any post made under your identity to a colleague surface. Read unchanged by every `autonomy` tier — opening it is its own explicit `immediate` |
 | `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
@@ -753,10 +754,10 @@ symlinks and caches.
 `mode` (a DB-home setting, or the `T3_MODE` env var) controls how much autonomy
 the agent has for publishing actions:
 
-- `interactive` *(default, conservative on security)* — the agent pauses for
+- `interactive` *(conservative on security)* — the agent pauses for
   explicit approval before push, MR create, MR merge, Slack posts, or any other
   write that leaves the local machine.
-- `auto` — opt-in end-to-end autonomy. The agent ships complete features
+- `auto` *(shipped default)* — end-to-end autonomy. The agent ships complete features
   without confirm prompts: push → MR create → pipeline watch → merge → clean up
   remote branches. Quality gates (lint, tests, migrations check) still run;
   they just do not depend on user confirmation. A small always-gated list
@@ -778,8 +779,9 @@ t3 <overlay> config_setting set mode auto --overlay my-project   # per-overlay o
 ```
 
 The resolution chain is, first match wins: `T3_MODE` env var → the active
-overlay's per-overlay DB row → the global DB row → the `UserSettings` default
-(`interactive`). `mode` is one of the per-overlay-overridable keys; the full
+overlay's per-overlay DB row → the global DB row → the shipped default (`auto`).
+An autonomous `autonomy` tier also pins `mode = auto` unless a per-overlay or env
+`mode` says otherwise. `mode` is one of the per-overlay-overridable keys; the full
 registry is `OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`.
 See `BLUEPRINT.md` § 10.1.1 for the full details.
 
