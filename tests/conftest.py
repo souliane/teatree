@@ -455,10 +455,13 @@ def django_db_setup(
     "master"``, e.g. ``pytest -k foo`` with no ``-n``) or a non-memory
     backend (the template/backup trick is sqlite-specific).
     """
-    from django.conf import settings  # noqa: PLC0415
-    from django.core.management import call_command  # noqa: PLC0415
-    from django.db import connections  # noqa: PLC0415
-    from django.test.utils import setup_databases, teardown_databases  # noqa: PLC0415 # ty: ignore[unresolved-import]
+    from django.conf import settings  # noqa: PLC0415 — deferred until Django bootstraps
+    from django.core.management import call_command  # noqa: PLC0415 — deferred until Django bootstraps
+    from django.db import connections  # noqa: PLC0415 — deferred until Django bootstraps
+    from django.test.utils import (  # noqa: PLC0415 — deferred until Django bootstraps
+        setup_databases,
+        teardown_databases,  # ty: ignore[unresolved-import]
+    )
 
     # Dependency-only fixtures (test-environment patching, xdist NAME
     # suffixing) — pulled by value instead of as params to stay under the

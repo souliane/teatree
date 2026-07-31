@@ -2392,6 +2392,110 @@ class TestPrivateRepoCarveOut:
         assert capsys.readouterr().out == ""
 
 
+class TestForgeMarkerBoundaryInChainedSegment:
+    """A chained segment whose token merely EMBEDS ``gh``/``glab``/``curl`` is inert (#3336).
+
+    The forge-marker test in ``segment_is_publish_inert`` matched by naked
+    substring, so any token carrying the letters ``gh`` -- ``insights.md``,
+    ``feat/highlight``, ``lighthouse.config``, the English word ``right`` --
+    looked like a forge invocation, made the chained segment non-inert, and
+    collapsed every commit-downgrade arm to a hard DENY, even on an allowlisted
+    private landing repo with no public surface to leak to. The boundary-delimited
+    marker fixes the over-block while keeping a REAL forge call (bare, absolute
+    path, or hidden in a transport string) non-inert.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_private_landing_chained_git_add_gh_substring_file_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _private_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git add insights.md && git commit -m "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        assert handle_banned_terms_pretool(data) is False  # was DENY on the ``insights`` substring
+        assert capsys.readouterr().out == ""
+
+    def test_private_landing_commit_then_push_gh_substring_branch_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _private_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "ship to acmecorp" && git push origin feat/highlight'},
+            "cwd": str(repo),
+        }
+        assert handle_banned_terms_pretool(data) is False  # was DENY on the ``highlight`` substring
+        assert capsys.readouterr().out == ""
+
+    def test_public_landing_chained_git_add_gh_substring_file_is_scanned_and_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # PUBLIC landing, same shape: the term is STILL scanned and reported, but a
+        # ``git commit`` is LOCAL so it downgrades (the #703 pre-push gate re-scans).
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git add insights.md && git commit -m "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        assert handle_banned_terms_pretool(data) is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "acmecorp" in captured.err  # anti-vacuity: the body WAS scanned
+
+    def test_lighthouse_build_then_commit_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'npx lighthouse ci && git commit -m "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        assert handle_banned_terms_pretool(data) is False  # was DENY on the ``lighthouse`` substring
+        assert capsys.readouterr().out == ""
+
+    def test_chained_sh_c_gh_post_after_commit_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Pins the boundary regex: a REAL ``gh`` hidden in a ``sh -c "…"`` transport
+        # token is still delimited by the quote, still non-inert, still a hard block.
+        repo = _private_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": 'git commit -m "ship to acmecorp" && sh -c "gh issue create --repo souliane/teatree"'
+            },
+            "cwd": str(repo),
+        }
+        assert handle_banned_terms_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_chained_public_gh_post_after_private_commit_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A chained affirmatively-PUBLIC forge post defeats the commit downgrade.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": 'git commit -m "ship to acmecorp" && gh pr create --repo souliane/teatree --title t --body b'
+            },
+            "cwd": str(repo),
+        }
+        assert handle_banned_terms_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
 # #1415 (still-over-blocking residue): a ``git commit`` whose effective first
 # action is NOT the literal first word -- it sits behind a NON-``cd`` leading
 # segment (a ``cat > <bodyfile> <<EOF … EOF`` heredoc-writer, the agent's
@@ -2733,9 +2837,11 @@ class TestGitCommitStdinBodyResolution:
     clone hard-blocked merely because the body was unreadable as a file named
     ``-`` at scan time. The fix resolves the in-command stdin body (heredoc /
     piped ``printf``/``echo`` writer) so a CLEAN message PASSES and a REAL banned
-    term in that same readable body still BLOCKS -- the resolution never weakens
-    the scan. A genuinely-OPAQUE stdin (``cat file | git commit -F -``) is a LOCAL
-    commit and downgrades to warn (the pre-push gate re-scans before a public push).
+    term in that same readable body is SCANNED and reported -- the resolution
+    never weakens the scan. Because a ``git commit`` is LOCAL (the #703 pre-push
+    gate re-scans before a public push), a scanned term downgrades to warn rather
+    than hard-blocks, matching a genuinely-OPAQUE stdin (``cat file | git commit
+    -F -``); a chained PUBLIC ``gh``/``glab`` post is what keeps the hard block.
     """
 
     def _run(self, command: str, cwd: Path) -> bool:
@@ -2775,15 +2881,20 @@ class TestGitCommitStdinBodyResolution:
         assert self._run("printf '%s' 'fix: a perfectly clean commit message' | git commit -F -", repo) is False
         assert capsys.readouterr().out == ""
 
-    def test_piped_printf_banned_term_to_public_still_blocks(
+    def test_piped_printf_readable_term_to_public_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY: the piped writer's body is scanned, so a banned term in it
-        # still blocks.
+        # ANTI-VACUITY: the piped writer's body IS scanned -- the term is found and
+        # named on stderr -- but a ``git commit`` is LOCAL so it downgrades to warn,
+        # matching its heredoc sibling. It formerly asserted DENY only because the
+        # ``gh`` substring in "ri[gh]t" made the printf segment look like a forge
+        # transport, a fossil of the substring bug removed by the boundary marker (#3336).
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
-        assert self._run("printf '%s' 'ship to acmecorp right now' | git commit -F -", repo) is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert self._run("printf '%s' 'ship to acmecorp right now' | git commit -F -", repo) is False
+        captured = capsys.readouterr()
+        assert captured.out == ""  # downgraded to warn, no deny JSON
+        assert "acmecorp" in captured.err  # the piped body WAS scanned, term reported
 
     def test_opaque_stdin_commit_to_public_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
