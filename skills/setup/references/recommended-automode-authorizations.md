@@ -45,7 +45,7 @@ check and this doc derive from the same source). The current sentences are:
   by this rule — it stays mechanically prohibited (#863).
 - **docker-exec-provisioning** — Allow `docker exec` into teatree deployment
   containers and installing the teatree editable package with extras via `uv`
-  (e.g. `uv tool install --editable '<clone>[slack]'`) as part of Slack/deploy
+  (e.g. `uv tool install --editable '<clone>[slack]' --overrides '<clone>/uv-overrides.txt'`) as part of Slack/deploy
   setup and runtime provisioning in Docker.
 - **slack-owner-id-lookup** — Allow reading an overlay's own Slack workspace
   data via its bot token (including `users.list` / `users.lookupByEmail`)

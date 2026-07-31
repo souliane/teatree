@@ -10,7 +10,8 @@ listed in `apm.yml`) so `apm install -g souliane/teatree` pulls them in.
 Install:
 
 ```sh
-uv tool install --from git+https://github.com/souliane/teatree.git teatree
+uv tool install --from git+https://github.com/souliane/teatree.git teatree \
+  --overrides https://raw.githubusercontent.com/souliane/teatree/main/uv-overrides.txt
 apm install -g souliane/teatree
 t3 setup
 ```

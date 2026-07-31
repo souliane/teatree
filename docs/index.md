@@ -25,7 +25,8 @@ The **CLI** (`t3 ...`) is the source of truth — everything else is a view on t
 
 ```bash
 # Install teatree
-git clone https://github.com/souliane/teatree && cd teatree && uv tool install --editable . && t3 setup
+git clone https://github.com/souliane/teatree && cd teatree && \
+  uv tool install --editable . --overrides uv-overrides.txt && t3 setup
 
 # Create an overlay package for your project
 t3 startoverlay my-overlay ~/workspace/my-overlay

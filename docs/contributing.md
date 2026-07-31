@@ -10,7 +10,7 @@ orientation, not a second source of truth.
 ```bash
 git clone https://github.com/souliane/teatree && cd teatree
 uv sync
-uv tool install --editable . && t3 setup
+uv tool install --editable . --overrides uv-overrides.txt && t3 setup
 ```
 
 ## Day-to-day commands

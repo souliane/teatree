@@ -575,7 +575,7 @@ Skills declare dependencies via a single YAML frontmatter `requires:` field (tra
 **Distribution.** Two install paths, one source of truth:
 
 - **APM**: `apm install souliane/teatree`
-- **CLI-first**: `git clone … && uv tool install --editable . && t3 setup` — also registers the plugin in `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the main clone (no `~/.claude/plugins/t3` symlink; always live)
+- **CLI-first**: `git clone … && uv tool install --editable . --overrides uv-overrides.txt && t3 setup` (the flag is required — `uv tool install` does not read `[tool.uv] override-dependencies`, so the SDK's `mcp` bound goes uncorrected without it) — also registers the plugin in `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the main clone (no `~/.claude/plugins/t3` symlink; always live)
 
 On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the editable install and reinstalls + `execv`-restarts if a declared dep is missing. The same run re-syncs runtime skill links and **prunes stale ones** — a teatree-managed link whose skill was removed or renamed upstream is removed so the dropped skill stops resolving, while contribute-mode workspace links and a user's own real skill directories are left untouched. Because `t3 update` re-runs `t3 setup`, updating teatree auto-cleans skills dropped upstream.
 
@@ -645,7 +645,7 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 
 ```toml
 asgiref>=3.8
-claude-agent-sdk==0.2.95
+claude-agent-sdk==0.2.128
 coverage>=7
 croniter>=6.2.2
 django>=6,<6.1
@@ -665,7 +665,7 @@ tomlkit>=0.13
 whitenoise>=6.6
 ```
 
-Load-bearing pins: `claude-agent-sdk` is an EXACT pin (not a floor) because `tests/test_claude_cli_pin.py` derives the eval/test image's `claude` CLI generation from that exact version — the generation the wheel BUNDLES and actually executes — and reds on a bump until it is re-derived from the new wheel. It carries NO Dependabot `ignore` entry: the quarantine that once froze it (a bundled CLI at/after 2.1.204 renders an `AskUserQuestion` call as a markdown chip rather than a `tool_use` block, reddening every scenario matching that tool call) was replaced by the `surface` axis below, which makes those scenarios advisory ([#3855](https://github.com/souliane/teatree/issues/3855)); `pydantic-ai-slim[anthropic,openai]` is a RUNTIME dep (not dev-only) because `agent_harness=pydantic_ai` is a live headless-dispatch path (the `[anthropic]` extra backs the CLI-free Anthropic Messages-API binding, the `[openai]` extra the OrcaRouter client); `croniter` parses the `[teatree.availability].windows` cron expressions (§17.1 invariant 9); `tomlkit` renders the `config_setting export` DB→TOML interchange dump; `django-linear-migrations` records the per-app `max_migration.txt` fork sentinel (§4 migration-fork probe); `gunicorn`/`whitenoise` serve the dashboard; `mcp` backs the MCP server; `pillow` handles image attachments; `coverage`/`asgiref`/`pyyaml` are transitive-critical direct pins.
+Load-bearing pins: `claude-agent-sdk` is an EXACT pin (not a floor) because `tests/test_claude_cli_pin.py` derives the eval/test image's `claude` CLI generation from that exact version — the generation the wheel BUNDLES and actually executes — and reds on a bump until it is re-derived from the new wheel. It resolves against `mcp>=2,<3` only behind a `[tool.uv] override-dependencies` entry: the SDK declares `mcp<2.0.0`, a bound broader than its usage — it reaches only the low-level `mcp.server.Server` / `mcp.types` surface, never the `mcp.server.mcpserver.MCPServer` surface `teatree.mcp.server` uses. `tests/test_claude_agent_sdk_pin.py::TestTheOverrideIsHonest` re-derives that import set from the installed wheel and reds if any of it stops resolving, so the override cannot quietly outlive its justification. It carries NO Dependabot `ignore` entry: the quarantine that once froze it (a bundled CLI at/after 2.1.204 renders an `AskUserQuestion` call as a markdown chip rather than a `tool_use` block, reddening every scenario matching that tool call) was replaced by the `surface` axis below, which makes those scenarios advisory ([#3855](https://github.com/souliane/teatree/issues/3855)); `pydantic-ai-slim[anthropic,openai]` is a RUNTIME dep (not dev-only) because `agent_harness=pydantic_ai` is a live headless-dispatch path (the `[anthropic]` extra backs the CLI-free Anthropic Messages-API binding, the `[openai]` extra the OrcaRouter client); `croniter` parses the `[teatree.availability].windows` cron expressions (§17.1 invariant 9); `tomlkit` renders the `config_setting export` DB→TOML interchange dump; `django-linear-migrations` records the per-app `max_migration.txt` fork sentinel (§4 migration-fork probe); `gunicorn`/`whitenoise` serve the dashboard; `mcp` backs the MCP server; `pillow` handles image attachments; `coverage`/`asgiref`/`pyyaml` are transitive-critical direct pins.
 
 Optional extras (installed on demand):
 

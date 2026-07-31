@@ -14,7 +14,8 @@ Teatree is not on PyPI. Install the `t3` CLI straight from the repo — no clone
 needed:
 
 ```sh
-uv tool install --from git+https://github.com/souliane/teatree.git teatree   # global `t3` binary
+uv tool install --from git+https://github.com/souliane/teatree.git teatree \
+  --overrides https://raw.githubusercontent.com/souliane/teatree/main/uv-overrides.txt   # global `t3` binary
 apm install -g souliane/teatree   # skills + companion deps
 t3 setup                          # links plugin, syncs skills, migrates self-DB
 ```

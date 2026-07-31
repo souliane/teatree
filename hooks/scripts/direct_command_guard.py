@@ -184,7 +184,8 @@ _QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
             "BLOCKED: `uv run t3` — teatree is installed globally; call `t3` directly. "
             "If `t3` is missing on this machine, install teatree "
             "(`uv tool install --from git+https://github.com/souliane/teatree.git teatree` "
-            "or `uv tool install --editable <teatree-repo>`)."
+            "or `uv tool install --editable <teatree-repo>`, both with "
+            "`--overrides <teatree-repo>/uv-overrides.txt`)."
         ),
     ),
 ]

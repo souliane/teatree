@@ -1,11 +1,19 @@
-"""Guards the exact pin of ``claude-agent-sdk`` and the guard that REPLACED its quarantine.
+"""Guards the ``claude-agent-sdk`` pin, the uv override it needs, and its ex-quarantine.
 
 The constraint stays an EXACT pin, for a reason unrelated to the quarantine:
 ``tests/test_claude_cli_pin.py`` derives the eval/test image's ``claude`` CLI generation from
 this exact version (the CLI the wheel bundles and actually executes), and reds until that
 generation is re-derived from the new wheel. A ``>=`` floor makes that derivation impossible.
 
-The pin is no longer a QUARANTINE. It used to carry a Dependabot ``ignore`` entry because a
+The SDK declares ``mcp<2.0.0`` while teatree declares ``mcp>=2,<3``, so the pin resolves only
+behind the ``[tool.uv] override-dependencies`` entry in ``pyproject.toml``.
+:class:`TestTheOverrideIsHonest` is what earns that override the right to exist: it re-derives
+the SDK's ``mcp`` imports from the INSTALLED wheel on every run and asserts each module and
+symbol resolves under the installed ``mcp``. Without it the override would be a standing
+unverified assumption, and a future SDK release reaching for an mcp 1.x-only symbol would
+fail at runtime rather than in CI.
+
+The pin is not a QUARANTINE. It used to carry a Dependabot ``ignore`` entry because a
 bundled claude CLI at/after 2.1.204 renders an ``AskUserQuestion`` call as a markdown chip
 instead of a ``tool_use`` block (``teatree.eval.message_mapping`` maps only a
 ``ToolUseBlock``), so every scenario matching that tool call went red. Freezing a whole
@@ -20,7 +28,11 @@ it is what earns Dependabot the right to watch the package again.
 # test-path: cross-cutting — a dependency-manifest contract test that also reads the eval
 # catalog, because the manifest's `ignore` entry and the catalog's labelling are one decision.
 
+import ast
+import importlib
 import importlib.metadata
+import importlib.util
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -30,18 +42,31 @@ from packaging.requirements import Requirement
 
 from teatree.eval.discovery import discover_specs
 from teatree.eval.surface import is_advisory, mislabelled_interactive_specs
+from teatree.utils.uv_overrides import UV_OVERRIDES_FILENAME, uv_overrides_args
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 
-_PINNED_VERSION = "0.2.95"
+_PINNED_VERSION = "0.2.128"
 _PACKAGE = "claude-agent-sdk"
+_SDK_MODULE = "claude_agent_sdk"
 
-#: The dependency whose major the pin's ceiling is set by. ``teatree.mcp`` imports the
-#: 2.0 module layout (``mcp.server.mcpserver.MCPServer``) across eight modules.
+#: The dependency the SDK's declared bound and teatree's own disagree on. ``teatree.mcp``
+#: imports the 2.0 module layout (``mcp.server.mcpserver.MCPServer``) across eight modules.
 _MCP = "mcp"
+
+#: A ``uv tool install`` that names a TARGET — what separates a runnable command from prose
+#: mentioning one. ``--editable`` must be followed by a real path rather than a closing
+#: backtick, so a doc fragment like ``uv tool install --editable`` is not swept up.
+_RUNNABLE_UV_TOOL_INSTALL = re.compile(
+    r"uv tool install(?: +(?:-[^\s]+|\"[^\"]*\"|'[^']*'|[^\s`]+))*? +(?:--editable +[^\s`]|--from +git\+)[^\n`]*"
+)
+
+#: The surfaces that run ``uv tool install`` UNATTENDED — a missing override there is a
+#: build failure, not advice a reader can correct.
+_AUTOMATED_INSTALL_ROOTS = ("deploy", "dev", ".github/workflows", ".gitlab-ci.yml")
 
 
 def _sdk_constraint() -> str:
@@ -90,6 +115,77 @@ def _locked_version() -> str:
     return matches[0]
 
 
+def _override_requirements() -> list[Requirement]:
+    raw = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    return [Requirement(spec) for spec in raw.get("tool", {}).get("uv", {}).get("override-dependencies", [])]
+
+
+def _installed_sdk_sources() -> list[Path]:
+    spec = importlib.util.find_spec(_SDK_MODULE)
+    assert spec is not None, f"{_SDK_MODULE} is not installed"
+    roots = spec.submodule_search_locations
+    assert roots, f"{_SDK_MODULE} is installed but exposes no package directory to walk"
+    return sorted(path for root in roots for path in Path(root).rglob("*.py"))
+
+
+def _sdk_mcp_imports() -> dict[str, set[str]]:
+    """``mcp`` module path -> the names the INSTALLED SDK imports from it.
+
+    Derived from the wheel on disk rather than a hand-written list, so a release that
+    reaches for a new symbol is seen the moment it is installed. ``TYPE_CHECKING`` blocks
+    are walked too: a name resolvable only at type-check time is still a real coupling, and
+    ``teatree.eval`` re-exports SDK types into annotations that pydantic resolves at runtime.
+    """
+    imports: dict[str, set[str]] = {}
+    for source in _installed_sdk_sources():
+        tree = ast.parse(source.read_text(encoding="utf-8"), str(source))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == _MCP or alias.name.startswith(f"{_MCP}."):
+                        imports.setdefault(alias.name, set())
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+                and (node.module == _MCP or node.module.startswith(f"{_MCP}."))
+            ):
+                imports.setdefault(node.module, set()).update(alias.name for alias in node.names)
+    return imports
+
+
+def _overrides_file_requirements() -> list[Requirement]:
+    lines = (_REPO_ROOT / UV_OVERRIDES_FILENAME).read_text(encoding="utf-8").splitlines()
+    return [Requirement(line.strip()) for line in lines if line.strip() and not line.lstrip().startswith("#")]
+
+
+def _automated_uv_tool_installs() -> list[tuple[str, str]]:
+    """``(repo-relative path, command)`` for every ``uv tool install`` of teatree run UNATTENDED.
+
+    Scoped to the build/deploy/CI surfaces, where a missing override is not advice a human
+    can correct but a hard build failure. A command counts once it names a target —
+    ``--editable <path>`` or ``--from git+…`` — which is what separates an invocation from
+    prose mentioning one. Backslash continuations are joined first, so a flag on the next
+    line still belongs to the same command.
+    """
+    installs: list[tuple[str, str]] = []
+    for root in _AUTOMATED_INSTALL_ROOTS:
+        base = _REPO_ROOT / root
+        candidates = sorted(base.rglob("*")) if base.is_dir() else [base]
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            joined = text.replace("\\\n", " ")
+            for match in _RUNNABLE_UV_TOOL_INSTALL.finditer(joined):
+                flagged = "--overrides" in match.group(0) or "UV_OVERRIDE" in joined
+                installs.append((path.relative_to(_REPO_ROOT).as_posix(), "flagged" if flagged else match.group(0)))
+    return installs
+
+
 def _pip_update_entries() -> list[dict[str, Any]]:
     config = yaml.safe_load(_DEPENDABOT.read_text(encoding="utf-8"))
     return [entry for entry in config["updates"] if entry.get("package-ecosystem") == "pip"]
@@ -109,26 +205,78 @@ class TestClaudeAgentSdkPin:
         assert _locked_version() == _PINNED_VERSION
 
 
-class TestThePinsCeilingIsTheMcpMajor:
-    """The pin has a CEILING, and it is ``mcp``'s major — not a matter of taste.
+class TestTheOverrideIsHonest:
+    """The ``mcp`` bound the SDK declares is overridden; these prove nothing real is masked.
 
-    ``claude-agent-sdk`` 0.2.96 added an ``mcp<2.0.0`` cap, while ``teatree.mcp``
-    imports the 2.0 layout (``mcp.server.mcpserver.MCPServer``) under the project's
-    ``mcp>=2,<3`` bound. The two are strictly disjoint, so the combination does not
-    resolve AT ALL: ``uv sync`` fails before a single test runs and every downstream
-    lane reds with no stated cause. These name the cause where a bump is made, so
-    raising the pin past the ceiling reds here on the reason rather than as an opaque
-    resolver error. Lifting the ceiling means the SDK dropping its cap — never moving
-    ``mcp`` back to 1.x, which the module layout above cannot survive.
+    ``claude-agent-sdk`` declares ``mcp<2.0.0`` while ``teatree.mcp`` imports the 2.0 layout
+    (``mcp.server.mcpserver.MCPServer``) under the project's ``mcp>=2,<3``. Left alone the two
+    are disjoint and ``uv sync`` fails before a single test runs, so ``pyproject.toml``'s
+    ``[tool.uv] override-dependencies`` replaces the SDK's bound with the project's own.
+
+    That is safe only because the SDK's cap is broader than its usage: it reaches only the
+    LOW-LEVEL ``mcp.server.Server`` and ``mcp.types`` surface, which mcp 2.x still provides,
+    and never the ``MCPServer`` surface teatree uses. An override that is wrong, though, is
+    invisible — the resolver stops complaining and the break moves to runtime. So the import
+    set is RE-DERIVED from the installed wheel here rather than trusted, and every module and
+    symbol in it must resolve under the installed ``mcp``.
     """
 
-    def test_the_locked_mcp_satisfies_the_pinned_sdks_own_bound(self) -> None:
-        requirement = _sdk_requirement_on(_MCP)
+    def test_pyproject_overrides_the_mcp_bound_to_the_projects_own(self) -> None:
+        overrides = {requirement.name: requirement for requirement in _override_requirements()}
+        assert _MCP in overrides, (
+            f"the SDK pin resolves only while `[tool.uv] override-dependencies` replaces its "
+            f"{_MCP} bound; without the entry `uv lock` fails with an opaque resolver error."
+        )
+        assert str(overrides[_MCP].specifier) == str(_project_requirement(_MCP).specifier), (
+            f"the {_MCP} override must restate the project's OWN bound and nothing wider — a "
+            "wider override would let the resolver pick a major the suite never runs against. "
+            f"Override: {overrides[_MCP]}; project: {_project_requirement(_MCP)}."
+        )
+
+    def test_the_override_still_has_something_to_override(self) -> None:
+        # When a release finally declares a bound the project's own already satisfies, the
+        # override is dead weight that would silently outlive its reason — so it reds here and
+        # gets deleted rather than accumulating.
+        declared = _sdk_requirement_on(_MCP)
         locked = _locked_version_of(_MCP)
-        assert requirement.specifier.contains(locked), (
-            f"{_PACKAGE}=={_PINNED_VERSION} requires {requirement}, which excludes the locked "
-            f"{_MCP}=={locked}. This SDK release cannot be used while teatree imports the "
-            f"{_MCP} 2.0 module layout; pin the SDK back below its {_MCP} cap."
+        assert not declared.specifier.contains(locked), (
+            f"{_PACKAGE}=={_PINNED_VERSION} declares {declared}, which already admits the locked "
+            f"{_MCP}=={locked}. The `[tool.uv] override-dependencies` entry for {_MCP} is no "
+            "longer doing anything — remove it, and this test with it."
+        )
+
+    def test_every_mcp_module_the_sdk_imports_resolves(self) -> None:
+        missing = sorted(module for module in _sdk_mcp_imports() if importlib.util.find_spec(module) is None)
+        assert not missing, (
+            f"{_PACKAGE}=={_PINNED_VERSION} imports {_MCP} modules the installed "
+            f"{_MCP}=={_locked_version_of(_MCP)} does not provide: {missing}. The override is "
+            f"masking a real incompatibility — the SDK's declared {_MCP} bound is now telling "
+            "the truth about its usage."
+        )
+
+    def test_every_mcp_symbol_the_sdk_imports_resolves(self) -> None:
+        unresolved: list[str] = []
+        for module_path, names in sorted(_sdk_mcp_imports().items()):
+            if importlib.util.find_spec(module_path) is None:
+                continue  # reported by the module-level assertion above
+            module = importlib.import_module(module_path)
+            unresolved.extend(f"{module_path}.{name}" for name in sorted(names) if not hasattr(module, name))
+        assert not unresolved, (
+            f"{_PACKAGE}=={_PINNED_VERSION} imports names the installed "
+            f"{_MCP}=={_locked_version_of(_MCP)} does not define: {unresolved}. The override is "
+            "masking a real incompatibility, not a bound that is merely broader than its usage."
+        )
+
+    def test_the_walk_sees_the_surface_that_justifies_the_override(self) -> None:
+        # The control: a walk that found nothing would pass both assertions above. The override
+        # rests on the claim that the SDK touches only the LOW-LEVEL server surface, so the walk
+        # must actually see that surface — and must NOT see the one teatree migrated.
+        found = _sdk_mcp_imports()
+        assert "Server" in found.get("mcp.server", set())
+        assert "ToolAnnotations" in found.get("mcp.types", set())
+        assert "mcp.server.mcpserver" not in found, (
+            "the SDK now imports the same surface as `teatree.mcp.server`; the two no longer "
+            "sit on disjoint APIs and the override's justification needs re-deriving."
         )
 
     def test_the_locked_mcp_satisfies_the_projects_own_bound(self) -> None:
@@ -139,6 +287,68 @@ class TestThePinsCeilingIsTheMcpMajor:
             f"`teatree.mcp.server` imports `{_MCP}.server.mcpserver.MCPServer`, so a resolution "
             "that drops below the bound crashes the MCP server on import."
         )
+
+
+class TestTheOverrideReachesEveryInstallSurface:
+    """``[tool.uv] override-dependencies`` alone does not reach the installed ``t3``.
+
+    ``uv tool install`` resolves the package it installs WITHOUT reading that package's
+    ``[tool.uv]`` overrides — the working directory makes no difference — so the deployed
+    and global installs fail outright with an unsatisfiable-requirements resolver error
+    while ``uv lock``/``uv sync``/CI all stay green. That is the same shape of blind spot
+    ``tests/conformance/test_import_pinned_dependency_bounds.py`` exists for: the lockfile
+    pins CI, and the container re-resolves.
+
+    So the override is ALSO committed as :data:`UV_OVERRIDES_FILENAME` and passed by every
+    install site. Two copies of one decision drift, hence the equality assertion; a site
+    that forgets the flag is invisible until a build fails, hence the site sweep.
+    """
+
+    def test_the_overrides_file_matches_the_pyproject_overrides(self) -> None:
+        declared = sorted(str(requirement) for requirement in _override_requirements())
+        committed = sorted(str(requirement) for requirement in _overrides_file_requirements())
+        assert declared == committed, (
+            f"{UV_OVERRIDES_FILENAME} and `[tool.uv] override-dependencies` are two copies of one "
+            f"decision and must be identical. pyproject: {declared}; {UV_OVERRIDES_FILENAME}: {committed}."
+        )
+
+    def test_every_unattended_install_resolves_with_the_override(self) -> None:
+        unflagged = sorted(
+            f"{path}: {command}" for path, command in _automated_uv_tool_installs() if command != "flagged"
+        )
+        assert not unflagged, (
+            "every unattended `uv tool install` of teatree must resolve with the override — via "
+            "`--overrides` on the command or an ambient `UV_OVERRIDE`. Without it uv ignores the "
+            f"`mcp` override entirely and the install fails to resolve at all. Missing it: {unflagged}"
+        )
+
+    def test_the_sweep_sees_the_surface_it_is_meant_to_guard(self) -> None:
+        # The control: a sweep matching nothing would pass the assertion above. The deployed
+        # image's bake and the entrypoint's runtime reinstall are the two that must be in it.
+        paths = {path for path, _ in _automated_uv_tool_installs()}
+        assert {"deploy/Dockerfile", "deploy/entrypoint.sh"} <= paths
+
+    def test_the_deployed_image_exports_the_override_to_every_install_it_runs(self) -> None:
+        # The image's own bake, the entrypoint's runtime `--reinstall`, and every in-container
+        # `t3 update` / doctor repair are separate `uv tool install` invocations. `UV_OVERRIDE`
+        # is the one setting that reaches all of them, so it is set once in the image ENV.
+        dockerfile = (_REPO_ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
+        assert f'UV_OVERRIDE="${{TEATREE_CLONE_DIR}}/{UV_OVERRIDES_FILENAME}"' in dockerfile, (
+            "deploy/Dockerfile must export UV_OVERRIDE — without it the image's bake and the "
+            "entrypoint's reinstall both fail to resolve, and the box never boots."
+        )
+        entrypoint = (_REPO_ROOT / "deploy" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert "uv tool install --editable" in entrypoint, (
+            "the entrypoint no longer reinstalls editable; re-check that UV_OVERRIDE still covers whatever replaced it."
+        )
+
+    def test_the_argv_builder_points_at_the_committed_file(self) -> None:
+        assert uv_overrides_args(_REPO_ROOT) == ["--overrides", str(_REPO_ROOT / UV_OVERRIDES_FILENAME)]
+
+    def test_the_argv_builder_omits_the_flag_for_a_checkout_without_the_file(self, tmp_path: Path) -> None:
+        # A reinstall is the path that REPAIRS a broken install; pointing uv at a missing
+        # file would turn that repair into a hard resolver error.
+        assert uv_overrides_args(tmp_path) == []
 
 
 class TestTheGuardThatReplacedTheQuarantine:

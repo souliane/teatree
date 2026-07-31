@@ -21,7 +21,8 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 - Overlay-specific config lives on `OverlayBase` methods (not Django settings)
 - `OverlayBase` uses composition: `overlay.config` is an `OverlayConfig` instance (credentials, URLs, labels)
 - Multi-overlay support: `overlay` CharField on Ticket, Worktree, Session
-- Installed from a local clone via `uv tool install --editable .` then `t3 setup`
+- Installed from a local clone via `uv tool install --editable . --overrides uv-overrides.txt` then `t3 setup`
+  (the flag is required — `uv tool install` does not read `[tool.uv] override-dependencies`)
 - CLI: `t3 startoverlay` (not `startproject`) creates lightweight overlay packages
 
 ## Running things
@@ -34,7 +35,7 @@ bash dev/ci-parity.sh            # the EXACT full CI predicate in one command (s
 uv run ruff check                # lint
 uv run ruff format               # format
 t3 tool push-gate                # inspect the incremental push-gate plan for the current diff (#122)
-t3 --help                        # CLI (installed via `uv tool install --editable .`)
+t3 --help                        # CLI (installed via `uv tool install --editable . --overrides uv-overrides.txt`)
 ```
 
 **Before pushing a src-touching PR, run `bash dev/ci-parity-fast.sh`** — scoped prek,

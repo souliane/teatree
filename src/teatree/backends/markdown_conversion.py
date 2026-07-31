@@ -19,7 +19,7 @@ from typing import Protocol
 
 INSTALL_HINT = (
     "markitdown is not installed. Install the optional 'markdown' extra to "
-    "enable attachment conversion, e.g. `uv tool install --editable . "
+    "enable attachment conversion, e.g. `uv tool install --editable . --overrides uv-overrides.txt "
     "--with 'markitdown[pdf,docx,xlsx,pptx]'` or `pip install "
     "'markitdown[pdf,docx,xlsx,pptx]'`."
 )

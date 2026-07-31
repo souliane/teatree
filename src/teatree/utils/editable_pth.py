@@ -170,7 +170,8 @@ def expected_checkout() -> Path | None:
 def repair_receipt_to_checkout(checkout: Path) -> bool:
     """Re-point the ``t3`` editable uv-tool install at *checkout*; return success (#3231).
 
-    Runs ``uv tool install --editable <checkout> --force`` — the supported way
+    Runs ``uv tool install --editable <checkout> --overrides <checkout>/uv-overrides.txt
+    --force`` — the supported way
     to re-anchor a relocated or same-name-hijacked editable install at its
     correct source, rewriting the shim, ``.pth``, and receipt in one step. Fails
     safe to ``False`` when ``uv`` is absent or the install errors, so the caller
@@ -183,13 +184,14 @@ def repair_receipt_to_checkout(checkout: Path) -> bool:
         TimeoutExpired,
         run_allowed_to_fail,
     )
+    from teatree.utils.uv_overrides import uv_overrides_args  # noqa: PLC0415 — deferred with the repair path
 
     uv = shutil.which("uv")
     if uv is None:
         return False
     try:
         result = run_allowed_to_fail(
-            [uv, "tool", "install", "--editable", str(checkout), "--force"],
+            [uv, "tool", "install", "--editable", str(checkout), *uv_overrides_args(checkout), "--force"],
             expected_codes=None,
             timeout=300,
         )

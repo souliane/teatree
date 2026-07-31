@@ -541,7 +541,8 @@ skills carry the rest.
 Teatree is not on PyPI. Install the `t3` CLI straight from the repo:
 
 ```bash
-uv tool install --from git+https://github.com/souliane/teatree.git teatree   # installs `t3` globally
+uv tool install --from git+https://github.com/souliane/teatree.git teatree \
+  --overrides https://raw.githubusercontent.com/souliane/teatree/main/uv-overrides.txt   # installs `t3` globally
 apm install -g souliane/teatree   # installs skills + companion dependencies
 t3 setup                          # links plugin, syncs skills, migrates self-DB
 t3 startoverlay my-overlay ~/workspace/my-overlay
@@ -549,6 +550,12 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 
 `uv tool install` puts `t3` in `~/.local/bin/`. If that directory is not on your
 `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
+
+`--overrides` is required, not optional: `claude-agent-sdk` declares an `mcp` bound
+broader than the surface it imports, and `uv tool install` does not read the
+`[tool.uv] override-dependencies` that corrects it — so without the flag the install
+fails with an unsatisfiable-requirements error. See
+[`uv-overrides.txt`](uv-overrides.txt).
 
 Installing the plugin does **not** force teatree on. By default a fresh Claude
 session does not auto-engage teatree — no skill auto-suggest, no load-block, no
@@ -564,7 +571,7 @@ auto-engage every session.
 ```bash
 git clone git@github.com:YOUR_USERNAME/teatree.git ~/workspace/teatree
 cd ~/workspace/teatree
-uv tool install --editable .   # global `t3` binary, live-reloaded from this clone
+uv tool install --editable . --overrides uv-overrides.txt   # global `t3`, live-reloaded from this clone
 t3 setup                       # installs skills globally, respects local symlinks
 ```
 
@@ -572,7 +579,7 @@ New here? [`docs/MAP.md`](docs/MAP.md) lists every package directory with a one-
 purpose and links to the relevant `BLUEPRINT.md` section — read it first to
 find where something lives.
 
-`uv tool install --editable .` produces the same global `~/.local/bin/t3` as
+`uv tool install --editable . --overrides uv-overrides.txt` produces the same global `~/.local/bin/t3` as
 the user flow — edits in this clone take effect on the next invocation, no
 `uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to
 install companion dependencies (superpowers, ac-django, etc.), symlinks teatree
@@ -580,14 +587,14 @@ skills to `~/.claude/skills/`, registers the Claude plugin in
 `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the
 clone so hooks and agents always read from the live checkout, applies any
 pending self-DB migrations, and — if `t3` is not on `PATH` — re-runs
-`uv tool install --editable .` to self-install. Must be run from the main
+`uv tool install --editable .` (with the overrides file) to self-install. Must be run from the main
 clone, not a worktree.
 
 `t3 setup` also self-heals when teatree adds a new dep: editable installs do
 not auto-resync their venv when `pyproject.toml` changes, so on every run
 `t3 setup` compares the declared `[project].dependencies` against the dists in
 the running interpreter and re-runs `uv tool install --editable . --reinstall`
-automatically when anything is missing. After the reinstall, setup re-execs
+(with the overrides file) automatically when anything is missing. After the reinstall, setup re-execs
 itself against the refreshed venv. No manual `--reinstall` step is needed when
 pulling teatree updates.
 

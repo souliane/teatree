@@ -28,6 +28,7 @@ from pathlib import Path
 import typer
 
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+from teatree.utils.uv_overrides import uv_overrides_args
 
 type SubprocessRunner = Callable[..., CompletedProcess[str]]
 
@@ -90,7 +91,7 @@ def reinstall_running_editable(*, runner: SubprocessRunner = run_allowed_to_fail
         source = current_editable_source(uv_bin)
         if source is not None and source.is_dir():
             result = runner(
-                [uv_bin, "tool", "install", "--editable", str(source), "--reinstall"],
+                [uv_bin, "tool", "install", "--editable", str(source), *uv_overrides_args(source), "--reinstall"],
                 expected_codes=None,
             )
             if result.returncode != 0:

@@ -1,13 +1,13 @@
 """Guards the npm-installed Claude CLI pin, per tier (souliane/teatree#3748).
 
-``claude-agent-sdk`` is quarantined at an exact pin with a guard test and a
-Dependabot ``ignore`` entry (``tests/test_claude_agent_sdk_pin.py``). The Claude
-CLI installed via ``npm install -g`` had none of that: every image and workflow
-installed it with no version, so each build resolved to whatever ``latest``
-happened to be that day, and Dependabot cannot see a non-manifest-driven install.
+``claude-agent-sdk`` is held at an exact pin with a guard test
+(``tests/test_claude_agent_sdk_pin.py``). The Claude CLI installed via
+``npm install -g`` has no manifest at all: Dependabot cannot see a
+non-manifest-driven install, so without these tests each build would resolve to
+whatever ``latest`` happened to be that day.
 
-The pin is deliberately split into TWO TIERS, because the two consumers need
-opposite things and one global version would break whichever tier lost:
+The pin is deliberately split into TWO TIERS, because the two consumers are
+pinned to different things and one global version would break whichever tier lost:
 
 **eval/test images** pin the generation the pinned SDK BUNDLES. The eval runner
 never executes the global binary — ``SubprocessCLITransport._find_cli()`` returns
@@ -15,16 +15,19 @@ never executes the global binary — ``SubprocessCLITransport._find_cli()`` retu
 ``teatree.eval.api_runner`` is only a provisioning presence-gate. Matching the
 bundle keeps the two CLIs in one image from disagreeing.
 
-**The deployed runtime image** pins a current known-good version instead. That
-image feeds the paths that DO exec the global binary (``teatree.cli.loop.app``'s
-``os.execv``, ``teatree.cli.agent``, ``teatree.agents.web_terminal``,
-``teatree.core.management.commands.tasks``). Rolling it back to the bundle's
-generation would put the deployed CLI ~50 generations behind, and behind the
-introduction of ``claude-opus-5``, which ``teatree.agents.model_tiering``'s
-``TIER_MODELS`` sets as the ``frontier`` tier.
+**The deployed runtime image** pins a current known-good version, chosen
+independently. That image feeds the paths that DO exec the global binary
+(``teatree.cli.loop.app``'s ``os.execv``, ``teatree.cli.agent``,
+``teatree.agents.web_terminal``, ``teatree.core.management.commands.tasks``), so it
+may LEAD the bundle but never trail it: a generation behind the introduction of
+``claude-opus-5`` breaks ``teatree.agents.model_tiering``'s ``TIER_MODELS``, which
+sets that model as the ``frontier`` tier.
 
 So these tests assert agreement PER TIER and never one global version across all
 sites — that global equality is precisely the mistake the split exists to avoid.
+The two tiers may happen to name the same version when the SDK's bundle catches up
+with the runtime's choice; that coincidence is not a coupling, and either constant
+moves on its own.
 """
 
 import re
@@ -40,11 +43,11 @@ _RUNTIME_DOCKERFILE = _REPO_ROOT / "deploy" / "Dockerfile"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.95"
+_PINNED_SDK_VERSION = "0.2.128"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.170 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.170"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.220 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.220"
 
 #: The deployed runtime's pin: the version the factory host runs today.
 _RUNTIME_CLI_VERSION = "2.1.220"

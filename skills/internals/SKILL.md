@@ -12,7 +12,8 @@ TeaTree is a personal code factory for multi-repo projects — it turns a ticket
 
 ## Architecture
 
-- **TeaTree IS the Django project.** Requires a local clone; installed via `uv tool install --editable .`.
+- **TeaTree IS the Django project.** Requires a local clone; installed via `uv tool install --editable . --overrides uv-overrides.txt`
+  (the flag is required — `uv tool install` does not read `[tool.uv] override-dependencies`).
 - **Overlays** register via `teatree.overlays` entry points and provide project-specific configuration. <!-- skill-symbol-ref: entry-point group name, not an importable module -->
 - **Skills** live in `skills/` and are loaded by the agent's skill system.
 - **Hooks** in `hooks/scripts/` run on agent lifecycle events (e.g., prompt submit, pre/post tool use).
