@@ -33,6 +33,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
+from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha, is_non_reviewer_role
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.ticket import Ticket
@@ -354,10 +355,11 @@ class ReviewVerdict(models.Model):
                     "recorded_at": timezone.now(),
                 },
             )
-            # Both claims this verdict concludes, retired in the same transaction
-            # that records it. The per-HEAD dispatch claim is spent outright — a
-            # verdict covers this exact tree, so re-arming it would be churn. The
-            # per-MR lock is released too, UNLESS *lock_holder* names a lock
+            # Every claim this verdict concludes, retired in the same transaction
+            # that records it. The per-HEAD dispatch claims are spent outright — a
+            # verdict covers this exact tree, so re-arming either would be churn;
+            # whichever path armed the review, the other's mark_resolved is a no-op.
+            # The per-MR lock is released too, UNLESS *lock_holder* names a lock
             # identity that is not the one holding it: a self-identifying verdict
             # from a path that took no lock must not free a still-running
             # reviewer's lock. An absent *lock_holder* is ignorance of the
@@ -365,6 +367,7 @@ class ReviewVerdict(models.Model):
             # releases — a concluded review may never strand a lock (#3920). See
             # MRReviewLock.resolve for the full asymmetry.
             AutoReviewDispatch.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
+            CodexReviewMarker.mark_resolved(slug=recorded.slug, pr_id=recorded.pr_id, head_sha=recorded.reviewed_sha)
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id, holder=lock_holder)
             return recorded
 

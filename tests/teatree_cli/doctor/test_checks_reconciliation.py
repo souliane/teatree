@@ -20,6 +20,7 @@ from teatree.cli.doctor import checks_reconciliation as recon
 from teatree.cli.doctor.checks_reconciliation import reconcile_and_notify, run_reconciliation_checks
 from teatree.core.models import (
     AutoReviewDispatch,
+    CodexReviewMarker,
     DeferredQuestion,
     EvalRunRecord,
     IncomingEvent,
@@ -500,6 +501,18 @@ class TestReviewDispatchSaturation(TestCase):
         self._claim(attempts=MAX_DISPATCH_ATTEMPTS, expired=True)
         AutoReviewDispatch.mark_resolved(slug=self.SLUG, pr_id=3920, head_sha=self.HEAD)
         assert not recon._check_review_dispatch_saturation().is_alarm
+
+    def test_a_saturated_codex_claim_alarms_and_is_labelled(self) -> None:
+        row = CodexReviewMarker.claim(slug=self.SLUG, pr_id=1254, head_sha=self.HEAD)
+        assert row is not None
+        CodexReviewMarker.objects.filter(pk=row.pk).update(
+            attempts=MAX_DISPATCH_ATTEMPTS, deadline=timezone.now() - dt.timedelta(minutes=1)
+        )
+
+        finding = recon._check_review_dispatch_saturation()
+
+        assert finding.is_alarm
+        assert f"codex:{self.SLUG}#1254" in finding.message
 
     def test_the_check_is_registered_in_the_ledger(self) -> None:
         assert recon._check_review_dispatch_saturation in recon.CHECKS
