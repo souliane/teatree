@@ -53,11 +53,11 @@ timezone = ""
 
 [teatree.Agents."Mode & harness"]
 agent_harness = "claude_sdk"
-agent_runtime = "interactive"
-autonomy = "babysit"
+agent_runtime = "headless"
+autonomy = "full"
 enforce_regulated_path = false
 envelope_stop_gate_refusals = 2
-mode = "interactive"
+mode = "auto"
 openai_compatible_lane = "factory"
 pydantic_ai_max_tokens = 16384
 pydantic_ai_request_limit = 40
@@ -72,7 +72,7 @@ watchdog_max_turns = 0
 loop_cadence_seconds = 720
 loop_runner_enabled = true
 merge_wip = 1
-wip = "medium"
+wip = "full"
 worker_quiescing = false
 write_wip = 3
 
@@ -94,6 +94,7 @@ eval_local_skill = "eval"
 scanning_news_cadence_hours = 24
 scanning_news_disabled = false
 scanning_news_skill = "scanning-news"
+schema_readiness_gate_enabled = true
 self_update_cadence_hours = 1
 self_update_disabled = false
 
@@ -109,7 +110,7 @@ db_backup_cadence_hours = 24
 db_backup_disabled = false
 db_backup_retention_days = 7
 directive_intake_per_tick = 25
-directive_loop_enabled = false
+directive_loop_enabled = true
 directive_verify_days = 7
 dream_propose_evals = false
 factory_score_enabled = false
@@ -117,7 +118,7 @@ fleet_claim_enabled = false
 gitlab_approval_scanner_enabled = false
 hook_fetch_titles = true
 issue_implementer_cadence_hours = 1
-issue_implementer_enabled = false
+issue_implementer_enabled = true
 issue_implementer_label = ""
 issue_implementer_max_concurrent = 3
 limit_autorecovery_enabled = true
@@ -128,7 +129,7 @@ outer_loop_measure_days = 7
 outer_loop_stop_after_consecutive_failures = 3
 sdk_monthly_credit_usd = 200.0
 triage_assessor_cadence_hours = 24
-triage_assessor_enabled = false
+triage_assessor_enabled = true
 triage_assessor_max_issues_per_tick = 10
 trusted_issue_authors = []
 
@@ -370,13 +371,13 @@ description = "Intakes newly-assigned issues (auto-starting ready ones) and fire
 delay_seconds = 1800
 colleague_facing = false
 default_enabled = false
-description = "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; every 30m, default-off behind a triple gate."
+description = "Discovers and claims admitted backlog issues to auto-implement, kicking off the maker pipeline; every 30m. issue_implementer_enabled ships ON (#3895), so this Loop row is the remaining switch."
 
 [loops.triage_assessor]
 delay_seconds = 3600
 colleague_facing = false
 default_enabled = false
-description = "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations behind an ask-gate; default-off behind triage_assessor_enabled, never acts without per-item approval."
+description = "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations behind an ask-gate; triage_assessor_enabled ships ON (#3895), so this Loop row is the remaining switch, and it never acts without per-item approval."
 
 [loops.dm_sweep]
 delay_seconds = 3600
@@ -445,7 +446,7 @@ description = "Advances at most one T4 autoresearch experiment one step per day 
 delay_seconds = 3600
 colleague_facing = false
 default_enabled = false
-description = "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); ships disabled behind the directive_loop_enabled flag, and the execution arc additionally needs the critic-live guard."
+description = "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); directive_loop_enabled ships ON (#3895), so this Loop row is the remaining switch, and the execution arc additionally needs the factory-score and critic-live guards."
 
 [loops.ci_eval_heal]
 delay_seconds = 300

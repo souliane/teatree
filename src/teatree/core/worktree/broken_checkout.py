@@ -3,9 +3,13 @@
 The row reaper's ordinary safety step, :func:`worktree_done.analyze_worktree_changes`,
 runs its working-tree dirt probe INSIDE the worktree dir. When that dir no longer
 resolves as a git repo the probe can never answer, so it fails closed forever and
-the row is kept for a salvage that can never run — while the broken-DIR reaper
-skips the same dir because a row still tracks it. Two passes, each deferring to
-the other, and `t3 doctor` prescribing the one command that could not act.
+the row is kept for a salvage that can never run, leaving `t3 doctor` to prescribe
+a command that could not act on a single item it flagged.
+
+This module is the only pass that still disposes of anything on that evidence, and
+what it disposes of is the ROW. The directory always survives — the broken-DIR pass
+reports and removes nothing (#3912) — so a release here frees the registry without
+touching a byte a salvage might still want.
 
 This module is the missing owner. For a provably-dead checkout the question moves
 off the unreadable dir and onto the BRANCH in the source clone, which is where any
@@ -14,6 +18,11 @@ recoverable git work actually lives: the checkout's admin entry is gone, but
 both halves — the dir is provably not a repo (:data:`CheckoutState.NOT_A_CHECKOUT`,
 never a probe that merely errored) AND the branch carries nothing that exists on no
 remote. Anything short of that keeps the row and names why.
+
+The source clone is therefore resolved BEFORE the checkout is probed, not after.
+A checkout records its admin dir as an absolute path written by whatever context
+created it, so the probe needs the clone as THIS context reaches it to tell a
+checkout that is live elsewhere from one that is dead everywhere.
 
 The push-state half is only as fresh as the clone's ``refs/remotes/*``, which go
 STALE the moment a branch is deleted upstream by anything other than this clone (a
@@ -32,6 +41,7 @@ from pathlib import Path
 from teatree.core.cleanup.cleanup import _resolve_worktree_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import content_equivalence_blockers, effective_default_target
+from teatree.core.worktree.checkout_liveness import context_scoped_pointer
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
@@ -90,19 +100,38 @@ def classify_broken_checkout(
     wt_path = Path(_resolve_worktree_path(workspace, worktree))
     if not wt_path.is_dir():
         return BrokenCheckoutVerdict(BrokenCheckout.LIVE_CHECKOUT)
-    probe = probe_checkout(wt_path)
+    # Resolved BEFORE the probe, not after: the clone is what turns "git cannot
+    # reach the admin dir this checkout names" into an answer, and without it the
+    # probe would report a live checkout created in another context as unknown.
+    repo_main = resolve_clone_path(workspace, worktree)
+    probe = probe_checkout(wt_path, clone=repo_main)
     if probe is CheckoutState.CHECKOUT:
         return BrokenCheckoutVerdict(BrokenCheckout.LIVE_CHECKOUT)
     if probe is CheckoutState.INCONCLUSIVE:
-        return BrokenCheckoutVerdict(
-            BrokenCheckout.UNVERIFIABLE,
-            f"git could not say whether {wt_path} is a checkout — keeping until it can",
+        return BrokenCheckoutVerdict(BrokenCheckout.UNVERIFIABLE, unresolved_checkout_reason(wt_path))
+    return _branch_verdict(worktree, wt_path=wt_path, repo_main=repo_main, refresh=refresh or RemoteRefresh())
+
+
+def unresolved_checkout_reason(wt_path: Path) -> str:
+    """Why *wt_path* could not be judged — the phrase every KEEP surface reports.
+
+    Two shapes, and the distinction is what an operator acts on. A checkout naming
+    an admin dir this context cannot reach is very probably alive somewhere; the
+    generic refusal is git declining to speak about a dir it can see. Neither is
+    proof of death, so neither authorises anything.
+    """
+    pointer = context_scoped_pointer(wt_path)
+    if pointer is not None:
+        return (
+            f"{wt_path} records its git dir at {pointer.target}, which does not exist in this execution "
+            "context — a checkout created elsewhere reads exactly like a dead one from here, so nothing "
+            "may reap it"
         )
-    return _branch_verdict(worktree, workspace=workspace, wt_path=wt_path, refresh=refresh or RemoteRefresh())
+    return f"git could not say whether {wt_path} is a checkout — keeping until it can"
 
 
 def _branch_verdict(
-    worktree: Worktree, *, workspace: Path, wt_path: Path, refresh: RemoteRefresh
+    worktree: Worktree, *, wt_path: Path, repo_main: Path | None, refresh: RemoteRefresh
 ) -> BrokenCheckoutVerdict:
     """Judge the dead checkout by its branch in the source clone.
 
@@ -116,7 +145,6 @@ def _branch_verdict(
     push-state question below actually depends on fresh tracking refs, and it fails
     closed without them.
     """
-    repo_main = resolve_clone_path(workspace, worktree)
     if repo_main is None or not repo_main.is_dir():
         return BrokenCheckoutVerdict(
             BrokenCheckout.UNVERIFIABLE,
@@ -171,4 +199,10 @@ def _unrecoverable_work(repo_main: Path, branch: str) -> str:
     return f"{len(unpushed)} commit(s) on NO remote, content not upstream: {preview}"
 
 
-__all__ = ["BrokenCheckout", "BrokenCheckoutVerdict", "RemoteRefresh", "classify_broken_checkout"]
+__all__ = [
+    "BrokenCheckout",
+    "BrokenCheckoutVerdict",
+    "RemoteRefresh",
+    "classify_broken_checkout",
+    "unresolved_checkout_reason",
+]

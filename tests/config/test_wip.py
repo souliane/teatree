@@ -57,8 +57,8 @@ class TestWipParse:
 
 
 class TestWipDefault:
-    def test_defaults_to_medium(self) -> None:
-        assert load_config().user.wip is Wip.MEDIUM
+    def test_defaults_to_full(self) -> None:
+        assert load_config().user.wip is Wip.FULL
 
 
 class TestWipDbResolution(TestCase):

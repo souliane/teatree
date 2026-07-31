@@ -73,31 +73,29 @@ class TestBuildRequiresIndex:
 
 
 class TestMetadataCacheInvalidation:
-    def test_valid_version_returns_data(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]}))
-        with (
-            mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
-            mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="1.0.0"),
-        ):
+    @staticmethod
+    def _seed_cache(tmp_path, monkeypatch, payload: dict) -> None:
+        """Write *payload* where the reader's XDG resolution will look for it."""
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        cache = skill_loader_mod.skill_metadata_cache()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(payload))
+
+    def test_valid_version_returns_data(self, tmp_path, monkeypatch):
+        self._seed_cache(tmp_path, monkeypatch, {"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]})
+        with mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="1.0.0"):
             result = skill_loader_mod._read_metadata_cache()
             assert result["skill_index"] == [{"skill": "test"}]
 
-    def test_mismatched_version_returns_empty(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]}))
-        with (
-            mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
-            mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="2.0.0"),
-        ):
+    def test_mismatched_version_returns_empty(self, tmp_path, monkeypatch):
+        self._seed_cache(tmp_path, monkeypatch, {"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]})
+        with mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="2.0.0"):
             assert skill_loader_mod._read_metadata_cache() == {}
 
-    def test_missing_version_in_cache_skips_check(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"skill_index": [{"skill": "test"}]}))
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
-            result = skill_loader_mod._read_metadata_cache()
-            assert result["skill_index"] == [{"skill": "test"}]
+    def test_missing_version_in_cache_skips_check(self, tmp_path, monkeypatch):
+        self._seed_cache(tmp_path, monkeypatch, {"skill_index": [{"skill": "test"}]})
+        result = skill_loader_mod._read_metadata_cache()
+        assert result["skill_index"] == [{"skill": "test"}]
 
 
 class TestSupplementarySkills:

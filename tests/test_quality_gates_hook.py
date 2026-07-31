@@ -80,13 +80,13 @@ class TestMainDetection:
     def test_returns_zero_when_no_relaxations(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
 
-        monkeypatch.setattr(mod, "_staged_diff", lambda path_filter="": "")
+        monkeypatch.setattr(mod, "_staged_diff", lambda path_filter="", base=None: "")
         assert mod.main() == 0
 
     def test_detects_pyproject_relaxation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
 
-        def fake_diff(path_filter: str = "") -> str:
+        def fake_diff(path_filter: str = "", base: object = None) -> str:
             if path_filter == "pyproject.toml":
                 return _PYPROJECT_DIFF
             return ""
@@ -104,7 +104,7 @@ class TestMainDetection:
         """
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
 
-        def fake_diff(path_filter: str = "") -> str:
+        def fake_diff(path_filter: str = "", base: object = None) -> str:
             if path_filter == "pyproject.toml":
                 return ""
             return _NOQA_DIFF
@@ -116,7 +116,7 @@ class TestMainDetection:
     def test_detects_pragma_in_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
 
-        def fake_diff(path_filter: str = "") -> str:
+        def fake_diff(path_filter: str = "", base: object = None) -> str:
             if path_filter == "pyproject.toml":
                 return ""
             return _PRAGMA_DIFF
@@ -133,7 +133,7 @@ class TestMainDetection:
         """A ``relax:`` commit subject must NOT bypass the gate (regression for #525)."""
         import scripts.hooks.check_quality_gates as mod  # noqa: PLC0415
 
-        def fake_diff(path_filter: str = "") -> str:
+        def fake_diff(path_filter: str = "", base: object = None) -> str:
             if path_filter == "pyproject.toml":
                 return _PYPROJECT_DIFF
             return ""

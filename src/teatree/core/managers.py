@@ -17,22 +17,34 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
+from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_issue_match import matching_issue_q
 from teatree.core.managers_overlay import for_overlay as _for_overlay
 from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_session import SessionQuerySet
-from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, schema_behind_code
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
 if TYPE_CHECKING:
-    from teatree.core.models.incoming_event import IncomingEvent
-    from teatree.core.models.reply_dispatch import ReplyDispatch
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
+
+
+def _phase_spellings(phase: str) -> tuple[str, ...]:
+    """Every stored spelling of *phase* — the one call-time hop to the phase vocabulary.
+
+    ``completed_in_phase`` / ``pending_in_phase`` / ``in_flight_for_phase`` all key on
+    the same spelling set, so the deferred ``modelkit.phases`` import lives here once
+    rather than being restated in each — one intra-core edge, not three.
+    """
+    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
+
+    return phase_spellings(phase)
+
 
 __all__ = [
     "PER_LOOP_OWNER_PREFIX",
@@ -151,63 +163,6 @@ class WorktreeQuerySet(models.QuerySet):
         ).update(last_e2e_run=now or timezone.now())
 
 
-# The settled/in-flight boundary, defined ONCE (#3693): an event is UNSETTLED until it is
-# drained (``processed_at``) or dead-lettered. ``unprocessed()`` filters this in (plus a
-# due clause); ``prunable()`` excludes it (the exact settled complement). Deriving both
-# from this one Q keeps the boundary from drifting between the two call sites.
-_UNSETTLED = Q(processed_at__isnull=True, dead_lettered_at__isnull=True)
-
-
-class IncomingEventQuerySet(models.QuerySet):
-    def unprocessed(self, now: datetime | None = None) -> models.QuerySet:
-        """Events still awaiting a drain: un-processed, not dead-lettered, and due (#673).
-
-        A failed drain (:meth:`IncomingEvent.record_failure`) leaves the event
-        un-processed but stamps a backoff ``next_retry_at`` and, past the attempt
-        cap, a ``dead_lettered_at``. Excluding both here is what lets the scanner
-        retry a transient failure without re-firing it every tick and drop a
-        dead-lettered poison out of the queue rather than block behind it.
-        """
-        moment = now or timezone.now()
-        return self.filter(_UNSETTLED).filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment))
-
-    def prunable(self, cutoff: datetime) -> models.QuerySet:
-        # Settled events before *cutoff*, safe to delete (#3693). Excludes the _UNSETTLED
-        # boundary itself (drained/dead-lettered) — NOT unprocessed(): a not-yet-due backoff
-        # row is still in-flight and must never be pruned however old.
-        return self.exclude(_UNSETTLED).filter(received_at__lt=cutoff)
-
-    def dead_lettered(self) -> models.QuerySet:
-        """Poisoned events that exhausted their retries — the dead-letter view (#673)."""
-        return self.filter(dead_lettered_at__isnull=False).order_by("-dead_lettered_at", "-pk")
-
-    def active_dm_thread(self, *, channel: str) -> str:
-        incoming_event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
-
-        if not channel:
-            return ""
-        latest = (
-            self.filter(source=incoming_event_model.Source.SLACK, channel_ref=channel)
-            .order_by("-received_at", "-pk")
-            .values_list("thread_ref", flat=True)
-            .first()
-        )
-        return latest or ""
-
-
-class ReplyDispatchQuerySet(models.QuerySet):
-    def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
-        reply_dispatch_model = cast("type[ReplyDispatch]", apps.get_model("core", "ReplyDispatch"))
-
-        moment = now or timezone.now()
-        return (
-            self.filter(status=reply_dispatch_model.Status.FAILED)
-            .exclude(action_name="dead_letter_alert")
-            .filter(models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=moment))
-            .order_by("next_retry_at", "pk")
-        )
-
-
 class TaskQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         """Tasks scoped to an overlay through the ticket OR the session.
@@ -243,11 +198,9 @@ class TaskQuerySet(models.QuerySet):
         ``reviewing`` one, mirroring the ``normalize_phase`` contract the
         rest of the system honours.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self.filter(phase__in=phase_spellings(phase), status=task_model.Status.COMPLETED)
+        return self.filter(phase__in=_phase_spellings(phase), status=task_model.Status.COMPLETED)
 
     def pending_in_phase(self, phase: str) -> models.QuerySet:
         """Non-terminal tasks whose phase normalizes to ``phase`` (#769).
@@ -259,18 +212,34 @@ class TaskQuerySet(models.QuerySet):
         as a zombie session. Same SSOT (``phase_spellings``), opposite
         status set.
         """
-        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         return self.filter(
-            phase__in=phase_spellings(phase),
+            phase__in=_phase_spellings(phase),
             status__in=task_model.Status.active(),
         )
 
+    def not_auto_review_armed(self) -> models.QuerySet:
+        """Tasks the #68 auto-review dispatch did NOT arm — the stray/armed discriminator (#3910).
+
+        Reaping an armed task costs its PR a full dispatch deadline: the claim is
+        keyed per ``(slug, pr_id, head_sha)``, so nothing re-arms that head until
+        the deadline passes and the next sweep reclaims it (#3920). Bounded, not
+        permanent — but still a wasted cycle, so an armed task stays off the
+        reaper's list.
+        """
+        return self.filter(auto_review_dispatches__isnull=True)
+
     def in_flight_for_phase(self, overlay: str, phase: str) -> models.QuerySet:
-        """Pending/claimed tasks for one overlay+phase — the periodic scanners' dedupe lock (SSOT)."""
-        return _in_flight_for_phase(self, overlay, phase)
+        """Pending/claimed tasks for one overlay+phase — the dedupe lock (SSOT).
+
+        Read by the periodic cadence scanners AND by the phase-task mint itself
+        (``Ticket._schedule_headless``, #3903), so the one lock the codebase
+        documents is consulted at the write rather than restated per caller.
+        Matches every accepted spelling of *phase* via ``phase_spellings``, the
+        same SSOT ``pending_in_phase`` reads.
+        """
+        return _in_flight_for_phase(self, overlay, _phase_spellings(phase))
 
     def last_run_at_for_phase(
         self, overlay: str, phase: str, *, statuses: frozenset[str] | None = None
@@ -328,10 +297,12 @@ class TaskQuerySet(models.QuerySet):
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        # Drain gate (rolling deploy): while the worker is quiescing, admit NO new
-        # task — the CAS never fires, so claimed ≡ spawned stays true and in-flight
-        # CLAIMED leases (which renew via ``renew_lease``, not this path) are untouched.
-        if worker_is_quiescing():
+        # Two admission gates, both admitting NO new task: the drain gate (a rolling
+        # deploy is quiescing this worker) and the deploy-order gate (#3901 — the control
+        # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
+        # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
+        # are untouched by either.
+        if worker_is_quiescing() or schema_behind_code():
             return None
         now = timezone.now()
         candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
@@ -601,7 +572,7 @@ class TaskQuerySet(models.QuerySet):
         # the interactive/headless claim commands admit zero new tasks during the
         # deploy window. Orthogonal to the supervisor's stop condition — in-flight
         # leases keep renewing.
-        if worker_is_quiescing():
+        if worker_is_quiescing() or schema_behind_code():
             return self.none()
         now = timezone.now()
         qs = (

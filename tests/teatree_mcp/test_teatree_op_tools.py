@@ -18,12 +18,12 @@ from teatree.core.models import DeferredQuestion, Task
 from teatree.core.notify import NotifyOutcome, NotifyReason
 from teatree.mcp import build_server
 from tests.factories import TicketFactory
+from tests.teatree_mcp._call_tool_result import structured as _structured
 
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
     result = async_to_sync(build_server().call_tool)(tool, args)
-    structured = result[1] if isinstance(result, tuple) else result
-    return structured["result"] if isinstance(structured, dict) and set(structured) == {"result"} else structured
+    return _structured(result)
 
 
 class TestQuestionList(TestCase):
@@ -58,7 +58,7 @@ class TestTaskCreate(TestCase):
 
     def test_unknown_ticket_surfaces_structured_error_not_systemexit(self) -> None:
         # `tasks create` raises SystemExit on a missing ticket — a BaseException
-        # FastMCP does NOT wrap. Without the _run_command guard the tool call
+        # MCPServer does NOT wrap. Without the _run_command guard the tool call
         # crashes; pytest.raises(Exception) would not catch a bare SystemExit,
         # so this is RED on an unguarded handler.
         with pytest.raises(Exception, match="not found"):

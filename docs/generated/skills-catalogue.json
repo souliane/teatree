@@ -33,7 +33,7 @@
       "summary": "Submit a plain-English directive about how teatree itself should behave \u2014 captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline"
     },
     {
-      "name": "dogfooding-teatree",
+      "name": "dogfooding",
       "summary": "Dogfooding teatree's own CLI, loop, and statusline \u2014 two modes sharing one mechanics section for reading a tick and the rendered statusline. \"Verify a change\" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. \"Hunt for bugs\" is proactive self-QA \u2014 dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees"
     },
     {
@@ -58,7 +58,11 @@
     },
     {
       "name": "interactive",
-      "summary": "The standing rule for an attended session \u2014 no work-bearing state is terminal, and the mechanisms that enforce it"
+      "summary": "ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that no work-bearing state is terminal. Loading this skill \u2014 or any skill declaring `requires: interactive` \u2014 writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged, by design. Also holds teatree's Claude Code harness wiring: how skills are selected, how plugin hooks are registered, and which output belongs to the headless pipeline. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. Teatree's own architecture and coding rules are `/t3:internals`; the dogfooding procedure is `/t3:dogfooding`"
+    },
+    {
+      "name": "internals",
+      "summary": "How teatree is BUILT and how to change it safely \u2014 architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring \u2014 that is `/t3:interactive` \u2014 and no dogfooding procedure \u2014 that is `/t3:dogfooding`"
     },
     {
       "name": "mode",
@@ -123,10 +127,6 @@
     {
       "name": "sweeping-worktrees",
       "summary": "Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked \u2014 deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`)"
-    },
-    {
-      "name": "teatree",
-      "summary": "TeaTree agent lifecycle platform \u2014 core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks"
     },
     {
       "name": "test",

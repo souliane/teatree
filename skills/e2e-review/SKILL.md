@@ -155,7 +155,7 @@ The canonical command (generic placeholders — substitute your real overlay, PR
 HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a short SHA
 ```
 
-**Clean spec → `merge_safe` (terminates the loop).** When the spec clears all hard gates and `score ≥ threshold`, record a `merge_safe` verdict. This is what drives the `ReviewLoop` to **PASSED** and lets the sweep merge; it does NOT re-open another author round:
+**Clean spec → `merge_safe`.** When the spec clears all hard gates and `score ≥ threshold`, record a `merge_safe` verdict. It resolves the per-MR review lock and lets the sweep merge; it does NOT re-open another author round:
 
 ```bash
 t3 <overlay> review record <pr_id> <slug> \

@@ -206,10 +206,10 @@ def _runs_in_session(instance: Task) -> bool:
 
     Delegates to ``headless_dispatch.runs_in_session``: a ``(ticket.role, phase)``
     with a registered phase agent runs in-session ONLY under
-    ``agent_runtime=interactive`` (the default), where it defaults to INTERACTIVE
+    ``agent_runtime=interactive``, where it defaults to INTERACTIVE
     at creation (``Task.save`` chokepoint) and the ``execution_target`` guard below
     already skips it — this remains as defense-in-depth for a row that reaches
-    HEADLESS some other way. Under a headless ``agent_runtime`` the same pair runs
+    HEADLESS some other way. Under the shipped headless ``agent_runtime`` the pair runs
     headless, so this returns ``False`` and the auto-enqueue ships it to
     ``execute_headless_task``. A pair with NO registered agent is free-form
     headless and is never in-session — never zero dispatch.
@@ -264,7 +264,7 @@ def _auto_enqueue_headless_task(
 ) -> None:
     """Auto-enqueue HEADLESS tasks for execution when created or re-routed.
 
-    Under ``agent_runtime=interactive`` (default), loop-dispatched phase tasks
+    Under ``agent_runtime=interactive``, loop-dispatched phase tasks
     default to INTERACTIVE at creation and so fail the ``execution_target`` guard;
     ``_runs_in_session`` stays as a belt-and-braces skip for any HEADLESS row of
     such a pair, so a ``db_worker`` draining the queue never double-runs loop phase
@@ -365,8 +365,17 @@ def _enqueue_ticket_transition_task(
     ``_log_ticket_transition``): the ticket was already terminal and its worktrees
     were already reaped, so a re-run would mint a duplicate job for work that no
     longer exists. Re-running teardown for a terminal ticket that still holds
-    worktrees is ``enqueue_teardown_for_terminal_tickets``'s job — an explicit
+    worktrees is ``TeardownDispatch.drain_terminal_backlog``'s job — an explicit
     operator drain, not a side effect of an FSM no-op.
+
+    The enqueue itself goes through ``TeardownDispatch.enqueue_once``, the shared seam
+    that skips a ticket whose teardown is already queued or running. Entering a
+    terminal state is the trigger; whether a job is still needed is the seam's call,
+    so this receiver and the operator drain cannot double-queue the same work. The
+    executor is bound HERE and handed to the seam, exactly as the name-mapped
+    transition workers above are: the ``on_commit`` callback fires after this frame is
+    gone, so resolving ``tasks_mod.execute_teardown`` inside it would read a different
+    object than the one in scope when the transition ran.
 
     The deferred import of the executor is call-time (mirroring
     ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
@@ -383,7 +392,7 @@ def _enqueue_ticket_transition_task(
         transaction.on_commit(lambda: executor.enqueue(ticket_pk))
     if target in _TERMINAL_TARGET_STATES and source != target:
         teardown = tasks_mod.execute_teardown
-        transaction.on_commit(lambda: teardown.enqueue(ticket_pk))
+        transaction.on_commit(lambda: tasks_mod.TeardownDispatch.enqueue_once(ticket_pk, executor=teardown))
 
 
 def _enqueue_worktree_transition_task(

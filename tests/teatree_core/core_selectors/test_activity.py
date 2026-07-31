@@ -3,6 +3,7 @@
 Split verbatim from the former monolithic ``tests/teatree_core/test_selectors.py`` (souliane/teatree#443).
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.selectors import _last_result_for_tasks, build_active_sessions, build_recent_activity
+from tests._agent_runtime_env import interactive_runtime
 
 
 class TestRecentActivityTokens(TestCase):
@@ -64,6 +66,13 @@ class TestRecentActivityTokens(TestCase):
 
 
 class TestBuildActiveSessions(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     @pytest.fixture(autouse=True)
     def _setup_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self.monkeypatch = monkeypatch

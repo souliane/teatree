@@ -87,7 +87,7 @@ class TestListAndStatus(TestCase):
 
 class TestTickCommand(TestCase):
     def test_tick_skips_while_the_loop_row_is_disabled(self) -> None:
-        # The shipped state — no enabled directive_loop Loop row (QUADRUPLE-OFF layer 2).
+        # The shipped state — no enabled directive_loop Loop row (TRIPLE-OFF layer 1).
         out = StringIO()
         call_command("directive", "tick", stdout=out)
         assert "SKIP" in out.getvalue()
@@ -95,8 +95,10 @@ class TestTickCommand(TestCase):
 
     def test_a_guard_refusal_prints_warn_not_ok(self) -> None:
         # #3643: a refused tick is a distinct outcome an operator must be able to see.
+        # The master flag is turned OFF to produce a refusal, since #3895 ships it ON.
         seed_default_loops_and_prompts()
         Loop.objects.set_enabled(DIRECTIVE_LOOP_NAME, enabled=True)
+        ConfigSetting.objects.set_value("directive_loop_enabled", value=False)
         out = StringIO()
         call_command("directive", "tick", stdout=out)
         assert out.getvalue().startswith("WARN")

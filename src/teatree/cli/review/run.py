@@ -243,7 +243,8 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
         raise ValueError(msg)
     repo, iid = parsed
     encoded = repo.replace("/", "%2F")
-    api = GitLabAPI(token=ReviewService.get_gitlab_token(), base_url=ReviewService._resolve_base_url())  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
+    service = ReviewService(ReviewService.get_gitlab_token(repo), repo=repo)
+    api = GitLabAPI(token=service.token, base_url=service._resolve_base_url())  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
 
     try:
         changes_payload = api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes")

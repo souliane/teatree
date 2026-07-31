@@ -29,10 +29,17 @@ def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
     return ok, buf.getvalue()
 
 
-def _broken_checkout(path: Path) -> Path:
-    """A dir that EXISTS but whose ``.git`` pointer no longer resolves."""
+def _never_a_checkout(path: Path) -> Path:
+    """A dir that EXISTS and carries no ``.git`` at all — the one provable dead shape."""
     path.mkdir(parents=True)
-    (path / ".git").write_text("gitdir: /nonexistent/clone/.git/worktrees/gone\n", encoding="utf-8")
+    (path / "leftover.txt").write_text("x", encoding="utf-8")
+    return path
+
+
+def _unresolvable_checkout(path: Path) -> Path:
+    """A dir naming an admin dir this venue cannot reach — live elsewhere, or dead."""
+    path.mkdir(parents=True)
+    (path / ".git").write_text("gitdir: /nonexistent/other-context/.git/worktrees/gone\n", encoding="utf-8")
     return path
 
 
@@ -54,21 +61,37 @@ class _TmpTestCase(TestCase):
 
 
 class RegisteredCheckoutCheckTest(_TmpTestCase):
-    def test_a_broken_registered_checkout_fails_and_is_named(self) -> None:
-        broken = _broken_checkout(self.tmp / "roots" / "dead-wt")
-        self._register(broken, branch="dead-wt")
+    def test_a_dir_that_never_was_a_checkout_fails_and_is_named(self) -> None:
+        dead = _never_a_checkout(self.tmp / "roots" / "dead-wt")
+        self._register(dead, branch="dead-wt")
 
         ok, out = _echoes(_check_registered_worktrees_are_checkouts)
 
         assert ok is False
         assert "FAIL" in out
-        assert "not a git checkout" in out
-        assert str(broken) in out
+        assert "never was a git checkout" in out
+        assert str(dead) in out
+
+    def test_a_checkout_this_venue_cannot_resolve_warns_and_names_no_destructive_remedy(self) -> None:
+        # #3912: a checkout created in another execution context is indistinguishable
+        # from a dead one HERE. FAILing would print `release-dead-rows --apply` /
+        # `clean-all` over live, in-flight work — the doctor instructing a data loss.
+        unresolvable = _unresolvable_checkout(self.tmp / "roots" / "elsewhere")
+        self._register(unresolvable, branch="elsewhere")
+
+        ok, out = _echoes(_check_registered_worktrees_are_checkouts)
+
+        assert ok is True
+        assert "WARN" in out
+        assert "UNVERIFIED" in out
+        assert "does not exist in this execution context" in out
+        assert "release-dead-rows" not in out
+        assert "clean-all" not in out
 
     def test_a_probe_git_declined_to_answer_warns_instead_of_failing(self) -> None:
         # FAILing here would print a remedy for a state no reaper is allowed to act
         # on — the doctor and the reaper share the probe precisely so they agree.
-        self._register(_broken_checkout(self.tmp / "roots" / "unanswerable"), branch="unanswerable")
+        self._register(_never_a_checkout(self.tmp / "roots" / "unanswerable"), branch="unanswerable")
         refusal = mock.Mock(returncode=128, stdout="", stderr="fatal: detected dubious ownership in repository")
 
         with mock.patch("teatree.core.worktree.worktree_roots.run_allowed_to_fail", return_value=refusal):

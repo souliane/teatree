@@ -114,7 +114,6 @@
 # 1: `_ticket_carrying_pr` walks `Ticket` rows, and `Ticket` reaches back into this
 # module's package — a genuine model cycle, so the sibling import stays call-time.
 "src/teatree/core/models/pull_request.py" = 1
-"src/teatree/core/models/review_loop.py" = 3
 "src/teatree/core/models/task.py" = 7
 # FSM disposition helpers (dispose_unshippable_review / escalate_unmatched_phase_
 # transition) split out of task.py; record_stuck_transition_question defers

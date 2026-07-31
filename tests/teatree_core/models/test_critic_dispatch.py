@@ -6,11 +6,17 @@ re-fire at the same delivered head returns ``None`` (no second critic); the row 
 task share one transaction.
 """
 
-from django.test import TestCase
+import datetime as dt
 
-from teatree.core.models import CriticDispatch, Ticket
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.models import CriticDispatch, CriticVerdict, Task, Ticket
+from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS
+from teatree.core.models.critic_verdict import CriticItemVerdict
 
 _FORTY_HEX = "a" * 40
+HEAD = _FORTY_HEX
 
 
 class TestCriticDispatchEnqueue(TestCase):
@@ -42,3 +48,90 @@ class TestCriticDispatchEnqueue(TestCase):
         fresh = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha="b" * 40, contract="c")
         assert fresh is not None
         assert CriticDispatch.objects.filter(ticket=ticket).count() == 2
+
+
+class TestStrandedCriticDispatchIsReArmable(TestCase):
+    """#3920: a dead critic must not leave the merge-quality gate unsatisfiable forever."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/3920")
+
+    def _arm(self) -> CriticDispatch:
+        row = CriticDispatch.enqueue(
+            ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade the delivery"
+        )
+        assert row is not None
+        return row
+
+    @staticmethod
+    def _expire(row: CriticDispatch) -> None:
+        CriticDispatch.objects.filter(pk=row.pk).update(deadline=timezone.now() - dt.timedelta(minutes=1))
+
+    def test_a_live_claim_still_dedups(self) -> None:
+        self._arm()
+        assert CriticDispatch.enqueue(ticket=self.ticket, transition="merge", head_sha=HEAD, contract="again") is None
+        assert Task.objects.filter(phase="critic_reviewing").count() == 1
+
+    def test_an_expired_claim_re_arms_once(self) -> None:
+        first = self._arm()
+        self._expire(first)
+
+        again = CriticDispatch.enqueue(
+            ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade the delivery"
+        )
+
+        assert again is not None
+        assert again.pk == first.pk
+        assert again.attempts == 2
+        assert again.task is not None
+        assert again.task.pk != first.task_id
+
+    def test_an_expired_claim_with_budget_left_is_not_saturated(self) -> None:
+        # Re-armable, so not the doctor's business: saturation is the END of the
+        # retry, not any one dead attempt.
+        row = self._arm()
+        self._expire(row)
+
+        assert row.attempts < MAX_DISPATCH_ATTEMPTS
+        assert CriticDispatch.saturated().count() == 0
+
+    def test_the_retry_budget_is_bounded_and_surfaces(self) -> None:
+        row = self._arm()
+        for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
+            self._expire(row)
+            row = CriticDispatch.enqueue(
+                ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade the delivery"
+            )
+            assert row is not None
+        self._expire(row)
+
+        assert CriticDispatch.enqueue(ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade") is None
+        assert CriticDispatch.saturated().count() == 1
+
+    def test_the_last_attempt_is_not_saturated_while_its_deadline_is_still_live(self) -> None:
+        # The final critic is still running and may yet record a verdict, so a
+        # spent budget alone is not "nothing will re-arm this head".
+        row = self._arm()
+        for _ in range(MAX_DISPATCH_ATTEMPTS - 1):
+            self._expire(row)
+            row = CriticDispatch.enqueue(
+                ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade the delivery"
+            )
+            assert row is not None
+
+        assert row.attempts == MAX_DISPATCH_ATTEMPTS
+        assert row.deadline > timezone.now()
+        assert CriticDispatch.saturated().count() == 0
+
+    def test_a_recorded_verdict_is_terminal(self) -> None:
+        row = self._arm()
+        CriticVerdict.record(
+            ticket=self.ticket,
+            transition="merge",
+            head_sha=HEAD,
+            grader_identity="an-independent-critic",
+            items=[CriticItemVerdict(slug="scope", status="pass", citation="src/x.py:1")],
+        )
+        self._expire(row)
+
+        assert CriticDispatch.enqueue(ticket=self.ticket, transition="merge", head_sha=HEAD, contract="grade") is None

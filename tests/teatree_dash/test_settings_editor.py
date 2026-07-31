@@ -212,7 +212,7 @@ class TestExportAndPreview(TestCase):
         assert dump.startswith("# teatree shipped defaults")
 
     def test_import_preview_is_a_dry_run(self) -> None:
-        result = import_preview('[teatree]\nmode = "auto"\n')
+        result = import_preview('[teatree]\nmode = "interactive"\n')
         assert result.dry_run is True
         assert [(r.scope, r.key) for r in result.written] == [("", "mode")]
         assert ConfigSetting.objects.count() == 0

@@ -15,6 +15,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,7 @@ from django.test import TestCase
 
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import BotPing, OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -100,6 +102,13 @@ class _Base(TestCase):
 
 
 class TestReviewRequestPostAfterReceipt(_Base):
+    @pytest.fixture(autouse=True)
+    def _gate_on(self) -> Iterator[None]:
+        # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
+        # case is about the gate BLOCKING, so it pins the mode it exercises.
+        with mode_gate_on_cm():
+            yield
+
     def test_successful_post_emits_after_receipt_dm(self) -> None:
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         notify_backend = _notify_backend()

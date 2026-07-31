@@ -25,6 +25,7 @@ import pytest
 from django.db.models import Q
 
 from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS
+from teatree.config import AgentRuntime
 from teatree.core.deterministic_phases import deterministic_phase_runner
 from teatree.core.management.commands import loop_dispatch
 from teatree.core.managers import TaskQuerySet
@@ -37,6 +38,7 @@ from teatree.loop.persistence import _HANDLER_TARGET_PHASES, _ZONE_HANDLERS
 from teatree.loop.phases import orchestrate
 from teatree.loops.registry import iter_loops
 from teatree.loops.seed import DEFAULT_LOOPS
+from tests._agent_runtime_env import pinned_agent_runtime
 
 
 def assert_registry_covers(
@@ -126,8 +128,24 @@ class TestDispatchableFilterSsotParity:
             assert orchestrate._dispatchable_filter() == self._SENTINEL
 
     def test_claim_filter_is_the_ssot_narrowed_to_interactive(self) -> None:
-        with patch.object(Task, "dispatchable_q", return_value=self._SENTINEL):
+        # The narrowing exists only in the interactive lane, so the lane is named
+        # rather than inherited: the shipped runtime is headless (#3895), under
+        # which the claimer deliberately matches nothing (asserted just below).
+        with (
+            pinned_agent_runtime(AgentRuntime.INTERACTIVE),
+            patch.object(Task, "dispatchable_q", return_value=self._SENTINEL),
+        ):
             assert loop_dispatch._dispatchable_q() == self._SENTINEL & self._INTERACTIVE
+
+    def test_the_claimer_matches_nothing_under_the_shipped_headless_runtime(self) -> None:
+        # The other half of the same SSOT contract: under headless the headless lane
+        # owns every loop-dispatched phase, so the in-session claimer must not narrow
+        # the SSOT — it must match NOTHING, keeping the two lanes disjoint.
+        with (
+            pinned_agent_runtime(AgentRuntime.HEADLESS),
+            patch.object(Task, "dispatchable_q", return_value=self._SENTINEL),
+        ):
+            assert loop_dispatch._dispatchable_q() == Q(pk__in=[])
 
     def test_budget_gate_counts_through_the_un_narrowed_ssot(self) -> None:
         # The boost budget is computed (orchestrate) over the SSOT WITHOUT the

@@ -22,6 +22,7 @@ from django_typer.management import TyperCommand
 
 from teatree.core.machine_output import emit
 from teatree.core.session_identity import session_id_from_env
+from teatree.utils.hook_registry import loop_registry_dir
 
 
 def _non_owner_session_id() -> str | None:
@@ -40,11 +41,8 @@ def _session_owns_loop(session_id: str | None) -> bool:
     if not session_id:
         return True
     import json as _json  # noqa: PLC0415 — deferred: loaded only when this command runs
-    from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    base_env = os.environ.get("T3_LOOP_REGISTRY_DIR")
-    base = Path(base_env) if base_env else Path.home() / ".local" / "share" / "teatree"
-    registry_path = base / "loop-registry.json"
+    registry_path = loop_registry_dir() / "loop-registry.json"
     if not registry_path.is_file():
         return True
     try:

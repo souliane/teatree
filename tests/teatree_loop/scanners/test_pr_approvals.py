@@ -7,8 +7,10 @@ Slack reaction does NOT fire at default settings (the on-behalf gate is ON) and
 DOES fire when the gate is lifted.
 """
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.core.signals as signals_mod
@@ -16,7 +18,7 @@ from teatree.core.backend_protocols import ApprovalState
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.pr_approvals import PrApprovalScanner, sync_forge_approvals
-from tests.teatree_core._on_behalf_gate_helpers import mode_immediate_cm
+from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
 
 
 class _ApprovedHost:
@@ -89,6 +91,13 @@ class TestPrApprovalScannerEmitsSignal(_PrApprovalScannerTestBase):
 
 class TestPrApprovalScannerOutboundGating(_PrApprovalScannerTestBase):
     """The revived lane must not fire the #961 approval reaction at default settings."""
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self) -> Iterator[None]:
+        # This case is about the gate BLOCKING, so it pins the mode it exercises
+        # rather than leaning on the shipped default resolving that way (#3895).
+        with mode_gate_on_cm():
+            yield
 
     def test_no_reaction_when_gate_on_default(self) -> None:
         pr = self._review_requested_pr()

@@ -1,17 +1,27 @@
 """Tick → DB persistence: kind=agent actions become Ticket + Task rows."""
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.backend_protocols import ReviewState
 from teatree.core.models import BroadcastObservation, ImplementedIssueMarker, ScannedBroadcast, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
+from tests._agent_runtime_env import interactive_runtime
 from tests.factories import ImplementedIssueMarkerFactory
 
 
 class TestPersistReviewer(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     def _action(
         self,
         *,

@@ -53,12 +53,16 @@ class TestDbTierDefaults(TestCase):
             monkeypatch.delenv(env, raising=False)
 
     def test_security_and_autonomy_gate_defaults(self) -> None:
+        # The shipped ``autonomy = full`` collapses the tier-governed gates and pins
+        # ``mode = auto``. Untouched by the tier: the merge gate (#3630), colleague
+        # egress (#3895), the safety floor (bash gate, agent-signature) and the
+        # on-behalf notify receipt.
         settings = get_effective_settings()
-        assert settings.mode is Mode.INTERACTIVE
-        assert settings.require_human_approval_to_merge is True
-        assert settings.require_human_approval_to_answer is True
-        assert settings.notify_on_post_on_behalf is True
+        assert settings.mode is Mode.AUTO
+        assert settings.require_human_approval_to_answer is False
         assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert settings.require_human_approval_to_merge is True
+        assert settings.notify_on_post_on_behalf is True
         assert settings.agent_signature is False
         assert settings.orchestrator_bash_gate_enabled is True
 
@@ -79,9 +83,9 @@ class TestDbTierDefaults(TestCase):
         assert settings.orchestrate_claim_enabled is False
         assert settings.require_review_context is False
 
-    def test_issue_implementer_defaults_are_opt_in_off(self) -> None:
+    def test_issue_implementer_defaults(self) -> None:
         settings = get_effective_settings()
-        assert settings.issue_implementer_enabled is False
+        assert settings.issue_implementer_enabled is True
         assert settings.issue_implementer_label == ""
         assert settings.issue_implementer_max_concurrent == 3
         assert settings.issue_implementer_cadence_hours == 1
@@ -199,6 +203,9 @@ class TestModeDbResolution(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_global_db_row_reflects(self) -> None:
+        # ``babysit`` disables the autonomy collapse so the raw global ``mode`` row
+        # is observable (a ``full`` overlay pins ``mode = auto`` regardless).
+        ConfigSetting.objects.set_value("autonomy", "babysit")
         ConfigSetting.objects.set_value("mode", "auto")
         assert get_effective_settings().mode is Mode.AUTO
         ConfigSetting.objects.set_value("mode", "interactive")

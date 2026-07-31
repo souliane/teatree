@@ -565,14 +565,26 @@ service is down — exactly the outage it exists to repair.
    init on every pass (verified empirically) and that would replay the heavy
    ~minute init every 5 minutes; a *missing or failed* init is included, so the
    init-failure outage still recovers.
-2. `t3 doctor check --json` inside a live container — reads the factory health,
+2. **Announces the repair.** The pass samples container state *before* the `up -d`,
+   re-reads it after, and DMs the owner naming every service it had to bring back —
+   with how long it had been gone, carried in the `<service> <last-seen-running>`
+   liveness ledger (`TEATREE_WATCHDOG_LIVENESS_STATE`, default
+   `/var/tmp/teatree-watchdog-liveness.state`). A silent auto-heal is
+   indistinguishable from a healthy idle factory, which is how a 4-hour worker
+   outage reached the owner only because they happened to open the dashboard
+   ([#3901](https://github.com/souliane/teatree/issues/3901)). A service that did
+   not come back is reported `STILL DOWN` rather than claimed as repaired, and an
+   unreadable daemon announces nothing rather than reporting the whole stack down.
+   Skipped while a convergence is in flight — a rolling swap legitimately stops
+   containers.
+3. `t3 doctor check --json` inside a live container — reads the factory health,
    including the H24 self-heal detectors: a compose init container that exited
    non-zero / a worker stuck `Created`, a free worker flock over overdue loop
    work, an `execute_headless_task` stranded RUNNING with no live worker, a READY
    loop timer stale past 2× its cadence, a PENDING `interactive` task under
    `agent_runtime=headless`, a FAILED task on a still-live ticket, and a runtime
    clone drifted off its default branch.
-3. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
+4. On any **red** finding it DMs the owner via `t3 teatree notify send`, keyed on
    the finding set so an ongoing outage does not re-spam every pass. (The default
    deploy wires no Slack credential; until you add one the DM step no-ops and the
    findings are visible in the watchdog's own container logs and `t3 doctor check`.)

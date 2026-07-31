@@ -15,7 +15,7 @@ the legacy ``ask_before_post_on_behalf`` TOML alias.
 import pytest
 from django.test import TestCase
 
-from teatree.config import OnBehalfPostMode
+from teatree.config import Autonomy, OnBehalfPostMode, get_effective_settings
 from teatree.core.models import ConfigSetting
 from teatree.on_behalf_gate import OnBehalfVerdict, on_behalf_post_will_block, resolve_on_behalf_verdict
 
@@ -86,6 +86,39 @@ class TestPerOverlayOverride(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
 
 
+class TestAutonomyTierDoesNotOpenTheGate(_OnBehalfDbBase):
+    """The autonomy tier is decoupled from colleague egress (#3895).
+
+    Shipping ``autonomy = full`` says "carry the work end to end"; it does not say
+    "speak as the owner to a colleague with no approval". Those are different
+    decisions, so the tier no longer collapses ``on_behalf_post_mode`` — the same
+    separation #3630 made for ``require_human_approval_to_merge``. Opening
+    colleague egress stays its own named opt-in (``on_behalf_post_mode =
+    immediate``), which every tier reads unchanged.
+    """
+
+    def test_shipped_full_autonomy_still_blocks_a_colleague_visible_post(self) -> None:
+        assert get_effective_settings().autonomy is Autonomy.FULL
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+
+    def test_explicit_full_overlay_still_blocks_a_colleague_visible_post(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+
+    def test_explicit_notify_overlay_still_blocks_a_colleague_visible_post(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+
+    def test_opening_egress_under_full_is_its_own_named_opt_in(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
+
+
 class TestRetiredLegacyTomlAlias(_OnBehalfDbBase):
     """The legacy ``ask_before_post_on_behalf`` TOML alias is RETIRED (#1775).
 
@@ -105,6 +138,4 @@ class TestRetiredLegacyTomlAlias(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
 
     def test_no_db_row_defaults_to_draft_or_ask(self) -> None:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-
         assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK

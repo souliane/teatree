@@ -450,8 +450,8 @@ def assert_no_active_review_lock(*, slug: str, pr_id: int) -> None:
     Sibling of :func:`assert_review_verdict_gate` at the same chokepoint
     (:func:`teatree.core.merge.execution.execute_bound_merge`): a recorded
     ``merge_safe`` verdict at the live head is not enough on its own when a
-    review is concurrently in flight (``review_dispatched`` /
-    ``verdict_pending``, not yet stale) for the SAME MR — that in-flight
+    review is concurrently in flight (``review_dispatched``, not yet stale)
+    for the SAME MR — that in-flight
     review could still be about to record a HOLD, and a merge racing ahead of
     it would land before the hold ever lands. No row, an ``idle``/``resolved``
     row, or an ``idle``/``resolved`` row mean "no review in flight" and the merge

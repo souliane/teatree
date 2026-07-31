@@ -6,6 +6,7 @@ chain together correctly.
 """
 
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from django.test import TestCase
 
 from teatree.core.models import QualityGateError, Session, Task, Ticket, Worktree
 from teatree.core.models.plan_artifact import PlanArtifact
+from tests._agent_runtime_env import interactive_runtime
 
 
 def _plan(ticket: Ticket) -> None:
@@ -40,6 +42,13 @@ def _make_repo_with_diff(repo_dir: Path, *, branch: str) -> None:
 
 
 class TestTicketLifecycle(TestCase):
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
+
     @pytest.fixture(autouse=True)
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path

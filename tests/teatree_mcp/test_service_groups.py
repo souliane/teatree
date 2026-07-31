@@ -8,10 +8,17 @@ import asyncio
 from unittest.mock import patch
 
 from django.test import TestCase
+from mcp.server.mcpserver import MCPServer
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
+from teatree.mcp.server import _SERVICE_GROUPS
+from teatree.mcp.services_forge import register_github, register_gitlab
+from teatree.mcp.services_notion import register as register_notion
+from teatree.mcp.services_sentry import register as register_sentry
+from teatree.mcp.services_sharepoint import register as register_sharepoint
+from teatree.mcp.services_slack import register
 
 _GITHUB_TOOLS = {
     "github_current_user",
@@ -61,6 +68,15 @@ _GROUP_BY_SERVICE = {
 }
 _ALL_SERVICE_TOOLS = set().union(*_GROUP_BY_SERVICE.values())
 
+_REGISTRAR_BY_SERVICE = {
+    Service.GITHUB: register_github,
+    Service.GITLAB: register_gitlab,
+    Service.SLACK: register,
+    Service.NOTION: register_notion,
+    Service.SENTRY: register_sentry,
+    Service.SHAREPOINT: register_sharepoint,
+}
+
 
 class _ServiceOverlay:
     def __init__(self, *services: Service) -> None:
@@ -82,3 +98,22 @@ class TestServiceGroupGating(TestCase):
 
     def test_no_declaration_registers_no_service_tools(self) -> None:
         assert not _ALL_SERVICE_TOOLS & _tools_for()
+
+
+class TestRegistrarsBindToTheServerType(TestCase):
+    """Each registrar puts its group on a bare server of the type `build_server` builds.
+
+    Reached only through `_SERVICE_GROUPS`, a registrar whose server binding
+    broke surfaces as a missing tool name — the same symptom as a gating bug.
+    Calling each one directly names the binding instead.
+    """
+
+    def test_each_registrar_registers_its_group(self) -> None:
+        for service, registrar in _REGISTRAR_BY_SERVICE.items():
+            with self.subTest(service=service.value):
+                server = MCPServer("test")
+                registrar(server)
+                assert _GROUP_BY_SERVICE[service] <= {tool.name for tool in asyncio.run(server.list_tools())}
+
+    def test_the_server_wires_those_same_registrars(self) -> None:
+        assert {service: registrar for service, (registrar, _) in _SERVICE_GROUPS.items()} == _REGISTRAR_BY_SERVICE

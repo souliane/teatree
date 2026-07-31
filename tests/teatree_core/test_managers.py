@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -5,8 +6,11 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
+from teatree.core.modelkit.phases import phase_spellings
 from teatree.core.models import IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
+from tests._agent_runtime_env import interactive_runtime
 
 
 class TestTicketQuerySet(TestCase):
@@ -61,6 +65,21 @@ class TestWorktreeQuerySet(TestCase):
         Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
 
         assert list(Worktree.objects.for_ticket(wanted_ticket).order_by("pk")) == [mine, also_mine]
+
+
+class TestInboundManagersStayWired(TestCase):
+    """The inbound querysets still back their models after moving to `managers_inbound`.
+
+    The move is a pure relocation, so nothing below asserts behaviour — it pins
+    the wiring, which is the only thing a relocation can break. Every predicate
+    test in this module reaches these classes through `Model.objects`, so a
+    manager silently rebuilt from a plain `QuerySet` would leave them all
+    passing while `unprocessed()` and `due_for_retry()` vanish at runtime.
+    """
+
+    def test_managers_are_built_from_the_relocated_querysets(self) -> None:
+        assert isinstance(IncomingEvent.objects.all(), IncomingEventQuerySet)
+        assert isinstance(ReplyDispatch.objects.all(), ReplyDispatchQuerySet)
 
 
 class TestIncomingEventQuerySet(TestCase):
@@ -314,8 +333,11 @@ class TestTaskPhaseCadenceQueries(TestCase):
     def test_manager_methods_delegate_to_module_helpers(self) -> None:
         pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=3)
 
-        # The module-level helpers are the concern-split home the manager methods delegate to.
-        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)) == [pending]
+        # The module-level helpers are the concern-split home the manager methods
+        # delegate to. The helper matches a set of stored spellings; resolving a
+        # phase to that set is the manager's job, because the layering keeps
+        # ``modelkit`` out of the helper module.
+        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, phase_spellings(self.PHASE))) == [pending]
         direct = last_run_at_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)
         via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
         assert direct == via_manager
@@ -1006,6 +1028,13 @@ class TestReplayOrphanedTransitions(TestCase):
     ticket has not yet taken and replays the *same* idempotent
     ``_advance_ticket`` path — no parallel transition mechanism.
     """
+
+    @pytest.fixture(autouse=True)
+    def _interactive_lane(self) -> Iterator[None]:
+        # The shipped ``agent_runtime`` is headless (#3895); this case is about the
+        # in-session interactive lane, so it names the runtime it exercises.
+        with interactive_runtime():
+            yield
 
     def test_backend_is_sqlite(self) -> None:
         from django.db import connection  # noqa: PLC0415

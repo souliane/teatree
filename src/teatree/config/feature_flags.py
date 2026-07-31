@@ -68,10 +68,11 @@ class FeatureFlag:
 
 # ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
 # autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus a
-# couple of ``SETTLING`` flags (``incremental_push_gate``, graduated by #122 once its
-# CI selection-audit soak came clean, and ``limit_autorecovery_enabled``, graduated by
-# #3691 so a fresh deploy self-recovers from an exhausted usage window); ``REMOVE`` is
-# not represented live, so the
+# few ``SETTLING`` flags (``incremental_push_gate``, graduated by #122 once its CI
+# selection-audit soak came clean; ``limit_autorecovery_enabled``, graduated by #3691
+# so a fresh deploy self-recovers from an exhausted usage window; and
+# ``directive_loop_enabled``, graduated by #3895 as part of the owner-authorised
+# autonomous-by-default posture); ``REMOVE`` is not represented live, so the
 # stage-discrimination machinery (:func:`dark_flags`, :func:`render_flags_audit`) is
 # proven non-vacuously over a MIXED FIXTURE in the conformance suite rather than over
 # the live set's accidental composition.
@@ -106,9 +107,15 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     ),
     "directive_loop_enabled": FeatureFlag(
         field="directive_loop_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — north-star PR-6 directive intake",
-        summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
+        stage=FlagStage.SETTLING,
+        tracking_issue="souliane/teatree#3895 — north-star PR-6 directive intake",
+        summary=(
+            "Master gate for the directive self-modification front-end (intake+interpret+ratify). Default ON "
+            "(graduated DARK->SETTLING by #3895 under the owner-authorised autonomous-by-default posture), so a "
+            "captured directive is interpreted without an operator opt-in. The EXECUTION arc past the human ratify "
+            "gate still needs factory_score_enabled (default OFF) and a live critic; survives as a per-overlay "
+            "escape hatch during the soak. OFF restores the pre-graduation total no-op."
+        ),
     ),
     "send_proxy_mode": FeatureFlag(
         field="send_proxy_mode",

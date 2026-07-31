@@ -174,6 +174,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "scanning_news_disabled",
         "scanning_news_skill",
         "sdk_monthly_credit_usd",
+        "schema_readiness_gate_enabled",
         "self_update_cadence_hours",
         "self_update_disabled",
         "send_proxy_allowlist",

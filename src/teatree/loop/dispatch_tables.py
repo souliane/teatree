@@ -115,6 +115,11 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Only the CI-green-gate skips reach here (see is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
+    # #3901 The clone pulled new code its control DB cannot serve and the reconcile
+    # could not fix it: the claim path is refusing work until a human acts, so this
+    # must be visible rather than dropped with the rest of the self_update family
+    # (exempted from the prefix drop in ``is_statusline_dropped``, like the CI skip).
+    "self_update.schema_behind": "action_needed",
     # Operator config gap, not per-MR bookkeeping — exempted from the drop below.
     "review_request_merge_react.missing_scope": "action_needed",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously

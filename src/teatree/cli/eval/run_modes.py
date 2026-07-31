@@ -29,6 +29,7 @@ from teatree.eval.skip_guard import (
     assert_judge_was_metered,
     assert_pydantic_ai_run_produced_output,
 )
+from teatree.eval.surface import is_advisory
 
 if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord
@@ -322,11 +323,17 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
 ) -> bool:
     """Persist a single-trial run and run the score + cost baseline + cost-bounds gates.
 
-    Returns ``True`` when the process should exit non-zero: any scenario
+    Returns ``True`` when the process should exit non-zero: any BLOCKING scenario
     failed, OR a score regression, OR a cost regression beyond tolerance, OR a
     declarative cost-bounds violation (over ceiling / configured-but-uncosted).
     With ``--no-persist`` durable-history gates are rejected before this point:
     silently skipping them would turn a requested gate into a no-op.
+
+    ``trials=1`` with no ``--models`` is the DEFAULT ``t3 eval run`` shape and the
+    one every metered CI leg drives, so the interactive-surface exemption has to hold
+    here too (#3855). This is ONE of the verdict points named in
+    :data:`teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS` — the canonical list,
+    enumerated by name rather than counted, because counting it went stale twice.
     """
     require_persist_for_history_gates(
         persist=persist,
@@ -345,7 +352,11 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
         cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
-    return any(not r.passed for r in results) or regressed or cost_regressed or cost_bounds_failed
+    # Every failing scenario reds the run. The ONE exception is the interactive
+    # surface, whose verdict rides a bundled claude CLI's AskUserQuestion rendering
+    # rather than the question contract teatree owns — reported, never gating (#3855).
+    failed = any(not r.passed and not is_advisory(r.spec) for r in results)
+    return failed or regressed or cost_regressed or cost_bounds_failed
 
 
 def build_transcript_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:

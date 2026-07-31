@@ -329,6 +329,23 @@ class SelfUpdateStatuslineTests(TestCase):
     def test_failed_is_dropped(self) -> None:
         assert self._zone("self_update.failed", "fetch:boom") is None
 
+    def test_schema_behind_survives_dispatch_into_action_needed(self) -> None:
+        """#3901: the schema-behind outage must reach the statusline, not be dropped.
+
+        The clone advanced onto code its control DB cannot serve and the post-pull
+        reconcile could not fix it, so the claim gate is refusing work until a human
+        acts. Asserting only that the scanner EMITS the kind is not enough — the
+        ``self_update.`` drop prefix runs BEFORE the zone table in ``_dispatch_one``,
+        so without an explicit exemption the announcement is dead code.
+        """
+        signal = ScanSignal(
+            kind="self_update.schema_behind",
+            summary="self-update teatree: control DB BEHIND the pulled code (migrate failed)",
+            payload={"repo": "teatree", "detail": "migrate failed"},
+        )
+        actions = dispatch([signal])
+        assert [(action.kind, action.zone) for action in actions] == [("statusline", "action_needed")]
+
 
 class PrSweepFlagStatuslineTests(TestCase):
     """#68/#78: pr_sweep flag-level signals surface; the rest of the family is dropped."""

@@ -24,6 +24,7 @@ class RunDockerArgs:
 
     name: str | None
     lane: str | None
+    surface: str | None
     shard: str | None
     output_format: str
     max_turns: int | None
@@ -94,6 +95,10 @@ class RunDockerArgs:
         return [
             [self.name] if self.name is not None else [],
             ["--lane", self.lane] if self.lane is not None else [],
+            # --surface slices the catalog exactly like --lane/--shard. Dropping it
+            # here would silently run the FULL catalog in-container — no error, and
+            # the whole point of the slice (metered spend) lost (#3855).
+            ["--surface", self.surface] if self.surface is not None else [],
             ["--shard", self.shard] if self.shard is not None else [],
             ["--benchmark"] if self.benchmark else [],
             ["--model", self.model] if self.model is not None else [],

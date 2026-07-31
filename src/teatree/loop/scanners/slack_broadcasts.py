@@ -212,8 +212,8 @@ def _seed_review_request_posts(
     point for any colleague- or author-broadcast.
 
     Idempotent on ``mr_url`` via ``record_review_request_post``: a re-scan
-    refreshes the channel/thread reference but preserves ``last_nag_step``
-    and ``done_at`` so the nag state machine is not reset. Merged URLs are
+    refreshes the channel/thread reference but preserves ``last_nag_at`` and
+    ``done_at`` so the nag state is not reset. Merged URLs are
     skipped — only open MRs need nagging.
     """
     for state in _open_subset(states):

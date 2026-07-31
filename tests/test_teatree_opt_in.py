@@ -3,8 +3,8 @@
 Covers must-fire / must-NOT-fire directions for:
 1. Fresh session (no marker) -- injection points silent, loop-registration exempt.
 2. Marker present -- injection points fire as before.
-3. handle_track_skill_usage sets marker for t3:teatree and for skills that
-    require: [teatree] (closure expansion).
+3. handle_track_skill_usage sets marker for t3:interactive and for skills that
+    require: [interactive] (closure expansion).
 4. Risk-6: mid-session teatree load triggers ownership claim from
     handle_enforce_loop_on_prompt when the loop is not disabled.
 """
@@ -118,7 +118,7 @@ class TestSessionStartBootstrapGating:
         out = capsys.readouterr().out
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        assert "run /teatree" in ctx
+        assert "run /t3:interactive" in ctx
         assert "t3 loops tick" not in ctx
 
     def test_fresh_session_without_marker_does_not_claim_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -232,7 +232,7 @@ class TestTrackSkillUsageSetsMarker:
             {
                 "session_id": "track-sess",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "t3:teatree"},
+                "tool_input": {"skill": "t3:interactive"},
             }
         )
         assert _is_marked_active("track-sess")
@@ -247,7 +247,7 @@ class TestTrackSkillUsageSetsMarker:
             {
                 "session_id": "track-sess2",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "teatree"},
+                "tool_input": {"skill": "interactive"},
             }
         )
         assert _is_marked_active("track-sess2")
@@ -271,7 +271,7 @@ class TestTrackSkillUsageSetsMarker:
         monkeypatch.setattr(
             router,
             "_resolve_skill_closure",
-            lambda skills: [*list(skills), "t3:teatree"],
+            lambda skills: [*list(skills), "t3:interactive"],
         )
         handle_track_skill_usage(
             {
@@ -293,7 +293,7 @@ class TestTrackSkillUsageSetsMarker:
                 {
                     "session_id": "track-sess5",
                     "tool_name": "Skill",
-                    "tool_input": {"skill": "t3:teatree"},
+                    "tool_input": {"skill": "t3:interactive"},
                 }
             )
         assert _is_marked_active("track-sess5")
@@ -307,7 +307,7 @@ class TestTrackSkillUsageSetsMarker:
         handle_track_skill_usage(
             {
                 "session_id": "track-sess6",
-                "skills": [{"name": "t3:teatree"}],
+                "skills": [{"name": "t3:interactive"}],
             }
         )
         assert _is_marked_active("track-sess6")
@@ -331,7 +331,7 @@ _CROSS_CUTTING_SKILLS = [
     "wip",
 ]
 # Genuinely teatree-specific skills keep the transitive opt-in.
-_TEATREE_SPECIFIC_SKILLS = ["dogfooding-teatree"]
+_TEATREE_SPECIFIC_SKILLS = ["dogfooding"]
 
 
 class TestRealClosureMarkerActivation:
@@ -368,7 +368,7 @@ class TestRealClosureMarkerActivation:
             {
                 "session_id": "tt-direct",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "t3:teatree"},
+                "tool_input": {"skill": "t3:interactive"},
             }
         )
         assert _is_marked_active("tt-direct")
@@ -418,7 +418,7 @@ class TestEngageIsTheSingleSeam:
             {
                 "session_id": "skill-sess",
                 "tool_name": "Skill",
-                "tool_input": {"skill": "t3:teatree"},
+                "tool_input": {"skill": "t3:interactive"},
             }
         )
         assert seen == ["skill-sess"]
@@ -831,7 +831,7 @@ class TestAutoloadSessionStart:
         assert _is_marked_active("owner-default")
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "t3 loops tick" in ctx
-        assert "run /teatree" not in ctx
+        assert "run /t3:interactive" not in ctx
 
     def test_autoload_on_claims_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
@@ -841,7 +841,7 @@ class TestAutoloadSessionStart:
     def test_default_off_emits_how_to_and_does_not_claim(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "off-sess"})
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-        assert "run /teatree" in ctx
+        assert "run /t3:interactive" in ctx
         # autoload is DB-home, so the auto-start how-to points at the config_setting
         # store.
         assert "config_setting set autoload true" in ctx
@@ -852,7 +852,7 @@ class TestAutoloadSessionStart:
         # On a compact/resume of a not-engaged session the how-to is suppressed,
         # but the merge still runs so snapshot-recovery / hand-off is never dropped.
         handle_session_start_bootstrap({"session_id": "off-compact", "source": "compact"})
-        assert "run /teatree" not in capsys.readouterr().out
+        assert "run /t3:interactive" not in capsys.readouterr().out
 
 
 class TestDefaultOffUserPromptSubmit:
@@ -935,7 +935,7 @@ class TestOption1T3EngagedMarker:
 
 
 class TestExplicitTeatreeEngages:
-    """#256: explicitly loading ``/teatree`` while OFF sets the marker and engages."""
+    """#256: explicitly loading ``/t3:interactive`` while OFF sets the marker and engages."""
 
     @pytest.fixture(autouse=True)
     def _identity_closure(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -947,7 +947,7 @@ class TestExplicitTeatreeEngages:
     def test_teatree_skill_engages_session(self) -> None:
         assert _teatree_engaged("tt-explicit") is False
         handle_track_skill_usage(
-            {"session_id": "tt-explicit", "tool_name": "Skill", "tool_input": {"skill": "t3:teatree"}}
+            {"session_id": "tt-explicit", "tool_name": "Skill", "tool_input": {"skill": "t3:interactive"}}
         )
         assert _is_marked_active("tt-explicit")
         assert _teatree_engaged("tt-explicit") is True

@@ -46,15 +46,12 @@ class ReviewAssignment(models.Model):
 
     The lifecycle is monotonic ``pending`` → ``approved`` (when the MR
     lands an approve transition). ``approved`` is reachable from any
-    non-approved state. The historic ``eyes_added`` state is retained as a
-    valid enum value for rows written before #113 moved the claim reaction
-    off discovery, but no code path transitions a row into it any more —
-    the scanner never posts a ``:eyes:`` claim at discovery time.
+    non-approved state. #113 moved the claim reaction off discovery, so the
+    scanner never posts a ``:eyes:`` claim at discovery time.
     """
 
     class State(models.TextChoices):
         PENDING = "pending"
-        EYES_ADDED = "eyes_added"
         APPROVED = "approved"
 
     class Trigger(models.TextChoices):

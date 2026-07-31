@@ -27,7 +27,7 @@ from fnmatch import fnmatch
 from typing import Any, cast
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.config import SAFETY_POSTURE_KEYS
@@ -40,9 +40,9 @@ from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.mcp.review_seam import review_post_seam
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
-_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
-_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
+_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+_DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
 
 # Safety-gate keys an MCP caller may never flip: cold-hook gate wires, feature
@@ -325,7 +325,7 @@ async def _review_post_draft_note(repo: str, mr: int, note: str) -> dict[str, An
     gates still apply. Inline (file/line) anchoring stays on the CLI for now.
     """
     message, code = await sync_to_async(
-        lambda: review_post_seam().post_draft_note(repo, mr, note),
+        lambda: review_post_seam(repo).post_draft_note(repo, mr, note),
         thread_sensitive=True,
     )()
     return {"message": message, "code": code}
@@ -340,7 +340,7 @@ async def _review_post_comment(repo: str, mr: int, note: str, *, live: bool = Fa
     Inline (file/line) anchoring stays on the CLI for now.
     """
     message, code = await sync_to_async(
-        lambda: review_post_seam().post_comment(repo, mr, note, live=live),
+        lambda: review_post_seam(repo).post_comment(repo, mr, note, live=live),
         thread_sensitive=True,
     )()
     return {"message": message, "code": code}
@@ -568,7 +568,7 @@ TOOL_SEAMS: dict[str, str] = {tool.name: tool.seam for tool in _TOOLS if tool.se
 INSTRUCTIONS = "\n".join(tool.instruction for tool in _TOOLS)
 
 
-def register(server: FastMCP) -> None:
+def register(server: MCPServer) -> None:
     # Teatree-own write tools register UNCONDITIONALLY (unlike the fail-closed
     # per-service groups): each wraps a `t3` CLI seam that is itself gate-guarded
     # and no-ops safely when its backend is absent, so a service declaration is

@@ -388,7 +388,7 @@ t3 outer status|history         # T4 autoresearch outer loop — guard-chain ver
 t3 outer tick                   # cadence-gated step the worker's off-live-tick driver chain fires (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
 t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
 t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
-t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships quadruple-OFF)
+t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships triple-OFF)
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 
@@ -617,13 +617,14 @@ graph LR
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
 | `directive` | Submit a plain-English directive about how teatree itself should behave — captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline |
-| `dogfooding-teatree` | Dogfooding teatree's own CLI, loop, and statusline — two modes sharing one mechanics section for reading a tick and the rendered statusline. "Verify a change" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. "Hunt for bugs" is proactive self-QA — dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees |
+| `dogfooding` | Dogfooding teatree's own CLI, loop, and statusline — two modes sharing one mechanics section for reading a tick and the rendered statusline. "Verify a change" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. "Hunt for bugs" is proactive self-QA — dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees |
 | `dreaming` | Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates |
 | `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate |
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |
-| `interactive` | The standing rule for an attended session — no work-bearing state is terminal, and the mechanisms that enforce it |
+| `interactive` | ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that no work-bearing state is terminal. Loading this skill — or any skill declaring `requires: interactive` — writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged, by design. Also holds teatree's Claude Code harness wiring: how skills are selected, how plugin hooks are registered, and which output belongs to the headless pipeline. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. Teatree's own architecture and coding rules are `/t3:internals`; the dogfooding procedure is `/t3:dogfooding`. |
+| `internals` | How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`. |
 | `mode` | The operating mode — one named posture (reachable / unattended / holiday) that decides whether `AskUserQuestion` asks the user now or captures a durable `DeferredQuestion` row, and which loops run |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms. |
@@ -640,7 +641,6 @@ graph LR
 | `sweeping-prs` | Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
 | `sweeping-tickets` | Evidence-gated ticket/issue consolidation and triage — classify every open issue against current `main`, then consolidate by merging related tickets into a small set of tracking epics (never by discarding ideas) and close only what is demonstrably shipped or now folded into an epic. Always asks the operator for the maximum number of tickets/epics to keep before triaging — never assumes a number. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "shipped by merged PR #X" class), posting a one-line reason on every close |
 | `sweeping-worktrees` | Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`) |
-| `teatree` | TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
 | `triaging-issues` | Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row |
@@ -719,7 +719,7 @@ live in `UserSettings` in `src/teatree/config/settings.py`. Overlays register vi
 `teatree.overlays` entry points plus the DB `overlays` registry row.
 
 ```bash
-t3 <overlay> config_setting set mode interactive                       # "interactive" (default) | "auto"
+t3 <overlay> config_setting set mode interactive                       # "auto" (default) | "interactive"
 t3 <overlay> config_setting set privacy '""'                           # privacy-scan profile name
 t3 <overlay> config_setting set contribute false                       # enable skill self-improvement
 t3 <overlay> config_setting set excluded_skills '["my-custom-skill"]'  # extra skills to exclude
@@ -732,13 +732,14 @@ t3 <overlay> config_setting set agent_signature false                  # append 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `workspace_dir` | `~/workspace` | Root for per-ticket workspace directories |
-| `mode` | `interactive` | `interactive` confirms before publishing; `auto` is end-to-end |
+| `mode` | `auto` | `auto` is end-to-end; `interactive` confirms before publishing |
 | `privacy` | `""` | Named privacy-scan profile applied before pushes |
 | `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
 | `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
 | `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
-| `require_human_approval_to_answer` | `true` | `t3:answerer` drafts a reply and DMs for approval |
+| `require_human_approval_to_answer` | `true`, collapsed to `false` by the shipped `autonomy = full` | `t3:answerer` drafts a reply and DMs for approval. The answer's own post is separately gated by `on_behalf_post_mode`, which no tier collapses |
+| `on_behalf_post_mode` | `draft_or_ask` | Pre-gate on any post made under your identity to a colleague surface. Read unchanged by every `autonomy` tier — opening it is its own explicit `immediate` |
 | `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
@@ -753,10 +754,10 @@ symlinks and caches.
 `mode` (a DB-home setting, or the `T3_MODE` env var) controls how much autonomy
 the agent has for publishing actions:
 
-- `interactive` *(default, conservative on security)* — the agent pauses for
+- `interactive` *(conservative on security)* — the agent pauses for
   explicit approval before push, MR create, MR merge, Slack posts, or any other
   write that leaves the local machine.
-- `auto` — opt-in end-to-end autonomy. The agent ships complete features
+- `auto` *(shipped default)* — end-to-end autonomy. The agent ships complete features
   without confirm prompts: push → MR create → pipeline watch → merge → clean up
   remote branches. Quality gates (lint, tests, migrations check) still run;
   they just do not depend on user confirmation. A small always-gated list
@@ -778,8 +779,9 @@ t3 <overlay> config_setting set mode auto --overlay my-project   # per-overlay o
 ```
 
 The resolution chain is, first match wins: `T3_MODE` env var → the active
-overlay's per-overlay DB row → the global DB row → the `UserSettings` default
-(`interactive`). `mode` is one of the per-overlay-overridable keys; the full
+overlay's per-overlay DB row → the global DB row → the shipped default (`auto`).
+An autonomous `autonomy` tier also pins `mode = auto` unless a per-overlay or env
+`mode` says otherwise. `mode` is one of the per-overlay-overridable keys; the full
 registry is `OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`.
 See `BLUEPRINT.md` § 10.1.1 for the full details.
 

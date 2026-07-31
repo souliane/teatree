@@ -1,9 +1,9 @@
 ---
-name: dogfooding-teatree
+name: dogfooding
 description: Dogfooding teatree's own CLI, loop, and statusline — two modes sharing one mechanics section for reading a tick and the rendered statusline. "Verify a change" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. "Hunt for bugs" is proactive self-QA — dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees. Use when the user says "dogfood", "dogfooding", makes a CLI/loop/statusline/scanner change, or says "bug hunt", "self-qa", or "hunt bugs".
 eval_exempt: manual dogfooding checklist plus a self-QA mode that delegates fix delivery to the code/ship skills; the checklist has no autonomous agent trajectory to grade and the delivered fix behaviour is graded by those skills' own evals
 requires:
-  - teatree
+  - interactive
 metadata:
   version: 0.0.1
   subagent_safe: false

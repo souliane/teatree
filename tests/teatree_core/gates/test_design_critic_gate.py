@@ -118,13 +118,29 @@ def _live() -> Iterator[None]:
         yield
 
 
+@contextlib.contextmanager
+def _disarmed() -> Iterator[None]:
+    """The arming flag explicitly OFF — the escape hatch, stated not inherited (#3895)."""
+    with patch.object(
+        design_critic_gate, "get_effective_settings", return_value=UserSettings(directive_loop_enabled=False)
+    ):
+        yield
+
+
 class TestArmedResolution(TestCase):
-    def test_dark_by_default(self) -> None:
-        assert design_critic_armed("t3-teatree") is False
+    def test_disarmed_when_directive_loop_disabled(self) -> None:
+        with _disarmed():
+            assert design_critic_armed("t3-teatree") is False
 
     def test_armed_when_directive_loop_enabled(self) -> None:
         with _live():
             assert design_critic_armed("t3-teatree") is True
+
+    def test_armed_under_the_shipped_default(self) -> None:
+        # #3895 graduated the arming flag ON, so the advisory critic is live out of the
+        # box for a directive-linked ticket. It stays advisory — the deterministic
+        # ``mechanism_conforms`` check is what blocks.
+        assert design_critic_armed("t3-teatree") is True
 
 
 class TestPlanHeadSha(TestCase):
@@ -207,10 +223,11 @@ class TestArming(TestCase):
 
 
 class TestNoOpConditions(TestCase):
-    def test_dark_flag_is_a_strict_noop_no_dispatch(self) -> None:
-        # Cost parity while dark: no CriticDispatch/Task created at all.
+    def test_disarmed_flag_is_a_strict_noop_no_dispatch(self) -> None:
+        # Cost parity for the operator who turns it off: no CriticDispatch/Task at all.
         ticket = _directive_ticket()
-        check_design_critic(ticket)  # flag off (default)
+        with _disarmed():
+            check_design_critic(ticket)
         assert not CriticDispatch.objects.filter(ticket=ticket).exists()
 
     def test_ordinary_ticket_is_a_noop(self) -> None:
@@ -289,8 +306,8 @@ class TestPlanTransitionWiring(TestCase):
             ticket.plan()
         assert CriticDispatch.objects.filter(ticket=ticket, transition="plan", head_sha=_FORTY_HEX).exists()
 
-    def test_plan_is_inert_when_dark(self) -> None:
+    def test_plan_is_inert_when_disarmed(self) -> None:
         ticket = self._planned_directive_ticket()
-        with self.captureOnCommitCallbacks(execute=True):
-            ticket.plan()  # flag off (default)
+        with _disarmed(), self.captureOnCommitCallbacks(execute=True):
+            ticket.plan()
         assert not CriticDispatch.objects.filter(ticket=ticket, transition="plan").exists()

@@ -32,6 +32,7 @@ from teatree.loop.scanners import (
     SnapshotWarmerScanner,
 )
 from teatree.loop.scanners.notion_view import NotionLike
+from teatree.loop.scanners.self_update import CORE_REPO_LABEL
 from teatree.loop.scanners.self_update_ci import GhMainCiStatus
 
 
@@ -85,7 +86,7 @@ def _collect_self_update_repos() -> list[tuple[str, Path]]:
 
     core = _resolve_t3_repo()
     if core is not None:
-        repos.append(("teatree", core))
+        repos.append((CORE_REPO_LABEL, core))
         seen.add(core)
 
     for entry in discover_overlays():

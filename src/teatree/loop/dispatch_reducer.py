@@ -46,6 +46,13 @@ def is_statusline_dropped(signal: ScanSignal) -> bool:
         return False
     if signal.kind == "review_request_merge_react.missing_scope":
         return False
+    # #3901 The clone advanced onto code its control DB cannot serve and the post-pull
+    # reconcile could not fix it, so the claim gate is refusing work until a human acts.
+    # It carries the ``self_update.`` prefix for log grouping but must escape the
+    # diagnostic drop — the drop runs BEFORE the zone table in ``_dispatch_one``, so
+    # without this exemption its ``action_needed`` entry there is unreachable.
+    if signal.kind == "self_update.schema_behind":
+        return False
     return signal.kind in STATUSLINE_DROP_KINDS or signal.kind.startswith(STATUSLINE_DROP_PREFIXES)
 
 

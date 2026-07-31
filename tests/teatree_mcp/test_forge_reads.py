@@ -17,6 +17,7 @@ from teatree.backends.types import Service
 from teatree.core.backend_protocols import ApprovalState, PrMergeState, PrOpenState
 from teatree.core.overlay import OverlayConfig
 from teatree.mcp import build_server
+from tests.teatree_mcp._call_tool_result import structured as _structured
 
 
 class _GithubOverlay:
@@ -85,8 +86,7 @@ def _call(tool: str, args: dict[str, Any], fake: _FakeForge) -> Any:
         patch("teatree.mcp.services_forge._forge_client", return_value=fake),
     ):
         result = async_to_sync(build_server().call_tool)(tool, args)
-    structured = result[1] if isinstance(result, tuple) else result
-    return structured["result"] if isinstance(structured, dict) and set(structured) == {"result"} else structured
+    return _structured(result)
 
 
 class TestForgeReadTools(TestCase):

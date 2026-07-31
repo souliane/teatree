@@ -30,9 +30,10 @@ explicit, always-available manual self-rescue.
 
 import typer
 from django.core.management import call_command
-from django.db import DEFAULT_DB_ALIAS, connections
-from django.db.migrations.executor import MigrationExecutor
+from django.db import DEFAULT_DB_ALIAS
 from django.db.utils import OperationalError
+
+from teatree.core.schema_readiness import pending_migrations
 
 _REMEDIATION = (
     "Run the sanctioned non-destructive migrate against the runtime self-DB:\n"
@@ -51,19 +52,6 @@ class SelfDbMigrationError(RuntimeError):
     underlying migrate failure so the consumer fails *closed* rather than
     proceeding against a half-migrated DB.
     """
-
-
-def pending_migrations(alias: str = DEFAULT_DB_ALIAS) -> list[str]:
-    """Return ``"<app>.<name>"`` for every unapplied migration on *alias*.
-
-    Empty list ⇒ the schema is current. Uses Django's own
-    :class:`MigrationExecutor` so the result matches ``showmigrations``.
-    """
-    connection = connections[alias]
-    executor = MigrationExecutor(connection)
-    targets = executor.loader.graph.leaf_nodes()
-    plan = executor.migration_plan(targets)
-    return [f"{migration.app_label}.{migration.name}" for migration, _backwards in plan]
 
 
 def migrate_self_db(alias: str = DEFAULT_DB_ALIAS) -> list[str]:

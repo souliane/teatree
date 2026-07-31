@@ -1,13 +1,11 @@
-"""Flag-off parity, and the critic's scope — the directive loop's no-op proof (north-star PR-7).
+"""What the loop does and does not mutate, per arc (north-star PR-7, #3649, #3895).
 
-At default config the loop mutates NOTHING — zero dispatches, zero ConfigSetting writes,
-zero questions, zero snapshots, and the directive's state is untouched. Anti-vacuous:
-remove the flag guard and the tick falls through and the counts move.
-
-#3649 narrowed the critic guard to the post-admission arc, so flag-on-without-a-critic is
-no longer a TOTAL no-op — it interprets. What it must still never do is write config or a
-score snapshot: the assertions below pin that the effectful counts stay at zero and the
-directive cannot pass the human ratify gate.
+#3649 narrowed the critic guard to the post-admission arc, and #3895 graduated the
+master flag default-ON — so a default-config tick is no longer a TOTAL no-op: it
+interprets. What it must still never do is write config or a score snapshot, and the
+directive must not pass the human ratify gate. The assertions below pin the effectful
+counts at zero across both arcs, and the OFF flag as a real total no-op — the escape
+hatch the graduation keeps.
 """
 
 from types import SimpleNamespace
@@ -39,16 +37,36 @@ def _counts() -> tuple[int, int, int, int]:
     )
 
 
+def _flag_off() -> SimpleNamespace:
+    return SimpleNamespace(
+        directive_loop_enabled=False,
+        factory_score_enabled=False,
+        directive_verify_days=7,
+        directive_intake_per_tick=25,
+    )
+
+
 class TestFlagOffParity(TestCase):
-    def test_default_config_tick_is_a_total_no_op(self) -> None:
-        # A CAPTURED directive is present; the default-config tick refuses at G1 and
-        # advances NOTHING. Removing the flag guard would dispatch the interpreter.
+    def test_flag_off_tick_is_a_total_no_op(self) -> None:
+        # The escape hatch the #3895 graduation keeps: OFF still refuses at G1 and
+        # advances NOTHING. Anti-vacuous — removing the flag guard falls through and
+        # the counts move (the default-ON case below dispatches).
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
         before = _counts()
-        result = run_tick()
+        result = run_tick(settings=_flag_off())
         assert result.action == "refused"
         assert result.reason == guards.FLAG_OFF
         assert _counts() == before == (0, 0, 0, 0)
+        assert Directive.objects.get(pk=directive.pk).state == Directive.State.CAPTURED
+
+    def test_default_config_tick_interprets_and_writes_no_config(self) -> None:
+        # The shipped posture (#3895): the intake arc runs at the REAL default
+        # resolution and stops at the human ratify gate, writing no config.
+        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
+        result = run_tick()
+        assert result.action == "interpret_dispatched"
+        dispatches, configs, _questions, snapshots = _counts()
+        assert (dispatches, configs, snapshots) == (1, 0, 0)
         assert Directive.objects.get(pk=directive.pk).state == Directive.State.CAPTURED
 
     def test_flag_on_without_a_critic_interprets_but_writes_no_config(self) -> None:

@@ -110,7 +110,6 @@ def _seed(**overrides: Any) -> ReviewRequestPost:
         "slack_channel_id": _COLLEAGUE,
         "slack_thread_ts": _TS,
         "created_at": timezone.now() - dt.timedelta(days=2),
-        "last_nag_step": 0,
         "done_at": None,
     }
     spec.update(overrides)

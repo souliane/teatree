@@ -152,4 +152,4 @@ t3 loop drain-queue start     # /loop 30s Run `t3 loop drain-queue run`.        
 
 Each acquires its own dedicated `LoopLease` slot (`loop-slack-answer` / `loop-self-improve` / `loop-drain-queue`) so a slow cycle never blocks another, and each is the sub-minute-cadence reason these stay dedicated `/loop`s rather than DB `Loop` rows (the cron-based `Loop` registration is minute-granular). There is no master tick to piggyback them onto — each is driven only by its own `/loop`.
 
-For ownership hand-off, claiming, the lease/owner machinery, and how the cron drives the tick, see `t3:teatree`.
+For ownership hand-off, claiming, the lease/owner machinery, and how the cron drives the tick, see `t3:internals`.

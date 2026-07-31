@@ -21,6 +21,8 @@ from teatree.loop.mechanical_snapshot_warmer import refresh_snapshot
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.task import Task
 
@@ -118,11 +120,17 @@ def reopen_ticket(payload: ActionPayload) -> None:
 def reviewer_task_orphaned(payload: ActionPayload) -> None:
     """Complete every open reviewing task on the orphaned reviewer ticket (#998).
 
-    The scanner emits this signal ONLY after ``host.get_pr_open_state``
-    confirmed the PR is genuinely MERGED or CLOSED (#1074) — never on mere
-    absence from the reviewer-assignment scan. Without this sweep the
-    PENDING task for a truly-merged PR lingers forever, surfacing on every
-    ``pending-spawn`` and dispatching a reviewer sub-agent for nothing.
+    The scanner emits this signal on either of two proofs, never on mere
+    absence from the reviewer-assignment scan: ``host.get_pr_open_state``
+    confirmed the PR is genuinely MERGED or CLOSED (#1074), or the local FSM
+    already reached a terminal state (#1431). Without this sweep the PENDING
+    task lingers forever, surfacing on every ``pending-spawn`` and dispatching
+    a reviewer sub-agent for nothing.
+
+    The two grounds are NOT interchangeable in a log (#3910): a terminal ticket
+    on a still-OPEN PR is a correct reap, so crediting it to the forge-state
+    proof reads as a forge bug and sends the operator hunting a phantom. The
+    signal carries the ground it actually used in ``payload["reason"]``.
 
     The handler is intentionally narrow: it operates by ticket id and only
     completes tasks in ``phase=reviewing`` with non-terminal status. Other
@@ -142,10 +150,11 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
     completed = _complete_open_reviewing_tasks(ticket)
     if completed:
         logger.info(
-            "Auto-completed %d orphaned reviewing task(s) on ticket %s (PR %s confirmed merged/closed)",
+            "Auto-completed %d orphaned reviewing task(s) on ticket %s (%s: %s)",
             completed,
             ticket_id,
             payload.get("url", "?"),
+            payload.get("reason", "orphaned"),
         )
 
 
@@ -163,6 +172,13 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     Narrow and best-effort, mirroring :func:`reviewer_task_orphaned`: by
     ticket id, only ``phase=reviewing`` non-terminal tasks; a missing
     ticket no-ops silently.
+
+    Narrower than :func:`reviewer_task_orphaned` in one way (#3910): a task the
+    #68 auto-review dispatch armed is skipped. That premise — own MR means a
+    colleague review-request — does not hold on a solo overlay, where the agent
+    cold-reviewer IS the checker and the armed task is the only route to a
+    merge. :func:`reviewer_task_orphaned` reaps it regardless, because a
+    merged/closed PR makes even an armed review dead work.
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
@@ -186,7 +202,7 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
         ticket = ticket_model.objects.get(pk=ticket_id)
     except ticket_model.DoesNotExist:
         return
-    completed = _complete_open_reviewing_tasks(ticket)
+    completed = _complete_tasks(_open_reviewing_tasks(ticket).not_auto_review_armed())
     if completed:
         logger.info(
             "Auto-completed %d reviewing task(s) on ticket %s (self-authored MR %s — no self-review)",
@@ -196,13 +212,21 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
         )
 
 
-def _complete_open_reviewing_tasks(ticket: object) -> int:
-    """Complete every non-terminal ``phase=reviewing`` task on *ticket*; return the count."""
+def _open_reviewing_tasks(ticket: object) -> "QuerySet":
+    """Every non-terminal ``phase=reviewing`` task on *ticket*."""
     from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    open_tasks = Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
+    return Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
+
+
+def _complete_open_reviewing_tasks(ticket: object) -> int:
+    """Complete every non-terminal ``phase=reviewing`` task on *ticket*; return the count."""
+    return _complete_tasks(_open_reviewing_tasks(ticket))
+
+
+def _complete_tasks(tasks: "QuerySet") -> int:
     completed = 0
-    for task in open_tasks:
+    for task in tasks:
         task.complete()
         completed += 1
     return completed

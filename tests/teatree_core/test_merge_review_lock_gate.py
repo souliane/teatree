@@ -6,7 +6,7 @@ forge squash PUT — the same chokepoint ``assert_review_verdict_gate`` (#2829)
 runs at. This adds a second, independent consult: even when a recorded
 ``merge_safe`` verdict exists at the live head, a merge is refused while the
 per-MR :class:`~teatree.core.models.mr_review_lock.MRReviewLock` is actively
-held (``review_dispatched`` / ``verdict_pending``, not yet stale) — a
+held (``review_dispatched``, not yet stale) — a
 concurrently-dispatched review could still be about to record a HOLD.
 
 Drives the REAL ``merge_ticket_pr`` -> ``execute_bound_merge`` chokepoint (only
@@ -100,19 +100,6 @@ class TestMergeRefusedWhileReviewLockHeld(TestCase):
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
-    def test_refused_while_lock_is_verdict_pending(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        clear = _clear(ticket=ticket)
-        _seed_merge_safe_verdict()
-        MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
-        MRReviewLock.mark_verdict_pending(slug=_SLUG, pr_id=_PR)
-
-        with pytest.raises(MergePreconditionError, match="verdict_pending"):
-            _merge(clear)
-
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
-
 
 class TestMergeProceedsWhenLockIsNotHeld(TestCase):
     def test_proceeds_with_no_lock_row_at_all(self) -> None:
@@ -132,7 +119,7 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         clear = _clear(ticket=ticket)
         _seed_merge_safe_verdict()
         MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
-        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR)
+        MRReviewLock.resolve(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
 
         outcome = _merge(clear)
 

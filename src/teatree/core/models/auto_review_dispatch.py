@@ -17,6 +17,16 @@ exactly one new task; an open task for the same head never duplicates; a
 recorded verdict for the head suppresses enqueue upstream (the PR never reaches
 ``flag_no_review``).
 
+The claim carries a ``deadline`` and a terminal ``state``, in the shape
+:class:`~teatree.core.models.mr_review_lock.MRReviewLock` established: a
+dispatched review that ends without recording a verdict expires, and the next
+sweep re-arms that head instead of leaving it permanently unmergeable (#3920).
+``attempts`` bounds the retry at :data:`MAX_DISPATCH_ATTEMPTS`, so a review that
+can never succeed saturates and is surfaced by the doctor's reconciliation
+ledger rather than re-armed forever. ``mark_resolved`` is the terminal, fired
+when a :class:`~teatree.core.models.review_verdict.ReviewVerdict` lands for the
+head.
+
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 (idempotent claim keyed on ``(pr_url, head_sha)``).
 
@@ -28,18 +38,35 @@ per-head, so it also dedups ACROSS heads, closing the gap where a fresh push
 during an in-flight review used to arm a second reviewer.
 """
 
+import datetime as dt
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.modelkit.expiring_claim import acquirable_q
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
 
-_LOOP_SCANNER_HOLDER = "loop-scanner:auto-review-dispatch"
+#: The holder identity the loop scanner takes the per-MR review lock under. A
+#: verdict recorded for a head this dispatch armed releases that lock; a verdict
+#: from any other path does not (see :meth:`MRReviewLock.resolve`).
+LOOP_SCANNER_HOLDER = "loop-scanner:auto-review-dispatch"
+
+#: How long an armed review may hold its claim before the head is re-armable.
+#: Equal to the review lock's TTL on purpose: the dispatch and the lock are
+#: claimed together and must expire together, or the re-arm would be refused by
+#: a lock that is still nominally held.
+DEFAULT_DISPATCH_TTL: dt.timedelta = DEFAULT_LOCK_TTL
+
+#: How many times one head may be armed before the claim is left saturated. A
+#: review that dies three times is not going to succeed on the fourth; re-arming
+#: forever would burn the headless lane on a PR that needs a human. Saturation is
+#: surfaced by ``t3 doctor check`` rather than left silent.
+MAX_DISPATCH_ATTEMPTS = 3
 
 
 def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) -> str:
@@ -82,6 +109,16 @@ class AutoReviewDispatch(models.Model):
     enqueued.
     """
 
+    class State(models.TextChoices):
+        DISPATCHED = "dispatched", "Dispatched"
+        RESOLVED = "resolved", "Resolved"
+
+    #: In-flight: acquirable again only once ``deadline`` has passed.
+    _ACTIVE_STATES: ClassVar[frozenset[str]] = frozenset({State.DISPATCHED})
+    #: Empty on purpose — unlike the per-MR lock, a RESOLVED per-head claim is
+    #: terminal: a verdict already covers that exact tree.
+    _ACQUIRABLE_STATES: ClassVar[frozenset[str]] = frozenset()
+
     slug = models.CharField(max_length=255)
     pr_id = models.IntegerField()
     head_sha = models.CharField(max_length=64)
@@ -94,6 +131,10 @@ class AutoReviewDispatch(models.Model):
         blank=True,
         related_name="auto_review_dispatches",
     )
+    state = models.CharField(max_length=32, choices=State.choices, default=State.DISPATCHED)
+    deadline = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=1)
     dispatched_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
@@ -110,6 +151,41 @@ class AutoReviewDispatch(models.Model):
         return f"auto-review<{self.pk}:{self.slug}#{self.pr_id}@{self.head_sha[:8]}>"
 
     @classmethod
+    def saturated(cls, *, at: "dt.datetime | None" = None) -> models.QuerySet:
+        """Claims that spent their whole retry budget and still hold no verdict.
+
+        The visible end of the bounded retry: every attempt was armed and none
+        produced a verdict, so nothing will re-arm this head and it needs a
+        human. Surfaced by the doctor's reconciliation ledger.
+
+        Precisely :meth:`_reclaim`'s claim test with the budget inverted, over
+        the same :func:`acquirable_q` predicate: a saturated claim is one the
+        reclaim would take but for its exhausted ``attempts``. Spelling the
+        state/deadline half inline here instead would let "will not re-arm"
+        drift from "would re-arm", which is the whole point of the shared rule.
+        """
+        now = at or timezone.now()
+        return cls.objects.filter(
+            acquirable_q(always_acquirable=cls._ACQUIRABLE_STATES, active=cls._ACTIVE_STATES, now=now),
+            attempts__gte=MAX_DISPATCH_ATTEMPTS,
+        )
+
+    @classmethod
+    def mark_resolved(cls, *, slug: str, pr_id: int, head_sha: str) -> bool:
+        """Terminal: a verdict landed for this exact head, so the claim is spent.
+
+        Returns ``True`` iff a row transitioned. Called when a
+        :class:`~teatree.core.models.review_verdict.ReviewVerdict` is recorded —
+        merge_safe or hold, either way the review concluded. Resolving an
+        unclaimed head is a legitimate no-op, never an error.
+        """
+        return bool(
+            cls.objects.filter(slug=slug.strip(), pr_id=pr_id, head_sha=head_sha.strip().lower())
+            .filter(state__in=cls._ACTIVE_STATES)
+            .update(state=cls.State.RESOLVED, resolved_at=timezone.now())
+        )
+
+    @classmethod
     def enqueue(
         cls,
         *,
@@ -121,40 +197,87 @@ class AutoReviewDispatch(models.Model):
     ) -> "AutoReviewDispatch | None":
         """Record the dispatch + create one claimable reviewing Task — idempotently.
 
-        Returns the new row (carrying the enqueued task) on first dispatch for
-        ``(slug, pr_id, head_sha)``; ``None`` when a row for that head already
-        exists (the sweep on a previous tick already armed the review) OR when
-        the per-MR :class:`~teatree.core.models.mr_review_lock.MRReviewLock`
-        is already held for ``(slug, pr_id)`` — a review for a DIFFERENT
-        (older) head on the same MR is still in flight (#1405: the lock is
-        keyed on the MR, not the head, so it also dedups a fresh push arriving
-        while the prior review hasn't concluded). The row insert and the Task
-        creation share one transaction so a row never exists without its task
-        and a task is never created without claiming the dedup slot.
+        Returns the row (carrying the enqueued task) when a review was armed;
+        ``None`` when it was not. A claim is armed on the first dispatch for
+        ``(slug, pr_id, head_sha)``, and re-armed when an existing claim has
+        EXPIRED without producing a verdict and has retry budget left — the
+        dispatched reviewer died, so the head is un-reviewed and must not stay
+        un-armable (#3920). ``None`` covers the three refusals: a live claim
+        (a review really is in flight), a RESOLVED claim (a verdict already
+        covers this exact tree), and a saturated one
+        (:data:`MAX_DISPATCH_ATTEMPTS` reviews died — see :meth:`saturated`).
+
+        ``None`` also when the per-MR
+        :class:`~teatree.core.models.mr_review_lock.MRReviewLock` is held for
+        ``(slug, pr_id)`` — a review for a DIFFERENT (older) head on the same MR
+        is still in flight (#1405: the lock is keyed on the MR, not the head, so
+        it also dedups a fresh push arriving while the prior review hasn't
+        concluded). The claim, the lock and the Task share one transaction, so a
+        refused lock unwinds the claim instead of leaving a half-claimed head
+        that would dedup the next tick out of arming a review nobody dispatched.
         """
         if not slug or not head_sha:
             return None
-        if MRReviewLock.acquire(slug=slug, pr_id=pr_id, holder=_LOOP_SCANNER_HOLDER, mr_url=pr_url) is None:
-            return None
+        now = timezone.now()
         with transaction.atomic():
             row, created = cls.objects.get_or_create(
                 slug=slug,
                 pr_id=pr_id,
                 head_sha=head_sha,
-                defaults={"pr_url": pr_url, "overlay": overlay},
+                defaults={
+                    "pr_url": pr_url,
+                    "overlay": overlay,
+                    "state": cls.State.DISPATCHED,
+                    "deadline": now + DEFAULT_DISPATCH_TTL,
+                    "attempts": 1,
+                },
             )
-            if not created:
+            if not created and not cls._reclaim(row, now=now):
                 return None
-            task = cls._create_reviewing_task(
+            if MRReviewLock.acquire(slug=slug, pr_id=pr_id, holder=LOOP_SCANNER_HOLDER, mr_url=pr_url) is None:
+                # Another reviewer holds the MR. Unwind the claim rather than
+                # strand it: a half-claimed head would dedup the next tick out of
+                # arming a review that was never dispatched.
+                transaction.set_rollback(True)
+                return None
+            row.refresh_from_db()
+            row.task = cls._create_reviewing_task(
                 slug=slug,
                 pr_id=pr_id,
                 head_sha=head_sha,
                 pr_url=pr_url,
                 overlay=overlay,
             )
-            row.task = task
             row.save(update_fields=["task"])
         return row
+
+    @classmethod
+    def _reclaim(cls, row: "AutoReviewDispatch", *, now: dt.datetime) -> bool:
+        """Compare-and-set an EXPIRED, unresolved claim back to dispatched. True iff re-armed.
+
+        The same shape :meth:`MRReviewLock.acquire` uses, over the shared
+        :func:`acquirable_q` predicate: a single conditional ``UPDATE`` is the
+        atomic claim, so two concurrent ticks racing the same stranded head
+        cannot both arm a reviewer. The retry budget is part of the condition
+        rather than a separate read, so exhausting it is the same atomic step.
+        """
+        return bool(
+            cls.objects.filter(pk=row.pk)
+            .filter(
+                acquirable_q(
+                    always_acquirable=cls._ACQUIRABLE_STATES,
+                    active=cls._ACTIVE_STATES,
+                    now=now,
+                )
+            )
+            .filter(attempts__lt=MAX_DISPATCH_ATTEMPTS)
+            .update(
+                state=cls.State.DISPATCHED,
+                deadline=now + DEFAULT_DISPATCH_TTL,
+                attempts=models.F("attempts") + 1,
+                resolved_at=None,
+            )
+        )
 
     @staticmethod
     def _create_reviewing_task(*, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str) -> "Task":

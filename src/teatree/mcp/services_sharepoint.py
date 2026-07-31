@@ -17,7 +17,7 @@ the OAuth-scope level (see :mod:`teatree.backends.sharepoint`).
 from typing import TYPE_CHECKING, Any
 
 from asgiref.sync import sync_to_async
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
@@ -27,7 +27,7 @@ from teatree.mcp.service_resolver import resolve_declaring_overlay_client
 if TYPE_CHECKING:
     from teatree.core.backend_registry import SharePointReadClient
 
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
 
 INSTRUCTIONS = (
     "- sharepoint_list(subpath, recursive): entries in the read-only SharePoint "
@@ -69,7 +69,7 @@ async def _sharepoint_verify_read_only() -> bool:
     return await sync_to_async(lambda: _client().verify_read_only(), thread_sensitive=True)()
 
 
-def register(server: FastMCP) -> None:
+def register(server: MCPServer) -> None:
     server.add_tool(_sharepoint_list, name="sharepoint_list", annotations=_READ_ONLY)
     server.add_tool(_sharepoint_cat, name="sharepoint_cat", annotations=_READ_ONLY)
     server.add_tool(_sharepoint_verify_link, name="sharepoint_verify_link", annotations=_READ_ONLY)

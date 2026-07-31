@@ -70,6 +70,7 @@ from teatree.cli.doctor.checks_session import (
 )
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
+from teatree.cli.doctor.checks_unshipped_work import check_unshipped_work
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
     _find_host_project_root,
@@ -168,6 +169,7 @@ __all__ = (
     "check_slack_roundtrip",
     "check_statusline",
     "check_statusline_freshness",
+    "check_unshipped_work",
     "doctor_app",
 )
 
@@ -374,7 +376,12 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     ok = _check_enabled_but_unprovisioned() and ok
     # Two hard FAILs over teatree's own durable rows — a registered worktree that is
     # no longer a checkout, and a PR owed since a deferral the drain cannot discharge.
-    ok = all((check_worktree_health(), check_pending_pull_requests())) and ok
+    # The third is advisory and always passes: the capture pass records what a
+    # checkout held that exists nowhere else, and this is the surface that makes
+    # those rows visible with an age (#3891). Nothing reaps them, so without a
+    # surface nobody looks. The tuple calls all three before ``all`` short-circuits,
+    # so no finding masks another.
+    ok = all((check_worktree_health(), check_pending_pull_requests(), check_unshipped_work())) and ok
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok
