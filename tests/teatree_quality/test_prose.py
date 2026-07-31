@@ -8,6 +8,7 @@ from teatree.quality.prose import (
     file_comments,
     file_prose,
     hash_comments,
+    markdown_notes,
     markdown_prose,
     python_comments,
     python_prose,
@@ -58,6 +59,55 @@ class TestHashComments:
 
     def test_a_comment_after_a_quoted_scalar_is_still_found(self) -> None:
         assert [line.text for line in hash_comments('prompt: "a value"  # the note\n')] == ["# the note"]
+
+    def test_a_sigil_needs_whitespace_before_it(self) -> None:
+        assert hash_comments("branch: feature#12\n") == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "prompt: |\n  a line\n  # not a note\n",
+            "prompt: >-\n  a line\n  # not a note\n",
+            "prompt: |2\n   a line\n   # not a note\n",
+        ],
+    )
+    def test_a_block_scalar_body_is_carried_text(self, source: str) -> None:
+        assert hash_comments(source) == []
+
+    def test_the_block_scalar_header_keeps_its_own_comment(self) -> None:
+        source = "prompt: |  # the header's own note\n  # not a note\n"
+        assert [line.text for line in hash_comments(source)] == ["# the header's own note"]
+
+    def test_a_block_scalar_ends_when_the_indent_returns(self) -> None:
+        assert [line.text for line in hash_comments("prompt: |\n  a line\n\n# the note\n")] == ["# the note"]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "summary: don't ship this  # the note\n",
+            'prompt: "say \\" now"  # the note\n',
+            "prompt: 'don''t'  # the note\n",
+        ],
+    )
+    def test_a_quoting_edge_case_does_not_swallow_the_comment(self, source: str) -> None:
+        assert [line.text for line in hash_comments(source)] == ["# the note"]
+
+
+class TestMarkdownNotes:
+    @pytest.mark.parametrize("fence", ["```", "~~~"])
+    def test_both_fence_styles_are_quoted_code(self, fence: str) -> None:
+        source = f"said\n{fence}\nquoted\n{fence}\nsaid again\n"
+        assert [line.text for line in markdown_notes(source)] == ["said", "said again"]
+
+    def test_an_indented_block_is_quoted_code(self) -> None:
+        assert [line.text for line in markdown_notes("said\n\n    quoted\nsaid again\n")] == [
+            "said",
+            "",
+            "said again",
+        ]
+
+    def test_a_list_item_is_still_the_author_speaking(self) -> None:
+        assert [line.text for line in markdown_notes("- a bullet\n  - nested\n")] == ["- a bullet", "  - nested"]
 
 
 class TestFileComments:

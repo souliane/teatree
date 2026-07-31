@@ -12,9 +12,9 @@ things follow, and they are what let the guard's own tests survive it.
 
 A comment is a note to whoever reads the file next. A docstring is the object
 saying what it is, and a string literal is a runtime value -- a fixture, a
-scenario's graded prose, a user-facing "renders TODO list page". Neither is
-addressed to a reader, so neither is scanned; JSON and JSONL have no comment
-syntax at all.
+scenario's graded prose in a YAML block scalar, a markdown code sample, a
+user-facing "renders TODO list page". Neither is addressed to a reader, so
+neither is scanned; JSON and JSONL have no comment syntax at all.
 
 Opening the comment is what separates the marker from the mention. "TODO:" at
 the head of a comment instructs; the same word inside a sentence is the file
@@ -42,29 +42,44 @@ from teatree.quality.incompleteness_markers import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The four occurrences that stood in this tree when the ban was written, verbatim.
-# Each survives for a different reason, and none of them for being on a list.
+# The four standing occurrences, each replanted under a bare tree at its own
+# path so the real repo's layout cannot be what saves it. Each survives for a
+# different reason, and none of them for being on a list.
 LEGITIMATE_OCCURRENCES: tuple[tuple[str, str, str], ...] = (
     (
-        "tests/gate_contract.py",
+        "tests/test_gate_never_lockout_contract.py",
         '"""Handlers are allowlisted with a ``# TODO(never-lockout)`` marker so they are tracked."""\n',
         "a docstring documents the convention rather than deferring work",
     ),
     (
-        "tests/detector_fixture.py",
-        'PROBE = \'"""TODO: something."""\'\n',
+        "tests/teatree_quality/test_incompleteness_markers.py",
+        '(tmp_path / "mod.py").write_text(\'"""TODO: something."""\\n\')\n',
         "a fixture for the detector is a string literal, not a note",
     ),
     (
-        "tests/ruff_probe.py",
-        'probe.write_text("x = 1  # TODO: wire this up\\n")\n',
+        "tests/quality/test_ruff_antislop_caps.py",
+        'probe.write_text("x = 1  # TODO: wire this up\\n", encoding="utf-8")\n',
         "the probe proving ruff catches a marker is a string literal too",
     ),
     (
-        "evals/scenarios/no_tech_debt.yaml",
-        "# suppression, a TODO/FIXME-for-later, a pyproject per-file-ignore, or an\n",
+        "evals/scenarios/do_the_best_no_tech_debt.yaml",
+        "    # suppression, a TODO/FIXME-for-later, a pyproject per-file-ignore, or an\n",
         "a comment naming the anti-pattern mentions the marker mid-sentence",
     ),
+)
+
+# The forms the two MAJOR review findings on the YAML reader turned up: a scalar
+# body that must not red the build, and a comment that must not be swallowed.
+YAML_SCALAR_PROBES: tuple[tuple[str, str], ...] = (
+    ("a block scalar body", "graded:\n  prompt: |\n    Review this diff:\n    # TODO: wire this up\n  tier: x\n"),
+    ("a folded scalar body", "rubric: >-\n  FAIL when the agent adds\n  # FIXME: later\n"),
+    ("a quoted scalar", 'prompt: "the agent writes # TODO: later"\n'),
+)
+YAML_COMMENT_PROBES: tuple[tuple[str, str], ...] = (
+    ("an apostrophe in an unquoted scalar", "summary: don't ship this      # TODO: grade the negative case\n"),
+    ("an escaped quote in a double-quoted scalar", 'prompt: "say \\" now"      # TODO: finish the assertion\n'),
+    ("a doubled quote in a single-quoted scalar", "prompt: 'don''t'      # FIXME: invert this\n"),
+    ("a line after a block scalar ends", "prompt: |\n  body text\n# TODO: grade this too\n"),
 )
 
 # One planted marker per comment syntax the verification trees actually use.
@@ -140,6 +155,30 @@ class TestTheRuleNotAnAllowlist:
         # can be what saves it, because the real repo is not there.
         _plant(tmp_path, rel, body)
         assert DeferredMarkerBan.over(tmp_path).markers() == [], reason
+
+    @pytest.mark.parametrize(("shape", "body"), YAML_SCALAR_PROBES)
+    def test_a_yaml_scalar_body_is_carried_text_not_a_note(self, tmp_path: Path, shape: str, body: str) -> None:
+        # A zero-tolerance gate has no ledger and no allowlist, so a scenario
+        # that must SHOW the marker it grades against would have nowhere to go.
+        _plant(tmp_path, "evals/scenarios/probe.yaml", body)
+        assert DeferredMarkerBan.over(tmp_path).markers() == [], shape
+
+    @pytest.mark.parametrize(("shape", "body"), YAML_COMMENT_PROBES)
+    def test_a_quoting_edge_case_does_not_swallow_a_marker(self, tmp_path: Path, shape: str, body: str) -> None:
+        _plant(tmp_path, "evals/scenarios/probe.yaml", body)
+        assert [marker.pattern_id for marker in DeferredMarkerBan.over(tmp_path).markers()] == ["author-marker"], shape
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "prose line\n\n    # TODO: wire this up\n",
+            "prose line\n\n~~~\n# TODO: wire this up\n~~~\n",
+            "prose line\n\n```\n# TODO: wire this up\n```\n",
+        ],
+    )
+    def test_markdown_code_is_quoted_not_said(self, tmp_path: Path, body: str) -> None:
+        _plant(tmp_path, "tests/quality/README.md", body)
+        assert DeferredMarkerBan.over(tmp_path).markers() == []
 
     def test_prose_families_are_out_of_scope_by_registry_form(self) -> None:
         forms = {pattern.id: pattern.form for pattern in load_marker_patterns()}

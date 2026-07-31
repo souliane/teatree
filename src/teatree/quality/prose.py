@@ -8,9 +8,12 @@ than the module describing itself.
 ``file_comments`` is the narrower cut: only the lines a file addresses to its
 READER, never a docstring. A docstring is the object documenting what it IS; a
 comment is a note left for whoever reads the source next, which is the form an
-author-marked deferral takes. Markdown has no comment syntax, so its whole body
-outside a fence is that note; JSON and JSONL have none either and carry no
-reader-addressed line at all.
+author-marked deferral takes. In YAML and TOML that is a ``#`` outside a scalar,
+with a block scalar's body skipped whole because it is verbatim carried text.
+Markdown has no comment syntax, so its body is the note -- minus fenced and
+indented code, the one part of a markdown file that is quoted rather than said.
+JSON and JSONL have no comment syntax either, so they carry no reader-addressed
+line at all.
 
 Markdown link targets are dropped. A URL is punctuation-dense noise sitting
 between a visible label and the rest of the sentence, and it breaks any pattern
@@ -37,6 +40,20 @@ HASH_COMMENT_SUFFIXES: tuple[str, ...] = (".yaml", ".yml", ".toml")
 
 #: Every suffix ``file_comments`` can read a reader-addressed line from.
 COMMENT_SUFFIXES: tuple[str, ...] = (".py", ".md", *HASH_COMMENT_SUFFIXES)
+
+#: What may precede a quote for it to OPEN a scalar rather than sit inside one.
+#: Without this an apostrophe in ``don't`` opens a region that never closes, and
+#: the comment after it is swallowed.
+_SCALAR_OPENERS = frozenset(" \t:,[{-=")
+
+#: A block-scalar header (``|``, ``>-``, ``|2``): everything indented under it is
+#: literal text, which is where a scenario quotes the marker it grades against.
+_BLOCK_SCALAR_RE = re.compile(r"[|>][+-]?\d*\s*$")
+
+#: An indented markdown code block. Markdown has no comment syntax, so its body
+#: is the author's note -- except where the body is quoted code.
+_MARKDOWN_INDENT = 4
+_MARKDOWN_FENCES = ("```", "~~~")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,23 +92,80 @@ def python_comments(source: str) -> list[ProseLine]:
         return []
 
 
+def comment_column(text: str) -> int | None:
+    r"""Where a comment opens on a YAML/TOML *text*, or ``None`` if it carries none.
+
+    Three things separate a comment sigil from a ``#`` that is part of a value,
+    and getting any of them wrong costs a gate in one direction or the other: the
+    sigil must follow whitespace or open the line, a quote only starts a scalar at
+    the head of a token (so the apostrophe in ``don't`` does not), and both of
+    YAML's escapes -- ``\\"`` inside double quotes, ``''`` inside single -- keep
+    the scalar open.
+    """
+    quote: str | None = None
+    column = 0
+    while column < len(text):
+        char = text[column]
+        if quote is not None:
+            if char == "\\" and quote == '"':
+                column += 2
+                continue
+            if char == quote:
+                quote = None if text[column + 1 : column + 2] != quote else quote
+                column += 1 if quote is None else 2
+                continue
+        elif char in "'\"" and (column == 0 or text[column - 1] in _SCALAR_OPENERS):
+            quote = char
+        elif char == "#" and (column == 0 or text[column - 1] in " \t"):
+            return column
+        column += 1
+    return None
+
+
 def hash_comments(source: str) -> list[ProseLine]:
     """The ``#`` comment of each line of a YAML/TOML document, from the sigil onwards.
 
-    A ``#`` inside a quoted scalar is a character of that value, so the scan
-    tracks quoting rather than splitting on the first sigil it sees.
+    A block scalar's body is skipped whole. It is verbatim text the document
+    carries, which is exactly where an eval scenario quotes the marker vocabulary
+    it grades an agent against.
     """
     lines: list[ProseLine] = []
+    block_indent: int | None = None
     for lineno, text in enumerate(source.splitlines(), start=1):
-        quote: str | None = None
-        for column, char in enumerate(text):
-            if quote is not None:
-                quote = None if char == quote else quote
-            elif char in "'\"":
-                quote = char
-            elif char == "#":
-                lines.append(ProseLine(lineno=lineno, text=text[column:]))
-                break
+        indent = len(text) - len(text.lstrip())
+        if block_indent is not None:
+            if not text.strip() or indent > block_indent:
+                continue
+            block_indent = None
+        column = comment_column(text)
+        if column is not None:
+            lines.append(ProseLine(lineno=lineno, text=text[column:]))
+        if _BLOCK_SCALAR_RE.search((text if column is None else text[:column]).rstrip()):
+            block_indent = indent
+    return lines
+
+
+def markdown_notes(source: str) -> list[ProseLine]:
+    """Markdown lines the author addressed to the reader: prose, never quoted code.
+
+    Both fence styles and the indented-block form are excluded. Markdown has no
+    comment syntax, so a code sample is the only thing in the document that is
+    not the author speaking.
+    """
+    lines: list[ProseLine] = []
+    fence: str | None = None
+    for lineno, text in enumerate(source.splitlines(), start=1):
+        stripped = text.lstrip()
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        opening = next((mark for mark in _MARKDOWN_FENCES if stripped.startswith(mark)), None)
+        if opening is not None:
+            fence = opening
+            continue
+        if text[:_MARKDOWN_INDENT].strip() or not text.startswith(" " * _MARKDOWN_INDENT):
+            lines.append(ProseLine(lineno=lineno, text=text))
     return lines
 
 
@@ -133,5 +207,5 @@ def file_comments(path: Path) -> list[ProseLine]:
     if path.suffix in HASH_COMMENT_SUFFIXES:
         return _without_link_targets(hash_comments(source))
     if path.suffix == ".md":
-        return _without_link_targets(markdown_prose(source))
+        return _without_link_targets(markdown_notes(source))
     return []
