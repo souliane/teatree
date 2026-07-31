@@ -338,7 +338,7 @@ jobs:
       - name: Install and assert the Claude CLI
         if: ${{ (inputs.backend || 'api') == 'api' }}
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.170
+          npm install -g @anthropic-ai/claude-code@2.1.220
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input

@@ -32,6 +32,14 @@ updates:
     # for an unrelated reason: tests/test_claude_cli_pin.py derives the eval/test image's
     # `claude` CLI generation from it, and reds on a bump until the bundled version is
     # re-derived from the new wheel.
+    #
+    # An SDK bump PR resolves only because `[tool.uv] override-dependencies` in
+    # pyproject.toml replaces the SDK's declared `mcp<2.0.0` with the project's own
+    # `mcp>=2,<3` — the cap is broader than the SDK's usage, which reaches only the
+    # low-level `mcp.server.Server` / `mcp.types` surface. Dependabot never touches that
+    # override, so a bump inherits it silently; the safety it assumes is re-derived from
+    # the new wheel by tests/test_claude_agent_sdk_pin.py::TestTheOverrideIsHonest, which
+    # reds if the release reaches for an mcp symbol the installed major lacks.
 
   # There is deliberately NO `npm` ecosystem for the pinned `@anthropic-ai/claude-code`
   # (and `pyright`) installs. Dependabot's npm ecosystem reads a package.json/lockfile,

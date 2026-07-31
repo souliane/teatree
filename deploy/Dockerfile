@@ -21,12 +21,13 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # `pyright-langserver` binary the pyright-lsp Claude plugin execs to give factory
 # agents live Python type diagnostics while coding (`t3 setup` enables the plugin).
 #
-# The claude CLI pin here is DELIBERATELY NOT the generation `claude-agent-sdk`
-# bundles (which every eval/test image pins). This image feeds the paths that exec
-# the GLOBAL binary — `t3 loop start`'s os.execv, the agent command, the ttyd web
-# terminal, the tasks command — so it needs a current known-good release; the
-# bundle's 2.1.170 predates `claude-opus-5`, which model_tiering resolves as the
-# `frontier` tier. Both tiers are guarded by tests/test_claude_cli_pin.py.
+# The claude CLI pin here is set INDEPENDENTLY of the generation `claude-agent-sdk`
+# bundles (which every eval/test image pins), even when the two coincide. This image
+# feeds the paths that exec the GLOBAL binary — `t3 loop start`'s os.execv, the agent
+# command, the ttyd web terminal, the tasks command — so it tracks a current
+# known-good release and may lead the bundle, never trail it: a generation behind
+# `claude-opus-5` breaks model_tiering's `frontier` tier. Both tiers are guarded by
+# tests/test_claude_cli_pin.py.
 # bash with `pipefail`, not the default dash `/bin/sh`. dash has no `pipefail`, so
 # a `curl ... | bash` whose FETCH fails still reports only the shell's exit status
 # and the `&&` chain sails on. That silently broke the box: NodeSource answered the

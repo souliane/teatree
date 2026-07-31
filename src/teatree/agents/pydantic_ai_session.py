@@ -181,6 +181,22 @@ def _retry_text(part: RetryPromptPart) -> str:
     return content if isinstance(content, str) else str(content)
 
 
+def _model_identity_usage(model_name: str) -> dict[str, Any]:
+    """The ``model_usage`` map carrying ONLY the billed model's identity, no breakdown.
+
+    ``ResultMessage.model_usage`` is a verbatim pass-through of the CLI's ``modelUsage``
+    JSON — the SDK's parser assigns ``data.get("modelUsage")`` unvalidated, so its
+    ``ModelUsage`` TypedDict documents the shape the CLI sends rather than a constructor
+    contract this lane must satisfy. There is no CLI on the metered lane and pydantic_ai
+    reports no per-model breakdown, so the entry is deliberately EMPTY: it exists because
+    ``headless_usage._billed_model`` reads the billed model from this map's single KEY.
+    The authoritative figures for the turn are ``usage`` and ``total_cost_usd`` on the same
+    message. Zero-filling the breakdown to satisfy the TypedDict would publish
+    measured-looking zeros for cost, context window, and output cap that nothing observed.
+    """
+    return {model_name: {}}
+
+
 def _turns_made(stream: "StreamedRunResult[None, str] | None") -> int:
     """The model requests a FAILED turn actually made — never zero.
 
@@ -399,7 +415,7 @@ class PydanticAiHarnessSession:
                 "cache_creation_input_tokens": run_usage.cache_write_tokens,
             },
             result=text,
-            model_usage={self._model_name: {}},
+            model_usage=_model_identity_usage(self._model_name),
         )
 
     def _error_result(
@@ -423,7 +439,7 @@ class PydanticAiHarnessSession:
             session_id=self._session_id,
             result=str(exc),
             api_error_status=api_error_status,
-            model_usage={self._model_name: {}},
+            model_usage=_model_identity_usage(self._model_name),
         )
 
     def _usage_limits(self) -> UsageLimits | None:
