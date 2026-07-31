@@ -33,7 +33,7 @@ import re
 import shutil
 from pathlib import Path
 
-from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write
+from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write, _is_existing_pr_metadata_only_edit
 from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.mr_cli_fields import extract_mr_target_repo, strip_quoted_and_heredoc
 
@@ -63,6 +63,13 @@ def is_merge_class_command(command: str) -> bool:
     if _GH_PR_READY_RE.search(skeleton) or _PR_MR_CREATE_RE.search(skeleton):
         return not _DRAFT_FLAG_RE.search(skeleton)
     if _FORGE_API_RE.search(skeleton) and _is_api_create_endpoint_write(command):
+        # Editing an existing PR's title/description creates nothing and merges
+        # nothing, so it is not a merge-class write. Sibling gates REQUIRE such a
+        # correction (conventional-commit first line, `## What` / `## Why`), and
+        # this gate blocks a push — so firing on it makes satisfying one gate trip
+        # another.
+        if _is_existing_pr_metadata_only_edit(command):
+            return False
         return not _DRAFT_FLAG_RE.search(skeleton)
     return False
 

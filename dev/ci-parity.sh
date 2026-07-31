@@ -21,6 +21,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# A CALLER's pipeline (`bash dev/ci-parity.sh 2>&1 | tail -25`) reports its LAST
+# stage's status, so this lane's exit code is erased before anyone reads it.
+# `pipefail` above governs only pipelines this script builds, never one a caller
+# wraps around it. So the verdict lives in the OUTPUT too: this trap makes the
+# final line of a red run an unmistakable FAILED banner, matching the success
+# banner at the end. It re-raises the original code, so an unpiped caller still
+# sees a true exit status.
+_announce_verdict() {
+    rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ]; then
+        echo "=== ci-parity: FAILED (exit ${rc}) -- a blocking CI predicate did NOT pass ==="
+    fi
+    exit "$rc"
+}
+trap _announce_verdict EXIT
+
 # Skip the slow network hooks (their own dedicated CI jobs run them); everything
 # else runs exactly as CI's `lint` job does. Override with SKIP=... if needed.
 export SKIP="${SKIP:-uv-audit,cyclonedx-sbom}"

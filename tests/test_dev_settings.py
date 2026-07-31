@@ -1,6 +1,9 @@
 """Tests for teatree.settings, teatree.urls, teatree.wsgi and teatree.__main__."""
 
 import importlib
+import os
+import subprocess
+import sys
 from unittest.mock import patch
 
 from django.contrib.staticfiles.views import serve as serve_static
@@ -14,7 +17,11 @@ def test_settings_importable():
     """Importing the module should execute it without errors."""
     mod = importlib.import_module("teatree.settings")
     assert mod.SECRET_KEY == "teatree-dev-insecure"
-    assert mod.DEBUG is True
+    # DEBUG is COMPUTED from T3_DEBUG, so asserting a constant here would pin the
+    # RUNNER'S environment rather than the code, and turn red wherever a deployment
+    # sets T3_DEBUG=0. Assert the wiring; the value contract itself is pinned
+    # environment-independently by `test_debug_follows_the_environment`.
+    assert mod.DEBUG is _debug_enabled()
     assert mod.USE_TZ is True
     assert mod.ROOT_URLCONF == "teatree.urls"
     assert "default" in mod.DATABASES
@@ -104,3 +111,27 @@ def test_wsgi_application_is_a_callable():
     """teatree.wsgi exposes a WSGI `application` callable for gunicorn."""
     mod = importlib.import_module("teatree.wsgi")
     assert callable(mod.application)
+
+
+def test_debug_follows_the_environment():
+    """``settings.DEBUG`` is derived from ``T3_DEBUG``, in BOTH directions.
+
+    ``DEBUG`` is evaluated once, at module import, so the wiring cannot be
+    observed by re-reading the attribute inside an already-configured Django
+    process. Each direction runs in a fresh interpreter instead, which makes the
+    assertion independent of the T3_DEBUG value the runner itself happens to
+    carry — a constant asserted in-process pins the runner's environment, not
+    the code, and turns red on any deployment that sets ``T3_DEBUG=0``.
+    """
+    script = "import teatree.settings as s; print(s.DEBUG)"
+    for value, expected in (("0", "False"), ("1", "True")):
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            env={**os.environ, "T3_DEBUG": value},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert completed.stdout.strip() == expected, (
+            f"T3_DEBUG={value} must yield DEBUG={expected}; settings.DEBUG is not wired to the env reader."
+        )

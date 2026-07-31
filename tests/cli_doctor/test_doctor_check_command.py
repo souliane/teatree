@@ -163,7 +163,11 @@ class TestDoctorCheckCommand:
         # The editable/contribute mismatch is an advisory WARN — it must NOT
         # redden the run now that the exit code is real (#3313).
         assert result.exit_code == 0, result.output
-        assert "WARN" in result.output
+        # Assert THIS gate's own line, not a bare "WARN": the doctor emits many
+        # advisory WARNs unrelated to the editable state (host-reading advisories,
+        # reconciliation reads), so a substring check for "WARN" alone passes with
+        # the editable/contribute warning removed entirely — it would guard nothing.
+        assert "teatree is editable but contribute=false in the DB config" in result.output
 
     def test_fails_when_required_tool_missing(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
