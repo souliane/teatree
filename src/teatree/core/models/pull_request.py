@@ -130,6 +130,16 @@ class PullRequestQuerySet(models.QuerySet):
             merged += 1
         return merged
 
+    def live(self) -> "PullRequestQuerySet":
+        """Rows that still evidence an attempt in flight — neither landed nor abandoned.
+
+        The ONE definition of "this ticket has an open PR", shared by every liveness
+        reader (the #3978 intake-budget release rules and its doctor alarm). MERGED and
+        CLOSED are both settled: the first succeeded, the second was given up on, and
+        neither is a reason to keep holding an in-flight budget slot.
+        """
+        return self.exclude(state__in=(PullRequest.State.MERGED, PullRequest.State.CLOSED))
+
     @staticmethod
     def settle_forge_state(row: "PullRequest", live_state: str) -> bool:
         """Record a live forge verdict on *row*; ``True`` when the row moved.

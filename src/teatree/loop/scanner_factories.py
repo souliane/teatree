@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from teatree.config import Autonomy, UserSettings, clone_root, effective_trusted_issue_authors, get_effective_settings
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.intake.budget import read_intake_budget
 from teatree.core.merge import normalize_repo_slug
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.worktree.clone_paths import find_clone_path
@@ -362,7 +363,13 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
     # so it strands its slot and the budget gate reads false forever.
     ImplementedIssueMarker.objects.reconcile_stale(backend.name)
-    can_claim = ImplementedIssueMarker.objects.in_flight_count(backend.name) < settings.issue_implementer_max_concurrent
+    budget = read_intake_budget(backend.name, settings.issue_implementer_max_concurrent)
+    can_claim = not budget.at_budget
+    if not can_claim:
+        # #3978: without this the tick returns None, does nothing and reports success —
+        # enabled loop, advancing last-run stamp, no error, and no surface anywhere
+        # saying intake is at budget and claiming nothing.
+        logger.warning("%s", budget.report())
     if not can_claim and not wire.fleet_claim_enabled(backend.name):
         return None
     return IssueIntakeScanner(

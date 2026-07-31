@@ -4407,7 +4407,16 @@ Usage: t3 loop reclaim-markers [OPTIONS]
 │                                                 waiting out the grace.       │
 │ --stall-grace-hours         FLOAT RANGE [x>=0]  How long a claim whose       │
 │                                                 ticket stopped moving may    │
-│                                                 hold its slot (default: 24). │
+│                                                 hold its slot while an open  │
+│                                                 PR proves it is still        │
+│                                                 mid-flight (default: 24).    │
+│ --dead-grace-hours          FLOAT RANGE [x>=0]  How long a claim whose       │
+│                                                 ticket has nothing queued    │
+│                                                 and no open PR may hold its  │
+│                                                 slot (default: 2). The       │
+│                                                 attempt is over rather than  │
+│                                                 slow, so it is not held to   │
+│                                                 the stall grace.             │
 │ --json                                          Emit the reconcile result as │
 │                                                 JSON.                        │
 │ --help                                          Show this message and exit.  │
