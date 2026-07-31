@@ -47,6 +47,7 @@ from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models import MergeAudit, PullRequest
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.url_classify import pr_ref
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.pr_ref import PrRef
 
@@ -82,6 +83,31 @@ def _pr_host_kind(pr: PullRequest) -> str:
     return forge_from_remote(pr.url) or "github"
 
 
+def _probeable_refs(ticket: "Ticket") -> list[PrRef]:
+    """Every PR of *ticket* the gate can ask the forge about, rows first.
+
+    A ticket with no ``PullRequest`` row is not a ticket with no PR: the board
+    reconcile's rule B targets exactly the ticket whose OWN ``issue_url`` names the
+    PR, and that is the shape with no row by definition (#3859). Deriving refs only
+    from rows left that queryset empty, so the gate found no evidence and refused the
+    very transition the reconcile was holding a definite forge MERGED verdict for.
+    The rows stay authoritative; the ``issue_url`` fills the gap only when there are
+    none, and only when it names a pull request — an ``/issues/N`` url parses to no
+    ref and is never probed.
+    """
+    refs: list[PrRef] = []
+    for pr in PullRequest.objects.filter(ticket=ticket):
+        slug = (pr.repo or "").strip()
+        raw_id = str(pr.iid or "").strip()
+        if not slug or not raw_id.isdigit():
+            continue
+        refs.append(PrRef(slug=slug, pr_id=int(raw_id), host_kind=_pr_host_kind(pr)))
+    if refs:
+        return refs
+    own = pr_ref(ticket.issue_url or "")
+    return [own] if own is not None else []
+
+
 def forge_confirms_merged(ticket: "Ticket") -> bool:
     """True iff a live forge probe confirms a PR of *ticket* is MERGED — FAIL-CLOSED.
 
@@ -90,19 +116,14 @@ def forge_confirms_merged(ticket: "Ticket") -> bool:
     malformed response) is inconclusive and yields no evidence, so a transport
     error is never mistaken for "merged".
     """
-    for pr in PullRequest.objects.filter(ticket=ticket):
-        slug = (pr.repo or "").strip()
-        raw_id = str(pr.iid or "").strip()
-        if not slug or not raw_id.isdigit():
-            continue
+    for ref in _probeable_refs(ticket):
         try:
-            query = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=int(raw_id), host_kind=_pr_host_kind(pr)))
-            state = query.pr_merge_state()
+            state = CodeHostQuery.for_ref(ref).pr_merge_state()
         except Exception:  # noqa: BLE001 — any probe failure is inconclusive; fail CLOSED (no evidence).
             logger.warning(
                 "merge_evidence gate: forge merge-state probe failed for %s#%s; treating as NOT merged (fail-closed).",
-                slug,
-                raw_id,
+                ref.slug,
+                ref.pr_id,
             )
             continue
         if state.is_merged:

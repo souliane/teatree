@@ -9,7 +9,7 @@ case-mismatched orphan must not survive to keep ratcheting the S4 hard-red gate.
 from django.test import TestCase
 
 from teatree.core.merge import execution
-from teatree.core.merge.execution import record_merge_and_advance
+from teatree.core.merge.post_hook import record_merge_and_advance
 from teatree.core.models import MergeClear, PullRequest, Ticket
 
 _SHA = "a" * 40
@@ -182,3 +182,39 @@ class TestSiblingSupersedeCaseInsensitive(TestCase):
 
         unrelated.refresh_from_db()
         assert unrelated.consumed_at is None
+
+
+class TestKeystoneReportsAnUnresolvableTicket(TestCase):
+    """A merge whose ticket cannot be resolved must not pass silently (#3840).
+
+    The post hook returned ``""`` and logged nothing when neither the CLEAR nor the
+    PR named a ticket, so a merge landed, consumed its CLEAR and wrote its audit
+    while the board stayed exactly where it was — with no record anywhere that an
+    FSM advance had been skipped.
+    """
+
+    def test_warns_when_no_ticket_resolves(self) -> None:
+        clear = MergeClear.objects.create(
+            pr_id=42,
+            slug="acme/widget",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+
+        with self.assertLogs("teatree.core.merge.post_hook", level="WARNING") as captured:
+            state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
+
+        assert state == ""
+        assert any("acme/widget#42" in line for line in captured.output), captured.output
+
+    def test_a_resolvable_ticket_logs_no_warning(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        _pull_request(ticket, slug="acme/widget", pr_id=42)
+        clear = _clear(ticket, slug="acme/widget", pr_id=42)
+
+        with self.assertNoLogs("teatree.core.merge.post_hook", level="WARNING"):
+            state = record_merge_and_advance(clear=clear, merged_sha="c" * 40, required_checks_status="green")
+
+        assert state == Ticket.State.MERGED

@@ -636,6 +636,36 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["pr_url_by_branch"]["s-1263-pr-b-current"] == "https://example.com/pr/b-new"
 
+    def test_persists_the_pull_request_arbiter_row_for_the_pr_it_opened(self) -> None:
+        """#3840: the row every merge-time consumer reads is written when the PR opens.
+
+        ``PullRequest`` is the PR-facts arbiter the merge keystone, the board
+        reconcile and the merge-evidence gate all resolve through. Recording the
+        URL only in ``extra`` left the pipeline's own PRs with no row, so the
+        keystone had no ticket to advance when they merged.
+        """
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-1263-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://github.com/acme/widget/pull/77"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+        ):
+            ShipExecutor(ticket).run()
+
+        row = PullRequest.objects.get(url="https://github.com/acme/widget/pull/77")
+        assert row.ticket == ticket
+        assert row.repo == "acme/widget"
+        assert row.iid == "77"
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=77) == ticket
+
 
 class TestShipReconcilesWorktreeBranch(TestCase):
     """#1519: ship pushes the worktree's ACTUAL git branch and reconciles the DB.

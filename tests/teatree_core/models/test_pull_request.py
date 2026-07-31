@@ -183,3 +183,76 @@ class TestRecordForgeMerge(TestCase):
 
     def test_no_row_for_the_pr_is_a_no_op(self) -> None:
         assert PullRequest.objects.record_forge_merge(slug="acme/widget", pr_id=99) == 0
+
+
+class TestOwningTicketReadsTheDeliveryPipelinesOwnIndex(TestCase):
+    """The pipeline's record of the PR it opened must resolve the owning ticket (#3840).
+
+    ``ShipExecutor`` records every PR it opens under ``extra["pr_urls"]`` and the
+    per-branch ``extra["pr_url_by_branch"]`` index. Resolving only ``extra["prs"]``
+    — the key the GitLab PR sync writes — left the keystone's post hook with no
+    ticket to advance for a PR the pipeline itself opened: the merge landed, the
+    CLEAR was consumed, the audit row was written, and the FSM never moved.
+    """
+
+    def test_resolves_through_the_per_branch_index(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"pr_url_by_branch": {"feat/x": _URL}})
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+    def test_resolves_through_the_recorded_url_list(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", extra={"pr_urls": [_URL]})
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+    def test_a_different_pr_in_the_index_is_not_the_owner(self) -> None:
+        Ticket.objects.create(overlay="t3-teatree", extra={"pr_url_by_branch": {"feat/x": _URL}})
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=43) is None
+
+    def test_the_index_matches_a_differently_cased_slug(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            extra={"pr_urls": ["https://github.com/Acme/Widget/pull/42"]},
+        )
+
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=42) == ticket
+
+
+class TestRecordOpened(TestCase):
+    """The arbiter row is written when the pipeline opens the PR, not a tick later.
+
+    ``PullRequest`` is the PR-facts arbiter every merge-time consumer reads, yet the
+    only writer was the tick-time open-PR reconciler — so a PR that opened and merged
+    between two ticks never got a row at all, and the keystone had nothing to resolve.
+    """
+
+    def test_persists_the_row_for_the_opened_pr(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+
+        row = PullRequest.objects.record_opened(ticket=ticket, url=_URL)
+
+        assert row is not None
+        assert row.ticket == ticket
+        assert row.repo == "acme/widget"
+        assert row.iid == "42"
+        assert row.overlay == "t3-teatree"
+        assert row.create_verification == PullRequest.CreateVerification.CONFIRMED
+        assert row.create_verified_at is not None
+
+    def test_a_retry_reuses_the_existing_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+
+        first = PullRequest.objects.record_opened(ticket=ticket, url=_URL)
+        second = PullRequest.objects.record_opened(ticket=ticket, url=_URL)
+
+        assert first is not None
+        assert second is not None
+        assert first.pk == second.pk
+        assert PullRequest.objects.filter(url=_URL).count() == 1
+
+    def test_a_url_that_names_no_pull_request_writes_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+
+        assert PullRequest.objects.record_opened(ticket=ticket, url="https://example.com/pr/b-new") is None
+        assert PullRequest.objects.count() == 0

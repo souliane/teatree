@@ -3,6 +3,8 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, NamedTuple, cast
 
+from django.apps import apps
+
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
@@ -545,3 +547,10 @@ class ShipExecutor(RunnerBase):
             merge_into_dicts=merge_dicts,
             pop_keys=["pr_title_override", "ship_invoking_branch"],
         )
+        # #3840: the JSON index above is the ticket's own cache; the arbiter row is
+        # what the merge keystone, the board reconcile and the merge-evidence gate
+        # resolve the PR's owning ticket through. Write it here, where the ticket is
+        # in hand and the PR has just been verify-by-re-read confirmed, so a PR that
+        # merges before the next tick is still attributable to its ticket.
+        if url:
+            apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
