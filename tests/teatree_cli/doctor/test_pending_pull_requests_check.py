@@ -1,11 +1,16 @@
 """``check_pending_pull_requests`` — a PR owed since push must fail loud, not retry in silence."""
 
+from pathlib import Path
+from unittest.mock import patch
+
 import django.test
 import pytest
 
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.core.models import PendingPullRequest
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
+from teatree.core.worktree.branch_landed import REVERT_RISK_NET_REMOVED_LINES
+from tests._git_repo import make_git_repo, run_git
 from tests.factories import serialized_pr_spec
 
 
@@ -42,4 +47,76 @@ class PendingPullRequestDoctorCheckTestCase(django.test.TestCase):
         assert "FAIL" in out
         assert "feat/orphan" in out
         assert "feat: the feature" in out
+        assert "pr ensure-pr" in out
+
+
+class PendingPullRequestBehindABaseRefactorTestCase(django.test.TestCase):
+    """#3977: a branch whose PR would delete base content needs a person, not a retry."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+        self._capsys = capsys
+        self._tmp_path = tmp_path
+
+    def _stale_branch_repo(self) -> Path:
+        repo = make_git_repo(self._tmp_path / "clone")
+        (repo / "keep.py").write_text("x = 1\n")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "initial")
+        run_git(repo, "checkout", "-q", "-b", "feat/stale")
+        (repo / "feature.py").write_text("y = 2\n")
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "feat: the feature")
+        run_git(repo, "checkout", "-q", "main")
+        (repo / "grown.py").write_text("".join(f"line {n}\n" for n in range(REVERT_RISK_NET_REMOVED_LINES + 50)))
+        run_git(repo, "add", "-A")
+        run_git(repo, "commit", "-q", "-m", "feat: a large refactor the branch predates")
+        run_git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        return repo
+
+    def _owe_undrainable(self, repo: Path) -> None:
+        row = PendingPullRequest.objects.owe(
+            repo_path=str(repo),
+            branch="feat/stale",
+            reason="branch not on remote yet",
+            spec=serialized_pr_spec("feat: the feature"),
+        )
+        PendingPullRequest.objects.filter(pk=row.pk).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+
+    def test_remedy_names_the_revert_risk_instead_of_urging_a_pr(self) -> None:
+        self._owe_undrainable(self._stale_branch_repo())
+
+        assert check_pending_pull_requests() is False
+
+        out = self._capsys.readouterr().out
+        assert "FAIL" in out
+        assert "feat/stale" in out
+        assert "revert" in out.lower()
+        assert "rebase" in out.lower()
+        assert str(REVERT_RISK_NET_REMOVED_LINES + 50) in out
+        assert "pr ensure-pr" not in out
+
+    def test_a_probe_that_blows_up_still_reports_the_obligation(self) -> None:
+        """The doctor owns its own crash-safety — nothing here may abort the run."""
+        self._owe_undrainable(self._stale_branch_repo())
+
+        with patch(
+            "teatree.cli.doctor.checks_pending_pr.assess_revert_risk",
+            side_effect=OSError("git is not on PATH"),
+        ):
+            assert check_pending_pull_requests() is False
+
+        assert "pr ensure-pr" in self._capsys.readouterr().out
+
+    def test_unreadable_repo_keeps_the_plain_remedy_and_never_crashes(self) -> None:
+        row = PendingPullRequest.objects.owe(
+            repo_path=str(self._tmp_path / "gone"),
+            branch="feat/stale",
+            reason="branch not on remote yet",
+        )
+        PendingPullRequest.objects.filter(pk=row.pk).update(drain_attempts=MAX_DRAIN_ATTEMPTS)
+
+        assert check_pending_pull_requests() is False
+
+        out = self._capsys.readouterr().out
         assert "pr ensure-pr" in out
