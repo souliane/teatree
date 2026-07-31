@@ -427,6 +427,60 @@ class TestSettingsRestore(TestCase):
             assert self._restore("mode").status_code == 302
 
 
+class TestNoShippedDefaultDrift(TestCase):
+    """A no-shipped-default key still has a real default: its code default.
+
+    A Secret/Personal key `defaults.toml` does not carry, so an operator's own tier
+    outranking that IS a drift, not a free pass. Regression for a cell that read "same as
+    default" whenever the shipped file carried no entry at all, whatever the DB held.
+    """
+
+    def test_an_unset_no_default_key_matches_its_code_default(self) -> None:
+        row = build_setting_row("workspace_dir")
+        assert not row.has_shipped_default
+        assert all(cell.matches_default for cell in row.cells)
+        assert not row.drifts
+
+    def test_an_overridden_no_default_key_reads_as_drifted(self) -> None:
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/custom")
+        row = build_setting_row("workspace_dir")
+        cell = next(c for c in row.cells if c.scope == "")
+        assert not cell.matches_default
+        assert row.drifts
+
+    def test_the_rendered_row_shows_the_drift_for_a_no_default_key(self) -> None:
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/custom")
+        body = _row_html(self.client, "workspace_dir")
+        assert "differs from default" in body
+
+
+class TestSelectOffersRestoreOnlyWhenDrifted(TestCase):
+    """A drifted select carries its own restore option, offered only once drifted.
+
+    A <select> cannot be "emptied" by typing, so the click-to-edit restore gesture needs
+    its own option once a select-rendered setting has drifted — and only then, mirroring
+    the old page's restore button appearing only on an overridden row.
+    """
+
+    def test_a_select_at_its_default_offers_no_restore_option(self) -> None:
+        body = _row_html(self.client, "mode")
+        assert "restore default" not in body
+
+    def test_a_drifted_select_offers_a_restore_option(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive")
+        body = _row_html(self.client, "mode")
+        assert '<option value="">' in body
+        assert "restore default" in body
+
+    def test_choosing_the_restore_option_clears_the_row(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive")
+        url = reverse("dash:settings_set", args=["mode"])
+        response = self.client.post(url, {"value": ""}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        assert response.status_code == 200
+        assert ConfigSetting.objects.get_effective("mode") is None
+        assert "restore default" not in response.content.decode()
+
+
 class TestHtmxRowSwap(TestCase):
     """A toggle swaps its own row — no redirect, no second full-page render, no scroll jump."""
 

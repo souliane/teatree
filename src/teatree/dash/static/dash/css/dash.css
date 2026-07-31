@@ -580,11 +580,6 @@ signal — the icon and the words inside the cell say the verdict on their own. 
 .settings-grid .cell-drifted { background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .settings-grid .setting-name { white-space: nowrap; }
 .settings-grid .setting-help-anchor { border-bottom: 1px dotted currentcolor; cursor: help; }
-.setting-source {
-  font-size: var(--text-xs);
-  color: var(--ink-muted);
-  white-space: nowrap;
-}
 
 /* Health verdict as the page lead. */
 .verdict-lead {

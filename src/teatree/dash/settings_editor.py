@@ -181,8 +181,11 @@ class _Grid:
         resolved = self.resolved[scope][key]
         value = _display_value(key, resolved)
         # Compared as the operator SEES them: identical text in the cell means identical
-        # value. A key the shipped file does not carry has no default to differ from.
-        matches = not resolved.is_overridden or value == default or key not in self.shipped
+        # value. A key the shipped file does not carry has no shipped text to equal, so it
+        # falls back to whether an operator's own tier supplied it at all — a Secret/Personal
+        # key with no entry in defaults.toml still has a real default (its code default), and
+        # an env/DB tier outranking that IS the drift the grid exists to surface.
+        matches = not resolved.is_overridden or (key in self.shipped and value == default)
         return ScopeCell(
             key=key,
             scope=scope,

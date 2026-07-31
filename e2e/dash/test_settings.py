@@ -12,6 +12,8 @@ different questions about the same coordinates. A substring locator cannot tell 
 apart and resolves to two elements; the exact one names which panel is meant.
 """
 
+import re
+
 import pytest
 from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
@@ -76,7 +78,9 @@ def test_a_click_to_edit_persists_with_no_save_button(live_server: LiveServer, p
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
     page.get_by_label("mode in global").select_option('"interactive"')
     expect(page.locator("#setting-mode")).to_contain_text("differs from default")
-    expect(page.locator("#setting-mode")).to_contain_text("DB global scope")
+    expect(page.locator("#setting-mode .default-differs").first).to_have_attribute(
+        "title", re.compile(r"DB global scope")
+    )
     # It PERSISTED rather than only re-rendering: a fresh load shows the same value.
     page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
     expect(page.get_by_label("mode in global")).to_have_value('"interactive"')

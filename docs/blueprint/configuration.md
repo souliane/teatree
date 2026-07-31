@@ -876,7 +876,14 @@ failed edit can never leave text that looks saved. Anything the schema constrain
 listable set — `bool`, an enum, a `Literal` — renders as a SELECT whose options come from
 `schema.setting_choices`, derived from the field's own annotation: an invalid value is then
 impossible to ENTER rather than merely rejected afterwards, and there is no hand-written
-option list to go stale the first time a `Literal` changes.
+option list to go stale the first time a `Literal` changes. A select cannot be "emptied" by
+typing, so a drifted select carries its own `— restore default —` option (posting the same
+empty value the click-to-edit gesture posts elsewhere) — offered only once the cell has
+actually drifted, mirroring the retired button's `is_overridden` gate. A safety-posture
+cell's confirm field sits BEFORE its value control for the same reason the value control
+posts on `hx-trigger="change"`: `hx-include="closest td"` reads the confirm field at the
+moment the value changes, so the phrase has to be typed first to authorize the write that
+follows.
 
 **Help text is authored once** (`config/setting_help.py`). One sentence per key, rendered
 twice: as the tooltip on the setting's name here, and as the trailing comment beside that

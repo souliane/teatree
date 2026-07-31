@@ -2,7 +2,7 @@
 """The help table is TOTAL over the schema, and shaped for the surfaces that render it.
 
 Help text is authored once (:mod:`teatree.config.setting_help`) and rendered twice — as the
-``defaults.toml`` comment above a key and as the dashboard tooltip on it. Totality is what
+``defaults.toml`` trailing comment beside a key and as the dashboard tooltip on it. Totality is what
 makes "authored once" hold: a new setting with no entry fails here rather than shipping an
 unexplained key to both surfaces.
 """

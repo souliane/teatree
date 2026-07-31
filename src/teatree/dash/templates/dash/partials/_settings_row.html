@@ -6,7 +6,14 @@ token of its own — the body's hx-headers in base.html supplies one token for t
 There is no <form> and no save button: the control posts itself on change (htmx sends a named
 input's own value), and hx-target="closest tr" swaps the WHOLE row back, because a global
 write changes what every overlay column inherits. Emptying a cell clears that scope's row,
-which is how a value goes back to the default now that there is no separate restore control.
+which is how a value goes back to the default now that there is no separate restore control
+— a select offers the same gesture as its own top option once the cell has drifted, since
+there is no way to "empty" a select by typing.
+
+A safety-posture cell's confirm field sits BEFORE the value control, because the control
+posts on hx-trigger="change" and hx-include="closest td" reads the confirm field's value at
+that moment: typing the confirm phrase first is what actually authorizes the write that
+follows, and putting it first in the cell is what makes that the field order a reader meets.
 
 A control holds the JSON literal the write expects, not the display text, so what is shown is
 what would be posted. The drift verdict is never colour alone — each one carries a text icon
@@ -28,6 +35,10 @@ and its own words, so it survives greyscale, colour blindness and a screen reade
       {% else %}
         <span class="default-differs" title="{{ cell.label }}: value came from {{ cell.source }}">&#9679; differs from default</span>
       {% endif %}
+      {% if s.is_safety_posture %}
+        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
+          aria-label="{{ s.name }} in {{ cell.label }} confirm phrase">
+      {% endif %}
       {% if s.is_secret %}
         <span class="mono">{{ cell.value }}</span>
         <input type="password" name="value" autocomplete="off" placeholder="new value (write-only)"
@@ -38,6 +49,7 @@ and its own words, so it survives greyscale, colour blindness and a screen reade
         <select name="value" aria-label="{{ s.name }} in {{ cell.label }}" hx-post="{{ cell.post_url }}"
           hx-target="closest tr" hx-swap="outerHTML" hx-trigger="change"
           {% if s.is_safety_posture %}hx-include="closest td"{% endif %}>
+          {% if not cell.matches_default %}<option value="">&mdash; restore default &mdash;</option>{% endif %}
           {% for choice in s.choices %}
             <option value="{{ choice.value }}" {% if choice.value == cell.selected %}selected{% endif %}>{{ choice.label }}</option>
           {% endfor %}
@@ -47,10 +59,6 @@ and its own words, so it survives greyscale, colour blindness and a screen reade
           aria-label="{{ s.name }} in {{ cell.label }}" hx-post="{{ cell.post_url }}"
           hx-target="closest tr" hx-swap="outerHTML" hx-trigger="change"
           {% if s.is_safety_posture %}hx-include="closest td"{% endif %}>
-      {% endif %}
-      {% if s.is_safety_posture %}
-        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
-          aria-label="{{ s.name }} in {{ cell.label }} confirm phrase">
       {% endif %}
     </td>
   {% endfor %}
