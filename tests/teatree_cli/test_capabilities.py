@@ -37,6 +37,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     """
     from teatree.cli import cost as cli_cost  # noqa: PLC0415
     from teatree.cli import info as cli_info  # noqa: PLC0415
+    from teatree.cli import push as cli_push  # noqa: PLC0415 — lazy: no Django bootstrap at module import
     from teatree.cli import tokens as cli_tokens  # noqa: PLC0415
     from teatree.cli.config import show as cli_config_show  # noqa: PLC0415
     from teatree.cli.doctor import app as cli_doctor_app  # noqa: PLC0415 — lazy: no Django bootstrap at module import
@@ -85,6 +86,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "doctor check": cli_doctor_app.check,
         "cost": cli_cost.cost,
         "tokens": cli_tokens.tokens,
+        "push": cli_push.push,
         "config show": cli_config_show,
         "info artifacts": cli_info.artifacts,
     }

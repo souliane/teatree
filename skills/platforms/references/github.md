@@ -47,10 +47,10 @@ gh pr view <NUMBER> --repo <OWNER>/<REPO> --json title,body,headRefName,baseRefN
 
 ### Create PR
 
-**Push first** — `gh pr create` requires the branch to exist on the remote:
+**Push first** — `gh pr create` requires the branch to exist on the remote. Push with `t3 push`, the supported seam (`/t3:ship` § 4a): from a container a bare `git push` blocks on git's credential prompt.
 
 ```bash
-git push -u origin HEAD
+t3 push
 gh pr create --repo <OWNER>/<REPO> --title "<title>" --body "<body>" --base main --head <branch> --assignee @me
 ```
 

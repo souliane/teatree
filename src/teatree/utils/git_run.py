@@ -42,6 +42,30 @@ def git_env_without_overrides() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
+#: Overrides that turn a credential-less remote operation into an immediate failure
+#: rather than an indefinite block. ``GIT_ASKPASS=""`` neutralises an inherited GUI
+#: askpass helper — git skips an empty program name — which is what leaves
+#: ``GIT_TERMINAL_PROMPT=0`` free to fail the prompt; ``GCM_INTERACTIVE`` is the same
+#: switch for Git Credential Manager.
+NON_INTERACTIVE_GIT_ENV: dict[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "SSH_ASKPASS": "",
+    "GCM_INTERACTIVE": "never",
+}
+
+
+def git_env_non_interactive() -> dict[str, str]:
+    """The hermetic env of :func:`git_env_without_overrides`, with every credential prompt disabled.
+
+    The env every remote-touching git call must run under (souliane/teatree#3927).
+    Without it a missing credential makes git block on an interactive username
+    prompt that no unattended venue will ever answer, so the caller hangs until
+    something kills it instead of reporting a failure it could act on.
+    """
+    return git_env_without_overrides() | NON_INTERACTIVE_GIT_ENV
+
+
 @contextlib.contextmanager
 def git_env_hermetic() -> Iterator[None]:
     """Strip every ``GIT_*`` override from ``os.environ`` for the duration, restoring after.

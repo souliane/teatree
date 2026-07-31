@@ -29,6 +29,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 unless local = all).                                         │
 │ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
 │                 slack/local on).                                             │
+│ push            Push a branch using the forge credential the loop already    │
+│                 holds.                                                       │
 │ fast-push       Stage, commit, push, and create-or-update the PR in one      │
 │                 leak-gated step.                                             │
 │ ui              Browse and run every t3 command in an interactive terminal   │

@@ -52,6 +52,13 @@
   2. Temporarily clear the flag with `git update-index --no-skip-worktree <file>`, commit or stash the local override, switch branches, then restore the flag. **Never `git checkout <file>` to "resolve" it — that wipes the override.**
 - **Prevention:** Keep the dogfood override on a dedicated branch, not on whichever branch the main clone happens to be sitting on. If the override must live in the main clone, document it in the repo's `AGENTS.md` so future agents don't try to check out another branch there.
 
+## `git push` Hangs Forever Inside the Worker Container
+
+- **Symptom:** a bare `git push` from a container shell produces no output and never returns, until a timeout or a kill ends it.
+- **Cause:** the global credential helper is `gh auth git-credential`, which answers only when `GH_TOKEN` is in **its own** env. The deploy entrypoint exports `GH_TOKEN` for the role process, but a `docker exec` shell bypasses the entrypoint and inherits only `TEATREE_GH_TOKEN` from the compose `env_file`. The helper returns nothing, and git falls back to an interactive username prompt nothing will ever answer.  <!-- mcp-ratchet: allow — names git's own default credential helper, not an agent-run fallback -->
+- **Fix:** `t3 push` — it resolves the token (`GH_TOKEN` → `TEATREE_GH_TOKEN` → the overlay's `pass` store), hands it to git as env only, and disables the interactive prompt so a genuinely missing credential fails in milliseconds with a readable reason. See `/t3:ship` § 4a.
+- **Never:** rewrite the remote to embed the token (`git remote set-url origin https://<token>@github.com/...`). That is the improvisation the seam replaces — it persists the credential in `.git/config`, which on a host-bind-mounted worktree outlives the session. `t3 push` refuses a remote whose URL already embeds one.
+
 ## `gh pr create` Refuses `"push the current branch to a remote, or use the --head flag"`
 
 - **Symptom:** `gh pr create` aborts with `you must first push the current branch to a remote, or use the --head flag` even though you just ran `git push -u origin <branch>` successfully.

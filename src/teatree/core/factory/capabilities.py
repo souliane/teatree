@@ -125,6 +125,12 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("cost", json_output=True, exit_codes=("0",)),
     Capability("tokens", json_output=True, exit_codes=("0",)),
+    Capability(
+        "push",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="the supported push path from a container (#3927); --json emits the PushOutcome, 1 on a refusal",
+    ),
     Capability("config show", json_output=True, exit_codes=("0",)),
     Capability("info artifacts", json_output=True, exit_codes=("0",), note="--format json"),
 )

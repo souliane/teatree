@@ -7,8 +7,8 @@ ref relative to a remote (or merges/rebases onto a target), all via the
 
 import subprocess
 
-from teatree.utils.git_run import check, git_env_without_overrides, run, run_strict
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.git_run import check, git_env_non_interactive, run, run_strict
+from teatree.utils.run import run_allowed_to_fail, run_checked
 
 FETCH_PRUNE_TIMEOUT_SECONDS = 120.0
 
@@ -39,10 +39,11 @@ def fetch_all_prune(repo: str = ".") -> bool:
     worktree/branch, delete nothing — because a failed refresh means remote
     state is unknown, and "unknown" must never authorise a deletion. Returns
     ``True`` only on a clean exit; a non-zero exit or a timeout yields ``False``.
-    ``GIT_TERMINAL_PROMPT=0`` ensures a remote demanding interactive credentials
-    fails fast instead of hanging the sweep on a password prompt.
+    :func:`~teatree.utils.git_run.git_env_non_interactive` ensures a remote
+    demanding interactive credentials fails fast instead of hanging the sweep on
+    a password prompt.
     """
-    env = git_env_without_overrides() | {"GIT_TERMINAL_PROMPT": "0"}
+    env = git_env_non_interactive()
     try:
         result = run_allowed_to_fail(
             ["git", "-C", repo, "fetch", "--all", "--prune", "--quiet"],
@@ -86,7 +87,14 @@ def pull_ff_only(repo: str = ".") -> bool:
 
 
 def push(repo: str = ".", remote: str = "origin", branch: str = "") -> None:
+    """``git push --set-upstream`` — raises :class:`~teatree.utils.run.CommandFailedError` on failure.
+
+    Runs under :func:`~teatree.utils.git_run.git_env_non_interactive` so a venue
+    whose credential helper cannot answer (the worker container's ``docker exec``
+    shell, souliane/teatree#3927) raises instead of blocking forever on git's
+    username prompt. ``t3 push`` is the agent-facing seam over the same guarantee.
+    """
     args = ["push", "--set-upstream", remote]
     if branch:
         args.append(branch)
-    run_strict(repo=repo, args=args)
+    run_checked(["git", "-C", repo, *args], env=git_env_non_interactive())
