@@ -21,7 +21,7 @@ from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
-from tests.teatree_core.cleanup._shared import _run_git
+from tests.teatree_core.cleanup._shared import _run_git, corrupt_index
 
 _patch_config = patch("teatree.core.cleanup.cleanup.clone_root")
 _patch_git = patch("teatree.core.cleanup.cleanup.git")
@@ -1323,6 +1323,33 @@ class TestCleanupWorktreeRefuseBeforeDestroy(TestCase):
         mock_down.assert_not_called()
         assert wt_dir.is_dir(), "a dirty worktree must be left intact on disk"
         assert Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    def test_an_unanswerable_dirt_probe_is_not_reported_as_uncommitted_changes(self, mock_overlay: MagicMock) -> None:
+        """A probe that could not answer keeps the worktree, and says exactly that.
+
+        The refusal is right — nothing may be destroyed on evidence nobody has. What
+        it must not do is assert uncommitted changes, sending the caller to look for
+        work to commit or discard that no probe ever saw.
+        """
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        workspace, wt_dir, wt = self._dirty_worktree()
+        (wt_dir / "app" / "models.py").write_text("x = 1\n", encoding="utf-8")
+        corrupt_index(wt_dir)
+
+        with (
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=workspace),
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_down,
+            pytest.raises(RuntimeError) as refusal,
+        ):
+            cleanup_worktree(wt)
+
+        message = str(refusal.value)
+        assert "uncommitted changes" not in message, "an unanswerable probe was reported as proven dirt"
+        assert "could not" in message
+        mock_down.assert_not_called()
+        assert wt_dir.is_dir()
+        assert Worktree.objects.filter(pk=wt.pk).exists()
 
     @_patch_overlay
     def test_force_overrides_dirty_guard(self, mock_overlay: MagicMock) -> None:

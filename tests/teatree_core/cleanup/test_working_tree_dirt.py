@@ -10,36 +10,15 @@ Happy paths run against real git under ``tmp_path``; the fail-closed error
 branches inject a ``CommandFailedError`` from the (unstoppable) git subprocess.
 """
 
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_orphan_ref import OrphanRefDecision
-from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
+from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons, working_tree_dirt
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-from tests.teatree_core.cleanup._shared import _GIT, _run_git
-
-
-def _corrupt_index(wt_dir: Path) -> None:
-    """Corrupt the real on-disk index for a worktree so ``git status`` itself fails.
-
-    A ``git worktree add`` checkout's ``.git`` is a *file* (a gitdir pointer),
-    not a directory, and each worktree has its own per-worktree index living
-    under the main repo's ``.git/worktrees/<name>/index`` — not
-    ``<wt_dir>/.git/index``. Resolve the real git-dir via ``rev-parse`` first.
-    """
-    result = subprocess.run(
-        [_GIT, "-C", str(wt_dir), "rev-parse", "--git-dir"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    git_dir = Path(result.stdout.strip())
-    if not git_dir.is_absolute():
-        git_dir = wt_dir / git_dir
-    (git_dir / "index").write_bytes(b"not a real git index")
+from tests.teatree_core.cleanup._shared import _run_git, corrupt_index
 
 
 def _committed_worktree(tmp_path: Path) -> tuple[Path, _EffectiveTarget]:
@@ -140,7 +119,7 @@ class TestRealUncommittedReasons:
         under real lock contention or disk corruption.
         """
         wt_dir, target = _committed_worktree(tmp_path)
-        _corrupt_index(wt_dir)
+        corrupt_index(wt_dir)
         reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons != []
         assert "keeping" in reasons[0]
@@ -152,6 +131,51 @@ class TestRealUncommittedReasons:
         reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons[0].startswith("4 uncommitted change(s)")
         assert reasons[0].endswith("…")
+
+
+class TestDirtIsDistinguishedFromAnUnanswerableProbe:
+    """``proven`` separates "these files are modified" from "the probe could not say".
+
+    Both keep the worktree, and they are not the same finding: one is evidence about
+    the working tree, the other is the absence of evidence. A caller that renders
+    them identically reports uncommitted work that may not exist.
+    """
+
+    def test_real_edits_are_proven(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+        (wt_dir / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+
+        dirt = working_tree_dirt(str(wt_dir), target)
+
+        assert dirt.proven is True
+        assert "tracked.py" in dirt.reasons[0]
+
+    def test_a_clean_tree_is_proven_clean(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+
+        dirt = working_tree_dirt(str(wt_dir), target)
+
+        assert dirt.proven is True
+        assert dirt.reasons == ()
+
+    def test_an_unreadable_status_is_not_proven(self, tmp_path: Path) -> None:
+        wt_dir, target = _committed_worktree(tmp_path)
+        corrupt_index(wt_dir)
+
+        dirt = working_tree_dirt(str(wt_dir), target)
+
+        assert dirt.proven is False
+        assert dirt.reasons != (), "an unanswerable probe must still keep the worktree"
+
+    def test_an_unrecoverable_dangling_head_is_not_proven(self, tmp_path: Path) -> None:
+        wt_dir, target = _dangling_head_worktree(tmp_path)
+        undecided = OrphanRefDecision(recovered_sha=None, in_remote=False, unsynced=[])
+
+        with patch("teatree.core.cleanup.working_tree_dirt.classify_orphan_ref", return_value=undecided):
+            dirt = working_tree_dirt(str(wt_dir), target)
+
+        assert dirt.proven is False
+        assert dirt.reasons != ()
 
 
 class TestDanglingHeadDirtReasons:
@@ -196,7 +220,7 @@ class TestDanglingHeadDirtReasons:
         to move to :func:`teatree.utils.git.run_strict`.
         """
         wt_dir, target = _dangling_head_worktree(tmp_path)
-        _corrupt_index(wt_dir)
+        corrupt_index(wt_dir)
         reasons = real_uncommitted_reasons(str(wt_dir), target)
         assert reasons != []
         assert "keeping" in reasons[0]

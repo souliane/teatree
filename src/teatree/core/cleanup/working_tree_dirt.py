@@ -19,11 +19,18 @@ Fails CLOSED: an inconclusive ``git status`` (corrupt index, lock contention) or
 an unrecoverable HEAD is treated as dirty so the worktree is KEPT — a guard that
 guessed "clean" on an error could let a force-wipe destroy real edits.
 
+Failing closed is not the same finding as finding dirt, and
+:class:`WorkingTreeDirt` keeps the two apart: ``proven`` is ``False`` exactly when
+the reasons describe a probe that could not answer rather than files that are
+modified. Both keep the worktree; only one of them is evidence, and a caller that
+renders them identically tells its operator about uncommitted work nothing saw.
+
 Imports ``_EffectiveTarget`` only under :data:`TYPE_CHECKING` so there is no
 runtime import cycle with :mod:`teatree.core.cleanup.cleanup`, which imports this
 module for its dirty-worktree guard.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -58,36 +65,61 @@ def _porcelain_path(line: str) -> str:
         return ""
 
 
+@dataclass(frozen=True, slots=True)
+class WorkingTreeDirt:
+    """What the dirt probe found — and whether it found anything at all.
+
+    ``reasons`` is what keeps the worktree, empty when nothing does. ``proven``
+    says which kind of finding it is: ``True`` for an answered probe (the reasons,
+    if any, name modified files), ``False`` for one that could not answer, where
+    the reasons name the obstacle instead. A ``False`` verdict is never evidence of
+    uncommitted work, only the absence of evidence either way.
+    """
+
+    reasons: tuple[str, ...]
+    proven: bool
+
+
 def real_uncommitted_reasons(wt_path: str, target: "_EffectiveTarget") -> list[str]:
     """Kept-reasons for real (non-regenerable) uncommitted changes; empty when clean.
 
+    The reasons alone, for callers that keep the worktree on any of them and do not
+    distinguish proven dirt from an unanswerable probe. Callers that report the
+    reason to an operator want :func:`working_tree_dirt`.
+    """
+    return list(working_tree_dirt(wt_path, target).reasons)
+
+
+def working_tree_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTreeDirt:
+    """The full dirt verdict for *wt_path* — reasons plus whether the probe answered.
+
     Fails CLOSED: an inconclusive ``git status`` (corrupt index, lock contention)
-    is treated as dirty so the worktree is kept. A dangling-HEAD worktree (its
+    keeps the worktree, reported as unproven. A dangling-HEAD worktree (its
     branch ref deleted post-merge) has no resolvable HEAD, so ``git status``
     reports EVERY tracked file as a staged addition — noise, not real uncommitted
     work. Rather than skipping the dirt check entirely there (which would let a
     force-wipe destroy genuine uncommitted follow-up edits), the working tree is
     diffed against the RECOVERED last-HEAD SHA plus an untracked-file scan —
-    :func:`_dangling_head_dirty_reasons`.
+    :func:`_dangling_head_dirt`.
     """
     if not Path(wt_path).is_dir():
-        return []
+        return WorkingTreeDirt(reasons=(), proven=True)
     if not git.check(repo=wt_path, args=["rev-parse", "--verify", "--quiet", "HEAD"]):
-        return _dangling_head_dirty_reasons(wt_path, target)
+        return _dangling_head_dirt(wt_path, target)
     try:
         porcelain = git.status_porcelain_strict(wt_path)
     except CommandFailedError as exc:
-        return [f"could not read working-tree status ({exc}) — keeping"]
+        return WorkingTreeDirt(reasons=(f"could not read working-tree status ({exc}) — keeping",), proven=False)
     dirty = [
         path
         for line in porcelain.splitlines()
         if (path := _porcelain_path(line)) and not path.startswith(_REGENERABLE_WORKTREE_PATHS)
     ]
-    return _dirt_reasons(dirty)
+    return _dirt_verdict(dirty)
 
 
-def _dangling_head_dirty_reasons(wt_path: str, target: "_EffectiveTarget") -> list[str]:
-    """Kept-reasons for real uncommitted edits in a dangling-HEAD worktree; empty when clean.
+def _dangling_head_dirt(wt_path: str, target: "_EffectiveTarget") -> WorkingTreeDirt:
+    """The dirt verdict for a dangling-HEAD worktree, diffed against the recovered SHA.
 
     A post-merge branch-ref deletion leaves HEAD unresolvable, so ``git status``
     is useless (everything reads as a staged add). The recovered last-HEAD SHA is
@@ -95,27 +127,32 @@ def _dangling_head_dirty_reasons(wt_path: str, target: "_EffectiveTarget") -> li
     (``git diff --name-only <sha>`` — tracked modifications) plus an untracked-file
     scan (``git ls-files --others --exclude-standard``), ignoring the regenerable
     env cache. Fails CLOSED: an unrecoverable HEAD or an erroring diff keeps the
-    worktree rather than letting a force-wipe destroy unexamined edits.
+    worktree — as UNPROVEN — rather than letting a force-wipe destroy unexamined
+    edits.
     """
     sha = classify_orphan_ref(target).recovered_sha
     if sha is None:
-        return ["could not recover HEAD to check working-tree changes — keeping"]
+        return WorkingTreeDirt(
+            reasons=("could not recover HEAD to check working-tree changes — keeping",), proven=False
+        )
     try:
         changed = git.run_strict(repo=wt_path, args=["diff", "--name-only", sha])
         untracked = git.run_strict(repo=wt_path, args=["ls-files", "--others", "--exclude-standard"])
     except CommandFailedError as exc:
-        return [f"could not diff working tree against recovered HEAD ({exc}) — keeping"]
+        return WorkingTreeDirt(
+            reasons=(f"could not diff working tree against recovered HEAD ({exc}) — keeping",), proven=False
+        )
     dirty = [
         stripped
         for raw in (*changed.splitlines(), *untracked.splitlines())
         if (stripped := raw.strip()) and not stripped.startswith(_REGENERABLE_WORKTREE_PATHS)
     ]
-    return _dirt_reasons(dirty)
+    return _dirt_verdict(dirty)
 
 
-def _dirt_reasons(dirty: list[str]) -> list[str]:
-    """Format a single kept-reason for a non-empty ``dirty`` file list; empty when clean."""
+def _dirt_verdict(dirty: list[str]) -> WorkingTreeDirt:
+    """The answered-probe verdict for a list of genuinely modified paths."""
     if not dirty:
-        return []
+        return WorkingTreeDirt(reasons=(), proven=True)
     preview = ", ".join(dirty[:_PREVIEW_LIMIT]) + (", …" if len(dirty) > _PREVIEW_LIMIT else "")
-    return [f"{len(dirty)} uncommitted change(s) not on any remote: {preview}"]
+    return WorkingTreeDirt(reasons=(f"{len(dirty)} uncommitted change(s) not on any remote: {preview}",), proven=True)
