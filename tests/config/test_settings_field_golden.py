@@ -82,6 +82,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "e2e_confidence_threshold",
         "e2e_mandatory_gate_enabled",
         "enforce_regulated_path",
+        "envelope_stop_gate_refusals",
         "eval_local_cadence_hours",
         "eval_local_disabled",
         "eval_local_skill",
