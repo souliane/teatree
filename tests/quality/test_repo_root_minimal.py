@@ -31,6 +31,9 @@ ALLOWED_ROOT = frozenset(
     {
         "pyproject.toml",
         "uv.lock",
+        # Resolver input, sibling of uv.lock: `uv tool install` cannot read
+        # `[tool.uv] override-dependencies` and takes the override as a file.
+        "uv-overrides.txt",
         ".python-version",
         "README.md",
         "LICENSE",
