@@ -366,13 +366,13 @@ def _check_duplicate_execution(now: dt.datetime | None = None) -> Reconciliation
 
 
 def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> ReconciliationFinding:
-    """ALARM when a review or critic claim spent its whole retry budget with no verdict.
+    """ALARM when a review, codex or critic claim spent its whole retry budget with no verdict.
 
-    Query: ``AutoReviewDispatch.saturated()`` + ``CriticDispatch.saturated()`` —
-    claims still in ``dispatched`` whose deadline has passed and whose
-    ``attempts`` reached the bound. Any such row alarms.
+    Query: ``AutoReviewDispatch.saturated()`` + ``CodexReviewMarker.saturated()`` +
+    ``CriticDispatch.saturated()`` — claims still in ``dispatched`` whose deadline
+    has passed and whose ``attempts`` reached the bound. Any such row alarms.
 
-    This is the visible end of the bounded retry (#3920). A dispatch that
+    This is the visible end of the bounded retry (#3920, #3921). A dispatch that
     expires is re-armed, so an ordinary crashed reviewer never reaches here; a
     saturated claim means every attempt died and nothing will arm that head
     again. Without this the bound would be a SILENT deadlock — the same failure
@@ -382,18 +382,20 @@ def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> Reconci
     try:
         from teatree.core.models import (  # noqa: PLC0415 — ORM import needs the app registry
             AutoReviewDispatch,
+            CodexReviewMarker,
             CriticDispatch,
         )
 
         moment = _now(now)
         reviews = [f"`{row.slug}#{row.pr_id}@{row.head_sha[:8]}`" for row in AutoReviewDispatch.saturated(at=moment)]
+        codex = [f"`codex:{row.slug}#{row.pr_id}@{row.head_sha[:8]}`" for row in CodexReviewMarker.saturated(at=moment)]
         critics = [
             f"`ticket:{row.ticket_id}/{row.transition}@{row.head_sha[:8]}`"
             for row in CriticDispatch.saturated(at=moment)
         ]
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
-    stranded = reviews + critics
+    stranded = reviews + codex + critics
     if not stranded:
         return _ok(check_id, "no saturated review/critic dispatches")
     return _alarm(
