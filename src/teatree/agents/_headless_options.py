@@ -18,6 +18,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
 from teatree.agents import permission_modes
+from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
 from teatree.agents.model_tiering import (
     model_supports_thinking,
     resolve_fallback_model,
@@ -182,7 +183,9 @@ def _build_options(
     )
     if env is not None:
         options.env = env
-    options.hooks = spawn_ceiling_hooks(SpawnCeiling(limit=resolve_spawn_ceiling()))
+    options.hooks = spawn_ceiling_hooks(SpawnCeiling(limit=resolve_spawn_ceiling())) | envelope_stop_hooks(
+        EnvelopeStopGate(phase or task.phase, limit=resolve_envelope_stop_refusals())
+    )
     if is_reader_phase(phase):
         _apply_reader_tool_lockdown(options)
     else:
@@ -198,6 +201,16 @@ def resolve_spawn_ceiling() -> int:
     async-context hazard. The dispatch closes over the resolved int instead.
     """
     return get_effective_settings().subagent_spawn_ceiling
+
+
+def resolve_envelope_stop_refusals() -> int:
+    """The configured per-run envelope Stop-gate refusal ceiling; ``0`` disables it.
+
+    Resolved here for the same reason as the spawn ceiling: the hook runs on the
+    SDK's async path, where a DB read is both a per-turn cost and an
+    async-context hazard. The dispatch closes over the resolved int instead.
+    """
+    return get_effective_settings().envelope_stop_gate_refusals
 
 
 def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:

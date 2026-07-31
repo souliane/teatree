@@ -74,6 +74,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "watchdog_max_cost_usd": _parse_strict_float,
     "ticket_budget_max_cost_usd": _parse_strict_float,
     "subagent_spawn_ceiling": _parse_strict_int,
+    "envelope_stop_gate_refusals": _parse_strict_int,
     "openai_compatible_base_url": _parse_strict_str,
     "openai_compatible_model": _parse_strict_str,
     "openai_compatible_credential_entry": _parse_strict_str,
