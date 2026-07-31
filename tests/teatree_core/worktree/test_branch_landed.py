@@ -9,11 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.worktree.branch_landed import (
-    REVERT_RISK_NET_REMOVED_LINES,
-    assess_revert_risk,
-    branch_content_landed_on_base,
-)
+from teatree.core.worktree.branch_landed import assess_revert_risk, branch_content_landed_on_base
 from tests._git_repo import make_git_repo, run_git
 
 FIX = "def parse(raw: str) -> int:\n    return int(raw.strip() or 0)\n"
@@ -120,6 +116,40 @@ class TestBranchContentLandedOnBase:
 
         assert branch_content_landed_on_base(str(repo), "feat/empty", "main") is False
 
+    def test_a_new_file_whose_content_only_pre_existed_elsewhere_is_not_landed(self, tmp_path: Path) -> None:
+        """#3977 review: a byte-identical COPY of pre-existing base content is not "landed".
+
+        The base never gains anything — the blob it always held stays exactly
+        where it always was. Matching on raw presence alone (not NEW occurrences)
+        would falsely discharge a branch whose real contribution never reached
+        the base, dropping it from tracking entirely.
+        """
+        repo = make_git_repo(tmp_path / "clone")
+        (repo / "config").mkdir()
+        (repo / "config" / "prod.yml").write_text("replicas: 3\ntimeout: 30\n")
+        _commit(repo, "base config")
+        run_git(repo, "checkout", "-q", "-b", "feat/staging-env")
+        (repo / "config" / "staging.yml").write_text("replicas: 3\ntimeout: 30\n")
+        _commit(repo, "feat: add a staging env config")
+        run_git(repo, "checkout", "-q", "main")
+
+        assert branch_content_landed_on_base(str(repo), "feat/staging-env", "main") is False
+
+    def test_an_empty_file_whose_blob_already_existed_is_not_landed(self, tmp_path: Path) -> None:
+        """The empty blob exists in nearly every repo — presence alone proves nothing."""
+        repo = make_git_repo(tmp_path / "clone")
+        (repo / "pkg_a").mkdir()
+        (repo / "pkg_a" / "__init__.py").write_text("")
+        (repo / "pkg_a" / "m.py").write_text("x = 1\n")
+        _commit(repo, "base pkg")
+        run_git(repo, "checkout", "-q", "-b", "fix/packaging")
+        (repo / "pkg_b").mkdir()
+        (repo / "pkg_b" / "__init__.py").write_text("")
+        _commit(repo, "fix: make pkg_b a package")
+        run_git(repo, "checkout", "-q", "main")
+
+        assert branch_content_landed_on_base(str(repo), "fix/packaging", "main") is False
+
     @pytest.mark.parametrize(("branch", "target"), [("no/such/branch", "main"), ("fix/parse", "origin/nope")])
     def test_unresolvable_ref_fails_closed(self, tmp_path: Path, branch: str, target: str) -> None:
         """An obligation is never discharged on a probe that could not run — that loses work."""
@@ -129,16 +159,22 @@ class TestBranchContentLandedOnBase:
 
 
 class TestAssessRevertRisk:
-    def test_names_the_base_content_a_pr_from_a_stale_branch_would_remove(self, tmp_path: Path) -> None:
+    def test_a_branch_merely_behind_an_active_base_is_not_at_risk(self, tmp_path: Path) -> None:
+        """#3977 review: a real merge is unaffected by base's UNRELATED progress.
+
+        A two-dot line-count would falsely flag this branch, because base grew
+        substantially — but nothing base did touches anything the branch
+        touched, so a real merge is clean.
+        """
         repo = _repo_with_branch_carrying_the_fix(tmp_path)
-        (repo / "grown.py").write_text("".join(f"line {n}\n" for n in range(REVERT_RISK_NET_REMOVED_LINES + 50)))
-        _commit(repo, "feat: a large refactor the branch predates")
+        (repo / "unrelated.py").write_text("".join(f"line {n}\n" for n in range(300)))
+        _commit(repo, "feat: ordinary churn on an active base")
 
         risk = assess_revert_risk(str(repo), "fix/parse", "main")
 
-        assert risk.at_risk is True
-        assert risk.net_removed >= REVERT_RISK_NET_REMOVED_LINES
-        assert risk.files_changed >= 1
+        assert risk.measured is True
+        assert risk.at_risk is False
+        assert risk.conflicted_paths == ()
 
     def test_a_branch_that_only_adds_is_not_at_risk(self, tmp_path: Path) -> None:
         repo = _repo_with_branch_carrying_the_fix(tmp_path)
@@ -146,24 +182,42 @@ class TestAssessRevertRisk:
         risk = assess_revert_risk(str(repo), "fix/parse", "main")
 
         assert risk.at_risk is False
-        assert risk.added > 0
+        assert risk.measured is True
 
-    def test_a_binary_file_counts_as_a_file_not_as_lines(self, tmp_path: Path) -> None:
-        """Git reports a binary row's counts as ``-``; parsing it as a number would crash."""
-        repo = _repo_with_branch_carrying_the_fix(tmp_path)
-        (repo / "logo.png").write_bytes(bytes(range(256)) * 8)
-        _commit(repo, "feat: add a binary asset")
+    def test_a_branch_modifying_a_file_the_base_independently_deletes_is_at_risk(self, tmp_path: Path) -> None:
+        """The canonical revert shape: base's refactor conflicts with the branch's own edit."""
+        repo = make_git_repo(tmp_path / "clone")
+        (repo / "app").mkdir()
+        (repo / "app" / "parse.py").write_text("def parse(x):\n    return 0\n")
+        _commit(repo, "base")
+        run_git(repo, "checkout", "-q", "-b", "fix/parse2")
+        (repo / "app" / "parse.py").write_text("def parse(x):\n    return int(x)\n")
+        _commit(repo, "fix: real fix, base unaware")
+        run_git(repo, "checkout", "-q", "main")
+        (repo / "app" / "parse.py").unlink()
+        _commit(repo, "refactor: remove the module")
 
-        risk = assess_revert_risk(str(repo), "fix/parse", "main")
+        risk = assess_revert_risk(str(repo), "fix/parse2", "main")
 
         assert risk.measured is True
-        assert risk.files_changed == 3
-        assert risk.removed == 2
+        assert risk.at_risk is True
+        assert risk.conflicted_paths == ("app/parse.py",)
 
     def test_unresolvable_ref_reports_no_risk_rather_than_raising(self, tmp_path: Path) -> None:
         repo = _repo_with_branch_carrying_the_fix(tmp_path)
 
         risk = assess_revert_risk(str(repo), "no/such/branch", "main")
+
+        assert risk.at_risk is False
+        assert risk.measured is False
+
+    def test_unrelated_histories_report_no_risk_rather_than_raising(self, tmp_path: Path) -> None:
+        """A merge simulation that fails for a reason other than "conflicts" fails closed too."""
+        repo = make_git_repo(tmp_path / "clone")
+        run_git(repo, "checkout", "-q", "--orphan", "unrelated")
+        run_git(repo, "commit", "-q", "--allow-empty", "-m", "feat: a root commit sharing no history")
+
+        risk = assess_revert_risk(str(repo), "unrelated", "main")
 
         assert risk.at_risk is False
         assert risk.measured is False
