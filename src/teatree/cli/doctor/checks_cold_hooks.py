@@ -159,3 +159,42 @@ def _check_cold_hook_settings_readable() -> bool:
         )
         return False
     return True
+
+
+def _check_config_override_tier_healthy() -> bool:
+    """FAIL when the ``ConfigSetting`` override tier degraded recently (#3873).
+
+    The fault this surfaces is invisible by construction: a runtime read failure resolves
+    every DB-home setting to a shipped default, and two of those defaults (``autonomy``,
+    ``mode``) are the MOST permissive value the setting has. The resolver now fails those
+    keys closed and records the degradation beside the control DB; without this check the
+    record would sit there unread, which is the state #3873 was filed about — the only
+    signal was a worker log line nobody tails.
+
+    Crash-proof and fail-open: an unreadable/absent marker is "healthy". A health check
+    that reddens because it could not read its own evidence teaches operators to ignore it.
+    """
+    from teatree.config.override_read_health import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        MARKER_TTL_SECONDS,
+        degraded_read_report,
+        marker_path,
+    )
+
+    try:
+        report = degraded_read_report()
+    except Exception as exc:  # noqa: BLE001 — a doctor probe never raises out of a doctor run
+        typer.echo(f"WARN  Could not read the config-tier health marker: {exc}. Tier health unverified.")
+        return True
+    if report is None:
+        return True
+    typer.echo(
+        f"FAIL  The ConfigSetting override tier FAILED to read {report.occurrences} time(s) "
+        f"(scopes: {', '.join(report.scopes)}; most recent {int(report.age_seconds)}s ago). While "
+        "degraded, the autonomy/approval gates resolve to their most RESTRICTIVE value rather "
+        "than your stored configuration, so the factory is running more conservatively than you "
+        "configured it to. Typical causes are SQLite lock contention against a large control DB, "
+        "an exhausted file-handle budget, or a full disk. Fix the underlying read fault; the "
+        "record clears itself once no further read fails for "
+        f"{MARKER_TTL_SECONDS // 3600}h, or delete {marker_path()} to acknowledge it now."
+    )
+    return False

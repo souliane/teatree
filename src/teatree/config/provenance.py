@@ -26,6 +26,7 @@ from enum import StrEnum
 from typing import Any
 
 from teatree.config.overlay_code_defaults import overlay_code_defaults
+from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES, ConfigOverrideReadError
 from teatree.config.resolution import env_setting_overrides, read_setting_layers
 from teatree.config.settings import UserSettings
 
@@ -37,7 +38,13 @@ _ABSENT: Any = object()
 
 
 class ValueSource(StrEnum):
-    """The tier that supplied a setting's effective value, highest precedence first."""
+    """The tier that supplied a setting's effective value, highest precedence first.
+
+    :attr:`UNRESOLVED` is not a tier — it is the honest answer when the DB override tier
+    could not be READ (#3873). Crediting the shipped file in that state would name a tier
+    that was never consulted, which is the same "partial failure presenting as a definite
+    answer" the KIND column used to produce.
+    """
 
     ENV = "env"
     DB_OVERLAY = "DB overlay scope"
@@ -45,6 +52,7 @@ class ValueSource(StrEnum):
     OVERLAY_CODE_DEFAULT = "overlay code default"
     SHIPPED_FILE = "shipped file"
     CODE_DEFAULT = "code default"
+    UNRESOLVED = "unresolved (DB override read failed)"
 
 
 #: The tiers whose value an operator changed — as opposed to one teatree ships.
@@ -81,8 +89,16 @@ class _Tiers:
     db_global: Mapping[str, Any]
     code_default: Mapping[str, Any]
     shipped_file: Mapping[str, Any]
+    #: True when a DB scope's read FAILED (#3873) — the tiers below ``env`` are then
+    #: unknown, not absent, and naming one of them would credit a tier never consulted.
+    degraded: bool = False
 
     def resolve(self, key: str) -> ResolvedSetting:
+        if self.degraded:
+            env_value = self.env.get(key, _ABSENT)
+            if env_value is not _ABSENT:
+                return ResolvedSetting(key, env_value, ValueSource.ENV)
+            return ResolvedSetting(key, self._unresolved_value(key), ValueSource.UNRESOLVED)
         for source, tier in (
             (ValueSource.ENV, self.env),
             (ValueSource.DB_OVERLAY, self.db_overlay),
@@ -95,6 +111,23 @@ class _Tiers:
                 return ResolvedSetting(key, value, source)
         return ResolvedSetting(key, getattr(UserSettings(), key, None), ValueSource.CODE_DEFAULT)
 
+    def _unresolved_value(self, key: str) -> object:
+        """The value the RESOLVER will actually use for *key* while the tier is degraded.
+
+        Read off the same fail-closed table ``resolution.fail_closed_overrides`` applies, so
+        the value shown and the value in force cannot disagree — the property this whole
+        module exists to hold. A key with no fail-closed entry keeps its shipped value; it
+        is reported ``UNRESOLVED`` all the same, because whether a row would have overridden
+        it is exactly what could not be determined.
+        """
+        fail_closed = SAFETY_FAIL_CLOSED_STORED_VALUES.get(key, _ABSENT)
+        if fail_closed is not _ABSENT:
+            return fail_closed
+        shipped = self.shipped_file.get(key, _ABSENT)
+        if shipped is not _ABSENT:
+            return shipped
+        return getattr(UserSettings(), key, None)
+
 
 def _tiers(scope: str, *, persisted_only: bool) -> _Tiers:
     layers = read_setting_layers(scope)
@@ -105,6 +138,7 @@ def _tiers(scope: str, *, persisted_only: bool) -> _Tiers:
         db_global=global_rows,
         code_default={} if persisted_only else overlay_code_defaults(scope),
         shipped_file=layers.toml_rows,
+        degraded=bool(layers.degraded_scopes),
     )
 
 
@@ -125,14 +159,24 @@ def resolve_settings(
 
     The tiers are read once for the whole call, so a page of two hundred rows costs one
     settings read rather than two hundred.
+
+    Raises :class:`ConfigOverrideReadError` when *persisted_only* is set and the DB tier
+    could not be read (#3873). A file export writes what it believes the stored tiers hold;
+    doing that from a tier it could not read would persist an absence it never verified —
+    turning a transient read fault into a permanent, silent config loss. The dashboard path
+    (``persisted_only=False``) does NOT raise: it renders the degradation as
+    :attr:`ValueSource.UNRESOLVED`, which is the whole point of showing it.
     """
     tiers = _tiers(scope, persisted_only=persisted_only)
+    if persisted_only and tiers.degraded:
+        raise ConfigOverrideReadError(scope)
     return {key: tiers.resolve(key) for key in keys}
 
 
 __all__ = [
     "OVERRIDING_SOURCES",
     "PERSISTED_SOURCES",
+    "ConfigOverrideReadError",
     "ResolvedSetting",
     "ValueSource",
     "resolve_settings",

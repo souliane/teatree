@@ -23,7 +23,8 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.resolution import _load_global_rows, _load_overlay_rows, env_setting_overrides, read_setting_layers
+from teatree.config.override_reader import load_global_rows, load_overlay_rows
+from teatree.config.resolution import env_setting_overrides, read_setting_layers
 from teatree.core.models import ConfigSetting
 
 
@@ -162,11 +163,12 @@ class TestPerOverlayDbScope(TestCase):
 class TestOverrideReadSignalsOnRealFailure(TestCase):
     """The DB override read never SILENTLY empties the tier on a REAL error (P1-B).
 
-    ``_load_global_rows`` / ``_load_overlay_rows`` degrade to ``{}`` SILENTLY only for
-    genuine bootstrap states (missing table, DB not ready). A real read bug drops the
-    whole override tier — including the ``autonomy`` / ``require_human_approval_to_merge``
-    safety gates — back to the dataclass defaults; that fail-open must be SIGNALLED loud
-    (ERROR log + traceback), not silently swallowed, so operator monitoring surfaces it.
+    ``load_global_rows`` / ``load_overlay_rows`` return ``({}, False)`` — an EMPTY tier that
+    was read cleanly — only for genuine bootstrap states (missing table, DB not ready). A
+    real read fault returns ``({}, True)``: the rows are equally empty, but the second
+    element says teatree could not determine what the tier held, which is what stops the
+    ``autonomy`` / ``require_human_approval_to_merge`` gates resolving to shipped defaults
+    (#3873). The loud ERROR log + traceback is retained on top, for operator monitoring.
     """
 
     @pytest.fixture(autouse=True)
@@ -178,13 +180,13 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
         # legitimate bootstrap no-op: {} and NO error log. `_app_registry_ready` is patched
         # False to model the genuine bootstrap state (this TestCase has Django set up).
         with (
-            mock.patch("teatree.config.resolution._app_registry_ready", return_value=False),
+            mock.patch("teatree.config.override_reader._app_registry_ready", return_value=False),
             mock.patch.object(
                 ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("no such table")
             ),
             self.assertNoLogs("teatree.config", level="ERROR"),
         ):
-            assert _load_global_rows() == {}
+            assert load_global_rows() == ({}, False)
 
     def test_app_registry_not_ready_error_is_always_silent(self) -> None:
         # AppRegistryNotReady is an unambiguous bootstrap state — silent regardless of the
@@ -195,7 +197,7 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             ),
             self.assertNoLogs("teatree.config", level="ERROR"),
         ):
-            assert _load_global_rows() == {}
+            assert load_global_rows() == ({}, False)
 
     def test_runtime_operational_error_is_logged_loud_not_silent(self) -> None:
         # THE fix: an OperationalError raised while the app registry IS ready (a locked DB,
@@ -203,35 +205,41 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
         # still degrades to {} but MUST be signalled loud, else the operator's DB-override
         # tier (autonomy, per-overlay mode, worker_quiescing) silently reverts to defaults.
         with (
-            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch("teatree.config.override_reader._app_registry_ready", return_value=True),
             mock.patch.object(
                 ConfigSetting.objects, "overrides_for_scope", side_effect=OperationalError("database is locked")
             ),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert _load_global_rows() == {}
+            # ``({}, True)`` — empty rows AND "this scope could not be read" (#3873). The
+            # loud log is retained; what changed is that the caller can now tell this apart
+            # from a healthy read of an empty tier.
+            assert load_global_rows() == ({}, True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_runtime_programming_error_is_logged_loud_not_silent(self) -> None:
         # ProgrammingError shares the runtime-vs-bootstrap distinction with OperationalError.
         with (
-            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch("teatree.config.override_reader._app_registry_ready", return_value=True),
             mock.patch.object(
                 ConfigSetting.objects, "overrides_for_scope", side_effect=ProgrammingError("relation gone")
             ),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert _load_global_rows() == {}
+            # ``({}, True)`` — empty rows AND "this scope could not be read" (#3873). The
+            # loud log is retained; what changed is that the caller can now tell this apart
+            # from a healthy read of an empty tier.
+            assert load_global_rows() == ({}, True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_runtime_operational_error_on_overlay_read_is_logged_loud(self) -> None:
         # The per-overlay reader shares the runtime-vs-bootstrap distinction.
         with (
-            mock.patch("teatree.config.resolution._app_registry_ready", return_value=True),
+            mock.patch("teatree.config.override_reader._app_registry_ready", return_value=True),
             mock.patch.object(ConfigSetting.objects, "exclude", side_effect=OperationalError("database is locked")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert _load_overlay_rows("my-overlay") == {}
+            assert load_overlay_rows("my-overlay") == ({}, True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_real_read_error_is_logged_loud_not_silent(self) -> None:
@@ -241,7 +249,10 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             mock.patch.object(ConfigSetting.objects, "overrides_for_scope", side_effect=RuntimeError("corrupt read")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert _load_global_rows() == {}
+            # ``({}, True)`` — empty rows AND "this scope could not be read" (#3873). The
+            # loud log is retained; what changed is that the caller can now tell this apart
+            # from a healthy read of an empty tier.
+            assert load_global_rows() == ({}, True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
     def test_real_read_error_signals_through_effective_settings(self) -> None:
@@ -260,7 +271,7 @@ class TestOverrideReadSignalsOnRealFailure(TestCase):
             mock.patch.object(ConfigSetting.objects, "exclude", side_effect=RuntimeError("corrupt read")),
             self.assertLogs("teatree.config", level="ERROR") as captured,
         ):
-            assert _load_overlay_rows("my-overlay") == {}
+            assert load_overlay_rows("my-overlay") == ({}, True)
         assert any("FAILED unexpectedly" in r.getMessage() for r in captured.records)
 
 

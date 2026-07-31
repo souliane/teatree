@@ -43,6 +43,11 @@ class SettingLayers:
     db_rows: tuple[dict[str, Any], ...]
     global_db: dict[str, Any]
     overlay_db: dict[str, Any]
+    #: The DB scopes whose override read FAILED — ``"global"`` and/or ``"overlay"`` (#3873).
+    #: Empty on a healthy read, INCLUDING a healthy read of an empty table: a scope is
+    #: listed only when the tier could not be determined, never when it is merely absent.
+    #: That distinction is the whole point — ``{}`` alone cannot carry it.
+    degraded_scopes: frozenset[str] = frozenset()
 
 
 def shipped_defaults_base(base: UserSettings, layers: SettingLayers) -> UserSettings:

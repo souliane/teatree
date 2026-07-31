@@ -112,6 +112,7 @@ from hooks.scripts.handlers.classifier_denial import (
     handle_clear_classifier_deny_marker,
     handle_track_classifier_denial,
 )
+from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
 from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
@@ -170,6 +171,9 @@ from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_d
 from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
+from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
+from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
+from hooks.scripts.skill_loader_input import strip_ambient_context as _strip_ambient_context
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.slack_mirror_wiring import build_dm_audio_enricher
 from hooks.scripts.slack_mirror_wiring import slack_http_poster as _slack_http_poster
@@ -572,75 +576,6 @@ _append_line = append_line
 
 
 # ── UserPromptSubmit ────────────────────────────────────────────────
-
-# Harness-injected ambient context — NOT task intent. The Claude Code
-# harness appends ``<system-reminder>…</system-reminder>`` blocks (the
-# CLAUDE.md body, the MEMORY.md index, the available-skills listing) to
-# the prompt that reaches ``UserPromptSubmit``. Keyword-matching those
-# blocks is the #1567 over-fire: a MEMORY.md index line naming
-# ``feedback_blog_*`` keyword-matched ``\bblog\b`` → suggested
-# ``ac-writing-blog-posts`` → the PreToolUse gate hard-blocked every
-# Bash/Edit/Write during an unrelated autonomous loop. The hard-block
-# demand set must derive from genuine task-intent text only, so these
-# wrappers are stripped before the prompt is matched.
-_AMBIENT_CONTEXT_RE = re.compile(
-    r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>"
-    r".*?</\1>",
-    re.DOTALL | re.IGNORECASE,
-)
-
-# The block regex is O(n²) against many UNTERMINATED open tags (a user
-# pasting a large log/transcript that quotes literal ``<system-reminder>``
-# open tags, or a malicious agent). ``_strip_ambient_context`` runs on
-# EVERY ``UserPromptSubmit`` and is net-new hot-path cost, so the input is
-# capped before the regexes run — bounding the worst case well under the
-# 30s ``UserPromptSubmit`` timeout (hooks/CLAUDE.md "hooks must be fast").
-# Genuine task intent sits early in the prompt (the harness appends ambient
-# blocks), so a 64 KiB cap never truncates intent — mirrors the 512-char
-# token windows used elsewhere in this file.
-_AMBIENT_STRIP_MAX_CHARS: int = 65536
-
-
-def _strip_ambient_context(prompt: str) -> str:
-    """Remove harness-injected ambient-context blocks from *prompt*.
-
-    Returns the prompt with every ``<system-reminder>`` / harness
-    ``<command-*>`` wrapper (and its body) removed, leaving only the
-    genuine task-intent text. An unterminated opening wrapper (truncated
-    injection) is dropped from its tag to end-of-string so leaked ambient
-    text can never reach the keyword matcher. The intent text is what the
-    high-confidence hard-block demand set is built from (#1567).
-
-    The input is capped to :data:`_AMBIENT_STRIP_MAX_CHARS` before
-    matching to keep this hot-path hook fast (see the constant's note).
-    """
-    prompt = prompt[:_AMBIENT_STRIP_MAX_CHARS]
-    stripped = _AMBIENT_CONTEXT_RE.sub(" ", prompt)
-    stripped = re.sub(
-        r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>.*",
-        " ",
-        stripped,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    return stripped.strip()
-
-
-def _build_skill_loader_input(prompt: str, session_id: str) -> dict:
-    teatree_home = os.environ.get("HOME", "")
-    source_root = Path(__file__).resolve().parents[2].parent
-
-    active = _read_lines(_state_file(session_id, "active"))
-    loaded = _read_lines(_state_file(session_id, "skills"))
-
-    search_dirs = [str(source_root), f"{teatree_home}/.agents/skills", f"{teatree_home}/.claude/skills"]
-    return {
-        "prompt": _strip_ambient_context(prompt),
-        "cwd": str(Path.cwd()),
-        "active_repos": active,
-        "loaded_skills": loaded,
-        "skill_search_dirs": [d for d in search_dirs if d],
-        "supplementary_config": os.environ.get("T3_SUPPLEMENTARY_SKILLS", f"{teatree_home}/.teatree-skills.yml"),
-    }
 
 
 def handle_user_prompt_submit(data: dict) -> None:
@@ -4412,7 +4347,13 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if not session_id:
         return
     source = data.get("source", "")
+    skill_context = ""
     if _autoload_enabled():
+        # #3869: resolve the context skills BEFORE ``engage(seed_skills=True)``. The seed
+        # writes the lifecycle-core names into ``<session>.skills`` for the statusline, and
+        # that file is the LOADED set the selection subtracts from — running after it would
+        # let names that were never actually loaded suppress their own injection.
+        skill_context = _session_start_skill_context(session_id)
         engage(session_id, seed_skills=True)
     elif not _teatree_active(session_id):
         advisory = "" if source in {"compact", "resume"} else _session_start_advisory()
@@ -4425,7 +4366,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         # any session that did not arm loops silently stranded the whole queue.
         # Every SessionStart path now merges, so exactly one thing gates the
         # drain — a session starting.
-        _emit_session_start_context(_merge_session_start_context("", session_id, source))
+        _emit_session_start_context(_merge_session_start_context(skill_context, session_id, source))
         return
     agent_id = data.get("agent_id", "")
 
@@ -4496,7 +4437,11 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if emit_osc:
         _emit_osc_title()
 
-    context = _merge_session_start_context(context, session_id, source)
+    # The skill directive leads: it is what the FIRST turn must act on, and the loop
+    # bootstrap below it is orientation the agent does not act on immediately.
+    context = _merge_session_start_context(
+        "\n\n".join(part for part in (skill_context, context) if part), session_id, source
+    )
     _emit_session_start_context(context)
 
 
@@ -5997,6 +5942,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_config_overwrite,
         handle_protect_default_branch,
         handle_block_main_clone_mutation,
+        handle_block_interactive_authoring,
         handle_block_self_dm_via_mcp,
         handle_block_mcp_slack_write,
         handle_quote_scanner_pretool,
