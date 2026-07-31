@@ -10,7 +10,9 @@ import io
 import json
 
 import django.test
+import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, Prompt
@@ -103,6 +105,14 @@ class TestLoopsListTags(django.test.TestCase):
         egress = _loop_names(_run("--json", "--tag", "egress"))
         assert colleague
         assert colleague <= egress
+
+    def test_unknown_tag_is_rejected_naming_the_valid_choices(self) -> None:
+        with pytest.raises(CommandError, match="unknown tag\\(s\\) bogus"):
+            _run("--tag", "bogus")
+
+    def test_unknown_tag_error_names_every_valid_choice(self) -> None:
+        with pytest.raises(CommandError, match="ingress\\|egress\\|colleague\\|deterministic\\|ai"):
+            _run("--tag", "bogus")
 
 
 @django.test.override_settings(USE_TZ=True)
