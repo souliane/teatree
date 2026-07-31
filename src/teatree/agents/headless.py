@@ -28,7 +28,7 @@ from claude_agent_sdk.types import RateLimitInfo
 from django.utils import timezone
 
 from teatree.agents._headless_env import _overlay_scope, _provider_child_env, with_test_worker_cap
-from teatree.agents._headless_options import _build_options
+from teatree.agents._headless_options import SpawnOverrides, _build_options, resolve_headless_max_turns
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness, HarnessSession, pydantic_ai_thread, resolve_harness
 from teatree.agents.harness_registry import InvalidHarnessProviderError, UnknownHarnessError
@@ -166,7 +166,13 @@ def run_headless(
         lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase),
         stage_skills=stage_skills,
     )
-    options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
+    options = _build_options(
+        task,
+        system_context,
+        phase=phase,
+        skills=skills,
+        overrides=SpawnOverrides(env=child_env, turn_ceiling=_turn_ceiling(harness)),
+    )
 
     try:
         # The quarantined reader (#116) also spawns inside ``reader_env_hermetic`` so its
@@ -212,6 +218,19 @@ def run_headless(
         lane=lane,
         provenance=DispatchProvenance(reasoning_effort=resolve_spawn_effort(phase) or "", skills_loaded=tuple(skills)),
     )
+
+
+def _turn_ceiling(harness: Harness) -> int:
+    """The per-run turn cap for THIS dispatch's backend — the ``claude_sdk`` lane's, or none.
+
+    ``headless_max_turns`` bounds the ``claude`` CLI child's ``--max-turns``. Every other
+    backend carries its own per-run limit (the ``pydantic_ai`` lane's
+    ``pydantic_ai_request_limit``), and the neutral ``HarnessOptions`` adapter reads a
+    positive ``max_turns`` as the CALLER's explicit cap, which WINS over that limit — so
+    passing this lane's ceiling to another backend would silently replace its cap with a
+    number chosen for a different lane. ``0`` leaves such a backend on its own ceiling.
+    """
+    return resolve_headless_max_turns() if harness.capabilities.spawns_cli_child else 0
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:

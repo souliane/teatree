@@ -9,13 +9,14 @@ default, and a run that reaches it is recorded FAILED with a reason that NAMES
 the ceiling **and** escalated to the owner — never a silent truncation.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from claude_agent_sdk import ResultMessage
 from django.test import TestCase
 
-from teatree.agents._headless_options import _build_options, resolve_headless_max_turns
-from teatree.agents.headless import _outcome_failure
+from teatree.agents._headless_options import SpawnOverrides, _build_options, resolve_headless_max_turns
+from teatree.agents.headless import _outcome_failure, _turn_ceiling
 from teatree.agents.headless_truncation import (
     TURN_CEILING_SUBTYPE,
     alert_owner_max_turns_truncation,
@@ -75,6 +76,29 @@ class TestTheCeilingReachesTheSpawn(_Dispatch):
     def test_zero_leaves_the_spawn_uncapped(self) -> None:
         ConfigSetting.objects.set_value("headless_max_turns", 0, scope="")
         options = _build_options(self._task(), "ctx", phase="coding", skills=[])
+        assert options.max_turns == 0
+
+
+class TestTheCeilingStaysOnItsOwnLane(_Dispatch):
+    """``max_turns`` is not lane-neutral, so the ceiling is only pinned where it belongs.
+
+    The neutral ``HarnessOptions`` adapter reads a positive ``max_turns`` as the CALLER's
+    explicit cap and lets it WIN over a backend's own per-run limit. A ceiling chosen for
+    the ``claude_sdk`` CLI lane therefore silently replaces the ``pydantic_ai`` lane's
+    ``pydantic_ai_request_limit`` if it is handed to it — a cap set for one lane deciding
+    another lane's budget.
+    """
+
+    def test_the_cli_spawning_backend_gets_the_ceiling(self) -> None:
+        assert _turn_ceiling(_FakeHarness(spawns_cli_child=True)) == UserSettings().headless_max_turns
+
+    def test_a_backend_with_its_own_limit_is_left_alone(self) -> None:
+        assert _turn_ceiling(_FakeHarness(spawns_cli_child=False)) == 0
+
+    def test_the_builder_pins_exactly_what_the_driver_names(self) -> None:
+        options = _build_options(
+            self._task(), "ctx", phase="coding", skills=[], overrides=SpawnOverrides(turn_ceiling=0)
+        )
         assert options.max_turns == 0
 
 
@@ -138,6 +162,13 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
         with patch("teatree.agents.headless_truncation.notify_user", return_value=True) as notify:
             assert _outcome_failure(task, _harness_outcome(_result("success")), phase="coding") is None
         notify.assert_not_called()
+
+
+class _FakeHarness:
+    """The narrow slice of the harness protocol the ceiling resolver reads."""
+
+    def __init__(self, *, spawns_cli_child: bool) -> None:
+        self.capabilities = SimpleNamespace(spawns_cli_child=spawns_cli_child)
 
 
 def _harness_outcome(message: ResultMessage):
