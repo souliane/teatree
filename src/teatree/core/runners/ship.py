@@ -3,6 +3,8 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, NamedTuple, cast
 
+from django.apps import apps
+
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
@@ -551,6 +553,4 @@ class ShipExecutor(RunnerBase):
         # in hand and the PR has just been verify-by-re-read confirmed, so a PR that
         # merges before the next tick is still attributable to its ticket.
         if url:
-            from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-            PullRequest.objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
+            apps.get_model("core", "PullRequest").objects.record_opened(ticket=ticket, url=url, overlay=ticket.overlay)
