@@ -8,7 +8,6 @@ import pytest
 from teatree.utils import git as git_mod
 from teatree.utils import git_branch as git_branch_mod
 from teatree.utils import git_remote_ops as git_remote_ops_mod
-from teatree.utils import git_sync as git_sync_mod
 from teatree.utils.git import GitRepo
 
 
@@ -92,29 +91,6 @@ class TestDefaultBranchDetection:
         monkeypatch.setattr(git_branch_mod, "check", lambda **_: False)
         with pytest.raises(RuntimeError, match="Could not detect default branch"):
             git_mod.default_branch("/r")
-
-
-class TestPush:
-    def test_push_includes_branch_in_args(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        recorded: list[list[str]] = []
-
-        def fake_run_strict(*, repo: str, args: list[str]) -> str:
-            recorded.append(args)
-            return ""
-
-        monkeypatch.setattr(git_sync_mod, "run_strict", fake_run_strict)
-        git_mod.push("/r", remote="origin", branch="feat")
-        assert recorded == [["push", "--set-upstream", "origin", "feat"]]
-
-    def test_push_without_branch_only_sets_upstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        recorded: list[list[str]] = []
-        monkeypatch.setattr(
-            git_sync_mod,
-            "run_strict",
-            lambda *, repo, args: recorded.append(args) or "",
-        )
-        git_mod.push("/r")
-        assert recorded == [["push", "--set-upstream", "origin"]]
 
 
 class TestBranchMerged:

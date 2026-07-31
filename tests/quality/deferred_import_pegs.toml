@@ -32,6 +32,11 @@
 # app-load cycle). Nesting the two modules under core/fleet/ does not change these
 # runtime edges, so the deferrals stay and are pegged here.
 "src/teatree/core/fleet/wire.py" = 3
+# 1: `t3 push` (#3927) must work in a bare clone with no Django settings, no DB,
+# and no registered overlay, so `_overlay_github_token` defers `from
+# teatree.core.overlay_loader import get_overlay` and degrades to the ambient
+# credential helper when it raises, rather than importing at module load time.
+"src/teatree/core/forge_push.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 2
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
 "src/teatree/core/gates/fix_dod_gate.py" = 1

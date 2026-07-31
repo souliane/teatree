@@ -102,3 +102,12 @@ class TestPush:
             push(repo="/repo", remote="upstream", branch="feature")
 
         assert recorder.commands[-1] == ["git", "-C", "/repo", "push", "--set-upstream", "upstream", "feature"]
+
+    def test_without_a_branch_it_only_sets_upstream(self) -> None:
+        """No branch argument means no trailing refspec — git resolves HEAD itself."""
+        recorder = _RecordingRun()
+
+        with patch("teatree.utils.git_sync.run_checked", recorder):
+            push(repo="/repo")
+
+        assert recorder.commands[-1] == ["git", "-C", "/repo", "push", "--set-upstream", "origin"]

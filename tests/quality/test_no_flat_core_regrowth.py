@@ -159,7 +159,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # home: the claim chokepoint reads it through managers_task_claim (its own tach node), and
 # core/gates/schema_guard reads the same primitive, so putting it under gates/ would put
 # managers on the teatree.core node it is itself a dependency OF — a cycle tach refuses.
-PINNED_FLAT_CORE_MODULES = 104
+# 105: +forge_push.py (#3927) — the `t3 push` credential-resolution + non-interactive-push seam
+# (the ONE supported push path from the worker container). A flat root leaf consumed by the
+# `t3 push` CLI command and `utils/git_sync.push`; owned by no existing subpackage — merge/ is
+# the keystone transition, not a push-credential seam.
+PINNED_FLAT_CORE_MODULES = 105
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
