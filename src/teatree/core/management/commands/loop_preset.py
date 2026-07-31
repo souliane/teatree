@@ -19,7 +19,8 @@ from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import clear_mode_override, posture_label, resolve_active_mode, set_mode_override
 from teatree.core.models import PIN_MODES, Loop, Mode
 from teatree.loop.preset_resolution import next_boundary
-from teatree.loops.preset_editing import apply_entry_edits
+from teatree.loops.preset_admin import delete_preset
+from teatree.loops.preset_editing import PresetEditError, apply_entry_edits
 from teatree.loops.preset_status import active_summary, effective_verdicts
 
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$")
@@ -194,12 +195,19 @@ class Command(TyperCommand):
         self,
         name: Annotated[str, typer.Argument(help="Preset to delete.")],
         *,
+        confirm: Annotated[str, typer.Option("--confirm", help="Typed phrase; required for a shipped preset.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Delete a preset (a slot/override still pointing at it fails open to base config)."""
-        deleted, _ = Mode.objects.filter(name=name).delete()
-        if not deleted:
-            self._refuse(f"no preset named {name!r}", json_output=json_output)
+        """Delete a preset — refused while anything still names it; a shipped one needs ``--confirm``.
+
+        Routed through the shared :func:`teatree.loops.preset_admin.delete_preset` seam so
+        the CLI honours the same referrer refusal the dashboard enforces (it previously
+        deleted the row directly, stranding live by-name references).
+        """
+        try:
+            delete_preset(name, confirm=confirm)
+        except PresetEditError as exc:
+            self._refuse(str(exc), json_output=json_output)
         self._emit({"deleted": name}, f"deleted preset {name!r}.", json_output=json_output)
 
     def _show_named(self, name: str, *, json_output: bool) -> None:

@@ -493,7 +493,7 @@
           "name": "edit"
         },
         {
-          "help": "Delete a preset (a slot/override still pointing at it fails open to base config)",
+          "help": "Delete a preset \u2014 refused while anything still names it; a shipped one needs ``--confirm``",
           "name": "delete"
         },
         {
@@ -509,6 +509,10 @@
         {
           "help": "Show a schedule's ordered slots (weekdays at a start time, then the preset)",
           "name": "show"
+        },
+        {
+          "help": "Delete a calendar and its slots \u2014 the ACTIVE one is refused; a shipped one needs ``--confirm``",
+          "name": "delete"
         },
         {
           "help": "List every schedule with its timezone, slot count, and the ACTIVE marker",
@@ -947,6 +951,28 @@
         {
           "help": "Move one working item to *status*",
           "name": "todo-set"
+        }
+      ]
+    },
+    {
+      "help": "Audit the shipped loop/preset/schedule seed set, and delete from it with a typed confirm (#3842).",
+      "name": "shipped_seed",
+      "subcommands": [
+        {
+          "help": "Report every shipped definition that is missing, disabled, or not ticking",
+          "name": "audit"
+        },
+        {
+          "help": "Delete a loop row \u2014 a shipped one needs ``--confirm stop-<name>``",
+          "name": "delete-loop"
+        },
+        {
+          "help": "Delete a calendar and its slots \u2014 a shipped one needs ``--confirm stop-<name>``",
+          "name": "delete-schedule"
+        },
+        {
+          "help": "Delete a preset \u2014 a shipped one needs ``--confirm stop-<name>``",
+          "name": "delete-preset"
         }
       ]
     },

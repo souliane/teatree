@@ -189,6 +189,29 @@ def _check_loop_classification_drift() -> bool:
     return False
 
 
+def _check_shipped_seed_inertness() -> bool:
+    """Warn on each shipped loop/preset/schedule that is missing, disabled, or not ticking.
+
+    The expected set is sourced from the shipped seed tables, not the DB, so a row somebody
+    deleted is visible at all. Only FAULTS are echoed — a shipped-off loop or an inactive
+    calendar is a deliberate choice, and a check that reports those every hour is one people
+    learn to ignore. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.seed_inertness import shipped_inertness  # noqa: PLC0415 — deferred: ORM-reading import
+
+    try:
+        faults = [finding for finding in shipped_inertness() if finding.is_fault]
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Shipped-seed inertness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not faults:
+        return True
+    for finding in faults:
+        typer.echo(f"WARN  Shipped seed inert: {finding.label}")
+    typer.echo("WARN  Run `t3 loops audit` for the full report, including the deliberate ones.")
+    return False
+
+
 def _check_aged_sweep_skips() -> bool:
     """Warn on each PR the merge sweep has skipped for the same reason N ticks running.
 

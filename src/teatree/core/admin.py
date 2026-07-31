@@ -59,8 +59,30 @@ class PullRequestAdmin(admin.ModelAdmin):
     list_display = ("id", "ticket", "repo", "iid", "state")
 
 
+class ShippedDeleteRouting(admin.ModelAdmin):
+    """Route deleting a SHIPPED row to the CLI seam that carries the typed confirm (#3842).
+
+    Not a prohibition — the admin's own button has nowhere to type a phrase and records
+    nothing, so a shipped row is deleted through ``t3 loops delete`` / ``t3 loop preset
+    delete`` / ``t3 loop schedule delete``, each of which names what stops happening first.
+    An operator-created row keeps the ordinary admin delete.
+    """
+
+    shipped_family: str = ""
+
+    def has_delete_permission(self, request: "HttpRequest", obj: object = None) -> bool:
+        from teatree.config.seed_defaults import is_shipped  # noqa: PLC0415 — deferred: reads the packaged seed file
+
+        if not super().has_delete_permission(request, obj):
+            return False
+        if obj is None:
+            return True
+        return not is_shipped(self.shipped_family, str(getattr(obj, "name", "")))
+
+
 @admin.register(Loop)
-class LoopAdmin(admin.ModelAdmin):
+class LoopAdmin(ShippedDeleteRouting):
+    shipped_family = "loop"
     list_display = (
         "name",
         "enabled",
@@ -208,7 +230,8 @@ class ConfigSettingAdmin(admin.ModelAdmin):
 
 
 @admin.register(Mode)
-class ModeAdmin(admin.ModelAdmin):
+class ModeAdmin(ShippedDeleteRouting):
+    shipped_family = "preset"
     list_display = ("name", "availability_mode", "entry_count", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
@@ -230,7 +253,8 @@ class ModeScheduleSlotInline(admin.TabularInline):
 
 
 @admin.register(ModeSchedule)
-class ModeScheduleAdmin(admin.ModelAdmin):
+class ModeScheduleAdmin(ShippedDeleteRouting):
+    shipped_family = "schedule"
     list_display = ("name", "timezone", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")

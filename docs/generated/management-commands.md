@@ -249,7 +249,7 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | `auto` | Clear the manual override so the active schedule / default mode decides again |
 | `create` | Create a new preset from ``--set`` entries, optional pin and overlay scope |
 | `edit` | Edit a preset's entries / description / pin / scope in place |
-| `delete` | Delete a preset (a slot/override still pointing at it fails open to base config) |
+| `delete` | Delete a preset — refused while anything still names it; a shipped one needs ``--confirm`` |
 | `list` | List every preset with its pin, scope, entry count, and the ACTIVE marker |
 
 ## `loop_schedule`
@@ -259,6 +259,7 @@ List/show/set-active/clear-active loop schedules (#3159).
 | Subcommand | Description |
 | --- | --- |
 | `show` | Show a schedule's ordered slots (weekdays at a start time, then the preset) |
+| `delete` | Delete a calendar and its slots — the ACTIVE one is refused; a shipped one needs ``--confirm`` |
 | `list` | List every schedule with its timezone, slot count, and the ACTIVE marker |
 | `set-active` | Activate *name* — the single ``active_loop_schedule`` write that switches calendars |
 | `set-timezone` | Set *name*'s slot timezone — the lever that makes its wall-clock slots fire locally |
@@ -485,6 +486,17 @@ Session-lifecycle operations.
 | `todo-add` | Append an item to this session's durable working list |
 | `todo-list` | List this session's working items, in working order |
 | `todo-set` | Move one working item to *status* |
+
+## `shipped_seed`
+
+Audit the shipped loop/preset/schedule seed set, and delete from it with a typed confirm (#3842).
+
+| Subcommand | Description |
+| --- | --- |
+| `audit` | Report every shipped definition that is missing, disabled, or not ticking |
+| `delete-loop` | Delete a loop row — a shipped one needs ``--confirm stop-<name>`` |
+| `delete-schedule` | Delete a calendar and its slots — a shipped one needs ``--confirm stop-<name>`` |
+| `delete-preset` | Delete a preset — a shipped one needs ``--confirm stop-<name>`` |
 
 ## `signals`
 

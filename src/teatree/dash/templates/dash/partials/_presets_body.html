@@ -93,7 +93,13 @@
           {% if preset.referrers.blocks_delete %}
             <span class="muted">Cannot delete — {{ preset.referrers.summary }}.</span>
           {% else %}
+            {% if preset.delete_phrase %}
+              <input type="text" name="confirm" placeholder="{{ preset.delete_phrase }}" aria-label="type {{ preset.delete_phrase }} to confirm">
+            {% endif %}
             <button class="dash-btn danger" type="submit">delete preset</button>
+            {% if preset.delete_phrase %}
+              <span class="muted">Ships by default — type <code>{{ preset.delete_phrase }}</code> to confirm. <code>t3 setup</code> recreates it.</span>
+            {% endif %}
           {% endif %}
         </form>
 
