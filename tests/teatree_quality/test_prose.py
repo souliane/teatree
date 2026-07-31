@@ -2,7 +2,16 @@
 
 from pathlib import Path
 
-from teatree.quality.prose import file_prose, markdown_prose, python_prose
+import pytest
+
+from teatree.quality.prose import (
+    file_comments,
+    file_prose,
+    hash_comments,
+    markdown_prose,
+    python_comments,
+    python_prose,
+)
 
 
 class TestPythonProse:
@@ -28,6 +37,48 @@ class TestMarkdownProse:
 
     def test_lines_keep_their_file_positions(self) -> None:
         assert [line.lineno for line in markdown_prose("a\nb\nc\n")] == [1, 2, 3]
+
+
+class TestPythonComments:
+    def test_a_docstring_is_not_a_comment(self) -> None:
+        lines = python_comments('"""Doc line."""\n\n# a comment\nx = 1\n')
+        assert [line.text for line in lines] == ["# a comment"]
+
+    def test_unparseable_source_yields_nothing(self) -> None:
+        assert python_comments("x = '\n") == []
+
+
+class TestHashComments:
+    def test_a_trailing_comment_is_found_from_its_sigil(self) -> None:
+        lines = hash_comments("name: probe  # a trailing note\n")
+        assert [(line.lineno, line.text) for line in lines] == [(1, "# a trailing note")]
+
+    def test_a_sigil_inside_a_quoted_scalar_is_data(self) -> None:
+        assert hash_comments('prompt: "run gh issue view #12"\n') == []
+
+    def test_a_comment_after_a_quoted_scalar_is_still_found(self) -> None:
+        assert [line.text for line in hash_comments('prompt: "a value"  # the note\n')] == ["# the note"]
+
+
+class TestFileComments:
+    @pytest.mark.parametrize(
+        ("name", "body", "expected"),
+        [
+            ("mod.py", '"""Doc."""\n# a note\n', ["# a note"]),
+            ("conf.yaml", "# a note\nname: x\n", ["# a note"]),
+            ("conf.toml", "# a note\nkey = 1\n", ["# a note"]),
+            ("doc.md", "a line\n", ["a line"]),
+        ],
+    )
+    def test_suffix_picks_the_extractor(self, tmp_path: Path, name: str, body: str, expected: list[str]) -> None:
+        path = tmp_path / name
+        path.write_text(body, encoding="utf-8")
+        assert [line.text for line in file_comments(path)] == expected
+
+    def test_a_format_without_comment_syntax_has_no_reader_line(self, tmp_path: Path) -> None:
+        path = tmp_path / "fixture.jsonl"
+        path.write_text('{"text": "# a value"}\n', encoding="utf-8")
+        assert file_comments(path) == []
 
 
 class TestFileProse:

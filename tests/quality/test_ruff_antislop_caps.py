@@ -12,6 +12,14 @@ Each test plants a violating probe and asserts ruff reports it under the real
 project config (the cap *bites*), plus an enablement guard that turns red if a
 future PR adds the rule to ``lint.ignore``. The tree itself is already green on
 all three (verified by the project-wide ``ruff check`` in CI).
+
+FIX and TD are also the commit-time half of the deferred-marker ban on the
+verification trees, whose whole statement is
+``tests/quality/test_deferred_marker_ban.py`` and whose vocabulary is the
+registry that gate reads (which pins the vocabulary parity from its side). Ruff
+resolves an exemption by path, so those two rules are pinned out of
+``per-file-ignores`` as well and probed at a ``tests/`` and an ``e2e/`` filename
+rather than only under ``tmp_path``.
 """
 
 import re
@@ -25,6 +33,9 @@ import pytest
 from tests._color_env import no_color_env
 
 _CODE_RE = re.compile(r"\b([A-Z]+\d+)\b")
+
+#: The rule families that make a deferred marker in a comment a lint error.
+_MARKER_RULES = frozenset({"FIX", "FIX001", "FIX002", "FIX003", "FIX004", "TD", "TD001", "TD002", "TD003", "TD004"})
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
@@ -42,6 +53,42 @@ def ruff_lint() -> dict:
 
 def _ignored_codes(lint: dict) -> set[str]:
     return set(lint.get("ignore", [])) | set(lint.get("extend-ignore", []))
+
+
+def _per_file_ignored_codes(lint: dict) -> dict[str, set[str]]:
+    return {glob: set(codes) for glob, codes in lint.get("per-file-ignores", {}).items()}
+
+
+def _ruff_codes_for_filename(source: str, filename: str) -> set[str]:
+    # Ruff resolves `per-file-ignores` against the DECLARED path, so a probe on
+    # disk under tmp_path can never show whether a rule still bites at
+    # `tests/**` or `e2e/**`. `--stdin-filename` asks that question without
+    # writing into the shared tree.
+    result = subprocess.run(
+        [
+            _UV,
+            "run",
+            "ruff",
+            "check",
+            "--config",
+            str(_PYPROJECT),
+            "--no-cache",
+            "--no-fix",
+            "--output-format",
+            "concise",
+            "--color=never",
+            "--stdin-filename",
+            filename,
+            "-",
+        ],
+        cwd=_REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        input=source,
+        env=no_color_env(),
+    )
+    return set(_CODE_RE.findall(result.stdout + result.stderr))
 
 
 def _ruff_codes(target: Path) -> set[str]:
@@ -88,6 +135,31 @@ class TestEnablementPins:
 
     def test_select_is_all(self, ruff_lint: dict) -> None:
         assert ruff_lint["select"] == ["ALL"]
+
+    def test_no_path_exempts_itself_from_the_marker_rules(self, ruff_lint: dict) -> None:
+        # `lint.ignore` is not the only way to switch a rule off. A
+        # `per-file-ignores` entry for `tests/**/*.py` would drop the fast
+        # commit-time half of the marker ban and leave only the CI-lane gate,
+        # silently.
+        relaxed = {
+            glob: codes & _MARKER_RULES
+            for glob, codes in _per_file_ignored_codes(ruff_lint).items()
+            if codes & _MARKER_RULES
+        }
+        assert not relaxed, f"a per-file-ignores entry disables the deferred-marker rules: {relaxed}"
+
+
+@pytest.mark.integration
+class TestCapsBiteInTheVerificationTrees:
+    """The commit-time half of the deferred-marker ban, asked at the real paths."""
+
+    @pytest.mark.parametrize("filename", ["tests/quality/_probe.py", "e2e/dash/_probe.py"])
+    def test_a_marker_comment_is_still_flagged(self, filename: str) -> None:
+        assert "FIX002" in _ruff_codes_for_filename("x = 1  # TODO: wire this up\n", filename)
+
+    def test_a_string_literal_carrying_the_word_is_not(self) -> None:
+        codes = _ruff_codes_for_filename('LABEL = "renders TODO list page"\n', "tests/quality/_probe.py")
+        assert not ({"FIX001", "FIX002"} & codes)
 
 
 @pytest.mark.integration
