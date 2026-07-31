@@ -641,7 +641,7 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 
 ```toml
 asgiref>=3.8
-claude-agent-sdk==0.2.94
+claude-agent-sdk==0.2.95
 coverage>=7
 croniter>=6.2.2
 django>=6,<6.1
@@ -653,7 +653,7 @@ django-tasks-db>=0.12
 django-typer>=3.3
 gunicorn>=23
 httpx>=0.27
-mcp>=1.27
+mcp>=2,<3
 pillow>=12.3
 pydantic-ai-slim[anthropic,openai]>=2.3
 pyyaml>=6

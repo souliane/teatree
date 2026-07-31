@@ -64,7 +64,7 @@ variables:
     # is only the presence-gate). Matching it stops the two CLIs in one image from
     # disagreeing. The DEPLOYED runtime pins a newer one on purpose; both tiers are
     # guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
-    - npm install -g @anthropic-ai/claude-code@2.1.169
+    - npm install -g @anthropic-ai/claude-code@2.1.170
     - claude --version
   # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
   retry:

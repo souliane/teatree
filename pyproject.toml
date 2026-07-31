@@ -23,14 +23,21 @@ dependencies = [
   # boundary inside the async tools; declared alongside since it is imported
   # directly by ``teatree.mcp.server``.
   "asgiref>=3.8,<4",
-  # EXACT pin, not a floor, and QUARANTINED from automated bumps (the
-  # ``.github/dependabot.yml`` ignore entry): a claude CLI at/after 2.1.204
-  # emits a markdown ``**AskUserQuestion**`` chip instead of a ``tool_use``
-  # block — breaking the eval AskUserQuestion flow and the question-drain
-  # (``teatree.eval.message_mapping`` maps only a ``ToolUseBlock``). 0.2.94
-  # (claude CLI 2.1.19x) is the known-green build; any bump must be opened by
-  # hand and re-verified against the metered eval lane (souliane/teatree#3125).
-  "claude-agent-sdk==0.2.128",
+  # EXACT pin, not a floor: ``tests/test_claude_cli_pin.py`` derives the
+  # eval/test image's ``claude`` CLI generation from this exact version (the
+  # CLI the wheel bundles and actually executes), and a floor makes that
+  # derivation impossible. Re-derive ``_SDK_BUNDLED_CLI_VERSION`` from the new
+  # wheel's ``claude_agent_sdk/_bundled/claude --version`` on every bump.
+  #
+  # CEILING — 0.2.95 is the newest release that resolves here. 0.2.96 added an
+  # ``mcp<2.0.0`` cap, and ``teatree.mcp`` imports the 2.0 module layout
+  # (``mcp.server.mcpserver.MCPServer``) under the ``mcp>=2,<3`` bound below, so
+  # the two are strictly disjoint and no lockfile can satisfy both. Lifting the
+  # ceiling means the SDK dropping its cap — never moving ``mcp`` back to 1.x.
+  # ``tests/test_claude_agent_sdk_pin.py`` proves the pin and the ``mcp`` bound
+  # stay co-satisfiable, so an unresolvable bump reds there with this reason
+  # rather than as an opaque `uv sync` resolver failure.
+  "claude-agent-sdk==0.2.95",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
