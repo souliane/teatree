@@ -25,6 +25,7 @@ from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES, ActionPayload
+from teatree.loop.persistence_phase_task import create_phase_task, has_open_task, open_task_in_phase
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -174,7 +175,7 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
         # review of the genuinely new revision (the recorded APPROVED
         # belonged to the old SHA).
         ticket.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state"])
-    open_task = _open_task_in_phase(ticket, phase="reviewing")
+    open_task = open_task_in_phase(ticket, phase="reviewing")
     if open_task is not None:
         _link_broadcast_reviewer_task(payload, open_task)
         return None
@@ -279,7 +280,7 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
             ticket.role,
         )
         return None
-    if _has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
+    if has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
         return None
     # Mark the plan-skipped direct-coding path BEFORE scheduling coding, so the
     # coding-completion transition (``Task._apply_phase_transition`` ->
@@ -300,18 +301,6 @@ def _link_claimed_marker(ticket: Ticket, issue_url: str) -> None:
     ImplementedIssueMarker.objects.filter(issue_url=issue_url).exclude(
         state__in=ImplementedIssueMarker.State.terminal()
     ).update(ticket=ticket, state=ImplementedIssueMarker.State.TICKET_CREATED)
-
-
-def _open_task_in_phase(ticket: Ticket, *, phase: str) -> Task | None:
-    # #769 audit: match any accepted phase spelling (short verb or
-    # gerund) via the shared SSOT helper, not a raw ``phase=phase``
-    # filter that would miss a short-verb ``code`` task and let the
-    # orchestrator create a duplicate.
-    return Task.objects.pending_in_phase(phase).filter(ticket=ticket).first()
-
-
-def _has_open_task(ticket: Ticket, *, phase: str) -> bool:
-    return _open_task_in_phase(ticket, phase=phase) is not None
 
 
 def _get_or_create_ticket(
@@ -342,22 +331,6 @@ def _get_or_create_ticket(
     )
     _reconcile_existing_overlay(ticket, created=created)
     return ticket, created
-
-
-def _create_phase_task(ticket: Ticket, *, phase: str, agent_id: str, reason: str) -> Task:
-    """Create a fresh ``Session`` + initial ``Task`` for ``(ticket.role, phase)``.
-
-    Mirrors ``ticket.schedule_coding`` / ``schedule_external_review`` for the
-    phases those methods do not cover (``debugging``/``e2e``/``answering``/
-    ``codex_reviewing``). ``Task.save`` routes a loop-dispatched ``(role, phase)``
-    to INTERACTIVE under an ``interactive`` ``agent_runtime`` (the /loop slot is its
-    dispatcher) and leaves it HEADLESS under the shipped headless one, so no explicit
-    ``execution_target`` is set here.
-    """
-    from teatree.core.models.session import Session  # noqa: PLC0415 — lazy: avoids the models import cycle
-
-    session = Session.objects.create(ticket=ticket, agent_id=agent_id)
-    return Task.objects.create(ticket=ticket, session=session, phase=phase, execution_reason=reason)
 
 
 def _handle_orchestrator_zone(action: DispatchAction) -> Task | None:
@@ -402,11 +375,11 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
         },
         kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
-    if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="coding"):
+    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="coding"):
         return None
     # Intentionally NOT gated by plan_currency (SELFCATCH-3): a redcard:// synthetic
     # ticket carries no PlanArtifact, so the adequacy/currency gate would false-positive.
-    return _create_phase_task(
+    return create_phase_task(
         ticket,
         phase="coding",
         agent_id="red-card",
@@ -438,11 +411,11 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
             kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
         )
-        if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="debugging"):
+        if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="debugging"):
             return None
         if not claim_red_mr_fix(payload):
             return None
-        return _create_phase_task(
+        return create_phase_task(
             ticket,
             phase="debugging",
             agent_id="debug",
@@ -479,7 +452,7 @@ def _handle_codex_review(action: DispatchAction) -> Task | None:
             overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
             extra={"reviewed_sha": head_sha, "codex_variant": variant},
         )
-        if ticket.role != Ticket.Role.REVIEWER or _has_open_task(ticket, phase=phase):
+        if ticket.role != Ticket.Role.REVIEWER or has_open_task(ticket, phase=phase):
             return None
         marker = CodexReviewMarker.claim(
             slug=slug,
@@ -490,7 +463,7 @@ def _handle_codex_review(action: DispatchAction) -> Task | None:
         )
         if marker is None:
             return None
-        return _create_phase_task(
+        return create_phase_task(
             ticket,
             phase=phase,
             agent_id="codex-review",
@@ -519,9 +492,9 @@ def _handle_e2e_fix(action: DispatchAction) -> Task | None:
         extra={"e2e_spec": spec, "e2e_test_title": str(payload.get("test_title") or "")},
         kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
-    if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="e2e"):
+    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="e2e"):
         return None
-    return _create_phase_task(
+    return create_phase_task(
         ticket,
         phase="e2e",
         agent_id="e2e-fix",
@@ -553,11 +526,11 @@ def _handle_skill_drift(action: DispatchAction) -> Task | None:
         },
         kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
-    if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="coding"):
+    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="coding"):
         return None
     # Intentionally NOT gated by plan_currency (SELFCATCH-3): a t3:coder skill-drift
     # synthetic ticket carries no PlanArtifact, so the currency gate would false-positive.
-    return _create_phase_task(
+    return create_phase_task(
         ticket,
         phase="coding",
         agent_id="skill-drift",
@@ -582,9 +555,9 @@ def _handle_answerer(action: DispatchAction) -> Task | None:
         overlay=str(payload.get("overlay") or ""),
         extra={"answer_event_id": event_id, "answer_detail": str(payload.get("detail") or "")},
     )
-    if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="answering"):
+    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="answering"):
         return None
-    return _create_phase_task(
+    return create_phase_task(
         ticket,
         phase="answering",
         agent_id="answerer",
