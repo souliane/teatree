@@ -16,7 +16,12 @@ from django.test import TestCase
 
 from teatree.agents._headless_options import _build_options, resolve_headless_max_turns
 from teatree.agents.headless import _outcome_failure
-from teatree.agents.headless_truncation import TURN_CEILING_SUBTYPE, is_max_turns_truncation
+from teatree.agents.headless_truncation import (
+    TURN_CEILING_SUBTYPE,
+    alert_owner_max_turns_truncation,
+    is_max_turns_truncation,
+    max_turns_failure_reason,
+)
 from teatree.agents.outage_classifier import is_transient_failure
 from teatree.config import UserSettings
 from teatree.core.modelkit.notify_policy import NotifyAudience
@@ -113,6 +118,20 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
             attempt = _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         assert attempt is not None
         assert is_transient_failure(attempt.error) is False
+
+    def test_the_reason_names_the_turns_and_both_lanes_ceilings(self) -> None:
+        # ONE subtype covers both lanes' per-run caps, so the reason names both knobs
+        # rather than guessing from ambient config which lane produced the message.
+        reason = max_turns_failure_reason(_result(TURN_CEILING_SUBTYPE, num_turns=311))
+        assert "311 turns" in reason
+        assert "headless_max_turns" in reason
+        assert "pydantic_ai_request_limit" in reason
+
+    def test_the_owner_alert_never_masks_the_recorded_failure(self) -> None:
+        # Best-effort egress: a broken notification must not swallow the FAILED record.
+        task = self._task()
+        with patch("teatree.agents.headless_truncation.notify_user", side_effect=RuntimeError):
+            alert_owner_max_turns_truncation(task, phase="coding", message=_result(TURN_CEILING_SUBTYPE))
 
     def test_a_healthy_run_neither_fails_nor_escalates(self) -> None:
         task = self._task()
