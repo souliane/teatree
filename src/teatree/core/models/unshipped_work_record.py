@@ -21,6 +21,14 @@ class UnshippedWorkRecord(models.Model):
     unpushed_commits = models.JSONField(default=list)
     artifact_prefix = models.CharField(max_length=1024, blank=True)
     unreadable = models.TextField(blank=True)
+    # TWO timestamps, because one cannot answer both questions. Capture re-runs on
+    # every non-dry-run sweep for every kept checkout, so ``captured_at`` says only
+    # "a sweep looked at this recently" — it is reset by each re-capture and can
+    # never express how long the work has been waiting. ``first_captured_at`` is
+    # set once, on insert, and is what any age report must read: the whole point of
+    # surfacing these rows is that a permanently-kept checkout is indistinguishable
+    # from a busy one, and only the age since FIRST capture separates them.
+    first_captured_at = models.DateTimeField(auto_now_add=True)
     captured_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -433,7 +433,10 @@ def _dead_checkout_outcome(
     from the source clone. ``force=True`` is warranted for the same reason it is in
     :func:`_wipe_proven_redundant`: that proof IS the data-loss gate, and the guards
     it bypasses are exactly the ones that can only fail closed here. The dir itself
-    is left to the broken-DIR reaper, which owns an untracked dead checkout.
+    SURVIVES: nothing in ``clean-all`` removes a checkout directory under a worktree
+    root any more, because no evidence one execution context can gather proves a
+    checkout dead everywhere (#3912). Disposing of its files is an explicit operator
+    decision, reached through ``workspace salvage``.
     """
     if verdict.state is not BrokenCheckout.RELEASABLE:
         return ReapOutcome(

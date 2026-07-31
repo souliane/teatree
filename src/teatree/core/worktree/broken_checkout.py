@@ -3,9 +3,13 @@
 The row reaper's ordinary safety step, :func:`worktree_done.analyze_worktree_changes`,
 runs its working-tree dirt probe INSIDE the worktree dir. When that dir no longer
 resolves as a git repo the probe can never answer, so it fails closed forever and
-the row is kept for a salvage that can never run — while the broken-DIR reaper
-skips the same dir because a row still tracks it. Two passes, each deferring to
-the other, and `t3 doctor` prescribing the one command that could not act.
+the row is kept for a salvage that can never run, leaving `t3 doctor` to prescribe
+a command that could not act on a single item it flagged.
+
+This module is the only pass that still disposes of anything on that evidence, and
+what it disposes of is the ROW. The directory always survives — the broken-DIR pass
+reports and removes nothing (#3912) — so a release here frees the registry without
+touching a byte a salvage might still want.
 
 This module is the missing owner. For a provably-dead checkout the question moves
 off the unreadable dir and onto the BRANCH in the source clone, which is where any
