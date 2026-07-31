@@ -82,7 +82,7 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # settings read is blocked by pytest-django and legitimately records a degradation —
     # the check would then FAIL for a reason that is an artefact of the harness, not of the
     # dispatch under test. Its real behaviour is exercised in
-    # tests/cli_doctor/test_config_tier_health_check.py; pin it to a pass here.
+    # tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to a pass here.
     monkeypatch.setattr(teatree_cli_doctor, "_check_config_override_tier_healthy", lambda: True)
     # The general provisioning gate (#3652) resolves the manifest-declared skills
     # against the runner's real skill-install state, where the external apm skills
