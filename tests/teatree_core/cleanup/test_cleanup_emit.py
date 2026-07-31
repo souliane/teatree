@@ -60,6 +60,7 @@ class TestCleanupEmitRecordSchema:
             "branch": "feat-x",
             "kind": "worktree",
             "unique_commit_shas": ["abc123"],
+            "uncommitted_paths": [],
             "merged_with_post_merge_work": True,
             "content_verified": True,
             "verdict_source": "not-redundant",
@@ -76,5 +77,8 @@ class TestCleanupEmitRecordSchema:
         assert record.content_verified is False, "a record nobody proved must never read as verified"
         assert record.verdict_source == "inconclusive"
 
-    def test_the_provenance_fields_are_a_breaking_schema_change(self) -> None:
-        assert EMIT_SCHEMA_VERSION == 2, "content_verified changes what an empty unique_commit_shas means"
+    def test_the_provenance_and_uncommitted_fields_are_a_breaking_schema_change(self) -> None:
+        assert EMIT_SCHEMA_VERSION == 3, (
+            "content_verified changes what an empty unique_commit_shas means, "
+            "and uncommitted_paths adds a second kind of work the record must carry"
+        )

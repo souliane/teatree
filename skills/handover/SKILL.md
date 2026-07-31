@@ -19,18 +19,32 @@ Two distinct hand-offs share this skill:
 
 ## Session → session hand-off
 
-The hand-off payload is the SAME durable-state snapshot the PreCompact hook builds (active tickets, worktree paths/branches, in-flight sub-agent ids+tasks, open PRs, approach/decisions, failing tests, loaded skills, t3-master status). A session that has not compacted yet still hands over its work: with no snapshot on disk the payload is DERIVED from live DB state (worktrees, active tickets, open PRs). A `SessionHandover` DB row is the source of truth; a file mirror (the DB-home `handover_mirror_path` setting, default `${T3_DATA_DIR:-${XDG_DATA_HOME:-~/.local/share}/teatree}/handover/latest.md`) mirrors it for human-readability and brand-new-session bootstrap. The mirror lives under the SHARED data dir on purpose — it is the one directory the host and the worker container both see, so a hand-off created on either side bootstraps a session on the other. The `latest.md` pointer resolves to the newest mirror IN that directory (filenames embed a fixed-width `created_at` stamp, so lexicographic order is chronological), not to whichever file happened to be written last.
+The payload has three sources, in order: what the session **authored** (`--from-file` / `--body`), else the durable-state snapshot the PreCompact hook builds (active tickets, worktree paths/branches, in-flight sub-agent ids+tasks, open PRs, approach/decisions, failing tests, loaded skills, t3-master status), else a payload **derived** from live DB state (worktrees, active tickets, open PRs) so a session that has neither authored nor compacted still hands over its in-flight work. A `SessionHandover` DB row is the source of truth; a file mirror (the DB-home `handover_mirror_path` setting, default `${T3_DATA_DIR:-${XDG_DATA_HOME:-~/.local/share}/teatree}/handover/latest.md`) mirrors it for human-readability and brand-new-session bootstrap. The mirror lives under the SHARED data dir on purpose — it is the one directory the host and the worker container both see, so a hand-off created on either side bootstraps a session on the other. The `latest.md` pointer resolves to the newest mirror IN that directory (filenames embed a fixed-width `created_at` stamp, so lexicographic order is chronological), not to whichever file happened to be written last.
 
 ### Hand off this session's work
 
 ```bash
-t3 <overlay> handover create            # hand to the LIVE loop owner; if none, park for the next session
-t3 <overlay> handover create --to <id>  # hand to a specific session id
+t3 <overlay> handover create --from-file handover.md            # hand over what YOU wrote (use '-' for stdin)
+t3 <overlay> handover create --body "$(cat handover.md)"        # same, inline
+t3 <overlay> handover create --from-file handover.md --to <id>  # …to a specific session id
+t3 <overlay> handover create                                    # no body: derived, and reported UNVETTED
 ```
+
+**Write the body.** A hand-off exists to carry this session's REASONING — the standing constraints, the current approach, what must not be resumed by hand. Nothing else can re-derive it; if the DB could, the hand-off would not be needed. Pass exactly one of `--from-file` / `--body`; an unreadable `--from-file` is refused rather than silently falling back to a derived payload.
 
 No `--to` resolves the target to the live `t3-master` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. The row is always persisted AND mirrored to the file.
 
-**A hand-off that transfers nothing is refused.** When both payload sources are empty (no snapshot and no live DB state), `handover create` exits 1 and reports `"ok": false` in its JSON — reporting OK over an empty payload would leave the receiving session claiming a row with nothing in it.
+**`handover create` reports what it actually transferred.** The JSON carries `payload_source` — `authored`, `snapshot`, `live-state`, or `empty` — and only the first two report `"ok": true`:
+
+| `payload_source` | exit | meaning |
+|---|---|---|
+| `authored` / `snapshot` | 0 | a vetted payload: the session wrote it, or its own PreCompact snapshot holds it |
+| `live-state` | 3 | recorded, but DERIVED — carries the in-flight inventory and none of the reasoning. Re-run with `--from-file`. |
+| `empty` | 1 | nothing to transfer at all; the receiver would claim a row with nothing in it |
+
+An unvetted or empty payload never reports OK: the operator moving on believing state was carried over is the failure this command exists to prevent.
+
+**A hand-off addressed to its own session is refused** (exit 1). `claimable_for` admits only the session named by `to_session` and excludes the session named by `from_session`, so a self-addressed row is claimable by nobody — it would sit as "pending" forever. Omit `--to` to park it for the next session instead.
 
 ### Know your own session id
 
