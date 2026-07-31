@@ -12,9 +12,9 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ImplementedIssueMarker, Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, PullRequest, Task, Ticket
 from teatree.instance_id import instance_id
-from tests.factories import ImplementedIssueMarkerFactory, TaskFactory, TicketFactory
+from tests.factories import ImplementedIssueMarkerFactory, PullRequestFactory, TaskFactory, TicketFactory
 
 
 class TestClaim(TestCase):
@@ -318,3 +318,129 @@ class TestReconcileStalledTicket(TestCase):
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
         assert result.abandoned == (marker.pk,)
+
+
+class TestReleaseOnMergedPr(TestCase):
+    """A claim whose PR has LANDED must not wait out a grace for a step the ticket will never take.
+
+    SHIPPED is deliberately not a ``marker_release_states()`` member — it means "PR open,
+    not yet landed" — so a ticket frozen at SHIPPED after its PR merged satisfies no
+    release condition and holds its slot for the full 24h stall grace. At the shipped
+    budget two of those close intake for a day.
+    """
+
+    def _shipped_with_merged_pr(self, url: str) -> ImplementedIssueMarker:
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.SHIPPED)
+        PullRequestFactory(ticket=ticket, overlay="acme", state=PullRequest.State.MERGED)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_merged_pr_releases_a_fresh_claim(self) -> None:
+        marker = self._shipped_with_merged_pr("https://github.com/o/r/issues/300")
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert result.completed == (marker.pk,)
+
+    def test_merged_pr_frees_the_in_flight_budget(self) -> None:
+        self._shipped_with_merged_pr("https://github.com/o/r/issues/301")
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 1
+
+        ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        assert ImplementedIssueMarker.objects.in_flight_count("acme") == 0
+
+    def test_merged_pr_releases_even_with_an_active_task(self) -> None:
+        # The PR landed; a pending retro/delivery task is not a reason to hold intake budget.
+        marker = self._shipped_with_merged_pr("https://github.com/o/r/issues/302")
+        TaskFactory(ticket=marker.ticket, status=Task.Status.PENDING)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.COMPLETED
+        assert result.completed == (marker.pk,)
+
+    def test_open_pr_does_not_release(self) -> None:
+        url = "https://github.com/o/r/issues/303"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.SHIPPED)
+        PullRequestFactory(ticket=ticket, overlay="acme", state=PullRequest.State.OPEN)
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+
+class TestDeadClaimGrace(TestCase):
+    """An attempt with nothing queued and nothing opened is over, not slow.
+
+    The 24h stall grace assumes the attempt might still be mid-flight. A ticket whose
+    only task failed at once and which never opened a PR shows no sign of an attempt at
+    all, so it is held to the much shorter dead-claim grace instead.
+    """
+
+    def _dead(self, url: str, *, age_hours: int) -> ImplementedIssueMarker:
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.NOT_STARTED)
+        task = TaskFactory(ticket=ticket, status=Task.Status.FAILED)
+        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
+        marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
+        ImplementedIssueMarker.objects.filter(pk=marker.pk).update(
+            dispatched_at=timezone.now() - timedelta(hours=age_hours)
+        )
+        return ImplementedIssueMarker.objects.get(pk=marker.pk)
+
+    def test_dead_attempt_releases_long_before_the_stall_grace(self) -> None:
+        marker = self._dead("https://github.com/o/r/issues/310", age_hours=4)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.abandoned == (marker.pk,)
+
+    def test_dead_attempt_within_the_short_grace_is_kept(self) -> None:
+        marker = self._dead("https://github.com/o/r/issues/311", age_hours=1)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_open_pr_keeps_the_long_stall_grace(self) -> None:
+        # Awaiting human review IS mid-flight — the 24h grace still governs it.
+        url = "https://github.com/o/r/issues/312"
+        marker = self._dead(url, age_hours=4)
+        PullRequestFactory(ticket=marker.ticket, overlay="acme", state=PullRequest.State.REVIEW_REQUESTED)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
+
+    def test_the_dead_grace_never_outlasts_the_stall_grace(self) -> None:
+        # An operator shortening the stall grace must not find PR-less claims held
+        # LONGER than mid-flight ones — the dead branch only ever releases sooner.
+        marker = self._dead("https://github.com/o/r/issues/314", age_hours=0)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme", stall_grace=timedelta(0))
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert result.abandoned == (marker.pk,)
+
+    def test_active_task_keeps_the_slot_inside_the_short_grace(self) -> None:
+        marker = self._dead("https://github.com/o/r/issues/313", age_hours=4)
+        TaskFactory(ticket=marker.ticket, status=Task.Status.CLAIMED)
+
+        result = ImplementedIssueMarker.objects.reconcile_stale("acme")
+
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
+        assert result.released == 0
