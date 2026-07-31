@@ -432,6 +432,28 @@ a.chip:hover {
 .chip.pr {
   font-family: var(--font-mono);
 }
+/* A PR chip's state is what an operator reads it for: still live, landed, or
+  abandoned. Same shape, three colours, so the three do not have to be read. */
+.chip.pr.merged {
+  color: var(--ok, var(--brand));
+  border-color: color-mix(in srgb, var(--ok, var(--brand)) 55%, var(--line));
+}
+.chip.pr.closed {
+  color: var(--ink-muted);
+  border-color: var(--line);
+  text-decoration: line-through;
+}
+.chip.pr.review_requested,
+.chip.pr.approved {
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--line));
+}
+/* An empty skill bundle is a FAULT, not an absence of information (#3886): a
+  dispatch whose bundle resolved to nothing looks normal everywhere else. */
+.chip.skills-fault {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+}
 .chip.state {
   color: var(--col-hue, var(--ink-muted));
   border-color: color-mix(in srgb, var(--col-hue, var(--line)) 55%, var(--line));

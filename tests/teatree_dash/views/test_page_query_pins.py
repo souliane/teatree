@@ -36,6 +36,8 @@ PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board_columns": 9,
     "dash:health": 20,
     "dash:health_bands": 20,
+    "dash:live": 12,
+    "dash:live_body": 10,
     "dash:loops": 17,
     "dash:loops_table": 17,
     "dash:presets": 15,

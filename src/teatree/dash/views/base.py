@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 # The top-level pages, in nav order: (url-name, label).
 NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dash:board", "Board"),
+    ("dash:live", "Live"),
     ("dash:health", "Health"),
     ("dash:loops", "Loops"),
     ("dash:sessions", "Sessions"),

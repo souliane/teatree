@@ -19,6 +19,7 @@ from django.db.models.functions import RowNumber
 
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.selectors._helpers import _humanize_duration
+from teatree.dash.skills import skill_bundle
 
 #: Sessions listed per page. The attempt table grows without bound (340k rows on the
 #: deployed box), so the index is a recent window, not a full history.
@@ -40,6 +41,11 @@ class SessionRow:
     outcome: str
     started_at: datetime
     duration: str
+    #: The resolved bundle the dispatch RAN with, and whether an empty one is a
+    #: fault (#3886) — a session whose bundle resolved to nothing behaves nothing
+    #: like the phase intended, and looks identical here without this.
+    skills: tuple[str, ...] = ()
+    skills_fault: bool = False
 
 
 def build_session_index() -> tuple[SessionRow, ...]:
@@ -62,6 +68,7 @@ def build_session_index() -> tuple[SessionRow, ...]:
 
 def _row(attempt: TaskAttempt) -> SessionRow:
     ticket = attempt.task.ticket
+    skills, skills_fault = skill_bundle(attempt)
     return SessionRow(
         agent_session_id=attempt.agent_session_id,
         ticket_id=ticket.pk if ticket else None,
@@ -74,6 +81,8 @@ def _row(attempt: TaskAttempt) -> SessionRow:
         outcome=attempt.get_outcome_display() if attempt.outcome else "",  # ty: ignore[unresolved-attribute]
         started_at=attempt.started_at,
         duration=_duration(attempt),
+        skills=skills,
+        skills_fault=skills_fault,
     )
 
 

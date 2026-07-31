@@ -17,6 +17,8 @@ from teatree.dash.views import (
     gate_toggle,
     health,
     health_bands_partial,
+    live,
+    live_body_partial,
     loop_action,
     loop_cadence,
     loops,
@@ -57,6 +59,8 @@ urlpatterns = [
     # Retired: the config page merged into /dash/settings/. Kept as a redirect so an old
     # bookmark, doc link or skill reference lands on the page that absorbed it.
     path("config/", RedirectView.as_view(pattern_name="dash:settings", permanent=False), name="config"),
+    path("live/", live, name="live"),
+    path("live/body/", live_body_partial, name="live_body"),
     path("loops/", loops, name="loops"),
     path("loops/table/", loops_table_partial, name="loops_table"),
     path("loops/action/", loop_action, name="loop_action"),

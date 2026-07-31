@@ -1,0 +1,16 @@
+{% extends "dash/base.html" %}
+{% block title %}Live{% endblock %}
+{% block heading %}Live work{% endblock %}
+{% block content %}
+  {% comment %}
+    Polled with the board's morph-swap so scroll position survives a refresh, and
+    `hx-sync` so a slow read can never start a second request over its own first.
+  {% endcomment %}
+  <div id="live-work"
+    hx-get="{% url 'dash:live_body' %}"
+    hx-trigger="every 5s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_live_body.html" %}
+  </div>
+{% endblock %}

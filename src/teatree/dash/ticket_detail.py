@@ -20,7 +20,8 @@ from teatree.core.models.transition import TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
 from teatree.core.selectors._helpers import _humanize_duration
 from teatree.dash.issue_link import issue_link
-from teatree.dash.selectors import PrChip, group_slug
+from teatree.dash.selectors import PrChip, group_slug, pr_chip
+from teatree.dash.skills import skill_bundle
 
 # How many of each history the drawer renders. A ticket the factory worked for weeks
 # accumulates thousands of transitions and attempts, and rendering all of them
@@ -59,6 +60,9 @@ class AttemptRow:
     model: str
     reasoning_effort: str
     skills_loaded: tuple[str, ...]
+    #: An EMPTY ``skills_loaded`` on a headless dispatch is a fault, not an absence
+    #: of information (#3886) — the drawer must say so rather than render nothing.
+    skills_fault: bool
     duration: str
     cost_usd: float | None
     cost_is_estimated: bool
@@ -231,11 +235,13 @@ def _tasks(ticket: Ticket) -> tuple[tuple[TaskRow, ...], int]:
 
 
 def _attempt_row(attempt: TaskAttempt) -> AttemptRow:
+    skills, skills_fault = skill_bundle(attempt)
     return AttemptRow(
         attempt_id=attempt.pk,
         model=attempt.model,
         reasoning_effort=attempt.reasoning_effort,
-        skills_loaded=tuple(attempt.skills_loaded or []),
+        skills_loaded=skills,
+        skills_fault=skills_fault,
         duration=_attempt_duration(attempt),
         cost_usd=attempt.cost_usd,
         cost_is_estimated=attempt.cost_is_estimated,
@@ -275,7 +281,4 @@ def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
 
 
 def _pr_chips(ticket_id: int) -> tuple[PrChip, ...]:
-    return tuple(
-        PrChip(url=pr.url, repo=pr.repo, iid=pr.iid, state=str(pr.state))
-        for pr in PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk")
-    )
+    return tuple(pr_chip(pr) for pr in PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk"))
