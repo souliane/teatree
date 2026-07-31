@@ -13,11 +13,22 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.urls import resolve, reverse
 
-from teatree.config.cold_defaults import shipped_defaults_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
+from teatree.config.enums import Autonomy
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import UNGROUPED_PATH, setting_group_path
+from teatree.config.setting_help import setting_help
 from teatree.core.models import ConfigSetting
-from teatree.dash.settings_editor import SettingsEditorView, SettingsGroupView, SettingsSection, build_settings_sections
+from teatree.dash.settings_editor import (
+    SettingsEditorView,
+    SettingsGroupView,
+    SettingsSection,
+    available_scopes,
+    build_setting_row,
+    build_settings_editor,
+    build_settings_group,
+    build_settings_sections,
+)
 from teatree.dash.settings_readouts import ReadoutsView
 from teatree.dash.views import settings_readouts as exported_readouts_view
 from teatree.dash.views.settings import (
@@ -42,11 +53,12 @@ _READOUT_HEADINGS = ("Model &amp; reasoning effort", "Credentials", "Self-repair
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 
-#: The page's whole DB cost: the readouts' reads plus the scope picker's DISTINCT, and the
-#: ONE settings read every row of the pane is resolved from. Constant in the row count, and
-#: two lower than before the request-scoped memo collapsed the repeated settings resolution.
-_PAGE_QUERIES = 5
-_PANE_QUERIES = 1
+#: The page's whole DB cost: the readouts' reads, the scope-column DISTINCT, and ONE settings
+#: read PER SCOPE that every cell in that column resolves from. Constant in the number of
+#: SETTINGS — the grid renders N scopes per row, so a per-cell read would be exactly the N+1
+#: these pins exist to catch — and it grows only with the number of scopes.
+_PAGE_QUERIES = 7
+_PANE_QUERIES = 4
 _READOUTS_QUERIES = 3
 
 
@@ -59,6 +71,12 @@ def _upload(text: str, name: str = "config.toml") -> io.BytesIO:
 def _section_slug(key: str) -> str:
     path = setting_group_path(key)
     return next(section.slug for section in build_settings_sections() if section.path == path)
+
+
+def _row_html(client, key: str) -> str:
+    """One setting's rendered ``<tr>``, fetched through its own section's pane."""
+    body = client.get(reverse("dash:settings_group", args=[_section_slug(key)]), **_LOOPBACK).content.decode()
+    return body[body.index(f'id="setting-{key}"') :].split("</tr>")[0]
 
 
 def _import_block(body: str) -> str:
@@ -159,9 +177,16 @@ class TestTheLeftNavAndRightPane(TestCase):
         body = self._body(f"?section={slug}")
         assert set(_ROW_ID.findall(body)) == set(_pane_keys(slug))
 
-    def test_the_pane_keeps_the_scope_on_every_row_url(self) -> None:
-        body = self._body("?scope=proj")
-        assert "?scope=proj" in body
+    def test_every_scope_gets_its_own_column_and_its_own_write_url(self) -> None:
+        # One row, every scope on it: the global cell posts unscoped and the overlay cell
+        # posts to that overlay, so an edit lands where the column says it does.
+        ConfigSetting.objects.set_value("issue_implementer_label", "scoped", scope="proj")
+        body = self._body(f"?section={_section_slug('mode')}")
+        set_url = reverse("dash:settings_set", args=["mode"])
+        assert f'hx-post="{set_url}"' in body
+        assert f'hx-post="{set_url}?scope=proj"' in body
+        assert ">proj</th>" in body
+        assert ">global</th>" in body
 
     def test_a_key_no_group_declares_gets_a_visible_leftovers_section(self) -> None:
         declared = setting_group_path
@@ -245,8 +270,14 @@ class TestThePageIsSmall(TestCase):
     def test_the_row_urls_carry_the_key_so_the_row_needs_no_field(self) -> None:
         body = self._body()
         assert reverse("dash:settings_set", args=["mode"]) in body
-        assert reverse("dash:settings_restore", args=["mode"]) in body
         assert 'name="key"' not in body
+
+    def test_no_row_offers_a_restore_control(self) -> None:
+        # Click-to-edit made restoring the same gesture as editing — emptying the cell — so
+        # a control of its own would be a second way to do one thing.
+        ConfigSetting.objects.set_value("mode", "auto")
+        assert reverse("dash:settings_restore", args=["mode"]) not in self._body()
+        assert "Restore default" not in self._body()
 
     def test_the_page_stays_far_below_the_measured_wall(self) -> None:
         body = self._body()
@@ -347,11 +378,20 @@ class TestSettingsSet(TestCase):
         assert "inconsistent config" in response.content.decode()
         assert ConfigSetting.objects.count() == 0
 
-    def test_a_scoped_write_redirects_back_keeping_the_scope(self) -> None:
+    def test_a_scoped_write_lands_in_the_scope_its_column_names(self) -> None:
         response = self._set("mode", {"value": '"auto"'}, scope="proj")
         assert response.status_code == 302
-        assert response["Location"].endswith("?scope=proj")
         assert ConfigSetting.objects.get_effective("mode", scope="proj") == "auto"
+        assert ConfigSetting.objects.get_effective("mode") is None
+
+    def test_an_emptied_cell_clears_that_scopes_row_so_the_default_resolves_again(self) -> None:
+        # The click-to-edit restore gesture: there is no restore button, so an empty value
+        # IS the way back to the default, and it clears only the column it was posted from.
+        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("mode", "auto", scope="proj")
+        assert self._set("mode", {"value": ""}, scope="proj").status_code == 302
+        assert ConfigSetting.objects.get_effective("mode", scope="proj") is None
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
 
 
 class TestSafetyPostureConfirm(TestCase):
@@ -387,6 +427,60 @@ class TestSettingsRestore(TestCase):
             assert self._restore("mode").status_code == 302
 
 
+class TestNoShippedDefaultDrift(TestCase):
+    """A no-shipped-default key still has a real default: its code default.
+
+    A Secret/Personal key `defaults.toml` does not carry, so an operator's own tier
+    outranking that IS a drift, not a free pass. Regression for a cell that read "same as
+    default" whenever the shipped file carried no entry at all, whatever the DB held.
+    """
+
+    def test_an_unset_no_default_key_matches_its_code_default(self) -> None:
+        row = build_setting_row("workspace_dir")
+        assert not row.has_shipped_default
+        assert all(cell.matches_default for cell in row.cells)
+        assert not row.drifts
+
+    def test_an_overridden_no_default_key_reads_as_drifted(self) -> None:
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/custom")
+        row = build_setting_row("workspace_dir")
+        cell = next(c for c in row.cells if c.scope == "")
+        assert not cell.matches_default
+        assert row.drifts
+
+    def test_the_rendered_row_shows_the_drift_for_a_no_default_key(self) -> None:
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/custom")
+        body = _row_html(self.client, "workspace_dir")
+        assert "differs from default" in body
+
+
+class TestSelectOffersRestoreOnlyWhenDrifted(TestCase):
+    """A drifted select carries its own restore option, offered only once drifted.
+
+    A <select> cannot be "emptied" by typing, so the click-to-edit restore gesture needs
+    its own option once a select-rendered setting has drifted — and only then, mirroring
+    the old page's restore button appearing only on an overridden row.
+    """
+
+    def test_a_select_at_its_default_offers_no_restore_option(self) -> None:
+        body = _row_html(self.client, "mode")
+        assert "restore default" not in body
+
+    def test_a_drifted_select_offers_a_restore_option(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive")
+        body = _row_html(self.client, "mode")
+        assert '<option value="">' in body
+        assert "restore default" in body
+
+    def test_choosing_the_restore_option_clears_the_row(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive")
+        url = reverse("dash:settings_set", args=["mode"])
+        response = self.client.post(url, {"value": ""}, HTTP_HX_REQUEST="true", **_LOOPBACK)
+        assert response.status_code == 200
+        assert ConfigSetting.objects.get_effective("mode") is None
+        assert "restore default" not in response.content.decode()
+
+
 class TestHtmxRowSwap(TestCase):
     """A toggle swaps its own row — no redirect, no second full-page render, no scroll jump."""
 
@@ -396,13 +490,15 @@ class TestHtmxRowSwap(TestCase):
             f"{url}?scope={scope}" if scope else url, data or {}, HTTP_HX_REQUEST="true", **_LOOPBACK
         )
 
-    def test_the_page_wires_each_row_form_to_swap_only_its_own_row(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto")  # an override → the restore control renders too
+    def test_the_page_wires_each_cell_to_swap_only_its_own_row(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
         url = f"{reverse('dash:settings')}?section={_section_slug('mode')}"
         body = self.client.get(url, **_LOOPBACK).content.decode()
         assert f'hx-post="{reverse("dash:settings_set", args=["mode"])}"' in body
-        assert f'hx-post="{reverse("dash:settings_restore", args=["mode"])}"' in body
         assert 'hx-target="closest tr"' in body
+        # No save button and no form: the control posts itself the moment it changes.
+        assert 'hx-trigger="change"' in body
+        assert "<form" not in body[body.index('id="setting-mode"') :][:2000]
 
     def test_an_htmx_set_answers_the_row_alone_never_a_redirect_or_a_full_page(self) -> None:
         response = self._post("dash:settings_set", "mode", {"value": '"auto"'})
@@ -413,9 +509,12 @@ class TestHtmxRowSwap(TestCase):
         assert "dash-nav" not in body
 
     def test_the_swapped_row_reflects_the_value_just_written(self) -> None:
-        body = self._post("dash:settings_set", "mode", {"value": '"auto"'}).content.decode()
-        assert ">auto<" in body
-        assert reverse("dash:settings_restore", args=["mode"]) in body  # now overridden
+        # ``interactive`` is not the shipped ``mode``, so the swapped row comes back with the
+        # written option preselected AND the cell's verdict flipped to the drifted one.
+        body = self._post("dash:settings_set", "mode", {"value": '"interactive"'}).content.decode()
+        assert "&quot;interactive&quot;" in body
+        assert "selected" in body
+        assert "differs from default" in body
 
     def test_an_htmx_restore_answers_the_row_back_at_its_default(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
@@ -610,13 +709,13 @@ class TestShippedDefaultColumn(TestCase):
 
 
 class SettingsScopeControlTestCase(TestCase):
-    """The ``?scope=`` parameter is reachable from the UI, and an import keeps it."""
+    """Every scope is a COLUMN of the grid rather than something the operator switches to."""
 
-    def test_the_page_offers_a_scope_picker(self) -> None:
+    def test_the_page_gives_every_scope_its_own_column(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_label", "scoped", scope="demo-overlay")
         body = self.client.get(reverse("dash:settings")).content.decode()
-        assert 'name="scope"' in body
-        assert "demo-overlay" in body
+        assert 'name="scope"' not in body  # the picker is gone — nothing to switch between
+        assert ">demo-overlay</th>" in body
 
     def test_the_picker_offers_the_global_scope_and_every_scope_holding_rows(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_label", "a", scope="alpha")
@@ -627,16 +726,129 @@ class SettingsScopeControlTestCase(TestCase):
         assert scopes[0] == ""
         assert {"alpha", "beta"} <= set(scopes)
 
-    def test_an_import_re_renders_the_scope_the_operator_was_editing(self) -> None:
-        """The file's own tables decide each row's scope; the PAGE scope decides the view."""
+    def test_an_import_re_renders_the_grid_with_every_scope_still_on_it(self) -> None:
+        """The file's own tables decide each row's scope; the grid shows them all either way."""
         ConfigSetting.objects.set_value("issue_implementer_label", "scoped", scope="demo-overlay")
         response = self.client.post(
             reverse("dash:settings_import"),
-            {
-                "toml_file": _upload('[teatree]\nissue_implementer_label = "x"\n'),
-                "scope": "demo-overlay",
-                "apply": "",
-            },
+            {"toml_file": _upload('[teatree]\nissue_implementer_label = "x"\n'), "apply": ""},
         )
         assert response.status_code == 200
-        assert response.context["editor"].scope == "demo-overlay"
+        scopes = response.context["editor"].group.scopes
+        assert scopes[0] == ""
+        assert "demo-overlay" in scopes
+
+
+class TestTheGridIsOneRowPerSettingAcrossEveryScope(TestCase):
+    """#3880: one row per setting, every scope on it, drift coloured against the default."""
+
+    def _pane(self, key: str) -> str:
+        url = reverse("dash:settings_group", args=[_section_slug(key)])
+        return self.client.get(url, **_LOOPBACK).content.decode()
+
+    def _row(self, key: str) -> str:
+        body = self._pane(key)
+        return body[body.index(f'id="setting-{key}"') :].split("</tr>")[0]
+
+    def test_a_setting_renders_once_however_many_scopes_hold_a_row(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="alpha")
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="beta")
+        assert self._pane("merge_wip").count('id="setting-merge_wip"') == 1
+
+    def test_the_row_carries_one_cell_per_scope_in_the_column_order(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="alpha")
+        row = self._row("merge_wip")
+        assert row.count('class="setting-cell') == len(available_scopes())
+        assert row.index("?scope=alpha") > row.index('hx-post="/dash/settings/set/merge_wip/"')
+
+    def test_a_cell_equal_to_the_default_is_green_and_one_that_differs_is_brown(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4, scope="alpha")
+        row = self._row("merge_wip")
+        assert "cell-at-default" in row  # global still ships the default
+        assert "cell-drifted" in row  # the overlay column does not
+
+    def test_the_provenance_is_a_tooltip_not_a_column_of_its_own(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        body = self._pane("merge_wip")
+        assert "value came from DB global scope" in self._row("merge_wip")
+        assert "<th>value came from</th>" not in body
+        assert "value came from</th>" not in body
+
+
+class TestHelpTextIsAuthoredOnceAndRenderedHere(TestCase):
+    def test_the_setting_name_carries_its_authored_sentence_as_a_tooltip(self) -> None:
+        url = reverse("dash:settings_group", args=[_section_slug("merge_wip")])
+        body = self.client.get(url, **_LOOPBACK).content.decode()
+        assert f'title="{setting_help("merge_wip")}"' in body
+
+    def test_every_rendered_row_carries_help_text(self) -> None:
+        # The table is total over the schema, so no row can render with an empty tooltip.
+        for section in build_settings_sections():
+            group = build_settings_group(section.slug)
+            assert all(row.help_text for row in group.settings), section.slug
+
+    def test_the_tooltip_is_the_same_sentence_the_shipped_file_comments_the_key_with(self) -> None:
+        shipped = DEFAULTS_TOML.read_text(encoding="utf-8")
+        assert f"merge_wip = 1 # {setting_help('merge_wip')}" in shipped
+
+
+class TestConstrainedTypesRenderAsSelects(TestCase):
+    def test_an_enum_setting_renders_a_select_of_the_schema_s_own_members(self) -> None:
+        row = _row_html(self.client, "autonomy")
+        assert "<select" in row
+        for member in Autonomy:
+            assert f'value="&quot;{member.value}&quot;"' in row
+
+    def test_a_boolean_setting_renders_a_select_never_a_text_box(self) -> None:
+        row = _row_html(self.client, "autoload")
+        assert "<select" in row
+        assert 'value="true"' in row
+        assert 'value="false"' in row
+        assert 'type="text"' not in row
+
+    def test_an_open_typed_setting_still_renders_free_text(self) -> None:
+        # The control for the two above: a select is derived, not applied to everything.
+        row = _row_html(self.client, "merge_wip")
+        assert "<select" not in row
+        assert 'type="text"' in row
+
+    def test_the_options_come_from_the_schema_rather_than_a_list_kept_beside_it(self) -> None:
+        with patch("teatree.dash.settings_editor.setting_choices", return_value=("only-this",)):
+            row = build_setting_row("autonomy")
+        assert [choice.label for choice in row.choices] == ["only-this"]
+
+
+class TestTheNavCountsDriftedSettings(TestCase):
+    def _section_of(self, key: str) -> SettingsSection:
+        slug = _section_slug(key)
+        return next(s for s in build_settings_editor(slug).sections if s.slug == slug)
+
+    def test_a_section_with_nothing_changed_counts_zero(self) -> None:
+        assert self._section_of("merge_wip").drift_count == 0
+
+    def test_a_changed_setting_adds_one_to_its_section(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        assert self._section_of("merge_wip").drift_count == 1
+
+    def test_a_setting_changed_in_several_scopes_still_counts_once(self) -> None:
+        # The rule the count answers: how many settings here has someone changed, not how
+        # many override rows exist.
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="alpha")
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="beta")
+        assert self._section_of("merge_wip").drift_count == 1
+
+    def test_two_changed_settings_in_one_section_count_two(self) -> None:
+        section = _section_slug("merge_wip")
+        keys = [k for k in _pane_keys(section) if k in {"merge_wip", "write_wip"}]
+        assert len(keys) == 2, "the fixture needs two keys in one section"
+        ConfigSetting.objects.set_value(keys[0], 4)
+        ConfigSetting.objects.set_value(keys[1], 4)
+        assert self._section_of("merge_wip").drift_count == 2
+
+    def test_the_count_renders_in_the_nav(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
+        assert "settings-nav-drift" in body
+        assert "setting(s) here differ from their default" in body

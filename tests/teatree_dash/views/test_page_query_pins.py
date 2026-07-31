@@ -42,7 +42,7 @@ PAGE_QUERY_PINS: dict[str, int] = {
     "dash:loops_table": 17,
     "dash:presets": 15,
     "dash:sessions": 3,
-    "dash:settings": 5,
+    "dash:settings": 7,
     "dash:settings_readouts": 3,
 }
 TICKET_DRAWER_QUERIES = 11

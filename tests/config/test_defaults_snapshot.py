@@ -253,8 +253,11 @@ class TestTheRenderedBlockIsNested:
 
     def test_a_genuine_sub_table_setting_keeps_its_own_top_level_path(self) -> None:
         # ``speak`` is a declared setting whose value IS a table, not a group wrapper, so it
-        # must stay reachable at ``[teatree.speak]`` rather than sink into its group.
-        assert "\n[teatree.speak]\n" in render_toml(_shipped())
+        # must stay reachable at ``[teatree.speak]`` rather than sink into its group. Its
+        # header carries the key's help text as the same trailing comment every other key's
+        # line carries, so the path is read off the line with that comment removed.
+        headers = {line.split(" #")[0] for line in render_toml(_shipped()).splitlines()}
+        assert "[teatree.speak]" in headers
 
     def test_nesting_the_block_moved_no_value(self) -> None:
         assert _emitted(render_toml(_shipped())) == _shipped()

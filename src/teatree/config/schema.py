@@ -28,7 +28,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import lru_cache
-from typing import Annotated, Any
+from types import NoneType, UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BeforeValidator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, TomlConfigSettingsSource
@@ -419,6 +420,40 @@ class TeatreeSettingsSchema(BaseSettings):
 def setting_meta(key: str) -> SettingMeta:
     """The :class:`SettingMeta` marker declared on field *key* (every field carries one)."""
     return next(m for m in TeatreeSettingsSchema.model_fields[key].metadata if isinstance(m, SettingMeta))
+
+
+def _enumerated(annotation: object) -> tuple[object, ...]:
+    """The values *annotation* admits, or ``()`` when it admits more than a listable set.
+
+    ``bool`` and every ``StrEnum`` the config declares are closed sets, and a ``Literal`` is
+    one by construction. An optional wrapper (``X | None``) contributes its ``None`` beside
+    the members of ``X``, so a nullable enum still offers every value it accepts.
+    """
+    if annotation is bool:
+        return (True, False)
+    if get_origin(annotation) is Literal:
+        return get_args(annotation)
+    if get_origin(annotation) in {Union, UnionType}:
+        return tuple(v for arg in get_args(annotation) for v in ((None,) if arg is NoneType else _enumerated(arg)))
+    if isinstance(annotation, type) and issubclass(annotation, StrEnum):
+        return tuple(member.value for member in annotation)
+    return ()
+
+
+def setting_choices(key: str) -> tuple[object, ...]:
+    """*key*'s admissible values when the schema constrains it to a listable set.
+
+    The ONE derivation behind every constrained control teatree renders. An option list
+    written out beside a ``Literal`` is a second source that goes stale the first time the
+    ``Literal`` changes; deriving it here also makes an invalid value impossible to ENTER
+    rather than merely rejected after the fact. A key whose type admits open values
+    (``str``, ``int``, a list, a mapping) returns ``()`` — the caller renders free text.
+
+    The values come back RAW, in the schema's own vocabulary; how a surface writes one on
+    the wire and how it labels one on screen are that surface's decisions, not this one's.
+    """
+    field = TeatreeSettingsSchema.model_fields.get(key)
+    return () if field is None else _enumerated(field.annotation)
 
 
 _NO_INIT_OVERRIDES: dict[str, Any] = {}
