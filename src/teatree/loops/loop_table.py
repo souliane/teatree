@@ -134,6 +134,34 @@ class LoopDispatch:
         return not self.blocked_reason
 
 
+def loop_block_reasons(now: dt.datetime, *, rows: "dict[str, Loop] | None" = None) -> dict[str, str]:
+    """Per registered mini-loop, why the live tick would refuse it at *now* — ``""`` if not.
+
+    The read-only projection of the admission gate the fan-out itself applies: it
+    resolves the same per-tick inputs and calls the same :func:`_admission_block`,
+    so a reader (the dashboard's live-work view) reports the tick's OWN reason
+    rather than a second vocabulary that can drift from the decision.
+
+    Keyed on the REGISTRY, not on ``Loop`` rows: a ``Loop`` row with no registered
+    mini-loop is not something the live tick dispatches at all, while a registered
+    loop with no row is a real, reportable misconfiguration — which is exactly the
+    asymmetry ``_admission_block`` already states.
+
+    Nothing here mutates: no cadence anchor is claimed and no ``build_jobs`` runs,
+    so asking the question never has the side effect of answering it differently
+    next time.
+
+    *rows* lets a caller that ALREADY holds the ``Loop`` rows (a polled dashboard
+    panel rendering the same anchors beside the reason) pass them in rather than
+    pay for a second read of the same table on every poll.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    admission = _TickAdmission.resolve(now)
+    by_name = {row.name: row for row in Loop.objects.all()} if rows is None else rows
+    return {loop.name: _admission_block(by_name.get(loop.name), loop, admission) for loop in iter_loops()}
+
+
 def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -> MiniLoop:
     """The mini-loop an admitted ``row`` dispatches — decided by its column, not its name.
 

@@ -18,7 +18,7 @@
     {% if card.overlay %}<span class="chip">{{ card.overlay }}</span>{% endif %}
     <span class="chip role">{{ card.role }}</span>
     <span class="chip">{{ card.kind }}</span>
-    {% for pr in card.pr_chips %}<a class="chip pr" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.state }}</a>{% endfor %}
+    {% for pr in card.pr_chips %}<a class="chip pr {{ pr.state }}" href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.repo }}!{{ pr.iid }} · {{ pr.label }}</a>{% endfor %}
   </div>
   {% if card.active_phase %}<div class="card-dwell">phase <span class="mono">{{ card.active_phase }}</span>{% if card.claimed_by %} · {{ card.claimed_by }}{% endif %}</div>{% endif %}
   {% if card.dwell %}<div class="card-dwell">in column <span class="mono">{{ card.dwell }}</span></div>{% endif %}

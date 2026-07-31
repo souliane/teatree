@@ -1,0 +1,142 @@
+{% comment %}
+  Every live-work panel, in one fragment so a single poll refreshes the whole answer.
+
+  Dispatch facts only — no attempt `error` body is rendered anywhere here. The
+  transcript click-through is the one surface that shows agent output, and it routes
+  every line through the shared leak-gate redactor first.
+{% endcomment %}
+<section class="band" aria-labelledby="live-running-heading">
+  <h2 id="live-running-heading">
+    Running
+    <span class="muted small">
+      {% if live.anything_running %}{{ live.running|length }} attempt{{ live.running|length|pluralize }} in flight{% else %}nothing in flight{% endif %}
+    </span>
+  </h2>
+  <table class="dash">
+    <thead>
+      <tr>
+        <th>ticket</th><th>phase</th><th>target / lane</th><th>model</th>
+        <th>skills</th><th>elapsed</th><th>transcript</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in live.running %}
+        <tr id="running-{{ row.attempt_id }}">
+          <td>
+            {% if row.ticket_id %}
+              <a href="{% url 'dash:board' %}#card-{{ row.ticket_id }}">#{{ row.ticket_number }}</a>
+              <span class="muted small">{{ row.short_description }}</span>
+            {% else %}<span class="muted small">—</span>{% endif %}
+          </td>
+          <td>{{ row.phase|default:"—" }}</td>
+          <td>{{ row.execution_target }}{% if row.lane %} · {{ row.lane }}{% endif %}</td>
+          <td class="mono small">{{ row.model|default:"—" }}</td>
+          <td>{% include "dash/partials/_skills.html" with skills=row.skills skills_fault=row.skills_fault %}</td>
+          <td>{{ row.elapsed }}</td>
+          <td>
+            {% if row.agent_session_id %}
+              <a class="chip" href="{% url 'dash:transcript' row.agent_session_id %}">transcript</a>
+            {% else %}<span class="muted small">—</span>{% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="7">No attempt is running.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band" aria-labelledby="live-queue-heading">
+  <h2 id="live-queue-heading">
+    Queue
+    <span class="muted small">{{ live.pending_count }} pending · {{ live.claimed_count }} claimed</span>
+  </h2>
+  <table class="dash">
+    <thead>
+      <tr><th>ticket</th><th>phase</th><th>status</th><th>claimed by</th><th>target</th></tr>
+    </thead>
+    <tbody>
+      {% for row in live.queued %}
+        <tr id="queued-{{ row.task_id }}">
+          <td>
+            {% if row.ticket_id %}
+              <a href="{% url 'dash:board' %}#card-{{ row.ticket_id }}">#{{ row.ticket_number }}</a>
+              <span class="muted small">{{ row.short_description }}</span>
+            {% else %}<span class="muted small">—</span>{% endif %}
+          </td>
+          <td>{{ row.phase|default:"—" }}</td>
+          <td><span class="chip small">{{ row.status }}</span></td>
+          <td class="mono small">{{ row.claimed_by|default:"—" }}</td>
+          <td>{{ row.execution_target }}</td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="5">The queue is empty.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band" aria-labelledby="live-loops-heading">
+  <h2 id="live-loops-heading">
+    Loops
+    <span class="muted small">a loop that would not run states why, in the tick's own words</span>
+  </h2>
+  <table class="dash">
+    <thead>
+      <tr><th>loop</th><th>cadence</th><th>last run</th><th>next due</th><th>verdict</th></tr>
+    </thead>
+    <tbody>
+      {% for row in live.loops %}
+        <tr id="live-loop-{{ row.name }}">
+          <td class="mono">{{ row.name }}</td>
+          <td>{{ row.cadence_label|default:"—" }}</td>
+          <td>{{ row.last_run_at|default:"never" }}</td>
+          <td>{{ row.next_run_at|default:"—" }}</td>
+          <td>
+            {% if row.dispatching %}
+              <span class="chip small">would dispatch</span>
+            {% else %}
+              <span class="chip small warn">{{ row.blocked_reason }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="5">No mini-loop is registered.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band" aria-labelledby="live-outcomes-heading">
+  <h2 id="live-outcomes-heading">
+    Recent outcomes
+    <span class="muted small">the newest {{ live.outcomes|length }} attempt{{ live.outcomes|length|pluralize }} to finish</span>
+  </h2>
+  <table class="dash">
+    <thead>
+      <tr><th>ticket</th><th>phase</th><th>outcome</th><th>exit</th><th>duration</th><th>ended</th></tr>
+    </thead>
+    <tbody>
+      {% for row in live.outcomes %}
+        <tr id="outcome-{{ row.attempt_id }}">
+          <td>{% if row.ticket_number %}#{{ row.ticket_number }}{% else %}<span class="muted small">—</span>{% endif %}</td>
+          <td>{{ row.phase|default:"—" }}</td>
+          <td>
+            {% if row.parked %}
+              <span class="chip small warn" title="parked on a usage window, re-derived {{ row.park_repeats }} further time{{ row.park_repeats|pluralize }}">parked ×{{ row.park_repeats }}</span>
+            {% elif row.outcome %}
+              <span class="chip outcome">{{ row.outcome }}</span>
+            {% else %}<span class="muted small">—</span>{% endif %}
+          </td>
+          <td class="num">{{ row.exit_code|default_if_none:"—" }}</td>
+          <td>{{ row.duration|default:"—" }}</td>
+          <td>{{ row.ended_at|default:"—" }}</td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="6">No attempt has finished yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<p class="muted small">Read at {{ live.generated_at }}.</p>

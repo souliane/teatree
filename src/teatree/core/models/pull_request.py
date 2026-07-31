@@ -74,6 +74,31 @@ class PullRequestQuerySet(models.QuerySet):
             merged += 1
         return merged
 
+    @staticmethod
+    def settle_forge_state(row: "PullRequest", live_state: str) -> bool:
+        """Record a live forge verdict on *row*; ``True`` when the row moved.
+
+        The forge is the authority on whether a PR is still live, and every caller
+        that pays for that read (the teardown gate re-reads each non-MERGED row)
+        otherwise discards the answer — so a PR closed without merging kept a row
+        saying OPEN forever, and the dashboard chip built from it advertised live
+        work that no longer exists.
+
+        Only the two TERMINAL verdicts settle a row. ``open`` is not news, and
+        ``unknown`` is the fail-open value every reader maps an auth error, a
+        network failure or an unparsable payload to — settling on it would let a
+        transient outage mark live PRs closed.
+        """
+        settle = {"merged": PullRequest.State.MERGED, "closed": PullRequest.State.CLOSED}.get(str(live_state))
+        if settle is None or row.state == settle:
+            return False
+        if settle is PullRequest.State.MERGED:
+            row.mark_merged()
+        else:
+            row.mark_closed()
+        row.save(update_fields=["state"])
+        return True
+
 
 PullRequestManager = models.Manager.from_queryset(PullRequestQuerySet)
 
@@ -96,6 +121,11 @@ class PullRequest(models.Model):
         REVIEW_REQUESTED = "review_requested", "Review requested"
         APPROVED = "approved", "Approved"
         MERGED = "merged", "Merged"
+        #: Closed on the forge without merging — terminal, and NOT merged. Without it
+        #: every abandoned PR stayed non-MERGED forever, so a chip rendered from the row
+        #: advertised live work indefinitely and the teardown gate had to re-probe the
+        #: forge on every pass to learn the same settled answer again.
+        CLOSED = "closed", "Closed"
 
     class CreateVerification(models.TextChoices):
         """Whether a row's forge PR was verify-by-re-read confirmed at creation (#1194).
@@ -153,3 +183,11 @@ class PullRequest(models.Model):
     @transition(field=state, source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.MERGED)
     def mark_merged(self) -> None:
         pass
+
+    @transition(field=state, source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.CLOSED)
+    def mark_closed(self) -> None:
+        """Record that the forge closed this PR WITHOUT merging it.
+
+        MERGED is deliberately not a source: a merge is irreversible and terminal,
+        so a later "not open" reading of a merged PR must never demote it to CLOSED.
+        """

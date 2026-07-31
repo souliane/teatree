@@ -24,14 +24,15 @@ reclaim on its own:
 * **Stale.** ``extra["prs"]`` snapshots a ``state`` at scan time, so an entry
     can still say ``opened`` long after the MR merged. Trusting it inverts the
     gate into a permanent false block.
-* **Not expressive enough.** ``PullRequest.State`` is OPEN / REVIEW_REQUESTED /
-    APPROVED / MERGED with no CLOSED member, so an MR closed-without-merge stays
-    non-MERGED in the model forever and a model-only gate would refuse that
-    ticket's teardown for good.
+* **Lagging.** A recorded row's state is whatever the last writer left; nothing
+    advances it when a PR merges or closes out of band, so ``OPEN`` may simply be a
+    state nobody moved.
 
 Recorded rows are therefore a CANDIDATE source, never the verdict: every
-non-``MERGED`` row is re-read live. ``MERGED`` is the one state taken on trust —
-terminal and irreversible, so it needs no forge call.
+non-terminal row is re-read live, and the live verdict is written back to the row
+so the next pass reads a settled state instead of re-probing. ``MERGED`` and
+``CLOSED`` are the states taken on trust — both terminal, so neither needs a
+forge call.
 
 Recorded candidates alone cannot see an unrecorded MR, so the gate adds a second
 candidate source keyed on what teardown actually destroys: each worktree's own
@@ -139,13 +140,18 @@ def check_no_open_prs(
 def _recorded_pr_blockers(ticket: Ticket, read_pr_state: PrStateReader) -> list[str]:
     """Blockers from the ticket's ``PullRequest`` rows, each verified live.
 
-    ``MERGED`` is terminal and irreversible, so those rows are settled without a
-    forge call. Every other row is re-read live: the FSM cannot express CLOSED,
-    and its ``OPEN`` may simply be a state nobody advanced.
+    ``MERGED`` and ``CLOSED`` are terminal, so those rows are settled without a forge
+    call. Every other row is re-read live, because its ``OPEN`` may simply be a state
+    nobody advanced — and the verdict of that read is RECORDED on the row
+    (:meth:`PullRequest.objects.settle_forge_state`). Discarding it is what left an
+    abandoned PR reading OPEN on the dashboard forever and made every later teardown
+    pay for the same forge call to learn the same settled answer (#3909).
     """
+    settled = {PullRequest.State.MERGED, PullRequest.State.CLOSED}
     blockers: list[str] = []
-    for row in PullRequest.objects.filter(ticket=ticket).exclude(state=PullRequest.State.MERGED).order_by("pk"):
+    for row in PullRequest.objects.filter(ticket=ticket).exclude(state__in=settled).order_by("pk"):
         state = _live_pr_state(row.url, read_pr_state)
+        PullRequest.objects.settle_forge_state(row, state)
         if state == PrOpenState.OPEN:
             blockers.append(f"{row.repo} !{row.iid} is still OPEN on the forge: {row.url}")
         elif state == PrOpenState.UNKNOWN:

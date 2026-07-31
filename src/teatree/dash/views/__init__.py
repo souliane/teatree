@@ -1,6 +1,7 @@
 from teatree.dash.views.board import board, board_columns_partial
 from teatree.dash.views.debug import command_run, debug_session
 from teatree.dash.views.health import health, health_bands_partial
+from teatree.dash.views.live import live, live_body_partial
 from teatree.dash.views.loops import (
     gate_toggle,
     loop_action,
@@ -43,6 +44,8 @@ __all__ = [
     "gate_toggle",
     "health",
     "health_bands_partial",
+    "live",
+    "live_body_partial",
     "loop_action",
     "loop_cadence",
     "loops",

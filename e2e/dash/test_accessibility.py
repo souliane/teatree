@@ -10,7 +10,7 @@ until focused, and that activating it reaches the main region.
 from playwright.sync_api import Page, expect
 from pytest_django.live_server_helper import LiveServer
 
-_PAGES = ("board", "health", "loops", "presets", "settings")
+_PAGES = ("board", "live", "health", "loops", "presets", "settings")
 
 
 def test_every_page_exposes_exactly_one_level_one_heading(live_server: LiveServer, page: Page) -> None:

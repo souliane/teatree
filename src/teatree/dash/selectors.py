@@ -64,10 +64,34 @@ def group_slug(state: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class PrChip:
+    """One PR on a card or in the drawer: where it is, and what state it is in.
+
+    ``state`` is the raw FSM value, carried so the template can key styling on it —
+    an open, a merged and a closed PR must not render as three identical chips.
+    ``label`` is what a reader sees: the model's own human label, because the raw
+    value is an underscored slug (``review_requested``) that reads as debug output.
+    """
+
     url: str
     repo: str
     iid: str
     state: str
+    label: str = ""
+
+
+def pr_chip(pr: PullRequest) -> PrChip:
+    """The chip for one ``PullRequest`` row — the single builder both surfaces use.
+
+    The label falls back to the raw value for a state the choices no longer name,
+    so a row written by an older schema renders as itself rather than as blank.
+    """
+    return PrChip(
+        url=pr.url,
+        repo=pr.repo,
+        iid=pr.iid,
+        state=str(pr.state),
+        label=PullRequest.State(pr.state).label if pr.state in PullRequest.State.values else str(pr.state),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,9 +299,7 @@ def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
 def _pr_chips_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[PrChip, ...]]:
     chips: dict[int, list[PrChip]] = {}
     for pr in PullRequest.objects.filter(ticket_id__in=ticket_ids).order_by("ticket_id", "pk"):
-        chips.setdefault(pr.ticket_id, []).append(
-            PrChip(url=pr.url, repo=pr.repo, iid=pr.iid, state=str(pr.state)),
-        )
+        chips.setdefault(pr.ticket_id, []).append(pr_chip(pr))
     return {ticket_id: tuple(prs) for ticket_id, prs in chips.items()}
 
 
