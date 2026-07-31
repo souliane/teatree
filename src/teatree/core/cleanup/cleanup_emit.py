@@ -12,11 +12,12 @@ these). ``schema_version`` is bumped on any breaking field change.
 
 ```jsonc
 {
-    "schema_version": 2,
+    "schema_version": 3,
     "path": "/abs/path/to/worktree-or-clone",       // on-disk location, "" for a bare branch/stash
     "branch": "feat-x",                             // the branch (or "stash@{N}" for a stash)
     "kind": "worktree",                             // "worktree" | "branch" | "stash"
     "unique_commit_shas": ["<sha>", ...],           // commits whose CONTENT is not provably on target
+    "uncommitted_paths": ["src/gate.py", ...],      // work-bearing files on NO ref: staged/modified/untracked
     "merged_with_post_merge_work": true,            // forge-merged BUT current tip has unique content
     "content_verified": true,                       // a content probe actually RAN and its answer stands
     "verdict_source": "cherry-zero-unique",         // the deciding layer, or why nothing decided
@@ -32,6 +33,14 @@ The skill reads ``unique_commit_shas`` + ``merged_with_post_merge_work`` to deci
 salvage-to-fresh-PR, ``banned_terms_status`` to know whether to clean before
 salvage, and ``liveness`` to defer a live item.
 
+``uncommitted_paths`` (schema 3) is the second half of "what would be lost". The
+record described COMMITS only, so a checkout whose entire delta is staged-but-
+uncommitted emitted an empty ``unique_commit_shas`` with ``content_verified:
+true`` — byte-identical to a shipped one — and the skill routed it to DELETE,
+while the CLI that produced the record had itself KEPT the checkout for exactly
+that dirt. The two now agree: any work-bearing path on no ref is named here, and
+:meth:`CleanupEmitRecord.to_dict` refuses to serialise such a record as verified.
+
 ``content_verified`` gates all of that (schema 2). An empty ``unique_commit_shas``
 carried two opposite meanings — "the probe proved the tip holds nothing unique"
 and "no probe could run" — and the skill routed both to DELETE, so an unresolvable
@@ -46,7 +55,11 @@ import re
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-EMIT_SCHEMA_VERSION = 2
+EMIT_SCHEMA_VERSION = 3
+
+#: The ``verdict_source`` a record naming uncommitted work always carries: no commit
+#: probe can speak for a delta that was never committed.
+UNCOMMITTED_WORK_SOURCE = "uncommitted-work"
 
 
 class EmitRecordDict(TypedDict):
@@ -57,6 +70,7 @@ class EmitRecordDict(TypedDict):
     branch: str
     kind: str
     unique_commit_shas: list[str]
+    uncommitted_paths: list[str]
     merged_with_post_merge_work: bool
     content_verified: bool
     verdict_source: str
@@ -126,6 +140,7 @@ class CleanupEmitRecord:
     branch: str
     kind: str
     unique_commit_shas: list[str] = field(default_factory=list)
+    uncommitted_paths: list[str] = field(default_factory=list)
     merged_with_post_merge_work: bool = False
     # Fail closed: a record nobody proved must never read as a verified-redundant one.
     content_verified: bool = False
@@ -137,16 +152,25 @@ class CleanupEmitRecord:
     owner: str = ""
 
     def to_dict(self) -> EmitRecordDict:
-        """JSON-serializable record including the schema version."""
+        """JSON-serializable record including the schema version.
+
+        The one place the record reaches a machine, so it is where the record is
+        made to agree with itself: a record naming ``uncommitted_paths`` describes
+        work that exists on no ref, which no commit probe can have proven
+        redundant. It serialises as UNVERIFIED with
+        :data:`UNCOMMITTED_WORK_SOURCE`, and an unverified record routes to KEEP.
+        """
+        holds_uncommitted_work = bool(self.uncommitted_paths)
         return {
             "schema_version": EMIT_SCHEMA_VERSION,
             "path": self.path,
             "branch": self.branch,
             "kind": self.kind,
             "unique_commit_shas": list(self.unique_commit_shas),
+            "uncommitted_paths": list(self.uncommitted_paths),
             "merged_with_post_merge_work": self.merged_with_post_merge_work,
-            "content_verified": self.content_verified,
-            "verdict_source": self.verdict_source,
+            "content_verified": self.content_verified and not holds_uncommitted_work,
+            "verdict_source": UNCOMMITTED_WORK_SOURCE if holds_uncommitted_work else self.verdict_source,
             "banned_terms_status": self.banned_terms_status,
             "banned_terms_found": list(self.banned_terms_found),
             "liveness": self.liveness,

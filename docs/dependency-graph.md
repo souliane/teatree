@@ -54,6 +54,7 @@ graph TD
     teatree.core --> teatree.core.managers
     teatree.core --> teatree.core.managers_overlay
     teatree.core --> teatree.core.loop_lease_manager
+    teatree.core --> teatree.core.session_handover_manager
     teatree.core --> teatree.core.session_identity
     teatree.core --> teatree.loop.loop_cadences
     teatree.core --> teatree.loop.preset_resolution

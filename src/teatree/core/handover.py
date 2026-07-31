@@ -1,18 +1,29 @@
 """Session-to-session work hand-off.
 
-Reuses the durable-state snapshot the PreCompact hook already builds (active
-tickets, worktree paths/branches, in-flight sub-agents, open PRs,
-approach/decisions, failing tests, loaded skills, t3-master status) — that
-snapshot is the hand-off payload, so a hand-off and a post-compaction
-recovery carry identical state. The hook writes it to
-``${STATE_DIR}/t3-snapshot-<session>-precompact.md``; this module reads that
-file as the payload, falling back to a payload DERIVED FROM LIVE DB STATE
-(worktrees, active tickets, open PRs) when no snapshot exists yet — a session
-that has not compacted still hands over its in-flight work (#3551).
+The payload has three sources, tried in order, and which one answered travels
+with the payload as a :class:`PayloadSource` — because the sources are not
+equally worth handing over:
+
+1. **Authored** — bytes the handing session supplied (``handover create
+    --from-file`` / ``--body``). A hand-off exists to carry a session's REASONING,
+    and reasoning is the one thing no query can re-derive; if the DB could produce
+    it, the hand-off would not be needed. This source wins over both others.
+2. **Snapshot** — the durable-state snapshot the PreCompact hook builds (active
+    tickets, worktree paths/branches, in-flight sub-agents, open PRs,
+    approach/decisions, failing tests, loaded skills, t3-master status), at
+    ``${STATE_DIR}/t3-snapshot-<session>-precompact.md``. A hand-off and a
+    post-compaction recovery then carry identical state.
+3. **Live state** — derived from the DB (worktrees, active tickets, open PRs) so
+    a session that has neither authored nor compacted still transfers its
+    in-flight work (#3551). It carries inventory, never reasoning, and nobody
+    vetted it, so :mod:`teatree.core.management.commands.handover` reports it as
+    UNVETTED rather than ``OK``.
 
 The :class:`SessionHandover` DB row is the source of truth. The XDG file
 mirror (``handover_mirror_path``) is for human-readability and for
-bootstrapping a brand-new session whose process predates any DB read.
+bootstrapping a brand-new session whose process predates any DB read; it is
+never read back as a payload, which is why authoring goes through the command
+rather than through the file.
 
 Target resolution (``create``):
 
@@ -26,15 +37,35 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
+from teatree.core.session_handover_manager import SelfAddressedHandoverError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from teatree.core.models.session_handover import SessionHandover
+
+__all__ = [
+    "CreatedHandover",
+    "HandoverPayload",
+    "PayloadSource",
+    "ResolvedPayload",
+    # Re-exported so the hand-off CLI catches the refusal from the module it already
+    # depends on, rather than reaching into the manager package for one exception.
+    "SelfAddressedHandoverError",
+    "claim_handovers",
+    "create_handover",
+    "mirror_path",
+    "newest_mirror",
+    "render_claimed_payload",
+    "resolve_target_session",
+    "unique_mirror_path",
+    "write_mirror",
+]
 
 _SNAPSHOT_PREFIX = "t3-snapshot-"
 _SNAPSHOT_SUFFIX = "-precompact.md"
@@ -62,32 +93,95 @@ def _live_worktree_lines() -> list[str]:
 
 
 def _live_ticket_lines() -> list[str]:
+    """One line per in-flight ticket that can actually be identified.
+
+    A ticket with neither a description nor a URL rendered as ``ticket 120
+    (untitled)``, which names nothing the receiver can act on while still reading
+    as inventory — worse than an absent line, because a list of them looks like a
+    hand-off. Such a ticket is skipped.
+    """
     from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     return [
-        f"- ticket {ticket.pk} ({ticket.short_description or ticket.issue_url or 'untitled'}) [{ticket.state}]"
+        f"- ticket {ticket.pk} ({ticket.short_description or ticket.issue_url}) [{ticket.state}]"
         for ticket in Ticket.objects.exclude(state__in=Ticket.marker_release_states()).order_by("pk")
+        if ticket.short_description or ticket.issue_url
     ]
 
 
 def _live_pr_lines() -> list[str]:
+    """One line per pull request that is not already settled.
+
+    Both TERMINAL states are excluded, not merges alone: a PR closed without
+    merging is as finished as a merged one, and listing it advertises live work
+    that does not exist. The row's state is the local record of the last forge
+    read (:meth:`PullRequest.objects.settle_forge_state` is its writer); this
+    derivation stays a pure DB read rather than probing the forge per PR, because
+    a payload built at hand-off time must not be able to hang on the network. A
+    row nothing has settled yet can therefore still be listed while stale, which
+    is one of the reasons a live-derived payload is reported as UNVETTED.
+    """
     from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
+    settled = (PullRequest.State.MERGED, PullRequest.State.CLOSED)
     return [
         f"- {pull_request.url or '(no url)'} ({pull_request.repo}!{pull_request.iid}) [{pull_request.state}]"
-        for pull_request in PullRequest.objects.exclude(state=PullRequest.State.MERGED).order_by("pk")
+        for pull_request in PullRequest.objects.exclude(state__in=settled).order_by("pk")
     ]
+
+
+class PayloadSource(StrEnum):
+    """Which source produced a hand-off payload — and therefore how much it is worth.
+
+    ``AUTHORED`` and ``SNAPSHOT`` are VETTED: a session either wrote the payload or
+    the PreCompact hook captured that session's own durable state. ``LIVE`` is a
+    machine derivation nobody reviewed, and ``EMPTY`` is no payload at all.
+    """
+
+    AUTHORED = "authored"
+    SNAPSHOT = "snapshot"
+    LIVE = "live-state"
+    EMPTY = "empty"
+
+    @property
+    def is_vetted(self) -> bool:
+        """Whether a hand-off from this source may report ``OK``."""
+        return self in {PayloadSource.AUTHORED, PayloadSource.SNAPSHOT}
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPayload:
+    """A hand-off payload together with the source that produced it."""
+
+    text: str
+    source: PayloadSource
+
+
+@dataclass(frozen=True, slots=True)
+class CreatedHandover:
+    """What :func:`create_handover` produced: the row, its mirror, and the payload's source.
+
+    ``source`` is carried out to the caller rather than inferred from the row,
+    because no property of a persisted payload distinguishes a session's own
+    reasoning from a machine-derived inventory of the same length.
+    """
+
+    handover: "SessionHandover"
+    mirror: Path
+    source: PayloadSource
 
 
 @dataclass(frozen=True, slots=True)
 class HandoverPayload:
     """The body one session hands over — the PreCompact snapshot, else live DB state.
 
-    Two sources for one payload, composed here rather than left as three
-    module functions each re-taking the same ``session_id``.
+    Three sources for one payload, composed here rather than left as module
+    functions each re-taking the same ``session_id``. ``authored`` carries bytes
+    the handing session supplied and outranks both derived sources.
     """
 
     session_id: str
+    authored: str = ""
 
     def snapshot(self) -> str:
         """The PreCompact durable-state snapshot, or ``""``.
@@ -128,14 +222,28 @@ class HandoverPayload:
         )
         return header + "\n\n" + "\n\n".join(rendered)
 
-    def resolve(self) -> str:
-        """The hand-off payload: the PreCompact snapshot, else live-derived state.
+    def resolve(self) -> ResolvedPayload:
+        """The hand-off payload AND the source that produced it.
 
-        ``""`` when neither source has anything — a hand-off with nothing durable
-        to transfer, which :mod:`teatree.core.management.commands.handover` refuses
-        loudly rather than reporting ``OK`` over an empty transfer (#3551).
+        Authored bytes first, then the PreCompact snapshot, then live-derived
+        state; :attr:`PayloadSource.EMPTY` when none of them has anything.
+
+        The source is returned rather than discarded because the caller's decision
+        depends on it and cannot be recovered from the text: an empty payload is a
+        hand-off with nothing to transfer, and a live-derived one is a machine
+        inventory nobody reviewed. Reporting ``OK`` over either is the failure
+        :mod:`teatree.core.management.commands.handover` exists to prevent — the
+        emptiness test alone (#3551) passed any non-empty stub.
         """
-        return self.snapshot() or self.live_state()
+        if self.authored.strip():
+            # The author's bytes VERBATIM — not stripped, not reformatted. A
+            # hand-off that edits what it was given is not carrying it.
+            return ResolvedPayload(text=self.authored, source=PayloadSource.AUTHORED)
+        if snapshot := self.snapshot():
+            return ResolvedPayload(text=snapshot, source=PayloadSource.SNAPSHOT)
+        if live := self.live_state():
+            return ResolvedPayload(text=live, source=PayloadSource.LIVE)
+        return ResolvedPayload(text="", source=PayloadSource.EMPTY)
 
 
 def resolve_target_session(explicit_to: str) -> str:
@@ -287,18 +395,26 @@ def claim_handovers(session_id: str) -> tuple[str, str]:
     return render_claimed_payload(claimed), origin
 
 
-def create_handover(*, from_session: str, explicit_to: str) -> "tuple[SessionHandover, Path]":
+def create_handover(*, from_session: str, explicit_to: str, authored: str = "") -> "CreatedHandover":
     """Persist a hand-off from *from_session* and mirror it to the XDG file.
 
-    Returns ``(handover_row, mirror_path)``. The payload is the reused
-    PreCompact snapshot; the target is resolved per :func:`resolve_target_session`.
+    *authored* is the payload the handing session supplied; omitted, the payload
+    is derived per :meth:`HandoverPayload.resolve`. The target is resolved per
+    :func:`resolve_target_session`.
+
+    Raises :class:`SelfAddressedHandoverError` when the resolved target is the
+    handing session itself — including via the no-``--to`` path, where the live
+    ``t3-master`` slot holder can BE the session handing off. Refusing here rather
+    than in the CLI keeps the check on the resolved target, which is the only
+    value that decides claimability.
     """
     from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     to_session = resolve_target_session(explicit_to)
+    resolved = HandoverPayload(from_session, authored=authored).resolve()
     handover = SessionHandover.objects.create_handover(
         from_session=from_session,
         to_session=to_session,
-        payload=HandoverPayload(from_session).resolve(),
+        payload=resolved.text,
     )
-    return handover, write_mirror(handover)
+    return CreatedHandover(handover=handover, mirror=write_mirror(handover), source=resolved.source)

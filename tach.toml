@@ -190,6 +190,9 @@ depends_on = [
   "teatree.core.managers",
   "teatree.core.managers_overlay",
   "teatree.core.loop_lease_manager",
+  # the hand-off service refuses a self-addressed hand-off with the manager's own
+  # exception — a domain leaf edge, mirroring loop_lease_manager above.
+  "teatree.core.session_handover_manager",
   "teatree.core.session_identity",
   "teatree.loop.loop_cadences",
   # The merged operating-mode resolver (teatree.core.mode_resolution, #61) reuses

@@ -48,7 +48,16 @@ class TestSnapshotPayloadReuse(TestCase):
 
     def test_handover_payload_prefers_the_snapshot(self) -> None:
         (self.state_dir / "t3-snapshot-sess-B-precompact.md").write_text("SNAPSHOT BODY", encoding="utf-8")
-        assert handover.HandoverPayload("sess-B").resolve() == "SNAPSHOT BODY"
+        resolved = handover.HandoverPayload("sess-B").resolve()
+        assert resolved.text == "SNAPSHOT BODY"
+        assert resolved.source is handover.PayloadSource.SNAPSHOT
+
+    def test_an_authored_body_outranks_the_snapshot(self) -> None:
+        """A hand-off carries the session's reasoning; a re-derivable snapshot never displaces it."""
+        (self.state_dir / "t3-snapshot-sess-C-precompact.md").write_text("SNAPSHOT BODY", encoding="utf-8")
+        resolved = handover.HandoverPayload("sess-C", authored="AUTHORED BODY").resolve()
+        assert resolved.text == "AUTHORED BODY"
+        assert resolved.source is handover.PayloadSource.AUTHORED
 
 
 class TestResolveTargetSession(TestCase):
@@ -131,17 +140,18 @@ class TestCreateHandover(TestCase):
 
     def test_create_persists_row_and_mirror_to_loop_owner(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-        row, mirror = handover.create_handover(from_session="hand-er", explicit_to="")
+        created = handover.create_handover(from_session="hand-er", explicit_to="")
+        row, mirror = created.handover, created.mirror
         assert row.to_session == "owner-X"
         assert SessionHandover.objects.filter(pk=row.pk).exists()
         assert mirror.is_file()
         assert "hand-er" in mirror.read_text(encoding="utf-8")
 
     def test_create_with_explicit_to_targets_that_session(self) -> None:
-        row, _ = handover.create_handover(from_session="hand-er", explicit_to="target-Z")
+        row = handover.create_handover(from_session="hand-er", explicit_to="target-Z").handover
         assert row.to_session == "target-Z"
 
     def test_create_no_owner_parks_for_next(self) -> None:
-        row, _ = handover.create_handover(from_session="hand-er", explicit_to="")
+        row = handover.create_handover(from_session="hand-er", explicit_to="").handover
         assert row.to_session == ""
         assert row.is_for_next_session is True

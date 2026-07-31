@@ -40,7 +40,7 @@ from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _r
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
-from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
+from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons, working_tree_dirt
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
     INCONCLUSIVE_SOURCE,
@@ -296,10 +296,17 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
 
     Resolves the current-tip redundancy (for ``unique_commit_shas`` +
     ``merged_with_post_merge_work``), its provenance (:func:`_verdict_provenance`,
-    so an unprobeable item never emits the proven-redundant shape), the
-    banned-terms status of the unique content, the tip author/date, and the
-    liveness reason — everything the judgment skill needs to route the item
-    without re-probing git itself.
+    so an unprobeable item never emits the proven-redundant shape), the WORKING
+    TREE's uncommitted delta, the banned-terms status of the unique content, the
+    tip author/date, and the liveness reason — everything the judgment skill needs
+    to route the item without re-probing git itself.
+
+    The working-tree read is what makes the record agree with the caller that
+    builds it. This function is reached from the KEEP branches of the reap pass,
+    including the one whose keep-reason IS uncommitted work — and a delta that was
+    never committed is invisible to every commit probe above, so without it the
+    record described a clean, redundant worktree while the CLI beside it printed
+    "salvage, do not wipe". A checkout kept for its dirt now emits that dirt.
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
@@ -328,6 +335,7 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
         branch=worktree.branch,
         kind="worktree",
         unique_commit_shas=verdict.unique_shas,
+        uncommitted_paths=list(working_tree_dirt(wt_path, target).paths),
         merged_with_post_merge_work=verdict.merged_with_post_merge_work,
         content_verified=content_verified,
         verdict_source=verdict_source,
