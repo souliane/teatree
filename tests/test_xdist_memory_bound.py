@@ -29,8 +29,20 @@ _GIB = 1024 * 1024 * 1024
 _PYTEST_LANES = ("dev/push-gate.sh", "dev/test-affected.sh", "dev/test-cov.sh")
 
 
-def _invoke(*, v2_contents: str | None, env: dict[str, str] | None = None, tmp_path: Path) -> tuple[str, str]:
-    """Source the helper against a FAKE cgroup file and report the resulting cap."""
+def _invoke(
+    *,
+    v2_contents: str | None,
+    env: dict[str, str] | None = None,
+    tmp_path: Path,
+    cores: int = 16,
+) -> tuple[str, str]:
+    """Source the helper against a FAKE cgroup file and report the resulting cap.
+
+    *cores* is pinned rather than detected: the bound only applies when memory is the
+    BINDING constraint, so a test that let the runner's real core count decide would
+    assert something different on a 2-core runner than on a 16-core one — the same
+    environment coupling these changes exist to remove.
+    """
     v2 = tmp_path / "memory.max"
     if v2_contents is not None:
         v2.write_text(v2_contents, encoding="utf-8")
@@ -38,6 +50,7 @@ def _invoke(*, v2_contents: str | None, env: dict[str, str] | None = None, tmp_p
         f"set -euo pipefail\n"
         f'export T3_CGROUP_MEMORY_MAX_V2="{v2}"\n'
         f'export T3_CGROUP_MEMORY_MAX_V1="{tmp_path / "absent-v1"}"\n'
+        f'export T3_CPU_COUNT="{cores}"\n'
         f'. "{_HELPER}"\n'
         f"bound_xdist_workers_to_memory\n"
         f'echo "WORKERS=${{PYTEST_XDIST_AUTO_NUM_WORKERS:-unset}}"\n'
@@ -116,3 +129,15 @@ def test_pytest_lane_bounds_its_worker_pool(lane: str) -> None:
     )
     assert "xdist-workers.sh" in body, reason
     assert "bound_xdist_workers_to_memory" in body, reason
+
+
+def test_cap_above_the_core_count_leaves_auto_detection_alone(tmp_path: Path) -> None:
+    """A cap that allows MORE workers than there are cores is not the binding constraint.
+
+    Bounding there would cut the pool below what `-n auto` would rightly pick, so the
+    helper must stand down. This branch is why the bound cannot be asserted against a
+    fixed number without pinning the core count too.
+    """
+    workers, _ = _invoke(v2_contents=str(64 * _GIB), tmp_path=tmp_path, cores=2)
+
+    assert workers == "unset"

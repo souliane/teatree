@@ -24,6 +24,11 @@
 : "${T3_CGROUP_MEMORY_MAX_V2:=/sys/fs/cgroup/memory.max}"
 : "${T3_CGROUP_MEMORY_MAX_V1:=/sys/fs/cgroup/memory/memory.limit_in_bytes}"
 
+# Core count, injectable for the same reason. Empty means "detect with nproc"; a value
+# pins it, so a test can exercise the memory arithmetic without its result depending on
+# how many cores the runner happens to have.
+: "${T3_CPU_COUNT:=}"
+
 # cgroup v1 reports a near-2**63 page-aligned sentinel to mean "unlimited"; cgroup v2
 # uses the literal string "max". Both mean "no cap" and must not bound anything.
 _T3_CGROUP_UNLIMITED_SENTINEL=9223372036854771712
@@ -67,7 +72,11 @@ bound_xdist_workers_to_memory() {
     fi
 
     local cores
-    cores=$(nproc 2>/dev/null || echo 1)
+    if [ -n "$T3_CPU_COUNT" ]; then
+        cores=$T3_CPU_COUNT
+    else
+        cores=$(nproc 2>/dev/null || echo 1)
+    fi
     if [ "$allowed" -ge "$cores" ]; then
         # Memory is not the binding constraint here; leave `-n auto` to the cores.
         return 0
