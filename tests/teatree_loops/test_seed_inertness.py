@@ -224,6 +224,10 @@ class TestAFreshlySeededBoxIsClean(django.test.TestCase):
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
         set_mode_override("engaged")
+        # `stale_loops` measures a never-run loop from `created_at`, so the migration-seeded
+        # rows age past 3x their cadence as the suite runs; stamp the anchor rather than
+        # inherit "the DB is young" from how long the suite has been going.
+        Loop.objects.update(last_run_at=timezone.now())
 
         faults = [f for f in shipped_inertness(now=timezone.now()) if f.is_fault]
 

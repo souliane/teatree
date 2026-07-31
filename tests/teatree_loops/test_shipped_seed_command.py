@@ -13,6 +13,7 @@ from unittest import mock
 import django.test
 import pytest
 from django.core.management import call_command
+from django.utils import timezone
 
 from teatree.cli.doctor.app import _check_shipped_seed_inertness
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
@@ -22,11 +23,23 @@ from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.shipped_guard import shipped_delete_phrase
 
 
+def _fleet_just_ticked() -> None:
+    """Stamp every loop's cadence anchor to now — the precondition a clean audit needs.
+
+    ``stale_loops`` measures a loop that has NEVER run from ``created_at``, so the rows the
+    migration seeded age past 3x their cadence as the suite runs and a clean-box assertion
+    that relied on a young DB flips red purely on wall-clock. Setting the anchor states the
+    precondition instead of inheriting it from how long the suite has been going.
+    """
+    Loop.objects.update(last_run_at=timezone.now())
+
+
 class TestAuditExitCode(django.test.TestCase):
     def setUp(self) -> None:
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
+        _fleet_just_ticked()
 
     def test_a_missing_shipped_row_exits_non_zero(self) -> None:
         Loop.objects.filter(name="review").delete()
@@ -148,6 +161,7 @@ class TestTheDoctorCheck(django.test.TestCase):
         seed_default_loops_and_prompts()
         seed_default_presets_and_schedules()
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
+        _fleet_just_ticked()
 
     def test_it_fails_and_names_the_missing_row(self) -> None:
         Loop.objects.filter(name="review").delete()
