@@ -77,21 +77,50 @@ class DeadRowVerdict:
 
 
 def plan_dead_row_release(workspace: Path) -> list[DeadRowVerdict]:
-    """Classify every registered row whose checkout is dead. Read-only.
+    """Classify every registered row whose checkout is not a working one. Read-only.
 
-    A row with a LIVE checkout — or no directory at all — is not this pass's
-    business and is omitted entirely rather than reported as a non-candidate: the
-    output is the set of rows the doctor's finding is about. The classifier decides
-    that SCOPE question; :func:`_verdict_for` then decides the row's disposition.
+    A row with a LIVE checkout is not this pass's business and is omitted entirely
+    rather than reported as a non-candidate: the output is the set of rows an
+    operator reached this command for. A row whose directory is ABSENT is in that
+    set — see :func:`_absent_directory_verdict` — even though nothing here can
+    release it. The classifier decides that SCOPE question; :func:`_verdict_for`
+    then decides the row's disposition.
     """
     refresh = RemoteRefresh()
     verdicts: list[DeadRowVerdict] = []
     for row in Worktree.objects.select_related("ticket").order_by("pk"):
-        checkout = classify_broken_checkout(row, workspace=workspace, refresh=refresh)
+        checkout = _absent_directory_verdict(row, workspace=workspace) or classify_broken_checkout(
+            row, workspace=workspace, refresh=refresh
+        )
         if checkout.state is BrokenCheckout.LIVE_CHECKOUT:
             continue
         verdicts.append(_verdict_for(row, workspace=workspace, checkout=checkout))
     return verdicts
+
+
+def _absent_directory_verdict(row: Worktree, *, workspace: Path) -> BrokenCheckoutVerdict | None:
+    """An UNVERIFIABLE verdict for a row with no directory here; ``None`` when there is one.
+
+    The classifier answers ``LIVE_CHECKOUT`` for an absent directory, which is the
+    right answer for the reapers that own an ordinary reaped worktree and the wrong
+    one here: it silently empties the plan of the rows this command is reached for,
+    so an operator staring at a row whose checkout went missing is told there is
+    nothing to look at.
+
+    The verdict is UNVERIFIABLE and never RELEASABLE. An absent directory is not
+    evidence of death — a checkout created in another execution context is absent
+    from here in exactly that way — and the row is the registry's only handle on the
+    branch. Provisioning re-materialises the checkout on the next pass, which is the
+    remedy the reason names.
+    """
+    path = Path(_resolve_worktree_path(workspace, row))
+    if path.is_dir():
+        return None
+    return BrokenCheckoutVerdict(
+        BrokenCheckout.UNVERIFIABLE,
+        f"nothing exists at {path} in this execution context, which a checkout created elsewhere looks "
+        "exactly like — so the row is kept. Re-run provisioning for the ticket to re-materialise the checkout.",
+    )
 
 
 def _verdict_for(row: Worktree, *, workspace: Path, checkout: BrokenCheckoutVerdict) -> DeadRowVerdict:

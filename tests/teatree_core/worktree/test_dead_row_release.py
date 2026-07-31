@@ -224,6 +224,45 @@ class DispositionReportingTest(_DeadRowCase):
         assert plan_dead_row_release(self.workspace) == []
 
 
+class AbsentDirectoryTest(_DeadRowCase):
+    """A row whose recorded directory is not there is REPORTED, and never released.
+
+    Nothing else owns this shape — the done reaper reads it as an ordinary live row
+    — so a pass that dropped it from the plan answered "nothing to do" about the very
+    rows an operator reaches for this command to understand. It is also not proof of
+    death: a checkout created in another execution context is absent from here in
+    exactly the same way, so the row is kept and the reason says why.
+    """
+
+    def _row_with_no_directory(self, branch: str = "vanished-dir") -> Worktree:
+        return self._register(self.workspace / f"wt-{branch}", branch=branch)
+
+    def test_a_row_whose_directory_is_absent_is_reported(self) -> None:
+        row = self._row_with_no_directory()
+
+        verdicts = plan_dead_row_release(self.workspace)
+
+        assert [v.worktree_pk for v in verdicts] == [row.pk]
+        assert verdicts[0].disposition is DeadRowDisposition.UNVERIFIABLE
+
+    def test_an_absent_directory_never_authorises_a_release(self) -> None:
+        row = self._row_with_no_directory()
+
+        outcome = release_dead_rows(self.workspace, dry_run=False)
+
+        assert Worktree.objects.filter(pk=row.pk).exists()
+        assert outcome.released_pks == frozenset()
+        assert outcome.render() == [f"KEPT 'vanished-dir' (worktree {row.pk}): {outcome.verdicts[0].reason}"]
+
+    def test_the_reason_names_the_path_and_the_vantage_point(self) -> None:
+        self._row_with_no_directory()
+
+        [verdict] = plan_dead_row_release(self.workspace)
+
+        assert str(self.workspace / "wt-vanished-dir") in verdict.reason
+        assert "execution context" in verdict.reason
+
+
 class ProtectionGatesMatchTheSweepTest(_DeadRowCase):
     """The narrow release must protect exactly what ``clean-all`` protects.
 

@@ -18,6 +18,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import WorktreeProvisioner
+from teatree.core.runners.provision import _recorded_checkout_is_live
 from teatree.utils import git
 from tests._git_repo import make_git_repo
 from tests.teatree_core.conftest import CommandOverlay
@@ -96,7 +97,7 @@ class TestWorktreeProvisioner(TestCase):
         assert worktrees[0].branch == "ac-repo-a-77-x"
         assert (worktrees[0].extra or {}).get("worktree_path") == str(wt_path)
 
-    def test_idempotent_when_worktree_already_exists(self) -> None:
+    def test_recorded_path_with_no_checkout_reprovisions_onto_the_same_row(self) -> None:
         repo_dir = self.workspace / "repo-a"
         repo_dir.mkdir()
         (repo_dir / ".git").mkdir()
@@ -116,13 +117,14 @@ class TestWorktreeProvisioner(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
-            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+            patch("teatree.core.runners.provision.git.worktree_add", return_value=True) as worktree_add,
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
         ):
             result = WorktreeProvisioner(ticket).run()
 
         assert result.ok is True
-        worktree_add.assert_not_called()
-        assert Worktree.objects.filter(ticket=ticket).count() == 1
+        worktree_add.assert_called_once()
+        assert Worktree.objects.filter(ticket=ticket).count() == 1, "the re-provision must reuse the existing row"
 
     def test_returns_failure_when_worktree_add_fails(self) -> None:
         repo_dir = self.workspace / "repo-a"
@@ -829,13 +831,28 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         git.run_strict(repo=str(worktree), args=["add", "-A"])
         git.run_strict(repo=str(worktree), args=["commit", "-q", "-m", f"add {name}"])
 
-    def _provision(self, branch: str, *, repo: str = "repo-a", public_remote: bool = False) -> tuple[Any, Ticket]:
+    def _provision(
+        self,
+        branch: str,
+        *,
+        repo: str = "repo-a",
+        public_remote: bool = False,
+        recorded_path: str = "",
+    ) -> tuple[Any, Ticket]:
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/3234",
             repos=[repo],
             extra={"branch": branch, "description": "x"},
         )
+        if recorded_path:
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path=repo,
+                branch=branch,
+                extra={"worktree_path": recorded_path},
+            )
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
@@ -932,6 +949,81 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert stale.is_dir(), "a leftover with unpushed commits was DESTROYED"
         assert (stale / "work.txt").read_text(encoding="utf-8") == "precious\n"
         assert self._recorded_path(ticket) == str(stale), "the surviving worktree must be the one recorded"
+
+    def test_row_recording_a_checkout_that_is_gone_is_reprovisioned(self) -> None:
+        # souliane/teatree#3943: the row records a path whose checkout no longer
+        # exists. Handing that path back makes provisioning a permanent no-op — the
+        # checkout can never be re-materialised and every later step walks into a
+        # directory that is not there.
+        self._clone()
+        branch = "3943-vanished"
+        vanished = self.tmp / "a-root-that-is-gone" / "repo-a"
+
+        result, ticket = self._provision(branch, recorded_path=str(vanished))
+
+        assert result.ok is True, result.detail
+        wt_path = self.workspace / branch / "repo-a"
+        assert self._recorded_path(ticket) == str(wt_path), "the dead path was handed back instead of re-provisioned"
+        assert git.current_branch(str(wt_path)) == branch
+
+    def test_row_recording_a_directory_that_is_not_a_checkout_is_reprovisioned(self) -> None:
+        # The dir survives but holds no checkout, so every git-driven step over it
+        # no-ops. A recorded path is not evidence; a live checkout is.
+        self._clone()
+        branch = "3943-hollow"
+        hollow = self.tmp / "hollow" / "repo-a"
+        hollow.mkdir(parents=True)
+
+        result, ticket = self._provision(branch, recorded_path=str(hollow))
+
+        assert result.ok is True, result.detail
+        recorded = Path(self._recorded_path(ticket))
+        assert (recorded / ".git").exists(), "a hollow directory was accepted as a checkout"
+        assert git.current_branch(str(recorded)) == branch
+
+    def test_live_recorded_checkout_short_circuits_provisioning(self) -> None:
+        # The other half of the contract: a checkout that IS there earns the no-op,
+        # so provisioning never enters the create path at all and the work standing
+        # in that checkout is never at risk.
+        clone = self._clone()
+        branch = "3943-live"
+        recorded = self._add_worktree(clone, self.tmp / "elsewhere" / "repo-a", branch)
+        self._commit(recorded, "work.txt", "in progress\n")
+
+        with patch.object(WorktreeProvisioner, "_create") as create:
+            result, ticket = self._provision(branch, recorded_path=str(recorded))
+
+        create.assert_not_called()
+        assert result.ok is True, result.detail
+        assert self._recorded_path(ticket) == str(recorded)
+        assert (recorded / "work.txt").read_text(encoding="utf-8") == "in progress\n"
+
+    def test_checkout_whose_admin_dir_is_scoped_to_another_context_counts_as_live(self) -> None:
+        # The vantage-point trap: a checkout records its admin dir as an absolute
+        # path written by whatever context created it, so from HERE git answers
+        # "not a git repository" for a checkout that is perfectly alive. The clone's
+        # own admin entry is what proves it live, so the short-circuit must consult
+        # the clone rather than trusting git's refusal in the checkout.
+        clone = self._clone()
+        branch = "3943-other-context"
+        recorded = self._add_worktree(clone, self.workspace / branch / "repo-a", branch)
+        (recorded / ".git").write_text(
+            f"gitdir: /a-root-this-context-cannot-reach/repo-a/.git/worktrees/{recorded.name}\n", encoding="utf-8"
+        )
+
+        assert git.run(repo=str(recorded), args=["rev-parse", "--git-dir"]) == "", "fixture: git must refuse here"
+        assert _recorded_checkout_is_live(str(recorded), clone=clone) is True
+
+    def test_checkout_no_clone_vouches_for_is_not_taken_as_live(self) -> None:
+        # The same unreadable pointer with no clone to resolve it against is exactly
+        # what a dead checkout looks like. Unproven is not dead — it just does not
+        # earn the short-circuit, and re-provisioning removes nothing.
+        clone = self._clone()
+        branch = "3943-unvouched"
+        recorded = self._add_worktree(clone, self.workspace / branch / "repo-a", branch)
+        (recorded / ".git").write_text("gitdir: /a-root-this-context-cannot-reach/wt\n", encoding="utf-8")
+
+        assert _recorded_checkout_is_live(str(recorded), clone=None) is False
 
     def test_failed_step_after_creation_leaves_no_stranded_worktree(self) -> None:
         # A provision STEP that fails after `git worktree add` succeeded must tear the

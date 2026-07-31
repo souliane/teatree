@@ -29,3 +29,24 @@ def _clean_env() -> dict[str, str]:
 
 def _run_git(*args: str, cwd: Path) -> None:
     subprocess.run([_GIT, "-C", str(cwd), *args], check=True, capture_output=True, env=_clean_env())
+
+
+def corrupt_index(wt_dir: Path) -> None:
+    """Corrupt the real on-disk index for a worktree so ``git status`` itself fails.
+
+    The unanswerable-probe fixture, with no mocking: a ``git worktree add``
+    checkout's ``.git`` is a gitdir POINTER file, and its index lives under the main
+    repo's ``.git/worktrees/<name>/index`` rather than ``<wt_dir>/.git/index``, so
+    the real git dir is resolved through ``rev-parse`` first.
+    """
+    result = subprocess.run(
+        [_GIT, "-C", str(wt_dir), "rev-parse", "--git-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+    )
+    git_dir = Path(result.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = wt_dir / git_dir
+    (git_dir / "index").write_bytes(b"not a real git index")

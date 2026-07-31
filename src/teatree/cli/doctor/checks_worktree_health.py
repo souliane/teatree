@@ -20,9 +20,10 @@ import typer
 def _check_registered_worktrees_are_checkouts() -> bool:
     """FAIL on a registered worktree dir PROVED not to be a checkout; WARN when it could not be judged.
 
-    A missing dir is NOT a failure here — that is an ordinary reaped worktree
-    whose row the done-reaper releases. The failure is a dir that EXISTS and never
-    claimed to be a checkout at all.
+    A missing dir is NOT a failure here: absence is not proof of anything one
+    context can act on, so no destructive remedy follows from it — ``workspace
+    release-dead-rows`` reports such a row as unverifiable and keeps it. The
+    failure is a dir that EXISTS and never claimed to be a checkout at all.
 
     The three-valued probe is shared with the reaper on purpose, and so is the
     clone it consults. FAILing on a merely-inconclusive probe would print a

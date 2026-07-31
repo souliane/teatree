@@ -11,6 +11,7 @@ from teatree.core.public_identity import is_public_github_remote, set_local_nore
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
+from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
 from teatree.utils.run import CommandFailedError
@@ -37,6 +38,25 @@ def _clone_dir_from_worktree(worktree_path: str) -> Path | None:
     if not common_path.is_absolute():
         common_path = (Path(worktree_path) / common_path).resolve()
     return common_path.parent
+
+
+def _recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
+    """Is the checkout a row records still THERE? Positive proof only.
+
+    The provisioning half of the liveness question the reaper asks in
+    :mod:`teatree.core.worktree.checkout_liveness`, and the answer it needs is the
+    opposite one. A reaper deletes, so it may act only on proof of DEATH; this
+    short-circuit skips the work that would re-materialise a checkout, so it may
+    act only on proof of LIFE. Anything less falls through and re-provisions, which
+    adds a checkout and removes nothing.
+
+    *clone* is the source clone as THIS context reaches it, and it is what makes the
+    conservative half work: a checkout records its admin dir as an absolute path
+    written by whatever context created it, so git answers "not a git repository"
+    here for a checkout that is alive elsewhere. The clone's own admin entry, looked
+    up by name, proves that checkout live and keeps the short-circuit.
+    """
+    return probe_checkout(Path(recorded), clone=clone) is CheckoutState.CHECKOUT
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,14 +310,20 @@ class WorktreeProvisioner(RunnerBase):
     ) -> str | None:
         """Materialise one repo's ``Worktree`` row + checkout; return its path or ``None``.
 
-        Idempotent: a repo whose worktree_path is already recorded is a no-op. In
-        adopt mode (*adopt_path* set) the existing checkout is recorded verbatim —
-        see :meth:`_create`. On a failed ``git worktree add`` the just-created row
-        is rolled back so the ticket carries no half-provisioned repo.
+        Idempotent: a repo whose recorded worktree_path still holds a LIVE checkout
+        is a no-op, and one whose checkout this context cannot prove is there falls
+        through to re-provision onto the same row — a recorded path is a claim, not
+        a checkout, and trusting the claim alone is what turns a vanished checkout
+        into a provision that can never succeed again. Proof of life is
+        :func:`_recorded_checkout_is_live`. In adopt mode (*adopt_path* set) the
+        existing checkout is recorded verbatim — see :meth:`_create`. On a failed
+        ``git worktree add`` the just-created row is rolled back so the ticket
+        carries no half-provisioned repo.
         """
         existing = Worktree.objects.filter(ticket=self.ticket, repo_path=repo_name).first()
-        if existing and (existing.extra or {}).get("worktree_path"):
-            return (existing.extra or {})["worktree_path"]
+        recorded = (existing.extra or {}).get("worktree_path", "") if existing else ""
+        if recorded and _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
+            return recorded
 
         worktree = existing or Worktree.objects.create(
             ticket=self.ticket,
