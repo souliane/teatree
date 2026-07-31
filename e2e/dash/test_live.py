@@ -39,8 +39,11 @@ def test_the_nav_reaches_the_live_page_and_it_names_the_running_work(live_server
     expect(page.get_by_role("heading", name="Running")).to_be_visible()
     expect(page.get_by_role("heading", name="Queue")).to_be_visible()
     expect(page.get_by_role("heading", name="Recent outcomes")).to_be_visible()
-    expect(page.get_by_text("build the widget")).to_be_visible()
-    expect(page.get_by_text("t3:code", exact=True)).to_be_visible()
+    # Scoped to the running row: the same ticket also appears in the queue panel,
+    # and an unscoped text match would resolve to both.
+    running = page.locator("tr[id^='running-']").filter(has_text="build the widget")
+    expect(running).to_be_visible()
+    expect(running.get_by_text("t3:code", exact=True)).to_be_visible()
 
 
 @pytest.mark.usefixtures("running_attempt")
