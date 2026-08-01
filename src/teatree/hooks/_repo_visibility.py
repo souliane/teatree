@@ -92,9 +92,22 @@ def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
 def slug_for_cwd(cwd: Path) -> str:
     """Return the ``origin`` slug (``host/owner/repo``) for ``cwd``, or ``""``.
 
-    The full slug (including host) is used so an organisation-namespace
-    allowlist entry matches a GitLab remote and a GitHub probe can be keyed by
-    the same string.
+    Resolves ``cwd``'s ``origin`` URL OFFLINE-FIRST (:func:`_origin_remote_url`):
+    parsing ``.git/config`` directly needs no ``git`` binary, so the slug resolves
+    inside the restricted PreToolUse hook subprocess where a bare ``git`` is
+    unresolvable. Normalization is :func:`slug_for_remote_url`. An empty slug fails
+    SAFE -- the destination then resolves PUBLIC and the gate stays hard-blocking.
+    """
+    return slug_for_remote_url(_origin_remote_url(cwd))
+
+
+def slug_for_remote_url(url: str) -> str:
+    """Return the canonical ``host/owner/repo`` slug for a git remote *url*, or ``""``.
+
+    The full slug (including host) is used so an organisation-namespace allowlist
+    entry matches a GitLab remote and the host-keyed :func:`probe_visibility` routes
+    to the right forge tool. Host-STRIPPING a remote here would send every GitLab
+    remote to the GitHub probe, which can never confirm it.
 
     Remote forms normalize to a canonical slug:
 
@@ -118,13 +131,9 @@ def slug_for_cwd(cwd: Path) -> str:
         tripped the substring matcher and falsely downgraded a PUBLIC repo
         (#1953).
 
-    The ``origin`` URL is resolved OFFLINE-FIRST (:func:`_origin_remote_url`):
-    parsing ``.git/config`` directly needs no ``git`` binary, so the slug
-    resolves inside the restricted PreToolUse hook subprocess where a bare
-    ``git`` is unresolvable. An empty slug fails SAFE -- the destination then
-    resolves PUBLIC and the gate stays hard-blocking.
+    An empty/unparsable *url* yields ``""``, which fails SAFE -- the caller then
+    treats visibility as unresolved and the gate stays enforcing.
     """
-    url = _origin_remote_url(cwd)
     if not url:
         return ""
     cleaned = url.strip().rstrip("/").removesuffix(".git")
