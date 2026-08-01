@@ -33,11 +33,6 @@ from typing import Any
 from teatree.loops.preset_seed import default_preset_specs, default_schedule_specs
 from teatree.loops.seed import LoopSeedSpec, load_loop_specs
 
-#: A shipped family and the ``defaults.toml`` table it ships in. The ``modes``/``preset``
-#: pair is the footgun this mapping exists to contain: the file table is ``[modes.*]``, the
-#: model is ``Mode``, and the word every surface says is "preset". Nothing else translates.
-FAMILY_TABLES: dict[str, str] = {"loop": "loops", "preset": "modes", "schedule": "schedules"}
-
 KIND_MISSING = "missing"
 KIND_DISABLED_VS_SHIPPED = "disabled_vs_shipped"
 KIND_DISABLED = "disabled"
@@ -49,7 +44,6 @@ KIND_DANGLING_SLOT = "dangling_slot"
 KIND_INACTIVE = "inactive"
 
 __all__ = [
-    "FAMILY_TABLES",
     "KIND_DANGLING_SLOT",
     "KIND_DISABLED",
     "KIND_DISABLED_VS_SHIPPED",
