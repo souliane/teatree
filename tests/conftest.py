@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.config.host_projection import SILENCE_ADVISORY_ENV
+from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
+from teatree.core.worktree.branch_classification import reset_single_branch_cache
+from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from tests._db_template import build_or_reuse_template, restore_from_template
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
@@ -156,8 +158,20 @@ def _silence_host_projection_advisory() -> Iterator[None]:
     would not reach the live caller. `tests/teatree_config/test_host_projection.py`
     unsets it to cover the advisory in both directions.
     """
+    reset_advisory_memo()
     with patch.dict(os.environ, {SILENCE_ADVISORY_ENV: "1"}):
         yield
+    reset_advisory_memo()
+
+
+@pytest.fixture(autouse=True)
+def _reset_declaration_caches() -> Iterator[None]:
+    """Drop the process-memoised repo declarations so one test's config never answers another's."""
+    reset_single_branch_cache()
+    reset_ci_memo()
+    yield
+    reset_single_branch_cache()
+    reset_ci_memo()
 
 
 @pytest.fixture(autouse=True)

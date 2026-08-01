@@ -619,6 +619,11 @@ _warned: set[str] = set()
 SILENCE_ADVISORY_ENV = "T3_SILENCE_HOST_PROJECTION_ADVISORY"
 
 
+def reset_advisory_memo() -> None:
+    """Forget which advisories were written — for tests, so the once-ness never crosses one."""
+    _warned.clear()
+
+
 def warn_once(advisory: str, env: Mapping[str, str] = os.environ) -> None:
     """Print *advisory* to stderr at most once per process, so a hot hook path stays quiet."""
     if not advisory or advisory in _warned or env.get(SILENCE_ADVISORY_ENV):

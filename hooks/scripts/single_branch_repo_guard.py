@@ -67,14 +67,21 @@ def _ok_token(command: str) -> str | None:
 
 
 def _declared_entries() -> list[str]:
-    """The ``single_branch_repos`` entries, or ``[]`` when unreadable (gate inert)."""
+    """The ``single_branch_repos`` entries, or ``[]`` when unreadable (gate inert).
+
+    Read through the Django-free cold reader, as every other cold hook does. This runs as a
+    PreToolUse hook, where Django is not configured — resolving the declaration through the
+    ORM chokepoint raises there, and the fail-open below would then silently leave the gate
+    inert in precisely the environment it exists to guard.
+    """
     try:
         with teatree_src_on_path():
-            from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: cold-hook import
+            from teatree.config.cold_reader import read_setting  # noqa: PLC0415 — deferred: cold-hook import
 
-            return list(get_effective_settings().single_branch_repos)
+            declared = read_setting("single_branch_repos")
     except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN (no entries → inert).
         return []
+    return [str(entry) for entry in declared] if isinstance(declared, list) else []
 
 
 def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotating would pull the type to module scope
