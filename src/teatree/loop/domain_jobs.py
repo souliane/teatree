@@ -80,39 +80,14 @@ logger = logging.getLogger(__name__)
 
 
 def default_drift_notifier(alert_text: str, idempotency_key: str) -> None:
-    """Production drift-notifier: post via the overlay bot, idempotent on key.
-
-    Uses the verified-delivery wrapper (#1181) so a silent primary
-    ``notify_user`` failure (the #1173 class) auto-falls back to a direct,
-    round-trip-verified send instead of dropping the drift alert. Lives here
-    (the orchestration construction site) rather than inside the
-    ``outbound_audit`` scanner so the scanner stays in the ``domain`` layer
-    with no ``messaging``/``notify`` (``integration``) up-edge — it is
-    injected into :class:`OutboundAuditScanner` at construction.
-    """
+    """Production drift-notifier: post via the overlay bot, idempotent on key."""
     notify_with_fallback(
         alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key, audience=NotifyAudience.OWNER_ESCALATION
     )
 
 
 def _global_dispatch_jobs() -> list[_ScannerJob]:
-    """The always-on global set ``build_default_jobs`` fans out once per tick.
-
-    The three owner-DM delivery scanners (``UndeliveredNotifyScanner``,
-    ``DeferredQuestionPosterScanner`` and ``QuestionBacklogNagScanner``) are
-    handed an explicit messaging backend +
-    user id resolved from the active overlay — the same source
-    ``_pr_sweep_scanner_for`` uses — so a global tick with no ``T3_OVERLAY_NAME``
-    can still DELIVER the allowed owner-audience DMs instead of no-opping on an
-    unresolved backend (F2). A ``None`` backend (no overlay configured) leaves the
-    scanners on ``notify_user``'s own resolution, unchanged.
-
-    ``PendingPrDrainScanner`` is the undelivered-notify redelivery shape applied
-    to the PR ``ensure-pr`` deferred at push time — git has no client-side
-    post-push hook, so this tick is the only drain that obligation ever gets. It
-    is registered AFTER the head three, whose order is the statusline's FIFO
-    write contract (#1191).
-    """
+    """The always-on global set ``build_default_jobs`` fans out once per tick."""
     backend = messaging_from_overlay()
     user_id = resolve_user_id()
     return [
@@ -160,12 +135,7 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
 
 
 def _tickets_per_host_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
-    """Per-host disposition scanner + the once-per-overlay completion scanner.
-
-    ``identity_groups`` is resolved only when there is a host to scan —
-    the resolution reads the overlay config, so a host-less backend stays
-    out of that path entirely.
-    """
+    """Per-host disposition scanner + the once-per-overlay completion scanner."""
     if not backend.hosts:
         return []
     identity_groups = _identity_groups_for_overlay(backend)
@@ -201,14 +171,7 @@ def _ship_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Own-author PR scanner + the auto-merge PR sweep + (opt-in) GitLab-approvals poll, per host.
-
-    #3244: the ``pr_sweep`` auto-merge engine lives HERE, in the ship domain, not
-    the review domain. The review loop is ``colleague_facing`` and is SKIPPED under
-    ``autonomous_away`` (loop_table gates it on availability), which starved the
-    merge path exactly when the operator was away. Ship is enabled and ticks every
-    5m, and its seed already claims the keystone merge, so the sweep belongs with it.
-    """
+    """Own-author PR scanner + the auto-merge PR sweep + (opt-in) GitLab-approvals poll, per host."""
     tag = backend.name
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
     jobs: list[_ScannerJob] = []
@@ -262,21 +225,7 @@ def _review_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """The single review intake (#3569): self-authored + colleague PRs → one board.
-
-    Both feed the SAME ``reviewing`` → ``t3:reviewer`` (Claude) queue; the review
-    execution is blind to author. The author distinction lives HERE, upstream.
-
-    Self-authored open PRs are ALWAYS admitted — the ``ClaudeSelfPrReviewScanner``
-    sweeps the owner's own open PRs and enqueues one Claude ``reviewing`` task per
-    un-reviewed head SHA (per-SHA dedup = "since last review"); codex is no longer
-    the self-review mechanism. COLLEAGUE / requested-reviewer PRs are admitted only
-    when ``admit_colleague_prs_to_board`` is ON (the sole config knob) — the
-    ``ReviewerPrsScanner`` is built only then, so ``false`` keeps colleague PRs off
-    the board while self-review still runs.
-
-    #3244: the ``pr_sweep`` auto-merge engine lives in the ship domain, not here.
-    """
+    """The single review intake (#3569): self-authored + colleague PRs → one board."""
     tag = backend.name
     jobs: list[_ScannerJob] = []
     self_pr_scanner = _self_pr_review_scanner_for(backend)
@@ -429,18 +378,7 @@ def jobs_for_domain(
     *,
     all_backends: tuple[OverlayBackends, ...] = (),
 ) -> list[_ScannerJob]:
-    """Return the scanner-job slice *domain* owns (#1482).
-
-    The public, typed seam the mini-loops consume in place of reaching
-    into the loop fan-out's privates. The per-overlay members
-    (:data:`PER_OVERLAY_DOMAINS`) partition :func:`_jobs_for_overlay_backend`
-    — disjoint and exhaustive — and require *backend*. ``Domain.DISPATCH``
-    is the global dispatch set and ignores *backend* (it carries no
-    per-overlay state), so callers with no overlay context pass none.
-
-    *all_backends* threads sibling URL claims into the PR scanners so a
-    less-specific claim yields to a more specific sibling (#1324).
-    """
+    """Return the scanner-job slice *domain* owns (#1482)."""
     if domain is Domain.DISPATCH:
         return _global_dispatch_jobs()
     if backend is None:
@@ -456,17 +394,7 @@ def _jobs_for_overlay_backend(
     *,
     all_backends: tuple[OverlayBackends, ...] = (),
 ) -> list[_ScannerJob]:
-    """Build every scanner job that fans out for one overlay backend.
-
-    Provably the sum of every per-overlay domain slice — the partition
-    invariant pinned by ``tests/teatree_loop/test_jobs_for_domain.py``.
-    The fan-out order follows ``PER_OVERLAY_DOMAINS``; the live tick
-    treats jobs as an unordered set, so grouping by domain is behaviour-
-    equivalent to the previous interleaved order.
-
-    *all_backends* is the full multi-overlay roster — threaded into the
-    PR scanners for cross-overlay URL attribution (#1324).
-    """
+    """Build every scanner job that fans out for one overlay backend."""
     jobs: list[_ScannerJob] = []
     for domain in PER_OVERLAY_DOMAINS:
         jobs.extend(jobs_for_domain(domain, backend, all_backends=all_backends))
@@ -502,17 +430,7 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
 
 
 def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> None:
-    """DM the user that a scanner is degraded — once per day per class (#1287).
-
-    Idempotency key is ``scanner_error:<scanner>:<error_class>:<utc-date>``
-    so :func:`teatree.core.notify.notify_user`'s ``BotPing`` ledger dedups
-    repeat ticks of the same failure inside one UTC day. The next day
-    re-notifies — if the issue is still there, the user wants the
-    reminder; if it cleared, no DM goes out.
-
-    Best-effort: any failure inside the notify path is logged and
-    swallowed so a notify failure never reverberates into the tick.
-    """
+    """DM the user that a scanner is degraded — once per day per class (#1287)."""
     today = _dt.datetime.now(_dt.UTC).date().isoformat()
     key = f"scanner_error:{exc.scanner}:{exc.error_class.value}:{today}"
     overlay_tag = f" [overlay={overlay}]" if overlay else ""
@@ -529,22 +447,7 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
 
 
 def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
-    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag.
-
-    The single ordered inbound scanner set both the per-overlay
-    :func:`_messaging_jobs_for_backend` and the single-overlay
-    :func:`single_overlay_messaging_jobs` build from, so the two paths cannot
-    re-diverge on the inbound set (#23) — a new inbound scanner is added HERE
-    once and every messaging fan-out picks it up.
-
-    ``SlackMentionsScanner`` owns the JSONL drain and fans reaction events into
-    the backend's reactions queue; ``SlackReviewIntentScanner`` must run after it
-    so the queue is populated for the same tick. ``SlackReviewIntentScanner`` is
-    also the SINGLE owner of the ``slack-reactions.jsonl`` atomic-rename drain, so
-    the 👀-back self-ack (owner reacts to teatree's OWN message → 👀 back) rides
-    INSIDE it — consuming the same drained snapshot rather than racing a second
-    drain (#1047).
-    """
+    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag."""
     return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
         _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
@@ -567,18 +470,7 @@ def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_Scan
 
 
 def single_overlay_messaging_jobs(messaging: MessagingBackend) -> list[_ScannerJob]:
-    """Single-overlay (``overlay=""``) inbound-messaging scanner jobs — the #23 SSOT.
-
-    Both single-overlay callers import THIS builder — the inbox mini-loop's
-    single-overlay branch and ``build_default_jobs``' single-overlay messaging
-    branch — so they can never re-diverge on the inbound scanner set (the #23
-    drift, where both had dropped ``AskUserQuestionReplyScanner``). It is the
-    ``overlay=""`` projection of the same inbound scanners
-    :func:`_messaging_jobs_for_backend` fans out per overlay minus
-    ``ReviewNagScanner``, pinned identical by the coverage parity lane. A later
-    single-overlay inbound scanner registers by extending
-    :func:`_inbound_messaging_jobs`, never by re-forking this builder.
-    """
+    """Single-overlay (``overlay=""``) inbound-messaging scanner jobs — the #23 SSOT."""
     return _inbound_messaging_jobs(messaging, "")
 
 
@@ -588,16 +480,7 @@ def _messaging_jobs_for_backend(
     *,
     include_review_nag: bool = True,
 ) -> list[_ScannerJob]:
-    """Per-overlay Slack scanners that need a resolved messaging backend.
-
-    Caller must check ``backend.messaging is not None`` before invoking; a
-    defensive early-return keeps the type narrow without a bare ``assert``.
-
-    ``include_review_nag`` lets a high-cadence caller (the inbox mini-loop) drop
-    ``ReviewNagScanner`` so the nag is emitted by exactly one owner — the followup
-    mini-loop, whose 10-minute cadence matches the legacy single emission. The
-    legacy monolithic fan-out keeps the default.
-    """
+    """Per-overlay Slack scanners that need a resolved messaging backend."""
     messaging = backend.messaging
     if messaging is None:
         return []

@@ -128,8 +128,12 @@ _FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
 # (#1415). ``\b`` still matches a marker glued to punctuation/path separators
 # (`` "gh issue create ..." `` starts the token, ``/usr/bin/gh`` ends it), so
 # the opaque-wrapper detection (``sh -c "gh ..."``) is unaffected.
+# Alphanumeric lookaround rather than ``\b``: an underscore is a word character, so
+# ``\b`` reads ``run_gh`` as clean while this catches it, failing closed toward the
+# block (#3336). The English-word false positives that motivated a boundary at all
+# ("though", "night", "right") are alphanumeric-adjacent, so they stay inert either way.
 _FORGE_TOOL_MARKER_RE: Final[re.Pattern[str]] = re.compile(
-    "|".join(rf"\b{re.escape(marker)}\b" for marker in _FORGE_TOOL_MARKERS)
+    r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(marker) for marker in _FORGE_TOOL_MARKERS) + r")(?![A-Za-z0-9])"
 )
 
 
@@ -532,24 +536,31 @@ def _git_commit_subject(words: list[str]) -> str | None:
     return None
 
 
-def extract_title_fragments(command: str) -> list[str]:
-    """Return the TITLE / commit-SUBJECT fragments the command publishes.
+class PublishDetectionHelpers:
+    """Module-level helpers grouped so the module keeps a readable public surface."""
 
-    A title (``gh``/``glab`` ``--title``) or git-commit subject is a forge
-    surface distinct from a description body: the forge auto-links a trailing
-    ``(#NNNN)``/``(!NNNN)`` reference there. A gate that wants to treat that
-    conventional suffix differently from a body reads these fragments instead of
-    the flattened body blob (#1544).
-    """
-    fragments: list[str] = []
-    for words in segment_word_lists(command):
-        leader = canonical_forge_leader(words)
-        if leader in {"gh", "glab"}:
-            title = _forge_title_value(words)
-            if title is not None:
-                fragments.append(title)
-        elif leader == "git":
-            subject = _git_commit_subject(words)
-            if subject is not None:
-                fragments.append(subject)
-    return fragments
+    @staticmethod
+    def extract_title_fragments(command: str) -> list[str]:
+        """Return the TITLE / commit-SUBJECT fragments the command publishes.
+
+        A title (``gh``/``glab`` ``--title``) or git-commit subject is a forge
+        surface distinct from a description body: the forge auto-links a trailing
+        ``(#NNNN)``/``(!NNNN)`` reference there. A gate that wants to treat that
+        conventional suffix differently from a body reads these fragments instead of
+        the flattened body blob (#1544).
+        """
+        fragments: list[str] = []
+        for words in segment_word_lists(command):
+            leader = canonical_forge_leader(words)
+            if leader in {"gh", "glab"}:
+                title = _forge_title_value(words)
+                if title is not None:
+                    fragments.append(title)
+            elif leader == "git":
+                subject = _git_commit_subject(words)
+                if subject is not None:
+                    fragments.append(subject)
+        return fragments
+
+
+extract_title_fragments = PublishDetectionHelpers.extract_title_fragments

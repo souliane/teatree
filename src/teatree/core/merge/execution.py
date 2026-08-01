@@ -191,7 +191,7 @@ def assert_merge_preconditions(
         return dataclasses.replace(reconcile, standing_delegation_by=standing_delegation_by)
 
     # 4. Not draft.
-    _assert_draft_state_clears(query.pr_draft_state(), slug=slug, pr_id=pr_id, refusing="refusing to merge")
+    _refuse_unless_draft_state_clears(query.pr_draft_state(), slug=slug, pr_id=pr_id, refusing="refusing to merge")
 
     # 3. CI still not FAILED — against the forge's LIVE rollup, not the saved
     # snapshot. Three-valued (green/pending/failed):
@@ -229,7 +229,7 @@ def assert_merge_preconditions(
     return MergePrecheck(verified_sha=live_sha, standing_delegation_by=standing_delegation_by)
 
 
-def _assert_draft_state_clears(state: DraftState, *, slug: str, pr_id: int, refusing: str) -> None:
+def _refuse_unless_draft_state_clears(state: DraftState, *, slug: str, pr_id: int, refusing: str) -> None:
     """Let only a CONFIRMED non-draft through §17.4.3 step 4.
 
     An unreadable draft flag cannot rule out a draft, and an irreversible merge is
@@ -256,7 +256,7 @@ def assert_not_draft(query: CodeHostQuery) -> None:
     snapshot and the irreversible PUT is refused here. A registered
     ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
     """
-    _assert_draft_state_clears(
+    _refuse_unless_draft_state_clears(
         query.pr_draft_state(),
         slug=query.ref.slug,
         pr_id=query.ref.pr_id,

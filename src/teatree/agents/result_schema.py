@@ -44,14 +44,7 @@ class ReviewFinding(TypedDict, total=False):
 
 
 class ArticleSuggestion(TypedDict, total=False):
-    """One news-scan candidate a shell-denied scanning_news agent hands back (#9).
-
-    The headless scanning_news phase cannot run the ``t3`` CLI to enqueue
-    candidates, so it RETURNS these instead: the recorder creates one
-    :class:`~teatree.core.models.pending_article_suggestion.PendingArticleSuggestion`
-    per candidate behind the ask-gate (idempotent by ``url``). ``rationale`` is
-    the one-line why-this-matters that becomes the row's summary.
-    """
+    """One news-scan candidate a shell-denied scanning_news agent hands back (#9)."""
 
     title: str
     url: str
@@ -59,17 +52,7 @@ class ArticleSuggestion(TypedDict, total=False):
 
 
 class TriageRecommendation(TypedDict, total=False):
-    """One assessed ``needs-triage`` issue a shell-denied triage_assessing agent hands back.
-
-    The headless ``triage_assessing`` phase cannot run ``gh`` to act on an issue, so
-    it RETURNS these instead: the recorder creates one
-    :class:`~teatree.core.models.pending_triage_recommendation.PendingTriageRecommendation`
-    per item behind the ask-gate (idempotent by ``issue_url``) plus one
-    :class:`~teatree.core.models.deferred_question.DeferredQuestion` DMing the user.
-    Nothing acts autonomously. ``verdict`` is ``keep`` / ``close`` / ``needs_info``;
-    ``rationale`` is the one-line why. ``duplicate_of`` names the superseding issue
-    when the verdict is a duplicate-close.
-    """
+    """One assessed ``needs-triage`` issue a shell-denied triage_assessing agent hands back."""
 
     issue_url: str
     verdict: str
@@ -80,30 +63,14 @@ class TriageRecommendation(TypedDict, total=False):
 
 
 class AnswerEnvelope(TypedDict, total=False):
-    """A shell-denied answering agent's drafted reply, handed back for approval (#9).
-
-    The headless answering phase cannot post on the user's behalf, so it
-    RETURNS the draft: the recorder routes ``text`` through the
-    :class:`~teatree.core.models.deferred_question.DeferredQuestion` approval
-    path (correlated to the task), and the orchestrator posts on confirmation.
-    ``thread_ref`` is the inbound thread the reply targets.
-    """
+    """A shell-denied answering agent's drafted reply, handed back for approval (#9)."""
 
     text: str
     thread_ref: str
 
 
 class ReviewVerdictEnvelope(TypedDict, total=False):
-    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11).
-
-    A headless reviewing phase must not run ``t3 <overlay> review record`` —
-    maker≠checker reserves that write for another actor. It RETURNS this instead: the orchestrator
-    (a different actor) records the ``ReviewVerdict`` from it, so maker≠checker
-    holds by construction. ``reviewed_sha`` is the full 40-char SHA the review
-    bound to; ``verdict`` is ``merge_safe`` / ``hold``; ``findings`` is the record of
-    what the reviewer observed, independent of the verdict it reached
-    (:data:`~teatree.core.modelkit.review_contract.ENVELOPE_FINDINGS_RULE`).
-    """
+    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11)."""
 
     verdict: str
     reviewed_sha: str
@@ -120,30 +87,14 @@ class CriticItemVerdictDict(TypedDict, total=False):
 
 
 class CriticVerdictEnvelope(TypedDict, total=False):
-    """The autonomous user-proxy critic's typed verdict, recorded server-side (SELFCATCH-5).
-
-    A headless critic phase is denied the shell, so it RETURNS this instead of
-    recording a ``CriticVerdict`` itself: the orchestrator (``attempt_recorder`` →
-    ``critic_gate.record_returned_critic_verdict``) records it, so maker≠checker
-    holds by construction. ``items`` carries one per-rubric-item PASS/FAIL with a
-    citation (an uncited pass is stored as ``instrumentation_gap``).
-    """
+    """The autonomous user-proxy critic's typed verdict, recorded server-side (SELFCATCH-5)."""
 
     grader_identity: str
     items: list[CriticItemVerdictDict]
 
 
 class DirectiveInterpretationEnvelope(TypedDict, total=False):
-    """A directive interpreter's typed return, recorded server-side (north-star PR-6).
-
-    A headless ``directive_interpreting`` phase is denied the shell, so it RETURNS
-    this instead of writing the sketch itself: ``attempt_recorder`` →
-    ``directive_interpret_gate.record_returned_directive_interpretation`` records the
-    :class:`~teatree.core.models.mechanism_sketch.MechanismSketch` onto the
-    ``Directive`` (maker≠checker — a different actor than the one that captured the
-    text). The interpreter returns EITHER a ``sketch`` (→ ``INTERPRETED``) OR
-    ``clarifying_questions`` when the directive is ambiguous (→ ``CLARIFYING``).
-    """
+    """A directive interpreter's typed return, recorded server-side (north-star PR-6)."""
 
     interpreter_identity: str
     constraint_statement: str
@@ -152,17 +103,7 @@ class DirectiveInterpretationEnvelope(TypedDict, total=False):
 
 
 class DirectiveCandidateEnvelope(TypedDict, total=False):
-    """A quarantined reader's typed verdict, recorded server-side (#116 context firewall).
-
-    The no-tools/no-creds ``directive_reading`` reader (:mod:`teatree.agents.reader_profile`)
-    is denied every tool, so it RETURNS this instead of acting: the orchestrator
-    (``directive_candidate_gate.record_returned_directive_candidate``) validates it —
-    provenance cross-check + the Layer-2 schema — and mints the ``Directive`` from the
-    SANITIZED ``normalized_constraint``, so no downstream tooled stage ever touches raw
-    attacker text (maker≠checker). ``provenance`` is the reader's ECHOED trust tag; the
-    recorder cross-checks it against the true source event and never trusts it as the
-    taint source.
-    """
+    """A quarantined reader's typed verdict, recorded server-side (#116 context firewall)."""
 
     reader_identity: str
     is_directive: bool
@@ -173,13 +114,7 @@ class DirectiveCandidateEnvelope(TypedDict, total=False):
 
 
 class AgentResult(TypedDict, total=False):
-    """Structured result from an agent task execution.
-
-    All fields are optional — agents report what they can. Phase-specific
-    evidence requirements are enforced by ``_record_success`` against
-    ``PHASE_REQUIRED_EVIDENCE``, not by the JSON schema itself, because the
-    required field depends on the running phase.
-    """
+    """Structured result from an agent task execution."""
 
     summary: str
     plan_text: str
@@ -505,35 +440,7 @@ class ProseSummaryPolicy:
 
     @staticmethod
     def allowed(phase: str) -> bool:
-        """Whether ``_record_success`` may hand an envelope-less run on *phase* to the recorder.
-
-        The runner-side sibling of :meth:`accepted`, and deliberately wider than
-        it. ``_record_success`` manufactures ``{"summary":
-        agent_text[:1000]}`` when :func:`~teatree.agents.headless_result.parse_result`
-        finds no JSON anywhere in the agent's output. That fallback is what let a run
-        which produced *nothing* — the model asked for tools it did not have and
-        stopped early — record COMPLETED and advance the ticket FSM: every gate in
-        ``record_result_envelope`` passes, because a phase absent from
-        :data:`PHASE_REQUIRED_EVIDENCE` has nothing to check. The generic task brief
-        demands a final JSON object from EVERY phase (``agents/prompt.py``), so
-        prose-only is a contract violation on every lane; the fallback laundered it
-        into a completion.
-
-        Two disjoint reasons the runner still hands the manufactured summary on
-        rather than refusing it outright:
-
-        * :meth:`accepted` — the lightweight phases, exempt by design.
-        * A phase that HAS an evidence requirement — the manufactured summary is
-            already refused downstream by :func:`check_evidence`, but only after
-            ``attempt_recorder._salvage_coding_result`` has had its chance to rescue a
-            coder that committed real work but omitted the envelope (#3263). Refusing
-            here would preempt the salvage and strand a landed branch. The recorder is
-            told the envelope was never parsed (``envelope_parsed=False``) so its
-            refusal still names the omitted envelope, not an omitted key (#3905).
-
-        Every other phase has no gate at all, so this is the only thing between a
-        vacuous run and a completed task.
-        """
+        """Whether ``_record_success`` may hand an envelope-less run on *phase* to the recorder."""
         return ProseSummaryPolicy.accepted(phase) or normalize_phase(phase) in PHASE_REQUIRED_EVIDENCE
 
 
@@ -541,12 +448,7 @@ type AgentResultBlob = dict[str, object]
 
 
 def suggestion_url(item: object) -> str:
-    """The persistable source URL of one article suggestion, or ``""`` if absent.
-
-    The single URL extractor BOTH the evidence gate and ``record_result_envelope``
-    call, so "the gate passed" and "the recorder wrote a row" cannot disagree on
-    what counts as a real candidate — the #9 gate/recorder-drift hardening.
-    """
+    """The persistable source URL of one article suggestion, or ``""`` if absent."""
     if not isinstance(item, dict):
         return ""
     return str(cast("ArticleSuggestion", item).get("url") or "").strip()
@@ -560,25 +462,14 @@ def answer_text(answer: object) -> str:
 
 
 def recommendation_issue_url(item: object) -> str:
-    """The persistable issue URL of one triage recommendation, or ``""`` if absent.
-
-    The single URL extractor BOTH the evidence gate and ``record_result_envelope``
-    call, so "the gate passed" and "the recorder wrote a row" cannot disagree on
-    what counts as a real recommendation — the #9 gate/recorder-drift hardening.
-    """
+    """The persistable issue URL of one triage recommendation, or ``""`` if absent."""
     if not isinstance(item, dict):
         return ""
     return str(cast("TriageRecommendation", item).get("issue_url") or "").strip()
 
 
 def recommendation_persists(item: object) -> bool:
-    """Whether one triage recommendation carries what the recorder actually PERSISTS.
-
-    The recorder writes a row ONLY for an item with a non-empty ``issue_url`` AND a
-    verdict in :data:`~teatree.core.models.pending_triage_recommendation.VALID_TRIAGE_VERDICTS`
-    (an unknown verdict is dropped fail-closed). This predicate matches that exactly
-    so the evidence gate can never pass an envelope the recorder would drop entirely.
-    """
+    """Whether one triage recommendation carries what the recorder actually PERSISTS."""
     from teatree.core.models.pending_triage_recommendation import (  # noqa: PLC0415 — ORM/app-registry
         VALID_TRIAGE_VERDICTS,
     )
@@ -590,14 +481,7 @@ def recommendation_persists(item: object) -> bool:
 
 
 def candidate_carries_payload(envelope: object) -> bool:
-    """Whether a directive-candidate envelope carries something the recorder persists (#116).
-
-    The recorder mints a ``Directive`` ONLY for a directive verdict with a non-empty
-    normalized constraint (an ``is_directive: False`` verdict, or a directive with no
-    constraint, persists nothing). This predicate matches that exactly, so "the gate
-    passed" and "the recorder wrote a row" cannot disagree — the #9 gate/recorder-drift
-    class, applied to the reader channel.
-    """
+    """Whether a directive-candidate envelope carries something the recorder persists (#116)."""
     if not isinstance(envelope, dict):
         return False
     typed = cast("DirectiveCandidateEnvelope", envelope)
@@ -605,13 +489,7 @@ def candidate_carries_payload(envelope: object) -> bool:
 
 
 def interpretation_carries_payload(envelope: object) -> bool:
-    """Whether a directive-interpretation envelope carries something the recorder persists.
-
-    A real interpret result is EITHER a non-empty ``sketch`` dict OR a non-empty
-    ``clarifying_questions`` list. An envelope with only an ``interpreter_identity``
-    would pass a coarse truthiness check yet be dropped by the recorder — the exact
-    gate/recorder-drift class (#9), refused here.
-    """
+    """Whether a directive-interpretation envelope carries something the recorder persists."""
     if not isinstance(envelope, dict):
         return False
     typed = cast("DirectiveInterpretationEnvelope", envelope)
@@ -623,13 +501,7 @@ def interpretation_carries_payload(envelope: object) -> bool:
 
 
 def verdict_carries_payload(envelope: object) -> bool:
-    """Whether a review-verdict envelope names a verdict the recorder can persist (#3654).
-
-    ``ReviewVerdict.record`` only knows ``merge_safe`` / ``hold``; a reviewer that
-    hands back ``PASS`` / ``LGTM`` — or an envelope carrying only findings — writes
-    no row, so the merge gate stays unfed. Matching the recorder's vocabulary here
-    keeps a reviewing task from completing over a verdict that never lands.
-    """
+    """Whether a review-verdict envelope names a verdict the recorder can persist (#3654)."""
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if not isinstance(envelope, dict):
@@ -662,20 +534,7 @@ def _field_carries_evidence(result: AgentResultBlob, field: str) -> bool:
 
 
 def check_evidence(result: AgentResultBlob, phase: str) -> str:
-    """Return an error message if *result* lacks required evidence, else ``""``.
-
-    A field is "present" iff the result has the key AND its value is
-    truthy (non-zero int, non-empty list/dict/string) — except the envelope
-    channels in ``_FIELD_PERSISTS``, which require the value to carry what the
-    recorder actually PERSISTS (a url-bearing suggestion / a text-bearing
-    answer), so the gate can never pass an envelope the recorder would drop.
-    Supplying ANY of the acceptable fields for ``phase`` satisfies the check —
-    the requirement is "one of these, with real content", not "all of these".
-
-    Sub-agent contracts that opt out of normal completion (``needs_user_input``
-    handoffs) bypass the check: the agent is *not* claiming the phase is
-    done, so demanding phase evidence would be incoherent.
-    """
+    """Return an error message if *result* lacks required evidence, else ``""``."""
     if result.get("needs_user_input"):
         return ""
     accepted = required_evidence_for_phase(phase)

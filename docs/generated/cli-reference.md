@@ -6588,9 +6588,6 @@ Usage: t3 teatree worker [OPTIONS]
 
  Start background task workers.
 
- Singleton across the machine: a second invocation refuses to start
- while one is alive, since both would drain the same canonical DB.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --count           INTEGER  Number of worker processes [default: 3]           │
 │ --interval        FLOAT    Polling interval in seconds [default: 1.0]        │
@@ -7767,22 +7764,6 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 
  Create or update a ticket and trigger worktree provisioning.
 
- Thin wrapper around the FSM (BLUEPRINT §4): persist branch + description
- on ``ticket.extra``, advance ``NOT_STARTED → SCOPED → STARTED`` via
- ``scope()`` and ``start()``, and let ``execute_provision`` materialise
- the per-repo git worktrees on the worker side.
-
- Idempotent: re-running over an already-started ticket merges new repos
- into ``ticket.repos`` so the next ``execute_provision`` picks them up.
- Per-repo branches (#33): a ``--repos`` token may carry its branch as
- ``repo:branch`` so split-branch repos provision as siblings in one dir
- (the dir is ``extra['branch']``; a bare token falls back to it).
-
- Filesystem-evidence double-dispatch guard (#2217): before materialising a
- worktree for issue ``N``, refuse when a *foreign* ``N-*`` worktree dir
- already exists (someone may already be on it) unless ``--take-over`` is
- passed. Re-provisioning the ticket's own existing dir is always allowed.
-
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -7814,13 +7795,6 @@ Usage: t3 teatree workspace provision [OPTIONS] [TICKET_ID]
 
  Provision every worktree in the current ticket workspace, in parallel.
 
- Each worktree's ENTIRE provision (FSM transition + steps) runs as its
- OWN subprocess under a bounded, RAM-admitted pool (souliane/teatree#2949)
- instead of one serial ``for`` loop. Every worktree is attempted
- regardless of an earlier one's failure; failures are reported by name
- at the end. #941: a positional ``ticket_id`` is a no-op PWD-auto-detect
- alias (typer used to reject it with rc=1).
-
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   ticket_id      [TICKET_ID]  Optional ticket id (alias for PWD auto-detect; │
 │                               #941).                                         │
@@ -7847,13 +7821,6 @@ Usage: t3 teatree workspace start [OPTIONS]
 
  Start docker for every worktree in the current ticket workspace.
 
- Fires ``Worktree.start_services()`` on each worktree (CLI runs the
- runner synchronously). Each runner brings up docker-compose, which
- auto-maps host ports; the actual ports are then queried via
- ``docker compose port`` and stored on ``Worktree.extra["ports"]``.
- After every worktree starts, runs each overlay's readiness probes —
- exits 1 if any probe fails.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
 │                     PWD).                                                    │
@@ -7868,11 +7835,6 @@ Usage: t3 teatree workspace ready [OPTIONS]
 
  Run readiness probes for every worktree in the ticket workspace.
 
- Strict: exits 0 iff every probe across every worktree passes. No
- per-worktree skip flag and no env-var escape — if a probe doesn't
- apply to a variant, the overlay's ``runtime.readiness_probes`` returns
- an empty list (or omits that probe) for that worktree.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path inside the workspace (auto-detects from    │
 │                     PWD).                                                    │
@@ -7886,19 +7848,6 @@ Usage: t3 teatree workspace ready [OPTIONS]
 Usage: t3 teatree workspace teardown [OPTIONS]
 
  Tear down every worktree in the current ticket workspace.
-
- Fires ``Worktree.teardown()`` on each worktree. Continues past
- per-worktree failures to maximise cleanup; surfaces them in the
- final summary. Refuses to remove a worktree whose branch carries
- unpushed commits unless ``--force`` is passed.
-
- Teardown is TICKET-scoped: it reclaims EVERY worktree of the resolved
- ticket, siblings included. That scope is only safe once the ticket is
- actually done, so the command is gated on the forge state of the
- ticket's PRs/MRs — a ticket carrying an open one is refused before any
- worktree is touched, and a sibling worktree whose branch backs a
- still-open MR is never reclaimed as collateral. ``--allow-open-prs`` is
- the explicit override, deliberately separate from ``--force``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path                                     TEXT  Worktree path inside the    │
@@ -7940,11 +7889,6 @@ Usage: t3 teatree workspace doctor [OPTIONS]
 
  Detect state drift across every store; optionally fix it.
 
- Checks Django ↔ git worktrees, Postgres DBs, docker containers, env cache
- files. Without ``--fix`` prints drift; with ``--fix`` cleans orphan
- containers, drops orphan DBs, regenerates missing env caches, and prunes
- stale worktree dirs. Thin wrapper over :func:`run_drift_report`.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --ticket                INTEGER  Reconcile just this ticket pk; 0 = all      │
 │                                  tickets.                                    │
@@ -7962,12 +7906,6 @@ Usage: t3 teatree workspace clean-merged [OPTIONS]
 
  Tear down every done worktree (analyze-then-wipe) on demand.
 
- On-demand reconciler for the daily followup sync — the same consolidated
- done+redundant reaper ``clean-all`` and the FSM teardown use. Use when
- merged-PR cleanup silently failed and stale docker stacks, branches, or
- databases linger. A not-done or potentially-needed worktree is KEPT with a
- reported reason; nothing unproven is destroyed.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -7980,21 +7918,6 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
 
  Reap every done+redundant worktree, then prune branches/stashes, orphan
  DBs/docker/env-roots, DSLR.
-
- The consolidated done-worktree reaper runs first: a worktree is wiped only
- when its ticket is done (MERGED/DELIVERED/IGNORED, or a forge squash-merge)
- AND every unpushed commit and uncommitted change is PROVEN redundant. A
- not-done or potentially-needed worktree is KEPT with a reported reason — the
- #706 data-loss guard, surfaced as the primary analyze-before-wipe step.
- There is no recovery snapshot: unproven work is kept, never destroyed.
-
- Fully unattended (#2361 / CORRECTION 3): never blocks on stdin and never
- prompts — an uncertain worktree is kept with a warning, salvage is the
- separate explicit ``t3 <overlay> pr create``. ``--dry-run`` previews the
- reaper (would-wipe/keep) and removes nothing.
-
- The ordered passes live in :func:`run_clean_all`; this method is the thin
- CLI wrapper that supplies the worktree dir and the command's IO sinks.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --keep-dslr                    INTEGER  Number of DSLR snapshots to keep per │
@@ -8020,11 +7943,6 @@ Usage: t3 teatree workspace relocate [OPTIONS]
  Move this overlay's teatree-managed worktrees under the per-overlay dir
  (regroup).
 
- Thin wrapper supplying the resolved overlay + per-overlay WORKTREE root
- (``config.worktree_root()``) to :func:`run_relocate` (the engine, with the
- full locked/dirty/active skip doctrine + idempotency + ``--dry-run``); see
- ``/t3:workspace``.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run    --no-dry-run      List the moves without moving anything.       │
 │                                [default: no-dry-run]                         │
@@ -8040,11 +7958,6 @@ Usage: t3 teatree workspace list-orphans [OPTIONS]
  List orphan branches (commits ahead of origin/main AND no open PR) across the
  workspace.
 
- Used by the session-end hook and the ``workspace ticket`` warning to
- surface work that would otherwise be lost when a session closes or a
- new worktree is created. Emits a JSON-serialisable list — one entry
- per orphan (the mapping lives in :func:`_wh.list_orphan_entries`).
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -8057,16 +7970,6 @@ Usage: t3 teatree workspace landscape [OPTIONS]
 
  Survey what is already in flight or settled before planning (#2541).
 
- The intake landscape survey the ``/t3:ticket`` step runs and the planner
- consumes: the operator's open PRs/MRs, the local worktrees carrying
- uncommitted or unpushed work, and a per-issue close/merge/supersede
- recommendation against the in-flight PR landscape. A missing code host
- degrades to a local-git-only survey with a warning; a CONFIGURED forge
- whose read errors FAILS LOUD (``LandscapeForgeReadError``) rather than
- laundering the outage into a confidently-empty survey. Emits a
- JSON-serialisable survey so the planner plans against reality instead of
- re-deriving it.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -8078,12 +7981,6 @@ Usage: t3 teatree workspace landscape [OPTIONS]
 Usage: t3 teatree workspace reap-stale [OPTIONS]
 
  Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207).
-
- The on-demand twin of the automatic pre-start/pre-provision sweep: an
- unowned compose project is reaped only when its newest container
- lifecycle event is older than the threshold, so a parallel session's
- fresh hand-rolled stack is never touched. ``clean-all`` remains the
- blunt deep clean (every unowned project, regardless of age).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --min-age-minutes                    INTEGER  Override the stale threshold   │
@@ -8106,11 +8003,6 @@ Usage: t3 teatree workspace reclaim-disk [OPTIONS]
  Free disk via the three safe Docker prunes, then STOP — engine:
  ``teatree.docker.reclaim`` (#2246).
 
- Exits non-zero when docker was reachable and refused a prune (daemon
- down, or no ``/var/run/docker.sock`` in the container the CLI runs in).
- A silent ``Total reclaimed: 0B`` success reads exactly like "nothing
- left to reclaim" to an operator whose disk is full.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run    --no-dry-run      Plan the reclaim set without removing         │
 │                                anything.                                     │
@@ -8127,10 +8019,6 @@ Usage: t3 teatree workspace stamp-identity [OPTIONS]
  Stamp the scoped noreply git identity onto an existing public GitHub clone
  (#762).
 
- Fixes public clones/worktrees created before the provisioner source-fix (new
- worktrees are stamped at creation). Thin wrapper over
- :func:`run_stamp_identity` — see it for the idempotence and refusal doctrine.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
 │ --help              Show this message and exit.                              │
@@ -8144,12 +8032,6 @@ Usage: t3 teatree workspace stamp-owners [OPTIONS]
 
  Record which checkout owns each auto-isolated env dir THIS venue can see
  (#3872).
-
- Deletes nothing. Run it in EVERY venue that sees checkouts — host and
- container
- both — because neither sees them all; engine:
- :func:`~teatree.core.management.commands._workspace.owner_stamps.backfill_owne
- r_stamps`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the stamping report as JSON on stdout instead of the    │
@@ -8165,12 +8047,6 @@ Usage: t3 teatree workspace release-dead-rows [OPTIONS]
 
  Release registered rows whose checkout is provably dead — ROWS ONLY (dry run
  unless --apply).
-
- The narrow alternative to ``clean-all`` for the doctor's "registered
- worktree ... never was a git checkout" finding: the SAME #706 classifier and
- freshness precondition, deleting the ``Worktree`` row and nothing else.
- Which rows are KEPT, and why, is
- :mod:`teatree.core.worktree.dead_row_release`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply    --no-apply      Actually release the rows. Without it, this is a  │
@@ -8189,16 +8065,6 @@ Usage: t3 teatree workspace emit [OPTIONS]
  Print the machine-readable JSON handoff for every NOT-auto-deleted item
  (#2763).
 
- The read-only structured EMIT the judgment skill consumes: a JSON array of
- records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
- content_verified, verdict_source, banned_terms_status, liveness,
- last_commit_date, owner — schema in ``teatree.core.cleanup.cleanup_emit``).
- Removes nothing — ``clean-all`` does the auto-deletion of provably-redundant
- items; this surfaces the rest for the skill to route (superseded /
- salvage-to-fresh-PR / defer-live). A record whose ``content_verified`` is
- ``false`` was never probed, so its empty ``unique_commit_shas`` is silence,
- not proof — the skill keeps it.
-
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -8211,11 +8077,6 @@ Usage: t3 teatree workspace salvage [OPTIONS] SOURCE_REF
 
  Capture a branch's unique content to a PR, verify it landed, then delete the
  branch (#2763).
-
- The salvage primitive the judgment skill calls once it has decided an
- emitted item is worth keeping and cleaned any banned terms. Fail-safe: the
- source branch is deleted ONLY after the forge confirms the PR — a failed
- push / open / verify leaves it intact. Operates on the current repo (cwd).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    source_ref      TEXT  [required]                                        │

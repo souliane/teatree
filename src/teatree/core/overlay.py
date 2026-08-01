@@ -83,20 +83,7 @@ __all__ = [
 
 
 class OverlayConfig(BaseModel):
-    """Typed, fail-closed overlay configuration (PR-27b).
-
-    A Pydantic model: every declared field is type-validated on assignment
-    (``validate_assignment=True``), so a settings module or DB overlays-registry
-    override that supplies the wrong type for a known field fails LOUD instead
-    of silently corrupting the config. ``extra="allow"`` keeps the overlay
-    extension seam — a downstream overlay's settings module may introduce
-    fields core never declared (e.g. ``dashboard_logo``, ``review_channel``),
-    accessible as attributes exactly as before.
-
-    Secrets are never stored on the model. ``*_PASS_KEY`` settings register a
-    ``pass`` lookup in ``_secret_pass_keys``; the ``get_*_token`` methods read
-    the store at point of use via :meth:`_read_secret`.
-    """
+    """Typed, fail-closed overlay configuration (PR-27b)."""
 
     model_config = ConfigDict(extra="allow", validate_assignment=True, arbitrary_types_allowed=True)
 
@@ -269,13 +256,7 @@ class OverlayConfig(BaseModel):
                 setattr(self, name.lower(), value)
 
     def apply_toml_overrides(self, overlay_name: str) -> None:
-        """Apply ``[overlays.<overlay_name>]`` overrides from the DB overlays registry.
-
-        Called automatically by ``__init__`` when an ``overlay_name`` is
-        supplied, and by ``overlay_loader._discover_overlays`` for every
-        entry-point overlay (so ``OverlayConfig`` subclasses don't have to
-        opt in by threading ``overlay_name`` through every ``super().__init__``).
-        """
+        """Apply ``[overlays.<overlay_name>]`` overrides from the DB overlays registry."""
         from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
         config = load_config()
@@ -290,13 +271,7 @@ class OverlayConfig(BaseModel):
                 setattr(self, key, value)
 
     def _secret_registry(self) -> dict[str, str]:
-        """The ``*_PASS_KEY`` lookup dict ``__init__`` installs in the instance ``__dict__``.
-
-        Read through ``__dict__`` (with a lazy default for a not-yet-initialised
-        model) so the plain-instance-dict storage stays invisible to Pydantic's
-        field machinery AND statically typed — a bare ``self._secret_pass_keys``
-        access has no declared home a type checker can resolve.
-        """
+        """The ``*_PASS_KEY`` lookup dict ``__init__`` installs in the instance ``__dict__``."""
         return self.__dict__.setdefault("_secret_pass_keys", {})
 
     def _register_secret(self, attr_name: str, pass_key: str) -> None:
@@ -343,13 +318,7 @@ class OverlayConfig(BaseModel):
         return ("", "")
 
     def get_review_broadcast_channels(self, repo: str = "") -> list[tuple[str, str]]:
-        """Return all review-broadcast channels for the overlay (#1295 capability A).
-
-        Defaults to a single-element list wrapping :meth:`get_review_channel`
-        when that getter returns a non-empty pair, else an empty list. The
-        ``repo`` parameter is reserved for overlays that route by repo; the
-        default implementation ignores it.
-        """
+        """Return all review-broadcast channels for the overlay (#1295 capability A)."""
         del repo  # default impl is repo-agnostic; overrides may consult it.
         channel_name, channel_id = self.get_review_channel()
         if not channel_id:
@@ -367,11 +336,7 @@ class OverlayConfig(BaseModel):
         return dict(DEFAULT_TRANSITION_EMOJIS)
 
     def get_review_companion_skills(self) -> list[str]:
-        """Return the skills a reviewer must hold, deduped and order-preserving.
-
-        ``[pr_review_companion, *companion_skills]``: the project's
-        review-quality bar (#1135) then the overlay's standing companion skills.
-        """
+        """Return the skills a reviewer must hold, deduped and order-preserving."""
         return list(dict.fromkeys(s for s in [self.pr_review_companion, *self.companion_skills] if s))
 
     @field_validator("stage_skills", mode="after")
@@ -454,33 +419,15 @@ class OverlayProvisioning:
         return _default_health_checks(self, worktree)
 
     def snapshot_warmer_configs(self) -> list["DjangoDbImportConfig"]:
-        """Reference-DB configs the snapshot-warmer loop keeps current, one per variant.
-
-        Default empty — an overlay with no DSLR-backed :meth:`db_import`
-        strategy warms nothing. An overlay that DOES use DSLR returns one
-        :class:`teatree.utils.django_db.DjangoDbImportConfig` per variant so the
-        loop scanner refreshes each out-of-band (souliane/teatree#2949).
-        """
+        """Reference-DB configs the snapshot-warmer loop keeps current, one per variant."""
         return []
 
     def reap_external_resources(self, worktree: "Worktree") -> list[str]:
-        """Remove out-of-band resources a reaped worktree leaves behind (default none).
-
-        Called by ``cleanup_worktree`` per torn-down worktree. The docker case: a
-        compose stack leaves per-worktree containers + a multi-GB image the git/DB
-        teardown never touches. Returns human-readable one-line outcomes.
-        """
+        """Remove out-of-band resources a reaped worktree leaves behind (default none)."""
         return []
 
     def resolve_variant(self, name: str) -> Variant:
-        """Resolve a variant *name* into a first-class :class:`Variant` (PR-27, #787).
-
-        The single seam turning a bare variant name into its resolved tenant /
-        language / DSLR snapshot / E2E credentials. The default returns
-        :meth:`Variant.bare` — correct for an overlay that neither prefixes nor
-        aliases. Consumed by ``workspace clean-all`` and overlays building a
-        ``DjangoDbImportConfig``.
-        """
+        """Resolve a variant *name* into a first-class :class:`Variant` (PR-27, #787)."""
         return Variant.bare(name)
 
 
@@ -497,12 +444,7 @@ class OverlayRuntime:
         return []
 
     def lint_command(self, worktree: "Worktree") -> list[str] | RunCommand:
-        """Return the argv (or ``RunCommand``) that lints this worktree.
-
-        Backs ``t3 <overlay> run lint``. The default is empty; an overlay with a
-        lint pipeline returns it here. When empty, ``run lint`` exits non-zero so
-        a caller that asked to lint is not told green.
-        """
+        """Return the argv (or ``RunCommand``) that lints this worktree."""
         return []
 
     def verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
@@ -516,23 +458,12 @@ _EMPTY_EXTRAS_CONTEXT = E2eExtrasContext()
 
 
 class OverlayE2E:
-    """End-to-end test concern — ``overlay.e2e``.
-
-    The runner (``_e2e_runners``) OWNS target resolution, the artifacts dir, and
-    the evidence flag; it hands :meth:`env_extras` a frozen
-    :class:`E2eExtrasContext` so an overlay's extras key off the *same* target
-    core routed at — never a re-derived ``BASE_URL`` host regex (#3331).
-    """
+    """End-to-end test concern — ``overlay.e2e``."""
 
     def env_extras(
         self, env_cache: dict[str, str], *, context: E2eExtrasContext = _EMPTY_EXTRAS_CONTEXT
     ) -> dict[str, str]:
-        """Overlay-specific Playwright env vars (e.g. ``CUSTOMER``); ``{}`` default.
-
-        *env_cache* is the parsed per-worktree env file; *context* carries the run
-        facts core resolved. An overlay whose extras depend on the target reads
-        ``context.target`` rather than classifying ``BASE_URL`` by host.
-        """
+        """Overlay-specific Playwright env vars (e.g. ``CUSTOMER``); ``{}`` default."""
         return {}
 
     def run_provenance(self, spec_path: str) -> str:
@@ -544,19 +475,11 @@ class OverlayE2E:
         return []
 
     def scenarios(self, spec_path: str) -> tuple[Scenario, ...]:
-        """The authored acceptance scenarios for *spec_path*; ``()`` default (#3329).
-
-        Each element is a frozen :class:`~teatree.core.e2e_scenario.Scenario`
-        core owns — the single authoring shape ``--from-seams`` folds into the note.
-        """
+        """The authored acceptance scenarios for *spec_path*; ``()`` default (#3329)."""
         return ()
 
     def spec_paths(self) -> tuple[str, ...]:
-        """Enumerate the overlay's registered spec paths; ``()`` default (#3329).
-
-        The spec-enumeration seam ``e2e lanes`` folds over, grouping specs by
-        :meth:`run_provenance`; core cannot list an overlay's specs itself.
-        """
+        """Enumerate the overlay's registered spec paths; ``()`` default (#3329)."""
         return ()
 
     def preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
@@ -580,12 +503,7 @@ class OverlayReview:
         return ()
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
-        """Return a merge-guard verdict for an approved merge request.
-
-        The default is permissive. Overlays that need human-approval gates,
-        freeze windows, or policy checks override this and return an
-        appropriate ``MergeGuard``.
-        """
+        """Return a merge-guard verdict for an approved merge request."""
         _ = target_ref, thread_ref
         return MergeGuard(allowed=True)
 
@@ -593,14 +511,7 @@ class OverlayReview:
         return []
 
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
-        """True iff *changed_files* could impact what is displayed to the customer (#1967).
-
-        The mandatory-E2E gate calls this to decide whether a change requires
-        green E2E evidence before shipping / CLEAR. The default is FAIL-CLOSED —
-        ``True`` for every diff and the empty diff alike — so an overlay that has
-        not declared its path rules treats every change as display-impacting and
-        the gate is never silently skipped.
-        """
+        """True iff *changed_files* could impact what is displayed to the customer (#1967)."""
         return True
 
 
@@ -608,11 +519,7 @@ class OverlayConnectors:
     """External-connector concern (claude.ai, MCP, Slack/Notion) — ``overlay.connectors``."""
 
     def preflight(self) -> list[Callable[[], None]]:
-        """Zero-arg probes run before any connector-dependent loop work.
-
-        Defaults to :func:`standard_probes` from this overlay's declarations
-        (#3333); an overlay overrides for a bespoke flow.
-        """
+        """Zero-arg probes run before any connector-dependent loop work."""
         from teatree.core.connector_probes import standard_probes  # noqa: PLC0415 — deferred: avoids import cycle
 
         return standard_probes(self.manifest(), self.mcp_provider_expectations())
@@ -697,15 +604,7 @@ class OverlayBase(ABC):
     # ── Statusline contribution ──────────────────────────────────────
 
     def get_statusline_segments(self) -> list[StatuslineSegment]:
-        """Inline statusline segments this overlay contributes (#3237).
-
-        Called at loop-tick cadence by the ``tick-meta.json`` writer; each
-        returned segment is spliced inline on the statusline. Producers must be
-        CHEAP — read a local cache primed out-of-band by the overlay's own
-        loop/watcher, never fetch or shell out inline. The default contributes
-        nothing; a broken producer is caught by the caller and fails open to no
-        segment, so it can never blank the statusline.
-        """
+        """Inline statusline segments this overlay contributes (#3237)."""
         return []
 
     # ── Issue / reference resolution ─────────────────────────────────
@@ -729,22 +628,13 @@ class OverlayBase(ABC):
         return isinstance(state, str) and state in {"closed", "completed"}
 
     def resolve_mr_token(self, iid: int) -> str | None:
-        """Return the canonical URL for ``!<iid>`` on this overlay's code host.
-
-        The default delegates to the deterministic ``ReferenceResolver``: ``!N``
-        in the ``PullRequest`` ref->URL store first, then the URL constructed from
-        this overlay's ``code_host`` + the active repo's git remote slug. Returns
-        ``None`` when neither resolves.
-        """
+        """Return the canonical URL for ``!<iid>`` on this overlay's code host."""
         from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415 — deferred: call-time import
 
         return ReferenceResolver.from_overlay(self).resolve_mr(iid)
 
     def resolve_issue_token(self, iid: int) -> str | None:
-        """Return the canonical URL for ``#<iid>`` on this overlay's code host.
-
-        Same DB-first, construction-fallback contract as :meth:`resolve_mr_token`.
-        """
+        """Return the canonical URL for ``#<iid>`` on this overlay's code host."""
         from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415 — deferred: call-time import
 
         return ReferenceResolver.from_overlay(self).resolve_issue(iid)
@@ -759,22 +649,9 @@ class OverlayBase(ABC):
         return []
 
     def get_checking_sources(self) -> list[str]:
-        """Return extra "needs you" source identifiers for ``t3 <overlay> checking show``.
-
-        Core builds the needs-you group from overlay-agnostic rows (pending
-        ``DeferredQuestion`` + failed ``TaskAttempt`` runs). An overlay that wants
-        richer signals returns their identifiers here; default empty.
-        """
+        """Return extra "needs you" source identifiers for ``t3 <overlay> checking show``."""
         return []
 
     def get_eval_scenarios_dir(self) -> Path | None:
-        """Return the directory holding overlay-contributed behavioral eval scenarios.
-
-        Each overlay may ship its own ``*.yaml`` scenarios alongside the core
-        catalog. The eval harness walks whatever directory is returned for
-        ``*.yaml`` files without filesystem-scope checks — the same trust model
-        as every other overlay extension hook. The path must be
-        overlay-package-relative. Default ``None`` — overlays that ship no
-        scenarios opt out without action.
-        """
+        """Return the directory holding overlay-contributed behavioral eval scenarios."""
         return None

@@ -35,13 +35,7 @@ __all__ = ["DJANGO_GROUPS", "OVERLAY_PROXY_COMMANDS", "DjangoGroup", "OverlayApp
 
 
 def _managepy_cmd(project_path: Path, *args: str) -> list[str]:
-    """Build the ``manage.py`` invocation for *project_path* via the shared prefix.
-
-    Routes through :func:`teatree.utils.django_db.runner_prefix` — the single
-    site that emits the interpreter prefix — so the overlay ``db_worker`` /
-    ``managepy`` paths inherit the pipenv-vs-uv detection instead of an
-    unconditional ``uv --directory`` (souliane/teatree#1976, #1973).
-    """
+    """Build the ``manage.py`` invocation for *project_path* via the shared prefix."""
     return [*runner_prefix(project_path), *args]
 
 
@@ -65,13 +59,7 @@ def _split_skill_args(values: list[str]) -> list[str]:
 
 
 def _overlay_skills_dir(project_path: Path | None, skill_metadata: "SkillMetadata") -> Path | None:
-    """The active overlay's own skills directory, when it ships one.
-
-    Resolves through the ``skill_root`` seam (#3355): an overlay-declared root, or
-    the ``<project>/skills`` layout ``overlay_init.generator`` scaffolds. Returns
-    ``None`` when neither resolves to a real directory (e.g. a path-less
-    invocation), in which case only the framework skills dir is searched.
-    """
+    """The active overlay's own skills directory, when it ships one."""
     from teatree.core.overlay_skills import overlay_skills_root  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     root = overlay_skills_root(skill_metadata, project_path)
@@ -121,17 +109,7 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
 
 @contextmanager
 def _faithful_child_exit() -> Iterator[None]:
-    """Propagate a bridged child's exit code faithfully, without a traceback (PR-30).
-
-    The overlay bridge shells the real subcommand out via ``run_streamed(check=True)``,
-    which raises :class:`CommandFailedError` on any non-zero child. Click only catches
-    ``ClickException``/``Abort``, so an uncaught ``CommandFailedError`` dumps a full
-    ``run_streamed`` traceback to stderr — burying the child's real error line — and
-    collapses every failure to exit 1, losing the child's specific exit code. A machine
-    front-end cannot branch on that. Re-raising as ``SystemExit(returncode)`` gives the
-    exact child code with no traceback; the child's stderr was already teed live by
-    ``run_streamed``, so nothing is lost.
-    """
+    """Propagate a bridged child's exit code faithfully, without a traceback (PR-30)."""
     try:
         yield
     except CommandFailedError as exc:
@@ -139,21 +117,7 @@ def _faithful_child_exit() -> Iterator[None]:
 
 
 def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> None:
-    """Run a Django management command for an overlay.
-
-    For overlays with their own project directory (TOML-configured), delegates
-    to ``uv --directory <path> run python manage.py``.  For entry-point overlays
-    (pip-installed, no project directory), uses ``python -m teatree``.
-
-    When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
-    environment so that ``get_overlay()`` can resolve the correct overlay even when
-    multiple overlays are installed.
-
-    A project directory whose virtualenv is not drivable from here
-    (:func:`project_env_is_drivable`) takes the ``python -m teatree`` path too: the
-    overlay is reachable in the running interpreter either way, and hopping into a
-    foreign-platform environment would have uv destroy it.
-    """
+    """Run a Django management command for an overlay."""
     env = _base_env()
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
@@ -168,16 +132,7 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
 
 
 def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
-    """True iff the overlay's package is already importable under ``sys.executable``.
-
-    The same-env signal that keeps :func:`_overlay_project_env` from redirecting
-    an overlay the running interpreter can already serve. Two sources confirm
-    same-env: the overlay is registered in *this* interpreter's
-    ``teatree.overlays`` entry-point group, or its ``module:Class`` overlay class
-    locates via :func:`importlib.util.find_spec` here. A settings-module-only
-    ``overlay_class`` (no ``:``) or a blank one is not a locatable package, so it
-    does not assert same-env on its own — the entry-point check decides.
-    """
+    """True iff the overlay's package is already importable under ``sys.executable``."""
     from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only when this command runs
 
     from teatree.config import OverlayEntry  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -196,25 +151,7 @@ def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
 
 
 def _overlay_project_env(overlay_name: str) -> Path | None:
-    """The named overlay's own project directory, or ``None`` for a same-env overlay.
-
-    The overlay named by *overlay_name* may be registered as an entry point in
-    its *own* clone's virtualenv — a different interpreter than the uv-tool
-    teatree install that runs ``t3``. In that case ``sys.executable -m teatree``
-    cannot import the overlay package, so ``get_overlay(overlay_name)`` raises
-    ``Overlay not found`` inside the core-dispatch subprocess (#2221). Returning
-    the overlay's project dir lets :func:`managepy_core` run the subprocess from
-    that env via :func:`runner_prefix`, where the overlay package is importable.
-
-    Returns ``None`` when *overlay_name* is blank, unknown, has no project dir,
-    or is **already importable under ``sys.executable``** — the last case is the
-    same-env guard: a default/active overlay an editable install resolves a
-    project dir for (e.g. a fresh checkout with no ``[overlays.<name>]`` TOML
-    table) stays on ``sys.executable`` so the keystone ``ticket clear`` /
-    ``ticket merge`` dispatch never takes an unnecessary nested-``uv run`` route.
-    The redirect fires ONLY for a secondary overlay whose package is genuinely
-    not importable in the current interpreter.
-    """
+    """The named overlay's own project directory, or ``None`` for a same-env overlay."""
     if not overlay_name:
         return None
     from teatree.config import OverlayEntry, discover_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
@@ -230,27 +167,7 @@ def _overlay_project_env(overlay_name: str) -> Path | None:
 
 
 def managepy_core(*args: str, overlay_name: str = "") -> None:
-    """Run a teatree-CORE management command via ``python -m teatree``.
-
-    Use this for commands that live in ``teatree.core.management.commands`` —
-    ``followup``, ``review_request_check``, ``review_request_post``, etc.
-    These exist on teatree core, not on overlay-owned ``manage.py`` projects
-    (an overlay clone may run against its own settings module that has no
-    such commands). Routing them through :func:`managepy` would crash when
-    invoked from such a clone, because :func:`managepy` prefers the overlay's
-    ``manage.py`` whenever the resolved project path has one (#1312).
-
-    When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
-    environment so that ``get_overlay()`` can resolve the correct overlay even
-    when multiple overlays are installed.
-
-    The subprocess runs ``python -m teatree`` — never the overlay's ``manage.py``
-    — but in the *named overlay's* project environment when it has one
-    (:func:`_overlay_project_env`), so a non-default overlay registered in its
-    own clone's venv is importable and ``get_overlay`` resolves it (#2221).
-    An overlay with no project dir is installed in the same env that runs
-    ``t3``, so the subprocess uses ``sys.executable``.
-    """
+    """Run a teatree-CORE management command via ``python -m teatree``."""
     env = _base_env()
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
@@ -340,11 +257,7 @@ class OverlayAppBuilder:
             count: int = typer.Option(3, help="Number of worker processes"),
             interval: float = typer.Option(1.0, help="Polling interval in seconds"),
         ) -> None:
-            """Start background task workers.
-
-            Singleton across the machine: a second invocation refuses to start
-            while one is alive, since both would drain the same canonical DB.
-            """
+            """Start background task workers."""
             if project_path is None:
                 typer.echo("Cannot find overlay project directory.")
                 raise typer.Exit(code=1)
@@ -440,14 +353,7 @@ class OverlayAppBuilder:
             )
 
     def _register_skill_preamble_command(self) -> None:
-        """Register ``t3 <overlay> skill-preamble`` — the sub-agent dispatch preamble.
-
-        A sub-agent spawned through the raw harness Agent tool inherits none of
-        the orchestrator's loaded skills, so the orchestrator must prepend the
-        skill bodies to the brief. This command emits the concatenated framework
-        + overlay ``SKILL.md`` preamble for a requested skill set, resolving
-        overlay skills from the active overlay's own ``skills/`` directory.
-        """
+        """Register ``t3 <overlay> skill-preamble`` — the sub-agent dispatch preamble."""
         project_path = self.project_path
         overlay_name = self.overlay_name
         overlay_app = self.overlay_app
@@ -502,19 +408,7 @@ class OverlayAppBuilder:
         *,
         core_dispatch: bool = False,
     ) -> None:
-        """Register a single subcommand that forwards to ``manage.py <group> <sub>``.
-
-        Uses ``invoke_without_command=True`` and disables the default typer help
-        so that ``--help`` is forwarded to the Django management command, which
-        shows the real options (``--path``, ``--variant``, etc.).
-
-        When ``core_dispatch`` is ``True`` the command is dispatched via
-        :func:`managepy_core` (teatree-native ``python -m teatree``) instead
-        of :func:`managepy` — required for groups whose commands live in
-        teatree core only and would crash if routed through an overlay's
-        own ``manage.py`` (#1312, #1318). The per-subcommand ``db migrate``
-        overlay-settings routing is resolved by :meth:`_dispatches_to_core`.
-        """
+        """Register a single subcommand that forwards to ``manage.py <group> <sub>``."""
         project_path = self.project_path
         overlay_name = self.overlay_name
 
@@ -538,17 +432,7 @@ class OverlayAppBuilder:
         OVERLAY_PROXY_COMMANDS[_run.__name__] = (group_name, sub_name)
 
     def _register_overlay_tools(self) -> None:
-        """Register tool commands from ``<skills-root>/*/hook-config/tool-commands.json``.
-
-        The skills root resolves through the ``skill_root`` seam (#3355), falling
-        back to ``<project>/skills`` — the documented per-overlay layout (one skill
-        dir per package), which is fast and side-steps an unbounded ``rglob`` over
-        the whole project tree (``.venv/``, ``__pycache__/``, ``node_modules/``).
-
-        The manifest REGISTERS the group; ``get_tool_commands()`` DECLARES the
-        surface. The two disagreeing is the warned condition (#3904, #3915) —
-        never the mere presence of a skills root.
-        """
+        """Register tool commands from ``<skills-root>/*/hook-config/tool-commands.json``."""
         from teatree.core import overlay_skills  # noqa: PLC0415 — deferred: keeps CLI startup light
 
         metadata = overlay_skills.overlay_skill_metadata(self.overlay_name)

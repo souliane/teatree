@@ -527,48 +527,58 @@ def data_dir_root() -> Path:
     return Path(override) if override else DATA_DIR
 
 
-def get_data_dir(namespace: str) -> Path:
-    data_dir = DATA_DIR / namespace
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+class PathHelpers:
+    """Module-level helpers grouped so the module keeps a readable public surface."""
+
+    @staticmethod
+    def get_data_dir(namespace: str) -> Path:
+        data_dir = DATA_DIR / namespace
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
+    @staticmethod
+    def expected_db_for_repo(repo_root: Path, *, env: dict[str, str], home: Path) -> Path:
+        """The control-DB path that code resident in *repo_root* resolves to.
+
+        Deterministic from the on-disk location alone — the same function the
+        process uses at import time (:func:`resolve_data_dir`), just parameterised
+        by an explicit ``repo_root`` instead of ``teatree_source_root()``. A primary
+        clone yields the canonical DB; a git worktree yields its sibling
+        auto-isolated DB; an explicit ``XDG_DATA_HOME`` sandbox yields that
+        sandbox's DB. This is the anchor for the cross-DB guard (#779): a
+        ticket's lifecycle/ship state lives in exactly one DB — the one its
+        worktree's resident code would resolve to — regardless of the CWD the
+        ``t3`` command happens to run from.
+        """
+        return canonical_db_in(resolve_data_dir(env=env, home=home, repo_root=repo_root).path, env=env)
+
+    @staticmethod
+    def find_overlay_db(name: str, project_path: str) -> Path | None:
+        for candidate in (Path(project_path).expanduser() / DB_FILENAME, DATA_DIR / name / DB_FILENAME):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
+        """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
+
+        Walks recursively under ``data_dir`` so any legacy namespaced layout
+        (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
+        Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
+        root, never under ``data_dir``, so they are structurally excluded here.
+        Used by both the settings warning and the ``t3 doctor`` check.
+        """
+        if not data_dir.is_dir():
+            return
+        canonical = canonical.resolve()
+        for candidate in data_dir.glob("**/db.sqlite3"):
+            if candidate.resolve() == canonical:
+                continue
+            yield candidate
 
 
-def expected_db_for_repo(repo_root: Path, *, env: dict[str, str], home: Path) -> Path:
-    """The control-DB path that code resident in *repo_root* resolves to.
-
-    Deterministic from the on-disk location alone — the same function the
-    process uses at import time (:func:`resolve_data_dir`), just parameterised
-    by an explicit ``repo_root`` instead of ``teatree_source_root()``. A primary
-    clone yields the canonical DB; a git worktree yields its sibling
-    auto-isolated DB; an explicit ``XDG_DATA_HOME`` sandbox yields that
-    sandbox's DB. This is the anchor for the cross-DB guard (#779): a
-    ticket's lifecycle/ship state lives in exactly one DB — the one its
-    worktree's resident code would resolve to — regardless of the CWD the
-    ``t3`` command happens to run from.
-    """
-    return canonical_db_in(resolve_data_dir(env=env, home=home, repo_root=repo_root).path, env=env)
-
-
-def find_overlay_db(name: str, project_path: str) -> Path | None:
-    for candidate in (Path(project_path).expanduser() / DB_FILENAME, DATA_DIR / name / DB_FILENAME):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def find_stale_dbs(data_dir: Path, *, canonical: Path) -> Iterator[Path]:
-    """Yield ``db.sqlite3`` files inside ``data_dir`` that aren't ``canonical``.
-
-    Walks recursively under ``data_dir`` so any legacy namespaced layout
-    (``data_dir/<name>/db.sqlite3``) surfaces. The canonical path is skipped.
-    Auto-isolated worktree DBs live under the sibling ``teatree-worktrees``
-    root, never under ``data_dir``, so they are structurally excluded here.
-    Used by both the settings warning and the ``t3 doctor`` check.
-    """
-    if not data_dir.is_dir():
-        return
-    canonical = canonical.resolve()
-    for candidate in data_dir.glob("**/db.sqlite3"):
-        if candidate.resolve() == canonical:
-            continue
-        yield candidate
+get_data_dir = PathHelpers.get_data_dir
+expected_db_for_repo = PathHelpers.expected_db_for_repo
+find_overlay_db = PathHelpers.find_overlay_db
+find_stale_dbs = PathHelpers.find_stale_dbs
