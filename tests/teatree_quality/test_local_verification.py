@@ -15,6 +15,7 @@ import pytest
 
 from teatree.quality import full_suite_invocation
 from teatree.quality.local_verification import (
+    CITED_NOT_PRESCRIBED,
     PHASE_MANDATES,
     SCOPED_LANE_TOKENS,
     Finding,
@@ -26,9 +27,12 @@ from teatree.quality.local_verification import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _EXPECTED_SURFACES = (
+    "CLAUDE.md",
     "skills/code/SKILL.md",
+    "skills/test/SKILL.md",
     "skills/ship/SKILL.md",
     "skills/contribute/SKILL.md",
+    "skills/retro/references/commit-to-fork.md",
     "src/teatree/agents/coding_prompt.py",
     "tests/CLAUDE.md",
 )
@@ -102,6 +106,44 @@ class TestScanText:
     @pytest.mark.parametrize("token", SCOPED_LANE_TOKENS)
     def test_each_scoped_lane_token_satisfies_the_positive_half(self, token: str) -> None:
         assert scan_text(f"Run `{token}`.", self._mandate(), self._roots()) == []
+
+
+class TestCitedNotPrescribedPragma:
+    """A prohibition reads identically to a prescription, so the author declares which."""
+
+    def _mandate(self) -> PhaseMandate:
+        return PhaseMandate(surface="skills/test/SKILL.md", phase="testing")
+
+    def _roots(self) -> tuple[str, ...]:
+        return full_suite_invocation.declared_testpaths(_REPO_ROOT / "pyproject.toml")
+
+    def test_pragma_line_is_not_read_as_a_prescription(self) -> None:
+        text = (
+            f"Never a bare `uv run pytest` against the containers. <!-- {CITED_NOT_PRESCRIBED} -->\n"
+            "Run `bash dev/test-affected.sh` instead.\n"
+        )
+        assert scan_text(text, self._mandate(), self._roots()) == []
+
+    def test_pragma_inside_a_fenced_block_is_not_read_as_a_prescription(self) -> None:
+        text = f"```bash\nbash dev/test-affected.sh\nuv run pytest  # {CITED_NOT_PRESCRIBED} -- what NOT to do\n```\n"
+        assert scan_text(text, self._mandate(), self._roots()) == []
+
+    def test_pragma_is_line_scoped_not_file_scoped(self) -> None:
+        # The escape must not silence the rest of the surface: an unmarked full-suite
+        # prescription two lines later is still a finding.
+        text = (
+            f"Never a bare `uv run pytest`. <!-- {CITED_NOT_PRESCRIBED} -->\n"
+            "Run `bash dev/test-affected.sh`.\n"
+            "Then `uv run pytest --no-cov -x -q`.\n"
+        )
+        details = [f.detail for f in scan_text(text, self._mandate(), self._roots())]
+        assert any("UNSCOPED whole-suite pytest" in d for d in details), details
+
+    def test_pragma_cannot_satisfy_the_positive_half(self) -> None:
+        # Marking every line still leaves the surface naming no scoped lane.
+        text = f"Never a bare `uv run pytest`. <!-- {CITED_NOT_PRESCRIBED} -->\n"
+        details = [f.detail for f in scan_text(text, self._mandate(), self._roots())]
+        assert [d for d in details if "names no diff-scoped lane" in d], details
 
 
 class TestScanMandates:

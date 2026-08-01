@@ -39,7 +39,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 ### Backend Tests
 
-**Run tests ONLY via `t3` — never raw `docker compose` (Absolute Rule).** The `t3` wrapper sets the correct env, project environment, DB name, and collection scope; a raw `docker compose up` + bare `pytest` reproduces neither and silently drifts from CI. Do this, in order — never the right-hand alternative:
+**Run tests ONLY via `t3` — never raw `docker compose` (Absolute Rule).** The `t3` wrapper sets the correct env, project environment, DB name, and collection scope; a raw `docker compose up` + bare `pytest` reproduces neither and silently drifts from CI. Do this, in order — never the right-hand alternative: <!-- local-verification: cited-not-prescribed -->
 
 1. Bring services up with the overlay command — **never** `docker compose up` / `docker-compose up`:
 
@@ -47,7 +47,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
    t3 <overlay> worktree start
    ```
 
-2. Run the suite with the overlay command — **never** a bare `pytest` / `uv run pytest` against the raw containers:
+2. Run the suite with the overlay command — **never** a bare `pytest` / `uv run pytest` against the raw containers: <!-- local-verification: cited-not-prescribed -->
 
    ```bash
    t3 <overlay> run tests --reuse-db
@@ -66,11 +66,11 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - Always run with `--reuse-db` for speed unless schema changed.
 - Use `--failed-first` to quickly re-verify fixes.
 - To run only the tests for a specific file or directory, append the path after `--`: `t3 <overlay> run tests -- path/to/test_file.py` (extra args after `--` are forwarded to pytest). This scopes verification to the changed module instead of firing the whole suite locally.
-- **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it.
+- **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it. <!-- local-verification: cited-not-prescribed -->
 
-### Fast Local Test Selection (opt-in, #113)
+### Local Test Selection — the testing phase's default lane (#113, [#3994](https://github.com/souliane/teatree/issues/3994))
 
-`t3 tool affected-tests` selects only the pytest tests a diff affects, for a fast local inner loop on the teatree repo. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. It is **opt-in local tooling** — the whole-tree 12-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
+`t3 tool affected-tests` selects only the pytest tests a diff affects. On the teatree repo it is **what the testing phase runs**, not an optional accelerator: a local whole-tree sweep re-pays for the run CI's required sharded lane is about to make anyway, and measured across 71 FSM transitions that duplication was most of a 3.5h ticket against a 30m target. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. What is unchanged by making it the default: the whole-tree 12-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
 
 ```bash
 t3 tool affected-tests                 # human report: SCOPED (tach plugin + force-keep) or FULL + reason
@@ -86,7 +86,7 @@ How it selects (#3672): the **tach pytest plugin** is the impact engine — `--t
 
 Degrades to a whole-tree FULL run with the plugin OFF (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; or a dirty merge-base. When the report says FULL, run the whole suite.
 
-**Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, the coverage gate is still `bash dev/ci-parity.sh` and CI's sharded `test (3.13)` lane.
+**Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, run `bash dev/ci-parity-fast.sh` — the necessary-and-sufficient local check (scoped prek, `makemigrations --check`, this lane, the incremental push gate, no coverage floor). `bash dev/ci-parity.sh` is the opt-in deep lane for a red CI or a coverage-sensitive PR; the whole-tree floor is owned by it and by CI's sharded `test (3.13)` lane, never by a push hook.
 
 **A hand-picked directory list is not a substitute.** `pytest tests/teatree_core tests/teatree_loop …` skips the always-run floor above, so a `tests/conformance` break — a new `ScanSignal` kind with no dispatch/statusline route — survives it. That reached CI twice ([#3787](https://github.com/souliane/teatree/pull/3787), [#3788](https://github.com/souliane/teatree/pull/3788)). Use `bash dev/test-affected.sh`, which force-keeps the floor; `tests/conformance` also runs unconditionally in `dev/push-gate.sh`, so it cannot be pushed red either way.
 
@@ -139,15 +139,16 @@ t3 ci fetch-failed-tests
 
 That extracts the failing node IDs so you can reproduce locally; pair it with `t3 ci fetch-errors` for the logs. Then reproduce (`t3 <overlay> run tests --failed-first -- <node_id>`), fix the root cause, push, and re-monitor until every job is `success`. Never run a command that asserts the pipeline is green (e.g. `echo "CI passing"`) while any job is non-green.
 
-### Docker Coverage Before Push
+### Docker Coverage — the opt-in deep lane, not a pre-push mandate
 
-When the repo's pre-push hook uses `--no-cov` but CI enforces a coverage threshold, run the exact CI command locally before pushing:
+The 93% floor is a whole-tree property, so proving it locally is **not** what you do before every push — `bash dev/ci-parity-fast.sh` is (above), and CI's required sharded `test (3.13)` lane owns the floor. Reach for the deep lane when a PR is coverage-sensitive (deleting tests, adding a low-coverage module) or when reproducing a red CI:
 
 ```bash
-docker run --rm -v "$PWD":/app:ro -e UV_PROJECT_ENVIRONMENT=/tmp/.venv -e COVERAGE_FILE=/tmp/.coverage teatree-test uv run -p 3.13 pytest --no-header -q -o cache_dir=/tmp/.pytest_cache
+bash dev/ci-parity.sh     # the exact blocking CI predicate, incl. dev/test-cov.sh + t3 ci coverage
+bash dev/test-matrix.sh   # the same suite in Docker across Python 3.13 + 3.14
 ```
 
-If the total is below the CI threshold, add tests before pushing.
+Never hand-roll the `docker run`: the runner pins the image, project environment, cache mounts and version set, so a hand-written invocation drifts from CI in exactly the way the Docker lane exists to catch. If the total is below the CI threshold, add tests before pushing.
 
 ### Green Means Root Cause
 

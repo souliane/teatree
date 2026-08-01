@@ -37,6 +37,13 @@ SCOPED_LANE_TOKENS: tuple[str, ...] = (
     "t3 tool affected-tests",
 )
 
+#: Line-scoped escape for a command a surface CITES rather than prescribes. "never a bare
+#: ``pytest``" and "a raw ``uv run pytest`` reports different counts" are textually identical
+#: to a prescription, so no matcher can separate them — without this the guard would force
+#: correct prose to be mangled. Line-scoped on purpose: it silences one line, never the file,
+#: and the positive half (must NAME a scoped lane) is outside its reach entirely.
+CITED_NOT_PRESCRIBED = "local-verification: cited-not-prescribed"
+
 
 @dataclass(frozen=True)
 class PhaseMandate:
@@ -49,9 +56,12 @@ class PhaseMandate:
 #: DATA, not logic — adding a surface is a one-row edit. Every entry is a place a
 #: dispatched agent reads to decide what to run in a phase.
 PHASE_MANDATES: tuple[PhaseMandate, ...] = (
+    PhaseMandate(surface="CLAUDE.md", phase="every phase (repo-root agent instructions)"),
     PhaseMandate(surface="skills/code/SKILL.md", phase="coding"),
+    PhaseMandate(surface="skills/test/SKILL.md", phase="testing"),
     PhaseMandate(surface="skills/ship/SKILL.md", phase="shipping"),
     PhaseMandate(surface="skills/contribute/SKILL.md", phase="contributing"),
+    PhaseMandate(surface="skills/retro/references/commit-to-fork.md", phase="contributing (fork pre-flight)"),
     PhaseMandate(surface="src/teatree/agents/coding_prompt.py", phase="coding (headless dispatch brief)"),
     PhaseMandate(surface="tests/CLAUDE.md", phase="coding (tests-tree conventions)"),
 )
@@ -81,6 +91,9 @@ def command_candidates(text: str) -> list[str]:
     agent copies is always written as code, so code spans are the whole surface. Extracting
     inline spans separately also strips the delimiters: shlex keeps a closing backtick
     attached, so ``uv run pytest`` written inline tokenises as ``pytest` `` and hides.
+
+    A line carrying :data:`CITED_NOT_PRESCRIBED` is dropped whole. Each line is tokenised
+    independently downstream, so dropping one never lets the next line's args be absorbed.
     """
     fenced: list[str] = []
     inline: list[str] = []
@@ -88,6 +101,8 @@ def command_candidates(text: str) -> list[str]:
     for line in text.splitlines():
         if line.lstrip().startswith(_FENCE):
             in_fence = not in_fence
+        elif CITED_NOT_PRESCRIBED in line:
+            continue
         elif in_fence:
             fenced.append(line)
         else:

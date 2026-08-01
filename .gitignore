@@ -65,6 +65,13 @@ e2e/.videos/
 .t3-env.cache
 .t3-cache/
 
+# direnv stub written into every worktree by `worktree provision`
+# (`teatree.core.runners.worktree_provision._append_envrc_lines`). Untracked and
+# UNIGNORED it is an unclassifiable changed path, so `t3 tool affected-tests`
+# escalated to FULL in every provisioned worktree — the whole-suite run #3994 exists
+# to stop, on every ticket, whatever the diff touched.
+.envrc
+
 # Autonomous review-loop runtime cursor (#924): written untracked at the
 # clone root by the loop. Ignoring it keeps the clone clean so `t3 update`
 # can always ff-advance the running editable t3 (it never blocked the
