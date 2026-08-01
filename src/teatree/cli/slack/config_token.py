@@ -15,25 +15,25 @@ that dead end, and the stored pair did after 12 days.
 Two invariants make that unreachable once a pair is seeded:
 
 1. **Rotate on age, not on failure.** :func:`ensure_fresh_config_token` rotates
-   as soon as the pair is older than :data:`ROTATE_AFTER` — a third of Slack's
-   lifetime, so several consecutive missed runs still leave hours of margin. Its
-   caller is ``t3 doctor``, which SessionStart runs (``bootstrap-cli.sh``) and
-   which the deployed stack's watchdog re-runs every five minutes — a cadence
-   far inside the window from two independent triggers, so a box whose worker
-   has been down for a day still self-heals the moment the owner opens a
-   session. An unknown age counts as stale: assuming freshness is precisely the
-   assumption that let the stored pair run to expiry.
+    as soon as the pair is older than :data:`ROTATE_AFTER` — a third of Slack's
+    lifetime, so several consecutive missed runs still leave hours of margin. Its
+    caller is ``t3 doctor``, which SessionStart runs (``bootstrap-cli.sh``) and
+    which the deployed stack's watchdog re-runs every five minutes — a cadence
+    far inside the window from two independent triggers, so a box whose worker
+    has been down for a day still self-heals the moment the owner opens a
+    session. An unknown age counts as stale: assuming freshness is precisely the
+    assumption that let the stored pair run to expiry.
 
 2. **Persist before the old pair is considered spent.** Slack has already
-   invalidated the previous pair by the time ``rotate`` returns, so a lost
-   response bricks the credential permanently.
-   :meth:`ConfigTokenStore.persist` writes the REFRESH half first — it is the
-   half that can mint another pair, so a crash between the two writes leaves a
-   store the next rotation recovers from, whereas the reverse order would leave
-   a live access token guarding a burned refresh token: dead in 12 hours with no
-   way back. Every write is verified by reading it back, and a failure raises
-   :class:`SlackConfigTokenPersistError` rather than returning a value a caller
-   can discard.
+    invalidated the previous pair by the time ``rotate`` returns, so a lost
+    response bricks the credential permanently.
+    :meth:`ConfigTokenStore.persist` writes the REFRESH half first — it is the
+    half that can mint another pair, so a crash between the two writes leaves a
+    store the next rotation recovers from, whereas the reverse order would leave
+    a live access token guarding a burned refresh token: dead in 12 hours with no
+    way back. Every write is verified by reading it back, and a failure raises
+    :class:`SlackConfigTokenPersistError` rather than returning a value a caller
+    can discard.
 
 The reactive path in :func:`~teatree.cli.slack.setup._export_with_rotation`
 remains as the complementary backstop for a pair invalidated early (revoked, or
@@ -115,7 +115,7 @@ class ConfigTokenStore:
     issued_at_key: str = _CONFIG_ISSUED_AT_REF
 
     def read_issued_at(self) -> dt.datetime | None:
-        """The recorded issue time, or ``None`` when absent or unparseable.
+        """The recorded issue time, or ``None`` when absent or unparsable.
 
         A naive stored value is read as UTC — every writer here emits an
         aware UTC timestamp, so a naive one can only come from hand-editing.

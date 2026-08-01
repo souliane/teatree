@@ -390,6 +390,7 @@ t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NO
 t3 dream tick                   # cadence-gated pass (~04:00 slot); the worker's off-live-tick driver chain fires it, decoupled from the live loop
 t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)
 t3 outer tick                   # cadence-gated step the worker's off-live-tick driver chain fires (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
+t3 notion whoami|fetch|audit-fetch  # read a Notion work item headlessly through the overlay's routed token — `whoami` proves the token resolves, `fetch` pulls a page (optionally one section), `audit-fetch` records what was read so a review can show its retrieval
 t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
 t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
 t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships triple-OFF)
