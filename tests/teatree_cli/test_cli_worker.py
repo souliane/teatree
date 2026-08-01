@@ -11,6 +11,7 @@ paths run under a real test DB; no test signals a real process.
 import datetime as dt
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -23,7 +24,7 @@ import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
 from teatree.core.models import ConfigSetting, Loop, Prompt
-from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainReport, set_worker_quiescing
+from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
 from teatree.loops.loop_staleness import Admission, LoopHealth
 from teatree.utils import singleton as singleton_mod
@@ -379,6 +380,49 @@ class TestWorkerDrain(django.test.TestCase):
         result = runner.invoke(worker_app, ["drain", "--help"])
         rendered = " ".join(result.stdout.split())
         assert "config_setting set worker_quiescing false" in rendered
+
+
+class TestWorkerDrainHeartbeat(django.test.TestCase):
+    """The drain speaks while it waits, so its transport never sees an idle session (#3983)."""
+
+    @staticmethod
+    def _drain_emitting(samples: list[DrainProgress]) -> Callable[..., DrainReport]:
+        """A ``drain_worker`` stand-in that replays *samples* through the caller's callback."""
+
+        def _drain(*, on_progress: Callable[[DrainProgress], None] | None = None, **_kwargs: object) -> DrainReport:
+            assert on_progress is not None, "drain_command must hand drain_worker a progress sink"
+            for sample in samples:
+                on_progress(sample)
+            return DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=samples[-1].waited_seconds)
+
+        return _drain
+
+    def test_the_wait_emits_a_heartbeat_naming_the_elapsed_time_and_in_flight_count(self) -> None:
+        samples = [DrainProgress(waited_seconds=5.0, still_claimed=[7, 9])]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain"])
+
+        assert result.exit_code == 0
+        assert "2 task(s) still in flight after 5s" in result.stderr
+
+    def test_heartbeats_are_throttled_but_stay_well_inside_the_idle_window(self) -> None:
+        # Three failed deploys tore down at ~278s of silence; the throttle must keep the
+        # gap between heartbeats far below that, and must not emit one line per 5s poll.
+        samples = [DrainProgress(waited_seconds=float(t), still_claimed=[7]) for t in range(5, 305, 5)]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain"])
+
+        beats = [line for line in result.stderr.splitlines() if "still in flight" in line]
+        assert 1 < len(beats) < len(samples), "every poll must not echo, but the wait must not go silent"
+        assert worker_cli._PROGRESS_ECHO_INTERVAL_SECONDS < worker_cli.OBSERVED_SSH_IDLE_TIMEOUT_SECONDS / 2
+
+    def test_json_output_stays_parseable_while_the_wait_heartbeats(self) -> None:
+        samples = [DrainProgress(waited_seconds=5.0, still_claimed=[7])]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain", "--json"])
+
+        assert json.loads(result.stdout)["outcome"] == "drained"
+        assert "still in flight" in result.stderr
 
 
 class TestWorkerStop(django.test.TestCase):

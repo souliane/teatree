@@ -13,6 +13,7 @@ of the stack it watches) can restart the stack and DM the owner:
 - a PENDING ``interactive`` task under ``agent_runtime=headless`` (unrunnable),
 - a FAILED task on a still-live ticket (the silent-freeze signature),
 - a runtime clone that has drifted off its default branch,
+- a ``worker_quiescing`` gate outliving any deploy that could explain it,
 - a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain``),
 - a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (this one AUTO-REPAIRS).
 
@@ -32,6 +33,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
 from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
@@ -517,6 +519,7 @@ def run_self_heal_checks() -> bool:
         _check_interactive_task_under_headless,
         _check_failed_tasks_on_live_tickets,
         _check_runtime_clone_on_default_branch,
+        check_stranded_quiescing_gate,
         check_slack_drain_alive,
         _check_dead_owner_lease,
     )

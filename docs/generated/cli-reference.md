@@ -5166,7 +5166,10 @@ Usage: t3 worker drain [OPTIONS]
  when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
  CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
  stuck
- task re-queues via its lease lapse.
+ task re-queues via its lease lapse. The wait heartbeats to stderr while it
+ runs, so
+ the deploy's SSH session never idles out mid-drain and takes the deploy with
+ it.
 
  THE WORKER IS LEFT QUIESCED: this command stops nothing, and the gate it sets
  is

@@ -117,7 +117,13 @@ jobs:
           # provisioned pass store.
           TEATREE_BOX_USE_PASS: ${{ vars.TEATREE_BOX_USE_PASS || 'false' }}
         run: |
-          SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          # ServerAlive* is load-bearing, not hygiene: three deploys died 276.8s /
+          # 280.0s / ~280s into the worker drain, which prints nothing while it waits
+          # for in-flight agents. A 3s spread across runs is a fixed idle timeout, and
+          # it fires far short of the 1800s the drain is allowed — so without
+          # keepalives the drain budget is unreachable and the deploy dies before the
+          # swap that clears `worker_quiescing`. 30s x 20 tolerates a 10-min stall.
+          SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=20"
           TARGET="${SSH_USER}@${SERVER_HOST}"
 
           # 1. Ensure the build-context checkout exists on the box.
