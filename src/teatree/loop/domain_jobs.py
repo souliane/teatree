@@ -339,11 +339,7 @@ def _review_jobs_for_overlay(
 
 
 def _repo_owner_resolver(backend: OverlayBackends) -> Callable[[str], RepoOwner]:
-    """The overlay's repo-ownership answer, or core's when the overlay has no class.
-
-    A TOML-only overlay has no object to ask, so it keeps the shipped engineering
-    cadence rather than inheriting a patience it never declared.
-    """
+    """The overlay's repo-ownership answer, or core's when the overlay has no class."""
     overlay = backend.overlay
     if overlay is None:
         return default_repo_owner

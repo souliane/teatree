@@ -130,6 +130,14 @@ def _booleans(payload: object, keys: tuple[str, ...]) -> tuple[bool, ...] | None
     return cast("tuple[bool, ...]", values) if all(isinstance(value, bool) for value in values) else None
 
 
+#: A value as the control DB stores it — arbitrary JSON, so the element type is genuinely
+#: open. Naming it says that once, instead of six bare `object`s a reader has to re-derive.
+type JsonValue = object
+#: scope -> key -> value, the shape `ConfigSetting` rows project into. The keys are data
+#: (any scope, any setting), so this is a mapping by nature and not a struct.
+type ScopedSettings = dict[str, dict[str, JsonValue]]
+
+
 @dataclass(frozen=True, slots=True)
 class ModeRow:
     """One ``teatree_loop_preset`` row — the three booleans that ARE a mode's posture."""
@@ -260,7 +268,7 @@ class HostProjection:
     """
 
     generation: int
-    settings: dict[str, dict[str, object]]
+    settings: ScopedSettings
     loop_state: dict[str, str]
     modes: dict[str, ModeRow]
     mode_override: OverrideRow | None
@@ -286,7 +294,7 @@ class HostProjection:
         """The slots of *schedule_id* — the projected side of ``WHERE schedule_id=?``."""
         return self.mode_schedule_slots.get(schedule_id, ())
 
-    def as_payload(self) -> dict[str, object]:
+    def as_payload(self) -> dict[str, JsonValue]:
         return {
             "schema_version": self.schema_version,
             "generation": self.generation,
@@ -316,7 +324,7 @@ class HostProjection:
         """
         if not isinstance(payload, dict):
             return None
-        fields = cast("dict[str, object]", payload)
+        fields = cast("dict[str, JsonValue]", payload)
         generation = fields.get("generation")
         settings = fields.get("settings")
         loop_state = fields.get("loop_state")
@@ -333,7 +341,7 @@ class HostProjection:
             return None
         return cls(
             generation=generation,
-            settings=cast("dict[str, dict[str, object]]", settings),
+            settings=cast("ScopedSettings", settings),
             loop_state=cast("dict[str, str]", loop_state),
             modes=modes,
             mode_override=override,
@@ -423,8 +431,8 @@ class ProjectionPublisher:
         return projection
 
     @staticmethod
-    def _read_settings(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
-        settings: dict[str, dict[str, object]] = {}
+    def _read_settings(conn: sqlite3.Connection) -> ScopedSettings:
+        settings: ScopedSettings = {}
         for scope, key, raw in conn.execute(_SETTINGS_SQL):
             try:
                 value = json.loads(raw)

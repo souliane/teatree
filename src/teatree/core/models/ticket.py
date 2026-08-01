@@ -242,18 +242,7 @@ class Ticket(
         return written
 
     def short_description_seed(self, title: str) -> str:
-        """The card label a blank ``short_description`` takes from *title*.
-
-        Returns ``""`` when nothing should change — a blank forge title, or a
-        ``short_description`` the operator (or the summariser) already wrote,
-        which is a decision and never overwritten. A blank one is an absence,
-        so it is seeded with the title truncated to the column width and the
-        card stops rendering ``(no description)``.
-
-        Every writer of ``extra['issue_title']`` shares this rule: the board
-        renders ``short_description``, so a title stamped without it repairs
-        nothing a reader can see.
-        """
+        """The card label a blank ``short_description`` takes from *title*."""
         if not title or self.short_description:
             return ""
         return title[: self._meta.get_field("short_description").max_length or 80]

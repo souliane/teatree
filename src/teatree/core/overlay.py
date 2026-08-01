@@ -303,15 +303,7 @@ class OverlayConfig(BaseModel):
         self._secret_registry()[attr_name] = pass_key
 
     def secret_pass_key(self, name: str) -> str:
-        """The ``pass`` entry *name* is routed to, or ``""`` when unregistered.
-
-        The path itself, never the value — a caller that needs to RESOLVE the
-        secret through the audited :class:`~teatree.llm.credentials.Credential`
-        machinery (env first, then ``pass``, failing loud) needs the overlay's
-        routed entry as a ``pass_path_override``, which :meth:`_read_secret`
-        cannot supply because it returns the already-read value and silently
-        empties on a miss.
-        """
+        """The ``pass`` entry *name* is routed to, or ``""`` when unregistered."""
         return self._secret_registry().get(name, "")
 
     def _read_secret(self, name: str) -> str:
@@ -579,26 +571,12 @@ class OverlayReview:
         return []
 
     def repo_owner_for_slug(self, slug: str) -> RepoOwner:
-        """Which org function reviews *slug* — picks how long a review request waits.
-
-        The default answers ENGINEERING for every repo, which is the cadence the
-        review nag has always enforced, so an overlay with no ownership model keeps
-        the behaviour it shipped with. An overlay that HAS one overrides this and
-        owns its own answer for a repo it does not recognise.
-        """
+        """Which org function reviews *slug* — picks how long a review request waits."""
         _ = slug
         return RepoOwner.ENGINEERING
 
     def review_exempt_repo_slugs(self) -> tuple[str, ...]:
-        """Repo patterns whose merge requests must never get a review request.
-
-        A SEPARATE axis from :meth:`repo_owner_for_slug`, not a reading of it:
-        ownership answers the patient owner for a repo it does not recognise, so
-        deriving exemption from it would exempt everything unrecognised. The
-        default declares none, so the refusal is inert until an overlay names its
-        own repos. Read through :mod:`teatree.core.review.repo_exemption`, which
-        unions this with the ``review_exempt_repos`` setting.
-        """
+        """Repo patterns whose merge requests must never get a review request."""
         return ()
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
@@ -713,24 +691,7 @@ class OverlayBase(ABC):
         return self.get_repos()
 
     def get_repo_clone_url(self, repo_name: str) -> str:
-        """The remote to clone *repo_name* from when no local clone exists yet.
-
-        This is what makes a runtime with an EMPTY clone root able to provision:
-        the containerized stack owns its own workspace volume and has no operator
-        pre-seeded checkouts, so provisioning materialises each repo from its
-        remote on first use. A host-native run with the clone already present
-        never reaches this hook.
-
-        The default declares no remote (``""``), which keeps the pre-existing
-        behaviour: a missing clone fails loud with "No git clone found" rather
-        than cloning something the overlay never named. Overlays that know their
-        repos' canonical remotes override it.
-
-        Return a URL git can clone WITHOUT an embedded secret — authentication is
-        the runtime's credential-helper concern (``deploy/entrypoint.sh`` wires
-        ``gh``/``glab`` as https helpers), never a token pasted into the URL,
-        which would persist in the new clone's ``.git/config``.
-        """
+        """The remote to clone *repo_name* from when no local clone exists yet."""
         return ""
 
     # ── Statusline contribution ──────────────────────────────────────
