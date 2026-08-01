@@ -94,14 +94,34 @@ def _is_revert_commit() -> bool:
     return result.returncode == 0
 
 
-def _is_blueprint(path: str) -> bool:
+def _vendoring_prefix() -> str:
+    """The staged-path prefix teatree's own tree sits behind, or "" in a plain clone.
+
+    Git reports staged paths relative to the OUTER repository root, so a fork that
+    vendors core at ``vendor/teatree/`` stages teatree's source as
+    ``vendor/teatree/src/…`` and its BLUEPRINT as ``vendor/teatree/BLUEPRINT.md``.
+    Deriving the prefix from this file's own location is what lets one hook serve both
+    layouts, and is why the fork's own ``src/`` is not read as teatree source.
+    """
+    teatree_root = pathlib.Path(__file__).resolve().parents[2]
+    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return ""
+    try:
+        relative = teatree_root.relative_to(pathlib.Path(result.stdout.strip()).resolve())
+    except ValueError:
+        return ""
+    return "" if relative == pathlib.Path() else f"{relative.as_posix()}/"
+
+
+def _is_blueprint(path: str, prefix: str = "") -> bool:
     """A staged path that counts as a BLUEPRINT update.
 
     The top-level ``BLUEPRINT.md`` or any of its split appendix markdown files
     under ``docs/blueprint/`` — the appendices are the BLUEPRINT's deep-mechanics
     sections, so editing one satisfies the sync requirement.
     """
-    return path == "BLUEPRINT.md" or (path.startswith("docs/blueprint/") and path.endswith(".md"))
+    return path == f"{prefix}BLUEPRINT.md" or (path.startswith(f"{prefix}docs/blueprint/") and path.endswith(".md"))
 
 
 def _looks_like_commit_msg_file(path: str) -> bool:
@@ -165,8 +185,9 @@ def main() -> int:
         return 0
 
     files = _staged_files()
-    has_src = any(f.startswith("src/") for f in files)
-    has_blueprint = any(_is_blueprint(f) for f in files)
+    prefix = _vendoring_prefix()
+    has_src = any(f.startswith(f"{prefix}src/") for f in files)
+    has_blueprint = any(_is_blueprint(f, prefix) for f in files)
 
     if has_src and not has_blueprint:
         print()
