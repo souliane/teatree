@@ -16,6 +16,8 @@ The names re-exported below keep ``from teatree.loop.rendering import X``
 working for every existing consumer and test after the split.
 """
 
+import logging
+
 from django.utils import timezone
 
 from teatree.loop.dispatch import DispatchAction
@@ -40,6 +42,8 @@ __all__ = [
     "cost_chip_lines",
     "zones_for",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def zones_for(
@@ -171,5 +175,8 @@ def cost_chip_lines() -> list[str]:
             today=today,
         )
         return [report.chip()]
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no anchors
+    except Exception:
+        # Loud: a silent empty chip is indistinguishable from "no spend this cycle",
+        # so the swallowed cause has to be named or the next failure is a mystery.
+        logger.warning("cost chip read failed — statusline renders without it", exc_info=True)
         return []

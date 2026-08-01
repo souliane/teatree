@@ -333,8 +333,13 @@ skip = "src/teatree/core/static/teatree/js/*,src/teatree/dash/static/dash/js/*"
 # contribution) is enforced where it belongs, off the fast inner loop.
 
 [tool.pytest.ini_options]
+# ``--ds`` (not just the ``DJANGO_SETTINGS_MODULE`` ini key below) because pytest-django
+# ranks an ambient env var ABOVE the ini value: a shell exporting it — the dogfooding box
+# does — silently ran the whole suite against PRODUCTION settings, a different DB and a
+# different TIME_ZONE than CI (#3996). ``addopts`` is prepended, so the e2e lane's own
+# trailing ``--ds=e2e.dash.settings`` still wins.
 addopts = """
---color=yes --strict-config --strict-markers --reuse-db -n auto
+--color=yes --strict-config --strict-markers --reuse-db -n auto --ds=tests.django_settings
 """
 timeout = 60
 # Keep only a FAILING test's scratch — a passing one's tmp_path is nothing anyone

@@ -1,5 +1,6 @@
 """Shared fixtures for teatree script tests."""
 
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -8,7 +9,7 @@ import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -87,6 +88,23 @@ def pg_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.setenv("POSTGRES_USER", "testuser")
     monkeypatch.setenv("POSTGRES_PASSWORD", "testpass")
+
+
+#: A fixed instant, deliberately mid-cycle, for every billing-cycle-scoped assertion.
+#: A cycle-scoped reader filters ``started_at >= cycle_start(localdate())``, so a test
+#: that stamps its attempt from the wall clock and then lets the reader re-read the
+#: clock silently loses the attempt whenever the local date rolls onto a cycle start
+#: between the two reads — the #3996 shuffle-lane red, which hit whichever test was on
+#: the clock at that second. ``test_pinned_clock_sits_well_inside_its_cycle`` keeps this
+#: value away from either boundary.
+CYCLE_MIDPOINT = dt.datetime(2026, 6, 10, 12, 0, tzinfo=dt.UTC)
+
+
+@pytest.fixture
+def pinned_clock() -> Iterator[dt.datetime]:
+    """Pin ``timezone.now`` (and therefore ``localdate``) to :data:`CYCLE_MIDPOINT`."""
+    with patch("django.utils.timezone.now", return_value=CYCLE_MIDPOINT):
+        yield CYCLE_MIDPOINT
 
 
 @pytest.fixture(autouse=True)

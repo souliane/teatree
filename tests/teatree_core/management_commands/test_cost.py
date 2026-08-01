@@ -12,8 +12,10 @@ from teatree.core.management.commands.cost import CostPayload
 from teatree.core.models import Session, Task, TaskAttempt
 from tests.factories import TicketFactory
 
+# ``pinned_clock``: the report is cycle-scoped, so a ``when=timezone.now()`` attempt falls
+# outside the cycle the command re-derives once the local date rolls over mid-test (#3996).
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("pinned_clock")]
 
 
 def _call(*args: str, **kwargs: object) -> str:
