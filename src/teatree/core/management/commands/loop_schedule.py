@@ -16,6 +16,8 @@ from django_typer.management import TyperCommand, command
 from teatree.core.machine_output import emit
 from teatree.core.models import ConfigSetting, ModeSchedule
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
+from teatree.loops.preset_editing import PresetEditError
+from teatree.loops.schedule_editing import delete_schedule
 
 _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -159,6 +161,21 @@ class Command(TyperCommand):
         cleared = ConfigSetting.objects.clear(ACTIVE_SCHEDULE_SETTING)
         message = "cleared the active schedule." if cleared else "no active schedule was set."
         self._emit({"cleared": cleared}, message, json_output=json_output)
+
+    @command(name="delete")
+    def delete(
+        self,
+        name: Annotated[str, typer.Argument(help="Schedule to delete.")] = "",
+        *,
+        confirm: Annotated[str, typer.Option("--confirm", help="Typed phrase; required for a shipped schedule.")] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """Delete a calendar and its slots — the ACTIVE one is refused; a shipped one needs ``--confirm``."""
+        try:
+            delete_schedule(name, confirm=confirm)
+        except PresetEditError as exc:
+            self._refuse(str(exc), json_output=json_output)
+        self._emit({"deleted": name}, f"deleted schedule {name!r}.", json_output=json_output)
 
     def _emit(self, payload: dict[str, Any], message: str, *, json_output: bool) -> None:
         emit(

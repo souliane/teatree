@@ -324,3 +324,59 @@ class TestPresetScheduleAdminChangelistsLoad(django.test.TestCase):
         assert response.status_code == 200
         # The inline renders the slot's start_time field on the schedule change form.
         assert b"slots-0-start_time" in response.content
+
+
+class TestShippedRowsRouteDeletionToTheAuditedSeam(django.test.TestCase):
+    """The admin button carries no phrase and records nothing, so a shipped row uses the CLI (#3842).
+
+    Routing, not prohibition — `t3 loops delete` / `t3 loop preset delete` /
+    `t3 loop schedule delete` each take the typed `stop-<name>`. An operator-created row
+    keeps the ordinary admin delete, so the friction lands only where an accidental
+    deletion silently stops work the box shipped configured to do.
+    """
+
+    def _request(self) -> django.http.HttpRequest:
+        """A superuser request — the override defers to Django's own permission check first."""
+        request = django.http.HttpRequest()
+        request.user = get_user_model().objects.create_superuser(
+            f"admin-shipped-{self.id().rsplit('.', 1)[-1]}", "shipped@example.com", "pw"
+        )
+        return request
+
+    def test_a_shipped_loop_cannot_be_deleted_from_the_admin(self) -> None:
+        loop, _ = Loop.objects.get_or_create(
+            name="review", defaults={"script": "src/teatree/loops/review/loop.py", "delay_seconds": 300}
+        )
+
+        assert admin.site._registry[Loop].has_delete_permission(self._request(), loop) is False
+
+    def test_an_operator_created_loop_keeps_the_admin_delete(self) -> None:
+        loop = Loop.objects.create(name="operator-custom", script="src/teatree/loops/x/loop.py", delay_seconds=300)
+
+        assert admin.site._registry[Loop].has_delete_permission(self._request(), loop) is True
+
+    def test_the_changelist_still_renders_when_no_object_is_bound(self) -> None:
+        """``obj=None`` is the changelist's own probe — denying it would break the whole page."""
+        assert admin.site._registry[Loop].has_delete_permission(self._request(), None) is True
+
+    def test_a_non_superuser_is_still_denied_by_djangos_own_check(self) -> None:
+        """The override narrows Django's permission, never widens it."""
+        request = django.http.HttpRequest()
+        request.user = get_user_model().objects.create_user("admin-plain", "plain@example.com", "pw")
+        loop = Loop.objects.create(name="operator-custom", script="src/teatree/loops/x/loop.py", delay_seconds=300)
+
+        assert admin.site._registry[Loop].has_delete_permission(request, loop) is False
+
+    def test_a_shipped_preset_and_schedule_route_the_same_way(self) -> None:
+        preset, _ = Mode.objects.get_or_create(name="engaged", defaults={"entries": {}, "description": "shipped"})
+        schedule, _ = ModeSchedule.objects.get_or_create(name="standard", defaults={"description": "shipped"})
+        request = self._request()
+
+        assert admin.site._registry[Mode].has_delete_permission(request, preset) is False
+        assert admin.site._registry[ModeSchedule].has_delete_permission(request, schedule) is False
+
+    def test_a_loop_name_does_not_make_a_preset_shipped(self) -> None:
+        """Families are scoped to their own seed table — `review` ships as a loop, not a preset."""
+        preset = Mode.objects.create(name="review", entries={}, description="operator-created")  # a LOOP name
+
+        assert admin.site._registry[Mode].has_delete_permission(self._request(), preset) is True

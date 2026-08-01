@@ -132,7 +132,7 @@ def preset_delete(request: "HttpRequest") -> "HttpResponse":
     """POST a preset deletion — refused while anything still resolves it by name."""
     name = request.POST.get("preset", "").strip()
     try:
-        delete_preset(name)
+        delete_preset(name, confirm=request.POST.get("confirm", ""))
     except PresetEditError as exc:
         return _answer(request, _posted_preset(request), error=str(exc))
     audit.record(actor=actor(request), action="preset:delete", target=name)

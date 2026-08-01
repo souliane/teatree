@@ -43,6 +43,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_loop_classification_drift,
     _check_loop_presets,
     _check_marker_jam,
+    _check_shipped_seed_inertness,
 )
 from teatree.cli.doctor.checks_mcp import (
     _check_chrome_devtools_mcp_suggestion,
@@ -142,6 +143,7 @@ __all__ = (
     "_check_recommended_skills",
     "_check_reconciliation_ledger",
     "_check_root_disk_headroom",
+    "_check_shipped_seed_inertness",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -256,9 +258,10 @@ def _run_loop_intent_gates() -> bool:
 
     ``_check_loop_presets`` (#3159, dangling preset/loop/schedule refs),
     ``_check_loop_classification_drift`` (a ``Loop`` row disagreeing with the shipped
-    ``[loops.<name>]`` table) and ``_check_marker_jam`` (#3275, orphaned issue-markers
-    stranding the intake budget) are surfacing-only WARNs — their return values are deliberately discarded so
-    neither can become a gate by accident.
+    ``[loops.<name>]`` table), ``_check_shipped_seed_inertness`` (#3842, a shipped
+    loop/preset/schedule that is missing, disabled or not ticking) and ``_check_marker_jam``
+    (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
+    their return values are deliberately discarded so neither can become a gate by accident.
 
     Two verdicts ARE returned. ``_check_intent_freshness`` is the "no owner-intent
     silently rots" gate: it HARD-FAILs when a consumable intent queue is non-empty while
@@ -271,6 +274,7 @@ def _run_loop_intent_gates() -> bool:
     """
     _check_loop_presets()
     _check_loop_classification_drift()
+    _check_shipped_seed_inertness()
     _check_aged_sweep_skips()
     _check_marker_jam()
     intake_ok = _check_intake_budget_deadlock()

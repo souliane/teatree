@@ -14,6 +14,7 @@ from typing import Final
 from teatree.core.models import ConfigSetting, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_editing import PresetEditError, require_preset
+from teatree.loops.shipped_guard import require_shipped_delete_confirm
 
 _MAX_WEEKDAY: Final = 6
 
@@ -74,6 +75,21 @@ def delete_schedule_slot(schedule_name: str, slot_id: int) -> None:
     _require_slot(_require_schedule(schedule_name), slot_id).delete()
 
 
+def delete_schedule(name: str, *, confirm: str = "") -> None:
+    """Delete a whole calendar and its slots, requiring the typed phrase when it ships.
+
+    The ACTIVE calendar is refused outright whatever phrase is typed — deleting it would
+    leave ``active_loop_schedule`` naming nothing, so no hour of the week picks a preset.
+    Switch calendars first (``t3 loop schedule set-active``) or clear the pin.
+    """
+    schedule = _require_schedule(name)
+    if active_schedule_name() == name:
+        msg = f"cannot delete schedule {name!r} — it is the active calendar; set another active first"
+        raise PresetEditError(msg)
+    require_shipped_delete_confirm("schedule", name, confirm)
+    schedule.delete()
+
+
 def _validated_slot(days: list[int] | tuple[int, ...], start_time: str, preset_name: str) -> SlotSpec:
     weekdays = tuple(sorted({int(day) for day in days if isinstance(day, int)}))
     if not weekdays or any(day < 0 or day > _MAX_WEEKDAY for day in weekdays):
@@ -111,6 +127,7 @@ __all__ = [
     "SlotSpec",
     "active_schedule_name",
     "clear_active_schedule",
+    "delete_schedule",
     "delete_schedule_slot",
     "set_active_schedule",
     "upsert_schedule_slot",

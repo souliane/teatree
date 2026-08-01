@@ -68,6 +68,19 @@ def register(loop_app: typer.Typer) -> None:
         """Clear the active schedule so no L2 layer applies."""
         _delegate("clear-active", json_output=json_output)
 
+    @schedule_app.command("delete")
+    def delete_command(
+        name: Annotated[str, typer.Argument()],
+        *,
+        confirm: Annotated[
+            str, typer.Option("--confirm", help="Typed phrase `stop-<name>`; required for a shipped schedule.")
+        ] = "",
+        json_output: Annotated[bool, typer.Option("--json")] = False,
+    ) -> None:
+        """Delete a calendar and its slots — the ACTIVE one is refused; shipped needs ``--confirm``."""
+        args = ["delete", name] + (["--confirm", confirm] if confirm else [])
+        _delegate(*args, json_output=json_output)
+
     loop_app.add_typer(schedule_app, name="schedule")
 
 

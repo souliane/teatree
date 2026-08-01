@@ -1,7 +1,10 @@
 """``t3 loops`` — DB-configured autonomous loops (#1796).
 
-``t3 loops list`` prints the loops from the DB (read-only). ``t3 loops tick
---loop <name>`` runs ONE enabled, due loop — the per-loop primitive the
+``t3 loops list`` prints the loops from the DB (read-only). ``t3 loops audit`` answers the
+question the DB alone cannot (#3842): which shipped loops, presets and schedules are
+missing, disabled, or not ticking — sourced from the shipped seed tables, so a deleted row
+is visible at all. ``t3 loops delete`` is the audited removal seam its typed confirm gates.
+``t3 loops tick --loop <name>`` runs ONE enabled, due loop — the per-loop primitive the
 self-rescheduling loop-timer chain drives (:mod:`teatree.loops.timer_chains`, the
 sole driver since PR-28 retired the native-``/loop`` cron mirror). There is NO
 master tick: ``t3 loops tick`` with no ``--loop`` is a hard error. Per-loop
@@ -45,6 +48,62 @@ def list_command(
     if json_output:
         kwargs["json_output"] = True
     call_command("loops_list", **kwargs)
+
+
+@loops_app.command("audit")
+def audit_command(
+    *,
+    json_output: bool = typer.Option(False, "--json", help="Emit the findings as JSON."),
+) -> None:
+    """Report every shipped loop/preset/schedule that is missing, disabled, or not ticking.
+
+    Sources the expected set from the shipped seed tables rather than the DB, so a row
+    somebody deleted is visible at all. Exits NON-ZERO when any finding is a fault; a
+    deliberate operator choice (a shipped-off loop, an inactive calendar) is a note.
+    """
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
+
+    kwargs: dict[str, bool] = {"json_output": True} if json_output else {}
+    try:
+        call_command("shipped_seed", "audit", **kwargs)
+    except SystemExit as exc:
+        raise typer.Exit(code=int(exc.code) if isinstance(exc.code, int) else 1) from exc
+
+
+@loops_app.command("delete")
+def delete_command(
+    name: str = typer.Argument(..., help="Loop to delete."),
+    *,
+    confirm: str = typer.Option("", "--confirm", help="Typed phrase `stop-<name>`; required for a shipped loop."),
+    json_output: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Delete a loop row — a loop that ships by default needs ``--confirm stop-<name>``.
+
+    Soft protection, not prohibition: the phrase names what stops happening, and the
+    refusal quotes the shipped description so an unclear operator learns rather than
+    just being blocked. `t3 setup` recreates a deleted shipped loop.
+    """
+    _delegate_delete("delete-loop", name, confirm=confirm, json_output=json_output)
+
+
+def _delegate_delete(subcommand: str, name: str, *, confirm: str, json_output: bool) -> None:
+    """Call ``shipped_seed <subcommand>``; map its ``SystemExit`` onto the typer exit code."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
+
+    args = ["shipped_seed", subcommand, name]
+    kwargs: dict[str, str | bool] = {}
+    if confirm:
+        kwargs["confirm"] = confirm
+    if json_output:
+        kwargs["json_output"] = True
+    try:
+        call_command(*args, **kwargs)
+    except SystemExit as exc:
+        raise typer.Exit(code=int(exc.code) if isinstance(exc.code, int) else 1) from exc
 
 
 @loops_app.command("tick")

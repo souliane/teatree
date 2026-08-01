@@ -4755,8 +4755,8 @@ Usage: t3 loop preset [OPTIONS] COMMAND [ARGS]...
 │ create  Create a preset from ``--set`` entries, an optional availability pin │
 │         and overlay scope.                                                   │
 │ edit    Edit a preset's entries / description / pin / scope in place.        │
-│ delete  Delete a preset (a slot/override still pointing at it fails open to  │
-│         base config).                                                        │
+│ delete  Delete a preset — refused while a slot/override/setting names it;    │
+│         shipped needs ``--confirm``.                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4868,15 +4868,17 @@ Usage: t3 loop preset edit [OPTIONS] NAME
 ```
 Usage: t3 loop preset delete [OPTIONS] NAME
 
- Delete a preset (a slot/override still pointing at it fails open to base
- config).
+ Delete a preset — refused while a slot/override/setting names it; shipped
+ needs ``--confirm``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --confirm        TEXT  Typed phrase `stop-<name>`; required for a shipped    │
+│                        preset.                                               │
 │ --json                                                                       │
-│ --help          Show this message and exit.                                  │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4899,6 +4901,8 @@ Usage: t3 loop schedule [OPTIONS] COMMAND [ARGS]...
 │ set-timezone  Set a schedule's timezone so its wall-clock slots fire         │
 │               locally, not in the project zone.                              │
 │ clear-active  Clear the active schedule so no L2 layer applies.              │
+│ delete        Delete a calendar and its slots — the ACTIVE one is refused;   │
+│               shipped needs ``--confirm``.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4976,6 +4980,25 @@ Usage: t3 loop schedule clear-active [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json                                                                       │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop schedule delete`
+
+```
+Usage: t3 loop schedule delete [OPTIONS] NAME
+
+ Delete a calendar and its slots — the ACTIVE one is refused; shipped needs
+ ``--confirm``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --confirm        TEXT  Typed phrase `stop-<name>`; required for a shipped    │
+│                        schedule.                                             │
+│ --json                                                                       │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5255,10 +5278,14 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list  List DB-configured autonomous loops: name, enabled, delay, last run,   │
-│       next due.                                                              │
-│ tick  Run ONE enabled, due loop by name — the per-loop primitive the         │
-│       loop-timer chain drives.                                               │
+│ list    List DB-configured autonomous loops: name, enabled, delay, last run, │
+│         next due.                                                            │
+│ audit   Report every shipped loop/preset/schedule that is missing, disabled, │
+│         or not ticking.                                                      │
+│ delete  Delete a loop row — a loop that ships by default needs ``--confirm   │
+│         stop-<name>``.                                                       │
+│ tick    Run ONE enabled, due loop by name — the per-loop primitive the       │
+│         loop-timer chain drives.                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5275,6 +5302,52 @@ Usage: t3 loops list [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the loops as JSON.                                      │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops audit`
+
+```
+Usage: t3 loops audit [OPTIONS]
+
+ Report every shipped loop/preset/schedule that is missing, disabled, or not
+ ticking.
+
+ Sources the expected set from the shipped seed tables rather than the DB, so a
+ row
+ somebody deleted is visible at all. Exits NON-ZERO when any finding is a
+ fault; a
+ deliberate operator choice (a shipped-off loop, an inactive calendar) is a
+ note.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the findings as JSON.                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops delete`
+
+```
+Usage: t3 loops delete [OPTIONS] NAME
+
+ Delete a loop row — a loop that ships by default needs ``--confirm
+ stop-<name>``.
+
+ Soft protection, not prohibition: the phrase names what stops happening, and
+ the
+ refusal quotes the shipped description so an unclear operator learns rather
+ than
+ just being blocked. `t3 setup` recreates a deleted shipped loop.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Loop to delete. [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --confirm        TEXT  Typed phrase `stop-<name>`; required for a shipped    │
+│                        loop.                                                 │
+│ --json                 Emit the result as JSON.                              │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

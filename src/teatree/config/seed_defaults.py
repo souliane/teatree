@@ -29,6 +29,11 @@ type SeedValue = bool | int | float | str | dt.time | list[object] | dict[str, o
 #: The seed families the shipped file carries, one top-level table each.
 SEED_TABLES: tuple[str, ...] = ("loops", "modes", "schedules")
 
+#: The singular family word each seed table is spoken as, and the table it ships in. The
+#: ``preset``/``modes`` pair is why this mapping exists rather than an ``f"{family}s"``: the
+#: file table is ``[modes.*]``, the model is ``Mode``, and every surface says "preset".
+SEED_FAMILIES: dict[str, str] = {"loop": "loops", "preset": "modes", "schedule": "schedules"}
+
 #: Per family, the seed fields that live ON the object's own row: the model attribute each
 #: maps onto and the type it must be. This is the interchange surface — what
 #: ``config_setting export`` dumps and ``import`` writes back, so an operator's tuned box
@@ -68,12 +73,15 @@ _cache: dict[tuple[Path, int], dict[str, Any]] = {}
 
 __all__ = [
     "DEFAULTS_TOML",
+    "SEED_FAMILIES",
     "SEED_ROW_FIELDS",
     "SEED_TABLES",
     "SHIPPED_ONLY_FIELDS",
     "classify_seed_field",
+    "is_shipped",
     "reset_seed_defaults_cache",
     "seed_divergences",
+    "shipped_description",
     "shipped_seed_table",
 ]
 
@@ -97,6 +105,26 @@ def shipped_seed_table(table: str, path: Path | None = None) -> dict[str, dict[s
     if not isinstance(entries, dict):
         return {}
     return {name: dict(body) for name, body in entries.items() if isinstance(body, dict)}
+
+
+def is_shipped(family: str, name: str, path: Path | None = None) -> bool:
+    """Whether *name* is declared in *family*'s shipped seed table (#3842).
+
+    Lives here rather than beside the delete policy because it is a pure question about
+    the shipped file, and its lowest consumer is the Django admin — a ``domain``-layer
+    module that may not reach up into ``teatree.loops``.
+
+    Families never leak into each other: a loop named ``review`` does not make a preset
+    named ``review`` shipped, so each lookup is scoped to its own table.
+    """
+    return name in shipped_seed_table(SEED_FAMILIES[family], path)
+
+
+def shipped_description(family: str, name: str, path: Path | None = None) -> str:
+    """The shipped one-line description of what *name* does, straight out of the seed table."""
+    entry = shipped_seed_table(SEED_FAMILIES[family], path).get(name, {})
+    description = entry.get("description", "")
+    return str(description) if description else f"the shipped {family} {name!r}"
 
 
 def _document(path: Path) -> dict[str, Any]:
