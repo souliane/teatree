@@ -62,6 +62,9 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "mcp_slack_write_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "dispatch_quote_gate_on_task_create_enabled": ColdHookSetting(_parse_strict_bool, default=False),
     "banned_terms_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    # Not a gate kill-switch: the banned-terms scanner's UNSET-list posture. False (the
+    # dev/solo default) warns and allows; True is the deployment that MUST scrub (#3247).
+    "banned_terms_required": ColdHookSetting(_parse_strict_bool, default=False),
     "orchestrator_boundary_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_goal_stop_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
