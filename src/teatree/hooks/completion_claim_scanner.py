@@ -383,6 +383,20 @@ def _no_claim_to_evaluate(text: str) -> bool:
     return not text or not _has_completeness_claim(text) or _is_honest_refusal(text)
 
 
+def _is_not_a_delivery_claim(text: str, bodies: list[str]) -> bool:
+    """True when the enumerated rows are not claims of DELIVERED work.
+
+    Three shapes look like a deliverable table but assert nothing finished: a
+    recommendation list, a locked design/decision table, and a status report whose rows
+    are dominated by unfinished work. They share one verdict, so they share one gate.
+    """
+    return (
+        _is_recommendation_prose(text, bodies)
+        or _is_design_decision_prose(text, bodies)
+        or _is_progress_report(text, bodies)
+    )
+
+
 def find_completion_block(text: str) -> CompletionVerdict | None:
     """Return a verdict to BLOCK, or ``None`` to allow (no fire).
 
@@ -405,13 +419,7 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
     if _no_claim_to_evaluate(text):
         return None
     bodies = _deliverable_bodies(text)
-    if len(bodies) < _MIN_DELIVERABLES:
-        return None
-    if _is_recommendation_prose(text, bodies):
-        return None
-    if _is_design_decision_prose(text, bodies):
-        return None
-    if _is_progress_report(text, bodies):
+    if len(bodies) < _MIN_DELIVERABLES or _is_not_a_delivery_claim(text, bodies):
         return None
     missing: list[str] = []
     lines_without_evidence = [

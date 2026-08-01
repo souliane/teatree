@@ -6,7 +6,7 @@ nothing else. The question was never answered, no work was dispatched, and the
 :white_check_mark: told the owner it had been handled. Three separate defects:
 
 * a receipt reaction and a completion reaction were the SAME emoji, so "seen"
-  and "done" were indistinguishable on the only surface the owner reads;
+    and "done" were indistinguishable on the only surface the owner reads;
 * an inbound message that implied work dispatched nothing; and
 * nothing ever asked whether a lane was already on it.
 
@@ -14,10 +14,10 @@ The four claims below are the contract:
 
 1. a message implying work dispatches EXACTLY ONE task;
 2. the same request, when a live lane already covers it, dispatches NONE and
-   says so in-thread;
+    says so in-thread;
 3. a question gets an ANSWER, not a bare reaction; and
 4. nothing is marked complete that was not — :white_check_mark: is placed only
-   behind a verified, delivered answer.
+    behind a verified, delivered answer.
 """
 
 from dataclasses import dataclass, field
@@ -25,8 +25,8 @@ from dataclasses import dataclass, field
 import pytest
 
 from teatree.core.models import PendingChatInjection, Task
-from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 from teatree.types import RawAPIDict
 
@@ -120,12 +120,12 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
     """Claim 1 — an instruction that implies work mints one task, no more."""
 
     def test_one_task_is_dispatched(self) -> None:
-        _row("the euribor rounding is still wrong on the offer PDF", ts="1.0")
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
         backend = RecordingBackend()
 
         report = run_slack_answer_cycle(
             messaging_resolver=_resolver(backend),
-            reader=_reader(_work("fix euribor rounding on the offer PDF")),
+            reader=_reader(_work("fix interest-rate rounding on the offer PDF")),
         )
 
         assert report.dispatched == 1
@@ -133,18 +133,18 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
 
     def test_the_dispatched_task_carries_the_request(self) -> None:
         """A fire-and-forget dispatch is not tracked work — the task names what it is for."""
-        _row("the euribor rounding is still wrong on the offer PDF", ts="1.0")
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
         backend = RecordingBackend()
 
         run_slack_answer_cycle(
             messaging_resolver=_resolver(backend),
-            reader=_reader(_work("fix euribor rounding on the offer PDF")),
+            reader=_reader(_work("fix interest-rate rounding on the offer PDF")),
         )
 
         task = Task.objects.get()
-        assert "euribor" in task.execution_reason.lower()
+        assert "interest-rate" in task.execution_reason.lower()
         assert task.ticket.extra["slack_answer"]["slack_ts"] == "1.0"
-        assert task.subject == "fix euribor rounding on the offer PDF", (
+        assert task.subject == "fix interest-rate rounding on the offer PDF", (
             "the lane is not named by the interpreted request, so nobody scanning the queue can see what it is"
         )
         assert task.ticket.extra["slack_answer"]["fingerprint"], (
@@ -153,12 +153,12 @@ class TestWorkImplyingMessageDispatchesExactlyOneTask:
 
     def test_the_dispatch_is_signalled_as_in_flight_not_done(self) -> None:
         """A dispatched lane is IN FLIGHT — never the completion emoji."""
-        _row("the euribor rounding is still wrong on the offer PDF", ts="1.0")
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
         backend = RecordingBackend()
 
         run_slack_answer_cycle(
             messaging_resolver=_resolver(backend),
-            reader=_reader(_work("fix euribor rounding on the offer PDF")),
+            reader=_reader(_work("fix interest-rate rounding on the offer PDF")),
         )
 
         assert InboundReaction.IN_FLIGHT in backend.emojis
@@ -169,14 +169,14 @@ class TestAlreadyCoveredDispatchesNothingAndSaysSo:
     """Claim 2 — a live lane on the same request wins; the loop reports it instead."""
 
     def test_no_second_task_and_the_reply_names_the_lane(self) -> None:
-        summary = "fix euribor rounding on the offer PDF"
-        _row("the euribor rounding is still wrong on the offer PDF", ts="1.0")
+        summary = "fix interest-rate rounding on the offer PDF"
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
         backend = RecordingBackend()
         run_slack_answer_cycle(messaging_resolver=_resolver(backend), reader=_reader(_work(summary)))
         first = Task.objects.get()
 
         # Same request, different words, a later message.
-        _row("did anyone look at the euribor rounding on the PDF yet", ts="2.0")
+        _row("did anyone look at the interest-rate rounding on the PDF yet", ts="2.0")
         second_backend = RecordingBackend()
         report = run_slack_answer_cycle(
             messaging_resolver=_resolver(second_backend),
@@ -191,11 +191,11 @@ class TestAlreadyCoveredDispatchesNothingAndSaysSo:
         assert str(first.pk) in body, f"the reply does not name the covering lane: {body!r}"
 
     def test_coverage_never_claims_completion(self) -> None:
-        summary = "fix euribor rounding on the offer PDF"
-        _row("the euribor rounding is still wrong on the offer PDF", ts="1.0")
+        summary = "fix interest-rate rounding on the offer PDF"
+        _row("the interest-rate rounding is still wrong on the offer PDF", ts="1.0")
         run_slack_answer_cycle(messaging_resolver=_resolver(RecordingBackend()), reader=_reader(_work(summary)))
 
-        _row("did anyone look at the euribor rounding on the PDF yet", ts="2.0")
+        _row("did anyone look at the interest-rate rounding on the PDF yet", ts="2.0")
         backend = RecordingBackend()
         run_slack_answer_cycle(messaging_resolver=_resolver(backend), reader=_reader(_work(summary)))
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.models import PendingChatInjection, Task
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.slack_answer.cycle import (
     SlackAnswerReport,
     _default_resolver,
@@ -22,7 +23,6 @@ from teatree.loop.slack_answer.cycle import (
     run_slack_answer_cycle,
     verify_reply_visible,
 )
-from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.types import RawAPIDict
 
 

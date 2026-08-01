@@ -82,6 +82,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
+│ notion          Headless Notion access (integration token) — read            │
+│                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
@@ -1472,10 +1474,13 @@ Usage: t3 review-request [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ discover  Discover open merge requests awaiting review.                      │
-│ check     Race-safe pre-post dedup gate against LIVE Slack messages (#1084). │
-│ post      Sanctioned authorized review-request post: #1094 dedup + #960      │
-│           approval + post (#1098).                                           │
+│ discover      Discover open merge requests awaiting review.                  │
+│ check         Race-safe pre-post dedup gate against LIVE Slack messages      │
+│               (#1084).                                                       │
+│ group-status  What each work group is waiting for before its members can be  │
+│               broadcast (R1).                                                │
+│ post          Sanctioned authorized review-request post: #1094 dedup + #960  │
+│               approval + post (#1098).                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1508,6 +1513,23 @@ Usage: t3 review-request check [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --mr-url        TEXT  Canonical MR/PR URL to dedup. [required]            │
 │    --help                Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review-request group-status`
+
+```
+Usage: t3 review-request group-status [OPTIONS]
+
+ What each work group is waiting for before its members can be broadcast (R1).
+
+ Read-only: it posts nothing and raises no owner question. For a group whose
+ every open member is review-ready it prints the ordered
+ ``t3 review-request post`` lines, leaving the decision to broadcast with you.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --mr-url        TEXT  Show only the work group holding this merge request.   │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3461,9 +3483,12 @@ Usage: t3 tool diff-coverage [OPTIONS]
  diff against its merge-base with ``--base``, NOT the clone's working tree, so
  unrelated uncommitted edits never enter the gate. When ``--base`` is omitted
  it
- resolves the configured base branch (``T3_DIFF_COVERAGE_BASE``) or the repo's
- ACTUAL default branch, never a hardcoded ``origin/main`` — the latter grades a
- ``master``-default repo or a fork's whole integration branch as new/uncovered.
+ resolves ``T3_DIFF_COVERAGE_BASE``, then the ``teatree.targetBranch`` git
+ config,
+ then the repo's ACTUAL default branch, never a hardcoded ``origin/main`` — the
+ latter grades a ``master``-default repo or a fork's whole integration branch
+ as
+ new/uncovered.
  Requires every new/changed production symbol to be imported by a changed test
  (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
  uncovered or a symbol is unreferenced.
@@ -3473,8 +3498,9 @@ Usage: t3 tool diff-coverage [OPTIONS]
 │                              [default: <bound method PathBase.cwd of <class  │
 │                              'pathlib._local.Path'>>]                        │
 │ --base                 TEXT  Ref to diff against (merge-base..HEAD).         │
-│                              Default: T3_DIFF_COVERAGE_BASE, else the repo's │
-│                              default branch.                                 │
+│                              Default: T3_DIFF_COVERAGE_BASE, else the        │
+│                              teatree.targetBranch git config, else the       │
+│                              repo's default branch.                          │
 │ --coverage-file        PATH  Path to .coverage data file                     │
 │                              [default: .coverage]                            │
 │ --json                       Emit machine-readable JSON.                     │
@@ -4000,10 +4026,10 @@ Usage: t3 overlay [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ install    Install an overlay editable into the current teatree worktree for │
-│            dogfooding.                                                       │
-│ uninstall  Uninstall an overlay from the current teatree worktree venv.      │
-│ status     Show overlays currently installed into this teatree worktree.     │
+│ install    Install an overlay editable into the current teatree workspace    │
+│            for dogfooding.                                                   │
+│ uninstall  Uninstall an overlay from the current teatree workspace venv.     │
+│ status     Show overlays currently installed into this teatree workspace.    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4012,7 +4038,7 @@ Usage: t3 overlay [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 overlay install [OPTIONS] NAME
 
- Install an overlay editable into the current teatree worktree for dogfooding.
+ Install an overlay editable into the current teatree workspace for dogfooding.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Overlay name as configured in the DB overlays registry. │
@@ -4028,7 +4054,7 @@ Usage: t3 overlay install [OPTIONS] NAME
 ```
 Usage: t3 overlay uninstall [OPTIONS] NAME
 
- Uninstall an overlay from the current teatree worktree venv.
+ Uninstall an overlay from the current teatree workspace venv.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Overlay name to uninstall. [required]                   │
@@ -4043,7 +4069,7 @@ Usage: t3 overlay uninstall [OPTIONS] NAME
 ```
 Usage: t3 overlay status [OPTIONS]
 
- Show overlays currently installed into this teatree worktree.
+ Show overlays currently installed into this teatree workspace.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -5408,10 +5434,16 @@ Usage: t3 mcp serve [OPTIONS]
 
  Run the structured-search MCP server over stdio (blocks until stdin closes).
 
- Every start first reaps orphaned predecessors (servers reparented to PID 1 —
- their client is gone, they can never serve again) and arms the parent-death
- watchdog so THIS server exits even when a leaked fd keeps its stdin from
- ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
+ This server writes, so it first hands itself to whichever domain owns the
+ control
+ database — a no-op on every install the containerized stack has not claimed
+ (see
+ :mod:`teatree.cli.mcp_owning_domain`). It then reaps orphaned predecessors
+ (servers
+ reparented to PID 1 — their client is gone, they can never serve again) and
+ arms
+ the parent-death watchdog so THIS server exits even when a leaked fd keeps its
+ stdin from ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -5454,6 +5486,347 @@ Usage: t3 mcp browser-diagnosis [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 notion`
+
+```
+Usage: t3 notion [OPTIONS] COMMAND [ARGS]...
+
+ Headless Notion access (integration token) — read pages/comments/properties,
+ write scoped.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ whoami       Verify the integration token and print the bot identity pages   │
+│              must be shared with.                                            │
+│ fetch        Fetch a page as Markdown (or raw blocks), optionally with its   │
+│              open comments.                                                  │
+│ audit-fetch  Read a dead page for an AUDIT, never to recover requirements    │
+│              from it.                                                        │
+│ comments     List the open (unresolved) comments on a page or block.         │
+│ append       Append content at the end of a page, then re-fetch to confirm   │
+│              it landed.                                                      │
+│ query        Query a Notion database (or data source) and emit the rows as   │
+│              JSON.                                                           │
+│ doctor       Triage one page: token present and valid, page shared, and page │
+│              still LIVE?                                                     │
+│ section      The owned-section write primitive.                              │
+│ comment      Post a page comment, once per marker.                           │
+│ property     Read or write one page property.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion whoami`
+
+```
+Usage: t3 notion whoami [OPTIONS]
+
+ Verify the integration token and print the bot identity pages must be shared
+ with.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay whose token routing to use.                   │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion fetch`
+
+```
+Usage: t3 notion fetch [OPTIONS] PAGE
+
+ Fetch a page as Markdown (or raw blocks), optionally with its open comments.
+
+ An archived, trashed or unprovable page exits 14 with its own diagnostic
+ instead of returning a body that reads exactly like a live one. To read one
+ anyway for a genuine audit, use the separate ``audit-fetch`` command.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay         TEXT  Overlay whose token routing to use.                  │
+│ --comments              Append the page's open discussions.                  │
+│ --json                  Emit the raw block tree instead of Markdown.         │
+│ --out             PATH  Write to this file instead of stdout.                │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion audit-fetch`
+
+```
+Usage: t3 notion audit-fetch [OPTIONS] PAGE
+
+ Read a dead page for an AUDIT, never to recover requirements from it.
+
+ Its own command rather than a flag on ``fetch``, deliberately: an escape that
+ can be reached by appending a flag to the read you were already typing will be
+ reached by habit, and this one must be reached only on purpose. The written
+ ``--reason`` is mandatory, the verdict and the reason go to stderr, and the
+ Markdown that comes back is stamped, so an audited body can never travel as a
+ current source. A page that is genuinely live reads through this command too —
+ with no stamp, because there is nothing to warn about.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL of a page this surface refuses │
+│                      as dead.                                                │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --reason         TEXT  Why this dead page is being read. Blank does not   │
+│                           unblock.                                           │
+│                           [required]                                         │
+│    --overlay        TEXT  Overlay whose token routing to use.                │
+│    --out            PATH  Write to this file instead of stdout.              │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion comments`
+
+```
+Usage: t3 notion comments [OPTIONS] PAGE
+
+ List the open (unresolved) comments on a page or block.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page or block id / notion.so URL. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay whose token routing to use.                   │
+│ --json                 Emit the raw comment objects.                         │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion append`
+
+```
+Usage: t3 notion append [OPTIONS] PAGE
+
+ Append content at the end of a page, then re-fetch to confirm it landed.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay            TEXT  Overlay whose token routing to use.               │
+│ --body-file          PATH  Markdown body to append.                          │
+│ --blocks-file        PATH  Raw Notion block JSON to append.                  │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion query`
+
+```
+Usage: t3 notion query [OPTIONS] DATABASE
+
+ Query a Notion database (or data source) and emit the rows as JSON.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    database      TEXT  Database id, data-source id, or notion.so URL.      │
+│                          [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay            TEXT     Overlay whose token routing to use.            │
+│ --data-source                 Target a data source instead of a database.    │
+│ --filter-file        PATH     JSON file holding a Notion filter object.      │
+│ --limit              INTEGER  Stop after this many rows (0 = every row).     │
+│                               [default: 0]                                   │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion doctor`
+
+```
+Usage: t3 notion doctor [OPTIONS] PAGE
+
+ Triage one page: token present and valid, page shared, and page still LIVE?
+
+ Reachable is not the same as current, and the third stage is the one a reader
+ cannot perform by eye: an archived page answers every earlier stage exactly
+ like a live one. It reports ``UNKNOWN`` — never ``OK`` — when the liveness
+ could not be established, and exits 14 on anything but ``OK``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL to probe reachability for.     │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay whose token routing to use.                   │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion section`
+
+```
+Usage: t3 notion section [OPTIONS] COMMAND [ARGS]...
+
+ The owned-section write primitive.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show     Show the resolved section: which heading matched, and exactly which │
+│          blocks are its body.                                                │
+│ replace  Rewrite ONE owned section in place — block-scoped, never a          │
+│          whole-page write.                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 notion section show`
+
+```
+Usage: t3 notion section show [OPTIONS] PAGE
+
+ Show the resolved section: which heading matched, and exactly which blocks are
+ its body.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --heading        TEXT  Canonical H2 heading that identifies the owned     │
+│                           section.                                           │
+│                           [required]                                         │
+│    --legacy         TEXT  Older heading string to adopt. Repeatable.         │
+│    --overlay        TEXT  Overlay whose token routing to use.                │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 notion section replace`
+
+```
+Usage: t3 notion section replace [OPTIONS] PAGE
+
+ Rewrite ONE owned section in place — block-scoped, never a whole-page write.
+
+ Absent → created, as a collapsed toggle heading carrying the canonical string.
+ There is no ``--blocks-file`` here (the section body must go through the block
+ builder for the contract to hold) and no ``--no-create`` (``section show``
+ already answers whether the section exists, without writing).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --heading          TEXT  Canonical H2 heading that identifies the owned   │
+│                             section.                                         │
+│                             [required]                                       │
+│ *  --body-file        PATH  Markdown body for the section. [required]        │
+│    --legacy           TEXT  Older heading string to adopt. Repeatable.       │
+│    --overlay          TEXT  Overlay whose token routing to use.              │
+│    --help                   Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion comment`
+
+```
+Usage: t3 notion comment [OPTIONS] COMMAND [ARGS]...
+
+ Post a page comment, once per marker.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ post  Post a comment unless its marker is already in the page's open         │
+│       discussions.                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 notion comment post`
+
+```
+Usage: t3 notion comment post [OPTIONS] PAGE
+
+ Post a comment unless its marker is already in the page's open discussions.
+
+ Refusing is the default because the callers are dedup-driven: a skill that
+ forgets a flag must under-post, never double-post. ``--allow-duplicate`` is
+ the deliberate second copy.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --body-file              PATH  File holding the comment text (stored      │
+│                                   verbatim).                                 │
+│                                   [required]                                 │
+│    --marker                 TEXT  Dedup key to look for first. Defaults to   │
+│                                   the whole body.                            │
+│    --allow-duplicate              Post even when the marker is already on    │
+│                                   the page.                                  │
+│    --overlay                TEXT  Overlay whose token routing to use.        │
+│    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 notion property`
+
+```
+Usage: t3 notion property [OPTIONS] COMMAND [ARGS]...
+
+ Read or write one page property.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ get  Print one page property — the poll a block-tree fetch cannot answer.    │
+│ set  Write one page property, shaped by its own type and verified by         │
+│      re-read.                                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 notion property get`
+
+```
+Usage: t3 notion property get [OPTIONS] PAGE
+
+ Print one page property — the poll a block-tree fetch cannot answer.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --name           TEXT  Property name, exactly as it reads in Notion.      │
+│                           [required]                                         │
+│    --json                 Emit the raw property object instead of its plain  │
+│                           value.                                             │
+│    --overlay        TEXT  Overlay whose token routing to use.                │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 notion property set`
+
+```
+Usage: t3 notion property set [OPTIONS] PAGE
+
+ Write one page property, shaped by its own type and verified by re-read.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    page      TEXT  Page id or notion.so URL. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --name           TEXT  Property name, exactly as it reads in Notion.      │
+│                           [required]                                         │
+│ *  --value          TEXT  Literal value; empty clears a nullable property.   │
+│                           [required]                                         │
+│    --overlay        TEXT  Overlay whose token routing to use.                │
+│    --help                 Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6367,6 +6740,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ raw-merge          Out-of-band raw-merge gate kill-switch (self-rescue).     │
 │ standing-goal      Standing verified-green stop-gate kill-switch             │
 │                    (self-rescue).                                            │
+│ glab-base-remote   Stale `glab-base` remote gate (glab's silent MR-create    │
+│                    no-op) kill-switch (self-rescue).                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6929,6 +7304,60 @@ Usage: t3 teatree gate standing-goal disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate standing-goal enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate glab-base-remote`
+
+```
+Usage: t3 teatree gate glab-base-remote [OPTIONS] COMMAND [ARGS]...
+
+ Stale `glab-base` remote gate (glab's silent MR-create no-op) kill-switch
+ (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate glab-base-remote status`
+
+```
+Usage: t3 teatree gate glab-base-remote status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate glab-base-remote disable`
+
+```
+Usage: t3 teatree gate glab-base-remote disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate glab-base-remote enable`
+
+```
+Usage: t3 teatree gate glab-base-remote enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -7677,6 +8106,11 @@ Usage: t3 teatree workspace reclaim-disk [OPTIONS]
  Free disk via the three safe Docker prunes, then STOP — engine:
  ``teatree.docker.reclaim`` (#2246).
 
+ Exits non-zero when docker was reachable and refused a prune (daemon
+ down, or no ``/var/run/docker.sock`` in the container the CLI runs in).
+ A silent ``Total reclaimed: 0B`` success reads exactly like "nothing
+ left to reclaim" to an operator whose disk is full.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run    --no-dry-run      Plan the reclaim set without removing         │
 │                                anything.                                     │
@@ -7876,6 +8310,12 @@ Usage: t3 teatree run frontend [OPTIONS]
 Usage: t3 teatree run build-frontend [OPTIONS]
 
  Build the frontend app for production/testing.
+
+ Every ``ok=False`` the launcher reports — no command configured, a build
+ already in flight, a non-zero build exit — means nothing was built, so it
+ stops the caller with exit 1 exactly as ``run tests`` / ``run lint`` do.
+ Discarding ``ok`` here reported a green production-build gate over a build
+ that never ran.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -8598,6 +9038,16 @@ Usage: t3 teatree pr ensure-pr [OPTIONS]
  ``--repo`` must be a filesystem path to a git checkout, never a forge
  slug (``owner/repo``) — validated up front so that mistake surfaces
  as a clear error instead of a silently misclassified branch (#2937).
+
+ The control-DB topology is read BEFORE the classification, because it is a
+ statement about where this code is running rather than an exception to
+ recover from afterwards. Every path past the classification needs the ORM —
+ ``create_or_defer_pr`` resolves the owning ``Worktree``, the PR budget, and
+ the forge credentials through it — so on a host that cannot reach the
+ container-only control DB this command dies on a raw ``OperationalError``
+ that is neither a ``DbBoundaryError`` nor anything the classifier can
+ report. Skipping with the reason keeps the pre-push hook it runs inside
+ from being wedged by a topology fact.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --branch        TEXT                                                         │
@@ -10050,6 +10500,11 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG
 │ --blast-class                    TEXT     Orchestrator judgment: substrate / │
 │                                           logic / docs (§17.4.2).            │
 │                                           [default: logic]                   │
+│ --forge                          TEXT     The forge hosting the PR/MR:       │
+│                                           github / gitlab. Required when the │
+│                                           CLEAR has no ticket and the repo   │
+│                                           is not the running clone — an      │
+│                                           owner/repo slug carries no host.   │
 │ --ticket-id                      INTEGER  Optional teatree Ticket id this    │
 │                                           CLEAR authorises the merge for.    │
 │                                           [default: 0]                       │
@@ -11125,17 +11580,32 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree questions record [OPTIONS] QUESTION
 
- Record a deferred question (called by the PreToolUse away-mode hook).
+ Record a deferred question by hand — the agent-facing capture surface.
+
+ ``--dedupe-marker`` and ``--audience`` are the two columns the scanners
+ already set, exposed so a question recorded here carries the SAME shape:
+ its row collapses onto the scanner's row for one underlying signal, and
+ an agent's self-report about its own tooling can be marked internal
+ instead of reaching the owner's DM.
+
+ There is no ``--tool-use-id``: that identifier is assigned by the harness
+ and nobody at a shell can know it. The away-mode ``AskUserQuestion``
+ PreToolUse hook records its own rows through
+ :meth:`DeferredQuestion.record` directly and sets it there.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    question      TEXT  The question text. [required]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --options            TEXT  Verbatim JSON-encoded ``AskUserQuestion``         │
-│                            options.                                          │
-│ --session            TEXT  Originating session id.                           │
-│ --tool-use-id        TEXT  Originating tool_use id.                          │
-│ --help                     Show this message and exit.                       │
+│ --options              TEXT  Verbatim JSON-encoded ``AskUserQuestion``       │
+│                              options.                                        │
+│ --session              TEXT  Originating session id.                         │
+│ --dedupe-marker        TEXT  Escalate-once scope; an open question already   │
+│                              carrying it is returned unchanged.              │
+│ --audience             TEXT  owner_question (DM'd to the owner) or internal  │
+│                              (logged only).                                  │
+│                              [default: owner_question]                       │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

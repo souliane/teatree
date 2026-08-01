@@ -16,11 +16,11 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.outage_classifier import is_transient_failure
 from teatree.core.management.commands.tasks_session_view import render_tasks_table
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure, is_environmental
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.dash.selectors import build_kanban_columns
+from teatree.failure_signatures import is_transient_failure
 
 if TYPE_CHECKING:
     from teatree.core.management.commands.tasks_session_view import TaskRow

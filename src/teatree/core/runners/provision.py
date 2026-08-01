@@ -16,7 +16,8 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
+from teatree.core.worktree.clone_provision import ensure_clone
 from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout

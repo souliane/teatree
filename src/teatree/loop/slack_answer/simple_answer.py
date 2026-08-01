@@ -28,8 +28,8 @@ import os
 from typing import TYPE_CHECKING
 
 from teatree.agents.one_shot import OneShotSpec, run_one_shot
-from teatree.loop.self_improve.budget import precheck_budget
 from teatree.loop.inbound_classifier import strip_urls
+from teatree.loop.self_improve.budget import precheck_budget
 from teatree.loop.statusline import statusline_for_slack
 
 if TYPE_CHECKING:

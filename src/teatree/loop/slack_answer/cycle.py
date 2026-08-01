@@ -57,9 +57,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.models import PendingChatInjection, Session, Task, Ticket
-from teatree.loop.slack_answer.orchestration import Coverage, dispatch_work, find_coverage, work_fingerprint
+from teatree.core.models import PendingChatInjection
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
+from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
 from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
 from teatree.loop.slack_answer.vocabulary import InboundReaction
@@ -340,11 +340,13 @@ def _orchestrate(backend: MessagingBackend, unit: _Unit, reading: InboundReading
         dispatch_work(
             reading=reading,
             fingerprint=work_fingerprint(reading, unit.text),
-            overlay=unit.overlay,
-            channel=unit.channel,
-            slack_ts=unit.slack_ts,
-            coalesced_ts=coalesced,
-            text=unit.text,
+            origin=WorkOrigin(
+                overlay=unit.overlay,
+                channel=unit.channel,
+                slack_ts=unit.slack_ts,
+                coalesced_ts=coalesced,
+                text=unit.text,
+            ),
         )
     try:
         backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)

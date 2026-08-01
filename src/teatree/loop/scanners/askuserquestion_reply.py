@@ -38,8 +38,8 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, read_inbound
+from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
 

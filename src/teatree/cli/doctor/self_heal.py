@@ -37,6 +37,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
+from teatree.cli.doctor.self_heal_slack_config_token import check_slack_config_token_fresh
 from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).

@@ -12,15 +12,15 @@ against the control plane's own records — Tasks, their Tickets, their Sessions
 never against the text of the message. Three questions, cheapest first:
 
 1. **Is this exact message already dispatched?** The ticket a dispatch mints
-   records its ``slack_ts`` (and every coalesced follow-up ts), so a re-run of
-   the cycle recognises its own lane instead of minting a rival. This is what
-   makes the whole path safe to retry after a failed thread post.
+    records its ``slack_ts`` (and every coalesced follow-up ts), so a re-run of
+    the cycle recognises its own lane instead of minting a rival. This is what
+    makes the whole path safe to retry after a failed thread post.
 2. **Is the same REQUEST already in flight?** Keyed on the interpreted
-   ``work_summary``, not the raw words, so "the euribor rounding is still wrong"
-   and "did anyone look at the euribor rounding yet" collapse onto one lane.
+    ``work_summary``, not the raw words, so "the interest-rate rounding is still wrong"
+    and "did anyone look at the interest-rate rounding yet" collapse onto one lane.
 3. **Is the subject already a live ticket?** A forge URL in the message that the
-   factory already tracks in a non-terminal state is covered by that ticket,
-   whatever words the owner used around it.
+    factory already tracks in a non-terminal state is covered by that ticket,
+    whatever words the owner used around it.
 
 Coverage found is REPORTED, never silently swallowed: the caller posts it in the
 thread. Telling the owner "task 42 has this" is the information he actually
@@ -126,15 +126,26 @@ def find_coverage(
     return _subject_coverage(text=text, overlay=overlay)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkOrigin:
+    """Where a dispatched lane came from — the Slack message that caused it.
+
+    Grouped because these five always travel together and mean nothing apart: they
+    are one message's identity, not five independent knobs.
+    """
+
+    overlay: str
+    channel: str
+    slack_ts: str
+    coalesced_ts: tuple[str, ...]
+    text: str
+
+
 def dispatch_work(
     *,
     reading: InboundReading,
     fingerprint: str,
-    overlay: str,
-    channel: str,
-    slack_ts: str,
-    coalesced_ts: tuple[str, ...],
-    text: str,
+    origin: WorkOrigin,
 ) -> Task:
     """Mint ONE tracked lane for *text* through the ordinary Ticket/Session/Task path.
 
@@ -143,6 +154,13 @@ def dispatch_work(
     carries the message's origin so a later cycle (or a human) can trace the lane
     back to the DM that caused it — and so :func:`find_coverage` recognises it.
     """
+    overlay, channel, slack_ts, coalesced_ts, text = (
+        origin.overlay,
+        origin.channel,
+        origin.slack_ts,
+        origin.coalesced_ts,
+        origin.text,
+    )
     ticket = Ticket.objects.create(
         overlay=overlay,
         role=Ticket.Role.AUTHOR,

@@ -4,8 +4,8 @@ The routing this replaces was a keyword table: a fixed imperative-verb set, a
 status-token list, and a ``why … fail`` regex. It answers "which of three cheap
 paths" and cannot answer the question the loop actually needs answered — *is
 this a question to answer, an instruction implying work, a correction, an FYI,
-or noise?* A table cannot tell "the euribor rounding is still wrong" (an
-instruction, in the indicative) from "the euribor rounding was wrong" (an FYI
+or noise?* A table cannot tell "the interest-rate rounding is still wrong" (an
+instruction, in the indicative) from "the interest-rate rounding was wrong" (an FYI
 about something already fixed), and it read the owner's question "beside that
 everything fixed?" as nothing at all.
 

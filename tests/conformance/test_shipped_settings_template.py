@@ -24,10 +24,12 @@ if the template ever grants a blanket rule for ``rm``, ``sudo``, ``ssh``,
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from teatree.cli.recommended_authorizations import RECOMMENDED_AUTHORIZATIONS
+from teatree.cli.setup.claude_settings import write_host_claude_settings
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "deploy" / "claude-settings.template.json"
 
@@ -135,8 +137,6 @@ class TestFreshBoxIsCorrectByConstruction:
     """
 
     def test_starved_host_gains_the_baseline_and_keeps_its_own_grants(self, tmp_path: Path) -> None:
-        from teatree.cli.setup.claude_settings import write_host_claude_settings
-
         host = tmp_path / "settings.json"
         host.write_text(
             json.dumps(
@@ -150,17 +150,15 @@ class TestFreshBoxIsCorrectByConstruction:
 
         merged = write_host_claude_settings(_TEMPLATE_PATH, host, env={})
 
-        permissions = merged["permissions"]["allow"]
-        sentences = "\n".join(merged["autoMode"]["allow"]).lower()
+        permissions = cast("dict[str, list[str]]", merged["permissions"])["allow"]
+        sentences = "\n".join(cast("dict[str, list[str]]", merged["autoMode"])["allow"]).lower()
         assert "Bash(tail:*)" in permissions
         assert "effective operation" in sentences
         assert "wrapping never" in sentences
         assert "Bash(my-own-tool:*)" in permissions
-        assert "My own operator sentence." in merged["autoMode"]["allow"]
+        assert "My own operator sentence." in cast("dict[str, list[str]]", merged["autoMode"])["allow"]
 
     def test_reseeding_an_already_correct_host_adds_nothing(self, tmp_path: Path) -> None:
-        from teatree.cli.setup.claude_settings import write_host_claude_settings
-
         host = tmp_path / "settings.json"
         host.write_text("{}", encoding="utf-8")
 

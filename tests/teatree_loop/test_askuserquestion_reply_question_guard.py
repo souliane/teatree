@@ -22,8 +22,8 @@ import pytest
 
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -98,7 +98,7 @@ class TestOwnerQuestionIsNotAnAnswer:
         backend = FakeMessaging()
 
         AskUserQuestionReplyScanner(
-            backend=backend,  # ty: ignore[invalid-argument-type]
+            backend=backend,
             reader=_reader_saying(InboundIntent.QUESTION),
         ).scan()
 
@@ -113,13 +113,11 @@ class TestOwnerQuestionIsNotAnAnswer:
         backend = FakeMessaging()
 
         AskUserQuestionReplyScanner(
-            backend=backend,  # ty: ignore[invalid-argument-type]
+            backend=backend,
             reader=_reader_saying(InboundIntent.QUESTION),
         ).scan()
 
-        assert backend.react_calls == [], (
-            f"an unanswered question was reacted to as handled: {backend.react_calls!r}"
-        )
+        assert backend.react_calls == [], f"an unanswered question was reacted to as handled: {backend.react_calls!r}"
 
     def test_a_real_answer_still_resolves_the_question(self) -> None:
         """Anti-vacuity: the guard must not disable the scanner's actual job."""
@@ -128,7 +126,7 @@ class TestOwnerQuestionIsNotAnAnswer:
         backend = FakeMessaging()
 
         AskUserQuestionReplyScanner(
-            backend=backend,  # ty: ignore[invalid-argument-type]
+            backend=backend,
             reader=_reader_saying(InboundIntent.FYI),
         ).scan()
 
@@ -147,7 +145,7 @@ class TestOwnerQuestionIsNotAnAnswer:
             raise AssertionError(msg)
 
         AskUserQuestionReplyScanner(
-            backend=backend,  # ty: ignore[invalid-argument-type]
+            backend=backend,
             reader=_exploding_reader,
         ).scan()
 
