@@ -1,3 +1,6 @@
+# test-path: cross-cutting — drives the sweep (loop.scanners.pr_sweep*) through the
+# real merge chokepoint (core.merge, core.models.pull_request/review_verdict); no
+# single src/teatree/ mirror dir covers the join.
 """The sweep's own merge must leave its ledger row reading ``merged`` (#3984).
 
 Every other sweep test stubs :meth:`PrApiClient.merge_pr_squash_bound` outright, so
