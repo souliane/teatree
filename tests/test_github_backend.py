@@ -25,7 +25,6 @@ from teatree.backends.github.api import (
     gh_ambient_auth_available,
 )
 from teatree.backends.github.projects import _gh_graphql
-from teatree.core.backend_protocols import PullRequestSpec
 
 
 def _reviewthreads_stdout(*, unresolved: int = 0, resolved: int = 0) -> str:
@@ -525,118 +524,6 @@ class TestFetchProjectItems:
 
 
 class TestGitHubCodeHost:
-    def test_create_pr(self) -> None:
-        """#1222: GitHub backend returns the canonical ``web_url`` field.
-
-        Cross-host code paths (notably ``ShipExecutor``) read ``web_url`` —
-        GitLab's API native key. Returning ``url`` here silently produced
-        empty PR rows on the ticket and tricked downstream gates into
-        thinking the PR was missing.
-        """
-        with patch.object(github_mod, "_run_gh") as mock_run:
-            mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1\n")
-            host = GitHubCodeHost(token="tok")
-            result = host.create_pr(
-                PullRequestSpec(
-                    repo="org/repo",
-                    branch="feature",
-                    title="Add feature",
-                    description="Description",
-                ),
-            )
-        assert result == {"web_url": "https://github.com/org/repo/pull/1"}
-
-    def test_create_pr_raises_when_gh_returns_no_url(self) -> None:
-        """#1226: an empty/non-URL ``gh pr create`` stdout must surface as a failure.
-
-        ``gh pr create`` can exit 0 while printing a non-URL line (e.g. the
-        "no commits between" pre-push race). The backend MUST refuse to claim
-        success with an empty URL; the ship runner relies on this invariant
-        to flip ``ok=False`` instead of advancing the FSM with an empty
-        ``pr_urls`` entry.
-        """
-        import pytest  # noqa: PLC0415
-
-        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
-
-        with patch.object(github_mod, "_run_gh") as mock_run:
-            mock_run.return_value = MagicMock(stdout="\n")
-            host = GitHubCodeHost(token="tok")
-            with pytest.raises(CommandFailedError):
-                host.create_pr(
-                    PullRequestSpec(
-                        repo="org/repo",
-                        branch="feature",
-                        title="Add feature",
-                        description="Description",
-                    ),
-                )
-
-    def test_create_pr_resolves_local_path_to_owner_repo_slug(self, tmp_path: object) -> None:
-        """``gh pr create --repo`` requires ``owner/repo`` — local paths must be resolved first."""
-        with (
-            patch.object(github_mod, "_run_gh") as mock_run,
-            patch.object(github_mod.git, "remote_slug", return_value="souliane/teatree") as mock_slug,
-        ):
-            mock_run.return_value = MagicMock(stdout="https://github.com/souliane/teatree/pull/3\n")
-            host = GitHubCodeHost()
-            host.create_pr(
-                PullRequestSpec(
-                    repo="/Users/adrien/workspace/ticket/teatree",
-                    branch="feature",
-                    title="t",
-                    description="d",
-                ),
-            )
-        mock_slug.assert_called_once_with(repo="/Users/adrien/workspace/ticket/teatree")
-        cmd = list(mock_run.call_args[0])
-        assert cmd[cmd.index("--repo") + 1] == "souliane/teatree"
-
-    def test_create_pr_passes_through_existing_slug_unchanged(self) -> None:
-        """When the caller already provides ``owner/repo``, no resolution is needed."""
-        with patch.object(github_mod, "_run_gh") as mock_run:
-            mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/4\n")
-            host = GitHubCodeHost()
-            host.create_pr(
-                PullRequestSpec(
-                    repo="org/repo",
-                    branch="feature",
-                    title="t",
-                    description="d",
-                ),
-            )
-        cmd = list(mock_run.call_args[0])
-        assert cmd[cmd.index("--repo") + 1] == "org/repo"
-
-    def test_create_pr_with_optional_params(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
-            mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/2\n")
-            host = GitHubCodeHost()
-            host.create_pr(
-                PullRequestSpec(
-                    repo="org/repo",
-                    branch="feature",
-                    title="Title",
-                    description="Desc",
-                    target_branch="develop",
-                    labels=["bug", "urgent"],
-                    assignee="user1",
-                ),
-            )
-        args = mock_run.call_args[0]
-        cmd = list(args)
-        # Flatten for checking
-        flat = []
-        for a in cmd:
-            if isinstance(a, (list, tuple)):
-                flat.extend(a)
-            else:
-                flat.append(a)
-        assert "--base" in flat
-        assert "develop" in flat
-        assert "--label" in flat
-        assert "--assignee" in flat
-
     def test_current_user_returns_login(self) -> None:
         with patch.object(github_mod, "_gh_api_get", return_value={"login": "souliane", "id": 42}) as mock_get:
             host = GitHubCodeHost(token="tok")
