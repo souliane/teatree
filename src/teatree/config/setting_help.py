@@ -133,7 +133,7 @@ SETTING_HELP: dict[str, str] = {
     "issue_implementer_cadence_hours": "hours between issue-implementer runs",
     "issue_implementer_enabled": "let the loop claim and implement labelled issues",
     "issue_implementer_label": "label an issue must carry for the implementer to claim it",
-    "issue_implementer_max_concurrent": "how many issues the implementer may have in flight at once",
+    "issue_implementer_max_concurrent": "fallback in-flight ceiling when the resource loop has no adaptive reading",
     "limit_autorecovery_enabled": "resume automatically once a usage limit window reopens",
     "local_stack_queue_disabled": "stop queueing work that needs a local stack",
     "local_stack_queue_max_attempts": "attempts a queued local-stack unit gets before it is abandoned",

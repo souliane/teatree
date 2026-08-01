@@ -44,7 +44,10 @@ class _LoopFlagAndCredentialSettings:
     # governs INTAKE only; merge authority is untouched (a substrate PR still
     # needs a recorded human approver).
     trusted_issue_authors: list[str] = field(default_factory=list)
-    # Cap on simultaneously in-flight auto-implement tickets.
+    # The FALLBACK in-flight ceiling when the resource loop has no adaptive
+    # opinion (kill-switch off, no reading yet, or stale) — see #3992's
+    # resolve_intake_concurrency, which otherwise derives the live limit from
+    # observed headroom and may exceed this number.
     issue_implementer_max_concurrent: int = 3
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
