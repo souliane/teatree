@@ -34,6 +34,31 @@ def test_settings_importable():
     assert mod.STATIC_URL == "static/"
 
 
+class TestSuiteSettingsMirrorProduction:
+    """The suite must resolve dates in production's zone, and actually run on its own settings.
+
+    Django's global ``TIME_ZONE`` default is ``America/Chicago``, so omitting it from
+    ``tests/django_settings.py`` put every ``localdate()`` boundary at 05:00/06:00 UTC —
+    inside the window this repo's CI runs in — while production resolves them at 00:00
+    UTC. That is what turned a once-a-cycle rollover into a shuffle-lane red on an
+    unrelated PR (souliane/teatree#3996).
+    """
+
+    def test_timezone_matches_production(self) -> None:
+        prod = importlib.import_module("teatree.settings")
+        suite = importlib.import_module("tests.django_settings")
+        assert getattr(suite, "TIME_ZONE", None) == prod.TIME_ZONE
+        assert getattr(suite, "USE_TZ", None) is prod.USE_TZ
+
+    def test_the_active_settings_are_the_suite_settings(self) -> None:
+        # pytest-django ranks an ambient DJANGO_SETTINGS_MODULE above the ini key, so
+        # without the ``--ds`` in addopts a shell that exports it runs the whole suite
+        # against production settings — a different DB and a different TIME_ZONE.
+        from django.conf import settings  # noqa: PLC0415 — deferred: read the ACTIVE module, not an import-time copy
+
+        assert settings.SETTINGS_MODULE == "tests.django_settings"
+
+
 def test_discover_overlay_apps_skips_broken_entry_points():
     """Entry points that raise on load are silently skipped."""
     broken_ep = type("FakeEP", (), {"load": lambda self: (_ for _ in ()).throw(ImportError("boom"))})()

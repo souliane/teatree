@@ -13,13 +13,18 @@ from pathlib import Path
 import pytest
 from django.utils import timezone
 
+from teatree.core.cost import cycle_start
 from teatree.core.models import Session, Task, TaskAttempt
 from teatree.loop.rendering import cost_chip_lines
 from teatree.loop.tick_freshness import _write_tick_meta
+from tests.conftest import CYCLE_MIDPOINT
 from tests.factories import TicketFactory
 
+# ``pinned_clock`` is not decoration: the chip filters on the cycle the READER derives
+# from ``localdate()``, so an attempt stamped from the wall clock disappears when the
+# local date rolls onto a cycle start between the stamp and the read (#3996).
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("pinned_clock")]
 
 
 def _headless_attempt(task: Task, *, cost: float) -> TaskAttempt:
@@ -87,3 +92,42 @@ class TestCostChipInTickMeta:
         _write_tick_meta(started, target=statusline)
         meta = json.loads((tmp_path / "tick-meta.json").read_text(encoding="utf-8"))
         assert meta["rendered_at"] == int(started.timestamp())
+
+
+class TestChipAssertionsAreClockIndependent:
+    """The #3996 shuffle-lane red: a wall-clock race, not an order leak.
+
+    ``cost_chip_lines`` keeps attempts whose ``started_at`` is at or after the cycle
+    the READER derives from ``localdate()`` at read time. Excluding an attempt stamped
+    a hair before a cycle start is correct — it belongs to the previous cycle — so the
+    defect was never in production, it was these tests stamping from the wall clock and
+    then letting the reader re-read it. Under a shuffled order the seed only decided
+    which test was on the clock when the local date rolled over.
+    """
+
+    def setup_method(self) -> None:
+        self.ticket = TicketFactory()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+    def test_attempts_are_stamped_from_the_pinned_clock(self) -> None:
+        assert _headless_attempt(self.task, cost=1.0).started_at == CYCLE_MIDPOINT
+
+    def test_pinned_clock_sits_well_inside_its_cycle(self) -> None:
+        # A pin parked ON a boundary would re-open the race the pin exists to close:
+        # a sub-second read drift either side must not change the cycle.
+        today = timezone.localdate()
+        start = cycle_start(today)
+        assert start < today, f"reading {today}, not a mid-cycle pin — the pin was dropped or moved onto a boundary"
+        assert timezone.localtime(timezone.now()).hour not in {0, 23}
+
+    def test_an_attempt_before_the_cycle_start_is_excluded(self) -> None:
+        # The exclusion the flake surfaced, pinned deliberately: it is the intended
+        # month-boundary reset, not the bug.
+        start = timezone.make_aware(
+            dt.datetime.combine(cycle_start(timezone.localdate()), dt.time.min),
+            timezone.get_current_timezone(),
+        )
+        attempt = _headless_attempt(self.task, cost=48.0)
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=start - dt.timedelta(microseconds=1))
+        assert cost_chip_lines() == []

@@ -4,6 +4,10 @@ import teatree
 
 SECRET_KEY = "teatree-tests"
 USE_TZ = True
+# Django's own default is ``America/Chicago``, so omitting this ran every date-boundary
+# assertion against a local midnight at 05:00/06:00 UTC — inside the window this repo's
+# CI actually runs in — while production resolves the same dates in UTC (#3996).
+TIME_ZONE = "UTC"
 ROOT_URLCONF = "teatree.urls"
 STATIC_URL = "/static/"
 
