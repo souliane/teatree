@@ -14,6 +14,11 @@ is exactly what this command exists to replace. Zero is their floor: a negative
 grace moves the cutoff into the FUTURE, so it releases claims that are still in
 flight and re-dispatches the very issues this ledger exists to guard.
 
+The ledger is converged against the forge first: the release verdict is drawn from
+``PullRequest.state``, so a merged PR whose row nobody advanced would otherwise be
+judged on a field the forge already disagrees with — and forcing the grace to zero
+to work around that releases genuinely in-flight claims too (#3984).
+
 Split out of ``teatree.cli.loop.app`` (module-health cap, same rationale as the
 sibling ``claim_next`` / ``slack_answer`` splits) and registered flat on
 ``loop_app`` by that module.
@@ -61,6 +66,7 @@ def reclaim_markers_command(
 
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
 
+    settled = _sync_live_pr_rows(overlay)
     result = ImplementedIssueMarker.objects.reconcile_stale(
         overlay,
         orphan_grace=None if orphan_grace_hours is None else dt.timedelta(hours=orphan_grace_hours),
@@ -77,6 +83,7 @@ def reclaim_markers_command(
                     "released": result.released,
                     "completed": list(result.completed),
                     "abandoned": list(result.abandoned),
+                    "pr_rows_settled": settled,
                 }
             )
         )
@@ -85,5 +92,25 @@ def reclaim_markers_command(
     typer.echo(
         f"Reclaimed {result.released} stale issue-marker(s) for {scope}: "
         f"{len(result.completed)} completed (terminal ticket or merged PR), "
-        f"{len(result.abandoned)} abandoned (gone or stalled ticket)."
+        f"{len(result.abandoned)} abandoned (gone or stalled ticket); "
+        f"{settled} PR row(s) settled from the forge first."
     )
+
+
+def _sync_live_pr_rows(overlay: str) -> int:
+    """Converge *overlay*'s live PR rows against the forge before markers are judged (#3984).
+
+    ``reconcile_stale`` releases on ``PullRequest.state == MERGED``, and nothing advanced
+    that field for a PR merged outside the keystone — so this lever could only ever
+    reproduce a verdict drawn from a field the forge already disagreed with, and an
+    operator staring at a merged PR had to force the grace to zero to get the slot back.
+    Whole-overlay rather than holder-scoped: this is the hand-run convergence pass, and
+    it is self-limiting because MERGED and CLOSED are terminal. Unconditional and safe to
+    run offline — the reader collapses every transport error to UNKNOWN, which settles
+    nothing, so an unreachable forge degrades to the ledger-as-recorded verdict.
+    """
+    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — ORM import needs the app registry
+
+    rows = PullRequest.objects.filter(overlay=overlay) if overlay else PullRequest.objects.all()
+    return rows.reconcile_forge_states(read_state=pr_open_state)

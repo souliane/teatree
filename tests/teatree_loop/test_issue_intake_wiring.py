@@ -14,8 +14,8 @@ from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
-from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import Task, Ticket
+from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
+from teatree.core.models import PullRequest, Task, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -190,6 +190,52 @@ class IssueIntakeGateTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)):
             scanner = _issue_intake_scanner_for(_backend())
         assert scanner is not None
+
+    def test_a_holder_whose_pr_merged_out_of_band_frees_the_budget(self) -> None:
+        """#3984 jam: nothing advanced the row, so the release rule never saw MERGED.
+
+        The row is the only evidence the rule and its alarm read, so asking the forge
+        for it before the budget is read is what stops one unadvanced field holding a
+        slot AND silencing the alarm about it.
+        """
+        url = "https://github.com/souliane/teatree/issues/3978"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+        row = PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/souliane/teatree/pull/3981",
+            repo="souliane/teatree",
+            iid="3981",
+        )
+
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
+            patch("teatree.backends.loader.pr_open_state", return_value=PrOpenState.MERGED),
+        ):
+            scanner = _issue_intake_scanner_for(_backend())
+
+        row.refresh_from_db()
+        assert row.state == PullRequest.State.MERGED
+        assert scanner is not None
+
+    def test_an_unreadable_forge_never_blocks_the_tick(self) -> None:
+        url = "https://github.com/souliane/teatree/issues/3979"
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="acme",
+            url="https://github.com/souliane/teatree/pull/3982",
+            repo="souliane/teatree",
+            iid="3982",
+        )
+
+        with (
+            patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=2)),
+            patch("teatree.backends.loader.pr_open_state", side_effect=RuntimeError("forge down")),
+        ):
+            assert _issue_intake_scanner_for(_backend()) is not None
 
     def test_abandoned_marker_does_not_consume_budget(self) -> None:
         ImplementedIssueMarkerFactory(overlay="acme", abandoned=True)

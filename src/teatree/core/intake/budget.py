@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING
 from django.utils import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from django.db.models import QuerySet
+
     from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
     from teatree.core.models.ticket import Ticket
 
@@ -81,17 +85,46 @@ class IntakeBudget:
 
 def read_intake_budget(overlay: str, limit: int, *, settle: timedelta | None = None) -> IntakeBudget:
     """Read *overlay*'s in-flight budget against *limit*. ``overlay=""`` spans every overlay."""
-    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
-
     cutoff = timezone.now() - (_DEFAULT_SETTLE if settle is None else settle)
-    markers = ImplementedIssueMarker.objects.exclude(state__in=ImplementedIssueMarker.State.terminal())
-    if overlay:
-        markers = markers.filter(overlay=overlay)
     return IntakeBudget(
         overlay=overlay,
         limit=limit,
-        holders=tuple(_held_slot(marker, cutoff=cutoff) for marker in markers.order_by("pk")),
+        holders=tuple(_held_slot(marker, cutoff=cutoff) for marker in _holders(overlay)),
     )
+
+
+def reconcile_holder_pr_rows(overlay: str, *, read_state: "Callable[[str], str]") -> int:
+    """Settle the ledger rows of every ticket holding a slot; return the count moved (#3984).
+
+    Both readings above are drawn from ``PullRequest.state``, so a row nobody advanced
+    after its PR merged does two things at once: it holds the slot (the release rule
+    asks for ``MERGED`` and never sees it) and it silences the alarm that exists to
+    report that (:attr:`IntakeBudget.deadlocked` reads the same row as proof of a live
+    attempt). Asking the forge before either reading is what keeps them from disagreeing
+    with it.
+
+    Scoped to the HOLDERS, not the ledger: the probe count is the slot count, so the
+    cost is the budget limit however large the ledger grows. *read_state* is injected —
+    reading a PR's live state needs a concrete backend, which ``teatree.core`` may not
+    import (the same split as ``open_pr_teardown_gate``'s ``PrStateReader``).
+    """
+    from teatree.core.models import PullRequest, Ticket  # noqa: PLC0415 — ORM import needs the app registry
+
+    issue_urls = [url for url in _holders(overlay).values_list("issue_url", flat=True) if url]
+    if not issue_urls:
+        return 0
+    held = Ticket.objects.filter(issue_url__in=issue_urls).values_list("pk", flat=True)
+    return PullRequest.objects.filter(ticket_id__in=held).reconcile_forge_states(read_state=read_state)
+
+
+def _holders(overlay: str) -> "QuerySet[ImplementedIssueMarker]":
+    """The non-terminal markers occupying *overlay*'s budget. ``overlay=""`` spans every one."""
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
+
+    markers = ImplementedIssueMarker.objects.exclude(state__in=ImplementedIssueMarker.State.terminal())
+    if overlay:
+        markers = markers.filter(overlay=overlay)
+    return markers.order_by("pk")
 
 
 def _held_slot(marker: "ImplementedIssueMarker", *, cutoff: datetime) -> HeldSlot:

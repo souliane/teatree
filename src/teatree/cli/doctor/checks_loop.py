@@ -72,6 +72,12 @@ def _check_intake_budget_deadlock() -> bool:
     warns only once a release grace has already expired) this HARD-FAILs, and fires
     while the graces are still running. Crash-proof: a broken read degrades to OK with a
     WARN, so a doctor run never reddens on the alarm's own failure.
+
+    Read-only, deliberately: the "is this holder's PR still open?" evidence comes from
+    ``PullRequest.state``, and keeping that field honest belongs to the writers — the
+    merge chokepoint stamps it the instant a merge lands, and the intake tick reconciles
+    the holders' rows against the forge before every budget read (#3984). Probing the
+    forge here instead would let a diagnostic mutate the state it reports on.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.core.intake.budget import (  # noqa: PLC0415 — deferred: keeps CLI startup light

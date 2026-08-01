@@ -327,6 +327,26 @@ def _owned_repo_slugs(overlay: "OverlayBase | None") -> tuple[str, ...]:
     return tuple(slugs)
 
 
+def _reconcile_holder_pr_rows(overlay_name: str) -> None:
+    """Ask the forge about each budget holder's PR before the budget is read (#3984).
+
+    Both intake readings — the release rule and the deadlock alarm — are drawn from
+    ``PullRequest.state``, so a row nobody advanced after its PR merged holds the slot
+    AND silences the alarm about it. Best-effort: an unreadable forge leaves rows
+    unsettled (the reader collapses every error to UNKNOWN, which never settles), and a
+    failure here must not stop the tick claiming.
+    """
+    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.intake.budget import reconcile_holder_pr_rows  # noqa: PLC0415 — leaf import
+
+    try:
+        reconcile_holder_pr_rows(overlay_name, read_state=pr_open_state)
+    except Exception:
+        logger.exception(
+            "intake: could not reconcile held PR rows for %s — reading the budget as recorded", overlay_name
+        )
+
+
 def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | None:
     """Build the per-overlay unified intake scanner behind the triple gate (#3634).
 
@@ -359,6 +379,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     code_host = backend.host
     if code_host is None:
         return None
+    _reconcile_holder_pr_rows(backend.name)
     # #3275: self-heal the in-flight budget BEFORE reading it. A marker orphaned
     # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
     # so it strands its slot and the budget gate reads false forever.
