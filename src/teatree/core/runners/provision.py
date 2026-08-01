@@ -10,6 +10,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
@@ -352,21 +353,15 @@ class WorktreeProvisioner(RunnerBase):
     def _existing_ticket_dir(ticket: Ticket) -> Path | None:
         """The shared parent dir of this ticket's already-materialised worktrees.
 
-        Returns the common parent of every existing ``Worktree`` whose
-        ``worktree_path`` is on disk, so a repo added later co-locates as a
-        sibling there rather than in a fresh ``<workspace>/<branch>`` dir. A
-        repo worktree lives at ``<ticket_dir>/<repo-basename>``, so its parent
-        IS the ticket dir. Returns ``None`` when the ticket has no materialised
-        worktree yet (first provision) or when the existing ones disagree on a
-        parent (a pre-existing split we don't paper over), leaving the caller's
+        Delegates to :func:`~teatree.core.worktree.ticket_workspace.ticket_workspace_dir`
+        so the provisioner's co-location rule and the refusal the ad-hoc registration
+        seams now enforce are the SAME predicate. They were the same rule expressed
+        twice, which is how the ad-hoc seams came to have no rule at all: a repo added
+        later co-locates as a sibling in the ticket's existing dir, and ``None`` (no
+        materialised worktree yet, or an existing split) leaves the caller's
         ``workspace / branch`` default in force.
         """
-        parents = {
-            Path(path).parent
-            for wt in Worktree.objects.for_ticket(ticket)
-            if (path := (wt.extra or {}).get("worktree_path")) and Path(path).is_dir()
-        }
-        return parents.pop() if len(parents) == 1 else None
+        return ticket_workspace_dir(ticket)
 
     @staticmethod
     def _create(

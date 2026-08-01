@@ -70,8 +70,10 @@ from teatree.cli.doctor.checks_session import (
     _check_interactive_permission_mode,
     _check_slack_socket_mode,
 )
+from teatree.cli.doctor.checks_skill_supply import _check_dispatched_overlay_skills, _check_skill_source_drift
 from teatree.cli.doctor.checks_slack_engagement import check_slack_engagement
 from teatree.cli.doctor.checks_slack_roundtrip import check_slack_roundtrip
+from teatree.cli.doctor.checks_stranded_prek_patches import check_stranded_prek_patches
 from teatree.cli.doctor.checks_unshipped_work import check_unshipped_work
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
 from teatree.cli.doctor.dev_sources import (
@@ -123,6 +125,7 @@ __all__ = (
     "_check_control_db_agreement",
     "_check_dangling_editable_pth",
     "_check_declared_dependencies_provisioned",
+    "_check_dispatched_overlay_skills",
     "_check_docker_workflow_wired",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
@@ -146,6 +149,7 @@ __all__ = (
     "_check_shipped_seed_inertness",
     "_check_single_db",
     "_check_singletons",
+    "_check_skill_source_drift",
     "_check_skills",
     "_check_slack_socket_mode",
     "_check_stale_path_t3",
@@ -174,6 +178,7 @@ __all__ = (
     "check_slack_roundtrip",
     "check_statusline",
     "check_statusline_freshness",
+    "check_stranded_prek_patches",
     "check_unshipped_work",
     "doctor_app",
 )
@@ -308,11 +313,20 @@ def _check_enabled_but_unprovisioned() -> bool:
     here. All HARD-FAIL, and each runs independently (no short-circuit) so every finding
     is emitted; returns their AND. The review-skill check reads the ConfigSetting store,
     so the caller runs this after :func:`ensure_django`.
+
+    The two skill-supply gates extend the family to the OVERLAY's own declaration
+    surfaces, which none of the readers above can see: the per-phase dispatch map (a
+    stage skill that resolves to nothing loads nothing and warns into a log), and the
+    source clone an installed skill was copied from (a copy cannot announce that a
+    merged fix moved past it). Both read overlay config, so they too run after
+    ``ensure_django``.
     """
     declared = _check_declared_dependencies_provisioned()
     review_skills = _check_configured_review_skills()
     pyright_lsp = _check_pyright_lsp_plugin()
-    return declared and review_skills and pyright_lsp
+    dispatched_skills = _check_dispatched_overlay_skills()
+    skill_drift = _check_skill_source_drift()
+    return declared and review_skills and pyright_lsp and dispatched_skills and skill_drift
 
 
 def _run_daily_advisories() -> None:
@@ -393,7 +407,20 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # those rows visible with an age (#3891). Nothing reaps them, so without a
     # surface nobody looks. The tuple calls all three before ``all`` short-circuits,
     # so no finding masks another.
-    ok = all((check_worktree_health(), check_pending_pull_requests(), check_unshipped_work())) and ok
+    # The fourth is advisory for the same reason as the third and reads a cache rather
+    # than a row: a pre-commit stash whose restore failed leaves the tree clean, so
+    # nothing but the saved patch records that the work ever existed.
+    ok = (
+        all(
+            (
+                check_worktree_health(),
+                check_pending_pull_requests(),
+                check_unshipped_work(),
+                check_stranded_prek_patches(),
+            )
+        )
+        and ok
+    )
     ok = _check_single_db() and ok
     ok = _check_control_db_agreement() and ok
     ok = _check_stale_uv_venv() and ok

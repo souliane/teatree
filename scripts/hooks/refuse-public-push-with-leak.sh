@@ -34,15 +34,17 @@
 # linear `<remote-sha>..<local-sha>` range, which a merge-forward inflates
 # with the whole of `main` (#3523).
 #
-# Visibility is resolved via `gh repo view <owner>/<repo> --json
-# visibility`. The gate SKIPS the scan only when the remote is KNOWN to be
-# private/internal. Every undetermined case — no owner/repo shape, no
-# `gh`, a `gh` error, or an unrecognised answer — fails CLOSED and the
-# diff is scanned anyway, so a leak never rides out on a gh-less machine
-# or an unparsable remote (§3f #14; was fail-open). "Fail closed" here
-# means "scan anyway", NOT "block anyway": the scan still fails OPEN on a
-# scanner crash and blocks ONLY on a real finding, so a clean push on a
-# machine without `gh` is unaffected.
+# Visibility is resolved by `teatree.hooks.repo_visibility_cli`, which routes
+# the probe by the remote's HOST (`gh` for GitHub, `glab` for GitLab) and
+# day-caches the verdict per slug. The gate SKIPS the scan only when the
+# remote is KNOWN to be private/internal. Every undetermined case — an
+# unparsable remote, no forge CLI for that host, a probe error, or an
+# unrecognised answer — fails CLOSED and the diff is scanned anyway, so a
+# leak never rides out on a tool-less machine or an unparsable remote
+# (§3f #14; was fail-open). "Fail closed" here means "scan anyway", NOT
+# "block anyway": the scan still fails OPEN on a scanner crash and blocks
+# ONLY on a real finding, so a clean push on a machine without a forge CLI
+# is unaffected.
 #
 # Wired via prek in `.pre-commit-config.yaml` (stages: [push]) so it
 # ships with the repo and needs no per-machine bootstrap.
@@ -57,27 +59,47 @@ if [ -z "${remote_url}" ]; then
 fi
 [ -n "${remote_url}" ] || exit 0  # no remote URL — nothing to gate
 
-# Extract owner/repo from common GitHub URL shapes (the ssh-shape
-# example below carries the inline allow-annotation so this hook's own
-# header does not self-trip the privacy gate it powers):
+# Human-readable repo label for the messages only — NOT the probe key (the
+# ssh-shape example below carries the inline allow-annotation so this hook's
+# own header does not self-trip the privacy gate it powers):
 #   https://github.com/owner/repo(.git)
 #   git@github.com:owner/repo(.git)  # privacy-scan:allow doc example
 slug=$(printf '%s' "${remote_url}" \
   | sed -E 's#^[^:]+://[^/]+/##; s#^git@[^:]+:##; s#\.git$##')
 
-# Resolve visibility only when we have an owner/repo shape AND gh. Any
-# other path leaves it empty (undetermined).
-visibility=""
-case "${slug}" in
-  */*)
-    if command -v gh >/dev/null 2>&1; then
-      visibility=$(gh repo view "${slug}" --json visibility \
-        --jq '.visibility' 2>/dev/null || true)
-      # Normalise (gh emits PUBLIC/PRIVATE/INTERNAL).
-      visibility=$(printf '%s' "${visibility}" | tr '[:lower:]' '[:upper:]')
-    fi
-    ;;
-esac
+# Resolve the repo root from this script's own location
+# (scripts/hooks/<this>.sh -> repo root) so the visibility CLI runs against
+# THIS clone's teatree regardless of the caller's cwd.
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
+# The FULL remote URL is passed (never the host-stripped `slug`) because the
+# host segment is what selects the forge tool. Shelling `gh repo view` here
+# hard-coded ONE forge: a gitlab.com remote errored on every push, so
+# visibility was permanently undetermined and this gate re-scanned a PRIVATE
+# repo forever.
+_resolve_visibility() {
+  if command -v uv >/dev/null 2>&1; then
+    uv run --project "${repo_root}" --no-sync \
+      python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>/dev/null && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+      python3 -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# Overridable for testing, mirroring T3_PRIVACY_SCAN_CMD.
+visibility=$(
+  if [ -n "${T3_REPO_VISIBILITY_CMD:-}" ]; then
+    ${T3_REPO_VISIBILITY_CMD} "${remote_url}" 2>/dev/null || true
+  else
+    _resolve_visibility || true
+  fi
+)
+# Normalise (PUBLIC/PRIVATE/INTERNAL/UNKNOWN); anything else is undetermined.
+visibility=$(printf '%s' "${visibility}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
 
 case "${visibility}" in
   PRIVATE | INTERNAL)
@@ -86,12 +108,12 @@ case "${visibility}" in
   PUBLIC)
     : ;;  # confirmed public — scan
   *)
-    # Undetermined visibility (no owner/repo shape, no gh, a gh error, or
-    # an unrecognised answer). Fail CLOSED: scan anyway. The scan itself
-    # still fails OPEN on a scanner crash and blocks ONLY on a real
-    # finding, so a clean push on a gh-less machine still passes — only an
+    # Undetermined visibility (unparsable remote, no forge CLI for that host,
+    # a probe error, or an unrecognised answer). Fail CLOSED: scan anyway. The
+    # scan itself still fails OPEN on a scanner crash and blocks ONLY on a real
+    # finding, so a clean push on a tool-less machine still passes — only an
     # actual leak is stopped. Warn loudly so the undetermined path shows.
-    echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (gh unavailable or unrecognised) — scanning anyway (fail closed, §3f #14)." >&2
+    echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning anyway (fail closed, §3f #14)." >&2
     ;;
 esac
 
