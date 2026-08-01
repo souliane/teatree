@@ -3,12 +3,12 @@
 Two forms of one decision, because the two consumers need different spellings:
 
 * :func:`resolve_target_branch` returns a REMOTE-qualified ref (``origin/main``)
-  for the merge-prediction gates — :func:`~teatree.core.worktree.branch_currency.sha_conflicts_with_target`
-  and friends fetch the remote named by its first segment.
+    for the merge-prediction gates — :func:`~teatree.core.worktree.branch_currency.sha_conflicts_with_target`
+    and friends fetch the remote named by its first segment.
 * :func:`resolve_pr_target_branch` returns a BARE branch name for
-  :class:`~teatree.core.backend_protocols.PullRequestSpec` — GitLab's
-  ``target_branch`` and ``gh pr create --base`` both take a branch, not a
-  remote-qualified ref — or ``""`` to let the forge's own default branch stand.
+    :class:`~teatree.core.backend_protocols.PullRequestSpec` — GitLab's
+    ``target_branch`` and ``gh pr create --base`` both take a branch, not a
+    remote-qualified ref — or ``""`` to let the forge's own default branch stand.
 
 It lives here, next to the currency gate rather than inside the ``pr create``
 command package, so every producer can reach it without importing a command
@@ -50,10 +50,10 @@ def _explicit_target(ticket: "Ticket | None", branch: str) -> str:
     Two tiers, highest first:
 
     1. ``ticket.extra['target_branch']`` — the per-ticket override a stacked PR
-       sets to base on something other than the repo default.
+        sets to base on something other than the repo default.
     2. The ``target_branch`` SETTING — a whole line of work stacking onto ONE
-       long-lived integration branch, rather than every ticket repeating the
-       same override.
+        long-lived integration branch, rather than every ticket repeating the
+        same override.
 
     *branch* is the branch being shipped, and exists for the self-target guard:
     the integration branch must NOT target itself, or its own PR is a no-op and

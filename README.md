@@ -386,6 +386,13 @@ t3 ui                           # browse and run the whole command tree in a ter
 t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
+t3 notion whoami|doctor         # headless Notion access via an integration token (no interactive connector, so a scheduled run reaches a page at all): verify the token / triage one page (token valid, page shared, page still LIVE)
+t3 notion fetch <page>          # read a page as Markdown (or raw blocks), optionally with its open comments; refuses an ARCHIVED page with its own exit code and names the successor, because a dead page renders exactly like a current one
+t3 notion audit-fetch <page>    # read a DEAD page for a postmortem — deliberately its own command so it is not reachable by habit
+t3 notion comments|append|query # list open comments; append at the end of a page; query a database/data source as JSON
+t3 notion section show|replace  # the owned-section write primitive — block-scoped, so replacing one heading's body leaves every discussion on the rest of the page intact (there is deliberately no whole-page replace)
+t3 notion comment post          # marker-keyed, so a caller that forgets the flag under-posts rather than double-posts
+t3 notion property get|set      # read/write one page property — the poll a block-tree fetch cannot answer; every write re-reads and refuses to report success unless the change landed
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated pass (~04:00 slot); the worker's off-live-tick driver chain fires it, decoupled from the live loop
 t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)

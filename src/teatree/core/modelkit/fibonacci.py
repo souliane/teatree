@@ -4,13 +4,13 @@
 caller multiplies it by whatever base its own cadence is measured in. Two do:
 
 - the local-stack acquisition queue (``core/gates/local_stack_gate.py`` →
-  ``LocalStackQueueItem``) retries a stalled ``worktree start`` / ``workspace
-  start`` on :func:`fibonacci_minutes` — one MINUTE per step. A queued request
-  never tears down another ticket's stack; it waits for a slot to free
-  naturally and backs off geometrically so a permanently-full host does not
-  re-shell docker every tick.
+    ``LocalStackQueueItem``) retries a stalled ``worktree start`` / ``workspace
+    start`` on :func:`fibonacci_minutes` — one MINUTE per step. A queued request
+    never tears down another ticket's stack; it waits for a slot to free
+    naturally and backs off geometrically so a permanently-full host does not
+    re-shell docker every tick.
 - the review nag (``core/review/mr_triage.TriageThresholds``) re-asks on the
-  same steps against a per-owner base measured in DAYS, capped.
+    same steps against a per-owner base measured in DAYS, capped.
 
 Kept pure (no DB, no clock) so it is exhaustively unit-testable and so each
 caller can compute its next-attempt moment from an attempt count

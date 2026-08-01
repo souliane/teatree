@@ -71,7 +71,7 @@ def _reinstall_argv(uv_bin: str, source: Path) -> list[str]:
     silently de-registers every overlay: the next in-process
     ``get_overlay("<name>")`` dies with ``Overlay '<name>' not found. Available:
     t3-teatree`` and every headless task on an overlay-owned ticket halts at
-    dispatch. Re-declaring the host here keeps ``t3 update`` and the loop's
+    dispatch. Redeclaring the host here keeps ``t3 update`` and the loop's
     deferred-reinstall drain from disarming the install they are refreshing.
     """
     argv = [uv_bin, "tool", "install", "--editable", str(source), *uv_overrides_args(source), "--reinstall"]
