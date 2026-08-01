@@ -27,6 +27,9 @@ DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 ENTRYPOINT = (DEPLOY / "entrypoint.sh").read_text(encoding="utf-8")
 COMPOSE = yaml.safe_load((DEPLOY / "docker-compose.yml").read_text(encoding="utf-8"))
 
+# The canonical CONTAINER path of the shared DB dir — the mount TARGET, which is
+# fixed for every service (the host-side source root is the `TEATREE_HOST_HOME`
+# knob; see tests/test_deploy_bindmount_compose.py).
 SHARED_DB_MOUNT = "/home/teatree/.local/share/teatree"
 
 
@@ -131,12 +134,12 @@ class TestComposeSlackListenerService:
         # Via the *teatree-common anchor: the listener must read the SAME
         # overlays registry (the bind-mounted sqlite DB) the worker writes, or
         # it resolves a different set of Slack-enabled overlays.
-        sources = {
-            entry["source"]
+        targets = {
+            entry["target"]
             for entry in self._service["volumes"]
             if isinstance(entry, dict) and entry.get("type") == "bind"
         }
-        assert SHARED_DB_MOUNT in sources
+        assert SHARED_DB_MOUNT in targets
 
 
 @pytest.mark.skipif(

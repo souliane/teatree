@@ -41,14 +41,16 @@ import subprocess
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
+from tests._git_repo import _GIT, git_identity_env, make_git_repo
 
 # ── environment & invocation context ────────────────────────────────────
 
@@ -95,7 +97,18 @@ class GateContext:
         """
         self.monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
-        self.monkeypatch.setattr(router.subprocess, "run", lambda *a, **k: result)
+        real_run = subprocess.run
+
+        # Only the `t3` invocation is pinned. Answering EVERY subprocess.run also swallowed
+        # the git probes a gate runs to prove which repo a ship comes from, so those probes
+        # inherited this returncode and the gate skipped before it measured anything — a row
+        # could then never arrange a real repo, and a skip is not the denial it asserts.
+        def _run_pinning_only_t3(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+            argv = args[0] if args else kwargs.get("args", ())
+            program = str(argv[0]) if isinstance(argv, list | tuple) and argv else str(argv)
+            return result if Path(program).name.startswith("t3") else real_run(*args, **kwargs)
+
+        self.monkeypatch.setattr(router.subprocess, "run", _run_pinning_only_t3)
 
     def write_state(self, suffix: str, lines: str) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -640,16 +653,85 @@ def _banned_bash_allow(ctx: GateContext) -> dict:
 # fails Gate 12 denies; a passing report allows.
 
 
+_UNCOVERED_REPO = "shipping-repo"
+
+
+def _arrange_uncovered_repo(ctx: GateContext) -> None:
+    """A repo the gate can prove the ship comes FROM, so it reaches the measurement.
+
+    The gate skips — never denies — when it cannot resolve which repo a create publishes
+    (its never-lockout contract). Without a real repo and a push destination the row asserts
+    a denial the gate could not have produced for that reason alone, which proves nothing
+    about the coverage verdict this row exists to pin.
+    """
+    repo = make_git_repo(ctx.tmp_path / _UNCOVERED_REPO)
+    subprocess.run(
+        [_GIT, "-C", str(repo), "remote", "add", "origin", "https://example.invalid/o/r.git"],
+        check=True,
+        capture_output=True,
+        env=git_identity_env(),
+    )
+
+
+_STALE_BASE_REPO = "glab-base-repo"
+_CLEAN_BASE_REPO = "glab-clean-repo"
+_PINNED_REPO = "pinned-repo"
+
+
+def _add_remote(repo: Path, name: str, url: str) -> None:
+    subprocess.run(
+        [_GIT, "-C", str(repo), "remote", "add", name, url],
+        check=True,
+        capture_output=True,
+        env=git_identity_env(),
+    )
+
+
+def _arrange_glab_base_remotes(ctx: GateContext) -> None:
+    """One repo carrying a STALE `glab-base` override, one carrying none.
+
+    The gate reads the override off the cwd repo's remotes, so both arms need a real
+    repository — a payload with no repo allows for want of a remote to read, which is
+    not the allow the row means to assert.
+    """
+    stale = make_git_repo(ctx.tmp_path / _STALE_BASE_REPO)
+    _add_remote(stale, BASE_REMOTE, "https://gitlab.example.com/one/project.git")
+    make_git_repo(ctx.tmp_path / _CLEAN_BASE_REPO)
+
+
+def _glab_base_deny(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _STALE_BASE_REPO} && glab mr create -R other/project")
+
+
+def _glab_base_allow(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _CLEAN_BASE_REPO} && glab mr create -R other/project")
+
+
+def _arrange_single_branch_repo(ctx: GateContext) -> None:
+    """A repo whose slug is DECLARED single-branch, pinned to its default branch."""
+    repo = make_git_repo(ctx.tmp_path / _PINNED_REPO)
+    _add_remote(repo, "origin", "https://example.invalid/acme/pinned.git")
+    ctx.seed_setting("single_branch_repos", ["acme/pinned=main"])
+
+
+def _second_branch_deny(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _PINNED_REPO} && git checkout -b feature/second")
+
+
+def _second_branch_allow(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _PINNED_REPO} && git worktree list")
+
+
 def _uncovered_deny(ctx: GateContext) -> dict:
     report = json.dumps({"passes": False, "uncovered": [{"path": "a.py", "lines": [1, 2]}]})
     ctx.patch_t3_subprocess(returncode=1, stdout=report)
-    return _bash("gh pr create --title t --body b")
+    return _bash(f"cd {ctx.tmp_path / _UNCOVERED_REPO} && gh pr create --title t --body b")
 
 
 def _uncovered_allow(ctx: GateContext) -> dict:
     report = json.dumps({"passes": True, "uncovered": []})
     ctx.patch_t3_subprocess(returncode=0, stdout=report)
-    return _bash("gh pr create --title t --body b")
+    return _bash(f"cd {ctx.tmp_path / _UNCOVERED_REPO} && gh pr create --title t --body b")
 
 
 # enforce-orchestrator-boundary Bash arm (PreToolUse Bash): a foreground heavy
@@ -996,12 +1078,31 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         arrange=_arrange_banned_terms,
     ),
     GateRow(
+        gate_id="block-glab-stale-base-remote",
+        handler=router.handle_block_glab_stale_base_remote,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_glab_base_deny,
+        allow_input=_glab_base_allow,
+        arrange=_arrange_glab_base_remotes,
+    ),
+    GateRow(
+        gate_id="block-second-branch",
+        handler=router.handle_block_second_branch,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_second_branch_deny,
+        allow_input=_second_branch_allow,
+        arrange=_arrange_single_branch_repo,
+    ),
+    GateRow(
         gate_id="block-uncovered-diff",
         handler=router.handle_block_uncovered_diff,
         event="PreToolUse",
         matched="Bash",
         deny_input=_uncovered_deny,
         allow_input=_uncovered_allow,
+        arrange=_arrange_uncovered_repo,
     ),
     GateRow(
         gate_id="enforce-orchestrator-boundary-bash",

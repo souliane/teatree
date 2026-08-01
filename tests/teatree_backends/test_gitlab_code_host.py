@@ -7,7 +7,7 @@ from teatree.backends.gitlab.discussions import (
     _note_author,
     thread_opened_solely_by,
 )
-from teatree.core.backend_protocols import PullRequestSpec
+from teatree.core.backend_protocols import BackendResolutionError, DraftState, PullRequestSpec
 
 
 def _project() -> ProjectInfo:
@@ -1587,3 +1587,54 @@ def test_list_recently_merged_with_cutoff_paginates() -> None:
     with patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)):
         result = api.list_recently_merged_mrs("alice", updated_after="2026-01-01T00:00:00Z")
     assert len(result) == 101
+
+
+def _draft_host(client: MagicMock) -> GitLabCodeHost:
+    client.resolve_project.return_value = _project()
+    return GitLabCodeHost(client=client)
+
+
+def test_fetch_pr_draft_state_reads_the_draft_flag_over_http() -> None:
+    """The draft probe must NOT shell out to ``glab`` — that binary is absent headless."""
+    client = MagicMock(spec=GitLabAPI)
+    client.get_json.return_value = {"draft": True}
+
+    assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.DRAFT
+    client.get_json.assert_called_once_with("projects/42/merge_requests/12")
+
+
+def test_fetch_pr_draft_state_accepts_the_legacy_work_in_progress_field() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.get_json.return_value = {"work_in_progress": True}
+
+    assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.DRAFT
+
+
+def test_fetch_pr_draft_state_confirms_a_non_draft() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.get_json.return_value = {"draft": False, "work_in_progress": False}
+
+    assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.NOT_DRAFT
+
+
+def test_fetch_pr_draft_state_unresolvable_project_is_unknown() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    client.resolve_project_from_remote.return_value = None
+
+    assert GitLabCodeHost(client=client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.UNKNOWN
+
+
+def test_fetch_pr_draft_state_transport_error_is_unknown_not_non_draft() -> None:
+    """A read that RAISED is not a live MR — the consumers refuse on UNKNOWN."""
+    client = MagicMock(spec=GitLabAPI)
+    client.get_json.side_effect = BackendResolutionError("no token")
+
+    assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.UNKNOWN
+
+
+def test_fetch_pr_draft_state_non_dict_payload_is_unknown() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.get_json.return_value = []
+
+    assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.UNKNOWN

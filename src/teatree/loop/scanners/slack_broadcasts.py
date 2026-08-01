@@ -207,14 +207,14 @@ def _seed_review_request_posts(
 
     The ``ReviewNagScanner`` walks ``ReviewRequestPost`` rows; before #1256
     only the bot's review-request flow wrote those rows, so manually-posted
-    MRs in the review channel escaped the +1/+2/+3/+5d nag cadence. Seeding
+    MRs in the review channel escaped the re-ping cadence entirely. Seeding
     here closes that gap — the broadcast scanner is the single ingestion
     point for any colleague- or author-broadcast.
 
     Idempotent on ``mr_url`` via ``record_review_request_post``: a re-scan
-    refreshes the channel/thread reference but preserves ``last_nag_at`` and
-    ``done_at`` so the nag state is not reset. Merged URLs are
-    skipped — only open MRs need nagging.
+    refreshes the channel/thread reference but preserves ``last_nag_at``,
+    ``nag_count`` and ``done_at`` so the nag state is not reset. Merged URLs
+    are skipped — only open MRs need nagging.
     """
     for state in _open_subset(states):
         record_review_request_post(

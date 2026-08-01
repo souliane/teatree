@@ -19,6 +19,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target
+from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
 from teatree.utils import git
 
 if TYPE_CHECKING:
@@ -278,7 +279,7 @@ class ShipExecutor(RunnerBase):
         # `pr create` gate already auto-merged the target, but ``execute_ship``
         # may run in an async worker after a window where ``origin/<target>``
         # advanced again. Abort only when the branch now *conflicts* with target.
-        currency_error = self._check_branch_currency(ticket, extra, repo_path, branch)
+        currency_error = self._check_branch_currency(ticket, repo_path, branch)
         if currency_error is not None:
             return RunnerResult(ok=False, detail=currency_error)
 
@@ -405,7 +406,6 @@ class ShipExecutor(RunnerBase):
     @staticmethod
     def _check_branch_currency(
         ticket: "Ticket",
-        extra: "TicketExtra",
         repo_path: str,
         branch: str,
     ) -> str | None:
@@ -420,15 +420,13 @@ class ShipExecutor(RunnerBase):
         not a push blocker. ``sha_conflicts_with_target`` predicts the
         merge via ``git merge-tree`` without mutating the worktree, so
         this stays a non-mutating defense gate.
+
+        The target is resolved through the shared
+        :func:`~teatree.core.worktree.target_branch.resolve_target_branch` seam,
+        so this re-check predicts against exactly the branch ``pr create``'s
+        gate merged in and the PR will be opened against.
         """
-        explicit = str(extra.get("target_branch") or "").strip()
-        if explicit:
-            target = explicit if "/" in explicit else f"origin/{explicit}"
-        else:
-            try:
-                target = f"origin/{git.default_branch(repo=repo_path)}"
-            except (RuntimeError, ValueError):
-                return None
+        target = resolve_target_branch(ticket, repo_path, branch=branch)
         conflict = sha_conflicts_with_target(repo_path, branch, target)
         if conflict is None:
             return None
@@ -528,6 +526,7 @@ class ShipExecutor(RunnerBase):
             branch=branch,
             title=title,
             description=description,
+            target_branch=resolve_pr_target_branch(ticket, branch=branch),
             labels=overlay_pr_labels(),
             assignee=assignee,
         )

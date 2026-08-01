@@ -259,7 +259,7 @@ class TestFetchNotionStatuses(TestCase):
         with _patch_overlay(SyncOverlay(notion_token="ntn_secret")):
             fetch_notion_statuses()
 
-        assert hits["count"] == 3
+        assert hits["count"] == 6  # each ticket: one liveness probe, then the status read
 
     def test_skips_tickets_without_page_id_or_status(self) -> None:
         no_url = Ticket.objects.create(overlay="test", extra={})
@@ -274,10 +274,38 @@ class TestFetchNotionStatuses(TestCase):
         with _patch_overlay(SyncOverlay(notion_token="ntn_secret")):
             fetch_notion_statuses()
 
-        assert len(calls) == 1  # only the ticket carrying a notion_url is fetched
+        assert len(calls) == 2  # only the ticket carrying a notion_url is fetched: liveness probe + status read
         for ticket in (no_url, no_status):
             ticket.refresh_from_db()
             assert "notion_status" not in ticket.extra
+
+    def test_an_archived_pages_status_is_never_recorded_onto_a_live_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"notion_url": _NOTION_URL})
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"archived": True, "properties": {"Status": {"status": {"name": "In Progress (dev/config)"}}}},
+            )
+
+        _patch_notion_transport(self._monkeypatch, handler)
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret")):
+            fetch_notion_statuses()
+
+        ticket.refresh_from_db()
+        assert "notion_status" not in ticket.extra, "a dead page's status must not become the ticket's status"
+
+    def test_write_back_refuses_an_archived_page(self) -> None:
+        methods: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            methods.append(request.method)
+            return httpx.Response(200, json={"object": "page", "id": _PAGE_ID, "archived": True})
+
+        _patch_notion_transport(self._monkeypatch, handler)
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=True)):
+            assert push_notion_status(_PAGE_ID, "Merged") is False
+        assert "PATCH" not in methods
 
     def test_update_page_status_gated_by_write_back_flag(self) -> None:
         patches: list[str] = []
@@ -294,7 +322,7 @@ class TestFetchNotionStatuses(TestCase):
 
         with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=True)):
             assert push_notion_status(_PAGE_ID, "Merged") is True
-        assert patches == ["PATCH"]
+        assert patches == ["GET", "PATCH"]  # the liveness probe reads the page before the mirror is written
 
     def test_push_notion_status_write_back_on_but_no_token_is_noop(self) -> None:
         with _patch_overlay(SyncOverlay(notion_token="", notion_write_back=True)):

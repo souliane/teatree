@@ -68,20 +68,47 @@ class Command(MachineOutputCommand):
     def record(
         self,
         question: Annotated[str, typer.Argument(help="The question text.")],
+        *,
         options_json: Annotated[
             str,
             typer.Option("--options", help="Verbatim JSON-encoded ``AskUserQuestion`` options."),
         ] = "",
         session_id: Annotated[str, typer.Option("--session", help="Originating session id.")] = "",
-        tool_use_id: Annotated[str, typer.Option("--tool-use-id", help="Originating tool_use id.")] = "",
+        dedupe_marker: Annotated[
+            str,
+            typer.Option(
+                "--dedupe-marker",
+                help="Escalate-once scope; an open question already carrying it is returned unchanged.",
+            ),
+        ] = "",
+        audience: Annotated[
+            str,
+            typer.Option("--audience", help="owner_question (DM'd to the owner) or internal (logged only)."),
+        ] = DeferredQuestion.Audience.OWNER_QUESTION,
     ) -> str:
-        """Record a deferred question (called by the PreToolUse away-mode hook)."""
+        """Record a deferred question by hand — the agent-facing capture surface.
+
+        ``--dedupe-marker`` and ``--audience`` are the two columns the scanners
+        already set, exposed so a question recorded here carries the SAME shape:
+        its row collapses onto the scanner's row for one underlying signal, and
+        an agent's self-report about its own tooling can be marked internal
+        instead of reaching the owner's DM.
+
+        There is no ``--tool-use-id``: that identifier is assigned by the harness
+        and nobody at a shell can know it. The away-mode ``AskUserQuestion``
+        PreToolUse hook records its own rows through
+        :meth:`DeferredQuestion.record` directly and sets it there.
+        """
+        if audience not in DeferredQuestion.Audience.values:
+            self.stderr.write(f"unknown audience {audience!r} — expected one of {DeferredQuestion.Audience.values}")
+            raise SystemExit(2)
         try:
             row = DeferredQuestion.record(
                 question,
                 options_json=options_json,
                 session_id=session_id,
-                tool_use_id=tool_use_id,
+                dedupe_marker=dedupe_marker,
+                audience=audience,
             )
         except DeferredQuestionError as exc:
             self.stderr.write(str(exc))

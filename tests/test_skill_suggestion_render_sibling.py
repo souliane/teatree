@@ -52,6 +52,21 @@ class TestRenderSkillSuggestionMessage:
         assert "/writing-plans" in message  # surfaced ...
         assert "writing-plans" not in pending.read_text(encoding="utf-8")  # ... but not a hard demand
 
+    def test_load_directive_names_the_same_token_as_pending(self, tmp_path: Path) -> None:
+        # An overlay ``skill_path`` reaches the renderer path-shaped. The agent
+        # can only load the canonical name, and that is what the PreToolUse gate
+        # reads back out of pending — so the directive must name it too.
+        pending = tmp_path / "pending"
+        message = render_skill_suggestion_message(
+            {"suggestions": ["overlay/skills/acme/SKILL.md"], "advisory": [], "companions": []},
+            pending=pending,
+            t3_reminder="",
+            normalize=lambda name: "acme" if name.endswith("/SKILL.md") else name,
+        )
+        assert "/acme" in message
+        assert "overlay/skills/acme/SKILL.md" not in message
+        assert pending.read_text(encoding="utf-8").strip() == "acme"
+
     def test_companion_surfaces_even_with_no_hard_suggestions(self, tmp_path: Path) -> None:
         # A companion of an already-loaded skill: no hard suggestion remains, yet
         # the companion is still surfaced (no mandatory directive is rendered).

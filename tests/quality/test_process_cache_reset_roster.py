@@ -142,6 +142,9 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
     "teatree.hooks.quote_scanner:_BLOCKLIST_CACHE": "reset_blocklist_cache",
     "teatree.core.schema_readiness:_MEMO": "invalidate_schema_readiness",
+    "teatree.config.host_projection:_warned": "reset_advisory_memo",
+    "teatree.core.worktree.branch_classification:_declared_single_branch_repos": "reset_single_branch_cache",
+    "teatree.loop.scanners.my_prs_ci:_MEMO": "reset_ci_memo",
     # The shipped seed tables are read by the `config_setting import` classifier, and tests
     # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
     # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT

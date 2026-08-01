@@ -28,6 +28,7 @@ given the resuming ``Task``. The transport stays pure/injectable — persistence
 lives in the sibling module, never inside the harness classes themselves.
 """
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, Protocol, cast
@@ -44,6 +45,7 @@ from teatree.agents.harness_registry import (
     assert_provider_valid_for_harness,
     register_harness,
     resolve_harness_spec,
+    valid_providers_for,
 )
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
@@ -62,6 +64,8 @@ from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_t
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.regulated_path import assert_model_allowed_on_regulated_path
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
+
+logger = logging.getLogger(__name__)
 
 CLAUDE_SDK_CAPABILITIES = HarnessCapabilities(
     hooks=True,
@@ -430,7 +434,10 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     constraint, which the closed-enum ``AgentHarnessProvider.valid_for`` cannot. It validates
     the CONFIG harness (never the phase-pinned one), so a verification-phase pin never turns a
     provider valid for the configured harness into a spurious failure; an unpinned provider
-    always passes.
+    always passes. The dispatch's Layer-2 credential must therefore come from
+    :func:`resolve_dispatch_provider`, which applies the SAME pin to the provider — reading
+    ``settings.agent_harness_provider`` directly re-opens exactly the failure this validation
+    deliberately declines to raise.
     """
     settings = get_effective_settings(_task_overlay(task))
     provider = settings.agent_harness_provider
@@ -438,6 +445,56 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     harness_name = resolve_phase_harness(settings.agent_harness, phase)
     spec = resolve_harness_spec(harness_name)
     return spec.factory(HarnessBuildContext(task=task, phase=phase, settings=settings))
+
+
+def resolve_dispatch_provider(task: "Task | None" = None, *, phase: str | None = None) -> AgentHarnessProvider | None:
+    """The Layer-2 provider that APPLIES to the harness :func:`resolve_harness` just resolved.
+
+    ``agent_harness_provider`` is Layer 2 and is CONSTRAINED BY Layer 1: the operator pins
+    it for the ``agent_harness`` they configured. When
+    :func:`~teatree.agents.model_tiering.resolve_phase_harness` PINS a verification *phase*
+    onto a different transport, that Layer-1 flip does not carry the Layer-2 pin with it —
+    the pin was never made for the pinned harness. Reading the configured provider straight
+    off the settings would hand the dispatch a credential selector invalid under the harness
+    it is actually running, which the claude_sdk child-env resolver
+    (:func:`~teatree.agents._headless_env._provider_child_env`) then refuses, failing every
+    verification dispatch of an otherwise-VALID deployment.
+
+    So a pin the phase flip invalidated is DROPPED (to the ambient-credential default,
+    ``None``) with a WARNING — never silently, and never by inventing a substitute
+    credential the operator did not choose. This mirrors
+    :func:`~teatree.agents._headless_env.system_child_env`, which already warns-and-falls-back
+    for the same shape.
+
+    Nothing else is weakened. A pair no phase pin explains is untouched here and still fails
+    loud: the ``ConfigSetting`` cross-key gate
+    (:func:`~teatree.config.cross_key_consistency.validate_cross_key_write`) refuses to store
+    it, and :func:`resolve_harness` above raises
+    :class:`~teatree.agents.harness_registry.InvalidHarnessProviderError` on it at dispatch.
+
+    Resolved at the same TASK-OVERLAY settings scope as :func:`resolve_harness`, so the
+    transport and the credential can never be read from two different scopes.
+    """
+    settings = get_effective_settings(_task_overlay(task))
+    provider = settings.agent_harness_provider
+    if provider is None:
+        return None
+    harness_name = resolve_phase_harness(settings.agent_harness, phase)
+    if harness_name == settings.agent_harness:
+        return provider
+    valid = valid_providers_for(harness_name)
+    if valid and provider.value not in valid:
+        logger.warning(
+            "phase=%s pins agent_harness=%s, under which the configured "
+            "agent_harness_provider=%s is not valid; this dispatch drops the Layer-2 pin and "
+            "uses the ambient credential (the configured agent_harness=%s is unaffected)",
+            phase,
+            harness_name,
+            provider.value,
+            settings.agent_harness,
+        )
+        return None
+    return provider
 
 
 def pydantic_ai_thread(session: HarnessSession) -> "list[ModelMessage] | None":

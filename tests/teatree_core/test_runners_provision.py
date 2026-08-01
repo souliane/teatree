@@ -1130,3 +1130,108 @@ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
 
         assert result.ok is True, result.detail
         assert (self.workspace / "ac-teatree-2276-bare" / "teatree" / ".git").exists()
+
+
+class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
+    """A repo declared SINGLE-BRANCH admits no worktree on any other branch.
+
+    The `t3 <overlay> worktree provision` half of the single-branch rule. The Bash
+    half (raw ``git worktree add`` / ``checkout -b``) is a PreToolUse gate over the
+    same decision core; this pins that the CLI path refuses too, because prose
+    saying "one branch" was already tried and produced 31 worktrees.
+
+    The refusal has to land BEFORE the ``Worktree`` row is created, or a blocked
+    provision leaves a half-provisioned repo on the ticket for the next run to
+    trip over.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _ticket(self, branch: str) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/91",
+            repos=["widget-core"],
+            extra={"branch": branch, "description": "x"},
+        )
+
+    @contextmanager
+    def _declared(self, *, enabled: bool = True, entries: list[str] | None = None) -> Iterator[None]:
+        declared = ["group/widget-core=chore/fork-bootstrap"]
+
+        class _Settings:
+            single_branch_repos = entries if entries is not None else declared
+
+        with (
+            patch("teatree.core.runners.provision.get_effective_settings", return_value=_Settings()),
+            patch("teatree.core.runners.provision.cold_reader.bool_setting", return_value=enabled),
+        ):
+            yield
+
+    def _run(self, branch: str, *, enabled: bool = True, entries: list[str] | None = None) -> Any:
+        repo_dir = self.workspace / "widget-core"
+        repo_dir.mkdir(exist_ok=True)
+        (repo_dir / ".git").mkdir(exist_ok=True)
+        ticket = self._ticket(branch)
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, branch, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            self._declared(enabled=enabled, entries=entries),
+        ):
+            return WorktreeProvisioner(ticket).run(), ticket
+
+    def test_a_second_branch_is_refused(self) -> None:
+        result, _ticket = self._run("feat/side-quest")
+
+        assert result.ok is False
+        assert "widget-core" in result.detail
+
+    def test_the_refusal_leaves_no_worktree_row_behind(self) -> None:
+        """No DB row and no checkout — the two things a later run would trip over.
+
+        ``run()`` pre-creates the (empty) ticket DIR before reaching the per-repo
+        call, so that dir's existence is not evidence of a half-provision; the
+        repo checkout inside it is.
+        """
+        _result, ticket = self._run("feat/side-quest")
+
+        assert not Worktree.objects.filter(ticket=ticket).exists()
+        assert not (self.workspace / "feat/side-quest" / "widget-core").exists()
+        assert not (ticket.extra or {}).get("provision")
+
+    def test_the_refusal_names_the_rule_in_the_log(self) -> None:
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            self._run("feat/side-quest")
+
+        blocked = "\n".join(logs.output)
+        assert "SINGLE-BRANCH" in blocked
+        assert "chore/fork-bootstrap" in blocked
+        assert "single_branch_repos" in blocked
+
+    def test_the_pinned_branch_still_provisions(self) -> None:
+        result, ticket = self._run("chore/fork-bootstrap")
+
+        assert result.ok is True, result.detail
+        assert Worktree.objects.filter(ticket=ticket).count() == 1
+
+    def test_an_undeclared_repo_still_provisions(self) -> None:
+        result, _ticket = self._run("feat/side-quest", entries=[])
+
+        assert result.ok is True, result.detail
+
+    def test_the_kill_switch_lets_it_through(self) -> None:
+        result, _ticket = self._run("feat/side-quest", enabled=False)
+
+        assert result.ok is True, result.detail

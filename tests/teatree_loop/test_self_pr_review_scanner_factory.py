@@ -1,20 +1,24 @@
-"""The self-PR review scanner builder — always Claude, no backend selector (#3569).
+"""The self-PR review scanner builder — which reviewer, never whether (#3569).
 
-Self-authored open PRs are ALWAYS admitted to the review board: the builder
-returns a :class:`ClaudeSelfPrReviewScanner` (routing to the same ``reviewing`` →
-``t3:reviewer`` gate colleague PRs get) whenever the overlay has a Python class
-and followup repos. There is no codex/claude/auto selector and no fleet-doctrine
-gate — codex is retired as the self-review mechanism.
+Self-authored open PRs are ALWAYS admitted to the review board. The builder
+returns a scanner whenever the overlay has a Python class and followup repos;
+``pr_review_backend`` picks WHICH one — the Claude scanner routing to
+``reviewing`` → ``t3:reviewer``, the codex one to ``codex_reviewing`` →
+``/codex:review``. No setting value can produce "no reviewer".
 """
 
-from unittest.mock import MagicMock
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
+from teatree.config import PrReviewBackend
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.loop.scanner_factories import _self_pr_review_scanner_for
+from teatree.loop.scanners.codex_review import CodexReviewScanner
 from teatree.loop.scanners.self_pr_review import ClaudeSelfPrReviewScanner
 
 
@@ -36,10 +40,24 @@ def _backend(*, name: str = "t3-teatree", repos: tuple[str, ...] = ("souliane/te
     )
 
 
+@contextmanager
+def _resolved_backend(backend: PrReviewBackend) -> Iterator[None]:
+    with patch("teatree.loop.scanner_factories.resolve_pr_review_backend", return_value=backend):
+        yield
+
+
 class TestSelfPrReviewScannerBuilder(TestCase):
-    def test_builds_the_claude_self_pr_scanner(self) -> None:
-        scanner = _self_pr_review_scanner_for(_backend())
+    def test_claude_backend_builds_the_claude_scanner(self) -> None:
+        with _resolved_backend(PrReviewBackend.CLAUDE):
+            scanner = _self_pr_review_scanner_for(_backend())
         assert isinstance(scanner, ClaudeSelfPrReviewScanner)
+        assert scanner.repos == ("souliane/teatree",)
+        assert scanner.overlay == "t3-teatree"
+
+    def test_codex_backend_builds_the_codex_scanner(self) -> None:
+        with _resolved_backend(PrReviewBackend.CODEX):
+            scanner = _self_pr_review_scanner_for(_backend())
+        assert isinstance(scanner, CodexReviewScanner)
         assert scanner.repos == ("souliane/teatree",)
         assert scanner.overlay == "t3-teatree"
 

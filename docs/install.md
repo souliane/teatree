@@ -115,6 +115,33 @@ t3 overlay install <overlay-name>                    # e.g. t3-acme
 
 This creates a sibling `git worktree` for the overlay (matching the teatree branch when it exists, otherwise the overlay's default branch) and installs it editable into the teatree worktree's `.venv`. The worktree's `t3` shadows the global install while you're inside it, so any agents use that branch's code.
 
+#### In a fork that vendors teatree core
+
+A downstream fork keeps core at `<fork>/vendor/teatree` and edits it in place, so
+the git boundary is the **fork root** while teatree's `pyproject.toml` sits one
+level down. `t3 overlay install` recognises that layout and resolves the fork root
+as the workspace — run it from anywhere in the fork, including inside
+`vendor/teatree/`:
+
+```sh
+cd ~/workspace/<org>/<fork>
+t3 overlay install <overlay-name>
+```
+
+A fork usually ships its overlay in the same repo (declared in the fork's own
+`[project.entry-points."teatree.overlays"]`). There is then no separate checkout
+to make a sibling worktree of — the overlay's source IS the workspace — so the
+command installs the fork root itself, or reports the overlay as *already provided
+by this workspace* when its package already imports from there (the normal state
+after `uv tool install --editable vendor/teatree --with-editable .`). Because no
+sibling worktree is created, running from the fork's main clone is allowed; the
+main-clone refusal still applies wherever a sibling WOULD be created.
+
+When `t3` runs through the containerized `deploy/t3` wrapper, the host cwd is
+translated into container coordinates and passed as `TEATREE_INVOCATION_CWD`, so
+"where you stand" survives the boundary. Standing outside the mounted tree leaves
+it unset and the command resolves from the container's own cwd, as before.
+
 The overlay's main clone path is recorded in the DB `overlays` registry row (one
 JSON-dict `ConfigSetting` row keyed by overlay name):
 

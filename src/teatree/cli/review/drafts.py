@@ -26,6 +26,13 @@ The helpers import their service-layer dependencies lazily inside
 each command body so this module can be imported (by typer for
 command discovery) before ``django.setup()`` has run, matching the
 sibling :mod:`teatree.cli.review.on_behalf` pattern.
+
+Every command passes its own ``repo`` argument to ``_require_token``:
+that slug is the overlay-resolution context both the credential and the
+API base URL are read through, so an install carrying several overlays
+resolves them from the overlay OWNING the target repo instead of failing
+the ambient lookup with ``Multiple overlays found``
+(souliane/teatree#1814 class).
 """
 
 from collections.abc import Callable

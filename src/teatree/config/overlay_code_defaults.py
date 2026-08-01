@@ -33,6 +33,7 @@ from typing import Any
 PROMOTED_OVERLAY_CODE_DEFAULT_KEYS: frozenset[str] = frozenset(
     {
         "review_skill",
+        "review_skill_alternates",
         "architectural_review_skill",
         "scanning_news_skill",
         "eval_local_skill",

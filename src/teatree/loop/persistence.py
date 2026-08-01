@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
-from teatree.core.models import ImplementedIssueMarker, Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, RedMrFixAttempt, Task, Ticket
 from teatree.core.models.auto_implement import mark_auto_implement
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
-from teatree.loop.dispatch_gates import claim_red_mr_fix
+from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES, ActionPayload
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task, open_task_in_phase
 
@@ -390,14 +390,28 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
     )
 
 
+#: The remedy each un-mergeable condition's debugging task is scheduled for. The
+#: conflict wording carries the never-rebase constraint into the task itself, so the
+#: agent that picks it up does not have to re-derive it.
+_FIX_REASON_BY_KIND: dict[str, str] = {
+    RedMrFixAttempt.Kind.CI_RED: "Auto-scheduled red-MR fix — debug {pr_url}",
+    RedMrFixAttempt.Kind.MERGE_CONFLICT: (
+        "Auto-scheduled merge-conflict fix — resolve {pr_url} by MERGING the target branch "
+        "into the head branch, never by rebasing"
+    ),
+}
+
+
 def _handle_debug(action: DispatchAction) -> Task | None:
-    """Failing own PR (``my_pr.failed``) → author ticket + ``debugging`` task (#1295 cap D).
+    """Un-mergeable own PR (``my_pr.failed`` / ``my_pr.conflicted``) → author ticket + ``debugging`` task.
 
     The ``RedMrFixAttempt`` idempotency claim (``claim_red_mr_fix``) rides the
     SAME atomic block that creates the Task, so a dropped/failed persist rolls
     the claim back and the next tick retries — the marker can no longer be burned
     before the fix ran (#1 blocker). A role conflict returns before the claim, so
-    it is never touched. SIG-2 hardens WHAT is claimed (real sha / sentinel).
+    it is never touched. SIG-2 hardens WHAT is claimed (real sha / sentinel), and
+    the payload's ``fix_kind`` selects both the ledger slot and the remedy the task
+    is scheduled for.
     """
     payload = action.payload
     pr_url = str(payload.get("pr_url") or payload.get("url") or "")
@@ -419,7 +433,7 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             ticket,
             phase="debugging",
             agent_id="debug",
-            reason=f"Auto-scheduled red-MR fix — debug {pr_url}",
+            reason=_FIX_REASON_BY_KIND[fix_kind_of(payload)].format(pr_url=pr_url),
         )
 
 

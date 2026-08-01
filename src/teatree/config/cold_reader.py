@@ -26,11 +26,20 @@ from pathlib import Path
 from typing import cast
 
 from teatree.config import value_coercion
-from teatree.config.cold_db import canonical_config_db, fetch_one, loop_status, row_exists
+from teatree.config.cold_db import (
+    canonical_config_db,
+    canonical_data_dir,
+    canonical_projection,
+    fetch_one,
+    loop_status,
+    row_exists,
+)
 
 __all__ = [
     "bool_setting",
     "canonical_config_db",
+    "canonical_data_dir",
+    "canonical_projection",
     "int_setting",
     "list_setting",
     "loop_status",
@@ -67,10 +76,19 @@ def read_setting(
     install), locked DB (within `busy_timeout`), corrupt JSON, and a missing row.
     The open strategy (and the quiescent-WAL `immutable=1` fallback) lives in
     `cold_db._execute_readonly`.
+
+    A canonical DB that does not exist is the ORDINARY host case — the database lives
+    in a named volume only the container can open — so the read falls through to the
+    host projection rather than to `None`. An explicitly passed `db_path` never does:
+    that caller named the file it means, and substituting a projection would answer a
+    different question.
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if not db.exists():
-        return None
+        if db_path is not None:
+            return None
+        projection = canonical_projection(env=env)
+        return projection.setting(key, scope=scope) if projection is not None else None
     row = _fetch_value_row(db, scope, key)
     if row is None:
         return None

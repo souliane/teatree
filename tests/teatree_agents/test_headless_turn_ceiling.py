@@ -23,10 +23,10 @@ from teatree.agents.headless_truncation import (
     is_max_turns_truncation,
     max_turns_failure_reason,
 )
-from teatree.agents.outage_classifier import is_transient_failure
 from teatree.config import UserSettings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.failure_signatures import is_transient_failure
 
 
 def _result(subtype: str, *, num_turns: int = 250) -> ResultMessage:

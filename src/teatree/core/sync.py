@@ -95,6 +95,12 @@ def fetch_notion_statuses() -> None:
     carries ``extra['notion_url']`` and records it in ``extra['notion_status']``.
     A clean no-op when no Notion integration token is configured for the active
     overlay — the default-safe posture, identical to no sync at all.
+
+    A page that is archived, in the trash, or whose liveness cannot be
+    established is SKIPPED loudly rather than read: an archived page's status
+    property still reads "In Progress" long after the work moved to its
+    successor, and recording that onto a live ticket is how a dead page's version
+    of reality reaches every agent that later reads the ticket.
     """
     client = notion_client_from_overlay()
     if client is None:
@@ -106,6 +112,14 @@ def fetch_notion_statuses() -> None:
         page_id = _notion_page_id((ticket.extra or {}).get("notion_url", ""))
         if not page_id:
             continue
+        if not client.page_is_live(page_id):
+            logger.warning(
+                "Notion status sync skipped ticket %s — page %s is archived, in the trash, or could not be "
+                "proven to be the current version; its status is not this ticket's status",
+                ticket.pk,
+                page_id,
+            )
+            continue
         status = client.get_page_status(page_id, property_name=property_name)
         if status is not None:
             ticket.merge_extra(set_keys=TicketExtra(notion_status=status))
@@ -116,13 +130,22 @@ def push_notion_status(page_id: str, value: str) -> bool:
 
     The opt-in WRITE direction: no-op unless the active overlay sets
     ``notion_write_back = True`` (and a token resolves). Returns whether a
-    ``PATCH`` was issued.
+    ``PATCH`` was issued. A dead or unprovable page is never written: Notion
+    accepts the patch and the value lands where nobody will ever read it, which
+    reports as a delivered mirror that never happened.
     """
     config = get_overlay().config
     if not config.notion_write_back:
         return False
     client = notion_client_from_overlay()
     if client is None:
+        return False
+    if not client.page_is_live(page_id):
+        logger.warning(
+            "Notion status write-back refused — page %s is archived, in the trash, or could not be proven "
+            "to be the current version",
+            page_id,
+        )
         return False
     client.update_page_status(page_id, property_name=config.notion_status_property, value=value)
     return True

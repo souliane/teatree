@@ -14,20 +14,31 @@ so registering once per clone covers all its worktrees — but a per-worktree
 re-run is a harmless no-op that keeps a hand-created worktree covered too.
 """
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
+from teatree.paths import teatree_source_root
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 _DRIVER_NAME = "regenerate generated docs on conflict (souliane/teatree#3582)"
-# ``uv run python`` supplies the venv interpreter with teatree + Django installed;
-# git runs the driver with cwd at the worktree root, where pyproject.toml lives.
-_DRIVER_COMMAND = "uv run python scripts/hooks/git_merge_generated.py %O %A %B %P"
+_DRIVER_SCRIPT = Path("scripts/hooks/git_merge_generated.py")
 
 
-def install_merge_driver(checkout: "Path") -> str:
+def driver_command() -> str:
+    """The ``merge.generated.driver`` value, with the driver script named ABSOLUTELY.
+
+    ``uv run python`` supplies the venv interpreter with teatree + Django installed.
+    git runs a merge driver with cwd at the top of the working tree, which in a fork
+    that vendors core is the FORK root — where ``scripts/hooks/`` is the fork's own
+    and holds no driver script. A repo-relative command therefore died with
+    ``can't open file '<fork>/scripts/hooks/git_merge_generated.py'`` on every merge.
+    :func:`~teatree.paths.teatree_source_root` is layout-independent (pure stdlib, so
+    this module stays Django-free), giving the repo root in a plain clone and
+    ``<repo>/vendor/teatree`` in a fork.
+    """
+    return f"uv run python {teatree_source_root() / _DRIVER_SCRIPT} %O %A %B %P"
+
+
+def install_merge_driver(checkout: Path) -> str:
     """Register the ``generated`` merge driver in *checkout*; return a status line.
 
     Never raises — a git failure degrades to a ``WARN`` line so setup and
@@ -39,7 +50,7 @@ def install_merge_driver(checkout: "Path") -> str:
             ["git", "-C", str(checkout), "config", "merge.generated.name", _DRIVER_NAME],
         )
         run_allowed_to_fail(
-            ["git", "-C", str(checkout), "config", "merge.generated.driver", _DRIVER_COMMAND],
+            ["git", "-C", str(checkout), "config", "merge.generated.driver", driver_command()],
         )
     except (OSError, CommandFailedError) as exc:
         return (

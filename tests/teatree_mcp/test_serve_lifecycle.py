@@ -20,6 +20,7 @@ from teatree.mcp.serve_lifecycle import (
     ProcessRecord,
     _hard_exit,
     is_serve_command,
+    orphan_detection_applies,
     orphaned_serve_pids,
     process_snapshot,
     reap_orphaned_servers,
@@ -220,3 +221,41 @@ class TestServeWiring:
         reap.assert_called_once_with()
         watch.assert_called_once_with()
         build.return_value.run.assert_called_once_with("stdio")
+
+
+class TestOrphanDetectionIsHostOnly:
+    """PID 1 proves the client is gone on a host; in a container it is the entrypoint.
+
+    A server started by ``docker compose run --entrypoint t3 … mcp serve`` has
+    ``getppid() == 1`` from its first instant, so the watchdog hard-exited it before it
+    answered a single request (exit 0, empty stdout) and the reaper would SIGTERM every
+    sibling server in the same container. That is what blocked routing the MCP server
+    into the containerized stack.
+    """
+
+    def test_the_pid1_proof_holds_on_a_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_ROLE", raising=False)
+
+        assert orphan_detection_applies(containerized=False) is True
+
+    def test_the_pid1_proof_does_not_hold_in_a_container(self) -> None:
+        assert orphan_detection_applies(containerized=True) is False
+
+    def test_the_containerized_runtime_is_detected_by_its_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The deploy entrypoint sets ``TEATREE_ROLE`` for every role."""
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+
+        assert orphan_detection_applies() is False
+
+    def test_no_watchdog_thread_is_armed_in_a_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+
+        assert start_parent_death_watch() is None
+
+    def test_no_sibling_is_reaped_in_a_container(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_ROLE", "worker")
+
+        with patch.object(serve_lifecycle_mod, "os") as never_signalled:
+            assert reap_orphaned_servers(matcher=lambda _: True) == []
+
+        never_signalled.kill.assert_not_called()

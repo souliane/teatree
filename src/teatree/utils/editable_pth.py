@@ -21,6 +21,7 @@ running env is itself partially broken.
 """
 
 import os
+import shlex
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -29,6 +30,8 @@ from pathlib import Path
 _TOOL_NAME = "teatree"
 _PTH_NAME = f"{_TOOL_NAME}.pth"
 _RECEIPT_NAME = "uv-receipt.toml"
+_PYPROJECT_NAME = "pyproject.toml"
+_VENDORED_CORE_SUBDIR = Path("vendor") / _TOOL_NAME
 
 
 def uv_tool_dir() -> Path:
@@ -76,25 +79,38 @@ def pth_source_dirs(pth: Path) -> list[Path]:
     return dirs
 
 
-def receipt_editable_source() -> Path | None:
-    """Return the editable source clone recorded in uv's teatree receipt, or ``None``.
+def receipt_editable_sources() -> dict[str, Path]:
+    """Return EVERY editable requirement uv recorded for the teatree tool, by distribution name.
 
-    Reads ``<tool-dir>/teatree/uv-receipt.toml``'s
-    ``[tool].requirements[].editable`` for the ``teatree`` requirement. Returns
-    ``None`` when the receipt is absent, unparsable, or records a non-editable
-    install.
+    Reads ``<tool-dir>/teatree/uv-receipt.toml``'s ``[tool].requirements[]``. A
+    ``--with-editable <host>`` co-install is recorded there as its own entry
+    beside ``teatree``, so this is the only stdlib-readable record of whether the
+    vendoring fork — and therefore the ``teatree.overlays`` entry point it carries
+    — is actually present in the tool env. Empty when the receipt is absent,
+    unparsable, or records no editable install.
     """
     receipt = uv_tool_dir() / _TOOL_NAME / _RECEIPT_NAME
     if not receipt.is_file():
-        return None
+        return {}
     try:
         data = tomllib.loads(receipt.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError):
-        return None
-    for req in data.get("tool", {}).get("requirements", []):
-        if req.get("name") == _TOOL_NAME and req.get("editable"):
-            return Path(req["editable"])
-    return None
+        return {}
+    return {
+        req["name"]: Path(req["editable"])
+        for req in data.get("tool", {}).get("requirements", [])
+        if req.get("name") and req.get("editable")
+    }
+
+
+def receipt_editable_source() -> Path | None:
+    """Return the editable source clone recorded in uv's teatree receipt, or ``None``.
+
+    The ``teatree`` requirement's ``editable`` path — the core checkout owning the
+    ``t3`` entry point. ``None`` when the receipt is absent, unparsable, or records
+    a non-editable install.
+    """
+    return receipt_editable_sources().get(_TOOL_NAME)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,54 +166,96 @@ def canonical_src_dir() -> Path | None:
     return src if src.is_dir() else None
 
 
-def expected_checkout() -> Path | None:
-    """Return the checkout the active ``t3`` editable install SHOULD point at (#3231).
+def distribution_name(project_dir: Path) -> str | None:
+    """Return the distribution name ``<project_dir>/pyproject.toml`` declares, or ``None``.
 
-    The canonical clone is ``$T3_REPO`` (a repo root — the same value
-    ``uv tool install --editable .`` records in the receipt's
-    ``requirements[].editable``). Returns the resolved path when ``$T3_REPO`` is
-    set and exists, else ``None`` — with no known expected checkout there is
-    nothing to compare the receipt against, so the shim-receipt check skips
-    rather than guess.
+    ``None`` covers every "not a Python project here" case — no ``pyproject.toml``,
+    unreadable, unparsable, or no ``[project].name`` — so callers can probe a
+    candidate directory without guarding each failure mode separately.
     """
-    repo = os.environ.get("T3_REPO", "")
-    if not repo:
-        return None
-    path = Path(repo).expanduser()
-    return path.resolve() if path.is_dir() else None
-
-
-def repair_receipt_to_checkout(checkout: Path) -> bool:
-    """Re-point the ``t3`` editable uv-tool install at *checkout*; return success (#3231).
-
-    Runs ``uv tool install --editable <checkout> --overrides <checkout>/uv-overrides.txt
-    --force`` — the supported way
-    to re-anchor a relocated or same-name-hijacked editable install at its
-    correct source, rewriting the shim, ``.pth``, and receipt in one step. Fails
-    safe to ``False`` when ``uv`` is absent or the install errors, so the caller
-    still reports the problem rather than claiming a repair.
-    """
-    import shutil  # noqa: PLC0415 — deferred: keeps the stdlib-only detection path light
-
-    from teatree.utils.run import (  # noqa: PLC0415 — deferred: only the repair path shells out
-        CommandFailedError,
-        TimeoutExpired,
-        run_allowed_to_fail,
-    )
-    from teatree.utils.uv_overrides import uv_overrides_args  # noqa: PLC0415 — deferred with the repair path
-
-    uv = shutil.which("uv")
-    if uv is None:
-        return False
     try:
-        result = run_allowed_to_fail(
-            [uv, "tool", "install", "--editable", str(checkout), *uv_overrides_args(checkout), "--force"],
-            expected_codes=None,
-            timeout=300,
-        )
-    except (OSError, TimeoutExpired, CommandFailedError):
-        return False
-    return result.returncode == 0
+        data = tomllib.loads((project_dir / _PYPROJECT_NAME).read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return None
+    name = data.get("project", {}).get("name")
+    return name if isinstance(name, str) else None
+
+
+def host_root_for_checkout(checkout: Path) -> Path | None:
+    """Return the vendoring fork root that must be co-installed alongside *checkout*.
+
+    ``<root>/vendor/teatree`` builds the ``teatree`` distribution — the one owning
+    the ``t3`` entry point — while ``<root>`` builds the fork's OWN distribution,
+    which is where the ``teatree.overlays`` entry point lives. Installing the
+    checkout alone therefore registers core and NO overlay, and every in-process
+    ``get_overlay("<name>")`` raises ``Overlay '<name>' not found. Available:
+    t3-teatree`` while the subprocess-bridged ``t3 <overlay> …`` commands keep
+    working (they re-enter through the overlay project's own environment) — a
+    split that reads as an intermittent fault rather than a missing install.
+
+    Derived from the layout, mirroring ``deploy/entrypoint.sh``'s
+    ``detect_host_root`` so the containerized and host-native installs agree.
+    ``None`` for a standalone core clone (no ``vendor/teatree`` parent) and for a
+    vendor parent that builds no distribution of its own — the two layouts with
+    nothing to co-install.
+    """
+    if checkout.parts[-2:] != _VENDORED_CORE_SUBDIR.parts:
+        return None
+    if distribution_name(checkout) != _TOOL_NAME:
+        return None
+    root = checkout.parent.parent
+    name = distribution_name(root)
+    return root if name is not None and name != _TOOL_NAME else None
+
+
+@dataclass(frozen=True, slots=True)
+class EditableInstall:
+    """The editable uv-tool install the active ``t3`` shim should be serving (#3231).
+
+    ``checkout`` is the directory whose ``pyproject.toml`` builds the ``teatree``
+    distribution — the one owning the ``t3`` entry point, and the value uv
+    records in the receipt's ``requirements[].editable``. ``host`` is the outer
+    fork repo when teatree is VENDORED inside it (``$T3_REPO/vendor/teatree``):
+    that repo builds a DIFFERENT distribution carrying the overlay, so it must
+    be co-installed with ``--with-editable`` or re-pointing the shim drops the
+    overlay from the tool env.
+    """
+
+    checkout: Path
+    host: Path | None
+
+    def install_argv(self, uv: str) -> list[str]:
+        from teatree.utils.uv_overrides import uv_overrides_args  # noqa: PLC0415 — deferred with the repair path
+
+        argv = [uv, "tool", "install", "--editable", str(self.checkout)]
+        if self.host is not None:
+            argv += ["--with-editable", str(self.host)]
+        return [*argv, *uv_overrides_args(self.checkout), "--force"]
+
+    @property
+    def install_command(self) -> str:
+        return shlex.join(self.install_argv("uv"))
+
+
+def editable_install_for_repo(root: Path) -> EditableInstall:
+    """Return the editable uv-tool install that serves ``t3`` for the clone at *root*.
+
+    In a plain teatree clone the repo root IS the ``teatree`` checkout, exactly
+    what ``uv tool install --editable .`` records. In a fork that vendors core
+    under ``vendor/teatree``, the root builds the fork's own distribution and only
+    the vendored subdir builds ``teatree`` — aiming the install at the root there
+    targets a different tool entirely (and one with no ``t3`` entry point), so the
+    vendored subdir is the checkout and the root is the ``--with-editable`` host.
+
+    The single home for that layout rule: every host-native install site (``t3
+    setup``, ``t3 update``, the loop's reinstall drain, ``t3 doctor --repair``)
+    resolves through it, so none of them can install a shape the others reject.
+    """
+    root = root.resolve()
+    vendored = root / _VENDORED_CORE_SUBDIR
+    if (host := host_root_for_checkout(vendored)) is not None:
+        return EditableInstall(checkout=vendored, host=host)
+    return EditableInstall(checkout=root, host=None)
 
 
 def _is_path_entry(line: str) -> bool:
@@ -210,60 +268,139 @@ def _is_path_entry(line: str) -> bool:
     return bool(stripped) and not stripped.startswith(("#", "import ", "import\t"))
 
 
-def repair_pth_to_canonical(pth: Path, canonical_src: Path) -> bool:
-    """Rewrite ``pth`` to point at ``canonical_src``; return whether it changed.
+class EditablePthHelpers:
+    """Module-level helpers grouped so the module keeps a readable public surface."""
 
-    Only the path entries are rewritten — ``import`` / comment / blank lines are
-    kept verbatim, in place. The first path entry becomes ``canonical_src`` and
-    any further path entries are dropped (the editable install is a single
-    ``src`` dir), so the relative order of preserved non-path lines is unchanged.
-    Idempotent: when the ``.pth`` already names exactly ``canonical_src`` (and no
-    other path entry), nothing is written and ``False`` is returned. Fails safe
-    to ``False`` on any read/write error so the caller still reports the problem
-    rather than claiming a repair.
-    """
-    target = str(canonical_src)
-    if [str(d) for d in pth_source_dirs(pth)] == [target]:
-        return False
-    try:
-        original = pth.read_text(encoding="utf-8")
-    except OSError:
-        return False
+    @staticmethod
+    def expected_editable_install() -> EditableInstall | None:
+        """Return the editable install the active ``t3`` shim SHOULD be serving (#3231).
 
-    rebuilt: list[str] = []
-    canonical_written = False
-    for raw in original.splitlines():
-        if _is_path_entry(raw):
-            if not canonical_written:
-                rebuilt.append(target)
-                canonical_written = True
-            # Drop any additional path entries — collapse to the single canonical src.
-        else:
-            rebuilt.append(raw)
-    if not canonical_written:
-        rebuilt.append(target)
+        ``$T3_REPO`` is the canonical clone, resolved through
+        :func:`editable_install_for_repo`. Returns ``None`` when ``$T3_REPO`` is unset
+        or missing — with no known expected checkout there is nothing to compare the
+        receipt against, so the shim-receipt check skips rather than guess.
+        """
+        repo = os.environ.get("T3_REPO", "")
+        if not repo:
+            return None
+        root = Path(repo).expanduser()
+        if not root.is_dir():
+            return None
+        return editable_install_for_repo(root)
 
-    try:
-        pth.write_text(os.linesep.join(rebuilt) + os.linesep, encoding="utf-8")
-    except OSError:
-        return False
-    return True
+    @staticmethod
+    def host_install_missing(install: EditableInstall) -> bool:
+        """Whether *install*'s vendoring fork root is absent from the tool env (#3231 follow-up).
+
+        ``False`` whenever there is no host to co-install, so a plain core clone never
+        reports a problem. Otherwise the uv receipt is the record: a
+        ``--with-editable`` co-install appears there as its own editable requirement,
+        and its absence means the fork distribution — and the ``teatree.overlays``
+        entry point it carries — is not in the tool env the ``t3`` shim runs.
+        """
+        if install.host is None:
+            return False
+        host = install.host.resolve()
+        return all(source.resolve() != host for source in receipt_editable_sources().values())
+
+    @staticmethod
+    def repair_editable_install(install: EditableInstall) -> bool:
+        """Re-point the ``t3`` editable uv-tool install at *install*; return success (#3231).
+
+        Runs ``uv tool install --editable <checkout> [--with-editable <host>]
+        --force`` — the supported way to re-anchor a relocated or same-name-hijacked
+        editable install at its correct source, rewriting the shim, ``.pth``, and
+        receipt in one step.
+
+        Success is the OBSERVED receipt, never uv's exit code: uv installs BY
+        DISTRIBUTION NAME, so a checkout that does not build ``teatree`` leaves the
+        ``teatree`` tool untouched no matter how the command exits. Verifying the
+        post-state keeps a repair that changed nothing from being reported as done —
+        and that post-state includes the ``--with-editable`` host, without which the
+        checkout alone would satisfy the check while the overlay stayed unregistered.
+        """
+        import shutil  # noqa: PLC0415 — deferred: keeps the stdlib-only detection path light
+
+        from teatree.utils.run import (  # noqa: PLC0415 — deferred: only the repair path shells out
+            CommandFailedError,
+            TimeoutExpired,
+            run_allowed_to_fail,
+        )
+
+        uv = shutil.which("uv")
+        if uv is None:
+            return False
+        try:
+            run_allowed_to_fail(install.install_argv(uv), expected_codes=None, timeout=300)
+        except (OSError, TimeoutExpired, CommandFailedError):
+            return False
+        source = receipt_editable_source()
+        if source is None or source.resolve() != install.checkout.resolve():
+            return False
+        return not host_install_missing(install)
+
+    @staticmethod
+    def repair_pth_to_canonical(pth: Path, canonical_src: Path) -> bool:
+        """Rewrite ``pth`` to point at ``canonical_src``; return whether it changed.
+
+        Only the path entries are rewritten — ``import`` / comment / blank lines are
+        kept verbatim, in place. The first path entry becomes ``canonical_src`` and
+        any further path entries are dropped (the editable install is a single
+        ``src`` dir), so the relative order of preserved non-path lines is unchanged.
+        Idempotent: when the ``.pth`` already names exactly ``canonical_src`` (and no
+        other path entry), nothing is written and ``False`` is returned. Fails safe
+        to ``False`` on any read/write error so the caller still reports the problem
+        rather than claiming a repair.
+        """
+        target = str(canonical_src)
+        if [str(d) for d in pth_source_dirs(pth)] == [target]:
+            return False
+        try:
+            original = pth.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+        rebuilt: list[str] = []
+        canonical_written = False
+        for raw in original.splitlines():
+            if _is_path_entry(raw):
+                if not canonical_written:
+                    rebuilt.append(target)
+                    canonical_written = True
+                # Drop any additional path entries — collapse to the single canonical src.
+            else:
+                rebuilt.append(raw)
+        if not canonical_written:
+            rebuilt.append(target)
+
+        try:
+            pth.write_text(os.linesep.join(rebuilt) + os.linesep, encoding="utf-8")
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def running_from_canonical_clone() -> bool:
+        """Whether the running ``t3`` already imports teatree from ``$T3_REPO/src``.
+
+        Auto-repair of the ``.pth`` is only safe when the process running the repair
+        is NOT itself resolving teatree through that ``.pth`` from a worktree (which
+        would re-anchor the global install at a transient checkout — the exact #1507
+        footgun). True only when the running ``teatree`` package lives under the
+        canonical ``$T3_REPO/src``.
+        """
+        canonical = canonical_src_dir()
+        if canonical is None:
+            return False
+        try:
+            running = Path(sys.modules["teatree"].__file__ or "").resolve().parent.parent
+            return running == canonical.resolve()
+        except (OSError, AttributeError, KeyError):
+            return False
 
 
-def running_from_canonical_clone() -> bool:
-    """Whether the running ``t3`` already imports teatree from ``$T3_REPO/src``.
-
-    Auto-repair of the ``.pth`` is only safe when the process running the repair
-    is NOT itself resolving teatree through that ``.pth`` from a worktree (which
-    would re-anchor the global install at a transient checkout — the exact #1507
-    footgun). True only when the running ``teatree`` package lives under the
-    canonical ``$T3_REPO/src``.
-    """
-    canonical = canonical_src_dir()
-    if canonical is None:
-        return False
-    try:
-        running = Path(sys.modules["teatree"].__file__ or "").resolve().parent.parent
-        return running == canonical.resolve()
-    except (OSError, AttributeError, KeyError):
-        return False
+expected_editable_install = EditablePthHelpers.expected_editable_install
+host_install_missing = EditablePthHelpers.host_install_missing
+repair_editable_install = EditablePthHelpers.repair_editable_install
+repair_pth_to_canonical = EditablePthHelpers.repair_pth_to_canonical
+running_from_canonical_clone = EditablePthHelpers.running_from_canonical_clone

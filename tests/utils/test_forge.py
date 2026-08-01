@@ -1,4 +1,16 @@
-from teatree.utils.forge import forge_from_remote
+from teatree.utils.forge import forge_from_remote, normalize_forge
+
+
+class TestNormalizeForge:
+    def test_known_forges_normalize_case_and_whitespace(self) -> None:
+        assert normalize_forge("  GitLab ") == "gitlab"
+        assert normalize_forge("GITHUB") == "github"
+
+    def test_unknown_token_is_empty(self) -> None:
+        assert normalize_forge("bitbucket") == ""
+
+    def test_empty_is_empty(self) -> None:
+        assert normalize_forge("") == ""
 
 
 class TestForgeFromRemote:

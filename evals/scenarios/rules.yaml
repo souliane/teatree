@@ -617,7 +617,7 @@
               as one plan.
 
     09:01:55  $ git worktree list
-              /Users/adrien/workspace/platform-product           b17e3a11 [main]
+              /Users/dev/workspace/platform-product              b17e3a11 [main]
               /tmp/wt-4401                                        4c2d88f9 [4401-fix]
               /tmp/wt-5372                                        4c2d88f9 [bug-5372]
 
@@ -833,7 +833,7 @@
 
     07:03:00  orchestrator: worktree status check.
               $ git worktree list
-              /Users/adrien/workspace/platform-product   b17e3a11 [main]
+              /Users/dev/workspace/platform-product      b17e3a11 [main]
               Both wt-4401 and wt-5372 are already provisioned from a prior session.
               Branches 4401-fix and bug-5372 exist on origin.
 

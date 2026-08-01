@@ -4,6 +4,7 @@ from teatree.core.backend_protocols import (
     ApprovalState,
     CIService,
     CodeHostBackend,
+    DraftState,
     ForgeMergeResult,
     MessagingBackend,
     PrMergeState,
@@ -200,9 +201,9 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return PrMergeState(state="", merge_commit_oid="")
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         _ = (slug, pr_id)
-        return False
+        return DraftState.NOT_DRAFT
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         _ = (slug, pr_id)

@@ -170,6 +170,7 @@ class TestReviewPostDraftNoteBootstrapsDjango:
             "import os\n"
             f"os.environ['HOME'] = {str(tmp_path)!r}\n"
             "os.environ['T3_ON_BEHALF_POST_MODE'] = 'immediate'\n"
+            "os.environ['GITLAB_TOKEN'] = 't'\n"
             "from unittest.mock import patch\n"
             "from typer.testing import CliRunner\n"
             "from teatree.cli import app\n"

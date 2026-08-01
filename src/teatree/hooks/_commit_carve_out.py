@@ -21,25 +21,10 @@ their leaf modules; the ``publish_surface``-local predicates each call needs are
 imported lazily inside it to avoid an import cycle.
 """
 
-import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _repo_visibility
-
-# A forge-tool command word the body could be posted through.
-_FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
-
-# Boundary-delimited so a filename / branch / English word that merely embeds
-# the letters ("insights.md" -> in-si-gh-ts, "feat/highlight", "right") is NOT
-# read as a forge invocation, while a real call in any position still is: bare
-# ("gh ..."), absolute path ("/usr/bin/gh"), or hidden in a transport string
-# (sh -c "gh issue create ..." -- one token, marker delimited by the quote).
-# Alphanumeric lookaround (not ``\b``) keeps an underscore-adjacent forge word
-# (``run_gh``) matching, failing closed toward the block (#3336).
-_FORGE_TOOL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(marker) for marker in _FORGE_TOOL_MARKERS) + r")(?![A-Za-z0-9])"
-)
+from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _publish_detection, _repo_visibility
 
 # Bash network pseudo-devices: a redirect TO one of these exfiltrates over the
 # network, so such a redirect target is NEVER treated as a benign local write.
@@ -253,7 +238,7 @@ def segment_is_publish_inert(words: list[str]) -> bool:
     for i, token in enumerate(words):
         if _gh_glab_hiding.token_has_substitution_marker(token):
             return False
-        if _FORGE_TOOL_RE.search(token):
+        if _publish_detection.token_carries_forge_marker(token):
             return False
         if _gh_glab_hiding.token_is_transport_construct(token) and not _transport_token_is_local_redirect(
             token, words, i

@@ -50,9 +50,15 @@ MAX_PARK_ROWS_PER_DAY = 200
 #: The honest floor is >= $204 (recorded total / deliveries); this alarms at the
 #: point cost-per-delivery is unambiguously pathological.
 MAX_USD_PER_DELIVERED_TICKET = 1000.0
-#: Cumulative spend on tickets ending ``ignored``/``not_started`` above which the
-#: "spend that reached no shipped ticket" waste is alarmed.
+#: Spend on tickets ending ``ignored``/``not_started`` above which the "spend that
+#: reached no shipped ticket" waste is alarmed, measured over :data:`_DEAD_SPEND_WINDOW`.
 MAX_USD_ON_DEAD_TICKETS = 250.0
+#: The window the dead-ticket spend is measured over. Unwindowed, the check sums
+#: every attempt ever recorded: one past runaway pins it red permanently, no action
+#: can clear it, and a doctor carrying a stuck red light trains the operator to
+#: ignore the findings that ARE actionable. Long enough that a slow burn still
+#: accumulates past the floor, short enough that a fixed runaway ages out.
+_DEAD_SPEND_WINDOW = dt.timedelta(days=30)
 #: Repair-halt escalations per 24h above which repair-loop churn is alarmed.
 MAX_HALTS_PER_DAY = 5
 #: Age of the oldest unanswered question above which head-of-line intake block is
@@ -154,8 +160,15 @@ def _check_cost_per_delivered_ticket(now: dt.datetime | None = None) -> Reconcil
     the count of author tickets in ``{DELIVERED, MERGED}``. Threshold:
     :data:`MAX_USD_PER_DELIVERED_TICKET`. Spend with zero deliveries is itself an
     alarm (every dollar reached no delivery).
+
+    Deliberately unwindowed, and not a ratchet: this is a running average whose
+    denominator grows with the numerator, so every delivery cheaper than the current
+    average drags it back down — normal operation clears the alarm. Windowing would
+    make it worse, not better. ``Ticket`` carries no timestamp, so only the numerator
+    could be windowed, and windowed spend over lifetime deliveries trends to zero —
+    a check that can never fire.
     """
-    del now  # lifetime KPI (Ticket carries no timestamp to window on); accepted for uniform dispatch
+    del now  # a self-correcting running average, not a windowed aggregate; taken for uniform dispatch
     check_id = "cost_per_delivered_ticket"
     try:
         from django.db.models import Sum  # noqa: PLC0415 — deferred: Django import at call time
@@ -193,9 +206,13 @@ def _check_dead_ticket_spend(now: dt.datetime | None = None) -> ReconciliationFi
     """ALARM when spend on tickets ending ``ignored``/``not_started`` exceeds the floor.
 
     Query: ``sum(TaskAttempt.cost_usd)`` joined to tickets in
-    ``{IGNORED, NOT_STARTED}``. Threshold: :data:`MAX_USD_ON_DEAD_TICKETS`.
+    ``{IGNORED, NOT_STARTED}``, over attempts started within
+    :data:`_DEAD_SPEND_WINDOW`. Threshold: :data:`MAX_USD_ON_DEAD_TICKETS`.
+
+    The window hangs off ``TaskAttempt.started_at`` — the row being summed — not
+    off ``Ticket``, which carries no timestamp. Summing lifetime made this a
+    ratchet: it could trip once and then never clear.
     """
-    del now  # lifetime KPI (Ticket carries no timestamp to window on); accepted for uniform dispatch
     check_id = "dead_ticket_spend"
     try:
         from django.db.models import Sum  # noqa: PLC0415 — deferred: Django import at call time
@@ -205,6 +222,7 @@ def _check_dead_ticket_spend(now: dt.datetime | None = None) -> ReconciliationFi
         spend = (
             TaskAttempt.objects.filter(
                 task__ticket__state__in=[Ticket.State.IGNORED, Ticket.State.NOT_STARTED],
+                started_at__gte=_now(now) - _DEAD_SPEND_WINDOW,
             ).aggregate(total=Sum("cost_usd"))["total"]
             or 0.0
         )
@@ -214,9 +232,9 @@ def _check_dead_ticket_spend(now: dt.datetime | None = None) -> ReconciliationFi
         return _ok(check_id, f"${spend:.2f} on dead tickets")
     return _alarm(
         check_id,
-        f"Dead-ticket-spend alarm: `${spend:.2f}` spent on tickets ending "
-        f"`ignored`/`not_started` (alarm above `${MAX_USD_ON_DEAD_TICKETS:.0f}`) — spend that reached "
-        f"no shipped ticket.",
+        f"Dead-ticket-spend alarm: `${spend:.2f}` spent in the last "
+        f"`{_DEAD_SPEND_WINDOW.days}d` on tickets ending `ignored`/`not_started` "
+        f"(alarm above `${MAX_USD_ON_DEAD_TICKETS:.0f}`) — spend that reached no shipped ticket.",
     )
 
 
@@ -429,7 +447,7 @@ def _check_high_churn_table_size(now: dt.datetime | None = None) -> Reconciliati
     prescribed remedy stay in step: a table the check flags is always one
     ``retention prune`` can act on. Advisory — surfaces DB growth before it bites.
     """
-    del now  # a total row count, no time window
+    del now  # a current-state row count, not a time window; taken for uniform dispatch
     check_id = "high_churn_table_size"
     try:
         counts = _high_churn_counts()

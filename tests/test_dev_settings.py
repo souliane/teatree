@@ -25,7 +25,7 @@ def test_settings_importable():
     assert mod.USE_TZ is True
     assert mod.ROOT_URLCONF == "teatree.urls"
     assert "default" in mod.DATABASES
-    assert mod.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
+    assert mod.DATABASES["default"]["ENGINE"] == "teatree.db.sqlite3_boundary"
     assert "teatree.core" in mod.INSTALLED_APPS
     assert "teatree.agents" in mod.INSTALLED_APPS
     assert "teatree.backends" in mod.INSTALLED_APPS

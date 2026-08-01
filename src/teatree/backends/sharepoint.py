@@ -36,6 +36,39 @@ _WRITE_PROBE_DIR = "__teatree_readonly_probe__"
 _RCLONE_TIMEOUT_SECONDS = 120.0
 
 
+class SharePointReadError(Exception):
+    """A read against a SharePoint document library failed.
+
+    The base of the taxonomy, and the fallback for a failure no subclass claims.
+    Core owns the taxonomy because it owns the rclone transport that produces the
+    failures; deciding WHICH condition a given rclone stderr means is a caller's
+    mapping policy, so the classes carry a ``reason`` a headless caller can print
+    and rank without re-deriving the wording.
+    """
+
+    reason = "the SharePoint read failed"
+
+
+class SharePointPathNotFoundError(SharePointReadError):
+    reason = "that path does not exist in the document library"
+
+
+class SharePointCredentialsError(SharePointReadError):
+    reason = "no SharePoint credential is configured on this host"
+
+
+class SharePointToolMissingError(SharePointReadError):
+    reason = "rclone is not installed, so the document library cannot be read"
+
+
+class SharePointAuthError(SharePointReadError):
+    reason = "SharePoint refused the credential"
+
+
+class SharePointUnreachableError(SharePointReadError):
+    reason = "SharePoint could not be reached"
+
+
 class SharePointClient:
     """Read-only rclone client for a SharePoint / OneDrive document library.
 

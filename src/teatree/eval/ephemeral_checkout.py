@@ -43,6 +43,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from teatree.paths import teatree_source_root
 from teatree.utils.git_run import check as git_check
 from teatree.utils.git_run import run as git_run
 
@@ -57,17 +58,39 @@ class EphemeralCheckoutError(RuntimeError):
 
 
 def resolve_teatree_repo_root() -> Path | None:
-    """The git working tree root of the installed teatree source, or ``None``.
+    """The git working tree root CONTAINING the teatree source, or ``None``.
 
-    Resolves through the editable install's own location
-    (``teatree/__init__.py`` -> ``src/teatree`` -> ``src`` -> repo root) and
-    confirms it is a real git working tree via ``git rev-parse --show-toplevel``.
+    This is the CLONE TARGET, which is not always the source root. In a fork
+    that vendors core, teatree's source lives at ``<repo>/vendor/teatree`` — a
+    subtree with no ``.git`` of its own, so it cannot be cloned directly and the
+    surrounding working tree is what must be cloned. In a plain clone the two
+    coincide. :func:`source_root_offset` bridges the difference, so callers must
+    never assume ``<repo-root>/src`` holds the package.
+
     Returns ``None`` when teatree is not running from a git checkout (a packaged
     install) — the caller then REFUSES the spawning scenario rather than guess.
     """
-    source_root = Path(__file__).resolve().parents[3]
-    toplevel = git_run(repo=str(source_root), args=["rev-parse", "--show-toplevel"])
+    toplevel = git_run(repo=str(teatree_source_root()), args=["rev-parse", "--show-toplevel"])
     return Path(toplevel) if toplevel else None
+
+
+def source_root_offset() -> Path:
+    """Where the teatree source root sits INSIDE its git working tree.
+
+    ``.`` for a plain clone (repo root is the source root) and ``vendor/teatree``
+    for a fork that vendors core. An ephemeral clone reproduces the source repo's
+    layout, so this offset is what turns a checkout path into that checkout's own
+    ``src`` directory. Falls back to ``.`` when the repo root is unresolvable or
+    the source root is not under it — the plain-clone assumption, which is also
+    what the callers' ``None`` refusal path already handles.
+    """
+    repo_root = resolve_teatree_repo_root()
+    if repo_root is None:
+        return Path()
+    try:
+        return teatree_source_root().relative_to(repo_root)
+    except ValueError:
+        return Path()
 
 
 def _clone_detached(repo_root: Path, checkout: Path) -> bool:
@@ -135,9 +158,14 @@ def ephemeral_checkout_env(base_env: dict[str, str], checkout: Path) -> dict[str
     Returns a NEW env dict (never mutates *base_env*) that redirects the two levers
     by which an SDK sub-agent would otherwise reach the developer's real clone:
 
-    *   ``PYTHONPATH`` is prepended with ``<checkout>/src`` so ``import teatree``
-        resolves into the ephemeral checkout, NOT the editable install's ``.pth``
-        that points at the real ``src/teatree``;
+    *   ``PYTHONPATH`` is prepended with the checkout's own teatree ``src`` —
+        ``<checkout>/<source-root-offset>/src`` — so ``import teatree`` resolves
+        into the ephemeral checkout, NOT the editable install's ``.pth`` that
+        points at the real ``src/teatree``. The offset is what makes this correct
+        in a fork that vendors core: there the package is at
+        ``<checkout>/vendor/teatree/src``, and the naive ``<checkout>/src`` is a
+        directory with NO teatree package, so ``import teatree`` would silently
+        fall through to the editable install and isolation would FAIL OPEN;
     *   ``GIT_DIR`` / ``GIT_WORK_TREE`` are CLEARED and ``GIT_CEILING_DIRECTORIES``
         is unset so ``git`` rediscovers the repo from the (ephemeral) cwd rather
         than inheriting a pin to the real clone.
@@ -147,7 +175,7 @@ def ephemeral_checkout_env(base_env: dict[str, str], checkout: Path) -> dict[str
     walks up from a neutral cwd.
     """
     env = dict(base_env)
-    ephemeral_src = str(checkout / "src")
+    ephemeral_src = str(checkout / source_root_offset() / "src")
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{ephemeral_src}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else ephemeral_src
     for git_pin in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES"):
@@ -160,4 +188,5 @@ __all__ = [
     "ephemeral_checkout_env",
     "provision_ephemeral_checkout",
     "resolve_teatree_repo_root",
+    "source_root_offset",
 ]

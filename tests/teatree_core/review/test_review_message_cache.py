@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.review.review_message_cache import ReviewMessageCacheError, persist_review_message
+from teatree.core.review.review_message_cache import persist_review_message
 
 _MR_385 = "https://gitlab.com/org/repo/-/merge_requests/385"
 _MR_386 = "https://gitlab.com/org/repo/-/merge_requests/386"
@@ -153,8 +153,14 @@ def test_non_dict_json_is_treated_as_empty(data_dir: Path) -> None:
     assert set(payload) == {_MR_385}
 
 
-def test_missing_data_dir_raises_named_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # ``T3_DATA_DIR`` unset raises a CLEAR named error, not a bare KeyError.
+def test_unset_data_dir_falls_back_to_the_canonical_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # ``T3_DATA_DIR`` unset must NOT be fatal: the worker container does not set it, and
+    # raising here made the sanctioned review-request post path unusable from the
+    # containerized loop. Fall back to the canonical data dir, like every sibling resolver.
     monkeypatch.delenv("T3_DATA_DIR", raising=False)
-    with pytest.raises(ReviewMessageCacheError, match="T3_DATA_DIR"):
-        persist_review_message(mr_url=_MR_385, iid="385", permalink="p", channel="C1", when=_WHEN)
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
+
+    path = persist_review_message(mr_url=_MR_385, iid="385", permalink="p", channel="C1", when=_WHEN)
+
+    assert path == tmp_path / "tickets" / "385" / "mr_review_messages.json"
+    assert json.loads(path.read_text())[_MR_385]["permalink"] == "p"

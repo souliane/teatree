@@ -63,6 +63,46 @@ class PrOpenState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class DraftState(StrEnum):
+    """Whether a pull/merge request is in DRAFT state on the forge.
+
+    Three-valued because ``bool`` cannot express "the forge did not answer",
+    and a draft probe that launders a read failure into ``not a draft`` silently
+    disarms the user's own hold mechanism: marking one MR of a batch Draft is how
+    a review-request broadcast is held back, so an unanswerable probe reading as
+    NOT_DRAFT fires the very broadcast the Draft flag exists to stop.
+
+    ``UNKNOWN`` is the fail-CLOSED value — an absent forge CLI, an auth or
+    network error, an unparsable URL, or an unrecognised payload all map here,
+    and every consumer refuses the harmful direction (no broadcast, no merge, no
+    nag) rather than proceeding on data it does not have.
+    """
+
+    DRAFT = "draft"
+    NOT_DRAFT = "not_draft"
+    UNKNOWN = "unknown"
+
+
+class ApprovalReadState(StrEnum):
+    """Whether a pull/merge request has been approved, per the forge.
+
+    The three-valued sibling of :class:`DraftState`, over the same payload
+    :class:`ApprovalState` carries: that TypedDict is the snapshot a successful
+    read returns, this is the verdict a caller acts on — including the case
+    where there was no successful read.
+
+    ``UNKNOWN`` is the fail-CLOSED value. A ``bool`` collapses "the forge says
+    nobody approved it" into the same answer as "the forge did not answer", and
+    the benign-looking one is NOT_APPROVED — which is exactly the value that
+    licenses re-pinging a group about a merge request review already finished
+    on. Every consumer refuses the harmful direction on UNKNOWN.
+    """
+
+    APPROVED = "approved"
+    NOT_APPROVED = "not_approved"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class PullRequestSpec:
     """Fields needed to open a pull/merge request on a CodeHostBackend."""
@@ -77,6 +117,26 @@ class PullRequestSpec:
     draft: bool = False
 
 
+class MergeConflictState(StrEnum):
+    """Whether the PR/MR conflicts with its target branch, per the forge.
+
+    Three-valued for the same reason :class:`DraftState` is: both forges compute
+    mergeability asynchronously, so "not conflicted" and "not answered yet" are
+    genuinely different facts and a ``bool`` collapses them into the benign one.
+    A conflict probe that launders an unanswered read into ``CLEAN`` makes the
+    conflict sweep silently inert — and one that launders it into ``CONFLICTED``
+    dispatches a fix for a merge request that has nothing wrong with it.
+
+    ``UNKNOWN`` is what every unreadable case maps to — a transport failure, an
+    unparsable payload, a forge that has not finished checking — and no consumer
+    acts on it in either direction.
+    """
+
+    CONFLICTED = "conflicted"
+    CLEAN = "clean"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class PrMergeState:
     """The PR/MR's merge state from the forge — used for the §928 reconciliation.
@@ -84,11 +144,14 @@ class PrMergeState:
     ``state`` is the forge's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``, always
     upper-cased so ``is_merged`` works across GitHub and GitLab);
     ``merge_commit_oid`` is the resulting squash/merge commit when the PR is
-    already merged (else ``""``).
+    already merged (else ``""``). ``conflict`` is the target-branch conflict axis,
+    defaulting to ``UNKNOWN`` so a backend that cannot read it is never mistaken
+    for one reporting a clean merge.
     """
 
     state: str
     merge_commit_oid: str
+    conflict: MergeConflictState = MergeConflictState.UNKNOWN
 
     @property
     def is_merged(self) -> bool:
@@ -343,7 +406,7 @@ class CodeHostBackend(Protocol):
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState: ...  # pragma: no branch
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool: ...  # pragma: no branch
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState: ...  # pragma: no branch
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
 

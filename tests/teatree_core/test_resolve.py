@@ -26,6 +26,7 @@ from teatree.core.intake.resolve import (
     tickets_owning_workspace_dir,
     workspace_owner_ticket,
 )
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 
@@ -299,6 +300,47 @@ class TestResolveWorktree(TestCase):
         result = resolve_worktree()
 
         assert result.extra["worktree_path"] == wt_path
+
+    def test_declared_invocation_cwd_takes_precedence_over_process_cwd(self) -> None:
+        """The container-translated cwd wins over T3_ORIG_CWD/PWD.
+
+        ``docker compose exec`` starts the CLI in the image WORKDIR, so inside the
+        container ``T3_ORIG_CWD``/``PWD`` both report that one directory no matter
+        where ``t3`` was typed. Only ``deploy/t3``'s translated value carries where
+        the operator actually stood.
+        """
+        ticket = Ticket.objects.create()
+        wt_path = self._tmp_path / "correct"
+        wt_path.mkdir()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_path)},
+        )
+        image_workdir = self._tmp_path / "image-workdir"
+        image_workdir.mkdir()
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(image_workdir))
+        self._monkeypatch.setenv("PWD", str(image_workdir))
+        self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(wt_path))
+
+        assert resolve_worktree().extra["worktree_path"] == str(wt_path)
+
+    def test_unusable_declared_invocation_cwd_falls_back_to_orig_cwd(self) -> None:
+        """A declared path that is not a directory here is ignored, never trusted."""
+        ticket = Ticket.objects.create()
+        wt_path = self._tmp_path / "correct"
+        wt_path.mkdir()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_path)},
+        )
+        self._monkeypatch.setenv(INVOCATION_CWD_ENV, str(self._tmp_path / "does-not-exist"))
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_path))
+
+        assert resolve_worktree().extra["worktree_path"] == str(wt_path)
 
     def test_env_file_without_ticket_dir(self) -> None:
         """When .t3-env.cache exists but has no TICKET_DIR, fall through to CWD match."""

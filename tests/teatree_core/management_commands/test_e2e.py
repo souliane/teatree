@@ -1225,6 +1225,40 @@ class TestE2eRun(TestCase):
         assert mock_external.call_args.kwargs["branch"] == "mr/working-branch"
 
 
+class TestLocalBaseUrlNamesTheHost(TestCase):
+    """``--target local`` must name the machine that PUBLISHED the frontend port.
+
+    Hard-coding ``localhost`` is correct only when the CLI runs natively. Inside the
+    containerized CLI it is the container's own loopback, so global-setup gets
+    ECONNREFUSED against a port that is open on the host. Both branches of
+    ``_resolve_target_env`` -- linked (``--linked-to``) and cwd-resolved -- build that
+    URL, so both are checked.
+    """
+
+    def _frontend_url(self, *, host: str, linked: bool) -> str | None:
+        command = e2e_mod.Command()
+        ticket = MagicMock() if linked else None
+        with (
+            patch.object(e2e_mod, "host_published_port_host", return_value=host),
+            patch.object(e2e_mod.Command, "_require_frontend_port", return_value=62674),
+            patch.object(e2e_mod, "_resolve_linked_worktree", return_value=MagicMock()),
+            patch.object(e2e_mod, "_linked_env_cache", return_value=None),
+            patch.object(e2e_mod, "resolve_worktree", return_value=MagicMock()),
+            patch.object(e2e_mod, "compose_project", return_value="proj"),
+        ):
+            frontend_url, _, _ = command._resolve_target_env("local", ticket)
+        return frontend_url
+
+    def test_a_native_run_still_says_localhost(self) -> None:
+        assert self._frontend_url(host="localhost", linked=False) == "http://localhost:62674"
+        assert self._frontend_url(host="localhost", linked=True) == "http://localhost:62674"
+
+    def test_a_containerized_run_names_the_docker_host(self) -> None:
+        expected = "http://host.docker.internal:62674"
+        assert self._frontend_url(host="host.docker.internal", linked=False) == expected
+        assert self._frontend_url(host="host.docker.internal", linked=True) == expected
+
+
 # ── _clone_or_update_e2e_repo ─────────────────────────────────────────
 
 
@@ -1334,6 +1368,61 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 e2e_mod._clone_or_update_e2e_repo(repo, "no-such-branch")
             assert "no-such-branch" in str(exc_info.value)
 
+    def _clone_cmd_for(self, *, url: str, ssh_on_path: str | None) -> list[str]:
+        """The git argv ``_clone_or_update_e2e_repo`` builds for *url* on such a host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = config_mod.E2ERepo(name="demo-svc", url=url, branch="feature/e2e")
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod.shutil, "which", return_value=ssh_on_path),
+                patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
+            ):
+                e2e_mod._clone_or_update_e2e_repo(repo)
+            return list(mock_run.call_args[0][0])
+
+    def test_ssh_url_resolves_to_https_when_the_host_has_no_ssh_client(self) -> None:
+        """The deploy image ships no ssh but bakes an HTTPS credential helper, so use HTTPS."""
+        cmd = self._clone_cmd_for(url="git@gitlab.com:org/svc.git", ssh_on_path=None)
+
+        assert "https://gitlab.com/org/svc.git" in cmd
+        assert "git@gitlab.com:org/svc.git" not in cmd
+
+    def test_ssh_url_is_untouched_when_an_ssh_client_exists(self) -> None:
+        """A developer laptop and CI keep the configured remote exactly as before."""
+        cmd = self._clone_cmd_for(url="git@gitlab.com:org/svc.git", ssh_on_path="/usr/bin/ssh")
+
+        assert "git@gitlab.com:org/svc.git" in cmd
+
+    def test_https_url_is_untouched_with_or_without_an_ssh_client(self) -> None:
+        """Only the ``git@`` form is rewritten; an HTTPS remote is already reachable."""
+        for ssh_on_path in (None, "/usr/bin/ssh"):
+            cmd = self._clone_cmd_for(url="https://gitlab.com/org/svc.git", ssh_on_path=ssh_on_path)
+
+            assert "https://gitlab.com/org/svc.git" in cmd
+
+    def test_a_failure_whose_ref_is_present_propagates_the_real_error(self) -> None:
+        """Only a genuinely absent ref may be reported as one.
+
+        Reporting every ``CommandFailedError`` as "branch not found" sends the reader
+        hunting a ref that ``git ls-remote`` demonstrably lists, while the real git
+        stderr is discarded. Here the ref EXISTS and the fetch fails for an unrelated
+        reason (the cache directory is not a git repository).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = _make_upstream_with_branches(tmp_path, ("feature/e2e",))
+            # Present but not a repository, so `git -C <cache> fetch` fails while the
+            # ref itself is on the remote.
+            (tmp_path / "e2e-repos" / "demo-svc").mkdir(parents=True)
+
+            repo = config_mod.E2ERepo(name="demo-svc", url=str(upstream), branch="feature/e2e")
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                pytest.raises(utils_run_mod.CommandFailedError),
+            ):
+                e2e_mod._clone_or_update_e2e_repo(repo)
+
     def test_ensure_external_e2e_dependencies_runs_npm_ci_for_locked_project(self) -> None:
         """Managed external clones install their Playwright project deps before running."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -1359,6 +1448,71 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 e2e_runners_mod.ensure_external_e2e_dependencies(playwright_root)
 
             mock_run.assert_not_called()
+
+
+class TestExternalE2eBrowsers(TestCase):
+    """Browser binaries are provisioned separately from node dependencies.
+
+    They are independently satisfiable -- a warm ``node_modules`` says nothing about
+    whether a browser exists -- so folding them into one early return means a repeat
+    run can never acquire the browser it is missing.
+    """
+
+    def _clone(self, tmp: str, *, node_modules: bool) -> Path:
+        playwright_root = Path(tmp) / "clone" / "e2e"
+        playwright_root.mkdir(parents=True)
+        (playwright_root / "package.json").write_text('{"scripts":{}}\n')
+        (playwright_root / "package-lock.json").write_text("{}\n")
+        if node_modules:
+            (playwright_root / "node_modules" / "@playwright" / "test").mkdir(parents=True)
+        return playwright_root
+
+    def _run(self, playwright_root: Path, *, browsers: Path) -> list[list[str]]:
+        calls: list[list[str]] = []
+        with (
+            patch.object(e2e_runners_mod, "_playwright_browsers_dir", return_value=browsers),
+            patch.object(e2e_runners_mod, "run_checked", side_effect=lambda cmd, **_kw: calls.append(list(cmd))),
+        ):
+            e2e_runners_mod.ensure_external_e2e_dependencies(playwright_root)
+        return calls
+
+    def test_a_missing_browser_is_installed_from_the_clone(self) -> None:
+        """Installed from the clone's own pin, so it matches whatever that repo asks for."""
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = self._clone(tmp, node_modules=True)
+
+            calls = self._run(playwright_root, browsers=Path(tmp) / "no-browsers")
+
+            assert ["npx", "playwright", "install", "chromium"] in calls
+
+    def test_a_warm_node_modules_no_longer_blocks_the_browser_install(self) -> None:
+        """The regression: the early return made this a no-op on exactly a repeat run's state."""
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = self._clone(tmp, node_modules=True)
+
+            calls = self._run(playwright_root, browsers=Path(tmp) / "no-browsers")
+
+            assert not any(call[:1] == ["npm"] for call in calls)
+            assert ["npx", "playwright", "install", "chromium"] in calls
+
+    def test_an_installed_browser_is_not_reinstalled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = self._clone(tmp, node_modules=True)
+            browsers = Path(tmp) / "browsers"
+            (browsers / "chromium_headless_shell-1200").mkdir(parents=True)
+
+            calls = self._run(playwright_root, browsers=browsers)
+
+            assert calls == []
+
+    def test_a_project_without_playwright_installs_no_browser(self) -> None:
+        """A managed clone that is not a Playwright project must not download one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = self._clone(tmp, node_modules=False)
+
+            calls = self._run(playwright_root, browsers=Path(tmp) / "no-browsers")
+
+            assert not any("playwright" in call for call in calls)
 
 
 # ── overlay_e2e_repo (the get_e2e_config -> E2ERepo builder) ───────────
@@ -1410,6 +1564,12 @@ class TestOverlayE2eRepo(TestCase):
 
 class TestResolveExternalSpecsPathOverlayRepo(TestCase):
     """``resolve_external_specs_path`` clones the overlay's own repo when supplied."""
+
+    def setUp(self) -> None:
+        # An exported T3_PRIVATE_TESTS now outranks the overlay's default repo, so
+        # these clone-path assertions are only meaningful with it unset.
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("T3_PRIVATE_TESTS", None)
 
     def test_overlay_repo_clones_at_ref_when_no_named_repo(self) -> None:
         """With ``overlay_repo`` and no ``--repo``, the overlay repo clones at its ``ref``."""
@@ -1504,6 +1664,85 @@ class TestResolveExternalSpecsPathOverlayRepo(TestCase):
         with pytest.raises(e2e_runners_mod.E2eSpecsResolutionError) as exc_info:
             e2e_runners_mod.resolve_external_specs_path("", "some-branch", overlay_repo=None)
         assert exc_info.value.exit_code == 2
+
+
+class TestExportedPrivateTestsOutranksOverlayRepo(TestCase):
+    """An exported ``T3_PRIVATE_TESTS`` beats an overlay's DECLARED repo.
+
+    An overlay that declares a ``url`` supplies a default source for the specs; an
+    export names the checkout to run for THIS invocation. Ranked the other way
+    round, the export was unreachable for every such overlay, so the runner could
+    only ever execute specs already pushed to a remote — a deterministic,
+    stack-free lane (no browser, no BASE_URL, no credentials) could not be run
+    against the working tree at all, which is exactly what CI runs. Explicit beats
+    default here for the same reason ``--repo`` already beats the overlay repo.
+    """
+
+    def setUp(self) -> None:
+        self.enterContext(patch.dict(os.environ))
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.exported = Path(self.tmp) / "worktree-e2e"
+        self.exported.mkdir()
+        self.overlay_repo = config_mod.E2ERepo(
+            name="client-workspace",
+            url="git@example.invalid:org/client-workspace.git",
+            branch="migration-branch",
+            e2e_dir="e2e",
+        )
+
+    def test_exported_path_wins_over_overlay_repo(self) -> None:
+        os.environ["T3_PRIVATE_TESTS"] = str(self.exported)
+        with patch.object(e2e_runners_mod, "clone_or_update_e2e_repo") as mock_clone:
+            root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=self.overlay_repo)
+        assert root == self.exported
+        mock_clone.assert_not_called()
+
+    def test_named_repo_still_beats_the_exported_path(self) -> None:
+        os.environ["T3_PRIVATE_TESTS"] = str(self.exported)
+        named = config_mod.E2ERepo(name="named-svc", url="git@example.invalid:org/named.git", branch="main")
+        cloned = Path(self.tmp) / "cloned"
+        with (
+            patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[named]),
+            patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=cloned) as mock_clone,
+            patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+        ):
+            root = e2e_runners_mod.resolve_external_specs_path("named-svc", "", overlay_repo=self.overlay_repo)
+        assert root == cloned
+        mock_clone.assert_called_once()
+
+    def test_branch_with_the_exported_path_is_still_a_misuse(self) -> None:
+        # The export is a checkout the user manages; a ref only means something to a clone.
+        os.environ["T3_PRIVATE_TESTS"] = str(self.exported)
+        with pytest.raises(e2e_runners_mod.E2eSpecsResolutionError) as exc_info:
+            e2e_runners_mod.resolve_external_specs_path("", "some-branch", overlay_repo=self.overlay_repo)
+        assert exc_info.value.exit_code == 2
+
+    def test_a_nonexistent_exported_path_is_ignored_not_obeyed(self) -> None:
+        # A typo'd export must not silently become "run nothing" — fall through to
+        # the overlay's repo exactly as if it had never been set.
+        os.environ["T3_PRIVATE_TESTS"] = str(Path(self.tmp) / "does-not-exist")
+        cloned = Path(self.tmp) / "cloned"
+        with (
+            patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=cloned) as mock_clone,
+            patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+        ):
+            root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=self.overlay_repo)
+        assert root == cloned
+        mock_clone.assert_called_once()
+
+    def test_db_configured_private_tests_does_not_outrank_the_overlay_repo(self) -> None:
+        # Only the EXPORT is an instruction about this run; the DB row is a standing
+        # preference and keeps its original lowest precedence.
+        os.environ.pop("T3_PRIVATE_TESTS", None)
+        cloned = Path(self.tmp) / "cloned"
+        with (
+            patch.object(e2e_runners_mod, "resolve_private_tests_path", return_value=self.exported),
+            patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=cloned) as mock_clone,
+            patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+        ):
+            root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=self.overlay_repo)
+        assert root == cloned
+        mock_clone.assert_called_once()
 
 
 # ── e2e external --repo ───────────────────────────────────────────────

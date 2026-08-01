@@ -223,18 +223,41 @@ _HISTORICAL_QUESTION_RE = re.compile(
 )
 
 
-def _question_is_only_quoted_or_historical(prose: str) -> bool:
-    """True when every live-question signal is quoted or attributed to the past (#3261).
+# A REPORTED question: the turn states an open question EXISTS and names where it
+# was already routed — recorded as a task, filed as an issue, relayed to the
+# product owner. The gate exists so a decision the agent needs is never lost in a
+# log line; a question already on a durable channel is not that, and re-asking it
+# through AskUserQuestion routes it to the wrong person and costs a round trip.
+# The clause is bounded by ``.``/``!``/newline but NOT by ``?``, so the reported
+# interrogative itself falls inside the span and is neutralised with it, while a
+# genuine live question in a NEIGHBOURING sentence survives and still fires.
+_QUESTION_NOUN = r"(?:questions?|decisions?|asks?|quer(?:y|ies)|clarifications?)"
+_ROUTED_ELSEWHERE_VERB = (
+    r"(?:recorded|logged|filed|tracked|relayed|routed|surfaced|sent|posted|captured|escalated|deferred|queued|raised)"
+)
+_REPORTED_QUESTION_RE = re.compile(
+    r"[^.!\n]*(?:"
+    rf"\b{_QUESTION_NOUN}\b[^.!\n]*\b{_ROUTED_ELSEWHERE_VERB}\b"
+    rf"|\b{_ROUTED_ELSEWHERE_VERB}\b[^.!\n]*\b{_QUESTION_NOUN}\b"
+    r")[^.!\n]*",
+    re.IGNORECASE,
+)
 
-    Strips quoted spans, blockquote lines, and historical-attribution clauses,
-    then re-checks for a surviving user-directed ``?``. When none survives, the
-    turn merely quotes/recounts a prior question — not a live decision — so the
-    gate must not force a spurious ``AskUserQuestion``. A genuine live question
-    survives the strip and keeps firing.
+
+def _question_is_only_quoted_historical_or_reported(prose: str) -> bool:
+    """True when no live-question signal survives the quoted/past/routed strips.
+
+    Strips quoted spans, blockquote lines, historical-attribution clauses (#3261),
+    and reported-question clauses, then re-checks for a surviving user-directed
+    ``?``. When none survives, the turn merely quotes, recounts, or REPORTS a
+    question already routed elsewhere — not a live decision — so the gate must not
+    force a spurious ``AskUserQuestion``. A genuine live question survives every
+    strip and keeps firing.
     """
     cleaned = _QUOTED_SPAN_RE.sub(" ", prose)
     cleaned = _BLOCKQUOTE_LINE_RE.sub(" ", cleaned)
     cleaned = _HISTORICAL_QUESTION_RE.sub(" ", cleaned)
+    cleaned = _REPORTED_QUESTION_RE.sub(" ", cleaned)
     if "?" not in cleaned:
         return True
     return not _USER_DIRECTED_CUE_RE.search(cleaned)
@@ -254,13 +277,15 @@ def is_user_directed_question(text: str) -> bool:
     agent's own work, which it resolves autonomously. A genuine go/no-go or a
     real choice between substantive options still fires.
 
-    A QUOTED or HISTORICAL question does NOT fire (#3261): when the only
-    user-directed ``?`` survives inside a quoted span / blockquote (the agent
+    A QUOTED, HISTORICAL, or REPORTED question does NOT fire (#3261): when the
+    only user-directed ``?`` survives inside a quoted span / blockquote (the agent
     quoting an earlier question back — e.g. answering "what was the last question
-    you asked me?") or inside a past-attribution clause ("the last question I
-    asked was …", "you asked whether …"), there is no live decision to route, so
-    forcing an ``AskUserQuestion`` would manufacture a spurious round-trip. A
-    genuine live question outside such spans still fires.
+    you asked me?"), inside a past-attribution clause ("the last question I asked
+    was …", "you asked whether …"), or inside a clause REPORTING that an open
+    question is already routed ("the refresh question — hourly or daily? —
+    recorded as TODO-12 and relayed to the PO"), there is no live decision to
+    route, so forcing an ``AskUserQuestion`` would manufacture a spurious
+    round-trip. A genuine live question outside such spans still fires.
 
     An ANNOUNCED ask ("**Action:** Ask about the first PR", "I'll ask the user
     which branch" — a bounded filler run between the head and "ask" included:
@@ -286,7 +311,7 @@ def is_user_directed_question(text: str) -> bool:
         return False
     if _SEQUENCING_OFFER_RE.search(prose):
         return False
-    return not _question_is_only_quoted_or_historical(prose)
+    return not _question_is_only_quoted_historical_or_reported(prose)
 
 
 # A user CLARIFICATION request — they did not pick an option, they asked the

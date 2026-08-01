@@ -2,11 +2,23 @@
 
 The post-half of #1084/#1094. One classifier-legible transaction:
 
+0.  ``mr_url_is_review_exempt`` — a repo the owner asks for review on in
+    person never gets a posted request. First, because the verdict is
+    permanent and repo-level: no channel, forge probe, attestation or
+    approval can turn it into a post, and — like the draft gate below —
+    refusing before the dedup claim leaves no orphan ``ReviewRequestPost``
+    row to wedge every later post on ``already_claimed``. Inert until a
+    pattern is declared (both sources default empty).
 1.  ``resolve_guard_target`` — resolves the postable review channel. When it
     returns ``None`` (e.g. a Slack Connect channel the bot token cannot post
     to — #2231), a bot→user DM draft is sent via ``notify_user`` and the
     command exits with ``action=draft`` / ``reason=no_review_channel_or_token``
     (exit 0). No channel post is made; no dedup claim is taken.
+1b. R1 ``review_request_batch_gate`` — a member of a multi-merge-request unit
+    of work waits until every open sibling is review-ready, so a reviewer is
+    never handed a third of a change. Refuses before the dedup claim for the
+    same orphan-claim reason as the draft gate; inert until
+    ``require_work_group_batch`` is on.
 2.  #1094 ``review_request_guard`` live-channel dedup
     (``should_post_review_request`` — takes the atomic ``ReviewRequestPost``
     claim internally). ``suppress`` → no post.
@@ -29,8 +41,10 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.gates.review_request_draft_gate import is_draft_mr
+from teatree.core.gates.review_request_batch_gate import refusal_payload, work_group_batch_refusal
+from teatree.core.gates.review_request_draft_gate import draft_refusal_reason
 from teatree.core.gates.review_request_guard import (
+    GuardTarget,
     canonical_mr_url,
     overlay_for_mr_url,
     resolve_guard_target,
@@ -45,6 +59,7 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_message_cache import persist_review_message
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.types import RawAPIDict
@@ -117,12 +132,22 @@ class Command(TyperCommand):
 
         Machine-legible: prints a single JSON dict (``action`` is
         ``post``/``draft``/``suppress``/``refused``) and uses exit codes —
-        ``0`` post/draft/suppress, ``2`` refused (no recorded approval / no
-        anti-vacuity attestation).
+        ``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no
+        recorded approval, no anti-vacuity attestation, a draft MR, an
+        unreadable draft state, or a work group holding this member back).
         """
         _ = approver  # the #960 approver is bound at approve-on-behalf record time.
 
-        # #1829 anti-vacuity gate runs FIRST — before the dedup claim or any
+        overlay_name = overlay_for_mr_url(mr_url)
+        # A review-exempt repo outranks every gate below: those all ask whether
+        # THIS attempt may post, and the answer here is that no attempt ever may.
+        if mr_url_is_review_exempt(mr_url, overlay_name=overlay_name):
+            self._emit(
+                {"action": "refused", "reason": "review_exempt_repo", "mr_url": mr_url},
+                exit_code=2,
+            )
+
+        # #1829 anti-vacuity gate runs before the dedup claim and any
         # wire call — so a missing attestation refuses without leaving an
         # orphan ``ReviewRequestPost`` claim to roll back. NO-OP when
         # ``require_anti_vacuity_attestation`` is off (opt-in default).
@@ -146,7 +171,6 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
-        overlay_name = overlay_for_mr_url(mr_url)
         target = resolve_guard_target(overlay_name=overlay_name)
         if target is None:
             # The review channel is unpostable (e.g. a Slack Connect channel
@@ -165,13 +189,25 @@ class Command(TyperCommand):
 
         canonical = canonical_mr_url(mr_url)
 
-        # Draft gate: a draft MR is not ready for review — refuse BEFORE the
-        # dedup claim so no orphan ``ReviewRequestPost`` row is left to roll back.
-        if is_draft_mr(canonical, overlay_name=overlay_name):
+        # Draft gate: a draft MR is not ready for review, and an UNREADABLE draft
+        # state cannot rule one out — both refuse BEFORE the dedup claim so no
+        # orphan ``ReviewRequestPost`` row is left to roll back. Failing closed
+        # here is what keeps "mark it Draft to hold the batch" working when the
+        # forge probe cannot be answered.
+        draft_refusal = draft_refusal_reason(canonical, overlay_name=overlay_name)
+        if draft_refusal:
             self._emit(
-                {"action": "refused", "reason": "draft_mr", "mr_url": canonical},
+                {"action": "refused", "reason": draft_refusal, "mr_url": canonical},
                 exit_code=2,
             )
+
+        # R1 batch gate: a member of a work group waits for its siblings. Like the
+        # draft gate it refuses BEFORE the dedup claim, so a held batch leaves no
+        # orphan ``ReviewRequestPost`` row to roll back. NO-OP while
+        # ``require_work_group_batch`` is off (inert default).
+        batch_refusal = work_group_batch_refusal(canonical, overlay_name=overlay_name)
+        if batch_refusal is not None:
+            self._emit(refusal_payload(batch_refusal, mr_url=canonical), exit_code=2)
 
         decision = should_post_review_request(mr_url=canonical, target=target)
         if not decision.should_post:
@@ -197,6 +233,24 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
+        self._publish(
+            canonical=canonical,
+            target=target,
+            title=title,
+            ticket_id=ticket_id,
+            overlay_name=overlay_name,
+        )
+
+    def _publish(
+        self,
+        *,
+        canonical: str,
+        target: GuardTarget,
+        title: str,
+        ticket_id: str,
+        overlay_name: str,
+    ) -> NoReturn:
+        """Consume the approval, post, and record the message — the tail after every gate."""
         messaging = messaging_from_overlay(overlay_name or None)
         if messaging is None:
             self._emit(

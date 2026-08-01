@@ -137,6 +137,30 @@ class TestToolCommands:
         assert result.exit_code == 0
         branch_diff.assert_called_once_with(str(repo), "origin/chore/integration-branch")
 
+    def test_diff_coverage_git_config_target_branch_beats_the_default_branch(self, tmp_path, monkeypatch):
+        # A fork whose work lands on an integration branch declares it once as
+        # ``teatree.targetBranch``; without that rung the gate grades the whole
+        # integration branch as new code and refuses an otherwise-clean PR.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run(
+            [_GIT, "-C", str(repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            check=True,
+        )
+        subprocess.run(
+            [_GIT, "-C", str(repo), "config", "teatree.targetBranch", "chore/integration-branch"], check=True
+        )
+        monkeypatch.delenv("T3_DIFF_COVERAGE_BASE", raising=False)
+        with (
+            patch("teatree.utils.git.branch_diff", return_value="") as branch_diff,
+            patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
+        ):
+            mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
+            result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(repo)])
+        assert result.exit_code == 0
+        branch_diff.assert_called_once_with(str(repo), "origin/chore/integration-branch")
+
     def test_diff_coverage_fails_exit_one_and_reports(self, tmp_path):
         report = MagicMock(
             passes=lambda: False,

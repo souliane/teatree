@@ -15,6 +15,7 @@ from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.discussions import _count_unresolved_resolvable_threads, _read_int
 from teatree.core.backend_protocols import (
     ApprovalState,
+    DraftState,
     ForgeMergeResult,
     PrMergeState,
     PrOpenState,
@@ -46,11 +47,13 @@ class _GitLabUser(TypedDict, total=False):
 
 
 class _GitLabMergeRequestSummary(TypedDict, total=False):
-    """Subset of the GitLab MR response read for the review/open-state lookup."""
+    """Subset of the GitLab MR response read for the review/open-state/draft lookup."""
 
     reviewers: list[_GitLabUser]
     state: str
     author: _GitLabUser
+    draft: bool
+    work_in_progress: bool
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -492,8 +495,41 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
         return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
 
-    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
-        return self._merge_rpc().fetch_pr_is_draft(slug=slug, pr_id=pr_id)
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        """Tri-state draft flag, read over the token-authenticated HTTP API.
+
+        Deliberately NOT on the ``glab`` merge-RPC transport its merge-path
+        siblings use: the review-request draft gate calls this from the headless
+        deploy image, which ships no ``glab`` binary, so every probe there raised
+        ``FileNotFoundError`` and the gate reported "not a draft" for every MR.
+        The HTTP client needs only ``GITLAB_TOKEN``, which that image already has.
+
+        ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the
+        legacy field kept for compatibility — either one being true means DRAFT.
+        An unresolvable project, a transport error, or a non-dict payload yields
+        ``UNKNOWN`` so no consumer mistakes an unanswered probe for a live MR.
+        """
+        try:
+            project = self._resolve_project(slug)
+            if project is None:
+                return DraftState.UNKNOWN
+            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{pr_id}")
+        except Exception as exc:  # noqa: BLE001 — fail closed: an unread probe must never read as NOT_DRAFT.
+            warn_throttled(
+                logger,
+                f"gitlab-draft-probe:{slug}!{pr_id}",
+                "GitLab draft probe failed for %s!%s — reporting UNKNOWN: %s",
+                slug,
+                pr_id,
+                exc,
+            )
+            return DraftState.UNKNOWN
+        if not isinstance(mr, dict):
+            return DraftState.UNKNOWN
+        summary = cast("_GitLabMergeRequestSummary", mr)
+        if summary.get("draft") or summary.get("work_in_progress"):
+            return DraftState.DRAFT
+        return DraftState.NOT_DRAFT
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)

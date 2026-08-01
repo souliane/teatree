@@ -70,6 +70,13 @@ type DriftNotifier = Callable[[str, str], None]
 logger = logging.getLogger(__name__)
 
 
+#: Marker stamped into a drift alert's own idempotency key, and the ONE thing the
+#: recursion guard keys on. Producer (`_apply_result`) and consumer
+#: (`_candidate_claims`) must read the same constant — the loop that DM'd the owner
+#: several times a second existed because the two sides agreed on the string but
+#: disagreed on its POSITION, the notify path having prefixed `slack_dm:` in front.
+DRIFT_ALERT_MARKER = "outbound_drift:"
+
 kind_settling_seconds: dict[str, int] = {
     "slack_dm": 30,
     "slack_reaction": 30,
@@ -137,10 +144,23 @@ class OutboundAuditScanner:
         "Diagnosis: {reason}"
     )
 
+    # How many drift DMs one tick may send. Drift is overwhelmingly CORRELATED — when the
+    # DM transport itself breaks (`open_dm` returning an empty channel), EVERY queued
+    # notification drifts for the identical reason, and alerting per victim turned one
+    # outage into 42 DMs in a single burst. Forty-two alerts sharing one cause are not
+    # forty-two pieces of information. The drift is still RECORDED on every claim (the
+    # `drift_detected` / `drift_reason` columns are the durable record and the signals
+    # list is unchanged) — only the outbound DM is rationed, and the first one carries
+    # the count of its silent siblings so the operator sees the true scale.
+    _MAX_DRIFT_ALERTS_PER_TICK = 1
+
     def scan(self) -> list[ScanSignal]:
         model = cast("type[OutboundClaimModel]", apps.get_model("core", "OutboundClaim"))
         now = self._now_factory()
         signals: list[ScanSignal] = []
+        # Per-TICK budget, tracked as a local because this scanner is frozen. A fresh tick
+        # alerts again if the cause is still live.
+        drift_budget = self._MAX_DRIFT_ALERTS_PER_TICK
         candidates = self._candidate_claims(model, now)
         for claim in candidates:
             # Explicit injected verifier wins (test path); else resolve the
@@ -158,7 +178,9 @@ class OutboundAuditScanner:
             except Exception as exc:  # noqa: BLE001 — never break a tick on a verifier raise
                 logger.warning("Verifier for %s raised: %s — skipping (no alert)", claim.kind, exc)
                 continue
-            signal = self._apply_result(claim, result, now)
+            signal = self._apply_result(claim, result, now, drift_budget=drift_budget)
+            if signal is not None and signal.kind == "outbound.drift":
+                drift_budget -= 1
             if signal is not None:
                 signals.append(signal)
         return signals
@@ -174,15 +196,22 @@ class OutboundAuditScanner:
         - it is not yet verified, AND
         - it has not yet been alerted as drift, AND
         - its ``claim_ts`` is older than the per-kind settling window, AND
-        - its ``idempotency_key`` does not start with ``outbound_drift:``.
+        - its ``idempotency_key`` does not carry the drift-alert marker.
 
         The last condition is the recursion guard: the drift DM itself
         records an ``OutboundClaim`` row (any successful Slack post does).
-        Without the prefix exclusion the scanner would re-verify those DM
-        claims on the next tick and, if the drift DM itself failed to
-        land, would emit *another* drift DM about the missing drift DM —
-        a feedback loop. The fixed ``outbound_drift:`` prefix is wired by
-        :meth:`_apply_result` below, so the contract is local.
+        Without it the scanner re-verifies those DM claims on the next
+        tick and, if the drift DM itself looks unlanded, emits *another*
+        drift DM about the missing drift DM — a self-amplifying loop that
+        DMs the owner several times a second until the worker is stopped.
+
+        Matched with ``__contains``, not ``__startswith``: :meth:`_apply_result`
+        hands ``outbound_drift:<key>`` to the *notifier*, and the notify path
+        stores it under its own namespace — ``notify_user`` records
+        ``slack_dm:{idempotency_key}``, so the row reads
+        ``slack_dm:outbound_drift:<key>`` and a ``startswith`` guard matched
+        nothing. The marker is the contract; whether a caller prefixes its own
+        namespace in front of it is not this scanner's business.
         """
         rows = (
             model.objects.filter(
@@ -190,7 +219,7 @@ class OutboundAuditScanner:
                 drift_alerted_at__isnull=True,
             )
             .filter(claim_ts__lte=now)
-            .exclude(idempotency_key__startswith="outbound_drift:")
+            .exclude(idempotency_key__contains=DRIFT_ALERT_MARKER)
             .order_by("claim_ts")[: self.limit * 2]
         )
         eligible: list[OutboundClaimModel] = []
@@ -207,6 +236,7 @@ class OutboundAuditScanner:
         claim: "OutboundClaimModel",
         result: VerifyResult,
         now: dt.datetime,
+        drift_budget: int = 1,
     ) -> ScanSignal | None:
         if result.verified:
             claim.verified_at = now
@@ -221,13 +251,24 @@ class OutboundAuditScanner:
             url=claim.target_url or "(no url)",
             reason=result.drift_reason or "artifact missing",
         )
+        suppressed = drift_budget <= 0
         try:
-            self.notifier(alert_text, f"outbound_drift:{claim.idempotency_key}")
+            if suppressed:
+                # Recorded, not DMed. `drift_alerted_at` stays unset so a claim whose cause is
+                # NOT shared with the first one still gets its own alert on a later tick.
+                logger.warning(
+                    "Drift on %s (%s) — recorded, DM suppressed: already alerted this tick",
+                    claim.kind,
+                    result.drift_reason,
+                )
+            else:
+                self.notifier(alert_text, f"{DRIFT_ALERT_MARKER}{claim.idempotency_key}")
         except Exception as exc:  # noqa: BLE001 — never break a tick on a notifier raise
             logger.warning("Drift notifier raised: %s — drift recorded, alert retried next tick", exc)
         else:
-            claim.drift_alerted_at = now
-            claim.save(update_fields=["drift_alerted_at"])
+            if not suppressed:
+                claim.drift_alerted_at = now
+                claim.save(update_fields=["drift_alerted_at"])
         return ScanSignal(
             kind="outbound.drift",
             summary=f"Drift on {claim.kind}: {result.drift_reason[:80]}",

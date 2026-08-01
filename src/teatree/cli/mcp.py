@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 import typer
 
+from teatree.cli.mcp_owning_domain import delegate_to_owning_domain
 from teatree.mcp.serve_lifecycle import reap_orphaned_servers, start_parent_death_watch
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -50,11 +51,14 @@ def open_reconnect_targets(reconnect_urls: list[str], *, opener: Callable[[str],
 def serve() -> None:
     """Run the structured-search MCP server over stdio (blocks until stdin closes).
 
-    Every start first reaps orphaned predecessors (servers reparented to PID 1 —
-    their client is gone, they can never serve again) and arms the parent-death
-    watchdog so THIS server exits even when a leaked fd keeps its stdin from
-    ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
+    This server writes, so it first hands itself to whichever domain owns the control
+    database — a no-op on every install the containerized stack has not claimed (see
+    :mod:`teatree.cli.mcp_owning_domain`). It then reaps orphaned predecessors (servers
+    reparented to PID 1 — their client is gone, they can never serve again) and arms
+    the parent-death watchdog so THIS server exits even when a leaked fd keeps its
+    stdin from ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
     """
+    delegate_to_owning_domain()
     reap_orphaned_servers()
     start_parent_death_watch()
     ensure_django()

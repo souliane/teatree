@@ -208,7 +208,8 @@ def deny_reason(finding: ConfigOverwriteFinding) -> str:
             "committed/stashed version, discarding any uncommitted on-disk edits. "
             "The on-disk content is authoritative — Read it FIRST and confirm you intend "
             "to overwrite it. If the live content is genuinely the one you want to "
-            "replace, add `[config-overwrite-ok: <reason>]` to the command to proceed."
+            "replace, put `[config-overwrite-ok: <reason>]` in the `command` string "
+            "(the Bash `description` is NOT scanned) to proceed."
         )
     return (
         f"BLOCKED: this Write would overwrite the existing config/dotfile `{finding.path}` "

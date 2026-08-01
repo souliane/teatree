@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
 from hooks.scripts import gate_result, mr_validator
+from hooks.scripts.gate_result import GateSkipped
 from hooks.scripts.hook_router import handle_validate_mr_metadata
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.review.mr_metadata import validate_mr_metadata
@@ -24,7 +25,7 @@ _ALLOWANCE_KEY = "hook_validator_timeout_seconds"
 def _verdict(command: str) -> list[str] | None:
     """``validate_mr_metadata`` verdict for *command* (``None`` when gate skips)."""
     fields = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
-    if fields is None:
+    if fields is None or isinstance(fields, GateSkipped):
         return None
     return validate_mr_metadata(fields[0], fields[1], DEFAULT_MR_TITLE_REGEX)
 
@@ -39,9 +40,10 @@ def _glab_create(title: str, description: str) -> dict:
 
 
 def _fields(command: str) -> tuple[str, str]:
-    """Extract (title, description) for *command*, asserting it IS an MR mutation."""
+    """Extract (title, description) for *command*, asserting it IS validated."""
     result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
     assert result is not None
+    assert not isinstance(result, GateSkipped)
     return result
 
 
@@ -125,6 +127,73 @@ class TestDefaultOverlayValidation:
         assert blocked is True
         argv = run.call_args[0][0]
         assert argv[:3] == ["/usr/local/bin/t3", "tool", "validate-mr"]
+
+
+class TestUnvalidatedOutcomeIsAnnounced:
+    """Every PASS-path outcome that skips validation says so — silence is reserved.
+
+    The gate's DENY path always talked; its PASS path did not. A recognised MR
+    create whose ``--description`` is an unexpanded ``$(< body.md)`` was allowed
+    through with ZERO output — indistinguishable, from outside the hook, from a
+    gate that swallowed the call. When the command then failed silently for its
+    own unrelated reason, the mute gate is what got blamed, and hours went into
+    the wrong layer.
+
+    So the contract is: exactly two outcomes are silent — "not an MR mutation"
+    and a clean PASS. Every other outcome names itself on stderr.
+    """
+
+    def _stderr_for(self, monkeypatch, capsys, command: str) -> str:
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        data = {"tool_name": "Bash", "tool_input": {"command": command}}
+        assert handle_validate_mr_metadata(data) is False
+        return capsys.readouterr().err
+
+    def test_dynamic_description_skip_names_the_field_and_says_skipped_is_not_passed(self, monkeypatch, capsys):
+        # The exact shape that went mute: a file-substituted description.
+        err = self._stderr_for(
+            monkeypatch,
+            capsys,
+            "glab mr create -R acme/widget --title 'feat(x): real (proj#1)' --description \"$(< body.md)\"",
+        )
+        assert "MR-metadata" in err
+        assert "--description" in err
+        assert "SKIPPED is not PASSED" in err
+
+    def test_dynamic_title_skip_names_the_title(self, monkeypatch, capsys):
+        err = self._stderr_for(
+            monkeypatch, capsys, "glab mr create --title \"$TITLE\" --description 'feat(x): real (proj#1)'"
+        )
+        assert "--title" in err
+
+    def test_metadata_only_update_skip_is_announced(self, monkeypatch, capsys):
+        err = self._stderr_for(monkeypatch, capsys, "glab mr update 7624 --add-label needs-review")
+        assert "neither a title nor a description" in err
+
+    def test_broken_env_opt_in_bypass_is_announced(self, monkeypatch, capsys):
+        # Taking the fail-closed escape hatch must not be a quiet bypass.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
+        monkeypatch.setattr(router.shutil, "which", lambda _: None)
+        assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
+        err = capsys.readouterr().err
+        assert "T3_MR_VALIDATE_ALLOW_BROKEN_ENV" in err
+        assert "SKIPPED is not PASSED" in err
+
+    def test_a_clean_pass_stays_silent(self, monkeypatch, capsys):
+        # The gate must not become chatty: a validated, valid MR says nothing.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok):
+            assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is False
+        assert capsys.readouterr().err == ""
+
+    def test_a_non_mr_command_stays_silent(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        assert handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": "ls -la"}}) is False
+        assert capsys.readouterr().err == ""
 
 
 class TestValidatorCrashIsNotADeny:
@@ -525,7 +594,9 @@ class TestUpdateValidatesOnlySetFields:
             "glab mr update --add-label needs-review",
             "glab mr update 12 --ready",
         ):
-            assert router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}}) is None
+            skipped = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}})
+            assert isinstance(skipped, GateSkipped)
+            assert "neither a title nor a description" in skipped.reason
 
     def test_title_only_update_does_not_demand_a_description(self):
         # Updating only the title must not block on a missing What/Why body.
@@ -552,27 +623,33 @@ class TestDynamicValueIsSkipped:
     The PreToolUse hook sees the command BEFORE the shell expands it, so such a
     value is not the real one (a nested quote truncates it to e.g. ``$(cat ``).
     Validating the captured literal fragment false-blocks; the remote CI gate is
-    the backstop.
+    the backstop. The skip is TYPED and carries its reason — see
+    :class:`TestUnvalidatedOutcomeIsAnnounced` for the loud line it drives.
     """
 
     def _fields_for(self, command: str):
         return router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
 
+    def _skip_reason(self, command: str) -> str:
+        skipped = self._fields_for(command)
+        assert isinstance(skipped, GateSkipped)
+        return skipped.reason
+
     def test_command_substitution_description_is_skipped(self):
         cmd = 'glab mr create --title \'techdebt(x): real (proj#1)\' --description "$(cat "$DESC")"'
-        assert self._fields_for(cmd) is None
+        assert "--description" in self._skip_reason(cmd)
 
     def test_variable_expansion_description_is_skipped(self):
         cmd = "glab mr create --title 'fix: x (proj#1)' --description \"$BODY\""
-        assert self._fields_for(cmd) is None
+        assert "--description" in self._skip_reason(cmd)
 
     def test_command_substitution_title_is_skipped(self):
         cmd = "glab mr create --title \"$(echo hi)\" --description 'fix: x (proj#1)'"
-        assert self._fields_for(cmd) is None
+        assert "--title" in self._skip_reason(cmd)
 
     def test_double_quoted_backtick_description_is_skipped(self):
         cmd = "glab mr create --title 'fix: x (proj#1)' --description \"use `foo` helper\""
-        assert self._fields_for(cmd) is None
+        assert "--description" in self._skip_reason(cmd)
 
     def test_single_quoted_literal_dollar_is_validated_not_skipped(self):
         # Single-quoted values are literal: a literal '$' is real text, validated.
@@ -681,4 +758,4 @@ class TestEmbeddedTriggerIsNotAnMrMutation:
 
     def test_real_metadata_only_update_still_skipped(self):
         # The strip must not turn a genuine metadata-only update into a mutation.
-        assert self._fields_for("glab mr update 7624 --reviewer alice") is None
+        assert isinstance(self._fields_for("glab mr update 7624 --reviewer alice"), GateSkipped)

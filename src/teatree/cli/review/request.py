@@ -103,6 +103,21 @@ def check(mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL 
     managepy_core("review_request_check", "--mr-url", mr_url, overlay_name=overlay_name)
 
 
+@review_request_app.command("group-status")
+def group_status(
+    mr_url: str = typer.Option("", "--mr-url", help="Show only the work group holding this merge request."),
+) -> None:
+    """What each work group is waiting for before its members can be broadcast (R1).
+
+    Read-only: it posts nothing and raises no owner question. For a group whose
+    every open member is review-ready it prints the ordered
+    ``t3 review-request post`` lines, leaving the decision to broadcast with you.
+    """
+    overlay_name = _overlay_name_for_mr(mr_url) if mr_url else _active_project()[1]
+    extra = ("--mr-url", mr_url) if mr_url else ()
+    managepy_core("review_request_groups", *extra, overlay_name=overlay_name)
+
+
 @review_request_app.command()
 def post(
     mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL to post."),

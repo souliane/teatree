@@ -455,12 +455,18 @@ class TestSyncFollowupLabels(TestCase):
         assert result.labels_fetched == 0
 
     def test_no_change_when_labels_and_title_unchanged(self) -> None:
-        """When tracker_status and issue_title are already the same, no save happens."""
+        """When tracker_status and issue_title are already the same, no save happens.
+
+        ``short_description`` is seeded too, so the row is fully settled: a blank
+        card label is itself a change the sync repairs, and leaving it blank here
+        would assert "no change" against a row that still has one pending.
+        """
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/50",
             repos=["repo"],
             state=Ticket.State.STARTED,
+            short_description="Issue title",
             extra={"tracker_status": "Process::Doing", "issue_title": "Issue title"},
         )
 
@@ -471,6 +477,50 @@ class TestSyncFollowupLabels(TestCase):
 
         # No change -> labels_fetched stays at 0
         assert result.labels_fetched == 0
+
+    def test_blank_card_label_is_seeded_from_the_tracker_title(self) -> None:
+        """The label sync heals a card that renders ``(no description)``.
+
+        This is the path that reaches every tracked GitLab issue/work item, not
+        just the ones currently assigned, so it is the one that repairs the
+        existing blank-card rows. Writing ``extra["issue_title"]`` alone left
+        them blank: the board renders ``short_description``.
+        """
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/50",
+            repos=["repo"],
+            state=Ticket.State.STARTED,
+            extra={},
+        )
+
+        mock_client = _make_mock_client([])
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
+
+        sync_followup()
+
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "Issue title"
+        assert ticket.short_description == "Issue title"
+
+    def test_an_operator_edited_card_label_survives_the_label_sync(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/50",
+            repos=["repo"],
+            state=Ticket.State.STARTED,
+            short_description="my own words",
+            extra={},
+        )
+
+        mock_client = _make_mock_client([])
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
+
+        sync_followup()
+
+        ticket.refresh_from_db()
+        assert ticket.short_description == "my own words"
+        assert ticket.extra["issue_title"] == "Issue title"
 
     def test_skips_non_gitlab_url(self) -> None:
         """Issue URL without GitLab /-/ pattern should not match the regex."""

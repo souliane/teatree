@@ -21,10 +21,14 @@ advanced directive takes exactly one FSM step:
 The guard chain is arc-scoped: the pre-admission INTAKE arc runs
 :func:`~teatree.loops.directive_loop.guards.evaluate_intake_guards`, and the
 post-admission EXECUTION arc — consulted only once a directive is past the human ratify
-gate — runs the score- and critic-requiring
+gate — runs the score-, critic- and signal-trust-requiring
 :func:`~teatree.loops.directive_loop.guards.evaluate_execution_guards`. The two arcs
 also have different throughput (#3649): intake drains up to
 ``directive_intake_per_tick`` directives per pass, execution advances exactly one.
+
+Intake throughput and OWNER throughput are separately rationed. Interpreting is silent
+and cheap, so it runs at the full per-tick budget; asking the owner to ratify costs a DM
+each time, so at most :data:`MAX_OPEN_RATIFY_QUESTIONS` may sit unanswered at once.
 
 Every dependency the tick reads is injectable (:class:`TickSeams`) so the whole
 pipeline is exercisable without a live critic, a real merge, a real pytest run, or a
@@ -75,6 +79,18 @@ _INTAKE_STATES = frozenset(
 
 #: Tick actions that report a wait on someone else rather than a step taken.
 _NO_PROGRESS_ACTIONS = frozenset({"waiting", "pending", "refused", "idle"})
+
+#: How many ratify questions may sit UNANSWERED on the owner at once.
+#:
+#: ``directive_intake_per_tick`` bounds how fast the drain moves, not how much lands on
+#: the human: a backlog reaching ``INTERPRETED`` together would open one ratify question
+#: each and DM them all. That is the burst the owner has already objected to, and an
+#: owner who mutes the channel stops reading the NEXT genuine question too — so an
+#: uncapped ask defeats the mechanism it implements. Capping the OUTSTANDING count
+#: rather than the per-tick rate is what makes it self-clearing: answering frees a slot
+#: immediately, whereas a rate cap would still let the whole backlog accumulate unread.
+#: Nothing is dropped — a directive holds at ``INTERPRETED`` and is re-read every tick.
+MAX_OPEN_RATIFY_QUESTIONS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +175,12 @@ def _drain_intake(actives: list[Directive], *, budget: int, stepped: set[int]) -
     waiting on the human, every re-tick spent its whole budget re-reporting them
     ``pending`` and never reached a single younger directive, while the tick still
     reported healthy.
+
+    Asking is rationed separately from advancing: *budget* bounds how many directives
+    make progress, ``ratify_slots`` bounds how many NEW questions may land on the owner
+    while earlier ones are still unanswered. The two compose — a directive denied a slot
+    reports ``waiting``, which is a no-progress action, so it costs no budget either and
+    the cheap, silent interpret step for every other directive still runs.
     """
     results: list[DirectiveTickResult] = []
     spent = 0
@@ -167,12 +189,26 @@ def _drain_intake(actives: list[Directive], *, budget: int, stepped: set[int]) -
             break
         if directive.state not in _INTAKE_STATES:
             continue
-        result = _advance_intake(directive)
+        result = _advance_intake(directive, ratify_slots=MAX_OPEN_RATIFY_QUESTIONS - _open_ratify_questions(actives))
         stepped.add(directive.pk)
         results.append(result)
         if result.action not in _NO_PROGRESS_ACTIONS:
             spent += 1
     return results
+
+
+def _open_ratify_questions(actives: list[Directive]) -> int:
+    """How many directives sit on an unanswered ratify question RIGHT NOW.
+
+    ``RATIFY_PENDING`` is exactly that set: the state is entered by
+    :func:`~teatree.loops.directive_loop.ratify.ask_ratification` and left only when
+    ``try_admit`` consumes the owner's recorded answer, so its size IS the owner's
+    outstanding decision count. Recounted per directive rather than snapshotted once,
+    off the already-loaded working set whose rows the FSM steps mutate in place: a
+    directive admitted earlier in THIS pass frees its slot for a younger sibling
+    immediately, instead of leaving the cap one short until the next tick.
+    """
+    return sum(1 for directive in actives if directive.state == Directive.State.RATIFY_PENDING)
 
 
 def _execution_candidate(actives: list[Directive], *, stepped: set[int]) -> Directive | None:
@@ -220,11 +256,15 @@ def _refused(reason: str, *, directive_id: int | None = None) -> DirectiveTickRe
     return DirectiveTickResult(action="refused", reason=reason, directive_id=directive_id)
 
 
-def _advance_intake(directive: Directive) -> DirectiveTickResult:
+def _advance_intake(directive: Directive, *, ratify_slots: int) -> DirectiveTickResult:
     """The pre-admission arc (interpret → clarify → ratify → admit); one step.
 
     Total over ``_INTAKE_STATES``, which is the only set the caller passes it — so
     ``RATIFY_PENDING`` is the unconditional tail, mirroring :func:`_advance_execution`.
+
+    *ratify_slots* is how many NEW ratify questions may still land on the owner this
+    pass. Nothing is dropped when it runs out: the directive holds at ``INTERPRETED``
+    and is re-read next tick.
     """
     state = Directive.State
     if directive.state == state.CAPTURED:
@@ -237,6 +277,8 @@ def _advance_intake(directive: Directive) -> DirectiveTickResult:
     if directive.state == state.CLARIFYING:
         return _advance_clarifying(directive)
     if directive.state == state.INTERPRETED:
+        if ratify_slots <= 0:
+            return DirectiveTickResult(action="waiting", reason="ratify_backpressure", directive_id=directive.pk)
         ask_ratification(directive)
         return DirectiveTickResult(action="ratify_asked", directive_id=directive.pk)
     return DirectiveTickResult(action=try_admit(directive), directive_id=directive.pk)

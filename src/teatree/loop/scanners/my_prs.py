@@ -2,9 +2,10 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Protocol
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
@@ -12,15 +13,6 @@ from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
-
-# The keys any forge populates with a pipeline/CI status. A PR carrying NONE of
-# them was never enriched — its red-pipeline lane is structurally inert, which
-# the scanner surfaces (throttled) instead of silently reading "".
-_PIPELINE_FIELDS = ("head_pipeline", "status_check_rollup", "mergeable_state")
-
-
-def _has_pipeline_field(pr: RawAPIDict) -> bool:
-    return any(name in pr for name in _PIPELINE_FIELDS)
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:
@@ -38,9 +30,6 @@ def _int_field(data: RawAPIDict, *names: str) -> int:
             return value
     return 0
 
-
-# A pipeline is green only when it explicitly succeeded.
-_GREEN_STATUSES = {"success", "succeeded", "passed"}
 
 # Legitimately still in progress — not green yet, but not red either. Blank
 # ("") means no pipeline has started; treat that as not-yet-running, not a
@@ -67,28 +56,18 @@ def _needs_attention(status: str) -> bool:
     everything else (gray/skipped/manual/canceled) as a benign open PR;
     that is the "walked away from a gray job" failure mode this fixes.
     """
-    return status not in _GREEN_STATUSES and status not in _IN_PROGRESS_STATUSES
+    return status not in GREEN_STATUSES and status not in _IN_PROGRESS_STATUSES
 
 
-def _pipeline_status(pr: RawAPIDict) -> str:
-    """Return the most relevant pipeline state across host shapes.
+class CiEnricher(Protocol):
+    """Resolves a PR's pipeline status when its list payload never carried one.
 
-    GitLab MRs expose ``head_pipeline.status``; GitHub PRs expose a
-    nested ``status_check_rollup`` or ``mergeable_state``. Scanners
-    surface whatever the backend chose to populate; missing data is "".
+    Implemented by :class:`teatree.loop.scanners.my_prs_ci.BoundedCiEnricher`; the
+    seam is a Protocol so the scanner stays free of the forge transport and a test
+    can hand it a plain callable.
     """
-    pipeline = pr.get("head_pipeline")
-    if isinstance(pipeline, dict):
-        status = cast("RawAPIDict", pipeline).get("status")
-        if isinstance(status, str):
-            return status
-    rollup = pr.get("status_check_rollup")
-    if isinstance(rollup, dict):
-        state = cast("RawAPIDict", rollup).get("state")
-        if isinstance(state, str):
-            return state
-    state = pr.get("mergeable_state")
-    return state if isinstance(state, str) else ""
+
+    def status_for(self, *, url: str, head_sha: str) -> str: ...
 
 
 @dataclass(slots=True)
@@ -121,12 +100,20 @@ class MyPrsScanner:
     a teatree-overlay dogfooding scan that lists ``souliane/teatree`` plus
     a sibling overlay's repo path does not steal the sibling's PRs from
     its own zone. Empty tuple disables cross-overlay attribution.
+
+    ``ci_enricher`` supplies the pipeline status for a PR whose list payload
+    carries none — the cross-project MR-list shape, where every MR would otherwise
+    read as in-progress and the ``my_pr.failed`` lane is unreachable. ``None``
+    keeps the payload-only behaviour. It is consulted only for PRs that survive
+    ``allowed_url_prefixes``, so a forge call is never spent on a sibling
+    overlay's MR.
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    ci_enricher: CiEnricher | None = None
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
@@ -140,14 +127,17 @@ class MyPrsScanner:
             url = _str_field(pr, "web_url", "html_url")
             if not self._url_allowed(url):
                 continue
-            if not _has_pipeline_field(pr):
-                # No pipeline field at all — the backend never populated CI state,
-                # so my_pr.failed can't fire for this PR. Count it and warn once
-                # per tick rather than silently classifying it as a benign open PR.
-                unenriched += 1
             title = _str_field(pr, "title")
             iid = _int_field(pr, "iid", "number")
-            status = _pipeline_status(pr)
+            sha = head_sha(pr)
+            status = pipeline_status(pr)
+            if not carries_pipeline_field(pr):
+                status = self._enriched_status(url=url, head_sha=sha)
+                if not status:
+                    # Neither the payload nor the live read produced CI state, so
+                    # my_pr.failed can't fire for this PR. Count it and warn once
+                    # per tick rather than silently classifying it as a benign open PR.
+                    unenriched += 1
             base_payload: SignalPayload = {
                 "url": url,
                 "title": title,
@@ -156,7 +146,7 @@ class MyPrsScanner:
                 # Carried on EVERY signal so ``my_pr.failed`` reaches
                 # ``claim_red_mr_fix`` with a real head sha — the RedMrFixAttempt
                 # ledger stayed empty (#7) while this was omitted.
-                "head_sha": head_sha(pr),
+                "head_sha": sha,
                 "raw": pr,
             }
             if _needs_attention(status):
@@ -195,6 +185,11 @@ class MyPrsScanner:
                 unenriched,
             )
         return signals
+
+    def _enriched_status(self, *, url: str, head_sha: str) -> str:
+        if self.ci_enricher is None:
+            return ""
+        return self.ci_enricher.status_for(url=url, head_sha=head_sha)
 
     def _url_allowed(self, url: str) -> bool:
         """Drop a PR whose URL is outside the overlay's repo prefixes (#1015, #1324).

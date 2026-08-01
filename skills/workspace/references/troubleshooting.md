@@ -7,7 +7,7 @@
 ## Orchestrator Locked Out of Bash
 
 - **Symptom:** Every orchestrator (main-agent) `Bash` call is denied by the orchestrator-execution-boundary gate (`handle_enforce_orchestrator_boundary`, BLUEPRINT §17.6.4 gate 2), and — when `agent_id` detection misfires (sidechain misdetection) — every sub-agent's `Bash` is denied too. The session deadlocks with no in-band way to run a command.
-- **Recovery:** Run `t3 <overlay> gate disable` (e.g. `t3 teatree gate disable`). This is the always-allow-listed self-rescue: it sets `orchestrator_bash_gate_enabled = false` in the DB `ConfigSetting` store (out-of-repo), and the gate's heavy-Bash denylist never matches a `t3 …` command, so it runs even while the gate is fully enabled. If even that is somehow blocked, the kill-switch value can be written straight into the DB store (`~/.local/share/teatree/db.sqlite3`, table `teatree_config_setting`) with the `sqlite3` CLI — it is out-of-repo and needs no repo edit. Re-enable later with `t3 <overlay> gate enable`.
+- **Recovery:** Run `t3 <overlay> gate disable` (e.g. `t3 teatree gate disable`). This is the always-allow-listed self-rescue: it sets `orchestrator_bash_gate_enabled = false` in the DB `ConfigSetting` store (out-of-repo), and the gate's heavy-Bash denylist never matches a `t3 …` command, so it runs even while the gate is fully enabled. If even that is somehow blocked, the kill-switch value can be written straight into the DB store (table `teatree_config_setting`) with the `sqlite3` CLI, from INSIDE the container — the control DB lives in the `teatree_control_db` named volume at `/var/lib/teatree/control-db/db.sqlite3` and has no host path. It is out-of-repo and needs no repo edit. Re-enable later with `t3 <overlay> gate enable`.
 - **Prevention:** Main-vs-sub-agent is detected via the PreToolUse payload's `agent_id` (non-empty ⇒ sub-agent), not the parent transcript's `isSidechain` marker — the transcript read misclassified every sub-agent and caused the double lockout. The durable out-of-repo kill-switch survives `t3 update`, so a stale clone cannot re-lock the orchestrator ([#1472](https://github.com/souliane/teatree/issues/1472), self-rescue command [#1474](https://github.com/souliane/teatree/issues/1474)).
 
 ## `ty` Version Bumps Break Pre-Commit
@@ -281,3 +281,23 @@ When relaying a sub-agent's success or failure claim that rests on a *generated 
 - **False success.** A stale generated artifact from before the relevant change still shows the desired value → "proven, it works" claim relayed upward. Always confirm the artifact's mtime/provenance post-dates the change before believing a "proven" verdict.
 
 Same root cause (no freshness gate), opposite signs. **Rule:** never relay a sub-agent success/failure claim built on an artifact or branch state without an independent freshness/currency check first. Make branch-currency and artifact-freshness **automatic preconditions of any verdict**, not manual discipline that compaction can erase.
+
+**The third axis: attribution.** Freshness asks *"is this evidence current?"*; attribution asks *"did the thing under test actually produce it?"* A shared endpoint answers both when the command is running and when something else is. Probing a well-known port (`curl localhost:8000` after starting a server), reading a file another process also writes, or checking a queue several producers feed all yield a result that looks like proof and attributes nothing. The failure is asymmetric and flatters: an unrelated listener reads as success, so the claim ships.
+
+Guard it by isolating the run, not by trusting the observation: bind an ephemeral port, assert on the process you started (its PID, its log line, its exit status), or stop the candidate and confirm the signal disappears. **Rule:** a verdict needs evidence that could only have come from the thing under test. When the evidence is merely *consistent* with success, say what was and was not established rather than reporting it as verified.
+
+## The `deploy/` Compose Wrapper Is Box-Only — Use the Native Install Locally
+
+`deploy/t3` routes every invocation through `docker compose`, and that compose file is written for the deployed box: it declares the box secrets file as a required `env_file`, and its bind mounts name the box's home as the **host-side source** (`source: /home/teatree/.local/share/teatree`). Both are correct there — the mount design is deliberate *path identity*, container and host seeing one absolute path.
+
+Neither holds on a developer machine, so the symptoms are venue errors wearing a config error's clothes:
+
+```text
+env file .../deploy/teatree.env not found
+Error response from daemon: mounts denied: The path /home/teatree/.local/share/teatree
+is not shared from the host and is not known to Docker
+```
+
+The second one is not fixable by sharing the path or parameterising the source. Pointing the source at the developer's home makes the mount succeed and **breaks path identity**: the container records worktree paths under `/home/teatree/…` that do not resolve on the host, so the DB is fine (same bytes) while every path stored in it is wrong.
+
+**Rule:** the compose wrapper is a *box* venue. Local work runs the native install (`uv tool install --editable` → `~/.local/bin/t3`), which is a different binary from `deploy/t3`. A shell alias pointing `t3` at the wrapper makes every local command fail this way — check `command -v -a t3` when a local run dies on mounts or env files. Only genuinely optional box inputs (the secrets file) should be softened with compose's `required: false`; the mounts should not.

@@ -96,6 +96,38 @@ class TestConfiguredReviewSkillGaps:
         )
         assert _configured_review_skill_gaps() == []
 
+    def test_dangling_alternate_is_flagged(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An alternate the gate would accept evidence for, that nobody can run,
+        # is the same incident class as a dangling primary — and it hides better.
+        _seed_skill(canonical_dir, "elite-review")
+        _pin(
+            monkeypatch,
+            replace(
+                UserSettings(),
+                review_skill="elite-review",
+                review_skill_alternates=["codex-review"],
+                architectural_review_disabled=True,
+            ),
+        )
+        gaps = _configured_review_skill_gaps()
+        assert len(gaps) == 1
+        assert "review_skill_alternates" in gaps[0]
+        assert "codex-review" in gaps[0]
+
+    def test_installed_alternate_resolves_clean(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_skill(canonical_dir, "elite-review")
+        _seed_skill(canonical_dir, "codex-review")
+        _pin(
+            monkeypatch,
+            replace(
+                UserSettings(),
+                review_skill="elite-review",
+                review_skill_alternates=["codex-review"],
+                architectural_review_disabled=True,
+            ),
+        )
+        assert _configured_review_skill_gaps() == []
+
     def test_each_registered_overlay_is_resolved(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_skill(canonical_dir, "code")
         _pin(
