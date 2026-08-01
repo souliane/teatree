@@ -1,5 +1,6 @@
 """Shared fixtures for teatree script tests."""
 
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -8,16 +9,17 @@ import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tests._db_template import build_or_reuse_template, restore_from_template
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
-# Ensure unit tests use the settings declared in pyproject.toml, not a stale
-# DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
-# pyproject.toml when the env var is absent.
+# Keep a stale shell DJANGO_SETTINGS_MODULE out of any SUBPROCESS a test spawns. The
+# suite's own settings are pinned by ``--ds`` in pyproject's addopts, because this pop
+# lands after pytest-django has already resolved the module and so never stopped an
+# ambient value winning here (#3996).
 os.environ.pop("DJANGO_SETTINGS_MODULE", None)
 # Pin T3_OVERLAY_NAME to the in-repo overlay so tests stay deterministic even
 # when extra overlays are editable-installed for dogfooding (see #120). Tests
@@ -87,6 +89,23 @@ def pg_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.setenv("POSTGRES_USER", "testuser")
     monkeypatch.setenv("POSTGRES_PASSWORD", "testpass")
+
+
+#: A fixed instant, deliberately mid-cycle, for every billing-cycle-scoped assertion.
+#: A cycle-scoped reader filters ``started_at >= cycle_start(localdate())``, so a test
+#: that stamps its attempt from the wall clock and then lets the reader re-read the
+#: clock silently loses the attempt whenever the local date rolls onto a cycle start
+#: between the two reads — the #3996 shuffle-lane red, which hit whichever test was on
+#: the clock at that second. ``test_pinned_clock_sits_well_inside_its_cycle`` keeps this
+#: value away from either boundary.
+CYCLE_MIDPOINT = dt.datetime(2026, 6, 10, 12, 0, tzinfo=dt.UTC)
+
+
+@pytest.fixture
+def pinned_clock() -> Iterator[dt.datetime]:
+    """Pin ``timezone.now`` (and therefore ``localdate``) to :data:`CYCLE_MIDPOINT`."""
+    with patch("django.utils.timezone.now", return_value=CYCLE_MIDPOINT):
+        yield CYCLE_MIDPOINT
 
 
 @pytest.fixture(autouse=True)

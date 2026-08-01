@@ -20,8 +20,10 @@ from teatree.core.statusline_segment import StatuslineSegment
 from teatree.loop.tick_freshness import _write_tick_meta
 from tests.factories import TicketFactory
 
+# ``pinned_clock``: the cost segment is cycle-scoped, so a wall-clock stamp goes missing
+# when the local date rolls onto a cycle start mid-test (#3996).
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("pinned_clock")]
 
 
 def _meta(tmp_path: Path) -> dict:
