@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opt-in fast-feedback lane: run only the tests a diff affects (#113, #3672).
+# The LOCAL DEFAULT lane: run only the tests a diff affects (#113, #3672, #3994).
 #
 # The impact engine is the tach pytest plugin (`--tach --tach-base origin/main`): it
 # walks the reverse-import graph natively and deselects the tests a diff cannot reach.
@@ -27,7 +27,9 @@
 #
 # NOT a gate. The 12-shard CI run + 93% combined-coverage floor stays the merge gate,
 # and pre-push is untouched (`tests/test_no_full_suite_on_pre_push.py`). Use this while
-# iterating; run `bash dev/test-fast.sh` (or `bash dev/ci-parity.sh`) before pushing.
+# iterating; run `bash dev/ci-parity-fast.sh` before pushing (it calls this lane). The
+# whole-suite runners (`--full`, `dev/test-fast.sh`, `dev/ci-parity.sh`) are the DECLARED
+# exception for a genuinely cross-cutting change, not the per-ticket default (#3994).
 #
 # Usage:
 #   bash dev/test-affected.sh                 # select + run against origin/main

@@ -814,8 +814,8 @@ exactly what will be pushed, runs privacy scans, and checks fork divergence
 before creating PRs.
 
 ```bash
-# Run tests locally
-uv run pytest               # full suite, parallel (-n auto), no coverage — fast default
+# Run tests locally — the diff-scoped lane is the default; CI's sharded lane is the authority
+bash dev/test-affected.sh   # only the tests the diff affects (`--full` for the whole suite)
 bash dev/test-cov.sh        # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 
 # Pre-commit checks

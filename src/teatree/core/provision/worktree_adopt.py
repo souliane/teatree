@@ -19,9 +19,11 @@ from pathlib import Path
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.work_lease import WorkIdentity, register_work_claim
+from teatree.core.worktree.ticket_workspace import TicketWorkspaceDivergenceError, assert_joins_ticket_workspace
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.instance_id import instance_id
 from teatree.utils import git
+from teatree.utils.git_worktree_query import canonical_repo_root
 
 # The terminal states a follow-up adoption must reopen to reach a shippable FSM
 # state. Only MERGED/DELIVERED need the dedicated edge: SHIPPED is already a
@@ -46,6 +48,22 @@ class WorktreeAdoptError(RuntimeError):
     """
 
 
+def _repo_name_for(cwd_path: Path) -> str:
+    """The REPO this checkout belongs to — its clone's leaf, not the directory's name.
+
+    ``Path(cwd).name`` is only *conventionally* the repo name: the provisioner
+    materialises ``<ticket-dir>/<repo-leaf>``, but a hand-made ``git worktree add``
+    yields a BRANCH-named directory, so adopting one of those recorded the branch slug
+    as the repo. A wrong ``repo_path`` is not cosmetic — it is the key the dup-row
+    guard, the per-repo run commands and the clone-discovery fallback all match on, so
+    the row silently stops resolving to its repo. ``git rev-parse --git-common-dir``
+    answers it regardless of the directory's name; the conventional basename stays as
+    the fallback for a checkout git will not speak about.
+    """
+    clone_root = canonical_repo_root(cwd_path)
+    return clone_root.name if clone_root is not None else cwd_path.name
+
+
 def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
     """Attach the on-disk git worktree at *cwd* to *ticket* as a new ``Worktree`` row.
 
@@ -59,6 +77,10 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
     - *cwd* must be a git *worktree* — ``.git`` present as a FILE. A main clone
         keeps ``.git`` as a directory and is refused (mirrors the #752 refusal).
     - the checkout must be on a feature branch (not ``HEAD``/``main``/``master``).
+    - it must sit in the ticket's ONE workspace dir when the ticket already has one
+        (:func:`~teatree.core.worktree.ticket_workspace.assert_joins_ticket_workspace`):
+        a ticket whose repos are split across roots cannot resolve its own siblings,
+        which drops services from the generated stack with only a log warning.
     - no ``Worktree`` row may already exist for this ``(ticket, repo, branch)``.
     - no row (any ticket) may already record this on-disk path — two rows
         claiming one directory is the collision core forecloses everywhere.
@@ -81,7 +103,12 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
         msg = f"Refusing to adopt {cwd_path}: not on a feature branch (branch={branch or '<none>'!r})."
         raise WorktreeAdoptError(msg)
 
-    repo_name = cwd_path.name
+    try:
+        assert_joins_ticket_workspace(ticket, cwd_path)
+    except TicketWorkspaceDivergenceError as exc:
+        raise WorktreeAdoptError(str(exc)) from exc
+
+    repo_name = _repo_name_for(cwd_path)
     if Worktree.objects.filter(ticket=ticket, repo_path=repo_name, branch=branch).exists():
         msg = (
             f"Ticket {ticket.pk} already has a worktree row for repo {repo_name!r} on branch "

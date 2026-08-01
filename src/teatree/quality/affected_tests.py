@@ -1,7 +1,7 @@
 """Safety-biased incremental test selection (#113, #3672 cutover).
 
 Fast-feedback ONLY. The whole-tree sharded run stays the merge/coverage gate; this
-selector is opt-in local tooling and is NEVER wired into the pre-push gate.
+selector is the LOCAL DEFAULT (#3994) and is NEVER wired into the pre-push gate.
 
 The impact engine is the tach pytest plugin (`--tach --tach-base origin/main`): it
 walks the import graph natively and deselects the tests a diff cannot reach. This
@@ -38,6 +38,12 @@ change that could not get one. The fail-safe that escalation provided by acciden
 now explicit and strictly stronger: :data:`SELECTION_DEFINING_PATHS` forces FULL for
 every file that decides WHICH tests run — including the ``src/teatree/quality`` modules
 this lane is built from, which the shared classifier scoped like any other src module.
+
+:data:`NON_EXECUTABLE_CONFIG_PATHS` (#3994) is the third member of that same class:
+``.gitignore`` and its siblings are neither imported nor executed by the local suite, yet
+one such edit escalated a small-surface ticket to the whole suite — the acceptance
+criterion the prose fixes alone could not reach. It is an ALLOWLIST by exact path, so
+everything unlisted keeps the fail-safe FULL.
 """
 
 from collections.abc import Callable
@@ -84,6 +90,16 @@ SELECTION_DEFINING_PATHS: frozenset[str] = frozenset(
 #: through to the shared classifier's out-of-root FULL.
 _LANE_RUNNER_PREFIX = "dev/"
 _PYTHON_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
+
+#: VCS / editor / build-context config nothing imports and the local suite never executes
+#: — the same shape as a doc (#3645) or a ``dev/`` lane runner (#3817), so the only test
+#: that can observe an edit is one whose source NAMES it. An ALLOWLIST by exact path, never
+#: a rule: anything unlisted keeps the shared classifier's fail-safe FULL, so ``uv.lock``
+#: (a dependency change), ``pyproject.toml`` (the pytest config) and ``.pre-commit-config.yaml``
+#: still escalate. Measured on #3994: one ``.gitignore`` edit ran the whole suite locally.
+NON_EXECUTABLE_CONFIG_PATHS: frozenset[str] = frozenset(
+    {".gitignore", ".gitattributes", ".editorconfig", ".dockerignore"}
+)
 
 _SRC_MODULE_PREFIX = "src/teatree/"
 _SRC_PREFIX = "src/"
@@ -198,11 +214,12 @@ def is_lane_runner(path: str) -> bool:
 def is_reference_mapped(path: str) -> bool:
     """True when *path* has no import-graph edges, so its impact is mapped textually.
 
-    Docs (#3645) and ``dev/`` lane runners (#3817): the only test that can observe a
-    change to one is a test whose source NAMES it, so ``build_force_keep`` maps it to
-    those readers instead of escalating the whole tree.
+    Docs (#3645), ``dev/`` lane runners (#3817) and :data:`NON_EXECUTABLE_CONFIG_PATHS`
+    (#3994): the only test that can observe a change to one is a test whose source NAMES
+    it, so ``build_force_keep`` maps it to those readers instead of escalating the whole
+    tree.
     """
-    return is_doc_path(path) or is_lane_runner(path)
+    return is_doc_path(path) or is_lane_runner(path) or path in NON_EXECUTABLE_CONFIG_PATHS
 
 
 def _extra_full_trigger(path: str) -> str | None:
