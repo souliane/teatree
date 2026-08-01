@@ -54,6 +54,10 @@ def _clear(ticket: Ticket) -> dict[str, object]:
             reviewed_sha=_SHA,
             reviewer_identity="reviewer-bob",
             ticket_id=ticket.pk,
+            # The slug is bare and the fixture's issue_url names no forge host, so the
+            # resolver has nothing to derive from; these tests are about the E2E gate,
+            # and naming the forge is what lets them reach it.
+            forge="github",
         ),
     )
 
