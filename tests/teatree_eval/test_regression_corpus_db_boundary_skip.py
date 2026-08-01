@@ -13,6 +13,7 @@ halves: the boundary fault does not redden the lane, AND nothing else got softer
 """
 
 import pytest
+from django.db import connection
 
 from teatree.db.boundary import DbBoundaryError
 from teatree.eval.regression_corpus import run_regression_corpus
@@ -29,6 +30,21 @@ def _raising(exc: BaseException) -> RegressionCheck:
 def _failing() -> RegressionCheck:
     """A check whose predicate cleanly reports the invariant violated."""
     return RegressionCheck(failure_class="probe", origin="probe", invariant="probe", predicate=lambda: False)
+
+
+_CONTAINER_ONLY_DIR = "/nonexistent/container-only/control-db"
+
+
+def _host_pointed_at_the_container_only_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The host case: the control dir is a container-only mount AND the ORM is aimed at it.
+
+    Both halves are the scenario. Setting the dir alone leaves the ORM pointed at some other,
+    perfectly reachable database, and the lane's question is about the database its checks
+    actually query — so a dir-only arrangement asserts a skip the real host would not take
+    for the reason named here.
+    """
+    monkeypatch.setenv("T3_CONTROL_DB_DIR", _CONTAINER_ONLY_DIR)
+    monkeypatch.setitem(connection.settings_dict, "NAME", f"{_CONTAINER_ONLY_DIR}/db.sqlite3")
 
 
 class TestContainerOwnedDbIsASkip:
@@ -89,7 +105,7 @@ class TestUnreachableControlDbSkipsBeforeThePreflight:
         # The host case: the canonical dir is a container-only mount that does not
         # exist here. Before this, the pre-flight died on a raw OperationalError
         # traceback before a single check had been classified.
-        monkeypatch.setenv("T3_CONTROL_DB_DIR", "/nonexistent/container-only/control-db")
+        _host_pointed_at_the_container_only_db(monkeypatch)
         report = run_regression_corpus((self._db_check(),))
         assert report.ok is True
         assert report.failures == ()
@@ -100,14 +116,14 @@ class TestUnreachableControlDbSkipsBeforeThePreflight:
     def test_the_preflight_is_not_even_appended(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Proof the guard runs FIRST: no pre-flight row is produced at all, so
         # nothing tried to open the database.
-        monkeypatch.setenv("T3_CONTROL_DB_DIR", "/nonexistent/container-only/control-db")
+        _host_pointed_at_the_container_only_db(monkeypatch)
         report = run_regression_corpus((self._db_check(),))
         assert len(report.results) == 1
 
     def test_a_non_db_check_still_runs_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The skip is scoped to DB-backed checks. The git/FSM checks that need no
         # database must keep running on the host — that is most of this lane.
-        monkeypatch.setenv("T3_CONTROL_DB_DIR", "/nonexistent/container-only/control-db")
+        _host_pointed_at_the_container_only_db(monkeypatch)
         report = run_regression_corpus((_failing(),))
         assert report.ok is False
         assert len(report.failures) == 1

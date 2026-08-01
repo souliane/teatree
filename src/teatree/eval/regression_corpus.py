@@ -29,6 +29,7 @@ module's namespace, and the runtime self-DB schema pre-flight (#2190) lives in
 """
 
 import os
+from pathlib import Path
 
 from teatree.db.boundary import DbBoundaryError, control_db_unreachable_reason
 from teatree.eval.regression_corpus_e2e import (
@@ -209,6 +210,25 @@ def _canonical_control_db_unreachable_reason() -> str | None:
     return control_db_unreachable_reason(control_db_dir(os.environ) / DB_FILENAME, env=os.environ)
 
 
+def _configured_db_unreachable_reason() -> str | None:
+    """Why this process cannot reach the database its DB-backed checks will actually query.
+
+    Those checks run through the ORM, so the database whose reachability decides whether
+    they can run is the one Django is configured with — not the canonical control DB. The
+    two are the same on a deployed host, which is the case the skip exists for, and differ
+    on every process holding a private database (a test run, a per-worktree isolated copy).
+    Asking about the canonical path there reports unreachable and skips checks that would
+    have run green against a database this process can open perfectly well, which is how a
+    genuinely failing migration came to be reported as a pass.
+    """
+    from django.db import connection  # noqa: PLC0415 — deferred: only reached once Django is configured
+
+    name = str(connection.settings_dict.get("NAME") or "")
+    if not name or name == ":memory:":
+        return None
+    return control_db_unreachable_reason(Path(name), env=os.environ)
+
+
 def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> RegressionReport:
     db_ready = _django_ready()
     # Resolved ONCE, before the pre-flight: the pre-flight itself opens the DB, so a
@@ -216,7 +236,7 @@ def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> Regr
     # check had been classified. On the host every DB-backed check in this lane cannot
     # run, and saying so up front is what lets them be reported as not-run instead of
     # as regressions the diff did not cause.
-    unreachable = _canonical_control_db_unreachable_reason() if db_ready else None
+    unreachable = _configured_db_unreachable_reason() if db_ready else None
     results: list[CheckResult] = []
     # Schema pre-flight (#2190): the ORM-backed checks query the runtime-resolved
     # self-DB, which (for a worktree's auto-isolated copy) is a stale-schema
