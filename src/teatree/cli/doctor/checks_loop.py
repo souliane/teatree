@@ -60,6 +60,51 @@ def _check_marker_jam() -> bool:
     return False
 
 
+def _check_intake_budget_deadlock() -> bool:
+    """FAIL when issue intake sits at a full budget with nothing progressing (#3978).
+
+    Two stalled claims at a budget of two stop the factory admitting any work at all,
+    and nothing surfaces it: a full budget makes the scanner factory return ``None``, so
+    the tick does nothing and reports success while labelled issues pile up unreachable.
+
+    The signature is a full budget held ENTIRELY by claims with no active task and no
+    open PR — busy is normal, going nowhere is not. Unlike ``_check_marker_jam`` (which
+    warns only once a release grace has already expired) this HARD-FAILs, and fires
+    while the graces are still running. Crash-proof: a broken read degrades to OK with a
+    WARN, so a doctor run never reddens on the alarm's own failure.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.intake.budget import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        IntakeBudget,
+        read_intake_budget,
+    )
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        occupied = (
+            ImplementedIssueMarker.objects.exclude(state__in=ImplementedIssueMarker.State.terminal())
+            .values_list("overlay", flat=True)
+            .distinct()
+        )
+        jammed: list[IntakeBudget] = []
+        for overlay in sorted(occupied):
+            settings = get_effective_settings(overlay)
+            if not settings.issue_implementer_enabled:
+                continue
+            budget = read_intake_budget(overlay, settings.issue_implementer_max_concurrent)
+            if budget.deadlocked:
+                jammed.append(budget)
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Intake-budget deadlock check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for budget in jammed:
+        typer.echo(
+            f"FAIL  {budget.report()} — no held slot is progressing, so no new issue can be admitted; "
+            "free the budget with `t3 loop reclaim-markers` (#3978)."
+        )
+    return not jammed
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 
