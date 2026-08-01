@@ -19,6 +19,7 @@ from teatree.backends.github.api import (
 )
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
+from teatree.backends.github.pr_create import create_pr as _create_pr
 from teatree.backends.github.pr_reads import PR_URL_RE
 from teatree.core.backend_protocols import (
     ApprovalState,
@@ -31,7 +32,6 @@ from teatree.core.backend_protocols import (
 )
 from teatree.types import RawAPIDict
 from teatree.utils import git
-from teatree.utils.pr_body import pr_body_tempfile
 from teatree.utils.run import CommandFailedError
 from teatree.utils.throttled_log import warn_throttled
 
@@ -46,48 +46,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         self._token = token
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
-        repo_slug = git.remote_slug(repo=spec.repo)
-        # Unique per-invocation body file the CLI owns — never a shared
-        # ``/tmp/pr-body.md`` two concurrent shippers race (#3581).
-        with pr_body_tempfile(spec.description) as body_path:
-            cmd = [
-                "gh",
-                "pr",
-                "create",
-                "--repo",
-                repo_slug,
-                "--head",
-                spec.branch,
-                "--title",
-                spec.title,
-                "--body-file",
-                str(body_path),
-            ]
-            if spec.target_branch:
-                cmd.extend(["--base", spec.target_branch])
-            if spec.labels:
-                cmd.extend(["--label", ",".join(spec.labels)])
-            if spec.assignee:
-                cmd.extend(["--assignee", spec.assignee])
-            if spec.draft:
-                cmd.append("--draft")
-
-            result = _run_gh(*cmd, token=self._token, timeout=_FORGE_READ_TIMEOUT_SECONDS)
-        # #1222 / #1226: align with the cross-host canonical key (``web_url``)
-        # that ``ShipExecutor`` reads — returning ``url`` silently produced
-        # empty PR rows because the consumer never looked at that field. The
-        # producer also enforces the verify-by-re-read invariant: an empty /
-        # non-URL stdout (e.g. the ``no commits between`` pre-push race that
-        # exits 0) is rejected so ``ok=True`` never escapes with no PR.
-        url = result.stdout.strip()
-        if not url.startswith(("http://", "https://")):
-            raise CommandFailedError(
-                cmd,
-                result.returncode,
-                result.stdout,
-                f"gh pr create produced no PR URL (stdout={url!r})",
-            )
-        return {"web_url": url}
+        return _create_pr(spec, token=self._token)
 
     def current_user(self) -> str:
         """Return the authenticated GitHub login (e.g. ``souliane``)."""
