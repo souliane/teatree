@@ -26,7 +26,7 @@ _SKILL_MD_PATTERN = re.compile(r"^plugins/.+/skills/.+/SKILL\.md$|^skills/.+/SKI
 
 _ADD_TYPER_RE = re.compile(r"""app\.add_typer\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*name\s*=\s*['"][^'"]+['"]""")
 _APP_COMMAND_RE = re.compile(r"""app\.command\(\s*\)\s*\(""")
-_TEXTCHOICE_ROW_RE = re.compile(r"""^\s*[A-Z][A-Z0-9_]*\s*=\s*['"][a-z0-9_-]+['"]\s*,""")
+_TEXTCHOICE_ROW_RE = re.compile(r"""^\s*[A-Z][A-Z0-9_]*\s*=\s*['"](?P<value>[a-z0-9_-]+)['"]\s*,""")
 _LOOP_LEASE_RE = re.compile(r"""LoopLease\.objects\.(?:acquire|filter|get|get_or_create)\(\s*['"][a-z0-9_-]+['"]""")
 
 
@@ -77,15 +77,29 @@ def _added_files() -> list[str]:
 
 
 def _added_lines_for_path(diff: str, target_path: str) -> list[str]:
-    added: list[str] = []
+    return _diff_lines_for_path(diff, target_path, sign="+")
+
+
+def _removed_lines_for_path(diff: str, target_path: str) -> list[str]:
+    return _diff_lines_for_path(diff, target_path, sign="-")
+
+
+def _diff_lines_for_path(diff: str, target_path: str, *, sign: str) -> list[str]:
+    header = sign * 3
+    lines: list[str] = []
     current_file = ""
     for raw in diff.splitlines():
         if raw.startswith("+++ "):
             current_file = raw[4:].removeprefix("b/")
             continue
-        if raw.startswith("+") and not raw.startswith("+++") and current_file == target_path:
-            added.append(raw[1:])
-    return added
+        if raw.startswith(sign) and not raw.startswith(header) and current_file == target_path:
+            lines.append(raw[1:])
+    return lines
+
+
+def _textchoice_values(lines: list[str]) -> set[str]:
+    matches = (_TEXTCHOICE_ROW_RE.match(line) for line in lines)
+    return {m.group("value") for m in matches if m is not None}
 
 
 def detect_top_level_command_added(diff: str) -> bool:
@@ -95,9 +109,15 @@ def detect_top_level_command_added(diff: str) -> bool:
 
 
 def detect_ticket_state_added(diff: str) -> bool:
-    """Detect a new ``Ticket.State`` enum value in the ticket model."""
-    added = _added_lines_for_path(diff, _TICKET_MODEL_PATH)
-    return any(_TEXTCHOICE_ROW_RE.match(line) for line in added)
+    """Detect a new ``Ticket.State`` enum value in the ticket model.
+
+    Keyed on the stored VALUE, not the row: that is what BLUEPRINT.md documents
+    and what the FSM branches on. A value present on both sides of the diff was
+    only relabelled, reindented, or moved — the soft cases this module disclaims,
+    and the ones that would otherwise demand a doc edit describing no new state.
+    """
+    added = _textchoice_values(_added_lines_for_path(diff, _TICKET_MODEL_PATH))
+    return bool(added - _textchoice_values(_removed_lines_for_path(diff, _TICKET_MODEL_PATH)))
 
 
 def detect_loop_lease_added(diff: str) -> bool:

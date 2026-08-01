@@ -3,12 +3,12 @@
 Two behaviours, driven through the real ``t3 review`` typer surface:
 
 * The target repo (the first CLI argument) is the overlay-resolution context, so the
-  service is built with the credential of the overlay that OWNS that repo.
+    service is built with the credential of the overlay that OWNS that repo.
 * An empty credential is diagnosed, not guessed at. ``guarded_read`` degrades a failed
-  overlay read to ``""`` so one broken config cannot take the review surface down —
-  which means "the read broke" and "there is genuinely no credential" arrive at the
-  caller looking identical. Printing ``glab auth login`` for the first one sends the
-  operator after the one thing that is not broken.
+    overlay read to ``""`` so one broken config cannot take the review surface down —
+    which means "the read broke" and "there is genuinely no credential" arrive at the
+    caller looking identical. Printing ``glab auth login`` for the first one sends the
+    operator after the one thing that is not broken.
 """
 
 import pytest

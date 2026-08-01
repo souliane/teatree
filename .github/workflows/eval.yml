@@ -340,6 +340,14 @@ jobs:
         run: |
           npm install -g @anthropic-ai/claude-code@2.1.220
           claude --version
+      # The runner is neither the container that mounts the control-DB volume
+      # nor the operator's host, so it must declare its own sandbox: without
+      # one the DB resolves to the container-only /var/lib/teatree/control-db
+      # and every teatree command below dies with "unable to open database
+      # file". An explicit XDG_DATA_HOME is the seam `paths.canonical_db_in`
+      # names for this — the DB lands beside the data dir settings.py creates.
+      - name: Sandbox the control DB (the runner is not the container)
+        run: echo "XDG_DATA_HOME=$RUNNER_TEMP/teatree-xdg" >> "$GITHUB_ENV"
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.

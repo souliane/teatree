@@ -87,7 +87,7 @@ class TestRotatesOnAge:
     def test_rotation_happens_well_inside_slacks_twelve_hour_expiry(self) -> None:
         """The whole point: rotate on age, with hours of margin left, never at expiry.
 
-        Pinned as a ratio so the margin survives either constant being returned:
+        Pinned as a ratio so the margin survives either constant being re-tuned:
         several consecutive missed ticks must still land inside the window.
         """
         assert ROTATE_AFTER * 2 < CONFIG_TOKEN_LIFETIME

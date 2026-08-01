@@ -12,17 +12,17 @@ this predicate rather than warning on it.
 TWO SIGNALS, AND ONLY ONE OF THEM PROVES DEATH
 ----------------------------------------------
 * ``archived`` / ``in_trash`` on the page object is the only signal the API
-  exposes that CONCLUDES a page is dead. It is checked first and it is decisive.
+    exposes that CONCLUDES a page is dead. It is checked first and it is decisive.
 * Membership of the page's own parent database is the corroboration. Calling it
-  an independent detector would be dishonest: the probe queries the parent the
-  PAGE ITSELF declares, so a row moved out of a database no longer names that
-  database and is never asked about it — and Notion excludes archived rows from
-  an unfiltered query anyway, which makes absence largely a consequence of the
-  flag rather than a second opinion on it. What membership genuinely buys is the
-  two things the flag cannot give: it turns a read this surface cannot vouch for
-  into an explicit :attr:`Liveness.UNKNOWN` instead of a silent pass, and its
-  result set is where the SUCCESSOR — the current version the caller must go read
-  instead — is found.
+    an independent detector would be dishonest: the probe queries the parent the
+    PAGE ITSELF declares, so a row moved out of a database no longer names that
+    database and is never asked about it — and Notion excludes archived rows from
+    an unfiltered query anyway, which makes absence largely a consequence of the
+    flag rather than a second opinion on it. What membership genuinely buys is the
+    two things the flag cannot give: it turns a read this surface cannot vouch for
+    into an explicit :attr:`Liveness.UNKNOWN` instead of a silent pass, and its
+    result set is where the SUCCESSOR — the current version the caller must go read
+    instead — is found.
 
 So the predicate is a **disjunction for death and a conjunction for life**: any
 one signal saying dead is enough (a page needs only one way to die), while LIVE
