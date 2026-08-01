@@ -19,6 +19,11 @@ from django.db import models
 
 STALE_THRESHOLD_HOURS = 48
 
+#: How many staleness windows a once-working pass may miss before the alarm stops being
+#: advisory. One missed window is a quiet night; this many is something structurally
+#: blocking every pass, which nobody notices while the only signal is a WARN (#3993).
+CRITICAL_STALE_MULTIPLE = 3
+
 
 class DreamRunMarkerManager(models.Manager["DreamRunMarker"]):
     """Read/write surface for the dream-run cadence + staleness alarm."""
@@ -53,6 +58,23 @@ class DreamRunMarkerManager(models.Manager["DreamRunMarker"]):
             return True
         threshold = dt.timedelta(hours=threshold_hours)
         return (now - marker.last_succeeded_at) >= threshold
+
+    def is_critically_stale(
+        self,
+        now: dt.datetime,
+        threshold_hours: int = STALE_THRESHOLD_HOURS,
+        multiple: int = CRITICAL_STALE_MULTIPLE,
+    ) -> bool:
+        """True iff a pass that HAS succeeded before has not for *multiple* windows.
+
+        The hard tier under :meth:`is_stale`'s advisory WARN. Bootstrap — no row, or a
+        row that never succeeded — is deliberately excluded: there is no baseline to
+        regress from, so a fresh install must not redden ``t3 doctor check``.
+        """
+        marker = self.filter(name=DreamRunMarker.NAME).first()
+        if marker is None or marker.last_succeeded_at is None:
+            return False
+        return (now - marker.last_succeeded_at) >= dt.timedelta(hours=threshold_hours * multiple)
 
 
 class DreamRunMarker(models.Model):

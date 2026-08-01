@@ -152,16 +152,28 @@ class TestGateA(SimpleTestCase):
 
 class TestGateB(SimpleTestCase):
     def test_passes_when_prior_session_score_does_not_regress(self) -> None:
-        after = _snapshot({"m.md": "name: m\nprior fact still recalled\n"})
+        snap = _snapshot({"m.md": "name: m\nprior fact still recalled\n"})
         prior = [QaProbe(question="q", expected_answer="prior fact still recalled", source_name="m.md")]
-        result = Gate.interference(prior, after, prior_pass_rate=1.0)
+        result = Gate.interference(prior, snap, snap)
         assert result.passed
 
     def test_fails_when_a_new_rule_corrupts_a_prior_answer(self) -> None:
+        before = _snapshot({"m.md": "name: m\nprior fact still recalled\n"})
         after = _snapshot({"m.md": "name: m\nthe answer was overwritten by a new cluster\n"})
         prior = [QaProbe(question="q", expected_answer="prior fact still recalled", source_name="m.md")]
-        result = Gate.interference(prior, after, prior_pass_rate=1.0)
+        result = Gate.interference(prior, before, after)
         assert not result.passed
+        assert result.regressions == ("m.md",)
+
+    def test_a_signature_that_drifted_between_passes_is_not_blamed_on_this_pass(self) -> None:
+        # #3993: a live session rewrote the memory in place between passes, so the row's
+        # frozen signature no longer matches text the memory still carries. The pass did
+        # not cause that, and blaming it there held the gate closed for 13 days.
+        rewritten = _snapshot({"m.md": "name: m\nthe same lesson, reworded by a later session\n"})
+        prior = [QaProbe(question="q", expected_answer="prior fact still recalled", source_name="m.md")]
+        result = Gate.interference(prior, rewritten, rewritten)
+        assert result.passed
+        assert "1 stale" in result.detail
 
 
 class TestGateC(SimpleTestCase):
@@ -546,7 +558,6 @@ class TestEvaluateGates(SimpleTestCase):
             schema_before=0,
             schema_after=2,
             homed_index_lines={"- b"},
-            prior_pass_rate=1.0,
             pass_rate_first=1.0,
             pass_rate_second=1.0,
             archived=[],
@@ -563,7 +574,6 @@ class TestEvaluateGates(SimpleTestCase):
             schema_before=0,
             schema_after=0,
             homed_index_lines=set(),
-            prior_pass_rate=1.0,
             pass_rate_first=1.0,
             pass_rate_second=0.0,
             archived=[],
@@ -647,9 +657,9 @@ class TestRunAcceptancePass(TestCase):
         # 'a.md' question, expected_answer 'a recalled fact').
         snap = _snapshot({"a.md": "name: a\na recalled fact\n"}, index="- a recalled fact\n")
         run_acceptance_pass(snap, snap, overlay="acme", archived=[], schema_before=0, schema_after=1)
-        # A second pass where the prior fact is now entirely gone regresses the
-        # prior-session pass-rate -> interference (and retention) fail against the
-        # recorded 100% baseline.
+        # A second pass whose AFTER snapshot drops the fact its BEFORE snapshot still
+        # held -> the pass itself destroyed the answer, so retention and interference
+        # both fail.
         regressed = _snapshot({"a.md": "name: a\nan unrelated replacement\n"}, index="- unrelated\n")
         report = run_acceptance_pass(snap, regressed, overlay="acme", archived=[], schema_before=1, schema_after=1)
         failed = {g.name for g in report.gate_results if not g.passed}
@@ -662,10 +672,9 @@ class TestRunAcceptancePass(TestCase):
 
     def test_interference_replays_the_recorded_prior_probe_set_distinct_from_monotonicity(self) -> None:
         # F6.3: gate (b) interference replays the ACTUAL recorded prior-session probe
-        # SET against the AFTER snapshot — not the current derived probes — so a
-        # regression of an OLD answer is caught even when the current corpus changed and
-        # the current-probe monotonicity is fine. This restores the two gates from
-        # collapsing onto one predicate that never replayed the persisted corpus.
+        # SET — not the current derived probes — so a pass that destroys an OLD answer
+        # is caught even when the current corpus is fine. This keeps the two gates from
+        # collapsing onto one predicate that never replays the persisted corpus.
         old = _snapshot({"old.md": "name: old\nthe OLD durable fact\n"}, index="- the OLD durable fact\n")
         # Two recordings mark the 'old.md' probe is_prior_session, so it becomes the
         # replayed prior corpus for later passes.
@@ -673,17 +682,49 @@ class TestRunAcceptancePass(TestCase):
         run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=1, schema_after=2)
         assert DreamQaProbe.objects.prior_session_probes("acme").count() == 1
 
-        # A later pass over a DIFFERENT current corpus whose AFTER snapshot no longer
-        # holds the OLD fact: the current probe (new.md) is retained (retention +
-        # monotonicity pass), but the REPLAYED prior set regresses -> interference fails.
-        new = _snapshot({"new.md": "name: new\na FRESH unrelated lesson\n"}, index="- a FRESH unrelated lesson\n")
+        # A later pass that strips the OLD fact out of a memory whose CURRENT signature
+        # (the renamed headline) it keeps: the derived probe is retained and the
+        # current-probe rate does not move, but the REPLAYED prior set was answerable
+        # BEFORE and is not AFTER -> only interference fails.
+        index = "- A RENAMED HEADLINE\n"
+        before = _snapshot({"old.md": "name: old\nA RENAMED HEADLINE\nthe OLD durable fact\n"}, index=index)
+        after = _snapshot({"old.md": "name: old\nA RENAMED HEADLINE\n"}, index=index)
         report = run_acceptance_pass(
-            new, new, overlay="acme", archived=[], schema_before=2, schema_after=3, clusters_recorded=1
+            before, after, overlay="acme", archived=[], schema_before=2, schema_after=3, clusters_recorded=1
         )
         failed = {g.name for g in report.gate_results if not g.passed}
-        assert "interference" in failed
-        assert "monotonicity" not in failed  # distinct predicate: current-probe rate did not regress
-        assert "retention" not in failed  # the current probe is retained
+        assert failed == {"interference"}
+
+    def test_a_prior_probe_stale_before_the_pass_no_longer_blocks_every_pass(self) -> None:
+        # #3993 end-to-end: the recorded corpus carries a signature a later session
+        # reworded away. It is unanswerable BEFORE and AFTER, so no pass caused it and
+        # no pass may be failed for it — the state that withheld the marker for 13 days.
+        old = _snapshot({"old.md": "name: old\nthe OLD durable fact\n"}, index="- the OLD durable fact\n")
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=0, schema_after=1)
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=1, schema_after=2)
+
+        reworded = _snapshot(
+            {"old.md": "name: old\nthe SAME lesson, reworded\n"}, index="- the SAME lesson, reworded\n"
+        )
+        report = run_acceptance_pass(
+            reworded, reworded, overlay="acme", archived=[], schema_before=2, schema_after=3, clusters_recorded=1
+        )
+        assert "interference" not in {g.name for g in report.gate_results if not g.passed}
+
+    def test_a_rewritten_memory_re_keys_its_recorded_probe(self) -> None:
+        # The row's stored answer and its recorded pass-rate must describe the SAME
+        # question: record_result scores the freshly-derived probe, so a row frozen on
+        # the creation-time signature reports a rate for text it no longer holds.
+        old = _snapshot({"old.md": "name: old\nthe OLD durable fact\n"}, index="- the OLD durable fact\n")
+        run_acceptance_pass(old, old, overlay="acme", archived=[], schema_before=0, schema_after=1)
+
+        reworded = _snapshot(
+            {"old.md": "name: old\nthe SAME lesson, reworded\n"}, index="- the SAME lesson, reworded\n"
+        )
+        run_acceptance_pass(reworded, reworded, overlay="acme", archived=[], schema_before=1, schema_after=2)
+
+        row = DreamQaProbe.objects.get(source_memory_path="old.md", scope="acme")
+        assert row.expected_answer == "the SAME lesson, reworded"
 
     def test_reindex_clipping_a_long_curated_summary_still_passes(self) -> None:
         # End-to-end #2545 staleness defect: re-index (phase 5) clips a >200-char

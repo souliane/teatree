@@ -11,7 +11,7 @@ import datetime as dt
 import tempfile
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -28,6 +28,7 @@ from teatree.loops.dream.engine import (
     TranscriptMember,
     WeightedSnippet,
 )
+from teatree.loops.dream.gates import DreamQaReport, GateResult
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
 
 
@@ -62,10 +63,6 @@ class _DreamTickEnabledMixin:
         _enable_dream_loop(last_run_at=None)
 
 
-if TYPE_CHECKING:
-    from teatree.loops.dream.gates import DreamQaReport
-
-
 def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
     # A real (memory-only, no violation) extract so the compliance-measurement phase
     # — which now runs on EVERY pass and reuses ``result.extract`` — has something to
@@ -79,6 +76,19 @@ def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
         snippets_distilled=len(extract.snippets),
         extract=extract,
     )
+
+
+def _run_dream(*args: str, stdout: "StringIO | None" = None) -> int:
+    """Run the dream command and return its exit code (0 when it did not raise).
+
+    A pass that runs and cannot stamp success exits non-zero (#3993), so a test that
+    deliberately drives one must read the code rather than treat it as an error.
+    """
+    try:
+        call_command("dream", *args, stdout=stdout if stdout is not None else StringIO())
+    except SystemExit as exit_signal:
+        return int(exit_signal.code or 0)
+    return 0
 
 
 class DreamRunStampsMarkerTestCase(TestCase):
@@ -109,7 +119,7 @@ class DreamRunStampsMarkerTestCase(TestCase):
             "teatree.loops.dream.engine.run_consolidation",
             side_effect=RuntimeError("engine boom"),
         ):
-            call_command("dream", "run", stdout=StringIO())
+            assert _run_dream("run") == 1
         marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
         assert marker.last_attempted_at is not None
         assert marker.last_succeeded_at is None
@@ -141,7 +151,7 @@ class DreamDryRunTestCase(TestCase):
             "teatree.loops.dream.engine.run_consolidation",
             side_effect=RuntimeError("engine boom"),
         ):
-            call_command("dream", "run", "--dry-run", stdout=stdout)
+            assert _run_dream("run", "--dry-run", stdout=stdout) == 1
         assert "FAIL" in stdout.getvalue()
         assert not DreamRunMarker.objects.exists()
 
@@ -690,7 +700,8 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
         _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
-    def _run(self, stdout: StringIO, *, report: "DreamQaReport") -> None:
+    def _run(self, stdout: StringIO, *, report: DreamQaReport) -> int:
+        """Run one pass and return the command's exit code (0 when it did not raise)."""
         with (
             patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
@@ -707,11 +718,13 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
                 clear=False,
             ),
         ):
-            call_command("dream", "run", stdout=stdout)
+            try:
+                call_command("dream", "run", stdout=stdout)
+            except SystemExit as exit_signal:
+                return int(exit_signal.code or 0)
+        return 0
 
     def test_failing_gate_does_not_stamp_succeeded(self) -> None:
-        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
-
         failing = DreamQaReport(gate_results=(GateResult(name="retention", passed=False, detail="lost mem_a"),))
         stdout = StringIO()
         self._run(stdout, report=failing)
@@ -721,16 +734,23 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
         assert "acceptance gate(s) FAILED" in out
         assert "retention" in out
 
-    def test_failing_gate_keeps_staleness_active(self) -> None:
-        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
+    def test_failing_gate_exits_non_zero_so_the_caller_sees_it(self) -> None:
+        # #3993: the diagnosis used to be a WARN line only, so `t3 dream run` exited 0
+        # and a blocked pass was indistinguishable from a healthy one for 13 days. The
+        # exit code now mirrors the marker: no success stamped ⇒ non-zero.
+        failing = DreamQaReport(gate_results=(GateResult(name="interference", passed=False, detail="regressed"),))
+        assert self._run(StringIO(), report=failing) == 1
 
+    def test_passing_gates_exit_zero(self) -> None:
+        passing = DreamQaReport(gate_results=(GateResult(name="interference", passed=True, detail="ok"),))
+        assert self._run(StringIO(), report=passing) == 0
+
+    def test_failing_gate_keeps_staleness_active(self) -> None:
         failing = DreamQaReport(gate_results=(GateResult(name="consolidation", passed=False, detail="no-op pass"),))
         self._run(StringIO(), report=failing)
         assert DreamRunMarker.objects.is_stale(timezone.now()) is True
 
     def test_passing_gates_stamp_succeeded(self) -> None:
-        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
-
         passing = DreamQaReport(gate_results=(GateResult(name="retention", passed=True, detail="ok"),))
         stdout = StringIO()
         self._run(stdout, report=passing)
@@ -1356,7 +1376,7 @@ class DreamInFlightLockTestCase(TestCase):
 
     def test_lease_released_even_when_engine_raises(self) -> None:
         with patch("teatree.loops.dream.engine.run_consolidation", side_effect=RuntimeError("boom")):
-            call_command("dream", "run", stdout=StringIO())
+            assert _run_dream("run") == 1
         assert LoopLease.objects.acquire(DREAM_LEASE_NAME, owner="after-failure")
 
 
@@ -1420,7 +1440,7 @@ class DreamTickCadenceTestCase(TestCase):
             "teatree.loops.dream.engine.run_consolidation",
             side_effect=RuntimeError("engine boom"),
         ):
-            call_command("dream", "tick", stdout=StringIO())
+            assert _run_dream("tick") == 1
         assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is None
 
 
@@ -1428,14 +1448,15 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
     def test_zero_members_does_not_stamp_succeeded(self) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
         with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
-            call_command("dream", "run", stdout=StringIO())
+            # A pass that replays nothing cannot stamp success, so it fails loud (#3993).
+            assert _run_dream("run") == 1
         marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
         assert marker is None or marker.last_succeeded_at is None
 
     def test_zero_members_stamps_attempted(self) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
         with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
-            call_command("dream", "run", stdout=StringIO())
+            assert _run_dream("run") == 1
         marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
         assert marker is not None
         assert marker.last_attempted_at is not None
@@ -1444,13 +1465,13 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
         stdout = StringIO()
         with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
-            call_command("dream", "run", stdout=stdout)
+            assert _run_dream("run", stdout=stdout) == 1
         assert "WARN" in stdout.getvalue()
 
     def test_zero_members_keeps_staleness_alarm_active(self) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
         with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
-            call_command("dream", "run", stdout=StringIO())
+            assert _run_dream("run") == 1
         assert DreamRunMarker.objects.is_stale(timezone.now()) is True
 
     def test_nonzero_members_stamps_succeeded(self) -> None:
@@ -1499,7 +1520,7 @@ class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):
                 clear=False,
             ),
         ):
-            call_command("dream", "tick", stdout=stdout)
+            assert _run_dream("tick", stdout=stdout) == 1
 
     def test_zero_members_still_cross_links_and_reindexes(self) -> None:
         stdout = StringIO()

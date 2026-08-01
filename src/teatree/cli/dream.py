@@ -13,9 +13,15 @@ hatch; ignores cadence; ``--dry-run`` does everything except writing rows).
 only when the dream cadence has elapsed (the ``dream`` row's ~04:00 slot, decoupled
 from the live 12-minute loop).
 
-The CLI, the off-live-tick driver, and the 48h staleness alarm (``t3 doctor``) are
-the thin surface; the distillation engine (phases 1-3) and the file-side phases
-4-6 live behind the ``dream`` management command.
+Both exit NON-ZERO when a pass ran and could not stamp the success marker (#3993) — a
+failing acceptance gate or a 0-member replay — so the caller sees a blocked pass rather
+than reading its WARN line in a worker log. A SKIP (disabled, not due, lease held) and
+a ``--dry-run`` never ran or never write, so both exit 0.
+
+The CLI, the off-live-tick driver, and the staleness alarms (``t3 doctor``: a 48h WARN
+plus a hard FAIL once a once-working pass has withheld the marker for
+``CRITICAL_STALE_MULTIPLE`` windows) are the thin surface; the distillation engine
+(phases 1-3) and the file-side phases 4-6 live behind the ``dream`` management command.
 """
 
 import typer

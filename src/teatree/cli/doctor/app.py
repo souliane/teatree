@@ -37,6 +37,7 @@ from teatree.cli.doctor.checks_intent import _check_intent_freshness
 from teatree.cli.doctor.checks_loop import (
     _check_aged_sweep_skips,
     _check_compose_output_root_pinned,
+    _check_dream_consolidation_blocked,
     _check_dream_staleness,
     _check_dream_transcript_visibility,
     _check_intake_budget_deadlock,
@@ -127,6 +128,7 @@ __all__ = (
     "_check_declared_dependencies_provisioned",
     "_check_dispatched_overlay_skills",
     "_check_docker_workflow_wired",
+    "_check_dream_consolidation_blocked",
     "_check_dream_staleness",
     "_check_dream_transcript_visibility",
     "_check_editable_sanity",
@@ -400,21 +402,23 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # its `pyright-langserver` binary (the LSP then silently never starts). Runs after
     # ensure_django() above: the review-skill check reads the ConfigSetting store.
     ok = _check_enabled_but_unprovisioned() and ok
-    # Two hard FAILs over teatree's own durable rows — a registered worktree that is
-    # no longer a checkout, and a PR owed since a deferral the drain cannot discharge.
-    # The third is advisory and always passes: the capture pass records what a
+    # Three hard FAILs over teatree's own durable rows — a registered worktree that is
+    # no longer a checkout, a PR owed since a deferral the drain cannot discharge, and a
+    # dream pass whose success marker has been withheld for weeks (#3993: it says so in
+    # a WARN line the daily advisories discard, so nothing else makes it visible). The
+    # last two are advisory and always pass: the capture pass records what a
     # checkout held that exists nowhere else, and this is the surface that makes
-    # those rows visible with an age (#3891). Nothing reaps them, so without a
-    # surface nobody looks. The tuple calls all three before ``all`` short-circuits,
-    # so no finding masks another.
-    # The fourth is advisory for the same reason as the third and reads a cache rather
-    # than a row: a pre-commit stash whose restore failed leaves the tree clean, so
-    # nothing but the saved patch records that the work ever existed.
+    # those rows visible with an age (#3891); the prek-patch one reads a cache rather
+    # than a row, because a pre-commit stash whose restore failed leaves the tree clean,
+    # so nothing but the saved patch records that the work ever existed. Nothing reaps
+    # either, so without a surface nobody looks. The tuple calls all five before ``all``
+    # short-circuits, so no finding masks another.
     ok = (
         all(
             (
                 check_worktree_health(),
                 check_pending_pull_requests(),
+                _check_dream_consolidation_blocked(),
                 check_unshipped_work(),
                 check_stranded_prek_patches(),
             )
