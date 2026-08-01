@@ -16,9 +16,10 @@ import pytest
 from tests._db_template import build_or_reuse_template, restore_from_template
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
-# Ensure unit tests use the settings declared in pyproject.toml, not a stale
-# DJANGO_SETTINGS_MODULE from the shell. pytest-django falls back to
-# pyproject.toml when the env var is absent.
+# Keep a stale shell DJANGO_SETTINGS_MODULE out of any SUBPROCESS a test spawns. The
+# suite's own settings are pinned by ``--ds`` in pyproject's addopts, because this pop
+# lands after pytest-django has already resolved the module and so never stopped an
+# ambient value winning here (#3996).
 os.environ.pop("DJANGO_SETTINGS_MODULE", None)
 # Pin T3_OVERLAY_NAME to the in-repo overlay so tests stay deterministic even
 # when extra overlays are editable-installed for dogfooding (see #120). Tests
