@@ -16,6 +16,7 @@ from teatree.core.review.mr_metadata import (
     auto_created_description,
     ensure_standard_body,
     expected_title_format,
+    lacks_rationale,
     missing_required_sections,
     validate_mr_metadata,
 )
@@ -319,3 +320,40 @@ class TestAutoCreatedDescription:
         out = auto_created_description(self._TITLE, "- the commit body")
         assert out.endswith(f"## Why\n{AUTO_CREATED_WHY_PLACEHOLDER}")
         assert AUTO_CREATED_WHY_PLACEHOLDER.startswith("TODO")
+
+
+class TestLacksRationale:
+    """Which bodies an adopting ship step may overwrite (#3991).
+
+    The predicate fires on the two shapes the no-orphan hook itself produces and on
+    nothing else — a body it wrongly claims is placeholder gets an author's rationale
+    silently replaced, which is worse than the placeholder it was meant to clear.
+    """
+
+    _TITLE = "fix(pr): render a gate-conforming auto-created body"
+
+    def test_the_hook_body_lacks_rationale(self) -> None:
+        assert lacks_rationale(auto_created_description(self._TITLE, "- the commit body")) is True
+
+    def test_the_placeholder_is_still_found_under_an_appended_section(self) -> None:
+        """The hook's body goes through ``ensure_standard_body``, which appends after ``## Why``."""
+        body = ensure_standard_body(
+            auto_created_description(self._TITLE, "- the commit body"),
+            required_sections=["Configuration"],
+            section_defaults={"Configuration": "No configuration."},
+        )
+        assert lacks_rationale(body) is True
+
+    def test_empty_what_why_headings_lack_rationale(self) -> None:
+        """The second observed shape: both headings present, nothing under either."""
+        assert lacks_rationale(f"{self._TITLE}\n\n## What\n\n## Why\n") is True
+
+    def test_a_blank_body_lacks_rationale(self) -> None:
+        assert lacks_rationale("   \n\n") is True
+
+    def test_an_authored_why_is_not_a_placeholder(self) -> None:
+        assert lacks_rationale(_GOOD_DESC) is False
+
+    def test_a_body_with_no_why_header_is_left_alone(self) -> None:
+        """A human-opened PR using its own headers is never claimed as the hook's."""
+        assert lacks_rationale(f"{self._TITLE}\n\n## Summary\nHand-written, different shape.") is False

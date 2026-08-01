@@ -36,6 +36,7 @@ __all__ = [
     "ensure_standard_body",
     "expected_first_line_format",
     "expected_title_format",
+    "lacks_rationale",
     "missing_required_sections",
     "validate_mr_metadata",
 ]
@@ -54,6 +55,12 @@ AUTO_CREATED_WHY_PLACEHOLDER = (
     "the commit. Replace this line with the rationale before requesting review."
 )
 
+# The stable slice of the placeholder :func:`lacks_rationale` keys on, so a reword of
+# the surrounding sentence cannot silently stop the predicate from recognising it.
+_PLACEHOLDER_MARKER = "opened automatically by the no-orphan pre-push hook"
+
+_NEXT_HEADER_RE = re.compile(r"^\s*#{1,6}\s", re.MULTILINE)
+
 
 def auto_created_description(title: str, commit_body: str) -> str:
     """The What/Why body for a PR opened with no author-written description.
@@ -64,6 +71,35 @@ def auto_created_description(title: str, commit_body: str) -> str:
     unfinished body.
     """
     return f"{title}\n\n## What\n{commit_body.strip() or title}\n\n## Why\n{AUTO_CREATED_WHY_PLACEHOLDER}"
+
+
+def lacks_rationale(description: str) -> bool:
+    """Whether *description* is a body the no-orphan hook left unfinished (#3991).
+
+    True for the shapes the hook itself produces — a blank body, the
+    :data:`AUTO_CREATED_WHY_PLACEHOLDER` marker, or a ``## Why`` header with nothing
+    under it — so a ship step adopting the hook's PR knows its body is still owed one.
+
+    A body carrying NO ``## Why`` header is deliberately False: the caller overwrites
+    on True, and a human-opened PR using its own headers must never have its rationale
+    replaced. Being wrong in that direction is worse than the placeholder it clears.
+    """
+    if not description.strip():
+        return True
+    if _PLACEHOLDER_MARKER in description:
+        return True
+    why = _section_body(description, "Why")
+    return why is not None and not why.strip()
+
+
+def _section_body(description: str, section: str) -> str | None:
+    """The text under ``## <section>`` up to the next header, or ``None`` if absent."""
+    header = _section_header_re(section).search(description)
+    if header is None:
+        return None
+    rest = description[header.end() :]
+    next_header = _NEXT_HEADER_RE.search(rest)
+    return rest if next_header is None else rest[: next_header.start()]
 
 
 def expected_title_format(title_regex: str) -> str:
