@@ -108,7 +108,10 @@
 # model registry in pre-app-registry (#3334).
 "src/teatree/core/messaging_tokens.py" = 1
 "src/teatree/core/merge/authorization.py" = 4
-"src/teatree/core/merge/execution.py" = 2
+# 3: #3984 added `_record_pr_landed`'s call-time `from teatree.core.models import
+# PullRequest` — the merge-landed ledger write needs the app registry, same as every
+# other ORM read in this file's group.
+"src/teatree/core/merge/execution.py" = 3
 # souliane/teatree#3840: the keystone post hook moved to its own module and took its two
 # call-time ORM imports with it — the retry helper and the `MergeClear` the atomic block
 # re-reads under the row lock. Same edges, new home; the pair below is execution.py's old
@@ -176,10 +179,12 @@
 # before BOTH outward writes via a deferred `from teatree.core.fleet import wire`.
 "src/teatree/core/runners/ship.py" = 1
 "src/teatree/core/safe_kill.py" = 1
-# 4: every one is an ORM read (`ImplementedIssueMarker` / `Ticket` / `Task` /
+# 5: every one is an ORM read (`ImplementedIssueMarker` / `Ticket` / `Task` /
 # `PullRequest`). This module is reached from the scanner factory, which loads before
-# the app registry is populated, so each can only resolve at call time.
-"src/teatree/core/intake/budget.py" = 4
+# the app registry is populated, so each can only resolve at call time. #3984 added
+# `_holders`' deferred `ImplementedIssueMarker` read, reused by both the read and the
+# reconcile path.
+"src/teatree/core/intake/budget.py" = 5
 "src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/send_proxy.py" = 3
 "src/teatree/core/signals.py" = 6 # +1: F9 headless-admission consult (lazy, avoids app-registry-at-load)

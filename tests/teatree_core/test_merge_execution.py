@@ -32,7 +32,7 @@ from teatree.core.merge import (
     merge_ticket_pr,
     record_merge_and_advance,
 )
-from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket, Worktree
+from teatree.core.models import ClearRequest, MergeAudit, MergeClear, PullRequest, Session, Ticket, Worktree
 from teatree.utils.pr_ref import PrRef
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -1366,6 +1366,49 @@ class TestExecuteBoundMergeLiveFloor(TestCase):
             merged_sha = execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
         assert merged_sha
         assert self._merge_calls(stub), "a green, not-draft head must reach the bound-merge PUT"
+
+
+class TestExecuteBoundMergeRecordsTheLanding(TestCase):
+    """#3984: every route out of the chokepoint stamps the ledger, and none can be blocked by it.
+
+    The keystone post hook used to be the only writer, so the sweep's CLEAR-less
+    routes — which reach the forge through this primitive with no keystone at all —
+    left the row reading ``open`` forever.
+    """
+
+    def _row(self, pr_id: int = 859) -> PullRequest:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        return PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url=f"https://github.com/souliane/teatree/pull/{pr_id}",
+            repo="souliane/teatree",
+            iid=str(pr_id),
+        )
+
+    def test_a_keystoneless_bound_merge_marks_the_row(self) -> None:
+        row = self._row()
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()):
+            execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
+
+        row.refresh_from_db()
+        assert row.state == PullRequest.State.MERGED
+
+    def test_a_ledger_write_failure_never_loses_the_merged_sha(self) -> None:
+        """Record-and-proceed: the forge merge is irreversible, so this cannot raise."""
+        self._row()
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
+            patch(
+                "teatree.core.models.pull_request.PullRequestQuerySet.record_forge_merge",
+                side_effect=OperationalError("database is locked"),
+            ),
+        ):
+            merged_sha = execute_bound_merge(ref=PrRef(slug="souliane/teatree", pr_id=859), expected_head_oid=_SHA)
+
+        assert merged_sha
 
 
 def _run_git(*args: str, cwd: Path) -> None:

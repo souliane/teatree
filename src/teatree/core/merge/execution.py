@@ -303,6 +303,11 @@ def execute_bound_merge(
     a verdict expedite can NEVER waive, so it is refused unconditionally (no
     expedite plumbing at this chokepoint; the pending-waiver lives only in
     ``assert_merge_preconditions``, which the keystone runs first).
+
+    Every path out of this function that returns a merged SHA records the landing on
+    the ``PullRequest`` ledger (:func:`_record_pr_landed`) — the same chokepoint
+    argument the gates above rest on, applied to the one post-merge fact that was
+    written only by the keystone before (#3984).
     """
     query = CodeHostQuery.for_ref(ref)
     slug, pr_id = ref.slug, ref.pr_id
@@ -330,10 +335,10 @@ def execute_bound_merge(
         if attempt > 0:
             landed = _already_merged_at(query=query, expected_head_oid=expected_head_oid)
             if landed:
-                return landed
+                return _record_pr_landed(ref, landed)
             time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
         try:
-            return _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid)
+            return _record_pr_landed(ref, _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid))
         except MergeTransientError as exc:
             if attempt == MERGE_TRANSIENT_ATTEMPTS - 1:
                 raise
@@ -347,6 +352,35 @@ def execute_bound_merge(
             )
     msg = f"merge of {slug}#{pr_id} exhausted {MERGE_TRANSIENT_ATTEMPTS} transient retries"  # pragma: no cover
     raise MergeTransientError(msg)  # pragma: no cover — the final attempt re-raises before the loop can fall through
+
+
+def _record_pr_landed(ref: PrRef, merged_sha: str) -> str:
+    """Stamp *ref*'s ledger rows MERGED; return *merged_sha* unchanged (#3984).
+
+    THE "a PR landed" recorder, deliberately at the one chokepoint every merge route
+    already crosses. Recording it only in the keystone post hook left the sweep's two
+    no-CLEAR routes — the solo-overlay bypass and the uv-audit raw fallback, both of
+    which reach the forge through :meth:`PrApiClient.merge_pr_squash_bound` → here —
+    writing nothing, so a PR the sweep demonstrably merged kept a row reading ``open``
+    and every consumer asking "has this ticket's PR landed?" answered ``False``. Placing
+    it here means a future third route cannot silently reintroduce that.
+
+    Record-and-proceed: the forge merge is already irreversible, so a ledger failure is
+    logged and never raised — propagating it would strand the keystone post hook the
+    caller still has to run, which loses more than a stale row the reconcile pass
+    (:meth:`PullRequestQuerySet.reconcile_forge_states`) then converges.
+    """
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    try:
+        PullRequest.objects.record_forge_merge(slug=ref.slug, pr_id=ref.pr_id)
+    except Exception:
+        logger.exception(
+            "merge landed for %s#%s but its PullRequest ledger row could not be marked merged",
+            ref.slug,
+            ref.pr_id,
+        )
+    return merged_sha
 
 
 def _already_merged_at(*, query: CodeHostQuery, expected_head_oid: str) -> str:
